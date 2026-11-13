@@ -563,6 +563,187 @@ fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
     )
 }
 
+/// A result kept in place, its value or its error in the caller's slot, for every kind of value:
+/// nothing, an int, a long text, a list, a dict, an optional, a struct in place and one in a block,
+/// on success and on failure, `fails A | B`, and a failure passed up through three `?`. Called
+/// directly, through a function value and an arrow, by `parallel` workers, out of `lock ... as ref`
+/// and in a launched task. Built both ways, kept in place and as a block (`FENNEC_BOXED_RESULTS`),
+/// in dev and release, each printing the same and holding nothing at the end.
+#[test]
+fn a_result_of_every_kind_is_kept_in_place_wherever_it_is_given_back() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for boxed in ["0", "1"] {
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder("results_in_place")?;
+            let (program, executable) = (dir.join("results.fen"), dir.join("results"));
+            std::fs::write(&program, RESULTS_IN_PLACE)?;
+            let mut command = crate::executables::fennec_command();
+            command.arg("build").args(how).arg(&program).arg("-o").arg(&executable).env("FENNEC_HOME", &dir);
+            if boxed == "1" {
+                command.env("FENNEC_BOXED_RESULTS", "1");
+            }
+            let built = command.output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "5157 1164 5157 566 570 140\n",
+                "boxed {boxed} {how:?}: {said}"
+            );
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "boxed {boxed} {how:?}: {said}");
+        }
+    }
+    Ok(())
+}
+
+const RESULTS_IN_PLACE: &str = r#"from std.concurrent import Closed, Crashed
+
+error Oops:
+    why: str
+
+error Other:
+    code: int
+
+struct Point:
+    x: int
+    y: int
+
+struct Named:
+    name: str
+    tags: list[str]
+
+struct Counter:
+    seen: int
+
+def reason(n: int) -> str:
+    return "this failed for a reason long enough to need a block " + str(n)
+
+def nothing(n: int) fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return
+
+def number(n: int) -> int fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return n
+
+def text(n: int) -> str fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return "a text that's longer than any header holds " + str(n)
+
+def items(n: int) -> list[int] fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return [n, n + 1]
+
+def table(n: int) -> dict[str, int] fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return {"n": n, "twice": n * 2}
+
+def maybe(n: int) -> int? fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    if n % 2 == 0: return n
+    return None
+
+def point(n: int) -> Point fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return Point(x=n, y=-n)
+
+def named(n: int) -> Named fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return Named(name="a name longer than any header holds " + str(n), tags=["tag " + str(n)])
+
+def either(n: int) -> int fails Oops | Other:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    if n % 3 == 1: fail Other(code=n)
+    return n
+
+def deep_one(n: int) -> str fails Oops:
+    return text(n)? + "!"
+
+def deep_two(n: int) -> str fails Oops:
+    return deep_one(n)? + "!"
+
+def deep_three(n: int) -> str fails Oops:
+    return deep_two(n)? + "!"
+
+# Every kind, called directly, each failure caught: a number that says what came back.
+def every(n: int) -> int:
+    mut total = 0
+    nothing(n) except Oops(why):
+        total += len(why)
+    got_number = number(n) except Oops(why): len(why)
+    got_text = text(n) except Oops(why): why
+    got_items = items(n) except Oops(why): [len(why)]
+    got_table = table(n) except Oops(why): {why: 1}
+    got_maybe = maybe(n) except Oops(why): len(why)
+    got_point = point(n) except Oops(why): Point(x=len(why), y=0)
+    got_named = named(n) except Oops(why): Named(name=why, tags=list[str]())
+    got_either = either(n) except why:
+        case Oops(text):
+            len(text)
+        case Other(code):
+            code * 100
+    got_deep = deep_three(n) except Oops(why): why
+    total += got_number + len(got_text) + len(got_items) + len(got_table) + (got_maybe else 7)
+    total += got_point.x + len(got_named.name) + len(got_named.tags) + got_either + len(got_deep)
+    return total
+
+def through(run: (int) -> str fails Oops, n: int) -> int:
+    got = run(n) except Oops(why):
+        return len(why)
+    return len(got)
+
+def counted(n: int) -> int:
+    return through(text, n=n) + through((k) => deep_three(k)?, n=n)
+
+def lengths(rounds: int) -> Iterator[int]:
+    for n in range(rounds):
+        got = text(n) except Oops(why): why
+        kept = named(n) except Oops(why): Named(name=why, tags=list[str]())
+        yield len(got) + len(kept.tags) - 1
+
+def generated(rounds: int) -> int:
+    mut total = 0
+    for length in lengths(rounds):
+        total += length
+    return total
+
+def tasked(n: int, out: shared Counter) fails Oops:
+    said = text(n)?
+    lock out as ref held:
+        held.seen += len(said)
+    return
+
+def locked(out: shared Counter, n: int) -> int:
+    lock out as ref held:
+        got = text(n) except Oops(why):
+            return len(why)
+        held.seen += 1
+        return len(got)
+
+def main(stdout: Stdout) fails Crashed | Oops:
+    rounds = 12
+    mut direct = 0
+    mut valued = 0
+    for n in range(rounds):
+        direct += every(n)
+        valued += counted(n)
+    workers = sum(every(n) for n in parallel(range(rounds)))
+    shared out = Counter(seen=0)
+    mut in_lock = 0
+    for n in range(rounds):
+        in_lock += locked(out, n=n)
+    for n in [0, 3, 6]:
+        with launch(() => tasked(n, out)?)?:
+            pass
+    lock out as held:
+        stdout.print(direct, valued, workers, generated(rounds), in_lock, held.seen)
+    return
+"#;
+
 const EXCEPT_FORMS: &str = r#"error Bad:
     Empty
     Long(size: int)
@@ -9078,6 +9259,74 @@ def main(stdout: Stdout):
     stdout.print(total, lines)
 "#;
 
+/// What a function value or an arrow gives back held in place, an enum holding a text or a struct
+/// holding one, is the caller's, as a direct call's is: kept, read and let go of, or thrown away,
+/// with nothing left held. Each call once kept a second owner of its text.
+#[test]
+fn a_result_held_in_place_through_a_function_value_is_let_go_of() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("in_place_through_values")?;
+    std::fs::write(dir.join("in_place_through_values.fen"), IN_PLACE_THROUGH_VALUES)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "in_place_through_values", how)?;
+        assert_eq!(printed, "185 185 185 55\n", "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const IN_PLACE_THROUGH_VALUES: &str = r#"enum Outcome:
+    Good(value: int)
+    Bad(reason: str)
+
+struct Said:
+    text: str
+    count: int
+
+def judge(n: int) -> Outcome:
+    if n % 2 == 0:
+        return .Good(value=n)
+    return .Bad(reason="this failed for a reason number " + str(n))
+
+def said(n: int) -> Said:
+    return Said(text="a text long enough for a block, number " + str(n), count=n)
+
+def use(got: Outcome) -> int:
+    match got:
+        case .Bad(reason):
+            return len(reason)
+        case .Good(value):
+            return value
+
+def apply(run: (int) -> Outcome, n: int) -> int:
+    got = run(n)
+    return use(got)
+
+def thrown(run: (int) -> Outcome, n: int) -> int:
+    _ = run(n)
+    return 1
+
+def counted(make: (int) -> Said, n: int) -> int:
+    kept = make(n)
+    return kept.count + len(kept.text) - 40
+
+def main(stdout: Stdout):
+    mut direct = 0
+    mut valued = 0
+    mut arrowed = 0
+    mut other = 0
+    for n in range(10):
+        direct += use(judge(n))
+        valued += apply(judge, n=n)
+        arrowed += apply((k) => judge(k), n=n)
+        other += thrown(judge, n=n) + counted(said, n=n)
+    stdout.print(direct, valued, arrowed, other)
+    return
+"#;
+
 /// Closures kept where the runtime reads them, as a list's items and in a generator's block, come
 /// out as pinned: appended, read in a loop and by index, shared by a copy of the list, popped,
 /// replaced, and captured by a generator that calls one. A list of closures and a generator keeping
@@ -11810,6 +12059,13 @@ fn a_big_file_hashed_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<
     let built = fennec(&["build", "--llvm", &path(&program), "-o", &path(&executable)], &dir)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let (ran, peak) = with_peak_memory(&executable, &dir)?;
+    // The same program hashing a file of one chunk, a megabyte, for what any run holds anyway.
+    let small = dir.join("hash_small.fen");
+    std::fs::write(&small, HASH_BIG_FILE.replace("range(64)", "range(1)"))?;
+    let small_executable = dir.join("hash_small");
+    let built = fennec(&["build", "--llvm", &path(&small), "-o", &path(&small_executable)], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (_, small_peak) = with_peak_memory(&small_executable, &dir)?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(
         String::from_utf8_lossy(&ran.stdout),
@@ -11817,8 +12073,19 @@ fn a_big_file_hashed_a_chunk_at_a_time_holds_little_memory() -> std::io::Result<
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
-    if let Some(peak) = measured(peak) {
-        assert!(peak < 32 * 1024 * 1024, "hashing 64 MB held {} MB", peak / (1024 * 1024));
+    let (Some(peak), Some(small_peak)) = (measured(peak), measured(small_peak)) else { return Ok(()) };
+    let mb = |bytes: u64| bytes / (1024 * 1024);
+    // Hashing 64 MB a chunk at a time holds hardly more than hashing one chunk. Measured as what
+    // it adds, since AddressSanitizer adds a share of its own to every run, which isn't what the
+    // program holds: 13 MB hashing 64 MB here, and 21 MB under the sanitizer, 35 MB in CI's.
+    assert!(
+        peak.saturating_sub(small_peak) < 16 * 1024 * 1024,
+        "hashing 64 MB held {} MB, against {} MB for one",
+        mb(peak),
+        mb(small_peak)
+    );
+    if std::env::var_os("FENNEC_SANITIZE").is_none() {
+        assert!(peak < 32 * 1024 * 1024, "hashing 64 MB held {} MB", mb(peak));
     }
     Ok(())
 }
@@ -14325,6 +14592,68 @@ fn launched_tasks_run_beside_their_block_natively() -> std::io::Result<()> {
             "play jump\nstop\ntick\nfailed: Muted(why=\"boom too loud\")\nfailed: Crashed(why=\"the task crashed\")\n{sums}"
         )
     );
+    Ok(())
+}
+
+/// Launches whose messages and errors are of types a text form can't carry, for the test below.
+const LAUNCHED_ANY_TYPE: &str = "from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+# The library has a `Delivery` too: this one is the program's own.
+struct Delivery:
+    parcel: str
+    if: int
+
+error Lost:
+    where: str
+
+error Late:
+    by: int
+
+def deliver(inbox: Inbox[Delivery], stdout: Stdout) fails Lost | Late:
+    for delivery in inbox:
+        if delivery.if > 9: fail Lost(where=delivery.parcel)
+        stdout.print(f\"{delivery.parcel} {delivery.if}\")
+
+def tally(inbox: Inbox[dict[str, list[(int, Delivery)]]], stdout: Stdout):
+    for batch in inbox:
+        for name, items in batch.items():
+            stdout.print(name, len(items))
+
+def main(stdout: Stdout) fails Closed | Crashed | Lost | Late | Timeout:
+    with launch((inbox) => deliver(inbox, stdout)?, inbox_size=2)? as deliveries:
+        deliveries.send(Delivery(parcel=\"box\", if=3))?
+    with launch((inbox) => tally(inbox, stdout))? as batches:
+        batches.send({\"a\": [(1, Delivery(parcel=\"x\", if=1)), (2, Delivery(parcel=\"y\", if=2))]})?
+    with launch((inbox) => deliver(inbox, stdout)?)? as more:
+        more.send(Delivery(parcel=\"far\", if=12))?
+";
+
+/// What a `with launch` is written in as holds the checked types themselves, never their text:
+/// a program's own type named like a library one, which the checker holds under a name a
+/// program can't write, a field named by a keyword, a message of nested generics, and a task that
+/// fails with a union of errors all come through unchanged. Read back as text, the first didn't
+/// build.
+#[test]
+fn a_launch_carries_any_type_the_checker_holds_through_unchanged() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("launched-any-type")?;
+    let program = dir.join("shadow.fen");
+    std::fs::write(&program, LAUNCHED_ANY_TYPE)?;
+    let executable = dir.join("shadow");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "box 3\na 2\n");
+    assert!(String::from_utf8_lossy(&ran.stderr).starts_with("error: `main` failed: Lost(where=\"far\")\n"));
+    assert_eq!(ran.status.code(), Some(1));
     Ok(())
 }
 

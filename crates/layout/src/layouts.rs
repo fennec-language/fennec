@@ -8,7 +8,7 @@
 //! is a machine int: floats keep their bits and bools are 0 or 1, and words a case doesn't
 //! use are 0. So two enum values are equal exactly when their words are.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Expr, TypeDef, TypeExpr};
@@ -79,6 +79,10 @@ struct InPlace {
     /// Whether a struct's string and list fields live inside it, so a struct holding them is
     /// still plain: kept in place, its fields owned by whatever holds it.
     counted_fields: bool,
+    /// Whether a result is kept in place: its case's number, then its value or its error, each
+    /// held as a boxed type's field would hold it, so an error is the one word of its block.
+    /// `FENNEC_BOXED_RESULTS=1` keeps every result a block of its own, as before.
+    results: bool,
 }
 
 /// What laying out types needs to see: the checker's structs, and the enums as written.
@@ -133,7 +137,7 @@ impl Layouts {
         let mut layouts = Layouts {
             one_word_optionals: true,
             native_buffers: true,
-            in_place: InPlace { text_headers: true, counted_fields: true },
+            in_place: InPlace { text_headers: true, counted_fields: true, results: results_in_place() },
             ..Layouts::default()
         };
         for (name, def) in definitions {
@@ -367,6 +371,36 @@ impl Layouts {
             // Every candidate's fields fit, so each lays out; a gap would shift the ids.
             let Some(layout) = layout else { return };
             built.push(layout);
+        }
+        // A result nothing holds as a block is kept in place, when native code keeps each of its
+        // fields in place already. A program can't keep a result, so it lives from a `return` to
+        // the caller's `?` or `except`, and no other layout should name one; one that does keeps
+        // it a block.
+        if self.in_place.results {
+            let named_as_block: HashSet<u32> = built
+                .iter()
+                .flat_map(|layout| {
+                    layout.cases.iter().flatten().flat_map(|case| &case.fields).chain(&layout.fields)
+                })
+                .filter_map(|field| match field.ty {
+                    Ty::Boxed(id) => Some(id),
+                    _ => None,
+                })
+                .collect();
+            for layout in &mut built {
+                let Some(id) = reserved.get(&layout.name) else { continue };
+                if layout.name.starts_with("Result[")
+                    && !named_as_block.contains(id)
+                    && layout
+                        .cases
+                        .iter()
+                        .flatten()
+                        .flat_map(|case| &case.fields)
+                        .all(|field| held_in_place(field.ty))
+                {
+                    layout.boxed = false;
+                }
+            }
         }
         for layout in built {
             if let Some(id) = reserved.get(&layout.name) {
@@ -641,6 +675,13 @@ impl Layouts {
     }
 }
 
+/// Whether a result is kept in place, as it is unless `FENNEC_BOXED_RESULTS=1` keeps each a block of
+/// its own. It changes what a build makes, so a build's cache key says it.
+#[must_use]
+pub fn results_in_place() -> bool {
+    std::env::var("FENNEC_BOXED_RESULTS").as_deref() != Ok("1")
+}
+
 /// Every field of a type, in every case of an enum.
 fn written_fields(def: &Written) -> Box<dyn Iterator<Item = &WrittenField> + '_> {
     match def {
@@ -690,6 +731,26 @@ fn has_param(ty: &Type) -> bool {
         Type::Arrow(parts, result) => parts.iter().any(has_param) || has_param(result),
         _ => false,
     }
+}
+
+/// Whether native code keeps a field of this kind in place, counting its owners where it's copied
+/// and let go of: a number, a text, a list, a dict, a boxed value's word, an optional of a block,
+/// or a struct or enum that's itself in place.
+fn held_in_place(ty: Ty) -> bool {
+    matches!(
+        ty,
+        Ty::Int
+            | Ty::Float
+            | Ty::Bool
+            | Ty::U64
+            | Ty::F32
+            | Ty::Str
+            | Ty::List(_)
+            | Ty::Dict(..)
+            | Ty::Boxed(_)
+            | Ty::Struct(_)
+            | Ty::Maybe(_)
+    )
 }
 
 /// How a boxed type's field is held, given the numbers the boxed types will have.

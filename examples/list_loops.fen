@@ -11,10 +11,8 @@ struct Particle:
         self.x += by
 
 def first_negative(numbers: list[int]) -> int:
-    mut i = 0
-    while i < len(numbers):
+    for i in range(len(numbers)):
         if numbers[i] < 0: return i
-        i += 1
     return -1
 
 def main(stdout: Stdout):

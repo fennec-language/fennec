@@ -25,6 +25,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 ## For CI and the tests
 
 - `FENNEC_CHECK_PROOFS`: `1` builds an assertion for every check a proof left out, so a wrong proof stops the program. It also checks, rather than hands to LLVM, every fact it can check where it runs: what's assumed, that a length is in range, and that a `ref` parameter's address is no other parameter's.
+- `FENNEC_BOXED_RESULTS`: `1` builds every result as a block of its own, as before results were kept in place: the case's number, then the value or the error, in the caller's slot. It's there to tell the two apart if a result kept in place is ever wrong.
 - `FENNEC_STRIP_FACTS`: `1` builds without the facts the compiler hands LLVM beside the code: `!range`, `!tbaa`, `!invariant.load`, `inbounds`, `nsw` and `nuw`, `noalias`, `captures(none)` and `llvm.assume`. The program runs the same, only slower. One that prints otherwise was handed a wrong fact, which is the only way to catch a wrong TBAA tag. The nightly proofs run builds everything both ways and compares.
 - `FENNEC_SANITIZE`: `address` or `thread` builds programs with that sanitizer.
 - `FENNEC_EXPECT_LLVM`: LLVM's tests fail rather than skip themselves when its tools are missing.
@@ -40,6 +41,8 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_LIVE_REPORT`: a program writes the runtime's live counts to this file as it ends.
 - `FENNEC_HASH_SEED`: a fixed seed for dict hashing, so a run's order repeats. `fennec test` sets it.
 - `FENNEC_GATE_LOCK`: the lock file the pre-push hook takes, so the landing script's test can use its own.
+- `FENNEC_DOCKER_CONTEXT`: the Docker context the gate's Linux check runs in, in place of `colima-fennec`, Fennec's own VM. See [landing.md](landing.md).
+- `FENNEC_LINUX_CHECK_HELD`: set by the gate's Linux check for itself, run again under its lock: the lock's file descriptor.
 - `FENNEC_PARKED_STOP`: a parked-code test runs itself again with this set, to crash on purpose.
 - `FENNEC_CONNECTIONS`: how many connections an ignored serve memory test opens, run by hand.
 - `FENNEC_AI_TEST_BASE_URL`: the host `tools/ai-test` sends its requests to.

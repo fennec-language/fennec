@@ -76,9 +76,9 @@ use fennec_ir::{EnumDef, Program};
 use fennec_layout::{ListItem, Written, generator_definition};
 use fennec_rt::embed::dicts::Word;
 
-pub use build::{Built, Tools, compile, compile_whole, huge_functions, sanitize_flag};
+pub use build::{Built, Tools, compile, compile_whole, huge_functions, output_switches, sanitize_flag};
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
-pub use copies_made::{CopyMade, copies_made};
+pub use copies_made::{CopyMade, Why as CopyWhy, changed_in_place, copies_made};
 pub use emit::{
     Cpu, Unit, check_proofs, emit, emit_for, emit_traced, emit_tracing_costs, strip_facts,
     trust_native_blocks,

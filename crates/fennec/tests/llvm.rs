@@ -956,6 +956,40 @@ def main(stdout: Stdout):
 "#;
 
 /// `total = lock scores as current:` gives the block's last line, read or after a change, as
+/// A `shared` value's made declaration holds the checked type itself, never its text: a program's
+/// own `Delivery`, which the checker holds under a name a program can't write, with a field named
+/// by a keyword, and a dict of lists of tuples of it come through unchanged.
+#[test]
+fn a_shared_value_holds_any_type_the_checker_holds_unchanged() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "shared_any_type",
+            r#"# The library has a `Delivery` too: this one is the program's own.
+struct Delivery:
+    parcel: str
+    if: int
+
+def main(stdout: Stdout):
+    latest: shared = Delivery(parcel="box", if=3)
+    lock latest as ref held:
+        held.if += 1
+    lock latest as held:
+        stdout.print(held.parcel, held.if)
+    batches: shared = {"a": [(1, Delivery(parcel="x", if=1))]}
+    lock batches as ref batch:
+        batch["b"] = [(2, Delivery(parcel="y", if=2))]
+    lock batches as batch:
+        stdout.print(len(batch), batch["b"][0][1].if)
+"#
+        )?,
+        "box 4\n2 2\n"
+    );
+    Ok(())
+}
+
 /// `mut` or not, with lines before it that do something.
 #[test]
 fn a_lock_block_gives_its_last_line() -> std::io::Result<()> {

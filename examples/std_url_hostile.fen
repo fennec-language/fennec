@@ -1,8 +1,10 @@
 # A URL from outside can be built to fool whatever reads it next, so `url.parse` refuses what
 # two readers could take for different hosts: a name in brackets, which is connected to as a
-# name past a check that took it for an address; brackets, `@`, `%` or `\` in a host; a `\`
-# anywhere before the query, which a browser reads as `/`; a port that isn't one; and a space
-# or a control character anywhere. What's merely long or odd reads, without making a run of it.
+# name past a check that took it for an address; brackets, `@`, `%`, `\` or what a browser maps
+# to them in a host; a `\` anywhere before the query, which a browser reads as `/`; `http:` not
+# followed by `//` and a host, which a browser reads as a host anyway; a port that isn't one; and
+# a space or a control character anywhere. What's merely long or odd reads, without making a run
+# of it. And a `Url` is written so it reads back as itself, never as a link somewhere else.
 from std import url
 
 ## Why `text` isn't a URL, or "parsed" if it is.
@@ -33,7 +35,7 @@ test "only an IPv6 address goes in brackets"():
     assert why_not("http://[::1]x/") == "`http://[::1]x/` isn't a URL: `x` follows its IPv6 address"
 
 test "a host can't hold what would make it another host to the next reader"():
-    said = "its host can't hold `@`, `%`, `\\`, `[` or `]`"
+    said = "its host can't hold `@`, `%`, `\\`, `[`, `]`, `/`, `?` or `#`"
     for text in ["http://a@b@c/", "http://h%41/", "http://[a@b]/", "http://a]b/"]:
         assert why_not(text) == f"`{text}` isn't a URL: {said}"
     long = "http://" + "a" * 254 + "/"
@@ -79,6 +81,70 @@ test "what's merely long, deep or odd reads, as its escapes are"():
     assert url.unquote("%e9") == "%e9"
     # A path's dots are its own business: `parse` doesn't take them away.
     assert url.parse("http://h/../../etc")?.path == "/../../etc"
+
+test "after http: come `//` and a host, since a browser finds one whatever the slashes"():
+    for text in ["http:evil.com/x", "http:/evil.com/x", "https:evil.com", "ws:/h", "ftp:h"]:
+        scheme = text[:text.find(":") else 0]
+        assert why_not(text) == f"`{text}` isn't a URL: `{scheme}:` is followed by `//` and a host"
+    # A browser reads each of these as a link to evil.com, or to h.
+    for text in [
+        "http:///evil.com/x", "///evil.com/x", "http://:80/", "https://@/", "//", "wss://",
+    ]:
+        assert why_not(text) == f"`{text}` isn't a URL: its host is empty"
+    # Other schemes have no host to find, so these read.
+    assert url.parse("file:///etc/hosts")?.path == "/etc/hosts"
+    assert url.parse("mailto:fox@den.example")?.path == "fox@den.example"
+    assert url.parse("urn:isbn:0451450523")?.path == "isbn:0451450523"
+    assert url.parse("/a//b")?.path == "/a//b"
+
+test "a host a browser would map to ASCII punctuation or letters is refused"():
+    for text in [
+        "http://evil。com/",
+        "http://ｅｖｉｌ.com/",
+        "http://evil.com＠good.com/",
+        "http://a﹒b/",
+        "http://a．b/",
+        "http://a․b/",
+        "http://a｡b/",
+    ]:
+        assert why_not(text).startswith(f"`{text}` isn't a URL: its host can't hold `")
+    # A name in another script is a name.
+    assert where("http://müller.de/") == "müller.de 0 müller.de"
+    assert where("http://例え.テスト/") == "例え.テスト 0 例え.テスト"
+
+test "a Url is written so it reads back as the same URL"():
+    # Each would otherwise be read back as a host, a scheme, or a host and path run together.
+    assert str(url.Url(path="//evil.com/x")) == "/.//evil.com/x"
+    assert url.parse(str(url.Url(path="//evil.com/x")))?.host == ""
+    assert str(url.Url(path="javascript:alert(1)")) == "./javascript:alert(1)"
+    assert url.parse(str(url.Url(path="javascript:alert(1)")))?.scheme == ""
+    assert str(url.Url(scheme="foo", path="//x")) == "foo:/.//x"
+    assert str(url.Url(scheme="http", host="h", path="p")) == "http://h/p"
+    assert str(url.Url(path="a/b:c")) == "a/b:c"
+    who = url.Url(scheme="http", user="a/b@c#d", host="h", path="/p")
+    assert str(who) == "http://a%2Fb%40c%23d@h/p"
+    assert url.parse(str(who))?.host == "h"
+    # What parse read is written as it was.
+    for text in [
+        "http://user:p%40ss@h:8080/a%2Fb/c?q=red+fox&q=2#top",
+        "https://[::1]/",
+        "mailto:fox@den.example",
+        "file:///etc/hosts",
+        "/a/b?c=d",
+        "a/b",
+        "?q=1",
+        "#frag",
+    ]:
+        assert str(url.parse(text)?) == text
+
+test "every cut of a URL parses or fails, and never stops the program"():
+    whole = "https://user:pw@[::1]:8080/a/%7Eb/../c?x=1&y=%zz&x=2#f%20g"
+    mut read = 0
+    for end in range(len(whole) + 1):
+        _ = url.parse(whole[0:end]) except InvalidValue():
+            continue
+        read += 1
+    assert read > 0
 
 def main(stdout: Stdout):
     stdout.print(where("http://[::1]:8080/"))

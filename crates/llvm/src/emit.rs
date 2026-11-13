@@ -294,8 +294,11 @@ pub(crate) fn facts_stripped() -> bool {
 }
 
 /// The most instructions a callee can have and still be copied into a caller that found what it
-/// may change alone already (see `call`): `Heap.pop` and what it calls are under half of this.
-const COPIED_IN_WHEN_ALONE: usize = 150;
+/// may change alone already (see `call`). Measured: from 30 to 100, `pathfind`, whose `Heap.pop`
+/// is such a callee, and `game_tick` both run as they did when callers made the block alone; with
+/// no callee copied in, `pathfind` takes 8% more instructions, and at 150, where `game_tick`'s
+/// whole `tick` is copied into `main`, `game_tick` takes 1.5% more.
+const COPIED_IN_WHEN_ALONE: usize = 60;
 
 pub(crate) fn emit_with(
     program: &Program,

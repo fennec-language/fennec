@@ -695,20 +695,27 @@ impl Lowering<'_> {
     {
         let span = walk.span;
         self.scopes.push(HashMap::new());
-        let read = self.temporary(item.clone());
-        walk.ask(self, read, "Table.at_slot", Some(count))?;
-        let bound = match names {
-            [name] => {
-                let dest = self.declare(name, item.clone());
-                self.emit(InstKind::Copy { dest, value: Operand::Local(read) }, span);
-                Ok(())
-            }
-            _ => self.unpack(names, &Operand::Local(read), span),
-        };
-        let leaving = match (back, names.first().and_then(|name| self.lookup(name))) {
-            (Some(back), Some(local)) => {
-                let id = self.temporary(Type::Id(Box::new(item)));
+        // For `for ref`, the slot's `Id` is asked first and the item read straight into the
+        // loop's name, so nothing reads the `Table` between taking the item and putting it back,
+        // and the item can be taken out to change in place, as a list's is.
+        let id = match (back, names) {
+            (Some(_), [_]) => {
+                let id = self.temporary(Type::Id(Box::new(item.clone())));
                 walk.ask(self, id, "Table.slot_id", Some(count))?;
+                Some(id)
+            }
+            _ => None,
+        };
+        let bound = if let [name] = names {
+            let dest = self.declare(name, item.clone());
+            walk.ask(self, dest, "Table.at_slot", Some(count))
+        } else {
+            let read = self.temporary(item.clone());
+            walk.ask(self, read, "Table.at_slot", Some(count))?;
+            self.unpack(names, &Operand::Local(read), span)
+        };
+        let leaving = match (back, names.first().and_then(|name| self.lookup(name)), id) {
+            (Some(back), Some(local), Some(id)) => {
                 Some(Leaving::Item { place: back.place.clone(), item: local, index: Operand::Local(id) })
             }
             _ => None,

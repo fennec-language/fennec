@@ -193,14 +193,17 @@ impl Reader {
     }
 }
 
+/// The names a dependency can't have: the standard library's, a kit's own `main` and `lib`, and
+/// `test`. `fennec` has an error of its own.
+const RESERVED: [&str; 4] = ["std", "main", "lib", "test"];
+
 /// What `fennec = ...` says for a kit built with a local build of Fennec.
 const DEV: &str = "dev";
 
 const DEPENDENCY_HELP: &str = "write `name = { git = \"https://...\", commit = \"<its whole hash>\" }`, or `name = { path = \"../name\" }`";
 
-/// One line of `[dependencies]`: `physics = { git = "...", commit = "..." }`, with a `folder` when
-/// the kit isn't at the top of its repository, or `tools = { path = "../tools" }`.
-fn dependency(name: &str, value: &str) -> Result<Dependency, (String, String)> {
+/// Why a dependency can't have the name `name`, with what to do instead.
+fn name_refused(name: &str) -> Result<(), (String, String)> {
     if !valid_name(name) {
         return Err((
             format!("`{name}` can't name a kit"),
@@ -213,6 +216,22 @@ fn dependency(name: &str, value: &str) -> Result<Dependency, (String, String)> {
             "say which with `fennec = \"0.4.2\"` at the top of kit.toml, before any table".to_owned(),
         ));
     }
+    // Names a program already means something by: a dependency named one would be shadowed, or
+    // would shadow.
+    if RESERVED.contains(&name) {
+        return Err((
+            format!("`{name}` is a name Fennec keeps for itself, so a dependency can't have it"),
+            "give the dependency another name here: a kit is imported by the name kit.toml gives it"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// One line of `[dependencies]`: `physics = { git = "...", commit = "..." }`, with a `folder` when
+/// the kit isn't at the top of its repository, or `tools = { path = "../tools" }`.
+fn dependency(name: &str, value: &str) -> Result<Dependency, (String, String)> {
+    name_refused(name)?;
     if string(value).is_some() {
         return Err((
             format!("`{name}` asks for a version from the Den, which isn't built yet"),
@@ -364,7 +383,20 @@ fn known_address(url: &str) -> bool {
 
 #[cfg(test)]
 mod address_tests {
-    use super::known_address;
+    use super::{dependency, known_address};
+
+    /// A dependency can't take a name Fennec keeps for itself: the standard library's, a kit's own
+    /// `main` and `lib`, `test`, or `fennec`.
+    #[test]
+    fn names_fennec_keeps_are_refused() {
+        let from = "{ path = \"../tools\" }";
+        for kept in ["std", "main", "lib", "test"] {
+            let (said, _) = dependency(kept, from).unwrap_err();
+            assert!(said.contains("is a name Fennec keeps for itself"), "{kept}: {said}");
+        }
+        assert!(dependency("fennec", from).is_err());
+        assert!(dependency("tools", from).is_ok());
+    }
 
     /// A dependency's git address is `https://`, `ssh://`, `user@host:path`, or `file://` for a
     /// repository on this machine. Any other scheme would have git run a helper named for it from

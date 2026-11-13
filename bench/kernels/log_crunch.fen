@@ -1,0 +1,168 @@
+# A log cruncher, as an operator runs one over a day's access log. The log is text made from one
+# seed, a line per request: a timestamp, a level, the service, the request, its status, how long
+# it took, the bytes sent and the user. Each line is split into its parts, its path turned into a
+# route, and it's counted into dicts of structs and counters, its time appended to its route's
+# list. Each minute's busiest route is found as the minute ends, and its counts cleared for the
+# next. Then the times are sorted for percentiles and the report is written.
+
+LINES = 50_000
+USERS = 3_000
+SERVICES = ["api", "auth", "store", "search"]
+SECTIONS = ["users", "orders", "items", "carts", "search", "login", "health"]
+METHODS = ["GET", "GET", "GET", "POST", "PUT", "DELETE"]
+SLOW = 400
+
+# What's been seen of one route.
+struct RouteStats:
+    requests = 0
+    errors = 0
+    bytes = 0
+
+# The next state of a small linear congruential generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+# A number from 0 up to `top` taken from a generator's state.
+def below(seed: int, top: int) -> int:
+    return seed // 65_536 % top
+
+# `number` written in `width` digits at least.
+def padded(number: int, width: int) -> str:
+    return str(number).zfill(width)
+
+# The log: one line per request, a few of them cut short as a crash would leave them.
+def log(seed: int) -> str:
+    mut state = seed
+    mut clock = 9 * 3_600_000
+    mut lines = list[str]()
+    for _ in range(LINES):
+        state = next(state)
+        clock += below(state, top=30)
+        state = next(state)
+        roll = below(state, top=1_000)
+        state = next(state)
+        user = below(state, top=USERS)
+        state = next(state)
+        took = below(state, top=40) + (below(state, top=7) * 97 if roll % 9 == 0 else 0)
+        hours = padded(clock // 3_600_000, width=2)
+        minutes = padded(clock // 60_000 % 60, width=2)
+        seconds = padded(clock // 1_000 % 60, width=2)
+        millis = padded(clock % 1_000, width=3)
+        stamp = f"2026-11-12T{hours}:{minutes}:{seconds}.{millis}Z"
+        if roll < 4:
+            lines.append(f"{stamp} ERROR api GET /users/")
+            continue
+        section = SECTIONS[roll % len(SECTIONS)]
+        mut path = f"/{section}"
+        if section == "users" or section == "orders" or section == "items":
+            path = path + f"/{user * 7 % 1_000}"
+            if roll % 5 == 0:
+                path = path + "/history"
+        status = 500 if roll < 25 else (404 if roll < 70 else (201 if roll % 6 == 3 else 200))
+        level = "ERROR" if status == 500 else ("WARN" if status == 404 or took > SLOW else "INFO")
+        method = METHODS[roll % len(METHODS)]
+        service = SERVICES[user % len(SERVICES)]
+        sent = 200 + roll * 3 + user % 50
+        lines.append(
+            f"{stamp} {level} {service} {method} {path} {status} {took}ms bytes={sent} user=fox-{user}",
+        )
+    return "\n".join(lines)
+
+# The route a path is for: each part that's a number becomes `:id`.
+def route_of(method: str, path: str) -> str:
+    mut route = method + " "
+    for part in path.split("/"):
+        if len(part) == 0: continue
+        if part.isdigit():
+            route = route + "/:id"
+        else:
+            route = route + "/" + part
+    return route
+
+# Which item of sorted `times` is at `percent`.
+def percentile(times: list[int], percent: int) -> int:
+    return times[(len(times) - 1) * percent // 100]
+
+# The minute's busiest route, the first by name among equals.
+def busiest(counts: dict[str, int]) -> str:
+    mut best = ""
+    mut most = 0
+    for name in sorted(counts.keys()):
+        if counts[name] > most:
+            best = name
+            most = counts[name]
+    return f"{best} {most}"
+
+def main(stdout: Stdout):
+    text = log(11)
+    mut levels = dict[str, int]()
+    mut statuses = dict[int, int]()
+    mut routes = dict[str, RouteStats]()
+    mut times = dict[str, list[int]]()
+    mut users = dict[str, int]()
+    mut minute = dict[str, int]()
+    mut minutes = list[str]()
+    mut current = ""
+    mut bad = 0
+    for line in text.split("\n"):
+        parts = line.split(" ")
+        if len(parts) != 9:
+            bad += 1
+            continue
+        status = int.parse(parts[5]) except InvalidValue():
+            bad += 1
+            continue
+        took = int.parse(parts[6].removesuffix("ms")) except InvalidValue():
+            bad += 1
+            continue
+        sent = int.parse(parts[7].removeprefix("bytes=")) except InvalidValue():
+            bad += 1
+            continue
+        at = parts[0][11:16]
+        if at != current:
+            if len(minute) > 0:
+                minutes.append(f"{current} {len(minute)} routes, busiest {busiest(minute)}")
+            minute.clear()
+            current = at
+        levels[parts[1]] = (levels.get(parts[1]) else 0) + 1
+        statuses[status] = (statuses.get(status) else 0) + 1
+        route = route_of(parts[3], path=parts[4])
+        if route not in routes:
+            routes[route] = RouteStats()
+            times[route] = []
+        routes[route].requests += 1
+        routes[route].bytes += sent
+        if status >= 500:
+            routes[route].errors += 1
+        times[route].append(took)
+        user = parts[8].removeprefix("user=")
+        users[user] = (users.get(user) else 0) + sent
+        minute[route] = (minute.get(route) else 0) + 1
+    minutes.append(f"{current} {len(minute)} routes, busiest {busiest(minute)}")
+
+    total = sum(stats.requests for stats in routes.values())
+    volume = sum(stats.bytes for stats in routes.values())
+    mut report = f"{total} requests, {bad} bad lines, {volume} bytes, {len(users)} users\n"
+    for level in sorted(levels.keys()):
+        report += f"{level} {levels[level]}\n"
+    for status in sorted(statuses.keys()):
+        report += f"status {status} {statuses[status]}\n"
+    for route in sorted(routes.keys()):
+        stats = routes[route]
+        times[route].sort()
+        ordered = times[route]
+        share = float(stats.errors) * 100.0 / float(stats.requests)
+        mut row = f"{route}: {stats.requests} requests, {share:.2f}% errors, {stats.bytes} bytes"
+        row = row + f", p50 {percentile(ordered, percent=50)}ms"
+        row = row + f", p90 {percentile(ordered, percent=90)}ms"
+        row = row + f", p99 {percentile(ordered, percent=99)}ms"
+        report += row + "\n"
+    slow = [route for route, ordered in times.items() if percentile(ordered, percent=99) > SLOW]
+    report += f"{len(slow)} routes slower than {SLOW}ms at p99\n"
+    top = sorted([(amount, user) for user, amount in users.items()])
+    for at in range(len(top) - 1, len(top) - 6, -1):
+        report += f"top {top[at][1]} {top[at][0]}\n"
+    for line in minutes:
+        report += line + "\n"
+    stdout.write(report)
+    return

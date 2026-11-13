@@ -1114,7 +1114,7 @@ impl Emit<'_, '_, '_> {
                 _ => {
                     let (x, y) = (self.load_field(kind, &x_at, ""), self.load_field(kind, &y_at, ""));
                     match kind {
-                        Kind::Int | Kind::Bool => {
+                        Kind::Int | Kind::U64 | Kind::Bool => {
                             let equal = self.temp();
                             let text = if *kind == Kind::Bool { "i1" } else { "i64" };
                             self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
@@ -1123,10 +1123,19 @@ impl Emit<'_, '_, '_> {
                         // An `f32` is held as the `double` that's exactly its value.
                         Kind::Float | Kind::F32 => self.float_compare(BinOp::Eq, (&x, &y)),
                         Kind::Str if self.headers() => self.same_headers(&x, &y),
+                        Kind::MaybeText => self.same_maybe_headers(&x, &y),
                         Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
-                        Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
-                            self.same_blocks(BinOp::Eq, (&x, &y))
-                        }
+                        // A block of any kind goes to the runtime, which compares it by its shape,
+                        // as it does a boxed value's.
+                        Kind::Boxed(_)
+                        | Kind::List(_)
+                        | Kind::Dict(..)
+                        | Kind::Bytes
+                        | Kind::Cap
+                        | Kind::TextBlock
+                        | Kind::Closure(..)
+                        | Kind::Gen => self.same_blocks(BinOp::Eq, (&x, &y)),
+                        Kind::Maybe(_) => self.same_maybe_blocks(&x, &y),
                         other => {
                             return Err(format!(
                                 "it compares a struct holding a {other:?}, which this backend doesn't take yet"
@@ -1140,6 +1149,31 @@ impl Emit<'_, '_, '_> {
             same = both;
         }
         Ok(same)
+    }
+
+    /// `==` on two optionals of a block, each the block's address or null for `None`: the same
+    /// address is equal, a `None` equals only a `None`, and two blocks compare by their shape.
+    fn same_maybe_blocks(&mut self, x: &str, y: &str) -> String {
+        let (same, x_none, y_none, either, decided) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{same} = icmp eq ptr {x}, {y}"));
+        self.line(&format!("{x_none} = icmp eq ptr {x}, null"));
+        self.line(&format!("{y_none} = icmp eq ptr {y}, null"));
+        self.line(&format!("{either} = or i1 {x_none}, {y_none}"));
+        self.line(&format!("{decided} = or i1 {same}, {either}"));
+        let (quick, blocks, joined) =
+            (self.label("maybe_decided"), self.label("maybe_blocks"), self.label("maybe_compared"));
+        self.line(&format!("br i1 {decided}, label %{quick}, label %{blocks}"));
+        self.start_block(&blocks);
+        let equal = self.same_blocks(BinOp::Eq, (x, y));
+        let blocks_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&quick);
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let result = self.temp();
+        self.line(&format!("{result} = phi i1 [ {same}, %{quick} ], [ {equal}, %{blocks_end} ]"));
+        result
     }
 
     /// -1, 0 or 1, by the first field that differs.
@@ -1163,6 +1197,10 @@ impl Emit<'_, '_, '_> {
                         Kind::Int => {
                             self.line(&format!("{less} = icmp slt i64 {x}, {y}"));
                             self.line(&format!("{more} = icmp sgt i64 {x}, {y}"));
+                        }
+                        Kind::U64 => {
+                            self.line(&format!("{less} = icmp ult i64 {x}, {y}"));
+                            self.line(&format!("{more} = icmp ugt i64 {x}, {y}"));
                         }
                         Kind::Bool => {
                             self.line(&format!("{less} = icmp ult i1 {x}, {y}"));

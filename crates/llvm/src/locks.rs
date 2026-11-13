@@ -412,15 +412,23 @@ impl Emit<'_, '_, '_> {
     /// A value copied across a lock's edge, as it's passed around, with owners of its own.
     fn crossed(&mut self, value: &str, kind: &Kind, way: Way) -> Result<String, String> {
         match kind {
-            Kind::Int | Kind::Float | Kind::Bool | Kind::Unit | Kind::Cap => Ok(value.to_owned()),
+            Kind::Int | Kind::Float | Kind::Bool | Kind::U64 | Kind::F32 | Kind::Unit | Kind::Cap => {
+                Ok(value.to_owned())
+            }
             Kind::Str | Kind::MaybeText if self.headers() => Ok(self.crossed_text(value, way)),
             Kind::Boxed(_) if self.is_cell(kind) => {
                 self.retain(value);
                 Ok(value.to_owned())
             }
-            Kind::Str | Kind::TextBlock | Kind::List(_) | Kind::Dict(..) | Kind::Boxed(_) => {
-                Ok(self.cross_block(value, way))
-            }
+            // Any other block is copied by the runtime, by its shape, as a boxed value's is.
+            Kind::Str
+            | Kind::TextBlock
+            | Kind::List(_)
+            | Kind::Dict(..)
+            | Kind::Boxed(_)
+            | Kind::Bytes
+            | Kind::Closure(..)
+            | Kind::Gen => Ok(self.cross_block(value, way)),
             Kind::Maybe(inner) if !self.is_cell(inner) => Ok(self.cross_block(value, way)),
             Kind::Maybe(_) => {
                 let place = self.temp_slot("null");

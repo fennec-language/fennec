@@ -339,7 +339,7 @@ pub(crate) fn dev_build_settings() -> String {
     let threads = std::env::var_os("FENNEC_THREADS_RUNTIME").map(|on| on.to_string_lossy().into_owned());
     let found = runtime_folder(false).is_ok_and(|folder| folder.join(Runtime::Threads.library()).is_file());
     let baseline = BASELINE.load(std::sync::atomic::Ordering::Relaxed);
-    format!("threads={threads:?} found={found} baseline={baseline}")
+    format!("threads={threads:?} found={found} baseline={baseline} {}", fennec_llvm::output_switches())
 }
 
 /// Puts the finished program at `output`: the one in the store under its root hash, or else the
@@ -408,7 +408,8 @@ struct Stored {
 /// A build's root hash: one hash of everything its program depends on. That's each function's
 /// text and the entry's, as LLVM reads them, which hold everything from the program's sources and
 /// the standard library that it reaches; the build of `fennec`; the target and the CPU it's built
-/// for; whether it's a release build and a static one; and the runtime library linked in, by its
+/// for; whether it's a release build and a static one; every switch that changes what's built, as
+/// `fennec_llvm::output_switches` names them; and the runtime library linked in, by its
 /// size and when it was built, since hashing it whole would cost every run. See `docs/store.md`.
 fn root_hash(
     units: &[fennec_llvm::Unit],
@@ -421,12 +422,15 @@ fn root_hash(
     let functions: Vec<String> = texts.iter().map(fennec_blake3::Hash::to_hex).collect();
     let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build root 2026-11-07");
     let baseline = BASELINE.load(std::sync::atomic::Ordering::Relaxed);
+    // Every switch that changes what's built, so a program built one way is never handed back for
+    // another: the sanitizer, checked proofs and stripped facts.
     let target = format!(
-        "{}\n{}\n{}\n{}\n{release}\n{statically}\n{baseline}\n",
+        "{}\n{}\n{}\n{}\n{release}\n{statically}\n{baseline}\n{}\n",
         env!("FENNEC_BUILD"),
         env!("CARGO_PKG_VERSION"),
         std::env::consts::ARCH,
-        std::env::consts::OS
+        std::env::consts::OS,
+        fennec_llvm::output_switches()
     );
     hasher.update(target.as_bytes());
     let library = runtime_library(runtime, statically)

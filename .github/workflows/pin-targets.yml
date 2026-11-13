@@ -39,8 +39,12 @@ jobs:
       - run: ./target/release/fennec-bench ops --pin
       - name: Print the targets
         run: |
+          # Each file between lines naming where it begins and ends, so copying one never takes the
+          # next file's lines with it.
           for file in bench/targets/*.txt bench/targets/unchecked/*.txt bench/ops/*.txt; do
             echo "== $file"
+            echo "----- begin $file -----"
             cat "$file"
+            echo "----- end $file -----"
             { echo "## $file"; echo '```'; cat "$file"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           done

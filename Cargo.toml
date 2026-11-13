@@ -106,7 +106,7 @@ same-file = { version = "=1.0.6", default-features = false }
 signal-hook = { version = "=0.3.18", default-features = false, features = ["iterator"] }
 # The same on Windows, for Ctrl-C and Ctrl-Break, through `SetConsoleCtrlHandler`, its handler run
 # on a thread of its own. Under MIT or Apache-2.0.
-ctrlc = { version = "=3.4.7", default-features = false }
+ctrlc = { version = "=3.5.2", default-features = false }
 # On Windows only, to give each connection a send buffer of a fixed size. Windows otherwise grows
 # it to take whatever's written, so a client that never reads can make the kernel hold unbounded
 # memory for each connection: a denial of service, and a write's `timeout=` that never comes.

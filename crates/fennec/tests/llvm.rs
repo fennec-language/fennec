@@ -18892,6 +18892,67 @@ fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
 const TEXT_GROWN_PRINTS: &str = r"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
 ";
 
+/// A field's text grown by what a call makes, `self.text += str(value)`, grows where it is: the
+/// call can't change the field, so the field is read after it, its only owner as it's added to.
+/// It once read the field first, so the text was copied every time, quadratically. A call given
+/// the field's holder by `ref`, or a method on it, still sees the field as it was before.
+#[test]
+fn a_field_grown_by_a_calls_text_grows_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("field_grown_by_call")?;
+    std::fs::write(dir.join("field_grown_by_call.fen"), FIELD_GROWN_BY_CALL)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "field_grown_by_call", how)?;
+        assert_eq!(printed, "7000\na? <5:1><6:2>\n", "{how:?}");
+        assert!(
+            count(&counts, "allocations") < Some(200) && counts.ends_with(" live 0"),
+            "{how:?}: {counts}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const FIELD_GROWN_BY_CALL: &str = r#"struct Writer:
+    text = ""
+    n = 0
+
+    def int(ref self, value: int):
+        self.text += str(value)
+
+    def pair(ref self, a: int, b: int):
+        self.text += "," + str(a) + str(b)
+
+    def counted(ref self, value: int):
+        self.n += 1
+        self.text += self.label(value)
+
+    def label(self, value: int) -> str:
+        return f"<{value}:{self.n}>"
+
+def bump(ref writer: Writer) -> str:
+    writer.text += "!"
+    return "?"
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    for i in range(4000):
+        out.int(i % 10)
+    for i in range(1000):
+        out.pair(i % 3, i % 7)
+    stdout.print(len(out.text))
+    mut other = Writer()
+    other.text = "a"
+    other.text += bump(ref other)
+    mut third = Writer()
+    third.counted(5)
+    third.counted(6)
+    stdout.print(other.text, third.text)
+    return
+"#;
+
 const TEXT_CHAINED: &str = r#"def main(stdout: Stdout):
     mut route = "GET "
     for part in ["a", "1", "b"]:

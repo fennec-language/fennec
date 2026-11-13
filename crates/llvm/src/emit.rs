@@ -2586,6 +2586,11 @@ impl Emit<'_, '_, '_> {
         if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
             return self.header_isdigit(dest, text);
         }
+        if dest.is_none()
+            && let Some(done) = self.moving_list_method(name, args, span)
+        {
+            return done;
+        }
         // `int.parse(text)` and `float.parse(text)` are `int(text)?` and `float(text)?` given back:
         // the result is made where the caller keeps it, rather than made, read and made again.
         if let ("int.parse" | "float.parse", Some(dest), [text @ Operand::Local(held)]) = (name, dest, args)

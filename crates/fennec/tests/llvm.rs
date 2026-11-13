@@ -11181,6 +11181,27 @@ fn a_field_changed_with_any_argument_is_never_copied() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A list or dict that starts as a shared empty constant, as json's reader and writer start
+/// theirs, is made anew the first time it's written, with nothing copied and no copy counted, and
+/// the constant stays empty. Each write counted a copy of nothing, 2,537 in `api_handler`.
+#[test]
+fn a_shared_empty_list_or_dict_written_once_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "NO_ITEMS = list[int]()\nNO_TAGS = dict[str, int]()\n\nstruct Holder:\n    items = NO_ITEMS\n    tags = NO_TAGS\n\ndef main(stdout: Stdout):\n    mut total = 0\n    for i in range(50):\n        mut holder = Holder()\n        holder.items.append(i)\n        holder.tags[\"a\"] = i\n        total += len(holder.items) + len(holder.tags) + holder.items[0]\n    stdout.print(total, len(NO_ITEMS), len(NO_TAGS))\n    return\n";
+    let dir = folder("shared_empty_written")?;
+    std::fs::write(dir.join("shared_empty_written.fen"), source)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "shared_empty_written", how)?;
+        assert_eq!(printed, "1325 0 0\n", "{how:?}");
+        assert_eq!(count(&counts, "copies"), Some(0), "{how:?}: {counts}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what
 /// changes it next finds the list with one owner: a `ref` function changing the items, then a
 /// plain loop reading them, round after round, copies nothing.
@@ -21698,6 +21719,107 @@ fn a_split_reads_its_text_and_separator_however_they_are_held() -> std::io::Resu
         Some("error: `split` was called with the wrong arguments")
     );
     Ok(())
+}
+
+/// What a list of parts prints as in `a_split_gives_what_rust_gives_at_every_edge`: each part's
+/// length in characters and its text, between bars.
+fn parts_shown<'a>(parts: impl Iterator<Item = &'a str>) -> String {
+    parts.map(|part| format!("{}:{part}", part.chars().count())).collect::<Vec<_>>().join("|")
+}
+
+/// A Fennec string literal of `text`.
+fn fennec_literal(text: &str) -> String {
+    let escaped: String = text
+        .chars()
+        .map(|character| match character {
+            '"' => "\\\"".to_owned(),
+            '\\' => "\\\\".to_owned(),
+            '\n' => "\\n".to_owned(),
+            '\t' => "\\t".to_owned(),
+            '\r' => "\\r".to_owned(),
+            other => other.to_string(),
+        })
+        .collect();
+    format!("\"{escaped}\"")
+}
+
+/// `split` gives what Rust's `str::split` and `split_whitespace` give, on rows chosen for where it
+/// could go wrong: empty parts, separators at both ends, separators of two and three bytes, parts
+/// of exactly 23 bytes, which are held inline, and of 24, which take a block, of ASCII and of
+/// two-byte characters, and whitespace of ASCII and beyond it. The texts and separators come out
+/// of lists, so each split is the runtime's. Every list and part is freed after, with no block
+/// left.
+#[test]
+fn a_split_gives_what_rust_gives_at_every_edge() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let (a23, b24) = ("a".repeat(23), "b".repeat(24));
+    let (e23, e24) = (format!("{}a", "é".repeat(11)), "é".repeat(12));
+    let separated: Vec<(String, &str)> = vec![
+        ("a,,b".to_owned(), ","),
+        (",,".to_owned(), ","),
+        (String::new(), ","),
+        (",a,b,".to_owned(), ","),
+        (" x ".to_owned(), " "),
+        ("x".to_owned(), "x"),
+        ("aéb€éc".to_owned(), "é"),
+        ("é".to_owned(), "é"),
+        ("日本語本".to_owned(), "本"),
+        ("→a→→b→".to_owned(), "→"),
+        ("a, b,, c".to_owned(), ", "),
+        (format!("{a23},{b24},{e23},{e24},"), ","),
+        (format!("{a23}é{b24}é{e23}"), "é"),
+        (format!(",{e24},,{a23}"), ","),
+        (format!("{a23}{b24}"), "ab"),
+        (b24.clone(), b24.as_str()),
+        ("ab".to_owned(), "abc"),
+        ("a\tb\nc".to_owned(), "\n"),
+        ("x,y,z,w,v,u,t,s,r,q,p,o,n,m,l,k".to_owned(), ","),
+    ];
+    let spaced: Vec<String> = vec![
+        "  a\tb\nc  ".to_owned(),
+        "a\u{3000}b  c\u{a0}d".to_owned(),
+        format!(" {a23} {b24}\t{e23}\n{e24} "),
+        String::new(),
+        " \t\n ".to_owned(),
+    ];
+    let texts: Vec<String> = separated.iter().map(|(text, _)| fennec_literal(text)).collect();
+    let separators: Vec<String> = separated.iter().map(|(_, separator)| fennec_literal(separator)).collect();
+    let spaced_texts: Vec<String> = spaced.iter().map(|text| fennec_literal(text)).collect();
+    let source = format!(
+        r#"def shown(parts: list[str]) -> str:
+    mut said = list[str]()
+    for part in parts:
+        said.append(f"{{len(part)}}:{{part}}")
+    return "|".join(said)
+
+def main(stdout: Stdout):
+    texts = [{}]
+    separators = [{}]
+    for at in range(len(texts)):
+        stdout.print(shown(texts[at].split(separators[at])))
+    for text in [{}]:
+        stdout.print(shown(text.split()))
+    return
+"#,
+        texts.join(", "),
+        separators.join(", "),
+        spaced_texts.join(", ")
+    );
+    let mut expected = String::new();
+    for (text, separator) in &separated {
+        expected.push_str(&parts_shown(text.split(*separator)));
+        expected.push('\n');
+    }
+    for text in &spaced {
+        expected.push_str(&parts_shown(text.split_whitespace()));
+        expected.push('\n');
+    }
+    let dir = folder("split_edges")?;
+    let program = dir.join("split_edges.fen");
+    std::fs::write(&program, &source)?;
+    prints_with_nothing_left(&dir, &program, &expected, &["1"])
 }
 
 /// `startswith` and `endswith` compare a text's bytes with its part's where both are, inline or

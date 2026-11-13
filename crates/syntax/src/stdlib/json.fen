@@ -176,6 +176,18 @@ struct JsonKey:
     def some[T: Serializable](ref self, x: T):
         pass
 
+## Empty values for what a reader or a writer uses only now and then: an explained failure's path,
+## `Id`s and `Table`s, tags and tuples. A reader or writer starts with these, shared, rather than
+## making its own, and makes its own only the first time it writes one, as any shared value does
+## when it's changed. So a plain read or write makes none: each would cost an allocation.
+NO_PARTS = list[str]()
+NO_FIELDS = list[(str, str)]()
+NO_COUNTS = list[int]()
+NO_SEEN = list[(str, str, int)]()
+NO_TAGS = dict[str, int]()
+NO_TUPLES = list[(str, int, int, int)]()
+NO_TABLES = dict[str, dict[(int, int), int]]()
+
 ## Writes JSON into one growing text. What's added to it is put in a name first: added straight
 ## from a call or an operator, the text was copied whole each time, so writing grew with the
 ## square of what was written.
@@ -187,7 +199,7 @@ struct JsonWriter:
     _first = True
     ## Where each `Id` is in its `Table`, by the name of its type and its `id_key`, once
     ## `TableFinder` has been through what's written. Until then an `Id` asks for it.
-    _tables = dict[str, dict[(int, int), int]]()
+    _tables = NO_TABLES
     _found = False
     _wants_tables = False
     _optional = False
@@ -512,8 +524,8 @@ def quoted(text: str) -> str:
 struct IdsSeen:
     ## What a message calls everything read: "the text", or "the data".
     _whole = "the text"
-    _ids = list[(str, str, int)]()
-    _tables = list[(str, str, int)]()
+    _ids = NO_SEEN
+    _tables = NO_SEEN
 
     def id(ref self, kind: str, at: str, position: int):
         self._ids.append((kind, at, position))
@@ -719,6 +731,9 @@ def same_bytes(text: str, start: int, word: str, size: int) -> bool:
 
 ## Reads JSON a byte at a time, straight into what it's read as. The first read of a text says
 ## nothing about what's wrong; only a failed one is read again, keeping track of where it is.
+## No `Id`s or `Table`s seen, shared until a read sees one.
+NO_IDS = IdsSeen()
+
 struct JsonReader:
     _source: str
     _names = JsonNames.SnakeCase
@@ -729,8 +744,8 @@ struct JsonReader:
     _first = True
     _depth = 0
     _in_key = False
-    _path = list[str]()
-    _fields = list[(str, str)]()
+    _path = NO_PARTS
+    _fields = NO_FIELDS
     _owner = ""
     ## For the object being read, the field most likely to come next: the one after the last
     ## found, since text usually has them in order. Each object it's inside keeps its own here.
@@ -739,12 +754,12 @@ struct JsonReader:
     _seen = 0
     ## Each object this one is inside: its `_hint`, then its `_seen`. One read at the top has
     ## nothing outside it, so a flat object never makes this list room.
-    _outer = list[int]()
-    _ids = IdsSeen()
-    _tags = dict[str, int]()
+    _outer = NO_COUNTS
+    _ids = NO_IDS
+    _tags = NO_TAGS
     ## For each tuple being read, inside one another: its type, where its array starts, how many
     ## items it has, and how many have been read.
-    _tuples = list[(str, int, int, int)]()
+    _tuples = NO_TUPLES
     ## The case whose data is read next, as `Type.Case`, for what a failure in it says.
     _case_owner = ""
 
@@ -1232,7 +1247,7 @@ struct JsonReader:
             if at >= 0:
                 self._place = at
                 self._hint = at + 1
-                self._once(at, fields)?
+                if self._seen_again(at): fail self._twice(at, fields)
                 return True
         key = self.text()?
         if self._space() != 58: fail no_reason()
@@ -1271,26 +1286,27 @@ struct JsonReader:
             tries += 1
         return -1
 
-    ## Takes in a field's key: which of `fields` it is, or what's done with a key none has.
-    ## Fails if field `at` of a struct has come before: which one to believe would be a guess.
-    ## A struct of more fields than a word has bits doesn't check past those.
-    def _once(ref self, at: int, fields: list[(str, str)]) fails ParseError:
-        if at >= 62: return
+    ## Notes that field `at` of a struct has come, and says whether it had come before: which one
+    ## to believe would be a guess, so the caller fails with `_twice`. It can't fail itself, so the
+    ## usual read, of each field once, makes no failure's room. A struct of more fields than a
+    ## word has bits doesn't check past those.
+    def _seen_again(ref self, at: int) -> bool:
+        if at >= 62: return False
         bit = 1 << at
-        if self._seen & bit != 0:
-            if not self._explain: fail no_reason()
-            fail ParseError(
-                message=f"{self._where()} has `{fields[at][0]}` twice",
-                line=0,
-                column=0,
-            )
+        if self._seen & bit != 0: return True
         self._seen = self._seen | bit
+        return False
+
+    ## The failure for field `at` of a struct coming twice.
+    def _twice(self, at: int, fields: list[(str, str)]) -> ParseError:
+        if not self._explain: return no_reason()
+        return ParseError(message=f"{self._where()} has `{fields[at][0]}` twice", line=0, column=0)
 
     def _named(ref self, key: str, fields: list[(str, str)]) -> bool fails ParseError:
         at = self._place_of(key, fields)
         if at >= 0:
             self._place = at
-            self._once(at, fields)?
+            if self._seen_again(at): fail self._twice(at, fields)
             if self._explain:
                 self._path.append(key)
             return True

@@ -210,7 +210,7 @@ impl FnCx<'_> {
                     .map_or_else(|| subject.clone(), |error| Type::Result(value.clone(), Box::new(error))),
                 _ => subject.clone(),
             },
-            // What `else as why:` names when a call can fail several ways: `match why:`, whose
+            // What `except why:` names when a call can fail several ways: its cases, whose
             // later cases hold what the earlier ones left.
             Type::Errors(members) => left(members).unwrap_or_else(|| subject.clone()),
             _ => subject.clone(),
@@ -672,7 +672,7 @@ impl FnCx<'_> {
         if let Type::Union(members) = subject {
             return self.check_members(members, arms, span);
         }
-        // What `else as why:` names when a call can fail several ways: each has a case, or `_`.
+        // What `except why:` names when a call can fail several ways: each has a case, or `_`.
         if let Type::Errors(members) = subject {
             let unguarded: Vec<&Pattern> = arms
                 .iter()

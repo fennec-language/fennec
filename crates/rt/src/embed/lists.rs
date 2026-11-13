@@ -429,7 +429,11 @@ fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i6
     let address = if shared {
         let element = element_of(state, block)?;
         let kept = items(block, stride).to_vec();
-        state.heap.copied(kept.len());
+        // An empty list shared, as the empty constant a list can start as is, is made anew with
+        // the room wanted: there's nothing to copy, so no copy is counted.
+        if !kept.is_empty() {
+            state.heap.copied(kept.len());
+        }
         retain_items(state, &element, &kept);
         let grown = build(state, at, stride, &kept, wanted);
         release(state, address);
@@ -1282,6 +1286,25 @@ pub(super) fn write_list(state: &mut State, element: &Rc<Element>, value: &Value
 pub(super) fn list_of_items(state: &mut State, element: &Rc<Element>, words: &[u64]) -> i64 {
     let at = number_of_element(state, element);
     let block = build(state, at, element.words(), words, 0);
+    state.heap.insert(block)
+}
+
+/// A new list owned once of the strings `items` holds: three words of each one's header when
+/// native code holds strings as headers, and each one's block's address otherwise (see
+/// `text::string_element`). The kind of item is found by its variant, with nothing made to compare.
+pub(super) fn list_of_texts(state: &mut State, items: &[u64]) -> i64 {
+    let headers = state.tables.text_headers;
+    let found = state.tables.elements.iter().position(|known| match **known {
+        Element::Text => headers,
+        Element::Str => !headers,
+        _ => false,
+    });
+    let at = found.unwrap_or_else(|| {
+        state.tables.elements.push(super::text::string_element(state));
+        state.tables.elements.len() - 1
+    });
+    let stride = if headers { Element::Text.words() } else { Element::Str.words() };
+    let block = build(state, at, stride, items, 0);
     state.heap.insert(block)
 }
 

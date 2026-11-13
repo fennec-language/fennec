@@ -2,6 +2,7 @@
 # Written by `fennec-bench pin`. Only the last column is edited by hand: `yes` once a kernel
 # reaches the floor, so it can't drop below it again.
 # kernel instructions micros output source enforced
+api_handler 650902057 0 5c8e12c673a10e91 fe6090660e557080 no
 binary_trees 407637618 0 085da71cd358d51a 949e5bad46520335 no
 chat_server 248590001 0 79a5cc2fd57a5914 a5cdfc3f05b550fc no
 closures 86326632 0 543f575536aed548 088ab69774e5c728 no
@@ -14,7 +15,7 @@ dicts 67458403 0 03f09d5e6aacdd93 7a6d831197b58fdf no
 dicts.std 182370374 0 03f09d5e6aacdd93 cc34ca34337fbabe no
 fannkuch 88689851 0 baaaef315c659f3c 1bf7d60f1bdec889 no
 fib 263323290 0 c1a7256e0480b2dc aca428ecedd5dbe5 no
-game_tick 498550558 0 7c609c6d7f2f41d9 2a559ff89726709f no
+game_tick 498550558 0 7c609c6d7f2f41d9 1ad1fb98eaafeb22 no
 generators 199894337 0 c5580b8a0b8c1548 68a811ed407050f1 no
 generics 119194581 0 abee1c81ec22e56d b2b5e8e9109de789 no
 grep_tool 781387620 0 1c75bff61c04236e 3a418d3656ec7d08 no
@@ -32,7 +33,7 @@ pathfind 222348392 0 ec441b0301540ede d5716b9c78020ea1 no
 physics 171954088 0 ce263b5cc361a948 b7d9a36b58f2a638 no
 regex 978361380 0 bee675fb854041e9 da3fa564c73aa6b9 no
 richards 103686243 0 c34a6cd35b11d1b8 cb427bfb20d62b83 no
-selfhost 110566630 0 af38537717e5dc5a - no
+selfhost 124065663 0 383310682d88a9c1 - no
 sieve 130027485 0 84a70b39ecced192 95573ac1807b47bf no
 sort 179357544 0 bd713ad39cc2e9f8 fffa291d34903227 no
 spectral_norm 70869193 0 b4e227d5abb9fd3a 252f16891051c8ef no

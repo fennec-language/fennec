@@ -2,6 +2,7 @@
 # --llvm`. A test keeps this exact, so a count can only go down: a change that adds one must be
 # undone, and one that removes some lowers its count here. The goal is zero everywhere, and every
 # kernel is there.
+api_handler 0
 binary_trees 0
 chat_server 0
 closures 0

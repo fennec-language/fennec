@@ -275,7 +275,32 @@ pub(crate) fn run(mut args: impl Iterator<Item = String>) -> Result<bool, String
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{Pinned, grouped, ops_in, parse, text, with_none};
+
+    /// Every operation pins file under `bench/ops`, for every architecture, reads cleanly, and
+    /// each line names an operation there is, so a line copied in from another file fails here.
+    #[test]
+    fn every_pins_file_reads_and_names_only_operations() {
+        let ops = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench/ops");
+        let mut files = 0;
+        for entry in std::fs::read_dir(&ops).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|ext| ext != "txt") {
+                continue;
+            }
+            files += 1;
+            let pins = parse(&std::fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|line| panic!("{}: {line}", path.display()));
+            assert!(!pins.is_empty(), "{} has no pins", path.display());
+            for (name, _) in &pins {
+                let known = ops.join(format!("{name}.fen")).exists();
+                assert!(known, "{} names `{name}`, which isn't an operation", path.display());
+            }
+        }
+        assert!(files >= 2, "found only {files} pins files");
+    }
 
     #[test]
     fn a_count_is_found_and_taken_out_on_both_sides() {

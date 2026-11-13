@@ -22,6 +22,8 @@ pub(crate) fn fill(def: &mut FnDef, slots: &[(&str, Type)]) -> Option<()> {
     {
         whole &= fill_type(ty, slots).is_some();
     }
+    // A local's declared type, as `mut read_x: Type0__slot = None`.
+    fennec_syntax::visit::written_types_in(&mut def.body, &mut |ty| whole &= fill_type(ty, slots).is_some());
     // A tuple type alone in brackets, as in `src.item[Item0__slot]()`, is written as a tuple of one
     // item, the tuple, as `[(int, str),]` is: a tuple there is otherwise read as the brackets'
     // several types.
@@ -51,7 +53,7 @@ pub(crate) fn fill(def: &mut FnDef, slots: &[(&str, Type)]) -> Option<()> {
 }
 
 /// Puts each slot's type in where a slot is in a written type, keeping a `?` written after it.
-fn fill_type(ty: &mut TypeExpr, slots: &[(&str, Type)]) -> Option<()> {
+pub(crate) fn fill_type(ty: &mut TypeExpr, slots: &[(&str, Type)]) -> Option<()> {
     if let Some((_, filled)) = slots.iter().find(|(slot, _)| *slot == ty.name) {
         let optional = ty.optional;
         *ty = filled.written(ty.span)?;

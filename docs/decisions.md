@@ -1656,15 +1656,18 @@ These are default lints, and the Den requires them.
 - `main`'s signature is the one copy of what a program may do. There's no `gets` for `main` and no `[entries]` table; `gets` stays only on dependency lines in `kit.toml`, where the hand-over is into someone else's code.
 - `fennec fix` threads a capability as far as `main` and stops there, saying so. No tool ever adds to a `main`: only a person widens a grant.
 - `src/main.fen` is a kit's program. Any other is a file of its own in `entries/`, beside `src/`, with its own `main`, importing the kit's modules: `ls entries/` lists them, `fennec check` checks each, and `fennec build entries/deploy.fen` builds one as an entry of its kit.
-- `kit.lock` records what each entry takes, beside what each kit holds, written by `fennec update` only. A build whose `main` takes more than the lock records fails, naming `fennec update`; CI builds with the lock as it is.
-- Tasks are entries, run with `fennec run <name>`. Never shell-string scripts, and never install, pre or post hooks.
+- `kit.lock` records what each entry takes, `src/main.fen` included, beside what each kit holds. Every build keeps it up to date and never stops on it: a `main` that takes more than the lock records builds, the lock gets what was added, and the build says what. One that takes less builds too, and the lock narrows. A person wrote the wider signature, so the source diff and the lock diff both show the widening in review.
+- Tasks are entries, run with `fennec run <name>`: a bare name, with no `/` and no `.fen`, is a file in `entries/`, and anything else is a path, as before. Never shell-string scripts, and never install, pre or post hooks.
+- An entry imports the kit's `src` modules, and nothing imports an entry: code entries share goes in `src`, and two `main`s never meet. An entry's file may hold tests, which `fennec test` runs.
+- A dependency's entries are its own: a kit never builds, runs or reaches them, and only a dependency's library is its API, so nothing of a dependency runs when it's fetched.
+- The folder is `entries/`, as Chris agreed on 2026-11-12.
 
 **Locked guardrails, forever:**
 - **An entry is only a `main`.** Nothing else ever joins it.
 - **No conditional compilation of any kind:** no `cfg`, no feature flags, no profiles, nothing in the source or in `kit.toml` that picks code for an environment.
 - **Settings are plain values:** a `Config` each `main` builds, from `Env`, literals or a file, and hands down. Only an entry's `main` reads `Env`.
 
-*Why:* Chris: Fennec must not grow into Rust with Python syntax. A second copy of the grant, written by hand beside `main`, only mirrors the signature, so it's approved without thought; the case for one rested on `fennec fix` writing `main`, and it no longer does. A record the tool writes in `kit.lock` gives the review signal without drift, in a small file a workspace can protect by path. Environments differ in what they may do, which `main` says; everything else that differs is a value. Feature flags, `cfg` and profiles would make every combination a different program to check.
+*Why:* Chris: Fennec must not grow into Rust with Python syntax. A second copy of the grant, written by hand beside `main`, only mirrors the signature, so it's approved without thought; the case for one rested on `fennec fix` writing `main`, and it no longer does. A record the build writes in `kit.lock` gives the review signal without drift, in a small file a workspace can protect by path, and stopping a build on it would only add a step after a change a person already made. Environments differ in what they may do, which `main` says; everything else that differs is a value. Feature flags, `cfg` and profiles would make every combination a different program to check.
 
 Built later, after the kit-boundary security holes: `fennec fix` stopping at `main` first, then `entries/`, then the lock's record.
 

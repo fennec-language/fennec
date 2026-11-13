@@ -539,7 +539,11 @@ pub(crate) fn source(program: &Program) -> String {
     writer.block(&program.body, 1);
     writer.line(1, "stdout.print(\"done\")");
     let tasks = if program.threadless { "" } else { TASKS };
-    format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
+    // Only a `Yielded` statement's task sends back over a channel, so only a program holding one
+    // imports what that takes, and every other program is written as it always was.
+    let channels =
+        if writer.helpers.contains("Sender[") { "from std.concurrent import Sender, channel\n" } else { "" };
+    format!("{channels}{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
 }
 
 /// `streamed{id}`, the function a `Streamed` calls: its stream, made and read.

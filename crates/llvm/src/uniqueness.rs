@@ -410,6 +410,18 @@ fn prefixes(path: &[String]) -> impl Iterator<Item = Vec<String>> + '_ {
     (0..=path.len()).map(|end| path.iter().take(end).cloned().collect())
 }
 
+/// The path to a place a call changes, when every step to it is a field.
+fn field_steps(place: &fennec_ir::ChangedPlace) -> Option<Vec<String>> {
+    place
+        .steps
+        .iter()
+        .map(|step| match step {
+            fennec_ir::PlaceStep::Field(name) => Some(name.clone()),
+            fennec_ir::PlaceStep::Item(_) => None,
+        })
+        .collect()
+}
+
 /// Whether each block is one every call that returns runs: with it left out, no `return` can be
 /// reached from the start. A change anywhere else may never happen, as in a branch not taken or a
 /// loop that never goes round.
@@ -448,7 +460,39 @@ pub(crate) fn needed<'p>(
     program: &'p Program,
     functions: &HashMap<&'p str, &'p Function>,
     analyses: &HashMap<&'p str, Analysis>,
+) -> Needs<'p> {
+    let always = changed_through(program, functions, analyses, true);
+    // What a function only may change through: its callers see whether it's alone already, with
+    // nothing copied, so a call where it is runs as fast as one whose callers saw to it.
+    let mut may: HashMap<&str, Vec<FieldPath>> = changed_through(program, functions, analyses, false);
+    #[expect(clippy::iter_over_hash_type, reason = "each function's paths are filtered where they are")]
+    for (name, paths) in &mut may {
+        if let Some(sure) = always.get(name) {
+            paths.retain(|path| !sure.contains(path));
+        }
+    }
+    Needs { always, may }
+}
+
+/// What each function changes through its `mut` parameters: the paths every call changes, which
+/// its callers make alone first, and those a call only may change, which stay as they are until
+/// it does.
+pub(crate) struct Needs<'p> {
+    pub(crate) always: HashMap<&'p str, Vec<FieldPath>>,
+    pub(crate) may: HashMap<&'p str, Vec<FieldPath>>,
+}
+
+/// [`needed`]'s paths: those every call changes through when `certain`, and otherwise every one
+/// any call may.
+fn changed_through<'p>(
+    program: &'p Program,
+    functions: &HashMap<&'p str, &'p Function>,
+    analyses: &HashMap<&'p str, Analysis>,
+    certain: bool,
 ) -> HashMap<&'p str, Vec<FieldPath>> {
+    let reached = |function: &Function| {
+        if certain { always_reached(function) } else { vec![true; function.blocks.len()] }
+    };
     let mut needs: HashMap<&str, HashSet<FieldPath>> = HashMap::new();
     #[expect(clippy::iter_over_hash_type, reason = "each function's needs go into its own set")]
     for (name, function) in functions {
@@ -457,9 +501,10 @@ pub(crate) fn needed<'p>(
         let mutable = |local: LocalId| function.mut_params.contains(&local.0) && local.0 < function.params;
         // Only a change every call makes is the callers' to see to: one in a branch a call may
         // never take is checked where it's made, so a call that only reads copies nothing.
-        let always = always_reached(function);
+        let always = reached(function);
         let certain =
             function.blocks.iter().zip(&always).filter(|(_, always)| **always).map(|(block, _)| block);
+        let mut listed: Vec<(LocalId, Vec<String>)> = Vec::new();
         for inst in certain.flat_map(|block| &block.insts) {
             let mut paths: Vec<(LocalId, &[String])> = Vec::new();
             match &inst.kind {
@@ -472,11 +517,31 @@ pub(crate) fn needed<'p>(
                         paths.push((*home, path));
                     }
                 }
+                // A list in a field, changed where it is by `append`, `pop` and the like: read out
+                // to a local, changed, and put back. The list is changed as surely as by a store
+                // to one of its items, so `push` and `pop` of a heap, which always change their
+                // list first, leave it to their callers once, not to each pass of their loops.
+                InstKind::Builtin { args, changes: true, .. } => {
+                    let changed = function.places.iter().find(|place| {
+                        args.first() == Some(&Operand::Local(place.value))
+                            && matches!(function.locals.get(place.value.0), Some(local) if matches!(local.ty, Type::List(_)))
+                    });
+                    if let Some(place) = changed
+                        && let Some(path) = field_steps(place)
+                    {
+                        listed.push((place.root, path));
+                    }
+                }
                 _ => {}
             }
             for (root, path) in paths {
                 if mutable(root) {
                     found.extend(prefixes(path).map(|prefix| (root, prefix)));
+                }
+            }
+            for (root, path) in listed.drain(..) {
+                if mutable(root) {
+                    found.extend(prefixes(&path).map(|prefix| (root, prefix)));
                 }
             }
         }
@@ -491,7 +556,7 @@ pub(crate) fn needed<'p>(
         )]
         for (name, function) in functions {
             // A call every run makes, as for a change.
-            let always = always_reached(function);
+            let always = reached(function);
             let certain =
                 function.blocks.iter().zip(&always).filter(|(_, always)| **always).map(|(block, _)| block);
             for inst in certain.flat_map(|block| &block.insts) {

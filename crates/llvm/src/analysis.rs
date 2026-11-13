@@ -154,6 +154,8 @@ pub(crate) struct Whole<'p> {
     pub(crate) non_negative: crate::signs::NonNegative,
     /// The field paths of `mut` parameters each function's callers make alone before calling.
     pub(crate) needs: HashMap<&'p str, Vec<FieldPath>>,
+    /// Those a function only may change through, which a caller looks at and leaves as they are.
+    pub(crate) may_need: HashMap<&'p str, Vec<FieldPath>>,
     /// The functions that give a constant's value, which keep it after the first time.
     pub(crate) constants: HashSet<&'p str>,
     /// The functions that can run on a thread `parallel` uses, which everything else can't.
@@ -3973,7 +3975,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
     }
     let settles = summarized(&functions, &analyses, Tracked::Owners);
     let lengths = summarized(&functions, &analyses, Tracked::Lengths);
-    let needs = needed(program, &functions, &analyses);
+    let crate::uniqueness::Needs { always: needs, may: may_need } = needed(program, &functions, &analyses);
     let builders = crate::builders::builders(program, &functions);
     let constants = every()
         .flat_map(|function| &function.blocks)
@@ -3995,6 +3997,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         builders,
         non_negative: crate::signs::non_negative(program),
         needs,
+        may_need,
         constants,
         on_workers,
         cells: crate::parallel::has_cells(program),

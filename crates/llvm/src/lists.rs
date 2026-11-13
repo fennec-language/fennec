@@ -1958,6 +1958,49 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// Whether each block along a field path from a local is alone, as [`Self::see_to`] would make
+    /// it, with nothing changed or copied. `None` when there's no block on the way to ask.
+    pub(crate) fn alone_along_as_it_is(
+        &mut self,
+        root: LocalId,
+        path: &[String],
+    ) -> Result<Option<String>, String> {
+        let mut kind = self.kind_of(root)?.clone();
+        let mut place = self.slot(root);
+        let mut all: Option<String> = None;
+        for step in 0..=path.len() {
+            let holds_block = matches!(kind, Kind::Boxed(_)) && !self.is_cell(&kind)
+                || (matches!(kind, Kind::List(_)) && step > 0);
+            let block = if holds_block {
+                let block = self.temp();
+                self.line(&format!("{block} = load ptr, ptr {place}"));
+                let alone = self.alone(&block);
+                all = Some(match all {
+                    Some(so_far) => {
+                        let both = self.temp();
+                        self.line(&format!("{both} = and i1 {so_far}, {alone}"));
+                        both
+                    }
+                    None => alone,
+                });
+                Some(block)
+            } else {
+                None
+            };
+            let Some(name) = path.get(step) else { break };
+            let inside = match (&kind, block) {
+                (Kind::Boxed(_), Some(block)) => self.offset(&block, FIELDS_OFFSET),
+                // A `shared` value's block is never copied, and nothing is asked past it or a list.
+                (Kind::Boxed(_) | Kind::List(_), _) => break,
+                (_, _) => place,
+            };
+            let Ok((offset, inner)) = self.field(&kind, name) else { break };
+            place = self.offset(&inside, offset);
+            kind = inner;
+        }
+        Ok(all)
+    }
+
     /// Whether `local` was read from `object` along `path`, a field at a time.
     fn reads_from(&self, local: LocalId, object: LocalId, path: &[String]) -> bool {
         match path.split_last() {

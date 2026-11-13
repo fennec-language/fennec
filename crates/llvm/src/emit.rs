@@ -293,6 +293,10 @@ pub(crate) fn facts_stripped() -> bool {
     FACTS_STRIPPED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The most instructions a callee can have and still be copied into a caller that found what it
+/// may change alone already (see `call`): `Heap.pop` and what it calls are under half of this.
+const COPIED_IN_WHEN_ALONE: usize = 150;
+
 pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,
@@ -2706,8 +2710,53 @@ impl Emit<'_, '_, '_> {
         for borrowed in &borrows_lent {
             self.when_made(borrowed, |emit| emit.retain(borrowed));
         }
+        // What the callee only may change through, which stays as it is until it does: whether
+        // each block on the way is alone already is looked at here, nothing copied, and the same
+        // call is made either way. Where it is alone, a small callee is copied in, so each check
+        // it makes before a change is one LLVM sees the answer to, as when callers made the block
+        // alone before calling; where it isn't, the call stays a call.
+        let mut alone_already: Option<String> = None;
+        let may = self.module.whole.may_need.get(name).map_or(&[][..], Vec::as_slice);
+        for (param, path) in may {
+            let Some(Operand::Local(given)) = args.get(param.0) else { continue };
+            let Some(alone) = self.alone_along_as_it_is(*given, path)? else { continue };
+            alone_already = Some(match alone_already {
+                Some(so_far) => {
+                    let both = self.temp();
+                    self.line(&format!("{both} = and i1 {so_far}, {alone}"));
+                    both
+                }
+                None => alone,
+            });
+        }
         let result = self.temp();
-        if ret == "void" {
+        if let Some(alone) = alone_already {
+            let (sure, unsure, called) =
+                (self.label("alone_call"), self.label("shared_call"), self.label("called"));
+            self.line(&format!("br i1 {alone}, label %{sure}, label %{unsure}, !prof !8"));
+            self.start_block(&sure);
+            let small =
+                callee.blocks.iter().map(|block| block.insts.len()).sum::<usize>() <= COPIED_IN_WHEN_ALONE;
+            let copied_in = if small && name != self.function.name { " alwaysinline" } else { "" };
+            let (first, second) = (self.temp(), self.temp());
+            if ret == "void" {
+                self.line(&format!("call swiftcc void {target}({shown}){copied_in}"));
+            } else {
+                self.line(&format!("{first} = call swiftcc {ret} {target}({shown}){copied_in}"));
+            }
+            self.line(&format!("br label %{called}"));
+            self.start_block(&unsure);
+            if ret == "void" {
+                self.line(&format!("call swiftcc void {target}({shown}) noinline"));
+            } else {
+                self.line(&format!("{second} = call swiftcc {ret} {target}({shown}) noinline"));
+            }
+            self.line(&format!("br label %{called}"));
+            self.start_block(&called);
+            if ret != "void" {
+                self.line(&format!("{result} = phi {ret} [ {first}, %{sure} ], [ {second}, %{unsure} ]"));
+            }
+        } else if ret == "void" {
             self.line(&format!("call swiftcc void {target}({shown})"));
         } else {
             self.line(&format!("{result} = call swiftcc {ret} {target}({shown})"));

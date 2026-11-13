@@ -240,7 +240,13 @@ mod unix {
                 if left.is_zero() {
                     return Err(ErrorKind::TimedOut.into());
                 }
-                self.stream.set_read_timeout(Some(left))?;
+                // macOS refuses a timeout, with "invalid argument", once the other end has closed the
+                // connection, as the daemon does after its whole answer. A read then gives the end
+                // at once, so it can't wait past the deadline either.
+                match self.stream.set_read_timeout(Some(left)) {
+                    Err(err) if err.kind() != ErrorKind::InvalidInput => return Err(err),
+                    _ => {}
+                }
             }
             self.stream.read(buf)
         }
@@ -674,6 +680,33 @@ mod unix {
                 &socket,
                 std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(&home).unwrap())
             ));
+        }
+
+        /// A daemon that answers and closes the connection, as the daemon does, is heard: on macOS
+        /// a socket whose other end has closed refuses a read timeout, which once lost every
+        /// answer, and the command did the work again itself.
+        #[test]
+        fn an_answer_and_then_a_closed_connection_is_heard() {
+            let home = fennec_temp::Temp::at(Path::new("/tmp").join(format!("fpa-{}", std::process::id())));
+            std::fs::create_dir_all(&home).unwrap();
+            let socket = socket_in(&home, None, true).unwrap();
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let mut stream = stream;
+                    let mut asked = Vec::new();
+                    let _ = stream.read_to_end(&mut asked);
+                    let answer = super::Outcome { stdout: "heard\n".to_owned(), ..super::Outcome::default() };
+                    let _ = stream.write_all(answer.encode().as_bytes());
+                    // Closed, as the daemon closes it once its whole answer is written.
+                }
+            });
+            match send_within(&home, &["status"], Duration::from_secs(10)) {
+                Reply::Answered(outcome) => assert_eq!(outcome.stdout, "heard\n"),
+                Reply::Unreached | Reply::Unanswered => {
+                    panic!("an answer the daemon wrote whole wasn't heard")
+                }
+            }
         }
 
         /// A command connects only to a socket the user's own: one another user bound, where the

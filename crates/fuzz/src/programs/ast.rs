@@ -451,10 +451,12 @@ impl Aliasing {
                     held.push(held.get(from).and_then(|from| from.part()).unwrap_or(Held::Numbers));
                 }
                 Alias::Built { .. } => held.push(Held::Holder),
+                Alias::Read { how: Reading::Kept, .. } => held.push(Held::Point),
                 Alias::Written { .. }
                 | Alias::Tasked { .. }
                 | Alias::Walked { .. }
-                | Alias::Drained { .. } => {}
+                | Alias::Drained { .. }
+                | Alias::Read { .. } => {}
             }
         }
         held
@@ -529,10 +531,32 @@ pub(crate) enum Alias {
     /// `spare{s} = from`, then `kept{n} = Holder(items=spare{s}, tag=n)`: a struct literal taking
     /// a list nothing reads again.
     Built { from: usize, n: i64 },
+    /// A `for item in table` loop that only reads, each item borrowed from its slot, over a
+    /// `Table`, a ledger's table field or the rooms, done as `how` with `n`. `Reading::Kept`
+    /// makes a name: the last item read with an `x` of `n` or more.
+    Read { from: usize, how: Reading, n: i64 },
     /// `mut last{s} = from`, its key `at` set to a fresh value made from `n`, then
     /// `print(last{s}.values())` as the dict's last use, so the walk is all that holds what it
     /// gives back once the dict is gone.
     Drained { from: usize, at: usize, n: i64 },
+}
+
+/// How a `Read` step's loop reads a table's items.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reading {
+    /// Each item's fields summed.
+    Summed,
+    /// The last item with an `x` of `n` or more kept by another name, printed at the end.
+    Kept,
+    /// The table replaced, on the first item, by a copy of it held apart, which frees the block
+    /// being read; each item read is printed after.
+    Replaced,
+    /// `break` at the first item whose `x` is over `n`.
+    Broken,
+    /// `first_over{id}(table, n)`: the first item whose `x` is over `n`, returned from its loop.
+    Returned,
+    /// `refused_over{id}(table, n)`: the `y`s summed, failing at the first `x` over `n`.
+    Failed,
 }
 
 /// How an `Aliased` step changes a name, each meaning what it says for the kinds that take it.
@@ -558,6 +582,12 @@ pub(crate) enum Writing {
     Added,
     /// `to = f"{to}piece"`.
     Formatted,
+    /// `to = to + piece + to`, a later piece reading what's being grown.
+    Chained,
+    /// `to += piece + to + "ç"`, three pieces, one of them what's being grown.
+    Summed,
+    /// `to += piece`, a piece past 23 bytes with letters past ASCII.
+    Long,
     /// `_ = to.remove(key)`, a walk of what's left, then the key put back with a new value.
     Removed,
 }
@@ -575,6 +605,76 @@ pub(crate) struct Constants {
     pub(crate) reads: i64,
     pub(crate) main_first: bool,
     pub(crate) launch_first: bool,
+}
+
+/// A `FieldCalls` statement: `box.field += f(...)` on a struct's `str`, `int` and `list[int]`
+/// fields, each call printing, failing, or reading the field through another path, so the order
+/// the field is read in and the call made shows, and a failure must leave the field as it was.
+#[derive(Clone, Debug)]
+pub(crate) struct FieldCalls {
+    pub(crate) id: usize,
+    pub(crate) base: i64,
+    pub(crate) steps: Vec<FieldCall>,
+}
+
+/// One `+=` of a `FieldCalls`: on `field`, the call made as `call`, with `a + f(b)` when `plus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FieldCall {
+    pub(crate) field: Field,
+    pub(crate) call: Calling,
+    pub(crate) plus: bool,
+    pub(crate) n: i64,
+}
+
+/// A field of a `FieldCalls` struct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Field {
+    Text,
+    Count,
+    Items,
+}
+
+/// What the call on a `FieldCall`'s right side does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Calling {
+    /// Prints, then gives a value made from `n`.
+    Printed,
+    /// `f(n)?` in a function taking the struct by `ref`, failing when `n` is over 5, which is
+    /// handled with `except` where it's called.
+    Failed,
+    /// Reads the field through a copy of the struct, made just before, and prints it.
+    Copied,
+    /// Reads the field through a list holding a copy of the struct, and prints it.
+    Listed,
+    /// A closure made just before, which captured the struct, gives the field.
+    Closure,
+    /// The `+=` is to a `shared` struct's field, under `lock`, with a call that prints.
+    Shared,
+}
+
+/// A `Yielded` statement: generators yielding a struct holding a text, a list and a dict, one
+/// kept in a local and changed across yields, tuples and enum cases holding texts and lists,
+/// each value kept and read after more yields, then sent through a task's inbox loop and back.
+/// The texts are `widths` long, past the 23 bytes a str holds in place.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Yielding {
+    pub(crate) id: usize,
+    pub(crate) count: i64,
+    pub(crate) widths: [i64; 3],
+}
+
+/// A `Woken` statement: a launched task answering each of `count` numbers over a channel, which
+/// crashes on `at`, or fails with `Refused` when `failing`, while its launcher waits for the
+/// answer. The launcher's wait has to end, and its block with the task's crash or failure.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Waking {
+    pub(crate) id: usize,
+    pub(crate) count: i64,
+    pub(crate) at: i64,
+    pub(crate) failing: bool,
+    /// How many times it's done, each with a channel of its own made and freed, as many as 70
+    /// so threads' caches of the channels they found have to trim.
+    pub(crate) rounds: i64,
 }
 
 /// How a `Streamed` stream is read.
@@ -860,6 +960,13 @@ pub(crate) enum Stmt {
     /// `constants{id}(stdout)`: module constants read on the main thread, then used and changed
     /// in copies there, in a launched task and in `parallel`'s bodies.
     Constants(Constants),
+    /// `fielded{id}(stdout)`: `+=` on a struct's fields with calls on the right.
+    FieldCalls(FieldCalls),
+    /// `yielded{id}(stdout)`: generators yielding structs, tuples and enums holding texts, lists
+    /// and dicts, and an inbox loop sending them back.
+    Yielded(Yielding),
+    /// `woken{id}(stdout)`: a task that crashes or fails while its launcher waits on a channel.
+    Woken(Waking),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

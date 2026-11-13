@@ -6072,23 +6072,116 @@ def main(stdout: Stdout) fails Closed | Crashed:
 "#,
     )?;
     let wanted = "20 10\n23 10\n24 10\n28 10\n31 10\n32 10\n40 10\n64 10\n";
-    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("sent_on"));
-    let output = output.to_string_lossy().into_owned();
+    prints_with_nothing_left(&dir, &program, wanted, &["1", "4", "16"])
+}
+
+/// Builds `program` in both builds and runs it at each count of `threads` under `FENNEC_COUNTS`:
+/// it prints `wanted`, and has no block left live at the end, so nothing it holds was let go of
+/// too soon or kept too long.
+fn prints_with_nothing_left(
+    dir: &Path,
+    program: &Path,
+    wanted: &str,
+    threads: &[&str],
+) -> std::io::Result<()> {
+    let output = program.with_extension("");
+    let (program, output) = (program.to_string_lossy().into_owned(), output.to_string_lossy().into_owned());
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let args: Vec<&str> = ["build"]
             .into_iter()
             .chain(how.iter().copied())
             .chain([program.as_str(), "-o", &output])
             .collect();
-        let built = fennec(&args, &dir)?;
+        let built = fennec(&args, dir)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        for threads in ["1", "4", "16"] {
-            let ran = Command::new(&output).env("FENNEC_THREADS", threads).output_within()?;
+        for count in threads {
+            let ran = Command::new(&output)
+                .env("FENNEC_THREADS", count)
+                .env("FENNEC_COUNTS", "1")
+                .output_within()?;
             let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
-            assert_eq!(said.0, wanted, "{how:?} on {threads} threads: {}", said.1);
+            assert_eq!(said.0, wanted, "{how:?} on {count} threads: {}", said.1);
+            assert!(said.1.contains(" live 0"), "{how:?} on {count} threads left blocks live: {}", said.1);
         }
     }
-    std::fs::remove_dir_all(&dir)
+    std::fs::remove_dir_all(dir)
+}
+
+/// A message a task reads with `for ... in inbox` stays its own while it makes other values: a
+/// struct's text and an enum case's text and list, checked with `==` after fifty other texts are
+/// made, where a text freed under it read as one of those. Fable's thread-crossing reproducer, and
+/// its three-case enum, which came out wrong silently.
+#[test]
+fn a_message_read_in_an_inbox_loop_stays_whole_while_the_task_makes_others() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("message_stays_whole")?;
+    let program = dir.join("message_stays_whole.fen");
+    std::fs::write(
+        &program,
+        r#"from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+struct Event:
+    user: int
+    text: str
+
+enum Message:
+    Said(text: str)
+    Count(n: int)
+    Many(texts: list[str])
+
+def long(n: int) -> str:
+    return "xxxxxxxxxxxxxxxxxxxxxxxxxx" + str(n % 9) + "y"
+
+def filler() -> int:
+    mut made = list[str]()
+    for at in range(50):
+        made.append("zzzzzzzzzzzzzzzzzzzzzzzzzz" + str(at % 9) + "!")
+    return len(made)
+
+def shown(message: Message) -> str:
+    match message:
+        case .Said(text):
+            return f"said {text}"
+        case .Count(n):
+            return f"count {n}"
+        case .Many(texts):
+            joined = "".join(texts)
+            return f"many {joined}"
+
+def events(inbox: Inbox[Event], out: Sender[str]) fails Closed:
+    for event in inbox:
+        made = filler()
+        out.send(f"{event.text}|{made}")?
+    return
+
+def messages(inbox: Inbox[Message], out: Sender[str]) fails Closed:
+    for message in inbox:
+        made = filler()
+        out.send(f"{shown(message)}|{made}")?
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    mut wrong = 0
+    with channel[str](size=4) as results:
+        back = results.sender()
+        with launch((inbox) => events(inbox, out=back)?, inbox_size=4)? as to_reader:
+            for n in range(6):
+                to_reader.send(Event(user=n, text=long(n)))?
+                if (results.receive() else "nothing") != f"{long(n)}|50":
+                    wrong += 1
+        with launch((inbox) => messages(inbox, out=back)?, inbox_size=4)? as to_reader:
+            for n in range(60):
+                message = Message.Said(text=long(n)) if n % 3 == 0 else (Message.Count(n=n) if n % 3 == 1 else Message.Many(texts=[long(n), long(n + 1)]))
+                to_reader.send(message)?
+                if (results.receive() else "nothing") != f"{shown(message)}|50":
+                    wrong += 1
+    stdout.print("wrong", wrong)
+    return
+"#,
+    )?;
+    prints_with_nothing_left(&dir, &program, "wrong 0\n", &["1", "4"])
 }
 
 /// A generator's item and what it keeps across a `yield` are its own: a struct holding a text in a
@@ -6098,8 +6191,10 @@ fn a_generator_owns_the_struct_it_yields_and_the_one_it_keeps() -> std::io::Resu
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds(
-        "generator_owns_structs",
+    let dir = folder("generator_owns_structs")?;
+    let program = dir.join("generator_owns_structs.fen");
+    std::fs::write(
+        &program,
         r#"struct Note:
     at: int
     text: str
@@ -6125,8 +6220,8 @@ def main(stdout: Stdout):
     stdout.print(seen, whole)
     return
 "#,
-        "12 12\n",
-    )
+    )?;
+    prints_with_nothing_left(&dir, &program, "12 12\n", &["1"])
 }
 
 /// A struct field that starts as a module constant, pushed to and popped through `ref self` methods,

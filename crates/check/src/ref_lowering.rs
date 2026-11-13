@@ -11,7 +11,7 @@
 //! is checked, then written in as
 //!
 //! ```fennec
-//! for unit__live7_at in range(world.units.len()):
+//! for unit__live7_at in range(len(world.units)):
 //!     world.units[unit__live7_at].target = nearest(world.units, world.units[unit__live7_at].at)
 //! ```
 //!

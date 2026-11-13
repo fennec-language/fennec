@@ -13,11 +13,13 @@
     reason = "one match chooses each kind of statement, and one each kind of value"
 )]
 
+use super::ast::Reading;
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
+use super::ast::{Calling, Field, FieldCall, FieldCalls, Waking, Yielding};
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
 /// It does since #1333; turned off, only a block that fails is given `guarded_noted`'s cleanup.
@@ -35,16 +37,28 @@ const PARALLEL_STREAMS: bool = true;
 
 /// Whether random programs make copies of collections and their parts, change each through every
 /// way of writing in place, and print them all: the shape that shows an in-place write reaching a
-/// second holder. Off until the LLVM lane's in-place writes land, and turned on against their
-/// branches before each merges. Off, no input reads the byte that picks it, so kept inputs still
-/// write what they did.
-const ALIASING: bool = false;
+/// second holder. On since the LLVM lane's in-place writes and their fixes (#1543, #1558).
+const ALIASING: bool = true;
 
 /// Whether random programs read module constants of lists, dicts and structs on the main thread,
 /// then use and change copies of them, through a struct's field defaults too, in launched tasks
-/// and `parallel`'s bodies. Off until the runtime's count fix for never-freed blocks lands;
-/// off, no input reads the byte that picks it.
-const CONSTANTS_IN_TASKS: bool = false;
+/// and `parallel`'s bodies. On since the runtime's count fix for never-freed blocks (#1531).
+const CONSTANTS_IN_TASKS: bool = true;
+
+/// Whether random programs make `box.field += f(...)` on a struct's `str`, `int` and list fields,
+/// with calls that print, fail, or read the field through a copy, a list or a closure, and on a
+/// `shared` struct's: the field's read comes after the call, so this shows if the order or a
+/// failure leaves the field wrong. On since a failing piece keeps what was there (#1558).
+const FIELD_CALLS: bool = true;
+
+/// Whether random programs have generators yield structs, tuples and enums holding texts past
+/// 23 bytes, lists and dicts, keep a struct in a local across yields, and send what they yield
+/// through a task's inbox loop and back. On since a generator's slot owns what it holds (#1560).
+const YIELDS: bool = true;
+
+/// Whether random programs launch a task that crashes or fails while its launcher waits on a
+/// channel for its answer, which has to end the wait rather than hang. On since #1563.
+const CRASH_WAKES: bool = true;
 
 /// Whether a failure passed up by a `?` nested inside another call's argument, as in
 /// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.
@@ -605,6 +619,9 @@ impl Writer<'_> {
             26 if ALIASING && self.choice(4) == 0 => self.aliasing(body),
             26 => self.change_counts(body),
             27 if CONSTANTS_IN_TASKS && !self.threadless && self.choice(4) == 0 => self.constants(body),
+            27 if FIELD_CALLS && self.choice(4) == 0 => self.field_calls(body),
+            27 if YIELDS && !self.threadless && self.choice(4) == 0 => self.yields(body),
+            27 if CRASH_WAKES && !self.threadless && self.choice(4) == 0 => self.wakes(body),
             27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
             29 => {
@@ -1002,6 +1019,57 @@ impl Writer<'_> {
         body.push(Stmt::Streamed(Streaming { id, items, map, read }));
     }
 
+    /// A task answering numbers over a channel that crashes or fails on one, while its launcher
+    /// waits for the answer, or answers them all.
+    fn wakes(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let count = 1 + i64::from(self.byte() % 5);
+        let at = i64::from(self.byte() % 7);
+        let failing = self.choice(2) == 0;
+        let rounds = if self.choice(4) == 0 { 70 } else { 1 };
+        body.push(Stmt::Woken(Waking { id, count, at, failing, rounds }));
+    }
+
+    /// Generators yielding structs, tuples and enums holding texts from 20 to 66 bytes, and an
+    /// inbox loop sending what they yielded back.
+    fn yields(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let count = 2 + i64::from(self.byte() % 5);
+        let mut width = || 20 + i64::from(self.byte() % 47);
+        let widths = [width(), width(), width()];
+        body.push(Stmt::Yielded(Yielding { id, count, widths }));
+    }
+
+    /// `+=` on a struct's fields, each with a call on its right that prints, fails, or reads the
+    /// field through another path, or on a `shared` struct's under `lock`.
+    fn field_calls(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 20);
+        let mut steps = Vec::new();
+        for _ in 0..4 + self.choice(8) {
+            let field = match self.choice(3) {
+                0 => Field::Text,
+                1 => Field::Count,
+                _ => Field::Items,
+            };
+            let call = match self.choice(6) {
+                0 => Calling::Printed,
+                1 => Calling::Failed,
+                2 => Calling::Copied,
+                3 => Calling::Listed,
+                4 => Calling::Closure,
+                _ => Calling::Shared,
+            };
+            let plus = self.choice(2) == 0;
+            let n = i64::from(self.byte() % 9);
+            steps.push(FieldCall { field, call, plus, n });
+        }
+        body.push(Stmt::FieldCalls(FieldCalls { id, base, steps }));
+    }
+
     /// Module constants read on the main thread `reads` times, then used and changed in copies
     /// on the main thread, in a launched task and in `parallel`'s bodies, in an order of its own.
     fn constants(&mut self, body: &mut Vec<Stmt>) {
@@ -1072,7 +1140,9 @@ impl Writer<'_> {
                 Held::Lists => &[Writing::Set, Writing::PutBack, Writing::Append, Writing::Removed],
                 Held::Spots => &[Writing::Field, Writing::PutBack, Writing::Method, Writing::Removed],
                 Held::Counts => &[Writing::Field, Writing::Set, Writing::Removed],
-                Held::Rooms => &[Writing::ForRef, Writing::Set, Writing::Field, Writing::PutBack],
+                Held::Rooms => {
+                    &[Writing::ForRef, Writing::Set, Writing::Field, Writing::PutBack, Writing::Method]
+                }
                 Held::Table | Held::Entries => {
                     &[Writing::ForRef, Writing::Set, Writing::PutBack, Writing::Method]
                 }
@@ -1080,8 +1150,42 @@ impl Writer<'_> {
                     &[Writing::Field, Writing::ForRef, Writing::Set, Writing::PutBack, Writing::Method]
                 }
                 Held::Point => &[Writing::Field, Writing::Method],
-                Held::Text => &[Writing::Joined, Writing::Added, Writing::Formatted],
+                Held::Text => &[
+                    Writing::Joined,
+                    Writing::Added,
+                    Writing::Formatted,
+                    Writing::Chained,
+                    Writing::Summed,
+                    Writing::Long,
+                ],
             };
+            // A table read by a loop that borrows each item from its slot.
+            if matches!(kind, Held::Table | Held::Entries | Held::Ledger | Held::Rooms) && self.choice(3) == 0
+            {
+                // A ledger's table can't be replaced while it's looped over, since that changes
+                // the ledger.
+                let ways: &[Reading] = if kind == Held::Rooms {
+                    &[Reading::Summed, Reading::Broken]
+                } else if kind == Held::Ledger {
+                    &[Reading::Summed, Reading::Kept, Reading::Broken, Reading::Returned, Reading::Failed]
+                } else {
+                    &[
+                        Reading::Summed,
+                        Reading::Kept,
+                        Reading::Replaced,
+                        Reading::Broken,
+                        Reading::Returned,
+                        Reading::Failed,
+                    ]
+                };
+                let how = ways.get(self.choice(ways.len())).copied().unwrap_or(Reading::Summed);
+                let n = i64::from(self.byte() % 30) - 5;
+                steps.push(Alias::Read { from, how, n });
+                if how == Reading::Kept {
+                    held.push(Held::Point);
+                }
+                continue;
+            }
             // Any collection can be handed to tasks, each changing a copy of its own.
             if !matches!(kind, Held::Point | Held::Text) && !self.threadless && self.choice(5) == 0 {
                 steps.push(Alias::Tasked { from });

@@ -176,7 +176,9 @@ struct JsonKey:
     def some[T: Serializable](ref self, x: T):
         pass
 
-## Writes JSON into one growing text.
+## Writes JSON into one growing text. What's added to it is put in a name first: added straight
+## from a call or an operator, the text was copied whole each time, so writing grew with the
+## square of what was written.
 struct JsonWriter:
     _text = ""
     _names = JsonNames.SnakeCase
@@ -197,17 +199,20 @@ struct JsonWriter:
         return self._text
 
     def int(ref self, value: int):
-        self._text += str(value)
+        piece = str(value)
+        self._text += piece
 
     def float(ref self, value: float):
         # NaN and infinity are the floats less themselves isn't 0.
         if value - value != 0.0:
             self._unwritable = True
             return
-        self._text += float_text(value)
+        piece = float_text(value)
+        self._text += piece
 
     def bool(ref self, value: bool):
-        self._text += "true" if value else "false"
+        piece = "true" if value else "false"
+        self._text += piece
 
     def text(ref self, value: str):
         self._text += "\""
@@ -220,19 +225,23 @@ struct JsonWriter:
             if b == 194 and (text_byte(value, at + 1) < 128 or text_byte(value, at + 1) > 159):
                 at = text_escape_at(value, at + 2)
             else:
-                self._text += text_part(value, start, at)
+                piece = text_part(value, start, at)
+                self._text += piece
                 if b == 194:
-                    self._text += escape_of(text_byte(value, at + 1))
+                    piece = escape_of(text_byte(value, at + 1))
+                    self._text += piece
                     at += 1
                 else:
-                    self._text += escape_of(b)
+                    piece = escape_of(b)
+                    self._text += piece
                 at += 1
                 start = at
                 at = text_escape_at(value, at)
         if start == 0:
             self._text += value
         else:
-            self._text += text_part(value, start, size)
+            piece = text_part(value, start, size)
+            self._text += piece
         self._text += "\""
 
     def bytes(ref self, value: bytes):
@@ -272,7 +281,8 @@ struct JsonWriter:
         if position < 0 and optional:
             self._text += "null"
         else:
-            self._text += str(position)
+            piece = str(position)
+            self._text += piece
 
     def some[T: Serializable](ref self, x: T):
         self._optional = True
@@ -300,7 +310,8 @@ struct JsonWriter:
     ## It's apart so that output on one line, as most is, has none of its work.
     def _new_line(ref self):
         self._text += "\n"
-        self._text += " " * (self._indent * self._depth)
+        piece = " " * (self._indent * self._depth)
+        self._text += piece
 
     def sequence[T: Serializable](ref self, items: list[T]):
         self._open("[")
@@ -345,9 +356,11 @@ struct JsonWriter:
         if self._indent < 0 and self._names == .SnakeCase:
             if self._first:
                 self._first = False
-                self._text += "\"" + name + "\": "
+                piece = "\"" + name + "\": "
+                self._text += piece
             else:
-                self._text += ", \"" + name + "\": "
+                piece = ", \"" + name + "\": "
+                self._text += piece
             x.serialize(ref self)
             return
         self._entry()
@@ -356,8 +369,10 @@ struct JsonWriter:
             case .SnakeCase:
                 self._text += name
             case _:
-                self._text += spelled_as(name, self._names)
-        self._text += "\": "
+                piece = spelled_as(name, self._names)
+                self._text += piece
+        piece = "\": "
+        self._text += piece
         x.serialize(ref self)
 
     def renamed[T: Serializable](ref self, name: str, x: T):
@@ -389,7 +404,8 @@ struct JsonWriter:
         self._entry()
         self._text += "\""
         self._text += case_name
-        self._text += "\": "
+        piece = "\": "
+        self._text += piece
         self._open("{")
 
     def member(ref self, name: str, at: int):

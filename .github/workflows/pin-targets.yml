@@ -1,6 +1,7 @@
-# Measures the benchmark suite's targets from the kernels' twins, once per architecture. Everyday
-# runs only read them. Run this when a kernel's work or a twin changes, then copy each file this
-# prints into bench/targets/, the unchecked ones too.
+# Measures the benchmark suite's targets from the kernels' twins, once per architecture, and what
+# one call of each operation in bench/ops costs. Everyday runs only read them. Run this when a
+# kernel's work or a twin changes, or an operation's cost moves, then copy each file this prints
+# into bench/targets/, the unchecked ones too, and bench/ops/.
 name: Pin benchmark targets
 
 on:
@@ -17,7 +18,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,9 +36,10 @@ jobs:
         run: |
           .github/scripts/apt.sh valgrind
       - run: ./target/release/fennec-bench pin
+      - run: ./target/release/fennec-bench ops --pin
       - name: Print the targets
         run: |
-          for file in bench/targets/*.txt bench/targets/unchecked/*.txt; do
+          for file in bench/targets/*.txt bench/targets/unchecked/*.txt bench/ops/*.txt; do
             echo "== $file"
             cat "$file"
             { echo "## $file"; echo '```'; cat "$file"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

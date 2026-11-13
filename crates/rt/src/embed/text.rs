@@ -145,22 +145,14 @@ pub(super) fn texts(state: &State, words: &[u64]) -> Vec<String> {
     words.as_chunks::<3>().0.iter().map(|header| text_of(state, header)).collect()
 }
 
-/// Whether a byte of UTF-8 carries on a character begun before it.
-fn is_continuation(byte: u8) -> bool {
-    byte & 0xC0 == 0x80
-}
-
 /// `fennec_text_block(a, b, c)`: a string's block, owned once, for the runtime's string calls,
 /// which take blocks. An inline string is copied into a new block; a string in a block gives
 /// that block, with one more owner.
 pub extern "C" fn block(a: u64, b: u64, c: u64) -> i64 {
     let words = [a, b, c];
     super::made_with("fennec_text_block", |state| {
-        if let Some(bytes) = inline_bytes(&words) {
-            // A header's bytes are a string's, already UTF-8, so its characters are its bytes
-            // that don't carry on one before them.
-            let chars = bytes.iter().filter(|byte| !is_continuation(**byte)).count();
-            return text_from_bytes(state, &bytes, chars);
+        if tag(&words) & INLINE != 0 {
+            return block_of_inline(state, &words);
         }
         let address = block_of(&words).unwrap_or(0);
         retain(state, address);
@@ -168,8 +160,47 @@ pub extern "C" fn block(a: u64, b: u64, c: u64) -> i64 {
     })
 }
 
+/// A new block owned once holding an inline header's text, its words copied across whole and its
+/// characters counted eight bytes at a time: a header's bytes are a string's, already UTF-8, so its
+/// characters are its bytes that don't carry on one before them. One ASCII character is the block
+/// every such string shares.
+fn block_of_inline(state: &mut State, words: &[u64; 3]) -> i64 {
+    let length = usize::from(tag(words) & !INLINE).min(INLINE_BYTES);
+    let [first, ..] = *words;
+    if length == 1
+        && let Some(address) =
+            usize::try_from(first & 0xff).ok().and_then(|byte| state.tables.ascii.get(byte))
+    {
+        return i64::try_from(*address).unwrap_or(0);
+    }
+    let chars = super::strings::chars_before(words, length);
+    let used = length.div_ceil(8);
+    let room = used.max(1);
+    // The header and each word with bytes in it are written here, and only an empty string's one
+    // word is left to be zero.
+    let mut block = state.heap.fresh_written(TEXT_HEADER_WORDS + room, TEXT_HEADER_WORDS + used);
+    let number = |n: usize| u64::try_from(n).unwrap_or(0);
+    let header = [1, state.tables.str_shape, number(length), number(chars), number(room * 8), 0];
+    if let Some(start) = block.get_mut(..TEXT_HEADER_WORDS) {
+        start.copy_from_slice(&header);
+    }
+    if let Some(text) = block.get_mut(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + used)
+        && let Some(from) = words.get(..used)
+    {
+        text.copy_from_slice(from);
+        // Past the last byte, the tag among them, is zero, as native code compares words whole.
+        let tail = u32::try_from(length % 8 * 8).unwrap_or(0);
+        if tail > 0
+            && let Some(last) = text.last_mut()
+        {
+            *last &= u64::MAX >> (64 - tail);
+        }
+    }
+    state.heap.insert(block)
+}
+
 /// A header's bytes where they are: in its own words when it's inline, and in its block otherwise.
-fn bytes_of<'a>(state: &'a State, words: &'a [u64; 3]) -> (&'a [u64], usize) {
+pub(super) fn bytes_of<'a>(state: &'a State, words: &'a [u64; 3]) -> (&'a [u64], usize) {
     match block_of(words) {
         Some(address) => super::strings::bytes_in_block(state, address.cast_signed()),
         None => (&words[..], usize::from(tag(words) & !INLINE).min(INLINE_BYTES)),
@@ -221,12 +252,11 @@ pub extern "C" fn append_header(text: i64, h0: u64, h1: u64, h2: u64) -> i64 {
 }
 
 /// `fennec_str_find_header(text, part)`: `text.find(part)` for two headers, which character `part`
-/// first starts at, or -1 when it isn't there.
+/// first starts at, or -1 when it isn't there, looked for where both are, as `find` does.
 pub extern "C" fn find_header(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u64) -> i64 {
     with(|state| {
-        let (text, part) = (text_of(state, &[t0, t1, t2]), text_of(state, &[p0, p1, p2]));
-        let before = text.find(part.as_str()).and_then(|at| text.get(..at));
-        before.map_or(-1, |before| i64::try_from(before.chars().count()).unwrap_or(-1))
+        let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
+        super::strings::find_in(bytes_of(state, &text), bytes_of(state, &part))
     })
 }
 
@@ -900,6 +930,14 @@ mod tests {
             assert_eq!(super::find_header(t0, t1, t2, p0, p1, p2), at, "{part:?}");
             assert_eq!(super::starts_with(t0, t1, t2, p0, p1, p2), i8::from(starts), "{part:?}");
             assert_eq!(super::ends_with(t0, t1, t2, p0, p1, p2), i8::from(ends), "{part:?}");
+        }
+        // An inline text, its bytes in the header itself, with its tag after them never matched.
+        let [i0, i1, i2] = header("Host: \u{e9}x.com");
+        for (part, at) in
+            [(": ", 4), ("\u{e9}x", 6), ("x.com", 7), ("com\u{80}", -1), ("Host: \u{e9}x.com!", -1)]
+        {
+            let [p0, p1, p2] = header(part);
+            assert_eq!(super::find_header(i0, i1, i2, p0, p1, p2), at, "{part:?}");
         }
         heap::free_text(text);
         if let Some(address) = block_of(&whole) {

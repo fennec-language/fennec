@@ -88,9 +88,19 @@ export struct Url:
             out.write("#" + quoted(self.fragment, keep="/?:@!$&'()*+,;="))
 
 ## The parts of `text`, an absolute URL like `https://example.com/a?b=1` or a relative one like
-## `/a?b=1`. Text that can't be a URL fails with an `InvalidValue` saying why: a space or a
-## control character in it, a `\` before its query, a port that isn't a number from 1 to 65535,
-## or an IPv6 address with no `]`.
+## `/a?b=1`. Text that can't be a URL fails with an `InvalidValue` saying why. What's refused is
+## what a browser, or whatever reads the URL next, could take for a different URL, so that a check
+## of what `parse` gives is a check of where the URL leads:
+## - a space or a control character anywhere, tab, CR and LF included, which a browser strips;
+## - a `\` before the query, which a browser reads as `/`;
+## - `http:`, `https:`, `ws:`, `wss:` or `ftp:` not followed by `//` and a host, and `//` with
+##   no host after it, since a browser finds a host whatever the slashes;
+## - a host holding `@`, `%`, `\`, `[`, `]`, `/`, `?` or `#`, or a character a browser maps to
+##   ASCII, like `。`, `＠` or a fullwidth letter;
+## - a host a browser reads as an IPv4 address but that isn't written as one plainly, like
+##   `127.1`, `0x7f.1`, `0177.0.0.1` or `2130706433`;
+## - brackets around anything but an IPv6 address, a zone like `%25en0` included;
+## - a port that isn't a number from 1 to 65535, or a host longer than 253 characters.
 export def parse(text: str) -> Url fails InvalidValue:
     for c in text:
         if c == " " or c.code() < 32 or c.code() == 127:
@@ -173,8 +183,7 @@ def host_refused(host: str) -> str:
         if is_ipv6(host): return ""
         return f"`{cut_input(host)}` isn't an IPv6 address"
     for refused in ["@", "%", "\\", "[", "]", "/", "?", "#"]:
-        if host.find(refused) is not None:
-            return "its host can't hold `@`, `%`, `\\`, `[`, `]`, `/`, `?` or `#`"
+        if host.find(refused) is not None: return f"its host can't hold `{refused}`"
     for c in host:
         if c == " " or c.code() < 32 or c.code() == 127:
             return "its host can't hold a space or a control character"
@@ -182,7 +191,43 @@ def host_refused(host: str) -> str:
             return f"its host can't hold `{c}`, which a browser reads as ASCII punctuation or a letter"
     # The most a name may be, as DNS has it.
     if len(host) > 253: return "its host is longer than 253 characters"
+    if ends_in_a_number(host) and not is_ipv4(host):
+        return f"its host `{cut_input(host)}` is an IPv4 address in a form a browser reads as another: write it as four numbers from 0 to 255, like 127.0.0.1"
     return ""
+
+## Whether a browser reads `host` as an IPv4 address: its last part, or the one before a last
+## dot, is digits, or `0x` and hex digits. Then `127.1`, `0x7f.1`, `0177.0.0.1` and `2130706433`
+## are all 127.0.0.1 to it, and to C's `inet_aton`, so a check of the host as written isn't one
+## of where it leads.
+def ends_in_a_number(host: str) -> bool:
+    mut parts = host.split(".")
+    if len(parts) > 1 and parts[-1] == "":
+        parts = parts[:-1]
+    last = parts[-1]
+    if last != "" and is_digits(last): return True
+    return last.lower().startswith("0x") and is_hex(last[2:])
+
+## Whether `host` is an IPv4 address written plainly: four numbers from 0 to 255, in decimal, with
+## no leading zero.
+def is_ipv4(host: str) -> bool:
+    parts = host.split(".")
+    if len(parts) != 4: return False
+    for part in parts:
+        if part == "" or not is_digits(part) or len(part) > 3: return False
+        if len(part) > 1 and part.startswith("0"): return False
+        number = int(part) except InvalidValue(): 256
+        if number > 255: return False
+    return True
+
+def is_digits(text: str) -> bool:
+    for c in text:
+        if c < "0" or c > "9": return False
+    return text != ""
+
+def is_hex(text: str) -> bool:
+    for c in text:
+        if not ((c >= "0" and c <= "9") or (c.lower() >= "a" and c.lower() <= "f")): return False
+    return True
 
 ## Whether a browser's IDNA mapping turns character `code` into ASCII: an ideographic or small
 ## full stop, a one-dot leader, or a fullwidth letter, digit or mark. In a host, `evil。com` is

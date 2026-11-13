@@ -35,12 +35,39 @@ test "only an IPv6 address goes in brackets"():
     assert why_not("http://[::1]x/") == "`http://[::1]x/` isn't a URL: `x` follows its IPv6 address"
 
 test "a host can't hold what would make it another host to the next reader"():
-    said = "its host can't hold `@`, `%`, `\\`, `[`, `]`, `/`, `?` or `#`"
-    for text in ["http://a@b@c/", "http://h%41/", "http://[a@b]/", "http://a]b/"]:
-        assert why_not(text) == f"`{text}` isn't a URL: {said}"
+    for text, held in [
+        ("http://a@b@c/", "@"),
+        ("http://h%41/", "%"),
+        ("http://evil%2Ecom/", "%"),
+        ("http://h%2Fx/", "%"),
+        # The `@` ends who it is, so the host is `b]`.
+        ("http://[a@b]/", "]"),
+        ("http://a]b/", "]"),
+    ]:
+        assert why_not(text) == f"`{text}` isn't a URL: its host can't hold `{held}`"
     long = "http://" + "a" * 254 + "/"
     assert why_not(long).endswith("isn't a URL: its host is longer than 253 characters")
     assert where("http://" + "a" * 253 + "/").startswith("a" * 253)
+    # A zone, and anything but an IPv6 address, isn't taken in brackets.
+    for inside in ["fe80::1%25en0", "fe80::1%en0", "v1.fe80::a+en1", "127.0.0.1"]:
+        text = f"http://[{inside}]/"
+        assert (
+            why_not(text) == f"`{text}` isn't a URL: `{inside}` in brackets isn't an IPv6 address"
+        )
+
+test "an IPv4 address is written plainly, as four numbers from 0 to 255"():
+    # A browser, and C's `inet_aton`, read every one of these as an address: 127.0.0.1, mostly.
+    for host in [
+        "127.1", "0x7f.1", "0177.0.0.1", "2130706433", "0x7f000001", "127.0.0.1.", "127.0.0.01",
+        "1.2.3.0x4", "256.0.0.1", "1.2.3.4.5", "example.123",
+    ]:
+        assert why_not(f"http://{host}/").endswith(
+            "is an IPv4 address in a form a browser reads as another: write it as four numbers from 0 to 255, like 127.0.0.1",
+        )
+    assert where("http://127.0.0.1:8080/") == "127.0.0.1 8080 127.0.0.1:8080"
+    assert where("http://0.0.0.0/") == "0.0.0.0 0 0.0.0.0"
+    assert where("http://123.example/") == "123.example 0 123.example"
+    assert where("http://0x7f.example/") == "0x7f.example 0 0x7f.example"
 
 test "a backslash before the query is refused, since a browser reads it as a slash"():
     said = "it can't hold `\\` before its query, since a browser reads it as `/`"
@@ -66,7 +93,19 @@ test "a port is from 1 to 65535, written in digits"():
     assert where("http://h:/") == "h 0 h"
 
 test "a space or a control character is refused anywhere"():
-    for text in ["http://h/a b", "http://h/a\x00b", "http://h/a\tb", "http://h/?a=\nb"]:
+    # A browser strips a tab, CR or LF, so `java\tscript:` would be javascript: to it.
+    for text in [
+        "http://h/a b",
+        "http://h/a\x00b",
+        "http://h/a\tb",
+        "http://h/?a=\nb",
+        "java\tscript:alert(1)",
+        "http://h/a\rb",
+        " http://h/",
+        "http://h/ ",
+        "\x01http://h/",
+        "http://h/\x7f",
+    ]:
         assert why_not(text).endswith("isn't a URL: it can't hold a space or a control character")
 
 test "what's merely long, deep or odd reads, as its escapes are"():
@@ -106,6 +145,7 @@ test "a host a browser would map to ASCII punctuation or letters is refused"():
         "http://a．b/",
         "http://a․b/",
         "http://a｡b/",
+        "http://a＠b＠c/",
     ]:
         assert why_not(text).startswith(f"`{text}` isn't a URL: its host can't hold `")
     # A name in another script is a name.

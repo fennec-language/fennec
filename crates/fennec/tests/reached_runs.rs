@@ -461,13 +461,13 @@ fn a_body_edit_to_a_case_another_files_enum_shares_is_refused() {
 /// file would take the builtin.
 #[test]
 fn a_body_edit_using_a_kit_name_from_a_file_not_imported_is_refused() {
-    let sorted = "def sorted(items: list[int]) -> list[int]:\n    return items\n\ntest \"sorted\":\n    assert sorted([2, 1]) == [2, 1]\n";
+    let ordered = "def ordered(items: list[int]) -> list[int]:\n    return items\n\ntest \"ordered\":\n    assert ordered([2, 1]) == [2, 1]\n";
     let dir = kit_of(
         "not_imported",
-        &[("util.fen", sorted), ("main.fen", "def main(stdout: Stdout):\n    stdout.print(1)\n")],
+        &[("util.fen", ordered), ("main.fen", "def main(stdout: Stdout):\n    stdout.print(1)\n")],
     )
     .unwrap();
-    let edit = "def main(stdout: Stdout):\n    stdout.print(sorted([2, 1]))\n";
+    let edit = "def main(stdout: Stdout):\n    stdout.print(ordered([2, 1]))\n";
     for refused in after_an_edit(&dir, edit).unwrap() {
         let said = String::from_utf8_lossy(&refused.stderr);
         assert!(!refused.status.success(), "{said}");

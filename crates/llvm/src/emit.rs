@@ -2839,6 +2839,7 @@ impl Emit<'_, '_, '_> {
             "intrinsics.text_plain_end" | "intrinsics.text_escape_at" => {
                 self.text_scan(dest.ok_or("no result")?, name, args)
             }
+            "intrinsics.text_same_at" => self.text_same_at(dest.ok_or("no result")?, args),
             // A float's bits as an int, and back, which a binary format saves.
             "intrinsics.float_bits" | "intrinsics.float_of_bits" => {
                 let (value, _) = self.operand(first.ok_or("no argument")?)?;

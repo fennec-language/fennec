@@ -125,6 +125,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_text_of",
     // One atomic add to the count of native blocks made and not freed.
     "fennec_native_live",
+    // Two texts' bytes compared where they are. A place outside the text is an answer, `False`.
+    "fennec_str_same_at",
 ];
 
 /// Whether `symbol` is in [`NEVER_FAIL`], worked out as each export is compiled.

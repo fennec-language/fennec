@@ -1776,6 +1776,10 @@ fn only_looks(inst: &InstKind, local: LocalId) -> bool {
         InstKind::IsNone { value, .. }
         | InstKind::IsCase { value, .. }
         | InstKind::GetCaseField { value, .. } => *value == held,
+        // Both texts are only read, so either may be the one looked into, or both.
+        InstKind::Builtin { name, args, .. } if name == "intrinsics.text_same_at" => {
+            (args.first() == Some(&held) || args.get(2) == Some(&held)) && args.get(1) != Some(&held)
+        }
         InstKind::Builtin { name, args, .. } => {
             args.first() == Some(&held)
                 && !args.iter().skip(1).any(|arg| *arg == held)

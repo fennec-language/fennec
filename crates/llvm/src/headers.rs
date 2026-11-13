@@ -524,6 +524,32 @@ impl Emit<'_, '_, '_> {
         self.assign(dest, &at)
     }
 
+    /// `text_same_at(text, start, word)`: whether `text`'s bytes from byte `start` begin with all
+    /// of `word`'s. Both go to the runtime as their headers' words, so neither is made a block
+    /// or copied, and the runtime compares them eight bytes at a time. It can't fail: a `start`
+    /// below 0, or a `word` running past the end, is `False`.
+    pub(crate) fn text_same_at(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        args: &[fennec_ir::Operand],
+    ) -> Result<(), String> {
+        if !self.headers() {
+            return Err("it calls `intrinsics.text_same_at` where strings aren't headers".to_owned());
+        }
+        let (text, _) = self.operand(args.first().ok_or("no text")?)?;
+        let (start, _) = self.operand(args.get(1).ok_or("no place")?)?;
+        let (word, _) = self.operand(args.get(2).ok_or("no word")?)?;
+        let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(&text, at));
+        let [w0, w1, w2] = [0, 1, 2].map(|at| self.header_word(&word, at));
+        self.declare("declare i8 @fennec_str_same_at(i64, i64, i64, i64, i64, i64, i64) nounwind");
+        let (found, same) = (self.temp(), self.temp());
+        self.line(&format!(
+            "{found} = call i8 @fennec_str_same_at(i64 {t0}, i64 {t1}, i64 {t2}, i64 {start}, i64 {w0}, i64 {w1}, i64 {w2})"
+        ));
+        self.line(&format!("{same} = trunc i8 {found} to i1"));
+        self.assign(dest, &same)
+    }
+
     /// Where a header's text starts: in its block, or in a copy of the header on the stack.
     pub(crate) fn header_bytes(&mut self, header: &str) -> String {
         let in_block = self.header_in_block(header);

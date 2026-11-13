@@ -103,7 +103,7 @@ same-file = { version = "=1.0.6", default-features = false }
 # Catching the signals that ask a program to stop, for `Signals`: on Unix, a handler that sets a
 # flag and wakes a thread, and gives a second signal its default action, so nothing of ours is
 # `unsafe`. Its iterator is the thread's. Under MIT or Apache-2.0.
-signal-hook = { version = "=0.3.18", default-features = false, features = ["iterator"] }
+signal-hook = { version = "=0.4.6", default-features = false, features = ["iterator"] }
 # The same on Windows, for Ctrl-C and Ctrl-Break, through `SetConsoleCtrlHandler`, its handler run
 # on a thread of its own. Under MIT or Apache-2.0.
 ctrlc = { version = "=3.4.7", default-features = false }

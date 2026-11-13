@@ -48,6 +48,9 @@ struct Channel {
     queue: Mutex<Queue>,
     /// For waits that block their thread.
     changed: Condvar,
+    /// Whether it's been freed, and is gone from `CHANNELS`: a thread that found it before, and kept
+    /// it to find again, takes it for gone as `CHANNELS` would.
+    freed: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -73,15 +76,43 @@ struct Waiter {
 #[cfg(not(any(test, feature = "threads")))]
 struct Waiter;
 
-static CHANNELS: Mutex<Option<HashMap<i64, Arc<Channel>>>> = Mutex::new(None);
+/// Channels by number. A channel's number is never given out again, so a number names one channel
+/// for the whole run.
+type ByNumber<T> = HashMap<i64, T, std::hash::BuildHasherDefault<heap::AddressHasher>>;
+
+static CHANNELS: Mutex<Option<ByNumber<Arc<Channel>>>> = Mutex::new(None);
 static NEXT: AtomicI64 = AtomicI64::new(1);
 
-fn channels<T>(use_them: impl FnOnce(&mut HashMap<i64, Arc<Channel>>) -> T) -> T {
-    use_them(CHANNELS.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
+/// How many channels a thread keeps to find again before it lets go of those that are gone.
+const FOUND_KEPT: usize = 64;
+
+thread_local! {
+    /// The channels this thread found lately, kept to find again without taking `CHANNELS`' lock,
+    /// which every thread's sends and receives took each time, and waited on each other for.
+    static FOUND: std::cell::RefCell<ByNumber<std::sync::Weak<Channel>>> =
+        std::cell::RefCell::new(ByNumber::default());
+}
+
+fn channels<T>(use_them: impl FnOnce(&mut ByNumber<Arc<Channel>>) -> T) -> T {
+    use_them(CHANNELS.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(ByNumber::default))
 }
 
 fn find(channel: i64) -> Option<Arc<Channel>> {
-    channels(|channels| channels.get(&channel).cloned())
+    let kept = FOUND.with_borrow(|found| found.get(&channel).and_then(std::sync::Weak::upgrade));
+    if let Some(kept) = kept {
+        return (!kept.freed.load(Ordering::Acquire)).then_some(kept);
+    }
+    let found = channels(|channels| channels.get(&channel).cloned())?;
+    FOUND.with_borrow_mut(|kept| {
+        if kept.len() >= FOUND_KEPT {
+            kept.retain(|_, channel| channel.strong_count() > 0);
+            if kept.len() >= FOUND_KEPT {
+                kept.clear();
+            }
+        }
+        kept.insert(channel, Arc::downgrade(&found));
+    });
+    Some(found)
 }
 
 impl Channel {
@@ -109,6 +140,7 @@ pub extern "C" fn channel_new(size: i64) -> i64 {
         replay: crate::replay::place("c"),
         queue: Mutex::new(Queue::default()),
         changed: Condvar::new(),
+        freed: std::sync::atomic::AtomicBool::new(false),
     };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));
@@ -184,6 +216,11 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
                 let_go(message);
                 return DONE;
             }
+            Waited::CutShort => {
+                met(&channel, "send", CLOSED);
+                let_go(message);
+                return CLOSED;
+            }
         }
     }
 }
@@ -226,6 +263,10 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
                 return TIMED_OUT;
             }
             Waited::Stopped => return DONE,
+            Waited::CutShort => {
+                met(&channel, "receive", CLOSED);
+                return CLOSED;
+            }
         }
     }
 }
@@ -286,6 +327,7 @@ pub extern "C" fn channel_close(channel: i64) {
 pub extern "C" fn channel_free(channel: i64) {
     every::forget(channel);
     let Some(channel) = channels(|channels| channels.remove(&channel)) else { return };
+    channel.freed.store(true, Ordering::Release);
     let mut queue = channel.queue();
     queue.closed = true;
     let left: Vec<Message> = queue.messages.drain(..).collect();
@@ -339,13 +381,26 @@ enum Waited {
     /// A stop cut it short: the task's failing.
     #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are stopped"))]
     Stopped,
+    /// A task this code launched crashed or failed, so nothing may ever come: it's over as if the
+    /// channel were closed, and the `with launch` block's end says how the task did.
+    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks crash"))]
+    CutShort,
 }
 
 /// Waits for the channel to change, with `queue` held to see that it hasn't: parked, in a task that
 /// can, and otherwise blocking.
-fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instant>, side: Side) -> Waited {
+fn wait(
+    channel: &Arc<Channel>,
+    queue: MutexGuard<'_, Queue>,
+    deadline: Option<Instant>,
+    side: Side,
+) -> Waited {
     if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
         return Waited::TimedOut;
+    }
+    #[cfg(any(test, feature = "threads"))]
+    if super::threads::Launcher::cut_short_here() {
+        return Waited::CutShort;
     }
     #[cfg(any(test, feature = "threads"))]
     if super::serve::can_park()
@@ -353,13 +408,23 @@ fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instan
     {
         let mut queue = queue;
         let token = super::serve::next_token();
+        // A crash of a task this one launched wakes it, said before its last look.
+        super::threads::Launcher::waiting_here(Box::new(move || {
+            pool.run_on(at, Box::new(move |io: &mut super::serve::Io| io.wake_token(token)));
+        }));
+        if super::threads::Launcher::cut_short_here() {
+            super::threads::Launcher::waited_here();
+            return Waited::CutShort;
+        }
         let waiter = Waiter { pool, at, token };
         match side {
             Side::Sending => queue.senders.push(waiter),
             Side::Receiving => queue.receivers.push(waiter),
         }
         drop(queue);
-        return match super::serve::park_on(token, deadline) {
+        let parked = super::serve::park_on(token, deadline);
+        super::threads::Launcher::waited_here();
+        return match parked {
             // Stopped, it's failing. Cancelled, as by a server that's stopping, it can't wait any more
             // and ends here: it'd never be parked again, and nothing would ever change what it saw.
             super::serve::Parked::Cancelled => {
@@ -373,6 +438,22 @@ fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instan
         };
     }
     let _ = side;
+    // A crash of a task this code launched wakes it: told with the queue held, so the crash can't
+    // come between this last look and the wait.
+    #[cfg(any(test, feature = "threads"))]
+    {
+        let changed = Arc::downgrade(channel);
+        super::threads::Launcher::waiting_here(Box::new(move || {
+            if let Some(channel) = changed.upgrade() {
+                let _queue = channel.queue();
+                channel.changed.notify_all();
+            }
+        }));
+        if super::threads::Launcher::cut_short_here() {
+            super::threads::Launcher::waited_here();
+            return Waited::CutShort;
+        }
+    }
     // What this thread printed comes out first, as before anything else that waits. The queue stays
     // held, so no change is missed before the wait.
     super::write_kept_output();
@@ -385,6 +466,8 @@ fn wait(channel: &Channel, queue: MutexGuard<'_, Queue>, deadline: Option<Instan
         }
         None => (channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), false),
     };
+    #[cfg(any(test, feature = "threads"))]
+    super::threads::Launcher::waited_here();
     if timed_out { Waited::TimedOut } else { Waited::Again }
 }
 

@@ -436,6 +436,32 @@ fn what_tasks_and_parallel_bodies_print_is_captured_by_their_test() {
     }
 }
 
+/// A constant a test's launched task works out before the test does is one the test finds too: a
+/// test works out its program's constants first, as `main` does in a program that uses tasks.
+/// Before, the task worked it out on its worker, where the test's own push to a field starting as
+/// it couldn't find it, and stopped.
+#[test]
+fn a_constant_a_test_s_task_reads_first_is_found_by_the_test() {
+    if !crate::executables::threads_runtime_built() {
+        return;
+    }
+    for threads in ["1", "4", "16"] {
+        let output = crate::executables::fennec_command()
+            .args(["test", "crates/fennec/tests/fixtures/constants_in_test_tasks.fen"])
+            .current_dir(repo())
+            .env("FENNEC_NO_CACHE", "1")
+            .env("FENNEC_THREADS", threads)
+            .output()
+            .unwrap();
+        assert_eq!(
+            text(&output.stdout),
+            "2 passed, 0 failed\n",
+            "{threads} threads: {}",
+            text(&output.stderr)
+        );
+    }
+}
+
 /// Each line a test and its tasks print reaches the test's capture whole. A `print` arrives in
 /// pieces, and before the fix, pieces of a task's line and the test's own mixed in most runs of
 /// this fixture: 42 of 50 at 4 threads and 30 of 50 at 1 thread, both stressed. So three runs at
@@ -1183,6 +1209,98 @@ fn a_run_counts_what_a_hot_loop_allocates() {
     let allocations: u64 = allocations.and_then(|count| count.parse().ok()).unwrap_or(0);
     assert!(allocations >= 100, "{counted}");
 }
+
+/// `dev copies` says what the native code copies, where it does: an item copied out, changed and
+/// put back where it was, which the native code changes in place, isn't listed, and a value sent on
+/// a channel, which the receiving end gets a copy of, is, at the send. A number sent isn't.
+#[test]
+fn dev_copies_names_the_copies_the_native_code_makes() {
+    let dir = scratch("copies_where_made").unwrap();
+    let report = |name: &str, source: &str| {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source).unwrap();
+        let output = fennec(&["dev", "copies", &program.to_string_lossy()], "").unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        text(&output.stdout)
+    };
+    let put_back = report("put_back", PUT_BACK);
+    assert!(!put_back.contains("copied"), "{put_back}");
+    let sends = report("sends", SENDS);
+    assert!(sends.contains("sends.fen:11:13 in `main`: what this sends is copied as it's sent"), "{sends}");
+    let numbers = report("numbers", NUMBERS_SENT);
+    assert!(!numbers.contains("copied"), "{numbers}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+const PUT_BACK: &str = r#"from std.collections import Id, Table
+
+struct Entity:
+    health: int
+    inventory: dict[str, int]
+    x: int
+
+def step(ref entities: Table[Entity], ids: list[Id[Entity]], order: list[int]):
+    for me in order:
+        mut entity = entities[ids[me]]
+        entity.health -= 1
+        if entity.health <= 0:
+            gold = entity.inventory.get("gold") else 0
+            entity.inventory["gold"] = gold // 2
+            entity.x = me * 3 + 1
+        entities[ids[me]] = entity
+    return
+
+def main(stdout: Stdout):
+    mut entities = Table[Entity]()
+    mut ids = list[Id[Entity]]()
+    for n in range(100):
+        ids.append(entities.add(Entity(health=n % 3, inventory={"gold": n}, x=0)))
+    order = [n for n in range(100)]
+    step(ref entities, ids, order)
+    mut total = 0
+    for entity in entities:
+        total += entity.inventory["gold"] + entity.x
+    stdout.print(total)
+    return
+"#;
+
+const SENDS: &str = r"from std.concurrent import Closed, channel
+
+enum Command:
+    Move(who: int, vx: int, vy: int)
+    Heal(who: int, amount: int)
+
+def main(stdout: Stdout) fails Closed:
+    mut total = 0
+    with channel[Command](size=64) as commands:
+        for n in range(50):
+            commands.send(.Move(who=n, vx=1, vy=2))?
+            command = commands.receive() else break
+            match command:
+                case .Move(who, vx, vy):
+                    total += who + vx + vy
+                case .Heal(who, amount):
+                    total += who * amount
+    stdout.print(total)
+    return
+";
+
+const NUMBERS_SENT: &str = r"from std.concurrent import Closed, channel
+
+enum Command:
+    Move(who: int, vx: int, vy: int)
+    Heal(who: int, amount: int)
+
+def main(stdout: Stdout) fails Closed:
+    mut total = 0
+    with channel[int](size=64) as commands:
+        for n in range(50):
+            commands.send(n)?
+            command = commands.receive() else break
+            total += command
+    stdout.print(total)
+    return
+";
 
 #[test]
 fn dev_copies_reports_a_mistake_instead_of_a_list() {
@@ -3132,6 +3250,71 @@ fn only_the_kit_that_declares_a_type_extends_it() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A dependency sees its own kit's names, what it imports, and the language's: never the program's.
+/// The program's names have no prefix in the merged module, so a dependency writing one it doesn't
+/// define read the program's private constant and called its private function.
+#[test]
+fn a_dependency_sees_only_its_own_names_what_it_imports_and_the_languages() {
+    let dir = scratch("dependency-names").unwrap();
+    let helper = dir.join("helper");
+    let peeks = "export def peek() -> str:\n    return f\"{API_KEY} {secret_total()}\"\n";
+    write_kit(&helper, "helper", "", &[("lib.fen", peeks)]).unwrap();
+    let game = dir.join("game");
+    let main = "import helper\n\nAPI_KEY = \"hunter2\"\n\nstruct Player:\n    hp: int\n\n\
+                def secret_total() -> int:\n    return 42\n\n\
+                def main(stdout: Stdout):\n    stdout.print(helper.peek())\n";
+    write_kit(&game, "game", "[dependencies]\nhelper = { path = \"../helper\" }\n", &[("main.fen", main)])
+        .unwrap();
+    let fennec = |command: &str| {
+        crate::executables::fennec_command()
+            .args([command, "."])
+            .current_dir(&game)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let refused = |says: &[&str]| {
+        for command in ["check", "build"] {
+            let output = fennec(command);
+            assert!(!output.status.success(), "{command}");
+            let said = text(&output.stderr);
+            for one in says {
+                assert!(said.contains(one), "{command}: {said}");
+            }
+            assert!(said.contains("helper/src/lib.fen"), "{command}: {said}");
+        }
+    };
+    refused(&["`API_KEY` doesn't exist", "`secret_total` doesn't exist"]);
+    // A type of the program's, too.
+    std::fs::write(
+        helper.join("src/lib.fen"),
+        "export def hurt(player: Player) -> int:\n    return player.hp\n",
+    )
+    .unwrap();
+    refused(&["`Player` doesn't exist"]);
+    // The program's own `len` would hide the language's from the dependency: refused, saying so.
+    std::fs::write(helper.join("src/lib.fen"), "export def size() -> int:\n    return len(\"abc\")\n")
+        .unwrap();
+    std::fs::write(
+        game.join("src/main.fen"),
+        "import helper\n\ndef len(text: str) -> int:\n    return 99\n\n\
+         def main(stdout: Stdout):\n    stdout.print(helper.size())\n",
+    )
+    .unwrap();
+    refused(&["`len` here would be the program's own `len`, not the language's"]);
+    // A name the dependency defines itself is its own, though the program has one too.
+    std::fs::write(
+        helper.join("src/lib.fen"),
+        "API_KEY = \"theirs\"\n\nexport def peek() -> str:\n    return f\"{API_KEY} {len(API_KEY)}\"\n",
+    )
+    .unwrap();
+    std::fs::write(game.join("src/main.fen"), main).unwrap();
+    let ran = fennec("run");
+    assert!(ran.status.success(), "{}", text(&ran.stderr));
+    assert_eq!(text(&ran.stdout), "theirs 6\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A small kit and a folder for Fennec's own files, in a folder that holds both and goes when the
 /// first is dropped.
 fn small_kit(name: &str) -> std::io::Result<(fennec_temp::Temp, PathBuf, PathBuf)> {
@@ -3528,6 +3711,48 @@ fn a_hot_loop_over_a_table_makes_nothing() {
     assert!(checked.status.success(), "{}", text(&checked.stderr));
     let output = fennec(&["run", program.to_str().unwrap()], "").unwrap();
     assert_eq!(text(&output.stdout), "6\n", "{}", text(&output.stderr));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// `@hot` refuses an item the native code copies to change: one read out of a list, changed and
+/// put back with the list read in between, so the code generator can't take it out. The same
+/// with nothing read in between, and a `for ref` loop over a `Table` of items holding a dict,
+/// change their items where they are, so they check. `fennec dev copies` lists the copy too.
+/// Before this, `@hot` saw none of these copies, though the program made them.
+#[test]
+fn a_hot_function_refuses_an_item_it_copies_to_change() {
+    let dir = scratch("hot_item_copy").unwrap();
+    let program = dir.join("hot.fen");
+    let types =
+        "from std.collections import Table\n\nstruct Enemy:\n    hp: int\n    bag: dict[str, int]\n\n";
+    let main = "\ndef main(stdout: Stdout):\n    mut enemies = [Enemy(hp=3, bag={\"a\": 1}), Enemy(hp=4, bag={\"a\": 2})]\n    \
+                mut table = Table[Enemy]()\n    _ = table.add(Enemy(hp=5, bag={\"a\": 3}))\n    \
+                step(ref enemies, ref table)\n    stdout.print(enemies[0].hp, enemies[1].hp)\n";
+    let step = |between: &str| {
+        format!(
+            "@hot\ndef step(ref enemies: list[Enemy], ref table: Table[Enemy]):\n    \
+             for ref held in table:\n        held.hp -= 1\n    \
+             for i in range(len(enemies)):\n        mut enemy = enemies[i]\n{between}        enemy.hp -= 1\n        \
+             enemies[i] = enemy\n"
+        )
+    };
+    let copying =
+        format!("{types}{}{main}", step("        for other in enemies:\n            enemy.hp -= other.hp\n"));
+    std::fs::write(&program, &copying).unwrap();
+    let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    assert!(!output.status.success());
+    let refused = "what this reads out of `enemies` is copied to change it in `@hot` `step`";
+    assert!(text(&output.stderr).contains(refused), "{}", text(&output.stderr));
+    std::fs::write(&program, copying.replace("@hot\n", "")).unwrap();
+    let listed = fennec(&["dev", "copies", program.to_str().unwrap()], "").unwrap();
+    assert!(
+        text(&listed.stdout).contains("what this reads out of `enemies` is copied to change it"),
+        "{}",
+        text(&listed.stdout)
+    );
+    std::fs::write(&program, format!("{types}{}{main}", step(""))).unwrap();
+    let checked = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
     std::fs::remove_dir_all(dir).unwrap();
 }
 

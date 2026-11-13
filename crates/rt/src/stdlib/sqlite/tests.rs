@@ -41,7 +41,7 @@ fn run(handle: i64, method: &str, args: &[Value]) -> Result<String, String> {
 fn a_tests_database_keeps_what_its_transactions_commit_and_none_of_what_they_roll_back() -> Result<(), String>
 {
     let mut fakes = Fakes::default();
-    let db = handle_of(&open_fake(&mut fakes, "index.db"))?;
+    let db = handle_of(&open_fake(&mut fakes, "index.db", false))?;
     assert_eq!(run(db, "_execute", &query("create table notes (n integer, text text)", &[], &[]))?, "Ok(0)");
     assert_eq!(run(db, "_execute", &query("insert into notes values (?, ?)", &[1], &["fox"]))?, "Ok(1)");
     let kept = handle_of(&call(db, "_begin", &[], Span::default()).map_err(|problem| problem.message)?)?;
@@ -52,7 +52,7 @@ fn a_tests_database_keeps_what_its_transactions_commit_and_none_of_what_they_rol
     assert_eq!(run(undone, "_rollback", &[])?, "");
     // Closed and opened again, it's the same database while the test lasts.
     assert_eq!(run(db, "_close", &[])?, "");
-    let again = handle_of(&open_fake(&mut fakes, "index.db"))?;
+    let again = handle_of(&open_fake(&mut fakes, "index.db", false))?;
     let found = run(again, "_query", &query("select n, text from notes order by n", &[], &[]))?;
     assert!(found.contains(r#"columns=["n", "text"]"#), "{found}");
     assert!(found.contains("kinds=[1, 3, 1, 3]") && found.contains(r#"texts=["fox", "owl"]"#), "{found}");
@@ -64,7 +64,7 @@ fn a_tests_database_keeps_what_its_transactions_commit_and_none_of_what_they_rol
 #[test]
 fn a_broken_rule_and_a_query_in_two_statements_fail_as_what_they_are() -> Result<(), String> {
     let mut fakes = Fakes::default();
-    let db = handle_of(&open_fake(&mut fakes, "rules.db"))?;
+    let db = handle_of(&open_fake(&mut fakes, "rules.db", false))?;
     assert_eq!(run(db, "_execute", &query("create table keys (k text primary key)", &[], &[]))?, "Ok(0)");
     assert_eq!(run(db, "_execute", &query("insert into keys values (?)", &[], &["a"]))?, "Ok(1)");
     let taken = run(db, "_execute", &query("insert into keys values (?)", &[], &["a"]))?;
@@ -76,7 +76,7 @@ fn a_broken_rule_and_a_query_in_two_statements_fail_as_what_they_are() -> Result
     assert!(extra.contains("places for them"), "{extra}");
     // A test's databases are its own.
     let mut others = Fakes::default();
-    let other = handle_of(&open_fake(&mut others, "rules.db"))?;
+    let other = handle_of(&open_fake(&mut others, "rules.db", false))?;
     assert!(
         run(other, "_execute", &query("insert into keys values (?)", &[], &["b"]))?.contains("no such table")
     );
@@ -86,7 +86,7 @@ fn a_broken_rule_and_a_query_in_two_statements_fail_as_what_they_are() -> Result
 #[test]
 fn a_tests_databases_are_files_of_its_own_gone_when_it_ends() -> Result<(), String> {
     let mut fakes = Fakes::default();
-    let db = handle_of(&open_fake(&mut fakes, "gone.db"))?;
+    let db = handle_of(&open_fake(&mut fakes, "gone.db", false))?;
     assert_eq!(run(db, "_execute", &query("create table notes (n integer)", &[], &[]))?, "Ok(0)");
     let folder = fakes.folder.clone().ok_or("no folder was made")?;
     assert!(folder.join("0.db").exists());
@@ -101,7 +101,7 @@ fn a_tests_databases_are_files_of_its_own_gone_when_it_ends() -> Result<(), Stri
 #[test]
 fn a_tests_databases_left_open_are_closed_and_gone_when_it_ends() -> Result<(), String> {
     let mut fakes = Fakes::default();
-    let db = handle_of(&open_fake(&mut fakes, "open.db"))?;
+    let db = handle_of(&open_fake(&mut fakes, "open.db", false))?;
     assert_eq!(run(db, "_execute", &query("create table notes (n integer)", &[], &[]))?, "Ok(0)");
     let began = run(db, "_begin", &[])?;
     assert!(began.starts_with("Ok("), "{began}");
@@ -153,15 +153,15 @@ fn a_checked_database_is_never_made_and_never_reached_through_a_link() {
     // The same file, reached through a link to its folder.
     std::os::unix::fs::symlink(folder.join("real"), folder.join("linked")).unwrap();
     let through_link = folder.join("linked").join("data.db").to_string_lossy().into_owned();
-    let refused = crate::format::repr(&super::open_checked(&through_link, noted));
+    let refused = crate::format::repr(&super::open_checked(&through_link, noted, false));
     assert!(refused.contains("IoError"), "{refused}");
     // A path that names no file: SQLite makes none.
     let missing = folder.join("real").join("missing.db");
-    let refused = crate::format::repr(&super::open_checked(&missing.to_string_lossy(), noted));
+    let refused = crate::format::repr(&super::open_checked(&missing.to_string_lossy(), noted, false));
     assert!(refused.contains("IoError"), "{refused}");
     assert!(!missing.exists(), "SQLite made a file the narrowed Fs didn't");
     // By its own path, with no link in it, it opens.
-    let opened = super::open_checked(&file.to_string_lossy(), noted);
+    let opened = super::open_checked(&file.to_string_lossy(), noted, false);
     assert!(handle_of(&opened).is_ok(), "{}", crate::format::repr(&opened));
     let _ = std::fs::remove_dir_all(&folder);
 }
@@ -175,7 +175,7 @@ fn a_database_cant_attach_or_vacuum_into_another_file() -> Result<(), String> {
     let folder = std::env::temp_dir().join(format!("fennec-sqlite-reach-{}", std::process::id()));
     std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
     let file = |name: &str| folder.join(name).to_string_lossy().into_owned();
-    let db = handle_of(&super::open_file(&file("own.db")))?;
+    let db = handle_of(&super::open_file(&file("own.db"), false))?;
     assert_eq!(run(db, "_execute", &query("create table notes (n integer)", &[], &[]))?, "Ok(0)");
     assert_eq!(run(db, "_execute", &query("insert into notes values (?)", &[7], &[]))?, "Ok(1)");
     let attach = format!("attach database '{}' as other", file("other.db"));
@@ -221,14 +221,14 @@ fn the_attach_left_for_vacuum_reaches_no_file() -> Result<(), String> {
     // Each on a connection of its own, so the one attach a connection allows is still free, and
     // what refuses it is that it names something.
     for (at, (text, given)) in refused.iter().enumerate() {
-        let db = handle_of(&super::open_file(&file(&format!("own{at}.db"))))?;
+        let db = handle_of(&super::open_file(&file(&format!("own{at}.db")), false))?;
         let said = run(db, "_execute", &query(text, &[], given))?;
         assert!(said.contains("not authorized"), "{text}: {said}");
         assert_eq!(run(db, "_close", &[])?, "");
     }
     // Its own `ATTACH ''` is a database of no file, which makes none, and tables go only in the
     // database it opened, not in that one.
-    let db = handle_of(&super::open_file(&file("own.db")))?;
+    let db = handle_of(&super::open_file(&file("own.db"), false))?;
     assert_eq!(run(db, "_execute", &query("attach database '' as scratch", &[], &[]))?, "Ok(0)");
     let made = run(db, "_execute", &query("create table scratch.notes (n integer)", &[], &[]))?;
     assert!(made.contains("not authorized"), "{made}");
@@ -248,7 +248,7 @@ fn the_attach_left_for_vacuum_reaches_no_file() -> Result<(), String> {
 #[test]
 fn a_database_takes_only_the_actions_ordinary_queries_need() -> Result<(), String> {
     let mut fakes = Fakes::default();
-    let db = handle_of(&open_fake(&mut fakes, "only.db"))?;
+    let db = handle_of(&open_fake(&mut fakes, "only.db", false))?;
     let works = [
         "create table notes (n integer, text text)",
         "create index by_n on notes (n)",
@@ -302,7 +302,7 @@ fn a_database_takes_only_the_actions_ordinary_queries_need() -> Result<(), Strin
 #[test]
 fn a_view_and_a_trigger_in_main_work() -> Result<(), String> {
     let mut fakes = Fakes::default();
-    let db = handle_of(&open_fake(&mut fakes, "kept.db"))?;
+    let db = handle_of(&open_fake(&mut fakes, "kept.db", false))?;
     for text in [
         "create table notes (n integer)",
         "create table counted (n integer)",
@@ -330,8 +330,8 @@ fn a_view_and_a_trigger_in_main_work() -> Result<(), String> {
 #[test]
 fn each_test_s_databases_go_in_a_new_folder_of_its_own() -> Result<(), String> {
     let (mut first, mut second) = (Fakes::default(), Fakes::default());
-    handle_of(&open_fake(&mut first, "same.db"))?;
-    handle_of(&open_fake(&mut second, "same.db"))?;
+    handle_of(&open_fake(&mut first, "same.db", false))?;
+    handle_of(&open_fake(&mut second, "same.db", false))?;
     let (Some(one), Some(two)) = (first.folder.clone(), second.folder.clone()) else {
         return Err("a test opened a database with no folder for it".to_owned());
     };

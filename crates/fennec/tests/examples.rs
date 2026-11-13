@@ -68,6 +68,78 @@ fn a_run_checking_only_what_it_reaches_finds_the_same_mistakes() {
     assert!(compared > 200, "only {compared} error examples parsed, so only they were compared");
 }
 
+/// How many copies each benchmark kernel's run makes is what `bench/copies.txt` says, exactly:
+/// a count that goes up is a copy the code generator started making, as when a `Table`'s
+/// `for ref` copied every item, which no time measured on a busy machine would show for sure.
+/// One that goes down is lowered there. Each is built for release and run on one thread.
+#[test]
+fn benchmark_kernels_copy_what_was_pinned() {
+    if !crate::llvm::ready() {
+        return;
+    }
+    let bench = examples_dir().join("../bench");
+    let written = fs::read_to_string(bench.join("copies.txt")).unwrap();
+    let pinned: Vec<(String, u64)> = written
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .map(|line| {
+            let (kernel, count) = line.split_once(' ').unwrap();
+            (kernel.to_owned(), count.parse().unwrap())
+        })
+        .collect();
+    let dir = std::env::temp_dir().join(format!("fennec-kernel-copies-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let mut wrong = Vec::new();
+    let paths = programs(&bench.join("kernels")).unwrap();
+    for path in &paths {
+        let kernel = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let executable = dir.join(&kernel);
+        let built = crate::executables::fennec_command()
+            .args([
+                "build",
+                "--llvm",
+                "--release",
+                &path.to_string_lossy(),
+                "-o",
+                &executable.to_string_lossy(),
+            ])
+            .output()
+            .unwrap();
+        assert!(built.status.success(), "{kernel}: {}", String::from_utf8_lossy(&built.stderr));
+        let ran = std::process::Command::new(&executable)
+            .current_dir(&dir)
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", "1")
+            .output()
+            .unwrap();
+        assert!(ran.status.success(), "{kernel}: {}", String::from_utf8_lossy(&ran.stderr));
+        let said = String::from_utf8_lossy(&ran.stderr);
+        let copies: u64 = said
+            .lines()
+            .find_map(|line| line.strip_prefix("copies "))
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|count| count.parse().ok())
+            .unwrap_or_else(|| panic!("{kernel} didn't say what it copied: {said}"));
+        match pinned.iter().find(|(name, _)| *name == kernel) {
+            Some((_, count)) if copies == *count => {}
+            Some((_, count)) => wrong.push(format!("{kernel}: {copies} copies, the list says {count}")),
+            None => wrong.push(format!("{kernel}: {copies} copies, and it isn't on the list")),
+        }
+    }
+    fs::remove_dir_all(&dir).unwrap();
+    for (name, _) in &pinned {
+        if !paths.iter().any(|path| path.file_stem().is_some_and(|stem| stem == name.as_str())) {
+            wrong.push(format!("{name} is on the list, but isn't a kernel"));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "bench/copies.txt is out of date. A count that went up is a copy the native code started \
+         making; see `fennec dev copies --run`. One that went down should be lowered there:\n{}",
+        wrong.join("\n")
+    );
+}
+
 /// How many functions in each benchmark kernel LLVM doesn't take can only go down: a change that
 /// adds one fails here, and one that removes some lowers the count in `bench/fallbacks.txt`.
 #[test]

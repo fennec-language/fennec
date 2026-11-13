@@ -22,7 +22,7 @@ It does the three steps below in order, and stops at the first that fails, with 
    merge that conflicts is undone, so your branch is as it was: merge `main` yourself, resolve it,
    commit, and run it again.
 2. It runs the gate, `.github/scripts/gate.sh`. That checks formatting, runs clippy, checks that the workspace and its tests
-   compile on Linux with every warning an error, in a Linux container through `docker`, runs every test and
+   compile on Linux with every warning an error, in a Linux container in Fennec's own VM (below), and for Windows, with MinGW-w64's C compiler (`brew install mingw-w64`), runs every test and
    every example and kit, and builds every example as x86-64 under Rosetta. It stops at the first failure and
    prints that step's output. A test program that uses more than a minute of CPU, runs for ten minutes or holds
    more than 4 GB is stopped, and the gate says which. A busy machine can't stop one that isn't stuck. It takes four to five minutes when the build is warm.
@@ -31,6 +31,27 @@ It does the three steps below in order, and stops at the first that fails, with 
 
 Say in the text that the gate passed, and what you measured. Don't open a pull request by joining these
 steps by hand in one command: a failed merge or gate goes unnoticed that way, and has more than once.
+
+## The Linux VM
+
+The gate's Linux check runs in a Linux VM of Fennec's own: the colima profile `fennec`, whose Docker context is `colima-fennec`. Nothing in Fennec uses Docker's default context, which on a shared Mac can be another project's VM.
+
+- **Make it,** once, with 4 CPUs, 8 GB of memory and 40 GB of disk, without making it Docker's context:
+
+  ```bash
+  colima start fennec --cpu 4 --memory 8 --disk 40 --activate=false
+  ```
+
+- **Day to day, nothing to do.** The check starts the VM when it needs it, which the step's time includes, and stops it after 30 minutes with no check. One check runs at a time, whichever worktree's gate starts it.
+- **Its disk.** Every worktree shares one target volume and one of fetched crates. Past 75% of the disk, the check removes its `fennec-` volumes and builds them again.
+- **Without it,** where there's no profile, it won't start, or its disk is full, the step warns that the Linux check is unavailable and the gate goes on. CI's Linux jobs still check.
+- **Remove it,** with everything in it:
+
+  ```bash
+  colima delete fennec
+  ```
+
+- **Make it again** with `colima start` as above. The check builds its volumes again the first time, in about 70 s.
 
 ## Flakes
 

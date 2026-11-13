@@ -352,6 +352,15 @@ pub(crate) fn emit_with(
     Ok((units, shared, layouts))
 }
 
+/// Whether a function only hands its work on: one block, a few instructions, and one call, to
+/// another function. Inlined where it's called, it costs nothing, and what it calls is reached
+/// with one call fewer, as `field(name, x)` reaches `x.serialize(ref self)`.
+fn forwards(function: &Function) -> bool {
+    let [block] = function.blocks.as_slice() else { return false };
+    let calls = block.insts.iter().filter(|inst| matches!(inst.kind, InstKind::Call { .. })).count();
+    block.insts.len() <= 4 && calls == 1 && callees(function).all(|name| name != function.name)
+}
+
 fn size(function: &Function) -> usize {
     function.blocks.iter().map(|block| block.insts.len() + 1).sum()
 }
@@ -468,7 +477,7 @@ fn unit<'p>(
     }
     let recursive = size(function) <= SELF_INLINED && callees(function).any(|name| name == function.name);
     let inlined = format!("@\"f_{}$inl\"", function.name);
-    let small = size(function) <= ALWAYS_INLINE && callees(function).next().is_none();
+    let small = (size(function) <= ALWAYS_INLINE && callees(function).next().is_none()) || forwards(function);
     module.define(
         function,
         &Definition {
@@ -954,7 +963,11 @@ impl Emit<'_, '_, '_> {
         if self.keeps_its_value() {
             self.give_back_what_it_kept();
         }
-        if function.name == "main" && self.module.threads {
+        // A test runs as a program's `main` does, so in a program that uses `parallel` it works out
+        // the constants first too: a task it launches only reads them then. Worked out first in a
+        // task instead, a constant's block stayed on that task's worker, where the test couldn't
+        // find it.
+        if (function.name == "main" || is_test(&function.name)) && self.module.threads {
             self.work_out_constants()?;
         }
         let kinds = self.kinds.clone();
@@ -1615,6 +1628,35 @@ impl Emit<'_, '_, '_> {
     /// In a build that checks proofs, ends the program if `broken` is true, as `proof_held` does,
     /// but through a call LLVM copies in, so the block this is in carries on: for a fact checked
     /// where what comes after leans on the block it's written in, like a phi.
+    /// In a build that checks proofs, that an item copied out and put back at `at` goes back
+    /// where it was taken from: the place still holds what was taken, which the local it was
+    /// first read into still has. A put back anywhere else would leave that block with no owner.
+    /// For a struct kept in place, the place still holds the words that were copied out.
+    pub(crate) fn proof_goes_back(&mut self, value: &Operand, at: &str) {
+        if !self.checks_proofs() {
+            return;
+        }
+        let Operand::Local(item) = value else { return };
+        let Some(read) = self.known.put_back_read(*item) else { return };
+        let Ok(kind) = self.kind_of(read).cloned() else { return };
+        let slot = self.slot(read);
+        let words = if kind.in_memory() { kind.size(self.module.layouts) / 8 } else { 1 };
+        let mut elsewhere = "false".to_owned();
+        for word in 0..words {
+            let (there_at, taken_at, there, taken, differs, either) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{there_at} = getelementptr inbounds i64, ptr {at}, i64 {word}"));
+            self.line(&format!("{taken_at} = getelementptr inbounds i64, ptr {slot}, i64 {word}"));
+            self.line(&format!("{there} = load i64, ptr {there_at}"));
+            self.line(&format!("{taken} = load i64, ptr {taken_at}"));
+            self.line(&format!("{differs} = icmp ne i64 {there}, {taken}"));
+            self.line(&format!("{either} = or i1 {elsewhere}, {differs}"));
+            elsewhere = either;
+        }
+        let span = self.here_span();
+        self.proof_held(&elsewhere, "an item copied out goes back to the place it was taken from", span);
+    }
+
     pub(crate) fn proof_held_here(&mut self, broken: &str, proof: &str, span: Span) {
         let text = self.proof_text(proof);
         let here = self.label("proof_at");
@@ -2534,6 +2576,20 @@ impl Emit<'_, '_, '_> {
         if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
             return self.header_isdigit(dest, text);
         }
+        // `int.parse(text)` and `float.parse(text)` are `int(text)?` and `float(text)?` given back:
+        // the result is made where the caller keeps it, rather than made, read and made again.
+        if let ("int.parse" | "float.parse", Some(dest), [text @ Operand::Local(held)]) = (name, dest, args)
+            && self.function.locals.get(held.0).is_some_and(|local| local.ty == fennec_check::Type::Str)
+            && self.kind_of(dest).is_ok_and(|kind| self.case_of(&kind.clone(), "Ok").is_ok())
+        {
+            let number = if name == "int.parse" { "int" } else { "float" };
+            return self.number_of_text(dest, number, text);
+        }
+        if let ("str.startswith" | "str.endswith", Some(dest), [text, part], true) =
+            (name, dest, args, self.headers())
+        {
+            return self.header_affix(dest, (text, part), name == "str.endswith");
+        }
         // What `fennec test` calls before each input of a property test with capabilities: a new
         // world of fakes, with nothing left by the input before.
         if name == "test:world" && args.is_empty() {
@@ -2972,8 +3028,11 @@ impl Emit<'_, '_, '_> {
             }
             return self.assign_memory(dest, &held, "");
         }
-        // A borrowing local takes no owner, so its copy needs none either.
-        if kind.counted() && !self.known.is_borrowed(dest) {
+        // A borrowing local takes no owner, so its copy needs none either. Nor does an item taken
+        // out, handed from the local that took it to the name it's changed under.
+        let handed_over =
+            self.known.is_taken(dest) && matches!(value, Operand::Local(from) if self.known.is_taken(*from));
+        if kind.counted() && !self.known.is_borrowed(dest) && !handed_over {
             match value {
                 Operand::Local(from)
                     if self.owns(*from)
@@ -4189,6 +4248,22 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A function that only hands its work on to another, as a serializer's `field` hands `x` to
+    /// its `serialize`, is inlined wherever it's called, so what it calls is reached with one call
+    /// fewer. One that calls itself, or does more, isn't made to be.
+    #[test]
+    fn a_function_that_only_forwards_is_inlined() -> Result<(), String> {
+        let source = "def work(n: int) -> int:\n    mut total = 0\n    for i in range(n):\n        total += i * n\n    return total\n\n\
+                      def forward(n: int) -> int:\n    return work(n)\n\n\
+                      def more(n: int) -> int:\n    a = work(n)\n    b = work(a)\n    return a + b\n\n\
+                      def main(stdout: Stdout):\n    stdout.print(forward(3), more(2))\n";
+        let forward = text_of(source, "forward")?;
+        assert!(forward.contains("@\"f_forward\"(") && forward.contains(") #2 {"), "{forward}");
+        let more = text_of(source, "more")?;
+        assert!(more.contains("@\"f_more\"(") && !more.contains("@\"f_more\"(i64 %p0) #2 {"), "{more}");
+        Ok(())
+    }
+
     #[test]
     fn a_loop_count_needs_no_overflow_check() -> Result<(), String> {
         let source = "def main(stdout: Stdout):\n    for i in range(3):\n        stdout.print(i)\n";
@@ -4227,6 +4302,14 @@ def main(stdout: Stdout):
 fn written_in_std(function: &Function) -> bool {
     let mut spans = function.blocks.iter().flat_map(|block| &block.insts).map(|inst| inst.span);
     spans.find(|span| *span != Span::default()).is_some_and(Span::in_prelude)
+}
+
+/// Whether a function is one `fennec test` makes for a test, named `test:` and its number, or for
+/// an attempt of a property test's shrinking.
+fn is_test(name: &str) -> bool {
+    name.strip_prefix("test:")
+        .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+        || is_attempt(name)
 }
 
 /// Whether a function is one `fennec test` makes for an attempt of a property test's shrinking,

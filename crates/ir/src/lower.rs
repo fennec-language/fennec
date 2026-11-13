@@ -439,6 +439,92 @@ struct Lowering<'a> {
     retyped: Vec<(Span, Type)>,
 }
 
+/// The name a place is reached from: `text` for `text`, `self` for `self._text` or `self.parts[0]`.
+fn root_name(target: &Expr) -> Option<&str> {
+    match &target.kind {
+        ExprKind::Name(name) => Some(name),
+        ExprKind::Attr { object, optional: false, .. } | ExprKind::Index { object, .. } => root_name(object),
+        _ => None,
+    }
+}
+
+/// The pieces of `a + b + c`, left to right.
+fn added_pieces(value: &Expr) -> Vec<Expr> {
+    match &value.kind {
+        ExprKind::Binary { op: BinOp::Add, lhs, rhs } => {
+            let mut pieces = added_pieces(lhs);
+            pieces.push((**rhs).clone());
+            pieces
+        }
+        _ => vec![value.clone()],
+    }
+}
+
+/// Whether an expression can leave the function partway, by a `?` anywhere in it. A piece after
+/// the first that can isn't split off, since the pieces before it would be added already, and
+/// `text += "," + f()?` failing must leave the text as it was.
+fn leaves_early(piece: &Expr) -> bool {
+    let mut found = matches!(&piece.kind, ExprKind::Try { .. });
+    let mut looked = piece.clone();
+    fennec_syntax::visit::in_expr(&mut looked, &mut |inner| {
+        found |= matches!(&inner.kind, ExprKind::Try { .. });
+    });
+    found
+}
+
+/// Whether an expression reads a name anywhere in it.
+fn mentions(piece: &Expr, name: &str) -> bool {
+    let mut found = matches!(&piece.kind, ExprKind::Name(held) if held == name);
+    let mut looked = piece.clone();
+    fennec_syntax::visit::in_expr(&mut looked, &mut |inner| {
+        found |= matches!(&inner.kind, ExprKind::Name(held) if held == name);
+    });
+    found
+}
+
+/// What `name = value` adds to `name`'s text, in order, when `value` is `name + a + b ...` or an
+/// f-string that starts with `name` as it is: the pieces, or the rest of the f-string. Each is
+/// worked out after the ones before it, as the whole would be.
+fn grown_by(name: &str, value: &Expr) -> Option<Vec<Expr>> {
+    let pieces = pieces_grown_by(name, value)?;
+    // A piece after the first that reads the text itself would see it grown by the ones before.
+    (!pieces.iter().skip(1).any(|piece| mentions(piece, name) || leaves_early(piece))).then_some(pieces)
+}
+
+fn pieces_grown_by(name: &str, value: &Expr) -> Option<Vec<Expr>> {
+    match &value.kind {
+        ExprKind::Binary { op: BinOp::Add, lhs, rhs } => {
+            if matches!(&lhs.kind, ExprKind::Name(held) if held == name) {
+                return Some(vec![(**rhs).clone()]);
+            }
+            let mut pieces = grown_by_adding(name, lhs)?;
+            pieces.push((**rhs).clone());
+            Some(pieces)
+        }
+        ExprKind::FStr(parts) => match parts.split_first() {
+            Some((fennec_syntax::FStrPart::Expr { expr, spec: None }, rest))
+                if !rest.is_empty() && matches!(&expr.kind, ExprKind::Name(held) if held == name) =>
+            {
+                Some(vec![Expr { kind: ExprKind::FStr(rest.to_vec()), span: value.span }])
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The pieces of `name + a + b ...` after `name`, when that's what it is.
+fn grown_by_adding(name: &str, value: &Expr) -> Option<Vec<Expr>> {
+    let ExprKind::Binary { op: BinOp::Add, lhs, rhs } = &value.kind else { return None };
+    let mut pieces = if matches!(&lhs.kind, ExprKind::Name(held) if held == name) {
+        Vec::new()
+    } else {
+        grown_by_adding(name, lhs)?
+    };
+    pieces.push((**rhs).clone());
+    Some(pieces)
+}
+
 impl<'a> Lowering<'a> {
     fn new(
         instance: &generics::FunctionInstance,
@@ -763,10 +849,43 @@ impl<'a> Lowering<'a> {
         if op.is_none() && !declares && self.replaces_its_source(target, value, span)? {
             return Ok(());
         }
+        // `text = text + piece` and `text = f"{text}..."` make the same text `text += ...` does,
+        // so they're that: the text grows where it is, rather than being copied into a new one.
+        if op.is_none()
+            && !declares
+            && let ExprKind::Name(name) = &target.kind
+            && self.lookup(name).is_some_and(|held| self.local_type(held) == Type::Str)
+            && let Some(pieces) = grown_by(name, value)
+        {
+            for piece in &pieces {
+                self.assign(target, (Some(BinOp::Add), false), piece, span)?;
+            }
+            return Ok(());
+        }
+        // `text += a + b + c` adds each piece in turn, as `text += a`, `text += b`, `text += c`,
+        // with no texts made to join first. A piece that reads what the target is reached from
+        // isn't split off, since it would see the text grown already, and nor is one that can
+        // fail with `?`, since the pieces before it would be added already.
+        if op == Some(BinOp::Add)
+            && let Some(root) = root_name(target)
+            && self.type_at(target.span) == Some(Type::Str)
+            && let ExprKind::Binary { op: BinOp::Add, .. } = &value.kind
+        {
+            let pieces = added_pieces(value);
+            if pieces.iter().all(|piece| self.type_at(piece.span) == Some(Type::Str))
+                && !pieces.iter().any(|piece| mentions(piece, root))
+                && !pieces.iter().skip(1).any(leaves_early)
+            {
+                for piece in &pieces {
+                    self.assign(target, (Some(BinOp::Add), false), piece, span)?;
+                }
+                return Ok(());
+            }
+        }
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_place(target, op, value, span);
         };
-        // `_ = save(path) else as why:` keeps nothing, and what gives nothing is only run.
+        // `_ = save(path) except why:` keeps nothing, and what gives nothing is only run.
         let discarded =
             name.strip_prefix('_').is_some_and(|rest| rest.starts_with(fennec_syntax::visit::HIDDEN));
         if discarded && op.is_none() && self.type_at(value.span) == Some(Type::Unit) {
@@ -882,7 +1001,7 @@ impl<'a> Lowering<'a> {
         if let ExprKind::Try { value, context } = &expr.kind {
             return self.try_value(value, context.as_deref(), expr.span).map(|_| ());
         }
-        // `conn.write(line) else: continue`: what fails gives nothing back when it doesn't.
+        // `conn.write(line) except IoError(): continue`: what fails gives nothing back otherwise.
         if let ExprKind::Else { value, default, .. } = &expr.kind
             && self.type_at(expr.span) == Some(Type::Unit)
         {

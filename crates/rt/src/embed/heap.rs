@@ -597,7 +597,8 @@ impl Heap {
             Some(mut block) => {
                 self.spare_words -= block.len();
                 match block.get_mut(written..) {
-                    Some(rest) if written > 0 => rest.fill(0),
+                    // What's left after what's written is a few words, mostly, for plain stores.
+                    Some(rest) if written > 0 => zero(rest),
                     _ => zero(&mut block),
                 }
                 block
@@ -943,10 +944,14 @@ impl Heap {
     pub(super) fn take_plain_list(&mut self, at: usize, first_list: u64) -> Option<Box<[u64]>> {
         let empty_items = &self.empty_items;
         self.blocks.take_if(at, |block| {
+            // A list of a kind whose items hold nothing, or one with no items at all, as a list
+            // made empty and never added to is. Only a kind of list's shape is looked at: past
+            // them are other blocks, like cells, whose third word means something else.
             !is_handle_block(block)
                 && shape_word(block)
                     .and_then(|shape| usize::try_from(shape.checked_sub(first_list)?).ok())
-                    .is_some_and(|number| empty_items.get(number).copied().unwrap_or(false))
+                    .and_then(|number| empty_items.get(number))
+                    .is_some_and(|empty| *empty || block.get(2) == Some(&0))
         })
     }
 

@@ -1,0 +1,15 @@
+# `line.split(" ")` of a request line into its 3 parts, done OPS times on inputs that vary.
+# `fennec-bench ops` counts its instructions per operation beside its Rust twin's.
+
+OPS = 20_000
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    lines = [f"GET /users/{i} HTTP/1.1" for i in range(shift, shift + 16)]
+    mut total = 0
+    for at in range(OPS):
+        parts = lines[(at + shift) % 16].split(" ")
+        total += len(parts) + len(parts[1])
+    stdout.print(total)
+    return

@@ -145,22 +145,14 @@ pub(super) fn texts(state: &State, words: &[u64]) -> Vec<String> {
     words.as_chunks::<3>().0.iter().map(|header| text_of(state, header)).collect()
 }
 
-/// Whether a byte of UTF-8 carries on a character begun before it.
-fn is_continuation(byte: u8) -> bool {
-    byte & 0xC0 == 0x80
-}
-
 /// `fennec_text_block(a, b, c)`: a string's block, owned once, for the runtime's string calls,
 /// which take blocks. An inline string is copied into a new block; a string in a block gives
 /// that block, with one more owner.
 pub extern "C" fn block(a: u64, b: u64, c: u64) -> i64 {
     let words = [a, b, c];
     super::made_with("fennec_text_block", |state| {
-        if let Some(bytes) = inline_bytes(&words) {
-            // A header's bytes are a string's, already UTF-8, so its characters are its bytes
-            // that don't carry on one before them.
-            let chars = bytes.iter().filter(|byte| !is_continuation(**byte)).count();
-            return text_from_bytes(state, &bytes, chars);
+        if tag(&words) & INLINE != 0 {
+            return block_of_inline(state, &words);
         }
         let address = block_of(&words).unwrap_or(0);
         retain(state, address);
@@ -168,8 +160,61 @@ pub extern "C" fn block(a: u64, b: u64, c: u64) -> i64 {
     })
 }
 
+/// A header's bytes where they are, as `bytes_of` gives them, and how many characters they make:
+/// a block keeps its count, and an inline header's are its bytes that don't carry on one before
+/// them, as its bytes are a string's, already UTF-8.
+pub(super) fn measured<'a>(state: &'a State, words: &'a [u64; 3]) -> (&'a [u64], usize, u64) {
+    let (bytes, length) = bytes_of(state, words);
+    let chars = if let Some(address) = block_of(words) {
+        state.heap.block(address).and_then(|block| block.get(3)).copied().unwrap_or(0)
+    } else {
+        let packed = bytes.iter().flat_map(|word| word.to_le_bytes()).take(length);
+        u64::try_from(packed.filter(|byte| byte & 0xC0 != 0x80).count()).unwrap_or(0)
+    };
+    (bytes, length, chars)
+}
+
+/// A new block owned once holding an inline header's text, its words copied across whole and its
+/// characters counted eight bytes at a time: a header's bytes are a string's, already UTF-8, so its
+/// characters are its bytes that don't carry on one before them. One ASCII character is the block
+/// every such string shares.
+fn block_of_inline(state: &mut State, words: &[u64; 3]) -> i64 {
+    let length = usize::from(tag(words) & !INLINE).min(INLINE_BYTES);
+    let [first, ..] = *words;
+    if length == 1
+        && let Some(address) =
+            usize::try_from(first & 0xff).ok().and_then(|byte| state.tables.ascii.get(byte))
+    {
+        return i64::try_from(*address).unwrap_or(0);
+    }
+    let chars = super::strings::chars_before(words, length);
+    let used = length.div_ceil(8);
+    let room = used.max(1);
+    // The header and each word with bytes in it are written here, and only an empty string's one
+    // word is left to be zero.
+    let mut block = state.heap.fresh_written(TEXT_HEADER_WORDS + room, TEXT_HEADER_WORDS + used);
+    let number = |n: usize| u64::try_from(n).unwrap_or(0);
+    let header = [1, state.tables.str_shape, number(length), number(chars), number(room * 8), 0];
+    if let Some(start) = block.get_mut(..TEXT_HEADER_WORDS) {
+        start.copy_from_slice(&header);
+    }
+    if let Some(text) = block.get_mut(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + used)
+        && let Some(from) = words.get(..used)
+    {
+        text.copy_from_slice(from);
+        // Past the last byte, the tag among them, is zero, as native code compares words whole.
+        let tail = u32::try_from(length % 8 * 8).unwrap_or(0);
+        if tail > 0
+            && let Some(last) = text.last_mut()
+        {
+            *last &= u64::MAX >> (64 - tail);
+        }
+    }
+    state.heap.insert(block)
+}
+
 /// A header's bytes where they are: in its own words when it's inline, and in its block otherwise.
-fn bytes_of<'a>(state: &'a State, words: &'a [u64; 3]) -> (&'a [u64], usize) {
+pub(super) fn bytes_of<'a>(state: &'a State, words: &'a [u64; 3]) -> (&'a [u64], usize) {
     match block_of(words) {
         Some(address) => super::strings::bytes_in_block(state, address.cast_signed()),
         None => (&words[..], usize::from(tag(words) & !INLINE).min(INLINE_BYTES)),
@@ -183,6 +228,60 @@ pub extern "C" fn contains(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u64)
         let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
         i8::from(super::strings::bytes_contain(bytes_of(state, &text), bytes_of(state, &part)))
     })
+}
+
+/// A header's bytes, copied out.
+fn bytes_vec(state: &State, words: &[u64; 3]) -> Vec<u8> {
+    let (words, length) = bytes_of(state, words);
+    words.iter().flat_map(|word| word.to_le_bytes()).take(length).collect()
+}
+
+/// How many characters a header's text has: a block keeps its count, and an inline header's are
+/// its bytes that don't carry on one before them, as its bytes are a string's, already UTF-8.
+fn chars_of(state: &State, words: &[u64; 3]) -> u64 {
+    if let Some(address) = block_of(words) {
+        return state.heap.block(address).and_then(|block| block.get(3)).copied().unwrap_or(0);
+    }
+    let count = bytes_vec(state, words).iter().filter(|byte| **byte & 0xC0 != 0x80).count();
+    u64::try_from(count).unwrap_or(0)
+}
+
+/// `fennec_str_append_header(text, piece)`: `text += piece` for a piece given as its header, inline
+/// or holding a block, so native code needn't make an inline piece a block first. It takes over
+/// the owner `text` had and gives back the joined string's, as `fennec_str_append` does; the piece
+/// is only read.
+pub extern "C" fn append_header(text: i64, h0: u64, h1: u64, h2: u64) -> i64 {
+    super::made_with("fennec_str_append_header", |state| {
+        let piece = [h0, h1, h2];
+        let chars = chars_of(state, &piece);
+        // Copied first: `text += text` reads the block it writes.
+        let mut copied = std::mem::take(&mut state.heap.scratch);
+        copied.clear();
+        let (words, length) = bytes_of(state, &piece);
+        copied.extend_from_slice(words.get(..length.div_ceil(8)).unwrap_or_default());
+        let grown = super::strings::grow_by(state, text, &copied, length, chars);
+        state.heap.scratch = copied;
+        grown.unwrap_or(text)
+    })
+}
+
+/// `fennec_str_find_header(text, part)`: `text.find(part)` for two headers, which character `part`
+/// first starts at, or -1 when it isn't there, looked for where both are, as `find` does.
+pub extern "C" fn find_header(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u64) -> i64 {
+    with(|state| {
+        let (text, part) = ([t0, t1, t2], [p0, p1, p2]);
+        super::strings::find_in(bytes_of(state, &text), bytes_of(state, &part))
+    })
+}
+
+/// `fennec_text_starts_with(text, part)`: `text.startswith(part)` for two headers.
+pub extern "C" fn starts_with(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u64) -> i8 {
+    with(|state| i8::from(bytes_vec(state, &[t0, t1, t2]).starts_with(&bytes_vec(state, &[p0, p1, p2]))))
+}
+
+/// `fennec_text_ends_with(text, part)`: `text.endswith(part)` for two headers.
+pub extern "C" fn ends_with(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u64) -> i8 {
+    with(|state| i8::from(bytes_vec(state, &[t0, t1, t2]).ends_with(&bytes_vec(state, &[p0, p1, p2]))))
 }
 
 /// `fennec_text_of(address)`: the header of a string's block, taking over the owner given.
@@ -764,6 +863,152 @@ mod tests {
         // Nothing past an inline string's bytes counts, like the tag in its last byte.
         assert!(!found(short, super::inline(b"\0")));
         assert_eq!(live(), before + 1);
+        finish();
+    }
+
+    /// Joining a list of headers, inline and in blocks, wide characters too, gives what Rust's own
+    /// join gives, with the characters counted, and one ASCII character is the block every such
+    /// string shares.
+    #[test]
+    fn a_join_of_headers_gives_what_rusts_own_gives() {
+        begin();
+        super::super::aot::ascii();
+        let long = "a line long enough to need a block of its own";
+        let parts =
+            ["", "a", "\u{e9}t\u{e9}", long, "twenty-three bytes long", "\u{65e5}\u{1f98a} and more of it"];
+        for separator in ["", "\n", ", ", "\u{2014}"] {
+            let between = with(|state| heap::text_address(state, separator));
+            for count in 0..=parts.len() {
+                let chosen: Vec<&str> = parts.iter().cycle().skip(count).take(count).copied().collect();
+                let list = lists::new(0, i64::try_from(chosen.len()).unwrap());
+                with(|state| {
+                    for (at, part) in chosen.iter().enumerate() {
+                        let words = super::header(state, part);
+                        let block = state.heap.block_mut(list.cast_unsigned()).unwrap();
+                        let start = lists::LIST_HEADER_WORDS + 3 * at;
+                        block.get_mut(start..start + 3).unwrap().copy_from_slice(&words);
+                    }
+                });
+                let joined = strings::join(between, list);
+                let whole = chosen.join(separator);
+                with(|state| {
+                    let block = state.heap.block(joined.cast_unsigned()).unwrap();
+                    assert_eq!(heap::block_text(block), whole, "{chosen:?} by {separator:?}");
+                    assert_eq!(block.get(3).copied(), Some(u64::try_from(whole.chars().count()).unwrap()));
+                });
+                heap::free(list);
+                // Let go of as native code does, which leaves the block a lone ASCII character shares.
+                with(|state| heap::release(state, joined.cast_unsigned()));
+            }
+            with(|state| heap::release(state, between.cast_unsigned()));
+        }
+        let one = lists::new(0, 1);
+        with(|state| {
+            let words = super::header(state, "x");
+            let block = state.heap.block_mut(one.cast_unsigned()).unwrap();
+            block
+                .get_mut(lists::LIST_HEADER_WORDS..lists::LIST_HEADER_WORDS + 3)
+                .unwrap()
+                .copy_from_slice(&words);
+        });
+        let empty = with(|state| heap::text_address(state, ""));
+        let x = with(|state| heap::text_address(state, "x"));
+        assert_eq!(strings::join(empty, one), x);
+        finish();
+    }
+
+    /// A list of strings with no items, and a dict of strings with no entries used, hold nothing,
+    /// so freeing them walks nothing: one made empty, one emptied after holding strings in blocks
+    /// of their own, and a dict whose only key was taken out again all free what they held once,
+    /// and leave nothing behind.
+    #[test]
+    fn empty_lists_and_dicts_of_strings_free_whole_without_a_walk() {
+        use super::super::dicts;
+        begin();
+        let before = live();
+        heap::free(lists::new(0, 0));
+        let emptied = lists::new(0, 2);
+        with(|state| {
+            for at in 0..2 {
+                let header = super::header(state, "a string too long to be held in a header");
+                let block = state.heap.block_mut(emptied.cast_unsigned()).unwrap();
+                let start = lists::LIST_HEADER_WORDS + 3 * at;
+                block.get_mut(start..start + 3).unwrap().copy_from_slice(&header);
+            }
+        });
+        assert_eq!(live(), before + 3);
+        let emptied = lists::truncate(emptied, 0);
+        assert_eq!(live(), before + 1, "the strings went as it was emptied");
+        heap::free(emptied);
+        assert_eq!(live(), before);
+        let shape = i64::try_from(dicts::shape(0, dicts::Word::Str, dicts::Word::Int).unwrap()).unwrap();
+        heap::free(dicts::new(shape, 0));
+        let long = header("a key much longer than any header");
+        let mut dict = dicts::set_header(dicts::new(shape, 0), long[0], long[1], long[2], 1);
+        dict = dicts::pop_header(dict, long[0], long[1], long[2], 0, 0);
+        assert_eq!(dicts::popped(), 1);
+        heap::free(dict);
+        assert_eq!(live(), before);
+        finish();
+    }
+
+    /// `+=`, `find`, `startswith` and `endswith` given their pieces as headers, inline or holding a
+    /// block, do what Rust's own do, characters counted, and `text += text` through its own block's
+    /// header reads what it had before it grew.
+    #[test]
+    fn text_calls_given_headers_do_what_rusts_own_do() {
+        begin();
+        let before = live();
+        let long = "a piece long enough to need a block of its own";
+        let mut text = with(|state| heap::text_address(state, "ab"));
+        let mut expected = String::from("ab");
+        for piece in ["", "c", "\u{e9}t\u{e9}", long, "twenty-three bytes long", "\u{65e5}\u{1f98a}"] {
+            let piece_header = header(piece);
+            let [h0, h1, h2] = piece_header;
+            text = super::append_header(text, h0, h1, h2);
+            expected.push_str(piece);
+            // The piece is only read, so a block it holds is still the test's to let go of.
+            if let Some(address) = block_of(&piece_header) {
+                heap::free_text(address.cast_signed());
+            }
+            with(|state| {
+                let block = state.heap.block(text.cast_unsigned()).unwrap();
+                assert_eq!(heap::block_text(block), expected);
+                assert_eq!(block.get(3).copied(), Some(u64::try_from(expected.chars().count()).unwrap()));
+            });
+        }
+        // Its own block's header: what it had, added once.
+        let length = u64::try_from(expected.len()).unwrap();
+        text = super::append_header(text, text.cast_unsigned(), length, 0);
+        expected = expected.repeat(2);
+        with(|state| assert_eq!(heap::block_text(state.heap.block(text.cast_unsigned()).unwrap()), expected));
+        let whole = header("caf\u{e9} au lait, \u{e9}t\u{e9} long enough for a block");
+        let [t0, t1, t2] = whole;
+        for (part, at, starts, ends) in [
+            ("caf", 0, true, false),
+            ("\u{e9}t\u{e9}", 14, false, false),
+            ("for a block", 30, false, true),
+            ("absent", -1, false, false),
+            ("", 0, true, true),
+        ] {
+            let [p0, p1, p2] = header(part);
+            assert_eq!(super::find_header(t0, t1, t2, p0, p1, p2), at, "{part:?}");
+            assert_eq!(super::starts_with(t0, t1, t2, p0, p1, p2), i8::from(starts), "{part:?}");
+            assert_eq!(super::ends_with(t0, t1, t2, p0, p1, p2), i8::from(ends), "{part:?}");
+        }
+        // An inline text, its bytes in the header itself, with its tag after them never matched.
+        let [i0, i1, i2] = header("Host: \u{e9}x.com");
+        for (part, at) in
+            [(": ", 4), ("\u{e9}x", 6), ("x.com", 7), ("com\u{80}", -1), ("Host: \u{e9}x.com!", -1)]
+        {
+            let [p0, p1, p2] = header(part);
+            assert_eq!(super::find_header(i0, i1, i2, p0, p1, p2), at, "{part:?}");
+        }
+        heap::free_text(text);
+        if let Some(address) = block_of(&whole) {
+            heap::free_text(address.cast_signed());
+        }
+        assert_eq!(live(), before);
         finish();
     }
 

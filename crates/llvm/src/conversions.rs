@@ -313,7 +313,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `int(text)` or `float(text)`: `Ok` with the number, or `Err` with an `InvalidValue`.
-    fn number_of_text(&mut self, dest: LocalId, name: &str, text: &Operand) -> Result<(), String> {
+    pub(crate) fn number_of_text(&mut self, dest: LocalId, name: &str, text: &Operand) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
         let (ok_case, ok_fields) = self.case_of(&kind, "Ok")?;
         let (err_case, err_fields) = self.case_of(&kind, "Err")?;
@@ -321,12 +321,6 @@ impl Emit<'_, '_, '_> {
         let (_, err_offset, err_kind) = err_fields.first().cloned().ok_or("an `Err` holding nothing")?;
         let err_kind = err_kind.ok_or("an error this backend doesn't take yet")?;
         let (value, _) = self.operand(text)?;
-        let (block, made) = if self.headers() {
-            let (block, made) = self.text_block(&value);
-            (block, Some(made))
-        } else {
-            (value, None)
-        };
         let boxed = if let Kind::Boxed(id) = kind { Some(self.new_block(id)?) } else { None };
         let base = if let Some(boxed) = &boxed {
             self.offset(boxed, crate::lists::FIELDS_OFFSET)
@@ -336,6 +330,29 @@ impl Emit<'_, '_, '_> {
             let zero = self.zero_line(&kind, &slot);
             self.line(&zero);
             slot
+        };
+        // A short int written plainly is read where its header holds it, with no block made for
+        // it and no call. Anything else goes to the runtime, which says what's wrong with it.
+        let quick_end = if name == "int" && self.headers() {
+            let (read, number) = self.plain_inline_int(&value);
+            let (quick, slow, end) =
+                (self.label("plain_int"), self.label("other_int"), self.label("int_read"));
+            self.line(&format!("br i1 {read}, label %{quick}, label %{slow}"));
+            self.start_block(&quick);
+            self.line(&format!("store i64 {ok_case}, ptr {base}"));
+            let number_at = self.offset(&base, ok_offset);
+            self.line(&format!("store i64 {number}, ptr {number_at}"));
+            self.line(&format!("br label %{end}"));
+            self.start_block(&slow);
+            Some(end)
+        } else {
+            None
+        };
+        let (block, made) = if self.headers() {
+            let (block, made) = self.text_block(&value);
+            (block, Some(made))
+        } else {
+            (value, None)
         };
         let function = if name == "int" { "fennec_parse_int" } else { "fennec_parse_float" };
         self.declare(&format!("declare i64 @{function}(ptr, ptr) nounwind"));
@@ -365,10 +382,77 @@ impl Emit<'_, '_, '_> {
         if let Some(made) = made {
             self.let_go_text_block(&block, &made);
         }
+        if let Some(end) = quick_end {
+            self.line(&format!("br label %{end}"));
+            self.start_block(&end);
+        }
         if let Some(boxed) = boxed {
             self.assign(dest, &boxed)?;
         }
         Ok(())
+    }
+
+    /// Whether an inline header holds an int written plainly, an optional `-` and 1 to 18 ASCII
+    /// digits, and the int. That's too few digits to overflow, and the runtime reads each such
+    /// text as the same int, so whatever's read here is what it would read.
+    fn plain_inline_int(&mut self, header: &str) -> (String, String) {
+        let in_block = self.header_in_block(header);
+        let length = self.inline_length(header);
+        let place = self.place_for_text();
+        self.line(&format!("store {} {header}, ptr {place}", crate::headers::HEADER));
+        let (first, negative, start, digits) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{first} = load i8, ptr {place}"));
+        self.line(&format!("{negative} = icmp eq i8 {first}, 45"));
+        self.line(&format!("{start} = zext i1 {negative} to i64"));
+        self.line(&format!("{digits} = sub i64 {length}, {start}"));
+        // 1 to 18 digits: one less than 19, unsigned, so none is a huge one.
+        let (less, few, inline, fits) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{less} = sub i64 {digits}, 1"));
+        self.line(&format!("{few} = icmp ult i64 {less}, 18"));
+        self.line(&format!("{inline} = xor i1 {in_block}, true"));
+        self.line(&format!("{fits} = and i1 {inline}, {few}"));
+        let entry = self.current.clone();
+        let (next, digit, done, other, read) = (
+            self.label("int_digits"),
+            self.label("int_digit"),
+            self.label("int_done"),
+            self.label("int_other"),
+            self.label("int_plain"),
+        );
+        self.line(&format!("br i1 {fits}, label %{next}, label %{other}"));
+        self.start_block(&next);
+        let (at, sum, at_end, more) = (self.temp(), self.temp(), self.temp(), self.label("int_more"));
+        let (byte_at, byte, wide, value, is_digit) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        let (times, added, after) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{at} = phi i64 [ {start}, %{entry} ], [ {after}, %{digit} ]"));
+        self.line(&format!("{sum} = phi i64 [ 0, %{entry} ], [ {added}, %{digit} ]"));
+        self.line(&format!("{at_end} = icmp eq i64 {at}, {length}"));
+        self.line(&format!("br i1 {at_end}, label %{done}, label %{more}"));
+        self.start_block(&more);
+        self.line(&format!("{byte_at} = getelementptr inbounds i8, ptr {place}, i64 {at}"));
+        self.line(&format!("{byte} = load i8, ptr {byte_at}"));
+        self.line(&format!("{wide} = zext i8 {byte} to i64"));
+        self.line(&format!("{value} = sub i64 {wide}, 48"));
+        self.line(&format!("{is_digit} = icmp ult i64 {value}, 10"));
+        self.line(&format!("br i1 {is_digit}, label %{digit}, label %{other}"));
+        self.start_block(&digit);
+        self.line(&format!("{times} = mul nuw nsw i64 {sum}, 10"));
+        self.line(&format!("{added} = add nuw nsw i64 {times}, {value}"));
+        self.line(&format!("{after} = add nuw nsw i64 {at}, 1"));
+        self.line(&format!("br label %{next}"));
+        self.start_block(&done);
+        let (flipped, number) = (self.temp(), self.temp());
+        self.line(&format!("{flipped} = sub nsw i64 0, {sum}"));
+        self.line(&format!("{number} = select i1 {negative}, i64 {flipped}, i64 {sum}"));
+        self.line(&format!("br label %{read}"));
+        self.start_block(&other);
+        self.line(&format!("br label %{read}"));
+        self.start_block(&read);
+        let (plain, got) = (self.temp(), self.temp());
+        self.line(&format!("{plain} = phi i1 [ true, %{done} ], [ false, %{other} ]"));
+        self.line(&format!("{got} = phi i64 [ {number}, %{done} ], [ 0, %{other} ]"));
+        (plain, got)
     }
 
     /// `text.codes()`.

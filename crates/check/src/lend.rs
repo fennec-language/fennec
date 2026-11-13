@@ -1,6 +1,6 @@
 //! `with` sources: a function that gives back `with T` lends a `T` to its caller's `with`
 //! block, with exactly one `lend`. Setup goes above the `lend` and cleanup below it, and
-//! `lend x else:` runs when the caller's block fails. The end of the block is the finish: code
+//! `lend x except:` runs when the caller's block fails. The end of the block is the finish: code
 //! after the `lend` may fail, and its failure is the `with` statement's. Once checked,
 //! `lend_lowering` writes each `with` over a source in as the source's own body.
 
@@ -22,7 +22,7 @@ pub(crate) fn lent(ty: &Type) -> Option<&Type> {
 }
 
 impl FnCx<'_> {
-    /// `lend value`, or `lend value else:` with what runs when the caller's block fails.
+    /// `lend value`, or `lend value except:` with what runs when the caller's block fails.
     pub(crate) fn lend(&mut self, value: &Expr, otherwise: &[Stmt], span: Span) -> Flow {
         self.not_under_lock(
             "a `lend` runs its caller's block, which can wait,",

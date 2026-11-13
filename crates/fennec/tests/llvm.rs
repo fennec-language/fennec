@@ -22951,6 +22951,63 @@ fn a_struct_constant_is_worked_out_ahead_for_parallel() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A constant struct held in place, holding a list and a text, read by `parallel`'s workers: the
+/// blocks it holds live for the whole run, as a constant held in a block does, so no worker's
+/// count of them races another's and none is left held at the end, at 1, 4 and 18 threads, in dev
+/// and release. They were never marked, and the list was left held.
+#[test]
+fn a_constant_struct_in_place_keeps_its_blocks_for_the_whole_run() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("constant_blocks_kept")?;
+    let (program, executable) = (dir.join("kept.fen"), dir.join("kept"));
+    std::fs::write(&program, CONSTANT_BLOCKS_KEPT)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "18"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "97399 Settings(id=0, title=\"a title long enough for a block of its own\", limits=[1, 2, 3])\n",
+                "{how:?} at {threads}: {said}"
+            );
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "{how:?} at {threads}: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const CONSTANT_BLOCKS_KEPT: &str = r#"struct Settings:
+    id: int
+    title: str
+    limits: list[int]
+
+SETTINGS = Settings(id=0, title="a title long enough for a block of its own", limits=[1, 2, 3])
+
+def score(n: int) -> int:
+    settings = SETTINGS
+    return settings.limits[n % 3] + len(settings.title) + n
+
+def main(stdout: Stdout):
+    mut values = [n for n in range(400)]
+    for ref value in parallel(values):
+        value = score(value)
+    stdout.print(sum(values), SETTINGS)
+    return
+"#;
+
 /// A constant keeps its value whatever a read does with what it was given.
 #[test]
 fn each_read_of_a_constant_has_its_own_value() -> std::io::Result<()> {

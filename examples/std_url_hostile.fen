@@ -67,6 +67,9 @@ test "an IPv4 address is written plainly, as four numbers from 0 to 255"():
     assert where("http://127.0.0.1:8080/") == "127.0.0.1 8080 127.0.0.1:8080"
     assert where("http://0.0.0.0/") == "0.0.0.0 0 0.0.0.0"
     assert where("http://123.example/") == "123.example 0 123.example"
+    # A name that ends in a dot is fully qualified, as DNS has it, and isn't a number.
+    assert where("http://example.com./") == "example.com. 0 example.com."
+    assert where("http://localhost.:8080/") == "localhost. 8080 localhost.:8080"
     assert where("http://0x7f.example/") == "0x7f.example 0 0x7f.example"
 
 test "a backslash before the query is refused, since a browser reads it as a slash"():

@@ -1184,6 +1184,98 @@ fn a_run_counts_what_a_hot_loop_allocates() {
     assert!(allocations >= 100, "{counted}");
 }
 
+/// `dev copies` says what the native code copies, where it does: an item copied out, changed and
+/// put back where it was, which the native code changes in place, isn't listed, and a value sent on
+/// a channel, which the receiving end gets a copy of, is, at the send. A number sent isn't.
+#[test]
+fn dev_copies_names_the_copies_the_native_code_makes() {
+    let dir = scratch("copies_where_made").unwrap();
+    let report = |name: &str, source: &str| {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source).unwrap();
+        let output = fennec(&["dev", "copies", &program.to_string_lossy()], "").unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        text(&output.stdout)
+    };
+    let put_back = report("put_back", PUT_BACK);
+    assert!(!put_back.contains("copied"), "{put_back}");
+    let sends = report("sends", SENDS);
+    assert!(sends.contains("sends.fen:11:13 in `main`: what this sends is copied as it's sent"), "{sends}");
+    let numbers = report("numbers", NUMBERS_SENT);
+    assert!(!numbers.contains("copied"), "{numbers}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+const PUT_BACK: &str = r#"from std.collections import Id, Table
+
+struct Entity:
+    health: int
+    inventory: dict[str, int]
+    x: int
+
+def step(ref entities: Table[Entity], ids: list[Id[Entity]], order: list[int]):
+    for me in order:
+        mut entity = entities[ids[me]]
+        entity.health -= 1
+        if entity.health <= 0:
+            gold = entity.inventory.get("gold") else 0
+            entity.inventory["gold"] = gold // 2
+            entity.x = me * 3 + 1
+        entities[ids[me]] = entity
+    return
+
+def main(stdout: Stdout):
+    mut entities = Table[Entity]()
+    mut ids = list[Id[Entity]]()
+    for n in range(100):
+        ids.append(entities.add(Entity(health=n % 3, inventory={"gold": n}, x=0)))
+    order = [n for n in range(100)]
+    step(ref entities, ids, order)
+    mut total = 0
+    for entity in entities:
+        total += entity.inventory["gold"] + entity.x
+    stdout.print(total)
+    return
+"#;
+
+const SENDS: &str = r"from std.concurrent import Closed, channel
+
+enum Command:
+    Move(who: int, vx: int, vy: int)
+    Heal(who: int, amount: int)
+
+def main(stdout: Stdout) fails Closed:
+    mut total = 0
+    with channel[Command](size=64) as commands:
+        for n in range(50):
+            commands.send(.Move(who=n, vx=1, vy=2))?
+            command = commands.receive() else break
+            match command:
+                case .Move(who, vx, vy):
+                    total += who + vx + vy
+                case .Heal(who, amount):
+                    total += who * amount
+    stdout.print(total)
+    return
+";
+
+const NUMBERS_SENT: &str = r"from std.concurrent import Closed, channel
+
+enum Command:
+    Move(who: int, vx: int, vy: int)
+    Heal(who: int, amount: int)
+
+def main(stdout: Stdout) fails Closed:
+    mut total = 0
+    with channel[int](size=64) as commands:
+        for n in range(50):
+            commands.send(n)?
+            command = commands.receive() else break
+            total += command
+    stdout.print(total)
+    return
+";
+
 #[test]
 fn dev_copies_reports_a_mistake_instead_of_a_list() {
     let dir = scratch("copies_bad").unwrap();

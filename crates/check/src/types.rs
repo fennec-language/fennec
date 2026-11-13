@@ -391,6 +391,55 @@ impl Type {
         })
     }
 
+    /// The type as a written type, built straight from it, for code the checker writes in: no
+    /// text, so a name the checker holds that couldn't be read back, as a program's own
+    /// `Delivery` beside the library's, or a dependency's, comes through as it is. Several errors
+    /// are written joined by `|`, as after `fails`, and nothing as `nothing`. `None` for a type
+    /// with no written form.
+    pub(crate) fn written(&self, span: fennec_syntax::Span) -> Option<fennec_syntax::TypeExpr> {
+        use fennec_syntax::TypeExpr;
+        let plain =
+            |name: &str, args: Vec<TypeExpr>| TypeExpr { name: name.to_owned(), args, optional: false, span };
+        let all = |items: &[Type]| items.iter().map(|item| item.written(span)).collect::<Option<Vec<_>>>();
+        Some(match self {
+            Type::Int
+            | Type::Float
+            | Type::Sized(_)
+            | Type::Bool
+            | Type::Str
+            | Type::LiteralStr
+            | Type::Bytes => plain(&self.kind(), Vec::new()),
+            Type::Unit => plain("nothing", Vec::new()),
+            Type::None => plain("None", Vec::new()),
+            Type::List(item) => plain("list", vec![item.written(span)?]),
+            Type::Buffer(item) => plain("Buffer", vec![item.written(span)?]),
+            Type::Array(item, size) => {
+                plain("array", vec![item.written(span)?, plain(&size.to_string(), Vec::new())])
+            }
+            Type::Set(item) => plain("set", vec![item.written(span)?]),
+            Type::Iterator(item) => plain("Iterator", vec![item.written(span)?]),
+            Type::Dict(key, value) => plain("dict", vec![key.written(span)?, value.written(span)?]),
+            Type::Tuple(items) => plain("tuple", all(items)?),
+            Type::Optional(inner) => TypeExpr { optional: true, ..inner.written(span)? },
+            Type::Union(members) => plain("|", all(members)?),
+            Type::Errors(errors) => match errors.as_slice() {
+                [one] => plain(one, Vec::new()),
+                _ => plain("|", errors.iter().map(|name| plain(name, Vec::new())).collect()),
+            },
+            Type::Result(value, error) => plain("Result", vec![value.written(span)?, error.written(span)?]),
+            Type::Named(name) | Type::Param(name) => plain(name, Vec::new()),
+            Type::Generic(name, args) => plain(name, all(args)?),
+            Type::Id(item) => plain("Id", vec![item.written(span)?]),
+            Type::Table(item) => plain("Table", vec![item.written(span)?]),
+            Type::Arrow(params, ret) => {
+                let mut args = all(params)?;
+                args.push(ret.written(span)?);
+                plain("->", args)
+            }
+            Type::Unknown | Type::Function(_) | Type::Var(_) => return None,
+        })
+    }
+
     /// The type as it's written in source, like `list[int]` or `Enemy?`. `None` for a type
     /// that has no written form, like one of several errors, or nothing at all.
     pub fn source(&self) -> Option<String> {

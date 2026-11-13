@@ -176,7 +176,9 @@ struct JsonKey:
     def some[T: Serializable](ref self, x: T):
         pass
 
-## Writes JSON into one growing text.
+## Writes JSON into one growing text. What's added to it is put in a name first: added straight
+## from a call or an operator, the text was copied whole each time, so writing grew with the
+## square of what was written.
 struct JsonWriter:
     _text = ""
     _names = JsonNames.SnakeCase
@@ -197,17 +199,20 @@ struct JsonWriter:
         return self._text
 
     def int(ref self, value: int):
-        self._text += str(value)
+        piece = str(value)
+        self._text += piece
 
     def float(ref self, value: float):
         # NaN and infinity are the floats less themselves isn't 0.
         if value - value != 0.0:
             self._unwritable = True
             return
-        self._text += float_text(value)
+        piece = float_text(value)
+        self._text += piece
 
     def bool(ref self, value: bool):
-        self._text += "true" if value else "false"
+        piece = "true" if value else "false"
+        self._text += piece
 
     def text(ref self, value: str):
         self._text += "\""
@@ -220,19 +225,23 @@ struct JsonWriter:
             if b == 194 and (text_byte(value, at + 1) < 128 or text_byte(value, at + 1) > 159):
                 at = text_escape_at(value, at + 2)
             else:
-                self._text += text_part(value, start, at)
+                piece = text_part(value, start, at)
+                self._text += piece
                 if b == 194:
-                    self._text += escape_of(text_byte(value, at + 1))
+                    piece = escape_of(text_byte(value, at + 1))
+                    self._text += piece
                     at += 1
                 else:
-                    self._text += escape_of(b)
+                    piece = escape_of(b)
+                    self._text += piece
                 at += 1
                 start = at
                 at = text_escape_at(value, at)
         if start == 0:
             self._text += value
         else:
-            self._text += text_part(value, start, size)
+            piece = text_part(value, start, size)
+            self._text += piece
         self._text += "\""
 
     def bytes(ref self, value: bytes):
@@ -272,7 +281,8 @@ struct JsonWriter:
         if position < 0 and optional:
             self._text += "null"
         else:
-            self._text += str(position)
+            piece = str(position)
+            self._text += piece
 
     def some[T: Serializable](ref self, x: T):
         self._optional = True
@@ -300,7 +310,8 @@ struct JsonWriter:
     ## It's apart so that output on one line, as most is, has none of its work.
     def _new_line(ref self):
         self._text += "\n"
-        self._text += " " * (self._indent * self._depth)
+        piece = " " * (self._indent * self._depth)
+        self._text += piece
 
     def sequence[T: Serializable](ref self, items: list[T]):
         self._open("[")
@@ -345,9 +356,11 @@ struct JsonWriter:
         if self._indent < 0 and self._names == .SnakeCase:
             if self._first:
                 self._first = False
-                self._text += "\"" + name + "\": "
+                piece = "\"" + name + "\": "
+                self._text += piece
             else:
-                self._text += ", \"" + name + "\": "
+                piece = ", \"" + name + "\": "
+                self._text += piece
             x.serialize(ref self)
             return
         self._entry()
@@ -356,8 +369,10 @@ struct JsonWriter:
             case .SnakeCase:
                 self._text += name
             case _:
-                self._text += spelled_as(name, self._names)
-        self._text += "\": "
+                piece = spelled_as(name, self._names)
+                self._text += piece
+        piece = "\": "
+        self._text += piece
         x.serialize(ref self)
 
     def renamed[T: Serializable](ref self, name: str, x: T):
@@ -389,7 +404,8 @@ struct JsonWriter:
         self._entry()
         self._text += "\""
         self._text += case_name
-        self._text += "\": "
+        piece = "\": "
+        self._text += piece
         self._open("{")
 
     def member(ref self, name: str, at: int):
@@ -507,6 +523,8 @@ struct IdsSeen:
 
     ## What's wrong with the `Id`s and `Table`s read, or "" when nothing is.
     def problem(self) -> str:
+        # Nearly always: nothing read was an `Id` or a `Table`, so there's nothing to check.
+        if len(self._ids) == 0 and len(self._tables) == 0: return ""
         mut seen = dict[str, str]()
         for kind, at, _ in self._tables:
             if kind in seen:
@@ -717,10 +735,11 @@ struct JsonReader:
     ## For the object being read, the field most likely to come next: the one after the last
     ## found, since text usually has them in order. Each object it's inside keeps its own here.
     _hint = 0
-    _hints = list[int]()
     ## The fields a struct being read has had so far, a bit each, and the same for those it's in.
     _seen = 0
-    _seens = list[int]()
+    ## Each object this one is inside: its `_hint`, then its `_seen`. One read at the top has
+    ## nothing outside it, so a flat object never makes this list room.
+    _outer = list[int]()
     _ids = IdsSeen()
     _tags = dict[str, int]()
     ## For each tuple being read, inside one another: its type, where its array starts, how many
@@ -1171,10 +1190,21 @@ struct JsonReader:
         if self._explain:
             self._owner = self._case_owner if self._case_owner != "" else name
             self._case_owner = ""
-        self._hints.append(self._hint)
+        if self._depth > 1:
+            self._outer.append(self._hint)
+            self._outer.append(self._seen)
         self._hint = 0
-        self._seens.append(self._seen)
         self._seen = 0
+
+    ## Leaves the object being read, back to the one it's inside, if any.
+    def _left(ref self):
+        self._depth -= 1
+        if self._depth > 0:
+            self._seen = self._outer.pop() else 0
+            self._hint = self._outer.pop() else 0
+        else:
+            self._seen = 0
+            self._hint = 0
 
     def next_field(ref self, fields: list[(str, str)]) -> bool fails ParseError:
         if self._explain:
@@ -1184,9 +1214,7 @@ struct JsonReader:
             self._first = False
             if b == 125:
                 self._at += 1
-                self._depth -= 1
-                self._hint = self._hints.pop() else 0
-                self._seen = self._seens.pop() else 0
+                self._left()
                 return False
             if self._explain and self._extra == .Error:
                 self._unknown_first(fields)?
@@ -1195,9 +1223,7 @@ struct JsonReader:
                 _ = self._path.pop()
             if b == 125:
                 self._at += 1
-                self._depth -= 1
-                self._hint = self._hints.pop() else 0
-                self._seen = self._seens.pop() else 0
+                self._left()
                 return False
             if b != 44: fail no_reason()
             self._at += 1

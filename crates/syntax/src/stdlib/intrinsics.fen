@@ -127,7 +127,7 @@ export def text_plain_end(text: str, at: int) -> int
 export def text_escape_at(text: str, at: int) -> int
 
 ## A byte builder, which a binary format writes into in place: empty, with room to grow. Only std
-## writes into one, with the intrinsics below, and copies it to its exact size, `data[0:data.len()]`,
+## writes into one, with the intrinsics below, and copies it to its exact size, `data[0:len(data)]`,
 ## before anything else sees it.
 @intrinsic
 export def bytes_builder() -> bytes

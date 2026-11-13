@@ -943,10 +943,14 @@ impl Heap {
     pub(super) fn take_plain_list(&mut self, at: usize, first_list: u64) -> Option<Box<[u64]>> {
         let empty_items = &self.empty_items;
         self.blocks.take_if(at, |block| {
+            // A list of a kind whose items hold nothing, or one with no items at all, as a list
+            // made empty and never added to is. Only a kind of list's shape is looked at: past
+            // them are other blocks, like cells, whose third word means something else.
             !is_handle_block(block)
                 && shape_word(block)
                     .and_then(|shape| usize::try_from(shape.checked_sub(first_list)?).ok())
-                    .is_some_and(|number| empty_items.get(number).copied().unwrap_or(false))
+                    .and_then(|number| empty_items.get(number))
+                    .is_some_and(|empty| *empty || block.get(2) == Some(&0))
         })
     }
 
@@ -1109,13 +1113,12 @@ pub(super) fn text_from_bytes(state: &mut State, bytes: &[u8], chars: usize) -> 
 /// A string's text, from its block.
 pub(crate) fn block_text(block: &[u64]) -> String {
     let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
-    let bytes: Vec<u8> = block
-        .get(TEXT_HEADER_WORDS..)
-        .unwrap_or_default()
-        .iter()
-        .flat_map(|word| word.to_le_bytes())
-        .take(length)
-        .collect();
+    // Copied a word at a time, then cut to its length.
+    let mut bytes = Vec::with_capacity(length.div_ceil(8) * 8);
+    for word in block.get(TEXT_HEADER_WORDS..).unwrap_or_default().iter().take(length.div_ceil(8)) {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.truncate(length);
     String::from_utf8(bytes).unwrap_or_default()
 }
 

@@ -696,9 +696,12 @@ fn match_params(
 /// A type as written where a type goes and as written in brackets, parsed from its source and
 /// moved to spans of its own, which no program's text reaches.
 pub(crate) fn written_type(ty: &crate::types::Type) -> Option<(TypeExpr, Expr)> {
-    let source = ty.source()?;
+    // A program's own type named like the library's is `Delivery'`, which is written so it
+    // parses and named back after.
+    let source = fennec_syntax::rename::writable(&ty.source()?);
     let text = format!("def held__(held: {source}):\n    _ = held[{source}]\n");
-    let module = fennec_syntax::parse(&text).ok()?;
+    let mut module = fennec_syntax::parse(&text).ok()?;
+    fennec_syntax::rename::rename_types(&mut module, &fennec_syntax::rename::written_names(&text));
     let Some(Item::Function(def)) = module.items.first() else { return None };
     let mut written = def.params.first()?.ty.clone()?;
     let StmtKind::Assign { value, .. } = &def.body.first()?.kind else { return None };

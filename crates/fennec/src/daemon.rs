@@ -137,8 +137,9 @@ mod unix {
     /// Linux does.
     const LONGEST_SOCKET: usize = 100;
 
-    /// How long a request has to arrive whole, once its connection is made. The commands that
-    /// send them write the whole of it at once.
+    /// How long a request has to arrive whole, once its connection is made, however it's sent:
+    /// a byte at a time, each in time, doesn't make it longer. The commands that send them write
+    /// the whole of it at once.
     const REQUEST_WAIT: Duration = Duration::from_secs(10);
 
     /// The most bytes a request's first two lines may take, and the most the rest may.
@@ -210,6 +211,44 @@ mod unix {
         (found.mode() & OTHERS == 0).then_some(())
     }
 
+    /// Connects to the daemon at `socket`, as long as the socket is the user's own: whoever owns
+    /// Fennec's folder at `home`. A socket another user bound in the folder before it was made
+    /// private is theirs, and they can't give it away, so its answers, and an editor's files sent
+    /// to it, never reach them.
+    fn connect(socket: &Path, home: &Path) -> Option<UnixStream> {
+        use std::os::unix::fs::MetadataExt as _;
+        let owner = std::fs::metadata(home).ok()?.uid();
+        socket_owned_by(socket, owner).then(|| UnixStream::connect(socket).ok()).flatten()
+    }
+
+    /// Whether `socket` is a socket, not followed if it's a link, that `owner` bound.
+    fn socket_owned_by(socket: &Path, owner: u32) -> bool {
+        use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+        std::fs::symlink_metadata(socket)
+            .is_ok_and(|found| found.file_type().is_socket() && found.uid() == owner)
+    }
+
+    /// A connection read until a moment: each read waits only what's left, so a request sent a
+    /// byte at a time still has `REQUEST_WAIT` in all. With no moment, a read waits as long as it
+    /// takes, as an editor's session does.
+    struct Within {
+        stream: UnixStream,
+        until: Option<Instant>,
+    }
+
+    impl Read for Within {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(until) = self.until {
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(ErrorKind::TimedOut.into());
+                }
+                self.stream.set_read_timeout(Some(left))?;
+            }
+            self.stream.read(buf)
+        }
+    }
+
     /// The first line of every request: the version and build of the `fennec` asking.
     fn header() -> String {
         format!("fennec {VERSION} {BUILD}")
@@ -250,7 +289,7 @@ mod unix {
     }
 
     pub(super) fn send(home: &Path, request: &[&str]) -> Option<Outcome> {
-        let mut stream = UnixStream::connect(socket_path(home, false)?).ok()?;
+        let mut stream = connect(&socket_path(home, false)?, home)?;
         let message = format!("{}\n{}\n", header(), request.join("\n"));
         stream.write_all(message.as_bytes()).ok()?;
         stream.shutdown(std::net::Shutdown::Write).ok()?;
@@ -261,7 +300,7 @@ mod unix {
 
     /// Opens a language server session: after `lsp`, the connection carries its messages.
     pub(super) fn open_session(home: &Path) -> Option<UnixStream> {
-        let mut stream = UnixStream::connect(socket_path(home, false)?).ok()?;
+        let mut stream = connect(&socket_path(home, false)?, home)?;
         stream.write_all(format!("{}\nlsp\n", header()).as_bytes()).ok()?;
         Some(stream)
     }
@@ -279,7 +318,7 @@ mod unix {
             .spawn()
             .ok()?;
         for _ in 0..200 {
-            if UnixStream::connect(&socket).is_ok() {
+            if connect(&socket, home).is_some() {
                 return Some(());
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -292,7 +331,9 @@ mod unix {
         // Its owner is whom the socket's folder has to belong to.
         let _ = std::fs::create_dir_all(home);
         let Some(socket) = socket_path(home, true) else { return ExitCode::FAILURE };
-        if UnixStream::connect(&socket).is_ok() {
+        // A daemon of its own already listening. A socket that isn't the user's is removed below,
+        // from the folder that is, and this daemon listens in its place.
+        if connect(&socket, home).is_some() {
             return ExitCode::SUCCESS;
         }
         let listener = socket
@@ -334,7 +375,7 @@ mod unix {
             match listener.accept() {
                 Ok((stream, _)) => {
                     let state = Arc::clone(&state);
-                    std::thread::spawn(move || answer(stream, &state));
+                    std::thread::spawn(move || answer(stream, &state, REQUEST_WAIT));
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
                     let done = {
@@ -370,14 +411,12 @@ mod unix {
         ExitCode::SUCCESS
     }
 
-    fn answer(stream: UnixStream, state: &Mutex<State>) {
+    /// Answers one connection, whose request has `wait` to arrive whole.
+    fn answer(stream: UnixStream, state: &Mutex<State>, wait: Duration) {
         let Ok(mut writer) = stream.set_nonblocking(false).and_then(|()| stream.try_clone()) else { return };
-        // A client that connects and says nothing, or says without end, can't hold a thread: a
-        // request has a while to arrive, and a size it can't pass.
-        if stream.set_read_timeout(Some(REQUEST_WAIT)).is_err() {
-            return;
-        }
-        let mut reader = BufReader::new(stream);
+        // A client that connects and says nothing, says without end, or says a byte at a time
+        // can't hold a thread: a request has a while to arrive, and a size it can't pass.
+        let mut reader = BufReader::new(Within { stream, until: Some(Instant::now() + wait) });
         let (mut header, mut kind) = (String::new(), String::new());
         let mut lines = (&mut reader).take(LONGEST_LINE);
         if lines.read_line(&mut header).is_err() || lines.read_line(&mut kind).is_err() {
@@ -385,7 +424,8 @@ mod unix {
         }
         if header.trim_end() == self::header() && kind.trim_end() == "lsp" {
             // An editor's session is quiet for as long as nobody types.
-            if reader.get_ref().set_read_timeout(None).is_err() {
+            reader.get_mut().until = None;
+            if reader.get_ref().stream.set_read_timeout(None).is_err() {
                 return;
             }
             language_server(&mut reader, &mut writer, state);
@@ -403,7 +443,7 @@ mod unix {
 
     /// Serves a language server session over a connection, on a thread with room for the
     /// checker to recurse, until the editor is done.
-    fn language_server(reader: &mut BufReader<UnixStream>, writer: &mut UnixStream, state: &Mutex<State>) {
+    fn language_server(reader: &mut BufReader<Within>, writer: &mut UnixStream, state: &Mutex<State>) {
         let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
         {
             let mut state = lock();
@@ -461,10 +501,118 @@ mod unix {
     #[cfg(test)]
     mod tests {
         use std::collections::HashMap;
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::net::UnixStream;
         use std::path::Path;
-        use std::time::Instant;
+        use std::time::{Duration, Instant};
 
-        use super::{BUILD, State, VERSION, handle, socket_in, socket_path};
+        use super::{BUILD, State, VERSION, answer, handle, socket_in, socket_owned_by, socket_path};
+
+        fn state() -> State {
+            State {
+                home: Path::new("/home/fennec/.fennec").to_path_buf(),
+                snapshots: HashMap::new(),
+                served: 0,
+                started: Instant::now(),
+                last_work: Instant::now(),
+                sessions: 0,
+                stopping: false,
+            }
+        }
+
+        /// What a daemon answers a request sent as `send` does, and how long it took: one that
+        /// doesn't arrive whole in `wait`, or passes 1 MiB, gets no answer.
+        fn answered(
+            send: impl FnOnce(&mut UnixStream) + Send + 'static,
+            wait: Duration,
+        ) -> (String, Duration) {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            let state = std::sync::Mutex::new(state());
+            let started = Instant::now();
+            let sender = std::thread::spawn(move || {
+                send(&mut client);
+                let mut reply = String::new();
+                let _ = client.read_to_string(&mut reply);
+                reply
+            });
+            answer(server, &state, wait);
+            let took = started.elapsed();
+            (sender.join().unwrap(), took)
+        }
+
+        /// A request has its wait in all: one sent a byte at a time, each in time, is dropped once
+        /// it's spent, as is one that stops halfway. One past 1 MiB is dropped too. One that
+        /// arrives whole, in time, is answered.
+        #[test]
+        fn a_request_slow_or_too_big_holds_no_thread() {
+            let whole = format!("fennec {VERSION} {BUILD}\nstatus\n");
+            let asked = whole.clone();
+            let (reply, _) = answered(
+                move |client| {
+                    client.write_all(asked.as_bytes()).unwrap();
+                    client.shutdown(std::net::Shutdown::Write).unwrap();
+                },
+                Duration::from_secs(10),
+            );
+            assert!(reply.contains("running: Fennec"), "{reply}");
+            let asked = whole.clone();
+            let (reply, took) = answered(
+                move |client| {
+                    for byte in asked.bytes().chain(std::iter::repeat(b' ')) {
+                        if client.write_all(&[byte]).is_err() {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                },
+                Duration::from_millis(300),
+            );
+            assert_eq!(reply, "", "a request dripped past its wait was answered");
+            assert!(took < Duration::from_secs(5), "a dripped request held its thread for {took:?}");
+            let (reply, took) = answered(
+                move |client| {
+                    let _ = client.write_all(b"fennec ");
+                    // Never more, and never closed, until the daemon gives up.
+                    let mut rest = Vec::new();
+                    let _ = client.read_to_end(&mut rest);
+                },
+                Duration::from_millis(300),
+            );
+            assert_eq!(reply, "");
+            assert!(took < Duration::from_secs(5), "a request left halfway held its thread for {took:?}");
+            let (reply, _) = answered(
+                move |client| {
+                    let mut asked = whole.into_bytes();
+                    asked.resize(asked.len() + (1 << 20) + 1, b'x');
+                    let _ = client.write_all(&asked);
+                    let _ = client.shutdown(std::net::Shutdown::Write);
+                },
+                Duration::from_secs(10),
+            );
+            assert_eq!(reply, "", "a request past 1 MiB was answered");
+        }
+
+        /// A command connects only to a socket the user's own: one another user bound, where the
+        /// folder once let them, isn't connected to. Nor is a file that isn't a socket.
+        #[test]
+        fn only_a_socket_of_the_users_own_is_connected_to() {
+            use std::os::unix::fs::MetadataExt as _;
+            let folder = fennec_temp::Temp::at(Path::new("/tmp").join(format!("fpo-{}", std::process::id())));
+            std::fs::create_dir_all(&folder).unwrap();
+            let socket = folder.join("d.sock");
+            let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let me = std::fs::metadata(&folder).unwrap().uid();
+            assert!(socket_owned_by(&socket, me));
+            assert!(
+                !socket_owned_by(&socket, me + 1),
+                "a socket bound by someone else was taken as the user's"
+            );
+            assert!(super::connect(&socket, &folder).is_some());
+            let plain = folder.join("plain.sock");
+            std::fs::write(&plain, "").unwrap();
+            assert!(!socket_owned_by(&plain, me));
+            assert!(super::connect(&plain, &folder).is_none());
+        }
 
         /// A daemon answers only a command of its own build: one of the same version built from
         /// other source would get what an older compiler does.

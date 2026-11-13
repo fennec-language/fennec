@@ -416,4 +416,62 @@ mod tests {
         );
         assert_eq!(super::optionals_agree(&optional, &boxed, &boxed), Ok(()));
     }
+
+    /// An error and a struct holding a `str?`: the first layout held the `str?` as an enum, so it
+    /// laid each out in place, and the finished one held it as one word and laid each out as a
+    /// block. Both layouts now hold them the same way.
+    #[test]
+    fn an_error_and_a_struct_holding_an_optional_string_are_laid_out_once() -> Result<(), String> {
+        let mut module = fennec_syntax::parse(OPTIONAL_TEXTS).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let first = super::laid_out(&program, None);
+        let finished = super::laid_out(&program, Some(&first));
+        for name in ["Inner", "Lost", "Holder"] {
+            let boxed = |layouts: &Layouts| {
+                layouts.id(name).and_then(|id| layouts.get(id)).map(|layout| layout.boxed)
+            };
+            assert_eq!(boxed(&first), boxed(&finished), "{name}");
+        }
+        super::agreed(&program, &first, &finished)
+    }
+
+    const OPTIONAL_TEXTS: &str = r#"error Lost:
+    place: str
+    hint: str?
+
+struct Inner:
+    label: str
+    note: str?
+
+struct Holder:
+    maybe: Inner?
+    why: Lost?
+    count: int
+
+def made(n: int) -> Holder:
+    inner = Inner(label=f"a label long enough for a block {n}", note=f"a note long enough for a block {n}" if n % 2 == 0 else None)
+    lost = Lost(place=f"a place long enough for a block {n}", hint=None if n % 2 == 0 else f"a hint long enough for a block {n}")
+    return Holder(maybe=inner, why=lost, count=n)
+
+def put(out: shared list[Holder], holder: Holder):
+    lock out as ref held:
+        held.append(holder)
+    return
+
+def main(stdout: Stdout):
+    noise = [made(n + 10) for n in range(3)]
+    holders = [made(n) for n in range(4)]
+    first = holders[1].maybe else return
+    stdout.print(first, first == made(1).maybe, holders[2].why, holders[2].why == made(2).why)
+    shared out = list[Holder]()
+    for at in [3, 2]:
+        given = holders[at]
+        with launch(() => put(out, given)):
+            pass
+    lock out as held:
+        kept = held[0].maybe else return
+        stdout.print(kept, kept.note, held[1].why, held[0] == holders[3], held[1] == holders[2], len(noise))
+    return
+"#;
 }

@@ -177,6 +177,42 @@ fn whose_block(changes: bool) -> String {
     )
 }
 
+/// After [`whose_block`], makes `%mine` hold for a native block too, whichever thread asks and
+/// whatever number it goes by: a native block is only ever its maker's, counted in the block, and
+/// its shape word carries no thread's number, so on any thread but the program's first it read as
+/// another's, was handed to the runtime, which knows no such block, and was never freed. The one
+/// native block every thread shares, a case with no fields, is marked never freed and stays out:
+/// no thread counts it. Nothing, when the program has no native blocks.
+fn or_native(shapes: &[String]) -> String {
+    if shapes.is_empty() {
+        return String::new();
+    }
+    let mut text = format!(
+        "  %kind = and i64 %shape, {}
+  %never = icmp eq i64 %owner, {}
+",
+        fennec_rt::embed::heap::SHAPE_BITS,
+        fennec_rt::embed::heap::NEVER_FREED_OWNER
+    );
+    let mut native = "false".to_owned();
+    for (at, symbol) in shapes.iter().enumerate() {
+        text += &format!(
+            "  %native_shape{at} = load i64, ptr @\"{symbol}\", !invariant.load !1
+  %is_native{at} = icmp eq i64 %kind, %native_shape{at}
+  %any_native{at} = or i1 {native}, %is_native{at}
+"
+        );
+        native = format!("%any_native{at}");
+    }
+    text += &format!(
+        "  %counted_here = xor i1 %never, true
+  %own_native = and i1 {native}, %counted_here
+  %mine_or_native = or i1 %mine, %own_native
+"
+    );
+    text
+}
+
 /// In a function about another thread's block, whether it's one that's never freed, like a
 /// string literal, so a thread needn't count it at all, and a body using one on every iteration
 /// costs nothing here. `%immortal` says so. It's read from the owner in the shape word, which
@@ -382,16 +418,36 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// The start of a helper that counts a block: whose it is, a native block counting as this
+    /// thread's own, up to the `br i1` on that.
+    fn whose_or_native(&mut self) -> String {
+        let native: Vec<u32> = self.module.shared.native.iter().copied().collect();
+        let mut shapes = Vec::with_capacity(native.len());
+        for id in native {
+            let Some(name) = self.module.layouts.get(id).map(|layout| layout.name.clone()) else { continue };
+            let symbol = format!("h_{name}");
+            self.module.shared.shapes.insert(symbol.clone(), id);
+            self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
+            shapes.push(symbol);
+        }
+        let start = whose_block(self.module.cells);
+        if shapes.is_empty() {
+            format!("{start}  br i1 %mine")
+        } else {
+            format!("{start}{}  br i1 %mine_or_native", or_native(&shapes))
+        }
+    }
+
     /// Defines `@fen_retain` for a program that runs `parallel`: one more owner of a block, by
     /// whichever way this thread counts it.
     pub(crate) fn counted_retain_helper(&mut self) {
         self.declare(THREAD_GLOBAL);
         self.declare("declare void @fennec_retain_shared(i64, i64) nounwind");
-        let (start, immortal) = (whose_block(self.module.cells), immortal());
+        let (start, immortal) = (self.whose_or_native(), immortal());
         self.module.add_helper(
             "fen_retain",
             format!(
-                "define internal void @fen_retain(ptr %block) #0 {{\nentry:\n{start}  br i1 %mine, label %own, label %other\nown:\n  \
+                "define internal void @fen_retain(ptr %block) #0 {{\nentry:\n{start}, label %own, label %other\nown:\n  \
                  %count = load i64, ptr %block{HEADER_ACCESS}\n  %more = add i64 %count, 1\n  store i64 %more, ptr %block{HEADER_ACCESS}\n  ret void\n\
                  other:\n{immortal}  br i1 %immortal, label %kept, label %counted\nkept:\n  ret void\n\
                  counted:\n  %at = ptrtoint ptr %block to i64\n  call void @fennec_retain_shared(i64 %at, i64 %owner)\n  ret void\n}}\n\n"
@@ -404,11 +460,11 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn counted_owner_gone_helper(&mut self) {
         self.declare(THREAD_GLOBAL);
         self.declare("declare void @fennec_release_shared(i64, i64) nounwind");
-        let (start, immortal) = (whose_block(self.module.cells), immortal());
+        let (start, immortal) = (self.whose_or_native(), immortal());
         self.module.add_helper(
             "fen_owner_gone",
             format!(
-                "define internal i1 @fen_owner_gone(ptr %block) #0 {{\nentry:\n{start}  br i1 %mine, label %own, label %other\nown:\n  \
+                "define internal i1 @fen_owner_gone(ptr %block) #0 {{\nentry:\n{start}, label %own, label %other\nown:\n  \
                  %count = load i64, ptr %block{HEADER_ACCESS}\n  %fewer = add i64 %count, -1\n  store i64 %fewer, ptr %block{HEADER_ACCESS}\n  \
                  %gone = icmp eq i64 %fewer, 0\n  ret i1 %gone\nother:\n{immortal}  br i1 %immortal, label %kept, label %counted\nkept:\n  ret i1 false\n\
                  counted:\n  %at = ptrtoint ptr %block to i64\n  call void @fennec_release_shared(i64 %at, i64 %owner)\n  ret i1 false\n}}\n\n"
@@ -420,11 +476,11 @@ impl Emit<'_, '_, '_> {
     /// with one owner.
     pub(crate) fn alone_helper(&mut self) {
         self.declare(THREAD_GLOBAL);
-        let start = whose_block(self.module.cells);
+        let start = self.whose_or_native();
         self.module.add_helper(
             "fen_alone",
             format!(
-                "define internal i1 @fen_alone(ptr %block) #0 {{\nentry:\n{start}  br i1 %mine, label %own, label %other\nown:\n  \
+                "define internal i1 @fen_alone(ptr %block) #0 {{\nentry:\n{start}, label %own, label %other\nown:\n  \
                  %count = load i64, ptr %block{HEADER_ACCESS}\n  %one = icmp eq i64 %count, 1\n  ret i1 %one\nother:\n  ret i1 false\n}}\n\n"
             ),
         );

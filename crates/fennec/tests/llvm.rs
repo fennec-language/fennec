@@ -4371,6 +4371,35 @@ fn an_int_read_from_text_is_read_the_same_however_its_written() -> std::io::Resu
     )
 }
 
+/// A `u64` too big, from text as long as it likes, is quoted by its first 20 digits and how many
+/// it has, so a hostile number can't make a message as long as itself. One just past the top is
+/// quoted whole, as before.
+#[test]
+fn a_u64_too_big_is_quoted_by_its_start_and_its_length() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "u64_too_big_quoted",
+        r#"def said(run: () -> u64 fails InvalidValue) -> str:
+    n = run() except why:
+        return why.message
+    return f"{n}"
+
+def main(stdout: Stdout):
+    digits = "1234567890" * 500
+    stdout.print(said(() => u64.parse(digits)?))
+    stdout.print(said(() => u64.parse("18446744073709551616")?))
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "12345678901234567890… (5,000 digits) doesn't fit in u64, which holds 0 to 18446744073709551615\n\
+         18446744073709551616 doesn't fit in u64, which holds 0 to 18446744073709551615\n"
+    );
+    Ok(())
+}
+
 /// A `u64` from outside: `u64.from(x)?` and `u64.parse(text)?`, which reads what's past the
 /// largest `int` a digit at a time, failing cleanly past the top. And `u64`'s `wrapping_` and
 /// `saturating_` methods, worked out on its 64 bits without going past them.
@@ -11387,6 +11416,24 @@ pub(crate) fn serving(report: &Path, at_least: usize) {
     }
 }
 
+/// Waits until the live count at `report` says `stopping 1`: the server has taken the stop and is
+/// draining, on either runtime. Fails if it never does.
+#[cfg(unix)]
+pub(crate) fn stopping(report: &Path) {
+    let started = std::time::Instant::now();
+    loop {
+        let counts = std::fs::read_to_string(report).unwrap_or_default();
+        if counts.lines().any(|line| line == "stopping 1") {
+            return;
+        }
+        assert!(
+            started.elapsed() < crate::executables::WALL_DEADLINE,
+            "the server never said it was stopping:\n{counts}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Sends SIGTERM to `running`.
 #[cfg(unix)]
 fn terminate(running: &Running) -> std::io::Result<()> {
@@ -11486,7 +11533,8 @@ fn a_server_on_the_plain_runtime_serving_until_signals_stops_when_asked() -> std
     partway.read_exact(&mut first)?;
     assert_eq!(String::from_utf8_lossy(&first), answer);
     terminate(&server)?;
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // The server has taken the stop before the request's finished, as its live count says.
+    stopping(&dir.join("live"));
     partway.write_all(b"\r\n")?;
     let mut answered = Vec::new();
     partway.read_to_end(&mut answered)?;
@@ -14277,6 +14325,68 @@ fn launched_tasks_run_beside_their_block_natively() -> std::io::Result<()> {
             "play jump\nstop\ntick\nfailed: Muted(why=\"boom too loud\")\nfailed: Crashed(why=\"the task crashed\")\n{sums}"
         )
     );
+    Ok(())
+}
+
+/// Launches whose messages and errors are of types a text form can't carry, for the test below.
+const LAUNCHED_ANY_TYPE: &str = "from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+# The library has a `Delivery` too: this one is the program's own.
+struct Delivery:
+    parcel: str
+    if: int
+
+error Lost:
+    where: str
+
+error Late:
+    by: int
+
+def deliver(inbox: Inbox[Delivery], stdout: Stdout) fails Lost | Late:
+    for delivery in inbox:
+        if delivery.if > 9: fail Lost(where=delivery.parcel)
+        stdout.print(f\"{delivery.parcel} {delivery.if}\")
+
+def tally(inbox: Inbox[dict[str, list[(int, Delivery)]]], stdout: Stdout):
+    for batch in inbox:
+        for name, items in batch.items():
+            stdout.print(name, len(items))
+
+def main(stdout: Stdout) fails Closed | Crashed | Lost | Late | Timeout:
+    with launch((inbox) => deliver(inbox, stdout)?, inbox_size=2)? as deliveries:
+        deliveries.send(Delivery(parcel=\"box\", if=3))?
+    with launch((inbox) => tally(inbox, stdout))? as batches:
+        batches.send({\"a\": [(1, Delivery(parcel=\"x\", if=1)), (2, Delivery(parcel=\"y\", if=2))]})?
+    with launch((inbox) => deliver(inbox, stdout)?)? as more:
+        more.send(Delivery(parcel=\"far\", if=12))?
+";
+
+/// What a `with launch` is written in as holds the checked types themselves, never their text:
+/// a program's own type named like a library one, which the checker holds under a name a
+/// program can't write, a field named by a keyword, a message of nested generics, and a task that
+/// fails with a union of errors all come through unchanged. Read back as text, the first didn't
+/// build.
+#[test]
+fn a_launch_carries_any_type_the_checker_holds_through_unchanged() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("launched-any-type")?;
+    let program = dir.join("shadow.fen");
+    std::fs::write(&program, LAUNCHED_ANY_TYPE)?;
+    let executable = dir.join("shadow");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "box 3\na 2\n");
+    assert!(String::from_utf8_lossy(&ran.stderr).starts_with("error: `main` failed: Lost(where=\"far\")\n"));
+    assert_eq!(ran.status.code(), Some(1));
     Ok(())
 }
 
@@ -17956,6 +18066,37 @@ def main(stdout: Stdout):
     )
 }
 
+/// A tuple of plainer items written or kept where one with optional items goes, as
+/// `(1, Parcel(name="x"))` where `(int, Parcel?)` goes: alone, in a list, in a list in a dict's
+/// value, in a list of lists, and a tuple kept in a name first. Each item becomes the optional it
+/// goes to, in both builds, with nothing left held.
+#[test]
+fn a_tuple_widens_to_its_optional_items_wherever_it_goes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "tuples_widened",
+        r#"struct Parcel:
+    name: str
+
+def main(stdout: Stdout):
+    batch: dict[str, list[(int, Parcel?)]] = {"a": [(1, Parcel(name="x")), (2, None)]}
+    pairs: list[(int, Parcel?)] = [(3, Parcel(name="y"))]
+    one: (int, Parcel?) = (4, Parcel(name="z"))
+    nested: list[list[(str, int?)]] = [[("a", 1)], [("b", None)]]
+    numbers: dict[str, list[int?]] = {"n": [1]}
+    kept = (5, Parcel(name="w"))
+    widened: (int, Parcel?) = kept
+    stdout.print(batch, pairs, one)
+    stdout.print(nested, numbers, widened, kept)
+    return
+"#,
+        "{\"a\": [(1, Parcel(name=\"x\")), (2, None)]} [(3, Parcel(name=\"y\"))] (4, Parcel(name=\"z\"))\n\
+         [[(\"a\", 1)], [(\"b\", None)]] {\"n\": [1]} (5, Parcel(name=\"w\")) (5, Parcel(name=\"w\"))\n",
+    )
+}
+
 #[test]
 fn tuples_and_structs_compare_as_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -19308,6 +19449,109 @@ fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
 
 const TEXT_GROWN_PRINTS: &str = r"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
 ";
+
+/// A field's text grown by what a call makes, `self.text += str(value)`, grows where it is: the
+/// call can't change the field, so the field is read after it, its only owner as it's added to.
+/// It once read the field first, so the text was copied every time, quadratically. A call given
+/// the field's holder by `ref`, or a method on it, still sees the field as it was before.
+#[test]
+fn a_field_grown_by_a_calls_text_grows_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("field_grown_by_call")?;
+    std::fs::write(dir.join("field_grown_by_call.fen"), FIELD_GROWN_BY_CALL)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "field_grown_by_call", how)?;
+        assert_eq!(printed, "7000\na? <5:1><6:2>\n", "{how:?}");
+        assert!(
+            count(&counts, "allocations") < Some(200) && counts.ends_with(" live 0"),
+            "{how:?}: {counts}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A field grown by a call that fails keeps what it had: the call runs before the field is read,
+/// so a failure out of it leaves the field as the last `+=` that finished left it, and what the
+/// calls print comes out in order.
+#[test]
+fn a_field_grown_by_a_call_that_fails_keeps_what_it_had() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "field_grown_by_failing_call",
+        r#"error Bad:
+    why: str
+
+struct Writer:
+    text = "start"
+    total = 0
+
+def risky(value: int, stdout: Stdout) -> str fails Bad:
+    stdout.print("called", value)
+    if value > 2: fail Bad(why="too big")
+    return str(value)
+
+def grow(ref out: Writer, value: int, stdout: Stdout) fails Bad:
+    out.text += risky(value, stdout)?
+    out.text += "," + risky(value + 1, stdout)?
+    return
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    for value in [1, 2]:
+        grow(ref out, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        stdout.print(out.text)
+    got = risky(5, stdout) except Bad(why): f"<{why}>"
+    out.text += got
+    stdout.print(out.text)
+    return
+"#,
+        "called 1\ncalled 2\nstart1,2\ncalled 2\ncalled 3\nfailed too big\nstart1,22\ncalled 5\nstart1,22<too big>\n",
+    )
+}
+
+const FIELD_GROWN_BY_CALL: &str = r#"struct Writer:
+    text = ""
+    n = 0
+
+    def int(ref self, value: int):
+        self.text += str(value)
+
+    def pair(ref self, a: int, b: int):
+        self.text += "," + str(a) + str(b)
+
+    def counted(ref self, value: int):
+        self.n += 1
+        self.text += self.label(value)
+
+    def label(self, value: int) -> str:
+        return f"<{value}:{self.n}>"
+
+def bump(ref writer: Writer) -> str:
+    writer.text += "!"
+    return "?"
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    for i in range(4000):
+        out.int(i % 10)
+    for i in range(1000):
+        out.pair(i % 3, i % 7)
+    stdout.print(len(out.text))
+    mut other = Writer()
+    other.text = "a"
+    other.text += bump(ref other)
+    mut third = Writer()
+    third.counted(5)
+    third.counted(6)
+    stdout.print(other.text, third.text)
+    return
+"#;
 
 /// `text += "," + f()?` that fails leaves the text as it was, in a field, a `ref` parameter, and
 /// `text = text + "," + f()?`: the pieces aren't added one at a time when a later one can fail,

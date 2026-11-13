@@ -160,6 +160,20 @@ pub extern "C" fn block(a: u64, b: u64, c: u64) -> i64 {
     })
 }
 
+/// A header's bytes where they are, as `bytes_of` gives them, and how many characters they make:
+/// a block keeps its count, and an inline header's are its bytes that don't carry on one before
+/// them, as its bytes are a string's, already UTF-8.
+pub(super) fn measured<'a>(state: &'a State, words: &'a [u64; 3]) -> (&'a [u64], usize, u64) {
+    let (bytes, length) = bytes_of(state, words);
+    let chars = if let Some(address) = block_of(words) {
+        state.heap.block(address).and_then(|block| block.get(3)).copied().unwrap_or(0)
+    } else {
+        let packed = bytes.iter().flat_map(|word| word.to_le_bytes()).take(length);
+        u64::try_from(packed.filter(|byte| byte & 0xC0 != 0x80).count()).unwrap_or(0)
+    };
+    (bytes, length, chars)
+}
+
 /// A new block owned once holding an inline header's text, its words copied across whole and its
 /// characters counted eight bytes at a time: a header's bytes are a string's, already UTF-8, so its
 /// characters are its bytes that don't carry on one before them. One ASCII character is the block
@@ -849,6 +863,57 @@ mod tests {
         // Nothing past an inline string's bytes counts, like the tag in its last byte.
         assert!(!found(short, super::inline(b"\0")));
         assert_eq!(live(), before + 1);
+        finish();
+    }
+
+    /// Joining a list of headers, inline and in blocks, wide characters too, gives what Rust's own
+    /// join gives, with the characters counted, and one ASCII character is the block every such
+    /// string shares.
+    #[test]
+    fn a_join_of_headers_gives_what_rusts_own_gives() {
+        begin();
+        super::super::aot::ascii();
+        let long = "a line long enough to need a block of its own";
+        let parts =
+            ["", "a", "\u{e9}t\u{e9}", long, "twenty-three bytes long", "\u{65e5}\u{1f98a} and more of it"];
+        for separator in ["", "\n", ", ", "\u{2014}"] {
+            let between = with(|state| heap::text_address(state, separator));
+            for count in 0..=parts.len() {
+                let chosen: Vec<&str> = parts.iter().cycle().skip(count).take(count).copied().collect();
+                let list = lists::new(0, i64::try_from(chosen.len()).unwrap());
+                with(|state| {
+                    for (at, part) in chosen.iter().enumerate() {
+                        let words = super::header(state, part);
+                        let block = state.heap.block_mut(list.cast_unsigned()).unwrap();
+                        let start = lists::LIST_HEADER_WORDS + 3 * at;
+                        block.get_mut(start..start + 3).unwrap().copy_from_slice(&words);
+                    }
+                });
+                let joined = strings::join(between, list);
+                let whole = chosen.join(separator);
+                with(|state| {
+                    let block = state.heap.block(joined.cast_unsigned()).unwrap();
+                    assert_eq!(heap::block_text(block), whole, "{chosen:?} by {separator:?}");
+                    assert_eq!(block.get(3).copied(), Some(u64::try_from(whole.chars().count()).unwrap()));
+                });
+                heap::free(list);
+                // Let go of as native code does, which leaves the block a lone ASCII character shares.
+                with(|state| heap::release(state, joined.cast_unsigned()));
+            }
+            with(|state| heap::release(state, between.cast_unsigned()));
+        }
+        let one = lists::new(0, 1);
+        with(|state| {
+            let words = super::header(state, "x");
+            let block = state.heap.block_mut(one.cast_unsigned()).unwrap();
+            block
+                .get_mut(lists::LIST_HEADER_WORDS..lists::LIST_HEADER_WORDS + 3)
+                .unwrap()
+                .copy_from_slice(&words);
+        });
+        let empty = with(|state| heap::text_address(state, ""));
+        let x = with(|state| heap::text_address(state, "x"));
+        assert_eq!(strings::join(empty, one), x);
         finish();
     }
 

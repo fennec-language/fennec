@@ -242,6 +242,35 @@ fn len_calls_the_values_own_len() {
     );
 }
 
+/// A top-level function, type or constant can't take a builtin's name, as a local can't: a
+/// `def len` would hide the language's `len` everywhere it's seen, a dependency's code included.
+/// A method or a field may, as `len(x)` calls `x.len()`.
+#[test]
+fn a_top_level_name_cant_be_a_builtins() {
+    assert_eq!(
+        problems_as_written(
+            "def len(text: str) -> int:\n    return 99\n\nstruct range:\n    low: int\n\nenum min:\n    One\n\n\
+             error max:\n    why: str\n\ninterface str:\n    def shown(self) -> int\n\ntype list = int\n\n\
+             def main(stdout: Stdout):\n    stdout.print(1)\n"
+        ),
+        [
+            "`len` is a builtin's name, which a function can't take @ def len(text: str) -> int",
+            "`range` is a builtin's name, which a type can't take @ struct range",
+            "`min` is a builtin's name, which a type can't take @ enum min",
+            "`max` is a builtin's name, which a type can't take @ error max",
+            "`str` is a builtin's name, which an interface can't take @ interface str:\n    def shown(self) -> int\n\n",
+            "`list` is a builtin's name, which a type can't take @ type list = int",
+        ]
+    );
+    assert_eq!(
+        problems_as_written(
+            "struct Box:\n    len: int\n\n    def sum(self) -> int:\n        return self.len\n\n\
+             def main(stdout: Stdout):\n    stdout.print(Box(len=2).sum())\n"
+        ),
+        Vec::<String>::new()
+    );
+}
+
 /// `abs(x)` is a builtin the same way: it gives back a number of the type it's given.
 #[test]
 fn abs_calls_the_values_own_abs() {

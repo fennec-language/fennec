@@ -316,9 +316,13 @@ impl Lowering<'_> {
         // place that's written.
         let place = if passes_ref { self.held_place(target, span)? } else { self.place_of(target)? };
         let held = self.steps_type(&place)?;
-        // What a call could change is read before it, so `+=` adds to what was there.
+        // What a call could change is read before it, so `+=` adds to what was there. One that
+        // can't is read after, so the place is its only owner as it's added to: a text grows
+        // where it is rather than being copied every time.
         let read_first = match op {
-            Some(_) if calls => Some(self.read_steps(place.local, &place.steps, span)?),
+            Some(_) if calls && self.calls_could_change(target, &place, value, passes_ref)? => {
+                Some(self.read_steps(place.local, &place.steps, span)?)
+            }
             _ => None,
         };
         let mut value = self.expr(value)?;
@@ -338,6 +342,30 @@ impl Lowering<'_> {
         }
         let value = self.coerce(value, &held, span)?;
         self.store(place.local, &place.steps, value, span)
+    }
+
+    /// Whether the calls in `value` could change what `place` holds. Only a call given something
+    /// by `ref` can change a value, or one on what the place is reached from, as a method taking
+    /// `ref self` is, which names it. A `shared` handle on the way to the place is the exception:
+    /// any call given it, or given what holds it, can lock it and change it.
+    fn calls_could_change(
+        &self,
+        target: &Expr,
+        place: &Place,
+        value: &Expr,
+        passes_ref: bool,
+    ) -> Lowered<bool> {
+        if passes_ref || super::root_name(target).is_none_or(|root| super::mentions(value, root)) {
+            return Ok(true);
+        }
+        let mut ty = self.local_type(place.local);
+        for step in &place.steps {
+            if self.context.is_handle(&ty) {
+                return Ok(true);
+            }
+            ty = self.step_type(&ty, step)?;
+        }
+        Ok(self.context.is_handle(&ty))
     }
 
     /// Does what leaving a `for mut` loop or `with` block has to.

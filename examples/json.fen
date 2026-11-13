@@ -17,11 +17,10 @@ struct Player:
     alive: bool
 
 def describe(text: str) -> str:
-    numbers = json.loads[list[float]](text) else as why:
-        match why:
-            case ParseError(message=message):
-                return f"couldn't read it: {message}"
-    f"read {json.dumps(numbers)}"
+    numbers = json.loads[list[float]](text) except why:
+        case ParseError(message=message):
+            return f"couldn't read it: {message}"
+    return f"read {json.dumps(numbers)}"
 
 struct Point:
     x: int
@@ -29,9 +28,9 @@ struct Point:
 
 ## Why `run` fails, or "" if it doesn't.
 def why_not[T](run: () -> T fails ParseError) -> str:
-    _ = run() else as why:
+    _ = run() except why:
         return why.message
-    ""
+    return ""
 
 test "arrays and objects may nest 500 deep, and no deeper"():
     too_deep = "arrays and objects nest more than 500 deep here, at line 1, column 501"
@@ -91,6 +90,6 @@ def main(stdout: Stdout):
     stdout.print(describe("{\"a\": 1,\n \"b\" 2}"))
     stdout.print(describe("\"never ends"))
     stdout.print(describe("tru"))
-    _ = json.loads[list[int]]("[\n  1,\n  oops\n]") else as why:
+    _ = json.loads[list[int]]("[\n  1,\n  oops\n]") except why:
         stdout.print(f"the problem is on line {why.line}, column {why.column}")
         []

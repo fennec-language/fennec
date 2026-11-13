@@ -6,7 +6,7 @@ export struct Html:
 
     ## The page as text, to send.
     def text(self) -> str:
-        self._text
+        return self._text
 
     def str(self, ref out: StrWriter):
         out.write(self._text)
@@ -30,11 +30,11 @@ export error HtmlError:
     def message(self) -> str:
         match self:
             case .Misplaced(expression, reason):
-                f"`{{{expression}}}` can't go there: {reason}"
+                return f"`{{{expression}}}` can't go there: {reason}"
             case .Formatted(expression):
-                f"`{{{expression}}}` has a format spec, which a page doesn't apply yet: format it first"
+                return f"`{{{expression}}}` has a format spec, which a page doesn't apply yet: format it first"
             case .Unfinished(reason):
-                reason
+                return reason
 
 ## A page from a template string: `html.render(t"<p>Hello, {name}</p>")`. Each value is put in
 ## for where it is in the page, found from the text written around it:
@@ -53,19 +53,19 @@ export def render(page: Template[HtmlValue]) -> Html fails HtmlError:
         for c in piece:
             scan.step(c)
         out += piece
-        if at < page.values.len():
+        if at < len(page.values):
             expression = page.expressions[at]
             if page.format_specs[at] != "": fail .Formatted(expression=expression)
             out += scan.put(page.values[at], expression)?
     if scan.spot != .Text: fail .Unfinished(reason=f"the template ends {where(scan.spot)}")
-    Html(_text=out)
+    return Html(_text=out)
 
 ## Pieces of a page one after another, like the rows of a list made in a loop.
 export def join(pieces: list[Html]) -> Html:
     mut out = ""
     for piece in pieces:
         out += piece._text
-    Html(_text=out)
+    return Html(_text=out)
 
 ## `text` with `& < > " '` escaped, so it reads as text between tags and in a quoted attribute.
 export def escape(text: str) -> str:
@@ -84,7 +84,7 @@ export def escape(text: str) -> str:
                 out += "&#39;"
             case _:
                 out += c
-    out
+    return out
 
 ## Where in a page the text written so far has reached, as a browser reads it.
 enum PageSpot:
@@ -113,17 +113,17 @@ enum PageSpot:
 def where(spot: PageSpot) -> str:
     match spot:
         case .Text:
-            "between tags"
+            return "between tags"
         case .TagOpen | .EndTagOpen | .TagName:
-            "in a tag's name"
+            return "in a tag's name"
         case .BeforeAttribute | .AttributeName | .AfterAttributeName | .BeforeValue:
-            "inside a tag"
+            return "inside a tag"
         case .DoubleQuoted | .SingleQuoted | .Unquoted:
-            "inside an attribute"
+            return "inside an attribute"
         case .MarkupOpen | .Comment | .Declaration:
-            "inside a comment"
+            return "inside a comment"
         case .RawText:
-            "inside a `<script>` or `<style>`"
+            return "inside a `<script>` or `<style>`"
 
 ## The attributes whose value is a URL that a browser follows or loads.
 LINKS = [
@@ -272,7 +272,7 @@ struct PageScan:
     ## followed by a space, `/` or `>`, in any case.
     def read_raw(ref self, c: str):
         wanted = "</" + self.raw
-        if self.ending.len() == wanted.len():
+        if len(self.ending) == len(wanted):
             if is_space(c) or c == "/" or c == ">":
                 self.closing = True
                 self.tag = self.raw
@@ -335,7 +335,7 @@ struct PageScan:
                 )
 
 def misplaced(expression: str, reason: str) -> HtmlError:
-    HtmlError.Misplaced(expression=expression, reason=reason)
+    return HtmlError.Misplaced(expression=expression, reason=reason)
 
 ## A value's text, before escaping.
 def text_of(value: HtmlValue) -> str:
@@ -351,7 +351,7 @@ def text_of(value: HtmlValue) -> str:
         found = str(value)
     if value is bool:
         found = "True" if value else "False"
-    found
+    return found
 
 ## Whether a link whose value so far is `before`, with `next` after it, is one a browser can follow
 ## safely: relative, or `http`, `https` or `mailto`. Once the value so far has a `:`, `/`, `?`
@@ -370,10 +370,10 @@ def followed(before: str, next: str) -> bool:
         if c == "\t" or c == "\n" or c == "\r": continue
         if scheme == "" and c <= " ": continue
         scheme += c
-    True
+    return True
 
 def is_letter(c: str) -> bool:
-    (c >= "a" and c <= "z") or (c >= "A" and c <= "Z")
+    return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z")
 
 def is_space(c: str) -> bool:
-    c == " " or c == "\t" or c == "\n" or c == "\r" or c == "\x0c"
+    return c == " " or c == "\t" or c == "\n" or c == "\r" or c == "\x0c"

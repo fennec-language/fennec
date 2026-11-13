@@ -283,6 +283,16 @@ pub fn strip_facts(on: bool) {
     FACTS_STRIPPED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether builds check proofs, as [`check_proofs`] last said.
+pub(crate) fn proofs_checked() -> bool {
+    PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether builds leave out the facts, as [`strip_facts`] last said.
+pub(crate) fn facts_stripped() -> bool {
+    FACTS_STRIPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,
@@ -350,6 +360,15 @@ pub(crate) fn emit_with(
         }
     }
     Ok((units, shared, layouts))
+}
+
+/// Whether a function only hands its work on: one block, a few instructions, and one call, to
+/// another function. Inlined where it's called, it costs nothing, and what it calls is reached
+/// with one call fewer, as `field(name, x)` reaches `x.serialize(ref self)`.
+fn forwards(function: &Function) -> bool {
+    let [block] = function.blocks.as_slice() else { return false };
+    let calls = block.insts.iter().filter(|inst| matches!(inst.kind, InstKind::Call { .. })).count();
+    block.insts.len() <= 4 && calls == 1 && callees(function).all(|name| name != function.name)
 }
 
 fn size(function: &Function) -> usize {
@@ -468,7 +487,7 @@ fn unit<'p>(
     }
     let recursive = size(function) <= SELF_INLINED && callees(function).any(|name| name == function.name);
     let inlined = format!("@\"f_{}$inl\"", function.name);
-    let small = size(function) <= ALWAYS_INLINE && callees(function).next().is_none();
+    let small = (size(function) <= ALWAYS_INLINE && callees(function).next().is_none()) || forwards(function);
     module.define(
         function,
         &Definition {
@@ -954,7 +973,11 @@ impl Emit<'_, '_, '_> {
         if self.keeps_its_value() {
             self.give_back_what_it_kept();
         }
-        if function.name == "main" && self.module.threads {
+        // A test runs as a program's `main` does, so in a program that uses `parallel` it works out
+        // the constants first too: a task it launches only reads them then. Worked out first in a
+        // task instead, a constant's block stayed on that task's worker, where the test couldn't
+        // find it.
+        if (function.name == "main" || is_test(&function.name)) && self.module.threads {
             self.work_out_constants()?;
         }
         let kinds = self.kinds.clone();
@@ -1615,6 +1638,35 @@ impl Emit<'_, '_, '_> {
     /// In a build that checks proofs, ends the program if `broken` is true, as `proof_held` does,
     /// but through a call LLVM copies in, so the block this is in carries on: for a fact checked
     /// where what comes after leans on the block it's written in, like a phi.
+    /// In a build that checks proofs, that an item copied out and put back at `at` goes back
+    /// where it was taken from: the place still holds what was taken, which the local it was
+    /// first read into still has. A put back anywhere else would leave that block with no owner.
+    /// For a struct kept in place, the place still holds the words that were copied out.
+    pub(crate) fn proof_goes_back(&mut self, value: &Operand, at: &str) {
+        if !self.checks_proofs() {
+            return;
+        }
+        let Operand::Local(item) = value else { return };
+        let Some(read) = self.known.put_back_read(*item) else { return };
+        let Ok(kind) = self.kind_of(read).cloned() else { return };
+        let slot = self.slot(read);
+        let words = if kind.in_memory() { kind.size(self.module.layouts) / 8 } else { 1 };
+        let mut elsewhere = "false".to_owned();
+        for word in 0..words {
+            let (there_at, taken_at, there, taken, differs, either) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{there_at} = getelementptr inbounds i64, ptr {at}, i64 {word}"));
+            self.line(&format!("{taken_at} = getelementptr inbounds i64, ptr {slot}, i64 {word}"));
+            self.line(&format!("{there} = load i64, ptr {there_at}"));
+            self.line(&format!("{taken} = load i64, ptr {taken_at}"));
+            self.line(&format!("{differs} = icmp ne i64 {there}, {taken}"));
+            self.line(&format!("{either} = or i1 {elsewhere}, {differs}"));
+            elsewhere = either;
+        }
+        let span = self.here_span();
+        self.proof_held(&elsewhere, "an item copied out goes back to the place it was taken from", span);
+    }
+
     pub(crate) fn proof_held_here(&mut self, broken: &str, proof: &str, span: Span) {
         let text = self.proof_text(proof);
         let here = self.label("proof_at");
@@ -2534,6 +2586,20 @@ impl Emit<'_, '_, '_> {
         if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
             return self.header_isdigit(dest, text);
         }
+        // `int.parse(text)` and `float.parse(text)` are `int(text)?` and `float(text)?` given back:
+        // the result is made where the caller keeps it, rather than made, read and made again.
+        if let ("int.parse" | "float.parse", Some(dest), [text @ Operand::Local(held)]) = (name, dest, args)
+            && self.function.locals.get(held.0).is_some_and(|local| local.ty == fennec_check::Type::Str)
+            && self.kind_of(dest).is_ok_and(|kind| self.case_of(&kind.clone(), "Ok").is_ok())
+        {
+            let number = if name == "int.parse" { "int" } else { "float" };
+            return self.number_of_text(dest, number, text);
+        }
+        if let ("str.startswith" | "str.endswith", Some(dest), [text, part], true) =
+            (name, dest, args, self.headers())
+        {
+            return self.header_affix(dest, (text, part), name == "str.endswith");
+        }
         // What `fennec test` calls before each input of a property test with capabilities: a new
         // world of fakes, with nothing left by the input before.
         if name == "test:world" && args.is_empty() {
@@ -2972,8 +3038,11 @@ impl Emit<'_, '_, '_> {
             }
             return self.assign_memory(dest, &held, "");
         }
-        // A borrowing local takes no owner, so its copy needs none either.
-        if kind.counted() && !self.known.is_borrowed(dest) {
+        // A borrowing local takes no owner, so its copy needs none either. Nor does an item taken
+        // out, handed from the local that took it to the name it's changed under.
+        let handed_over =
+            self.known.is_taken(dest) && matches!(value, Operand::Local(from) if self.known.is_taken(*from));
+        if kind.counted() && !self.known.is_borrowed(dest) && !handed_over {
             match value {
                 Operand::Local(from)
                     if self.owns(*from)
@@ -3624,8 +3693,8 @@ mod tests {
     use super::*;
 
     fn lowered(source: &str) -> Result<Program, String> {
-        let module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
-        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         Ok(fennec_ir::lower(&module, &checked))
     }
 
@@ -3672,10 +3741,10 @@ from std.time import Clock, Duration
 def main(stdout: Stdout, args: Args, clock: Clock):
     started = clock.now()
     clock.sleep(Duration.millis(1))
-    stdout.print(args.len(), args.program, started.nanos)
+    stdout.print(len(args), args.program, started.nanos)
     for arg in args:
         stdout.print(arg, args[0])
-    stdout.write(args.len())
+    stdout.write(len(args))
 ";
         let text = text_of(source, "main")?;
         assert!(text.contains("@fennec_args_list("), "{text}");
@@ -3696,11 +3765,11 @@ def small(n: int) -> bool:
 
 def kept(word: str) -> bool:
     words = [\"def\", \"if\"]
-    return word in words and words.len() == 2
+    return word in words and len(words) == 2
 
 def kept_set(word: str) -> bool:
     words = {\"def\", \"if\"}
-    return word in words and words.len() == 2
+    return word in words and len(words) == 2
 
 def main(stdout: Stdout):
     stdout.print(is_keyword(\"if\"), small(2), kept(\"if\"), kept_set(\"if\"))
@@ -3732,7 +3801,7 @@ enum Tok:
     Eof
 
 def is_eof(token: Tok) -> bool:
-    token == .Eof
+    return token == .Eof
 
 def main(stdout: Stdout):
     stdout.print(is_eof(.Name(\"x\")))
@@ -3749,7 +3818,7 @@ def main(stdout: Stdout):
     fn looking_for_a_part_of_a_text_makes_no_block_for_either() -> Result<(), String> {
         let source = "\
 def has_x(text: str) -> bool:
-    \"x\" in text
+    return \"x\" in text
 
 def main(stdout: Stdout):
     stdout.print(has_x(\"a\"))
@@ -3764,7 +3833,7 @@ def main(stdout: Stdout):
     fn a_change_elsewhere_in_a_file_leaves_a_functions_text_alone() -> Result<(), String> {
         let later = |gap: &str| {
             let source = format!(
-                "{gap}def add(a: int, b: int) -> int:\n    a + b\n\ndef main(stdout: Stdout):\n    stdout.print(\"sum\", add(1, 2))\n"
+                "{gap}def add(a: int, b: int) -> int:\n    return a + b\n\ndef main(stdout: Stdout):\n    stdout.print(\"sum\", add(1, 2))\n"
             );
             text_of(&source, "add")
         };
@@ -3797,7 +3866,7 @@ def main(stdout: Stdout):
     #[test]
     fn a_program_using_parallel_works_out_its_constants_before_any_worker_starts() -> Result<(), String> {
         let source = "WORDS = [\"a\", \"b\"]\nFIRST = WORDS[5]\n\ndef main(stdout: Stdout):\n    mut counts = [1, 2]\n    \
-                      for ref count in parallel(counts):\n        count += WORDS.len() + FIRST.len()\n    \
+                      for ref count in parallel(counts):\n        count += len(WORDS) + len(FIRST)\n    \
                       stdout.print(counts)\n";
         let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
@@ -3832,7 +3901,7 @@ def main(stdout: Stdout):
             "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n\n";
         let main = "def main(stdout: Stdout):\n    mut units = [Unit([1], 0)]\n    grow(ref units, 0, 1)\n    mut world = World(units)\n    grow_field(ref world, 0, 1)\n    stdout.print(units[0].hp, read(world, 0))\n";
         let source = format!(
-            "{types}def grow(ref units: list[Unit], at: int, v: int):\n    units[at].tags.append(v)\n\ndef grow_field(ref world: World, at: int, v: int):\n    world.units[at].tags.append(v)\n\ndef read(world: World, at: int) -> int:\n    world.units[at].hp\n\n{main}"
+            "{types}def grow(ref units: list[Unit], at: int, v: int):\n    units[at].tags.append(v)\n\ndef grow_field(ref world: World, at: int, v: int):\n    world.units[at].tags.append(v)\n\ndef read(world: World, at: int) -> int:\n    return world.units[at].hp\n\n{main}"
         );
         for function in ["grow", "grow_field"] {
             let text = text_of(&source, function)?;
@@ -3860,10 +3929,10 @@ def in_field(ref note: Note, more: str):
 def in_local(more: str) -> str:
     mut text = \"\"
     text += more
-    text
+    return text
 
 def anew(note: Note, more: str) -> str:
-    note.text + more
+    return note.text + more
 
 def main(stdout: Stdout):
     mut note = Note()
@@ -3885,10 +3954,10 @@ def main(stdout: Stdout):
     fn a_numbers_text_makes_no_block() -> Result<(), String> {
         let source = "\
 def of_int(n: int) -> str:
-    str(n)
+    return str(n)
 
 def of_float(x: float) -> str:
-    str(x)
+    return str(x)
 
 def main(stdout: Stdout):
     stdout.print(of_int(1), of_float(1.5))
@@ -3903,7 +3972,7 @@ def main(stdout: Stdout):
 
     #[test]
     fn a_function_that_cant_fail_has_no_flag() -> Result<(), String> {
-        let source = "def half(a: float) -> float:\n    a * 0.5\n\ndef main(stdout: Stdout):\n    stdout.print(half(1.0))\n";
+        let source = "def half(a: float) -> float:\n    return a * 0.5\n\ndef main(stdout: Stdout):\n    stdout.print(half(1.0))\n";
         assert!(text_of(source, "half")?.contains("define swiftcc double @\"f_half\"(double %p0)"));
         Ok(())
     }
@@ -3911,7 +3980,7 @@ def main(stdout: Stdout):
     /// A program whose code is handed every kind of fact: a `ref` parameter (`noalias`), lengths
     /// (`!range`), a remainder by a number and a list made alone (`llvm.assume`), and the failure
     /// flag a function that can fail is given clear (`llvm.assume`).
-    const FACTFUL: &str = "struct Unit:\n    hp: int\n\ndef bump(ref unit: Unit, by: int, seen: list[int]) -> int:\n    unit.hp += by % 7 + seen.len()\n    return unit.hp\n\ndef fill(xs: list[int]) -> list[int]:\n    mut ys = xs\n    ys.append(xs.len())\n    return ys\n\ndef pick(xs: list[int], at: int) -> int:\n    return xs[at]\n\ndef main(stdout: Stdout):\n    mut unit = Unit(hp=1)\n    stdout.print(bump(ref unit, by=10, seen=[1]), fill([1, 2]), pick([4, 5], at=1))\n    return\n";
+    const FACTFUL: &str = "struct Unit:\n    hp: int\n\ndef bump(ref unit: Unit, by: int, seen: list[int]) -> int:\n    unit.hp += by % 7 + len(seen)\n    return unit.hp\n\ndef fill(xs: list[int]) -> list[int]:\n    mut ys = xs\n    ys.append(len(xs))\n    return ys\n\ndef pick(xs: list[int], at: int) -> int:\n    return xs[at]\n\ndef main(stdout: Stdout):\n    mut unit = Unit(hp=1)\n    stdout.print(bump(ref unit, by=10, seen=[1]), fill([1, 2]), pick([4, 5], at=1))\n    return\n";
 
     /// Every module's text, as a build with these settings hands it to LLVM.
     fn handed(shared: Shared) -> Result<(String, Shared), String> {
@@ -3961,7 +4030,7 @@ def main(stdout: Stdout):
     /// place in its bytes: in finding a character, reading one, and walking to one.
     #[test]
     fn checking_proofs_checks_a_strings_cursor() -> Result<(), String> {
-        let source = "def go(s: str) -> int:\n    mut n = 0\n    for i in range(s.len()):\n        if s[i] == \"\u{e9}\" or s[i - 1] == \"a\":\n            n += 1\n    return n\n\ndef main(stdout: Stdout):\n    stdout.print(go(\"caf\u{e9} na\u{ef}ve\"))\n    return\n";
+        let source = "def go(s: str) -> int:\n    mut n = 0\n    for i in range(len(s)):\n        if s[i] == \"\u{e9}\" or s[i - 1] == \"a\":\n            n += 1\n    return n\n\ndef main(stdout: Stdout):\n    stdout.print(go(\"caf\u{e9} na\u{ef}ve\"))\n    return\n";
         let program = lowered(source)?;
         let (plain, _, _) = emit(&program)?;
         let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
@@ -3979,7 +4048,7 @@ def main(stdout: Stdout):
     /// a loop's count can't overflow, and its index is inside the list it goes through.
     #[test]
     fn checking_proofs_writes_what_they_left_out() -> Result<(), String> {
-        let source = "def total(xs: list[int]) -> int:\n    mut sum = 0\n    for i in range(xs.len()):\n        sum += xs[i] * 0\n    sum\n\ndef main(stdout: Stdout):\n    stdout.print(total([1, 2]))\n";
+        let source = "def total(xs: list[int]) -> int:\n    mut subtotal = 0\n    for i in range(len(xs)):\n        subtotal += xs[i] * 0\n    return subtotal\n\ndef main(stdout: Stdout):\n    stdout.print(total([1, 2]))\n";
         let program = lowered(source)?;
         let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
         let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
@@ -3999,7 +4068,7 @@ def main(stdout: Stdout):
     /// keeps the signed check.
     #[test]
     fn only_a_product_of_ints_that_arent_negative_checks_unsigned() -> Result<(), String> {
-        let source = "def area(w: int, h: int) -> int:\n    return w * h\n\ndef scaled(x: int) -> int:\n    return x * 3\n\ndef main(stdout: Stdout):\n    xs = [1, 2, 3]\n    stdout.print(area(xs.len(), h=xs.len()))\n    stdout.print(scaled(xs[0] - 5))\n    return\n";
+        let source = "def area(w: int, h: int) -> int:\n    return w * h\n\ndef scaled(x: int) -> int:\n    return x * 3\n\ndef main(stdout: Stdout):\n    xs = [1, 2, 3]\n    stdout.print(area(len(xs), h=len(xs)))\n    stdout.print(scaled(xs[0] - 5))\n    return\n";
         let area = text_of(source, "area")?;
         assert!(area.contains("@llvm.umul.with.overflow.i64(") && !area.contains("@llvm.smul"), "{area}");
         let scaled = text_of(source, "scaled")?;
@@ -4023,15 +4092,15 @@ def main(stdout: Stdout):
             let text = text_of(&program(body), "counted")?;
             Ok((text.matches("br i1 true, label %quick").count(), text.matches("label %quick").count()))
         };
-        let alone = "    mut counts: dict[int, int] = {}\n    for i in range(n):\n        counts[i % 3] = (counts.get(i % 3) else 0) + 1\n    return counts.len() + counts[0]";
+        let alone = "    mut counts: dict[int, int] = {}\n    for i in range(n):\n        counts[i % 3] = (counts.get(i % 3) else 0) + 1\n    return len(counts) + counts[0]";
         let (proven, puts) = checked(alone)?;
         assert!(proven >= 1 && proven == puts, "{proven} of {puts}");
         // Each of these lets something else hold the dict, so every put checks.
         let shared = [
-            "    mut counts: dict[int, int] = {}\n    for i in range(n):\n        counts[i] = keep(counts)\n    return counts.len()",
-            "    mut counts: dict[int, int] = {}\n    mut kept = [counts]\n    for i in range(n):\n        counts[i] = 1\n    return counts.len() + kept[0].len()",
-            "    mut counts: dict[int, int] = {}\n    other = counts\n    for i in range(n):\n        counts[i] = 1\n    return counts.len() + other.len()",
-            "    mut counts = given\n    for i in range(n):\n        counts[i] = 1\n    return counts.len()",
+            "    mut counts: dict[int, int] = {}\n    for i in range(n):\n        counts[i] = keep(counts)\n    return len(counts)",
+            "    mut counts: dict[int, int] = {}\n    mut kept = [counts]\n    for i in range(n):\n        counts[i] = 1\n    return len(counts) + len(kept[0])",
+            "    mut counts: dict[int, int] = {}\n    other = counts\n    for i in range(n):\n        counts[i] = 1\n    return len(counts) + len(other)",
+            "    mut counts = given\n    for i in range(n):\n        counts[i] = 1\n    return len(counts)",
         ];
         for body in shared {
             let (proven, puts) = checked(body)?;
@@ -4044,7 +4113,7 @@ def main(stdout: Stdout):
     /// loop's doesn't, so LLVM still interleaves a counted loop where that pays.
     #[test]
     fn only_a_loop_nothing_counts_says_not_to_interleave() -> Result<(), String> {
-        let source = "def marks(limit: int) -> int:\n    mut composite = [0 for _ in range(limit + 1)]\n    mut count = 0\n    for n in range(2, limit + 1):\n        if composite[n] == 0:\n            count += 1\n            mut multiple = n * n\n            while multiple <= limit:\n                composite[multiple] = 1\n                multiple += n\n    count\n\ndef main(stdout: Stdout):\n    stdout.print(marks(100))\n";
+        let source = "def marks(limit: int) -> int:\n    mut composite = [0 for _ in range(limit + 1)]\n    mut count = 0\n    for n in range(2, limit + 1):\n        if composite[n] == 0:\n            count += 1\n            mut multiple = n * n\n            while multiple <= limit:\n                composite[multiple] = 1\n                multiple += n\n    return count\n\ndef main(stdout: Stdout):\n    stdout.print(marks(100))\n";
         let text = text_of(source, "marks")?;
         let marked =
             text.lines().filter(|line| line.contains("br label") && line.contains("!llvm.loop")).count();
@@ -4057,7 +4126,7 @@ def main(stdout: Stdout):
     /// turn, and one whose length is kept aside isn't changed by anything else meanwhile.
     #[test]
     fn checking_proofs_covers_a_list_a_loop_fills() -> Result<(), String> {
-        let source = "def made(n: int) -> int:\n    zeros = [0 for i in range(n)]\n    doubled = [i * 2 for i in range(n)]\n    zeros.len() + doubled.len()\n\ndef main(stdout: Stdout):\n    stdout.print(made(5))\n";
+        let source = "def made(n: int) -> int:\n    zeros = [0 for i in range(n)]\n    doubled = [i * 2 for i in range(n)]\n    return len(zeros) + len(doubled)\n\ndef main(stdout: Stdout):\n    stdout.print(made(5))\n";
         let program = lowered(source)?;
         let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
         let (_, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
@@ -4076,7 +4145,7 @@ def main(stdout: Stdout):
         let checks = |lines: usize| -> Result<usize, String> {
             let line = "    stdout.print(area(.Square(at_or_zero([3, 1, 2], at_or_zero([1, 2], 1)))))\n";
             let source = format!(
-                "enum Shape:\n    Circle(radius: int)\n    Square(side: int)\n    Empty\n\ndef area(shape: Shape) -> int:\n    match shape:\n        case .Circle(radius): radius * radius * 3\n        case .Square(side): side * side\n        case .Empty: 0\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef main(stdout: Stdout):\n{}",
+                "enum Shape:\n    Circle(radius: int)\n    Square(side: int)\n    Empty\n\ndef area(shape: Shape) -> int:\n    match shape:\n        case .Circle(radius): return radius * radius * 3\n        case .Square(side): return side * side\n        case .Empty: return 0\n\ndef at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef main(stdout: Stdout):\n{}",
                 line.repeat(lines)
             );
             let program = lowered(&source)?;
@@ -4098,7 +4167,7 @@ def main(stdout: Stdout):
     /// own length, with a value nothing set. The build checking proofs found it.
     #[test]
     fn a_string_built_by_a_loop_has_no_length_written_over() -> Result<(), String> {
-        let source = "def repeated(text: str, times: int) -> str:\n    \"\".join([text for _ in range(times)])\n\ndef main(stdout: Stdout):\n    stdout.print(repeated(\"ab\", 3))\n";
+        let source = "def repeated(text: str, times: int) -> str:\n    return \"\".join([text for _ in range(times)])\n\ndef main(stdout: Stdout):\n    stdout.print(repeated(\"ab\", 3))\n";
         let text = text_of(source, "repeated")?;
         assert!(!text.contains("kept_length"), "{text}");
         Ok(())
@@ -4108,7 +4177,7 @@ def main(stdout: Stdout):
     /// drop lets go of each string's block, giving the runtime one with no owner left.
     #[test]
     fn an_enum_holding_strings_has_native_blocks() -> Result<(), String> {
-        let source = "enum Named:\n    Leaf(name: str)\n    Pair(left: Named, right: Named, label: str)\n\ndef build(depth: int) -> Named:\n    if depth == 0: return .Leaf(name=\"leaf\")\n    .Pair(left=build(depth - 1), right=build(depth - 1), label=\"pair\")\n\ndef size(tree: Named) -> int:\n    match tree:\n        case .Leaf(name):\n            name.len()\n        case .Pair(left, right, label):\n            size(left) + size(right) + label.len()\n\ndef main(stdout: Stdout):\n    stdout.print(size(build(4)))\n";
+        let source = "enum Named:\n    Leaf(name: str)\n    Pair(left: Named, right: Named, label: str)\n\ndef build(depth: int) -> Named:\n    if depth == 0: return .Leaf(name=\"leaf\")\n    return .Pair(left=build(depth - 1), right=build(depth - 1), label=\"pair\")\n\ndef size(tree: Named) -> int:\n    match tree:\n        case .Leaf(name):\n            return len(name)\n        case .Pair(left, right, label):\n            return size(left) + size(right) + len(label)\n\ndef main(stdout: Stdout):\n    stdout.print(size(build(4)))\n";
         let (units, shared, _) = emit(&lowered(source)?)?;
         assert!(!shared.native.is_empty(), "Named's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
@@ -4121,7 +4190,7 @@ def main(stdout: Stdout):
     /// left.
     #[test]
     fn an_enum_holding_lists_has_native_blocks() -> Result<(), String> {
-        let source = "enum Doc:\n    Words(names: list[str], counts: list[int])\n    Pair(left: Doc, right: Doc)\n\ndef build(depth: int) -> Doc:\n    if depth == 0: return .Words(names=[\"a\", \"b\"], counts=[1, 2])\n    .Pair(left=build(depth - 1), right=build(depth - 1))\n\ndef size(doc: Doc) -> int:\n    match doc:\n        case .Words(names, counts):\n            names.len() + sum(counts)\n        case .Pair(left, right):\n            size(left) + size(right)\n\ndef main(stdout: Stdout):\n    stdout.print(size(build(4)))\n";
+        let source = "enum Doc:\n    Words(names: list[str], counts: list[int])\n    Pair(left: Doc, right: Doc)\n\ndef build(depth: int) -> Doc:\n    if depth == 0: return .Words(names=[\"a\", \"b\"], counts=[1, 2])\n    return .Pair(left=build(depth - 1), right=build(depth - 1))\n\ndef size(doc: Doc) -> int:\n    match doc:\n        case .Words(names, counts):\n            return len(names) + sum(counts)\n        case .Pair(left, right):\n            return size(left) + size(right)\n\ndef main(stdout: Stdout):\n    stdout.print(size(build(4)))\n";
         let (units, shared, _) = emit(&lowered(source)?)?;
         assert!(!shared.native.is_empty(), "Doc's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
@@ -4133,7 +4202,7 @@ def main(stdout: Stdout):
     /// makes and frees, for it to stop if it's ever given one.
     #[test]
     fn a_watched_build_tells_the_runtime_of_its_native_blocks() -> Result<(), String> {
-        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\ndef build(depth: int) -> Twig:\n    if depth == 0: return .Leaf\n    .Node(left=build(depth - 1), right=build(depth - 1))\n\ndef count(twig: Twig) -> int:\n    match twig:\n        case .Leaf:\n            1\n        case .Node(left, right):\n            1 + count(left) + count(right)\n\ndef main(stdout: Stdout):\n    stdout.print(count(build(4)))\n";
+        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\ndef build(depth: int) -> Twig:\n    if depth == 0: return .Leaf\n    return .Node(left=build(depth - 1), right=build(depth - 1))\n\ndef count(twig: Twig) -> int:\n    match twig:\n        case .Leaf:\n            return 1\n        case .Node(left, right):\n            return 1 + count(left) + count(right)\n\ndef main(stdout: Stdout):\n    stdout.print(count(build(4)))\n";
         let program = lowered(source)?;
         let (units, shared, _) = emit(&program)?;
         assert!(!shared.native.is_empty(), "Twig's blocks are native");
@@ -4147,7 +4216,7 @@ def main(stdout: Stdout):
     /// tree's blocks native.
     #[test]
     fn sized_numbers_and_literal_strings_leave_blocks_native() -> Result<(), String> {
-        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\ndef build(depth: int) -> Twig:\n    if depth == 0: return .Leaf\n    .Node(left=build(depth - 1), right=build(depth - 1))\n\ndef count(twig: Twig) -> int:\n    match twig:\n        case .Leaf:\n            1\n        case .Node(left, right):\n            1 + count(left) + count(right)\n\ndef main(stdout: Stdout):\n    small: u8 = 3\n    wide = i32(7)\n    stdout.print(small, wide, \"tree\", count(build(4)))\n";
+        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\ndef build(depth: int) -> Twig:\n    if depth == 0: return .Leaf\n    return .Node(left=build(depth - 1), right=build(depth - 1))\n\ndef count(twig: Twig) -> int:\n    match twig:\n        case .Leaf:\n            return 1\n        case .Node(left, right):\n            return 1 + count(left) + count(right)\n\ndef main(stdout: Stdout):\n    small: u8 = 3\n    wide = i32(7)\n    stdout.print(small, wide, \"tree\", count(build(4)))\n";
         let (_, shared, _) = emit(&lowered(source)?)?;
         assert!(!shared.native.is_empty(), "Twig's blocks are native");
         Ok(())
@@ -4157,7 +4226,7 @@ def main(stdout: Stdout):
     /// `Refused | Shut` elsewhere in a program leaves a tree's blocks native.
     #[test]
     fn failing_two_ways_leaves_blocks_native() -> Result<(), String> {
-        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\nerror Refused:\n    code: int\n\nerror Shut:\n    code: int\n\ndef build(depth: int) -> Twig:\n    if depth == 0: return .Leaf\n    .Node(left=build(depth - 1), right=build(depth - 1))\n\ndef count(twig: Twig) -> int:\n    match twig:\n        case .Leaf:\n            1\n        case .Node(left, right):\n            1 + count(left) + count(right)\n\ndef both(a: int) -> str fails Refused | Shut:\n    if a < 0: fail Refused(code=a)\n    if a == 0: fail Shut(code=a)\n    \"open\"\n\ndef either(run: () -> str fails Refused | Shut) -> str:\n    run() else \"failed\"\n\ndef main(stdout: Stdout):\n    stdout.print(both(-1) else \"failed\", either(() => both(1)?), count(build(4)))\n";
+        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\nerror Refused:\n    code: int\n\nerror Shut:\n    code: int\n\ndef build(depth: int) -> Twig:\n    if depth == 0: return .Leaf\n    return .Node(left=build(depth - 1), right=build(depth - 1))\n\ndef count(twig: Twig) -> int:\n    match twig:\n        case .Leaf:\n            return 1\n        case .Node(left, right):\n            return 1 + count(left) + count(right)\n\ndef both(a: int) -> str fails Refused | Shut:\n    if a < 0: fail Refused(code=a)\n    if a == 0: fail Shut(code=a)\n    return \"open\"\n\ndef either(run: () -> str fails Refused | Shut) -> str:\n    return run() except Refused() | Shut(): \"failed\"\n\ndef main(stdout: Stdout):\n    both_value = both(-1) except Refused() | Shut(): \"failed\"\n    stdout.print(both_value, either(() => both(1)?), count(build(4)))\n";
         let (_, shared, _) = emit(&lowered(source)?)?;
         assert!(!shared.native.is_empty(), "Twig's blocks are native");
         Ok(())
@@ -4167,7 +4236,7 @@ def main(stdout: Stdout):
     /// compiled code itself, and only to the runtime otherwise.
     #[test]
     fn a_new_struct_key_is_added_natively() -> Result<(), String> {
-        let source = "struct Cell:\n    x: int\n    y: int\n\ndef main(stdout: Stdout):\n    mut seen: dict[Cell, int] = {}\n    for i in range(10):\n        seen[Cell(x=i, y=i)] = i\n    stdout.print(seen.len())\n";
+        let source = "struct Cell:\n    x: int\n    y: int\n\ndef main(stdout: Stdout):\n    mut seen: dict[Cell, int] = {}\n    for i in range(10):\n        seen[Cell(x=i, y=i)] = i\n    stdout.print(len(seen))\n";
         let text = text_of(source, "main")?;
         assert!(text.contains("call i1 @fen_add_plain("), "{text}");
         assert!(text.contains("call ptr @fennec_dict_set("), "{text}");
@@ -4178,7 +4247,7 @@ def main(stdout: Stdout):
     /// with release and read with acquire, so another thread that sees it sees its count and tag.
     #[test]
     fn a_shared_case_is_published_with_release_and_read_with_acquire() -> Result<(), String> {
-        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig, tag: str)\n\ndef leaf() -> Twig:\n    .Leaf\n\ndef main(stdout: Stdout):\n    stdout.print(leaf() is Twig.Leaf)\n";
+        let source = "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig, tag: str)\n\ndef leaf() -> Twig:\n    return .Leaf\n\ndef main(stdout: Stdout):\n    stdout.print(leaf() is Twig.Leaf)\n";
         let text = text_of(source, "leaf")?;
         assert!(
             text.contains("load atomic ptr, ptr @\"fen_case_") && text.contains("acquire, align 8"),
@@ -4186,6 +4255,22 @@ def main(stdout: Stdout):
         );
         assert!(text.contains("release, align 8"), "{text}");
         assert!(!text.contains("unordered"), "{text}");
+        Ok(())
+    }
+
+    /// A function that only hands its work on to another, as a serializer's `field` hands `x` to
+    /// its `serialize`, is inlined wherever it's called, so what it calls is reached with one call
+    /// fewer. One that calls itself, or does more, isn't made to be.
+    #[test]
+    fn a_function_that_only_forwards_is_inlined() -> Result<(), String> {
+        let source = "def work(n: int) -> int:\n    mut total = 0\n    for i in range(n):\n        total += i * n\n    return total\n\n\
+                      def forward(n: int) -> int:\n    return work(n)\n\n\
+                      def more(n: int) -> int:\n    a = work(n)\n    b = work(a)\n    return a + b\n\n\
+                      def main(stdout: Stdout):\n    stdout.print(forward(3), more(2))\n";
+        let forward = text_of(source, "forward")?;
+        assert!(forward.contains("@\"f_forward\"(") && forward.contains(") #2 {"), "{forward}");
+        let more = text_of(source, "more")?;
+        assert!(more.contains("@\"f_more\"(") && !more.contains("@\"f_more\"(i64 %p0) #2 {"), "{more}");
         Ok(())
     }
 
@@ -4200,7 +4285,7 @@ def main(stdout: Stdout):
     /// holds it: what holds it has the address of what the call may have moved or freed.
     #[test]
     fn a_crash_puts_a_place_that_is_out_back_first() -> Result<(), String> {
-        let source = "struct Inner:\n    name: list[int]\n\nstruct Wrap:\n    r: Inner\n\ndef grow(ref xs: list[int], at: int):\n    xs.append(at)\n    empty: list[int] = []\n    xs[0] = empty[at]\n\ndef handle(at: int) -> int:\n    mut w = Wrap(r=Inner(name=[1]))\n    grow(ref w.r.name, at=at)\n    w.r.name.len()\n\ndef main(stdout: Stdout):\n    stdout.print(handle(0))\n";
+        let source = "struct Inner:\n    name: list[int]\n\nstruct Wrap:\n    r: Inner\n\ndef grow(ref xs: list[int], at: int):\n    xs.append(at)\n    empty: list[int] = []\n    xs[0] = empty[at]\n\ndef handle(at: int) -> int:\n    mut w = Wrap(r=Inner(name=[1]))\n    grow(ref w.r.name, at=at)\n    return len(w.r.name)\n\ndef main(stdout: Stdout):\n    stdout.print(handle(0))\n";
         let text = text_of(source, "handle")?;
         let prop = text.find("prop:").ok_or("no way out on a crash")?;
         let put_back =
@@ -4216,7 +4301,7 @@ def main(stdout: Stdout):
     #[test]
     fn what_it_cant_take_says_which_function() -> Result<(), String> {
         // Sorting lists of lists isn't built natively yet.
-        let source = "def f() -> int:\n    xs = sorted([[2], [1]])\n    xs.len()\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
+        let source = "def f() -> int:\n    xs = sorted([[2], [1]])\n    return len(xs)\n\ndef main(stdout: Stdout):\n    stdout.print(f())\n";
         let error = emit(&lowered(source)?).err().unwrap_or_default();
         assert!(error.contains("`f`"), "{error}");
         Ok(())
@@ -4227,6 +4312,14 @@ def main(stdout: Stdout):
 fn written_in_std(function: &Function) -> bool {
     let mut spans = function.blocks.iter().flat_map(|block| &block.insts).map(|inst| inst.span);
     spans.find(|span| *span != Span::default()).is_some_and(Span::in_prelude)
+}
+
+/// Whether a function is one `fennec test` makes for a test, named `test:` and its number, or for
+/// an attempt of a property test's shrinking.
+fn is_test(name: &str) -> bool {
+    name.strip_prefix("test:")
+        .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+        || is_attempt(name)
 }
 
 /// Whether a function is one `fennec test` makes for an attempt of a property test's shrinking,

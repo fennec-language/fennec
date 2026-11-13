@@ -56,6 +56,7 @@ pub extern "C" fn channel_new_every(size: i64) -> i64 {
         replay: crate::replay::place("c"),
         queue: Mutex::new(queue),
         changed: Condvar::new(),
+        freed: std::sync::atomic::AtomicBool::new(false),
     };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));
@@ -116,7 +117,7 @@ pub(super) fn push(
 }
 
 /// The next message for `listener`, as `channel_receive` gives back.
-pub(super) fn receive(channel: &Channel, listener: i64, timeout_ns: i64, value: &mut i64) -> i64 {
+pub(super) fn receive(channel: &Arc<Channel>, listener: i64, timeout_ns: i64, value: &mut i64) -> i64 {
     let timeout_ns = match super::replayed(channel, "receive") {
         super::Turn::Live => timeout_ns,
         super::Turn::Goes => -1,
@@ -169,6 +170,10 @@ pub(super) fn receive(channel: &Channel, listener: i64, timeout_ns: i64, value: 
                 return TIMED_OUT;
             }
             Waited::Stopped => return DONE,
+            Waited::CutShort => {
+                super::met(channel, "receive", CLOSED);
+                return CLOSED;
+            }
         }
     }
 }

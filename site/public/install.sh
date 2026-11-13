@@ -64,7 +64,14 @@ fi
 tar -xzf "$work/$archive" -C "$work"
 toolchain="$home/toolchains/$version"
 rm -rf "$toolchain"
-mkdir -p "$home/toolchains" "$home/bin"
+# Its user's alone, as fennec makes it: what's kept there is run. One that's another user's, or
+# that anyone can write to, may hold what isn't this user's, so it's refused, as fennec refuses it.
+if [ -e "$home" ]; then
+  [ -n "$(find "$home" -prune -user "$(id -u)")" ] || fail "$home is another user's: set FENNEC_HOME to a folder of your own"
+  [ -z "$(find "$home" -prune -perm -0002)" ] || fail "$home can be written by anyone, so what's in it may not be yours: \`chmod -R go-w $home\` fixes it, or remove it"
+fi
+(umask 077 && mkdir -p "$home/toolchains" "$home/bin")
+chmod go-rwx "$home" "$home/toolchains"
 mv "$work/fennec-$version-$target" "$toolchain"
 
 # Not a link: `fennec` finds its runtime libraries and LLVM's tools beside itself, and on macOS

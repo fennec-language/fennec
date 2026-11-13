@@ -53,6 +53,44 @@ fn chunk(words: usize) -> usize {
     (CHUNK_BYTES / (8 * words.max(1))).max(1)
 }
 
+/// How many ranges a call whose body is heavy is cut into at least, however short its list: a
+/// body with a loop or a call in it can take long on few items, so they're shared among the pool's
+/// workers. It's fixed, not the number of workers, so the cut is the same on every machine.
+const HEAVY_RANGES: usize = 64;
+
+/// What a `parallel` call's body is like, as the compiler saw it, which says how its list is cut
+/// and whether it goes to the pool.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Weight {
+    /// Straight-line work: ranges of [`CHUNK_BYTES`] of items, on the pool when there are enough.
+    Light,
+    /// A loop or a call: at least [`HEAVY_RANGES`] ranges, on the pool whenever there are two items.
+    Heavy,
+    /// A body that may wait: an item a range, always on the pool, each range a task that can park.
+    Waiting,
+}
+
+impl Weight {
+    /// How many positions a range of a list `length` long, with items of `words` words, is split
+    /// down to.
+    fn chunk(self, length: usize, words: usize) -> usize {
+        match self {
+            Weight::Light => chunk(words),
+            Weight::Heavy => chunk(words).min(length.div_ceil(HEAVY_RANGES)).max(1),
+            Weight::Waiting => 1,
+        }
+    }
+
+    /// The pool a call of `length` items of `words` words runs on, or None to run it here.
+    fn pool(self, length: usize, words: usize) -> Option<&'static Pool> {
+        match self {
+            Weight::Light => pool::for_call(length * words),
+            Weight::Heavy => pool::for_heavy(length),
+            Weight::Waiting => pool::for_waiting(),
+        }
+    }
+}
+
 fn number(n: usize) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
@@ -475,22 +513,26 @@ fn counted() {
 /// `fennec_parallel_for(list, body, env)`: `for x in parallel(list)` and `for mut x in
 /// parallel(list)`. Gives back 0, or 1 when the body failed.
 pub extern "C" fn parallel_for(list: i64, body: Body, env: i64) -> i64 {
-    run_for(list, body, env, false)
+    run_for(list, body, env, Weight::Light)
 }
 
-fn run_for(list: i64, body: Body, env: i64, waiting: bool) -> i64 {
+/// `fennec_parallel_for_heavy`: `parallel_for`, for a body with a loop or a call in it.
+pub extern "C" fn parallel_for_heavy(list: i64, body: Body, env: i64) -> i64 {
+    run_for(list, body, env, Weight::Heavy)
+}
+
+fn run_for(list: i64, body: Body, env: i64, weight: Weight) -> i64 {
     counted();
     let Some((length, words)) = with(|state| extent(state, list)) else { return 0 };
-    let run = Run::new(if waiting { 1 } else { chunk(words) }).waiting(waiting);
-    run_each(run, length, words, Leaf::For(body, env))
+    let run = Run::new(weight.chunk(length, words)).waiting(weight == Weight::Waiting);
+    run_each(run, length, words, Leaf::For(body, env), weight)
 }
 
 /// Runs a loop's or a comprehension's ranges, on the pool when it's worth it, then passes the
 /// failure up: 1 if there was one, else 0. A body that may wait goes to the pool however few its
 /// items, as what it waits for is what takes the time.
-fn run_each(run: Run, length: usize, words: usize, leaf: Leaf) -> i64 {
-    let pool = if run.waiting { pool::for_waiting() } else { pool::for_call(length * words) };
-    let Some(pool) = pool else {
+fn run_each(run: Run, length: usize, words: usize, leaf: Leaf, weight: Weight) -> i64 {
+    let Some(pool) = weight.pool(length, words) else {
         run.each((0, length), &|from, to, thread| leaf.run(from, to, thread));
         return run.finish();
     };
@@ -541,15 +583,20 @@ fn reduce_on_pool(
 /// The result is a new list owned once of the element numbered `element`, with each item
 /// at its position. On a failure it's 0.
 pub extern "C" fn parallel_map(list: i64, body: MapBody, env: i64, element: i64) -> i64 {
-    run_map(list, body, env, element, false)
+    run_map(list, body, env, element, Weight::Light)
 }
 
-fn run_map(list: i64, body: MapBody, env: i64, element: i64, waiting: bool) -> i64 {
+/// `fennec_parallel_map_heavy`: `parallel_map`, for a body with a loop or a call in it.
+pub extern "C" fn parallel_map_heavy(list: i64, body: MapBody, env: i64, element: i64) -> i64 {
+    run_map(list, body, env, element, Weight::Heavy)
+}
+
+fn run_map(list: i64, body: MapBody, env: i64, element: i64, weight: Weight) -> i64 {
     counted();
     let Some((length, words)) = with(|state| extent(state, list)) else { return 0 };
     let out = super::lists::new(element, number(length));
-    let run = Run::new(if waiting { 1 } else { chunk(words) }).waiting(waiting);
-    if run_each(run, length, words, Leaf::Map(body, env, out)) != 0 {
+    let run = Run::new(weight.chunk(length, words)).waiting(weight == Weight::Waiting);
+    if run_each(run, length, words, Leaf::Map(body, env, out), weight) != 0 {
         super::heap::free(out);
         return 0;
     }
@@ -607,12 +654,12 @@ fn run_reduce(
 
 /// `fennec_parallel_for_waiting`: `parallel_for`, for a body that may wait.
 pub extern "C" fn parallel_for_waiting(list: i64, body: Body, env: i64) -> i64 {
-    run_for(list, body, env, true)
+    run_for(list, body, env, Weight::Waiting)
 }
 
 /// `fennec_parallel_map_waiting`: `parallel_map`, for a body that may wait.
 pub extern "C" fn parallel_map_waiting(list: i64, body: MapBody, env: i64, element: i64) -> i64 {
-    run_map(list, body, env, element, true)
+    run_map(list, body, env, element, Weight::Waiting)
 }
 
 /// `fennec_parallel_reduce_waiting`: `parallel_reduce`, for a body that may wait.
@@ -706,6 +753,10 @@ mod pool {
     }
 
     pub(super) fn for_waiting() -> Option<&'static Pool> {
+        None
+    }
+
+    pub(super) fn for_heavy(_length: usize) -> Option<&'static Pool> {
         None
     }
 
@@ -1056,6 +1107,54 @@ mod tests {
         finish();
     }
 
+    /// The ranges the heavy-body test's calls ran: where each starts, how long it is, and the
+    /// thread it ran on.
+    static HEAVY: Mutex<Vec<(i64, i64, i64)>> = Mutex::new(Vec::new());
+
+    extern "C" fn heavy(_env: i64, from: i64, to: i64, thread: i64) -> i64 {
+        HEAVY.lock().unwrap().push((from, to - from, thread));
+        0
+    }
+
+    fn heavy_ranges() -> Vec<(i64, i64, i64)> {
+        let mut ranges = std::mem::take(&mut *HEAVY.lock().unwrap());
+        ranges.sort_unstable();
+        ranges
+    }
+
+    /// A heavy body's list is cut into at least 64 ranges however short it is, or an item each when
+    /// it's shorter, cut the same way each time and shared among the pool's workers, where a light
+    /// body's few items stay one range.
+    #[test]
+    fn a_heavy_body_s_short_list_is_cut_into_at_least_64_ranges_on_the_pool() {
+        begin();
+        let here = i64::from(threads::index());
+        for length in [2_i64, 100, 640, 1000] {
+            let list = lists::new(0, length);
+            assert_eq!(super::parallel_for_heavy(list, heavy, 0), 0);
+            let ranges = heavy_ranges();
+            assert!(ranges.len() >= 64.min(usize::try_from(length).unwrap()), "{length}: {ranges:?}");
+            let longest = (length + 63) / 64;
+            assert!(ranges.iter().all(|(_, size, _)| (1..=longest).contains(size)), "{length}: {ranges:?}");
+            // Together they cover the list once, in order.
+            let mut next = 0;
+            for (from, size, _) in &ranges {
+                assert_eq!(*from, next, "{length}: {ranges:?}");
+                next += size;
+            }
+            assert_eq!(next, length);
+            assert!(ranges.iter().all(|(_, _, thread)| *thread != here), "{length}: ran here");
+            // The same cut again.
+            assert_eq!(super::parallel_for_heavy(list, heavy, 0), 0);
+            let again: Vec<_> = heavy_ranges().iter().map(|(from, size, _)| (*from, *size)).collect();
+            assert_eq!(again, ranges.iter().map(|(from, size, _)| (*from, *size)).collect::<Vec<_>>());
+            assert_eq!(super::parallel_for(list, heavy, 0), 0);
+            assert_eq!(heavy_ranges().len(), 1, "a light body's {length} items are one range");
+            heap::free(list);
+        }
+        finish();
+    }
+
     /// How many of the lending test's ranges ran.
     static RANGES: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
@@ -1179,6 +1278,7 @@ mod tests {
     #[test]
     fn what_a_thread_kept_comes_out_when_it_panics() {
         crate::embed::write_kept_output_on_panic();
+        let mark = crate::embed::written_mark();
         let panicked = std::thread::spawn(|| {
             let inputs = crate::Inputs { live: true, ..crate::Inputs::default() };
             start(Tables::default(), inputs);
@@ -1189,7 +1289,6 @@ mod tests {
         })
         .join();
         assert!(panicked.is_err());
-        let written = crate::embed::WRITTEN.lock().unwrap();
-        assert!(String::from_utf8_lossy(&written).contains("printed just before panicking\n"));
+        assert!(crate::embed::written_since(mark).contains("printed just before panicking\n"));
     }
 }

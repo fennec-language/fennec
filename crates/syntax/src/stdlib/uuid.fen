@@ -14,9 +14,9 @@ export struct Uuid:
 
     ## The UUID 36-character text says, with its hyphens where they go, in either case.
     def parse(text: str) -> Uuid fails InvalidValue:
-        if text.len() != 36:
+        if len(text) != 36:
             fail InvalidValue(
-                message=f"{quoted_input(text)} isn't a UUID: it has {text.len()} characters, not 36",
+                message=f"{quoted_input(text)} isn't a UUID: it has {len(text)} characters, not 36",
             )
         mut high = 0
         mut low = 0
@@ -40,17 +40,17 @@ export struct Uuid:
                     low = (low << 4) | n
                 digits += 1
             at += 1
-        Uuid(high=high, low=low)
+        return Uuid(high=high, low=low)
 
     ## Which kind of UUID it is: 4 for one `v4` made, 7 for one `v7` made, 0 for the nil one.
     def version(self) -> int:
-        (self.high >> 12) & 15
+        return (self.high >> 12) & 15
 
     ## Ordered as their text is, as 128-bit numbers with no sign.
     def <(self, other: Uuid) -> bool:
         top = 1 << 63
         if self.high != other.high: return (self.high ^ top) < (other.high ^ top)
-        (self.low ^ top) < (other.low ^ top)
+        return (self.low ^ top) < (other.low ^ top)
 
     def str(self, ref out: StrWriter):
         out.write(Uuid._hex(self.high >> 32, count=8) + "-")
@@ -66,18 +66,18 @@ export struct Uuid:
         while at >= 0:
             out.append("0123456789abcdef"[(bits >> (4 * at)) & 15])
             at -= 1
-        "".join(out)
+        return "".join(out)
 
     ## What a hex digit stands for, or -1.
     def _hex_value(c: str) -> int:
-        "0123456789abcdef".find(c.lower()) else -1
+        return "0123456789abcdef".find(c.lower()) else -1
 
 ## A random UUID: 122 bits from `entropy`, with its version and variant bits set.
 export def v4(entropy: Entropy) -> Uuid:
     data = entropy.bytes(16)
     high = word(data, at=0)
     low = word(data, at=8)
-    stamped(high, low=low, version=4)
+    return stamped(high, low=low, version=4)
 
 ## A UUID that starts with the milliseconds since 1970 that `clock` says, then 74 random bits
 ## from `entropy`. One made later sorts after one made earlier, at a millisecond's grain.
@@ -86,21 +86,21 @@ export def v7(entropy: Entropy, clock: Clock) -> Uuid:
     millis = clock.time().nanos // 1_000_000
     high = (millis << 16) | (data[0] << 8) | data[1]
     low = word(data, at=2)
-    stamped(high, low=low, version=7)
+    return stamped(high, low=low, version=7)
 
 ## The 8 bytes of `data` from `at`, the first highest.
 def word(data: bytes, at: int) -> int:
     mut n = 0
     for offset in range(8):
         n = (n << 8) | data[at + offset]
-    n
+    return n
 
 ## `high` and `low` with the version in bits 48 to 51 and RFC 9562's variant, `10`, at the top
 ## of `low`.
 def stamped(high: int, low: int, version: int) -> Uuid:
     with_version = (high & ~(15 << 12)) | (version << 12)
     with_variant = (low & ((1 << 62) - 1)) | (1 << 63)
-    Uuid(high=with_version, low=with_variant)
+    return Uuid(high=with_version, low=with_variant)
 
 ## A `Uuid` saves as its text, as APIs and files write one.
 extend Uuid:
@@ -109,4 +109,6 @@ extend Uuid:
 
     def deserialize(ref src: Deserializer) -> Uuid fails ParseError:
         text = src.text()?
-        Uuid.parse(text) else fail src.here(f"is `{text}`, which isn't a UUID")
+        return Uuid.parse(text) except InvalidValue(): fail src.here(
+            f"is {quoted_input(text)}, which isn't a UUID",
+        )

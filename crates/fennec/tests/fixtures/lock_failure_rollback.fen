@@ -14,7 +14,7 @@ def spend(a: shared Account, amount: int) -> int fails Nope:
         held.log.append("spent")
         changed = 1
         if held.balance < 0: fail Nope(why=f"{held.name} is short")
-    changed
+    return changed
 
 def both(a: shared Account, b: shared Account) fails Nope:
     lock a, b as ref first, ref second:
@@ -35,13 +35,13 @@ def in_a_loop(a: shared Account) -> int:
             held.balance += 1
             if at == 1: break
         rounds += 1
-    rounds
+    return rounds
 
 def kept_local(a: shared Account) -> int:
     mut seen = 0
-    set_and_fail(a, ref seen) else:
+    set_and_fail(a, ref seen) except Nope():
         pass
-    seen
+    return seen
 
 def set_and_fail(a: shared Account, ref seen: int) fails Nope:
     lock a as ref held:
@@ -50,7 +50,7 @@ def set_and_fail(a: shared Account, ref seen: int) fails Nope:
         fail Nope(why="local kept")
 
 def tries(a: shared Account, at: int) -> int:
-    spend(a, 1000 + at) else -1
+    return spend(a, 1000 + at) except Nope(): -1
 
 def show(a: shared Account, stdout: Stdout):
     lock a as held:
@@ -59,13 +59,14 @@ def show(a: shared Account, stdout: Stdout):
 def main(stdout: Stdout):
     shared a = Account(balance=10, name="ann", log=["start"])
     shared b = Account(balance=20, name="bob", log=[])
-    stdout.print(spend(a, 3) else -1)
+    spend_value = spend(a, 3) except Nope(): -1
+    stdout.print(spend_value)
     show(a, stdout)
-    _ = spend(a, 50) else as why:
+    _ = spend(a, 50) except why:
         stdout.print(why)
         0
     show(a, stdout)
-    both(a, b) else as why:
+    both(a, b) except why:
         stdout.print(why)
     show(a, stdout)
     show(b, stdout)

@@ -8,9 +8,9 @@ START = NAME[0:3]
 
 def main(stdout: Stdout):
     stdout.print(size())
-    stdout.print(NAME.len())
-    stdout.print(START.len())
-    stdout.print(embed_file("levels/first.bin").len() == size())
+    stdout.print(len(NAME))
+    stdout.print(len(START))
+    stdout.print(len(embed_file("levels/first.bin")) == size())
 
 test "the name is all there":
-    assert NAME.len() == 6
+    assert len(NAME) == 6

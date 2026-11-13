@@ -78,7 +78,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use fennec_syntax::{Diagnostic, Expr, ExprKind, Item, Module, Span};
 
-pub use except_fix::{migration_fixes, std_migration_fixes, syntax_migration_fixes};
+pub use except_fix::{migration_fixes, reserved_name, std_migration_fixes, syntax_migration_fixes};
 pub use messages::missing_method;
 pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;
@@ -89,7 +89,24 @@ pub use types::{Num, Type};
 /// Checks a parsed module. Returns the signature of every function and method, or every
 /// problem found, in source order.
 pub fn check(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
-    check_typed(module).map(Checked::into_signatures)
+    refuse_reserved(module)?;
+    let checked = check_typed(module)?;
+    refuse_old_forms(module, &checked)?;
+    Ok(checked.into_signatures())
+}
+
+/// The forms of before 2026-11-11 a program still has, refused, from what checking it as it was
+/// written found. `check_typed` takes them, so `fennec fix` can type them to rewrite them.
+/// A top-level definition named after a builtin, refused before anything's checked: one like
+/// `interface str` would turn every other message into one about it.
+fn refuse_reserved(module: &Module) -> Result<(), Vec<Diagnostic>> {
+    let refused = except_fix::reserved_definitions(module);
+    if refused.is_empty() { Ok(()) } else { Err(refused) }
+}
+
+fn refuse_old_forms(module: &Module, checked: &Checked) -> Result<(), Vec<Diagnostic>> {
+    let refused = except_fix::old_forms(module, checked);
+    if refused.is_empty() { Ok(()) } else { Err(refused) }
 }
 
 /// Like `check`, for a module `check_to_build` has resolved and trimmed to what `main` reaches,
@@ -265,7 +282,9 @@ pub fn builtin_method_params(ty: &Type, name: &str) -> Option<Vec<Type>> {
 /// types.
 pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
     let names = own_types_apart(module);
+    refuse_reserved(module)?;
     let checked = check_typed(module).map_err(|problems| as_written(problems, &names))?;
+    refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
     resolved(module, checked)
 }
 
@@ -451,9 +470,11 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
 pub fn check_to_build(module: &mut Module) -> Result<Option<Signatures>, Vec<Diagnostic>> {
     library_parses()?;
     let names = own_types_apart(module);
+    refuse_reserved(module)?;
     let checked = checker::Checker::new(module)
         .run(checker::Scope::ReachedWithFields)
         .map_err(|problems| as_written(problems, &names))?;
+    refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
     // Resolving writes in what the check found, as a default left out of a call, which checking
     // the module again types as what's written there: the first check's types are only those of
     // a module it left as it was.
@@ -472,8 +493,10 @@ pub fn check_to_lower(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>
 fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, Vec<Diagnostic>> {
     library_parses()?;
     let names = own_types_apart(module);
+    refuse_reserved(module)?;
     let checked =
         checker::Checker::new(module).run(scope).map_err(|problems| as_written(problems, &names))?;
+    refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
     resolved(module, checked)
 }
 

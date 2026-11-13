@@ -4,28 +4,28 @@ error Missing:
     value: int
 
 def total(items: list[int]) -> int:
-    sum(items)
+    return sum(items)
 
 def first(items: list[int]) -> int:
-    items[0]
+    return items[0]
 
 def scale() -> int:
-    1
+    return 1
 
 def index() -> int:
-    0
+    return 0
 
 def count() -> int:
-    0
+    return 0
 
 def size() -> int:
-    0
+    return 0
 
 def step() -> int:
-    0
+    return 0
 
 def find(items: list[int], value: int) -> int fails Missing:
-    for at in range(items.len()):
+    for at in range(len(items)):
         if items[at] == value: return at
     fail Missing(value)
 

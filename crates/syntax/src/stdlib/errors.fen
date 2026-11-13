@@ -28,9 +28,9 @@ export error ParseError:
 
 ## What `run` fails with, or `None` when it doesn't, for a test that needs the failure as a value:
 ## `problem = failure_of(() => Time.parse(text)?)`. `assert Time.parse(text) fails ParseError()` is
-## the usual way to check one. It's only for tests: anywhere else, `else as why:` names a failure
+## the usual way to check one. It's only for tests: anywhere else, `except why:` names a failure
 ## where it happens.
 export def failure_of[T, E](run: () -> T fails E) -> E?:
-    run() else as why:
+    run() except why:
         return why
-    None
+    return None

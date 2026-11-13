@@ -102,6 +102,34 @@ fn a_page_is_never_loaded() {
     );
 }
 
+/// A capability is handed down from `main`, never made: loading one from text would make one nobody
+/// handed over. Neither one nor anything holding one is saved or loaded, by JSON, TOML or pack, as a
+/// `Secret` isn't.
+#[test]
+fn a_capability_is_never_saved_or_loaded() {
+    let program = "
+        a = json.loads[Fs]('{}')
+        b = json.loads[Holder]('{}')
+        c = toml.loads[Outputs]('')
+        d = pack.loads[Reaches](bytes([]))
+        e = json.dumps(stdout)
+    ";
+    let declarations = "from std import json, pack, toml\n\n\
+                        struct Holder:\n    files: Fs\n\n\
+                        struct Outputs:\n    out: list[Stdout]\n\n\
+                        struct Reaches:\n    net: Net?\n";
+    assert_eq!(
+        with_imports(declarations, program),
+        [
+            "JSON can't hold an `Fs` @ Fs",
+            "JSON can't hold `Holder.files`, which is an `Fs` @ Holder",
+            "TOML can't hold `Outputs.out`, which is a `Stdout` @ Outputs",
+            "`Reaches` isn't a `Deserializable`: `Reaches.net` is a `Net`, which can't be saved @ pack.loads[Reaches](bytes([]))",
+            "JSON can't hold a `Stdout` @ json.dumps(stdout)",
+        ]
+    );
+}
+
 /// A database URL written in the source can't hold its password, which would be in a plain `str`
 /// and in the source too. Without one, or as a `Secret`, it's fine.
 #[test]
@@ -334,7 +362,7 @@ fn a_channel_opens_through_its_generic_source() {
     let source = "from std.concurrent import Closed, Inbox, Sender, Timeout, channel\n\n\
         enum Job:\n    Build(name: str)\n    Stop\n\n\
         def drain(inbox: Inbox[Job]) -> int:\n    mut count = 0\n    for job in inbox:\n        match job:\n            \
-        case .Build(name):\n                count += name.len()\n            case .Stop:\n                return count\n    count\n\n\
+        case .Build(name):\n                count += len(name)\n            case .Stop:\n                return count\n    return count\n\n\
         def main(stdout: Stdout) fails Closed | Timeout:\n    with channel[Job](size=4) as jobs:\n        \
         sender: Sender[Job] = jobs.sender()\n        sender.send(.Build(name=\"core\"))?\n        jobs.send_within(.Stop, 1s)?\n        \
         stdout.print(drain(jobs.inbox()))\n";
@@ -370,17 +398,17 @@ fn a_channel_opens_through_its_generic_source() {
 /// come from the brackets, and a wrong count says so.
 #[test]
 fn a_static_method_takes_its_types_from_the_type_written() {
-    let boxes = "struct Boxed[T]:\n    items: list[T]\n\n    def empty() -> Boxed[T]:\n        Boxed[T](items=[])\n\n";
+    let boxes = "struct Boxed[T]:\n    items: list[T]\n\n    def empty() -> Boxed[T]:\n        return Boxed[T](items=[])\n\n";
     let empty: [&str; 0] = [];
     assert_eq!(
         problems(&format!(
-            "{boxes}def main(stdout: Stdout):\n    held = Boxed[int].empty()\n    stdout.print(held.items.len())\n"
+            "{boxes}def main(stdout: Stdout):\n    held = Boxed[int].empty()\n    stdout.print(len(held.items))\n"
         )),
         empty
     );
     assert_eq!(
         problems(&format!(
-            "{boxes}def main(stdout: Stdout):\n    held = Boxed[int, str].empty()\n    stdout.print(held.items.len())\n"
+            "{boxes}def main(stdout: Stdout):\n    held = Boxed[int, str].empty()\n    stdout.print(len(held.items))\n"
         )),
         ["`Boxed` takes 1 type in brackets, but this gives 2 @ int, str"]
     );
@@ -468,11 +496,11 @@ fn tls_is_named_where_a_connection_is_made() {
 fn a_program_lowering_rewrote_checks_again() {
     for source in [
         "struct World:\n    squads = list[int]()\n\n    def form(ref self, at: (int, int)) -> int:\n        \
-         self.squads.append(at[0])\n        self.squads.len()\n\n\
+         self.squads.append(at[0])\n        return len(self.squads)\n\n\
          def main(stdout: Stdout):\n    mut world = World()\n    _ = world.form((1, 2))\n    _ = world.form((3, 4))\n    \
          shared count = World()\n    lock count as held:\n        stdout.print(held.squads, world.squads)\n",
         "error DbError:\n    why: str\n\nstruct Log:\n    lines = list[str]()\n\n\
-         def transaction(ref log: Log) -> with int fails DbError:\n    lend 1 else:\n        \
+         def transaction(ref log: Log) -> with int fails DbError:\n    lend 1 except:\n        \
          log.lines.append(\"rolled back\")\n        fail DbError(why=\"lost\")\n    pass\n\n\
          def insert(n: int) fails DbError:\n    if n > 1: fail DbError(why=\"duplicate\")\n\n\
          def main(stdout: Stdout) fails DbError:\n    mut log = Log()\n    \

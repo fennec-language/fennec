@@ -82,6 +82,29 @@ fn counts_in(line: &str) -> Option<fennec_rt::embed::Counts> {
     Some(counts)
 }
 
+/// The copy model's findings, less each copy of a local the native code changes where it is: an
+/// item taken out of its place and put back, which the model sees as shared with that place.
+pub(crate) fn without_what_changes_in_place(
+    findings: Vec<fennec_ir::Finding>,
+    lowered: &fennec_ir::Program,
+) -> Vec<fennec_ir::Finding> {
+    let in_place = fennec_llvm::changed_in_place(lowered);
+    findings
+        .into_iter()
+        .filter(|finding| match &finding.cost {
+            fennec_ir::Cost::Copy { value, why: fennec_ir::Shared::HeldBy { .. } } => {
+                !in_place.contains(&(finding.function.clone(), value.clone()))
+            }
+            _ => true,
+        })
+        .collect()
+}
+
+/// What a send sends, as a report names it: by its name, or as what the call sends.
+pub(crate) fn sent(name: &str) -> String {
+    if name == "an item" { "what this sends".to_owned() } else { format!("`{name}`") }
+}
+
 /// What a run did, in a line.
 pub(crate) fn ran(counts: &fennec_rt::embed::Counts) -> String {
     let copies = match counts.copies {
@@ -120,12 +143,12 @@ pub(crate) fn copies(path: &str) -> ExitCode {
     let checked = match fennec_check::check_and_resolve(&mut program.module) {
         Ok(checked) => checked,
         Err(diagnostics) => {
-            eprint!("{}", program.sources.render_all(&diagnostics));
+            eprint!("{}", program.render(&diagnostics));
             return ExitCode::FAILURE;
         }
     };
     let lowered = fennec_ir::lower(&program.module, &checked);
-    let findings = fennec_ir::costs(&lowered);
+    let findings = without_what_changes_in_place(fennec_ir::costs(&lowered), &lowered);
     for finding in &findings {
         let (file, line, column, text) = program.sources.locate(finding.span).unwrap_or(("?", 0, 0, ""));
         let hot = match (finding.loops, &finding.called_from_loop) {
@@ -135,6 +158,30 @@ pub(crate) fn copies(path: &str) -> ExitCode {
             (loops, _) => format!(" (in {loops} loops)"),
         };
         println!("{file}:{line}:{column} in `{}`{hot}: {}", finding.function, finding.message());
+        println!("    {}", text.trim());
+    }
+    // What the native code copies that the model above can't see: an item read out of where it
+    // is, changed and put back, with nothing showing its place isn't read meanwhile.
+    for copy in fennec_llvm::copies_made(&lowered) {
+        if copy.span.in_prelude()
+            || findings.iter().any(|finding| finding.span == copy.span && finding.function == copy.function)
+        {
+            continue;
+        }
+        let (file, line, column, text) = program.sources.locate(copy.span).unwrap_or(("?", 0, 0, ""));
+        let what = match copy.why {
+            fennec_llvm::CopyWhy::PutBack => format!(
+                "what this reads out of `{}` is copied to change it, since `{}` may be read before it goes back",
+                copy.from, copy.from
+            ),
+            fennec_llvm::CopyWhy::Sent => {
+                format!(
+                    "{} is copied as it's sent, since the receiving end may be on another thread",
+                    sent(&copy.from)
+                )
+            }
+        };
+        println!("{file}:{line}:{column} in `{}`: {what}", copy.function);
         println!("    {}", text.trim());
     }
     for skipped in &lowered.not_lowered {

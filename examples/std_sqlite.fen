@@ -12,17 +12,16 @@ struct Item:
 
 ## What `run` fails with, as the case's name and its reason, or `fine`.
 def outcome[T](run: () -> T fails SqlError) -> str:
-    _ = run() else as why:
-        match why:
-            case .Constraint(reason=reason):
-                return f"Constraint: {reason}"
-            case .Busy(reason=reason):
-                return f"Busy: {reason}"
-            case .Column(name=name, reason=reason):
-                return f"Column {name}: {reason}"
-            case .Failed(reason=reason):
-                return f"Failed: {reason}"
-    "fine"
+    _ = run() except why:
+        case .Constraint(reason=reason):
+            return f"Constraint: {reason}"
+        case .Busy(reason=reason):
+            return f"Busy: {reason}"
+        case .Column(name=name, reason=reason):
+            return f"Column {name}: {reason}"
+        case .Failed(reason=reason):
+            return f"Failed: {reason}"
+    return "fine"
 
 test "every kind of value goes in as a parameter and comes back as it was"(fs: Fs):
     with sqlite.open(fs, "kinds.db")? as db:

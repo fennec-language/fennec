@@ -180,9 +180,13 @@ fn with_crashed(error: Option<&Type>) -> Type {
 /// makes the channel, starts the task with the receiving end, lends the sending end, and where
 /// the block ends closes the channel, waits for the task and gives back how it ended. A block
 /// that fails cuts the task short at once.
+///
+/// Its code is the same text for every launch, read as the standard library's, with a slot where
+/// each type goes; the checked types are put in as written types built straight from them, never
+/// as text, so a program's type named like the library's, a dependency's, or any other the
+/// checker holds under a name a program can't write comes through as it is.
 pub(crate) fn source(launch: &Launch) -> Option<crate::lend_lowering::Source> {
-    let (text, message) = source_text(launch)?;
-    let mut module = fennec_syntax::parse_prelude(&text).ok()?;
+    let mut module = fennec_syntax::parse_prelude(&source_text(launch.message.is_some())).ok()?;
     // `intrinsics.launch` is the intrinsic's own name, as the standard library's calls to it are.
     fennec_syntax::visit::exprs_mut(&mut module, &mut |expr| {
         if let ExprKind::Attr { object, name, optional: false } = &expr.kind
@@ -197,8 +201,28 @@ pub(crate) fn source(launch: &Launch) -> Option<crate::lend_lowering::Source> {
             expr.kind = ExprKind::Name(format!("_{}", fennec_syntax::visit::HIDDEN));
         }
     });
-    let Some(Item::Function(mut def)) = module.items.into_iter().next() else { return None };
-    with_task(&mut def, launch, message.as_deref())?;
+    // What `launch_end` gives back on a failure: the task's error, or `Crashed` for a task that
+    // can't fail, whose code 2 never comes.
+    let ended = launch.error.clone().unwrap_or_else(|| Type::named("Crashed"));
+    let fails = with_crashed(launch.error.as_ref());
+    let mut slots = vec![(ENDED, ended), (FAILS, fails)];
+    slots.extend(launch.message.clone().map(|message| (MESSAGE, message)));
+    let mut items = module.items.into_iter();
+    let Some(Item::Function(mut def)) = items.next() else { return None };
+    fill(&mut def, &slots)?;
+    let inbox = match items.next() {
+        Some(Item::Function(mut maker)) => {
+            fill(&mut maker, &slots)?;
+            let Some(fennec_syntax::StmtKind::Return(Some(made))) =
+                maker.body.into_iter().next().map(|stmt| stmt.kind)
+            else {
+                return None;
+            };
+            Some(made)
+        }
+        _ => None,
+    };
+    with_task(&mut def, launch, inbox.as_ref())?;
     let lent =
         launch.message.clone().map_or(Type::Int, |message| Type::Generic("Sender".to_owned(), vec![message]));
     Some(crate::lend_lowering::Source {
@@ -207,6 +231,48 @@ pub(crate) fn source(launch: &Launch) -> Option<crate::lend_lowering::Source> {
         gives: Type::Generic(crate::lend::WITH.to_owned(), vec![lent]),
         generics: Vec::new(),
     })
+}
+
+/// The slots in the source's text, each where one checked type goes: what the inbox takes, what
+/// `launch_end` gives back on a failure, and what the source fails with.
+const MESSAGE: &str = "Message__slot";
+const ENDED: &str = "Ended__slot";
+const FAILS: &str = "Fails__slot";
+
+/// Puts each slot's type in, wherever a slot is in `def`: in its signature as a written type, and
+/// in its code, as in `Sender[Message__slot](...)`, as the expression that names that type.
+fn fill(def: &mut fennec_syntax::FnDef, slots: &[(&str, Type)]) -> Option<()> {
+    let mut whole = true;
+    for ty in def
+        .ret
+        .iter_mut()
+        .chain(def.fails.iter_mut())
+        .chain(def.params.iter_mut().filter_map(|param| param.ty.as_mut()))
+    {
+        whole &= fill_type(ty, slots).is_some();
+    }
+    fennec_syntax::visit::in_function(def, &mut |expr| {
+        if let ExprKind::Name(name) = &expr.kind
+            && let Some((_, ty)) = slots.iter().find(|(slot, _)| slot == name)
+        {
+            match ty.written(expr.span).and_then(|written| written.as_expr(expr.span)) {
+                Some(named) => *expr = named,
+                None => whole = false,
+            }
+        }
+    });
+    whole.then_some(())
+}
+
+/// Puts each slot's type in where a slot is in a written type, keeping a `?` written after it.
+fn fill_type(ty: &mut fennec_syntax::TypeExpr, slots: &[(&str, Type)]) -> Option<()> {
+    if let Some((_, filled)) = slots.iter().find(|(slot, _)| *slot == ty.name) {
+        let optional = ty.optional;
+        *ty = filled.written(ty.span)?;
+        ty.optional |= optional;
+        return Some(());
+    }
+    ty.args.iter_mut().try_for_each(|arg| fill_type(arg, slots))
 }
 
 /// A `launch(...)` call with its task taken out, leaving `launch`'s own options to give the
@@ -219,46 +285,32 @@ pub(crate) fn options_only(call: &Expr) -> Expr {
     options
 }
 
-/// The text of the source written in for a `with launch(...)`, and what its inbox takes, as written.
-fn source_text(launch: &Launch) -> Option<(String, Option<String>)> {
-    let written = |ty: &Type| match ty {
-        Type::Unit => Some("nothing".to_owned()),
-        Type::Errors(names) => Some(names.join(" | ")),
-        other => other.source(),
-    };
-    let error = match &launch.error {
-        Some(error) => Some(written(error)?),
-        None => None,
-    };
-    // What `launch_end` gives back on a failure: the task's error, or `Crashed` for a task that
-    // can't fail, whose code 2 never comes.
-    let ended = error.clone().unwrap_or_else(|| "Crashed".to_owned());
-    let fails = written(&with_crashed(launch.error.as_ref()))?;
-    let message = match &launch.message {
-        Some(message) => Some(message.source()?),
-        None => None,
-    };
+/// The text of the source written in for a `with launch(...)`, the same for every launch with an
+/// inbox, and for every one without: a slot stands where each type goes (see `fill`). With an
+/// inbox, a second function after it holds the inbox the task is given, made from the channel.
+fn source_text(inbox: bool) -> String {
     // With an inbox, the channel is made first and closed and let go of where the block ends.
-    let channel = |line: &str| message.as_ref().map(|_| line.to_owned());
+    let channel = |line: &str| inbox.then(|| line.to_owned());
     // The task stays as written, in the caller's code: its arrow is the closure started, with
     // its inbox written in, where the placeholder is. It's taken out of the call's arguments.
-    let (params, lends, lent) = match &message {
-        Some(message) => (
-            "stop_after: Duration? = None, inbox_size = 16".to_owned(),
-            format!("Sender[{message}]"),
-            format!("Sender[{message}](_channel=channel__made)"),
-        ),
-        None => ("stop_after: Duration? = None".to_owned(), "int".to_owned(), "0".to_owned()),
+    let (params, lends, lent) = if inbox {
+        (
+            "stop_after: Duration? = None, inbox_size = 16",
+            format!("Sender[{MESSAGE}]"),
+            format!("Sender[{MESSAGE}](_channel=channel__made)"),
+        )
+    } else {
+        ("stop_after: Duration? = None", "int".to_owned(), "0".to_owned())
     };
     let lines = [
-        Some(format!("def launched__({params}) -> with {lends} fails {fails}:")),
+        Some(format!("def launched__({params}) -> with {lends} fails {FAILS}:")),
         channel("    channel__made = intrinsics.channel_new(inbox_size)"),
         Some("    started__made = intrinsics.launch(task__placeholder)".to_owned()),
         // Above the `lend`, since its `except:` is written in at each place the block can fail.
         Some("    mut cut__made = 0".to_owned()),
         Some(format!("    lend {lent} except:")),
         channel("        intrinsics.channel_close(channel__made)"),
-        Some(format!("        _ = intrinsics.launch_end[{ended}](started__made, -1, True, ref cut__made)")),
+        Some(format!("        _ = intrinsics.launch_end[{ENDED}](started__made, -1, True, ref cut__made)")),
         channel("        intrinsics.channel_free(channel__made)"),
         channel("    intrinsics.channel_close(channel__made)"),
         Some("    mut nanos__made = -1".to_owned()),
@@ -266,38 +318,31 @@ fn source_text(launch: &Launch) -> Option<(String, Option<String>)> {
         Some("    if stop_after is not None: nanos__made = max(stop_after.nanos, 0)".to_owned()),
         Some("    mut why__made = 0".to_owned()),
         Some(format!(
-            "    failed__made = intrinsics.launch_end[{ended}](started__made, nanos__made, False, ref why__made)"
+            "    failed__made = intrinsics.launch_end[{ENDED}](started__made, nanos__made, False, ref why__made)"
         )),
         channel("    intrinsics.channel_free(channel__made)"),
         Some("    if why__made == 1: fail Crashed(why=\"the task crashed\")".to_owned()),
         Some("    if why__made == 2:".to_owned()),
         Some("        failure__made = failed__made else fail Crashed(why=\"the task crashed\")".to_owned()),
         Some("        fail failure__made".to_owned()),
+        channel(""),
+        channel(&format!("def inbox__made(channel__made: int) -> Inbox[{MESSAGE}]:")),
+        channel(&format!("    return Inbox[{MESSAGE}](_channel=channel__made)")),
     ];
-    let text: String = lines.into_iter().flatten().map(|line| line + "\n").collect();
-    Some((text, message))
+    lines.into_iter().flatten().map(|line| line + "\n").collect()
 }
 
 /// Writes the task's arrow in as the closure the source starts, where its placeholder is, with its
-/// inbox, when it has one, as the receiving end of the channel the source made.
-fn with_task(def: &mut fennec_syntax::FnDef, launch: &Launch, message: Option<&str>) -> Option<()> {
+/// inbox, when it has one, as the receiving end of the channel the source made: `inbox`, which
+/// reads `channel__made`.
+fn with_task(def: &mut fennec_syntax::FnDef, launch: &Launch, inbox: Option<&Expr>) -> Option<()> {
     // The arrow, with its inbox written in, where the placeholder is.
     let ExprKind::Lambda { params, body } = &launch.task.kind else { return None };
     let mut called = body.as_ref().clone();
-    if let (Some(inbox), Some(message)) = (params.first(), message) {
-        let made = fennec_syntax::parse_prelude(&format!(
-            "def inbox__made(channel__made: int) -> Inbox[{message}]:\n    return Inbox[{message}](_channel=channel__made)\n"
-        ))
-        .ok()?;
-        let Some(Item::Function(maker)) = made.items.into_iter().next() else { return None };
-        let Some(fennec_syntax::StmtKind::Return(Some(inbox_made))) =
-            maker.body.into_iter().next().map(|stmt| stmt.kind)
-        else {
-            return None;
-        };
+    if let (Some(name), Some(inbox)) = (params.first(), inbox) {
         fennec_syntax::visit::in_expr(&mut called, &mut |expr| {
-            if matches!(&expr.kind, ExprKind::Name(name) if name == inbox) {
-                *expr = inbox_made.clone();
+            if matches!(&expr.kind, ExprKind::Name(named) if named == name) {
+                *expr = inbox.clone();
             }
         });
     }

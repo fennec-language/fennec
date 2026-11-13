@@ -513,6 +513,9 @@ impl Lowering<'_> {
             at,
         );
         let mut block = std::mem::take(&mut arm.body);
+        // A case whose body always returns returns after the case is put back, every time, so
+        // what's written in ends the function as the body did.
+        let always = always_returns(&block);
         fail_through(&mut block, std::slice::from_ref(&put_back));
         let (exit, returned) = (format!("exit__ref{made}"), format!("returned__ref{made}"));
         let mut caller = Caller { exit: &exit, returned: &returned, ways: Ways::default(), span: at };
@@ -535,7 +538,11 @@ impl Lowering<'_> {
             body.extend(block);
         }
         body.push(put_back);
-        body.extend(taken_again(ways, &exit, &returned, at));
+        if always && ways.returned == Some(true) {
+            body.extend(returned_always(&returned, at));
+        } else {
+            body.extend(taken_again(ways, &exit, &returned, at));
+        }
         arm.body = body;
         Some(())
     }
@@ -689,9 +696,12 @@ fn match_params(
 /// A type as written where a type goes and as written in brackets, parsed from its source and
 /// moved to spans of its own, which no program's text reaches.
 pub(crate) fn written_type(ty: &crate::types::Type) -> Option<(TypeExpr, Expr)> {
-    let source = ty.source()?;
+    // A program's own type named like the library's is `Delivery'`, which is written so it
+    // parses and named back after.
+    let source = fennec_syntax::rename::writable(&ty.source()?);
     let text = format!("def held__(held: {source}):\n    _ = held[{source}]\n");
-    let module = fennec_syntax::parse(&text).ok()?;
+    let mut module = fennec_syntax::parse(&text).ok()?;
+    fennec_syntax::rename::rename_types(&mut module, &fennec_syntax::rename::written_names(&text));
     let Some(Item::Function(def)) = module.items.first() else { return None };
     let mut written = def.params.first()?.ty.clone()?;
     let StmtKind::Assign { value, .. } = &def.body.first()?.kind else { return None };
@@ -964,7 +974,7 @@ struct Caller<'n> {
 fn replace_lend(body: &mut Vec<Stmt>, with_block: &mut LentAs<'_>) -> bool {
     for at in 0..body.len() {
         let Some(stmt) = body.get_mut(at) else { return false };
-        if let StmtKind::Lend { value, otherwise } = &stmt.kind {
+        if let StmtKind::Lend { value, otherwise, .. } = &stmt.kind {
             let Some(written) = with_block(value.clone(), &otherwise.clone()) else { return false };
             body.splice(at..=at, written);
             return true;
@@ -1576,6 +1586,10 @@ fn unmarked_first(crash: Option<&(Stmt, Stmt, Stmt)>, otherwise: &[Stmt]) -> Vec
     }
 }
 
+/// Since 2026-11-11 a program can't write `with src else fail E:`, which `else` on a failing
+/// call refuses, so nothing reaches this from what a program writes; it's kept until lowering is
+/// next reworked.
+///
 /// A source's body as `with src else fail E:` writes it in: each `fail` does what the `else` does
 /// instead, and so does each `?`, through `else`. A `?` in an arrow function passes the arrow's
 /// own failure up, not the source's, so it stays.
@@ -2072,7 +2086,7 @@ mod tests {
     #[test]
     fn a_pass_that_writes_nothing_in_says_so() {
         let source = "error Boom:\n    pass\n\n\
-            def opened(n: int) -> with int fails Boom:\n    lend n else:\n        pass\n\n\
+            def opened(n: int) -> with int fails Boom:\n    lend n except:\n        pass\n\n\
             def main(stdout: Stdout) fails Boom:\n    with opened(1)? as first:\n        stdout.print(first)\n";
         let mut module = fennec_syntax::parse(source).unwrap();
         let checked = crate::checker::Checker::new(&module).run(crate::checker::Scope::Everything).unwrap();

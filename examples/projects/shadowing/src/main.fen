@@ -16,13 +16,12 @@ def main(stdout: Stdout):
 
 ## Where `wanted` is in `values`, or why it can't be found.
 def located(values: list[int], wanted: int) -> str:
-    index = tools.find(values, wanted) else as why:
-        match why:
-            case tools.Missing(value):
-                return f"{value} is missing"
-            case _:
-                return f"{why}"
-    f"found at {index}"
+    index = tools.find(values, wanted) except why:
+        case tools.Missing(value):
+            return f"{value} is missing"
+        case _:
+            return f"{why}"
+    return f"found at {index}"
 
 def scaled(first: int, scale: int) -> int:
-    first * scale
+    return first * scale

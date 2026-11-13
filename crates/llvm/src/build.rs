@@ -176,6 +176,21 @@ pub fn sanitize_flag() -> Option<String> {
     sanitizer().map(|name| format!("-fsanitize={name}"))
 }
 
+/// Every switch outside the program that changes what a build makes, as a line for a cache key: the
+/// sanitizer, and whether proofs are checked and facts stripped. A program built one way is never
+/// handed back for another, as a plain one was for a build asked for the address sanitizer.
+/// The objects' own key has the pipeline, which names the sanitizer's passes; checked proofs and
+/// stripped facts change the text too. Said here as well, so no key leans on that.
+#[must_use]
+pub fn output_switches() -> String {
+    format!(
+        "sanitize={:?} proofs_checked={} facts_stripped={}",
+        sanitizer(),
+        crate::emit::proofs_checked(),
+        crate::emit::facts_stripped()
+    )
+}
+
 /// The passes `opt` runs.
 fn pipeline() -> String {
     match sanitizer() {
@@ -637,7 +652,7 @@ mod tests {
             ));
         }
         format!(
-            "def at_or_zero(items: list[int], at: int) -> int:\n    if items.len() == 0: return 0\n    items[at % items.len()]\n\ndef long() -> int:\n    mut total = 0\n{body}    total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
+            "def at_or_zero(items: list[int], at: int) -> int:\n    if len(items) == 0: return 0\n    return items[at % len(items)]\n\ndef long() -> int:\n    mut total = 0\n{body}    return total\n\ndef main(stdout: Stdout):\n    stdout.print(long())\n"
         )
     }
 
@@ -654,8 +669,8 @@ mod tests {
     }
 
     fn units(source: &str) -> Result<Vec<Unit>, String> {
-        let module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
-        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         Ok(crate::emit(&fennec_ir::lower(&module, &checked))?.0)
     }
 

@@ -62,13 +62,18 @@ impl Emit<'_, '_, '_> {
         if held.in_memory() { place } else { self.load_field(held, &place, ITEM_ACCESS) }
     }
 
-    /// Puts a value in a new list's empty place, with an owner of its own.
+    /// Puts a value in a new list's empty place, with an owner of its own. A struct kept in
+    /// place is copied as it is, so each block it holds gets an owner for the copy too, as what
+    /// it's copied from keeps its own.
     pub(crate) fn put_item(&mut self, item: &Kind, kind: &Kind, value: &str, place: &str) {
         let (kind, value, owned) = self.as_header(kind, value);
         if kind.counted() && !owned {
             self.retain_value(&value, &kind);
         }
         self.store_field(item, &value, place, ITEM_ACCESS);
+        if kind.in_memory() && !owned {
+            self.retain_inline(item, place);
+        }
     }
 
     /// Puts a tuple of these in a new list's empty place.
@@ -99,6 +104,9 @@ impl Emit<'_, '_, '_> {
                 self.retain_value(&value, &kind);
             }
             self.store_field(&kind, &value, &at, "");
+            if kind.in_memory() && !owned {
+                self.retain_inline(&kind, &at);
+            }
         }
         if let Some(block) = block {
             self.line(&format!("store ptr {block}, ptr {place}{ITEM_ACCESS}"));
@@ -701,6 +709,13 @@ impl Emit<'_, '_, '_> {
             ("str.chars", [text]) => result(dest).and_then(|dest| self.chars(dest, text)),
             ("dict.get", _) => result(dest).and_then(|dest| self.dict_get(dest, args)),
             ("dict.pop", [_, _]) => self.dict_pop(dest, args, span),
+            // Only gone through in order, a dict's keys, values or items are never made: the
+            // loop walks its entries.
+            ("dict.items" | "dict.keys" | "dict.values", [_])
+                if dest.is_some_and(|dest| self.known.map_walks.contains_key(&dest.0)) =>
+            {
+                Ok(())
+            }
             ("dict.items", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "items")),
             ("dict.keys", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "keys")),
             ("dict.values", [dict]) => result(dest).and_then(|dest| self.dict_list(dest, dict, "values")),

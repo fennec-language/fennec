@@ -4,10 +4,10 @@ extend int:
     ## Anything else fails, saying what it was given: digit separators, hex, a fraction, an
     ## exponent, digits that aren't ASCII, and an int too big to hold.
     def parse(text: str) -> int fails InvalidValue:
-        int(text)?
+        return int(text)?
 
     def serialize(self, ref out: Serializer):
         out.int(self)
 
     def deserialize(ref src: Deserializer) -> int fails ParseError:
-        src.int()?
+        return src.int()?

@@ -62,6 +62,13 @@ pub(crate) struct Analysis {
     /// Locals taking an item out of a list to change it and put it back: the local or field
     /// the list is in, which has to be alone before the item's count says anything.
     items_taken: HashMap<usize, (LocalId, Vec<String>)>,
+    /// Names an item copied out with `mut` is changed under, by the local it was read into
+    /// first, which still holds what was taken: a build that checks proofs checks it goes back
+    /// where it came from.
+    put_back_reads: HashMap<usize, LocalId>,
+    /// `for ref` items taken out of a `Table`'s slot: the local or field the `Table` is in,
+    /// which has to be alone before the item is taken.
+    slot_homes: HashMap<usize, (LocalId, Vec<String>)>,
     /// Locals taking a field of a list's item out to change it, put back through the same place
     /// read again: `root.list[index].field`, as the root, the list's field and the index.
     path_taken: HashMap<usize, (LocalId, Vec<String>, Operand)>,
@@ -105,6 +112,9 @@ pub(crate) struct Analysis {
     /// Copies, by block and place in it, whose source nothing reads again or leans on: the
     /// copy takes over its owner.
     last_copies: HashSet<(usize, usize)>,
+    /// Fields a struct is made with, by block, place in it and local, that nothing reads again or
+    /// leans on: the struct takes over the local's owner.
+    last_made: HashSet<(usize, usize, usize)>,
     /// `enumerate(list)` results, and copies of them, never made: each with the list.
     pub(crate) enumerated: HashMap<usize, LocalId>,
     /// `map.items()` or `map.values()` where all that's done with what it gives is going through
@@ -112,6 +122,8 @@ pub(crate) struct Analysis {
     pub(crate) map_walks: HashMap<usize, LocalId>,
     /// What such a loop reads each time round: which map, and whether it's a pair to take apart.
     pub(crate) walk_items: HashMap<usize, (LocalId, bool)>,
+    /// Of those, the ones reading a dict's keys rather than its values.
+    pub(crate) walk_keys: HashSet<usize>,
     /// Pairs read from those, never made: the list, and the index the pair is at.
     pub(crate) pairs: HashMap<usize, (LocalId, Operand)>,
     /// Reads of a list's item, by block and place in it, that a guard proves in range: see
@@ -1835,19 +1847,15 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                     }
                 }
             }
-            // A `Table`'s items aren't a list's, so they're read and written as they are.
-            let id_map = |local: LocalId| {
-                matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::Table(_)))
-            };
-            // Nor are an array's: one in a block isn't made alone to take one out. Nor a dict's,
-            // whose item is read out of it as it is, with no making it alone first: the dict may
-            // be another's too, and the item has to own what it holds to change it.
-            let dict = matches!(function.locals.get(source.0).map(|local| &local.ty), Some(Type::Dict(..)));
-            if matches!(&inst.kind, InstKind::GetIndex { .. })
-                && (id_map(source) || is_array(function, source) || dict)
-            {
-                continue;
-            }
+            // A list's, an array's, a `Table`'s or a dict's item, by position, `Id` or key: each
+            // is read from what holds it made alone first, and a dict's value from its own block
+            // made alone too. A `Table`'s or a dict's item may be changed by a builtin or a call
+            // given it once too, as `held[key].append(n)` and `heal(ref units[id])` are, which
+            // the IR notes as a changed place only for a list.
+            let by_key = matches!(
+                function.locals.get(source.0).map(|local| &local.ty),
+                Some(Type::Dict(..) | Type::Table(_))
+            );
             if let InstKind::GetIndex { index, .. } = &inst.kind {
                 let home = from_field.get(&source.0).cloned().unwrap_or((source, Vec::new()));
                 for next in later {
@@ -1864,6 +1872,19 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                         }
                         // Something inside it, changed directly, or taken out and changed on the way back.
                         InstKind::SetIndex { object, .. } if *object == dest => {}
+                        InstKind::Builtin { args, changes: true, .. }
+                            if by_key
+                                && args.first() == Some(&Operand::Local(dest))
+                                && !args.iter().skip(1).any(|arg| {
+                                    *arg == Operand::Local(dest) || *arg == Operand::Local(source)
+                                }) => {}
+                        InstKind::Call { function: callee, args, .. }
+                            if by_key
+                                && args.iter().filter(|arg| **arg == Operand::Local(dest)).count() == 1
+                                && changes(callee)
+                                    .iter()
+                                    .any(|at| args.get(*at) == Some(&Operand::Local(dest)))
+                                && !args.contains(&Operand::Local(source)) => {}
                         InstKind::SetIndex { object, path, .. } if *object != home.0 && path.is_empty() => {}
                         other if is_quiet(other) => {}
                         _ => break,
@@ -1916,11 +1937,6 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
             }
         }
     }
-}
-
-/// Whether a local holds a fixed-size array, which is laid out as a struct, not a list.
-fn is_array(function: &Function, local: LocalId) -> bool {
-    matches!(function.locals.get(local.0).map(|local| &local.ty), Some(Type::Array(..)))
 }
 
 /// `object.field += text`, which the IR writes as a local read from the field, added to and put
@@ -2130,7 +2146,8 @@ fn settle_place_takes(function: &Function, known: &mut Analysis) {
 /// taken, not copied, when nothing else touches the root meanwhile and the index stays the same.
 fn find_path_takes(function: &Function, known: &mut Analysis) {
     let steady = |operand: &Operand, known: &Analysis| match operand {
-        Operand::Int(_) => true,
+        // A number or a string written out: a list's position, or a dict's key.
+        Operand::Int(_) | Operand::Str(_) => true,
         Operand::Local(local) => known.writes.get(local.0).copied().unwrap_or(0) <= 1,
         _ => false,
     };
@@ -2154,9 +2171,12 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                 continue;
             }
             let Some((None, list, Some(index))) = defined(*item, at) else { continue };
-            // Only a list's item is in a place this can reach: an array's isn't, and a `Table`'s is
-            // read and put back.
-            if !matches!(function.type_of(&Operand::Local(list)), Some(Type::List(_))) {
+            // A list's item, a `Table`'s or a dict's value is in a place this can reach: an
+            // array's isn't.
+            if !matches!(
+                function.type_of(&Operand::Local(list)),
+                Some(Type::List(_) | Type::Table(_) | Type::Dict(..))
+            ) {
                 continue;
             }
             // The list is a field of the root, or the root itself.
@@ -2224,7 +2244,12 @@ fn find_loop_takes(function: &Function, known: &mut Analysis) {
             let InstKind::GetIndex { dest, object: Operand::Local(from), index } = &inst.kind else {
                 continue;
             };
-            let is_list = matches!(function.locals.get(from.0).map(|local| &local.ty), Some(Type::List(_)));
+            // A list's item, or an array's: an array kept in place is read and written where it
+            // is, and one in a block is made alone first, as a list is.
+            let is_list = matches!(
+                function.locals.get(from.0).map(|local| &local.ty),
+                Some(Type::List(_) | Type::Array(..))
+            );
             if !is_list
                 || dest == from
                 || known.writes.get(dest.0) != Some(&1)
@@ -2240,6 +2265,265 @@ fn find_loop_takes(function: &Function, known: &mut Analysis) {
                 known.taken.insert(dest.0);
                 known.items_taken.insert(dest.0, (root, path));
                 known.loop_taken.insert(dest.0);
+            }
+        }
+    }
+    find_slot_takes(function, known);
+    find_put_back_takes(function, known);
+    find_slot_borrows(function, known);
+}
+
+/// `for item in table` whose body only looks inside the item, reading its fields, while nothing
+/// in the loop changes the `Table`: the item is borrowed from its slot rather than given an owner
+/// of its own and let go of again each time round.
+fn find_slot_borrows(function: &Function, known: &mut Analysis) {
+    for (start, block) in function.blocks.iter().enumerate() {
+        for inst in &block.insts {
+            let InstKind::Builtin { dest: Some(dest), name, args, .. } = &inst.kind else { continue };
+            let [Operand::Local(from), Operand::Local(slot)] = args.as_slice() else { continue };
+            // A `Table` read from a field is read again each time round and let go of: borrowing
+            // from it would keep that read, an owner of the `Table`, until the item's last use,
+            // and a change to the `Table` after the loop would then copy it.
+            if name != "Table.at_slot"
+                || known.writes.get(dest.0) != Some(&1)
+                || known.taken.contains(&dest.0)
+                || known.borrowed.contains(&dest.0)
+                || known.field_of(*from).is_some()
+            {
+                continue;
+            }
+            // The loop counting the slots: its blocks, from the test of its count.
+            let Some(count) = function.counts.iter().find(|count| count.count == *slot) else { continue };
+            let header = function.blocks.iter().position(|held| {
+                let Terminator::Branch { cond: Operand::Local(cond), .. } = &held.end else { return false };
+                held.insts.iter().any(|test| {
+                    matches!(&test.kind, InstKind::Binary { dest, op: BinOp::Lt, lhs: Operand::Local(lhs), rhs: Operand::Local(stop) }
+                        if dest == cond && lhs == slot && *stop == count.stop)
+                })
+            });
+            let Some(header) = header else { continue };
+            let Some(Terminator::Branch { then, .. }) = function.blocks.get(header).map(|held| &held.end)
+            else {
+                continue;
+            };
+            let body = loop_blocks(function, header, then.0);
+            if !body.contains(&start) {
+                continue;
+            }
+            // What the `Table` is read from: itself, what it was copied from, or the local a field
+            // of which it is, however many steps back.
+            let mut sources = vec![*from];
+            let mut at = 0;
+            while let Some(held) = sources.get(at).copied() {
+                at += 1;
+                if sources.len() > 8 {
+                    break;
+                }
+                if let Some((root, _)) = known.field_of(held) {
+                    sources.push(*root);
+                }
+                for copied in function.blocks.iter().flat_map(|block| &block.insts) {
+                    if let InstKind::Copy { dest, value: Operand::Local(source) } = &copied.kind
+                        && *dest == held
+                        && !sources.contains(source)
+                    {
+                        sources.push(*source);
+                    }
+                }
+            }
+            let insts = || body.iter().filter_map(|at| function.blocks.get(*at)).flat_map(|held| &held.insts);
+            let changes_it = insts().any(|later| {
+                sources.iter().any(|source| {
+                    let held = Operand::Local(*source);
+                    match &later.kind {
+                        InstKind::SetIndex { object, .. } | InstKind::SetField { object, .. } => {
+                            object == source
+                        }
+                        InstKind::Builtin { args, changes: true, .. } => args.first() == Some(&held),
+                        InstKind::Call { args, .. } => args.contains(&held),
+                        _ => false,
+                    }
+                })
+            });
+            // Every read of the item, anywhere, only looks inside it.
+            let only_looked_at = function.blocks.iter().flat_map(|held| &held.insts).all(|other| {
+                let mut reads = false;
+                visit(&other.kind, |operand| reads |= *operand == Operand::Local(*dest), |_| {});
+                !reads || only_looks(&other.kind, *dest)
+            }) && function.blocks.iter().all(|held| !reads_in_end(&held.end, *dest));
+            if !changes_it && only_looked_at {
+                known.borrowed.insert(dest.0);
+            }
+        }
+    }
+}
+
+/// Whether a block's way out reads a local.
+fn reads_in_end(end: &Terminator, local: LocalId) -> bool {
+    match end {
+        Terminator::Return(Some(value)) | Terminator::Branch { cond: value, .. } => {
+            *value == Operand::Local(local)
+        }
+        _ => false,
+    }
+}
+
+/// `mut item = items[key]`, changed, then `items[key] = item`, for a list, a `Table` or a dict: the item
+/// is taken out rather than copied, as a `for ref` item is, when it goes back by the same key on
+/// every way on and nothing reads the collection meanwhile. The IR reads it into a temporary
+/// copied into the name, so both are taken: the copy only hands it over.
+fn find_put_back_takes(function: &Function, known: &mut Analysis) {
+    for (start, block) in function.blocks.iter().enumerate() {
+        for (at, inst) in block.insts.iter().enumerate() {
+            let InstKind::GetIndex { dest: read, object: Operand::Local(from), index } = &inst.kind else {
+                continue;
+            };
+            let Some(InstKind::Copy { dest: item, value: Operand::Local(copied) }) =
+                block.insts.get(at + 1).map(|next| &next.kind)
+            else {
+                continue;
+            };
+            let kept = matches!(
+                function.locals.get(from.0).map(|local| &local.ty),
+                Some(Type::List(_) | Type::Array(..) | Type::Table(_) | Type::Dict(..))
+            );
+            if !kept
+                || copied != read
+                || read == from
+                || item == from
+                || [*read, *item]
+                    .iter()
+                    .any(|local| known.writes.get(local.0) != Some(&1) || known.taken.contains(&local.0))
+                || known.borrowed.contains(&item.0)
+                || known.reads.get(read.0) != Some(&1)
+            {
+                continue;
+            }
+            let Some((root, path)) = put_back_to(function, known, *item, index) else { continue };
+            if comes_from(function, known, *from, (root, &path))
+                && stays_apart(function, known, (start, at + 2), (*item, *from, index), (root, &path))
+            {
+                for local in [*read, *item] {
+                    known.taken.insert(local.0);
+                    known.items_taken.insert(local.0, (root, path.clone()));
+                }
+                known.put_back_reads.insert(item.0, *read);
+            }
+        }
+    }
+}
+
+/// Where a local is put back, when that's one place and by a key equal to `index`: the same
+/// operand, or the same item read again of something nothing changes.
+fn put_back_to(
+    function: &Function,
+    known: &Analysis,
+    item: LocalId,
+    index: &Operand,
+) -> Option<(LocalId, Vec<String>)> {
+    let mut home: Option<(LocalId, &Vec<String>)> = None;
+    for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        if let InstKind::SetIndex { object, path, index: at, value: Operand::Local(put) } = &inst.kind
+            && *put == item
+        {
+            if home.is_some() || !same_key(function, known, at, index) {
+                return None;
+            }
+            home = Some((*object, path));
+        }
+    }
+    home.map(|(root, path)| (root, path.clone()))
+}
+
+/// Whether two keys are equal wherever both are read: the same operand, or locals each written
+/// once by the same read of an item, of locals nothing writes again.
+fn same_key(function: &Function, known: &Analysis, one: &Operand, other: &Operand) -> bool {
+    if one == other {
+        return true;
+    }
+    let (Operand::Local(one), Operand::Local(other)) = (one, other) else { return false };
+    let once = |local: &LocalId| known.writes.get(local.0) == Some(&1);
+    let steady = |operand: &Operand| match operand {
+        Operand::Local(local) => known.writes.get(local.0).copied().unwrap_or(0) <= 1,
+        Operand::Int(_) | Operand::Str(_) | Operand::Bool(_) => true,
+        _ => false,
+    };
+    let read_by = |local: &LocalId| {
+        function.blocks.iter().flat_map(|block| &block.insts).find_map(|inst| match &inst.kind {
+            InstKind::GetIndex { dest, object, index } if dest == local => {
+                Some((object.clone(), index.clone()))
+            }
+            _ => None,
+        })
+    };
+    // What a key is read from mustn't change in place either, as `ids.swap(0, 1)`, `ids.reverse()`,
+    // `ids[2] = x` or `shuffle(ref ids)` change it: the same read would then find another key.
+    let changed_in_place = |operand: &Operand| {
+        let Operand::Local(held) = operand else { return false };
+        function.blocks.iter().flat_map(|block| &block.insts).any(|inst| match &inst.kind {
+            InstKind::SetIndex { object, .. } | InstKind::SetField { object, .. } => object == held,
+            InstKind::Builtin { args, changes: true, .. } => args.first() == Some(operand),
+            InstKind::Call { args, .. } => args.contains(operand),
+            _ => false,
+        })
+    };
+    once(one)
+        && once(other)
+        && read_by(one).zip(read_by(other)).is_some_and(|((object, index), (object2, index2))| {
+            object == object2
+                && index == index2
+                && steady(&object)
+                && steady(&index)
+                && !changed_in_place(&object)
+                && !changed_in_place(&index)
+        })
+}
+
+/// `for ref item in table`: the same for a `Table`'s slot, read into the loop's name and put
+/// back by the `Id` asked of the same slot just before. Taken, the item has one owner while the
+/// body runs, so changing it changes it where it is, and putting it back moves it home.
+fn find_slot_takes(function: &Function, known: &mut Analysis) {
+    for (start, block) in function.blocks.iter().enumerate() {
+        for (at, inst) in block.insts.iter().enumerate() {
+            let InstKind::Builtin { dest: Some(dest), name, args, .. } = &inst.kind else { continue };
+            let [Operand::Local(from), _] = args.as_slice() else { continue };
+            if name != "Table.at_slot"
+                || dest == from
+                || known.writes.get(dest.0) != Some(&1)
+                || known.taken.contains(&dest.0)
+                || known.borrowed.contains(&dest.0)
+            {
+                continue;
+            }
+            // The slot's `Id`, asked just before at the same slot.
+            let id =
+                block.insts.get(..at).unwrap_or_default().iter().rev().find_map(|asked| match &asked.kind {
+                    InstKind::Builtin { dest: Some(id), name, args: asked_args, .. }
+                        if name == "Table.slot_id" && asked_args.get(1) == args.get(1) =>
+                    {
+                        Some((*id, asked_args.first().cloned()))
+                    }
+                    _ => None,
+                });
+            let Some((id, Some(Operand::Local(asked_of)))) = id else { continue };
+            let index = Operand::Local(id);
+            if known.writes.get(id.0) != Some(&1) {
+                continue;
+            }
+            let Some((root, path)) = written_back_to(function, *dest, &index) else { continue };
+            // Both read the same `Table`: the one the item goes back into.
+            if comes_from(function, known, *from, (root, &path))
+                && comes_from(function, known, asked_of, (root, &path))
+                && stays_apart(function, known, (start, at + 1), (*dest, *from, &index), (root, &path))
+            {
+                known.taken.insert(dest.0);
+                known.loop_taken.insert(dest.0);
+                known.slot_homes.insert(dest.0, (root, path.clone()));
+                // A field's `Table` read for the item is only looked at, and nothing reads it
+                // again before the item is home, so holding it would make the slot shared.
+                if *from != root {
+                    known.borrowed.insert(from.0);
+                }
             }
         }
     }
@@ -2538,10 +2822,12 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
             _ => None,
         });
         let Some(list) = appended else { continue };
+        // Only a list made here, which has one owner. A constant list is one block every reader
+        // shares and nothing frees, so appending to it with no count check would write into it.
         let made_here = block
             .insts
             .iter()
-            .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } | InstKind::ConstantList { dest, items } if dest.0 == list && items.is_empty()));
+            .any(|inst| matches!(&inst.kind, InstKind::MakeList { dest, items } if dest.0 == list && items.is_empty()));
         if made_here {
             let zeros_counted = fills_with_zeros(function, block, (header, body), list, known);
             let zeros = zeros_counted.is_some();
@@ -2757,6 +3043,8 @@ impl Analysis {
             borrowed_from: HashMap::new(),
             taken: HashSet::new(),
             items_taken: HashMap::new(),
+            slot_homes: HashMap::new(),
+            put_back_reads: HashMap::new(),
             path_taken: HashMap::new(),
             loop_taken: HashSet::new(),
             places_taken: HashMap::new(),
@@ -2773,8 +3061,10 @@ impl Analysis {
             room_enough: HashSet::new(),
             length_kept: HashMap::new(),
             last_copies: HashSet::new(),
+            last_made: HashSet::new(),
             enumerated: HashMap::new(),
             map_walks: HashMap::new(),
+            walk_keys: HashSet::new(),
             walk_items: HashMap::new(),
             pairs: HashMap::new(),
             guarded_reads: HashSet::new(),
@@ -2820,6 +3110,12 @@ impl Analysis {
     /// Whether the copy at this place in this block is the last anything does with its source.
     pub(crate) fn is_last_copy(&self, block: usize, index: usize) -> bool {
         self.last_copies.contains(&(block, index))
+    }
+
+    /// Whether a struct made at this place in this block is the last anything does with this
+    /// local it's made with.
+    pub(crate) fn is_last_made(&self, (block, index): (usize, usize), local: LocalId) -> bool {
+        self.last_made.contains(&(block, index, local.0))
     }
 
     /// Whether a local is written once and read once.
@@ -2912,6 +3208,16 @@ impl Analysis {
 
     pub(crate) fn item_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>)> {
         self.items_taken.get(&local.0)
+    }
+
+    /// The local an item copied out with `mut` was first read into, which holds what was taken.
+    pub(crate) fn put_back_read(&self, item: LocalId) -> Option<LocalId> {
+        self.put_back_reads.get(&item.0).copied()
+    }
+
+    /// Where the `Table` is that a `for ref` item was taken out of.
+    pub(crate) fn slot_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>)> {
+        self.slot_homes.get(&local.0)
     }
 
     /// Whether anything writes a local.
@@ -3025,7 +3331,13 @@ fn walk_leaves_alone(function: &Function, made: LocalId, map: LocalId, read_at: 
             }
     };
     from_start.intersection(&to_read).all(|at| {
-        let skipped = if *at == start && !to_read_comes_back(&to_read, &before, start) { first } else { 0 };
+        // What comes before the walk's asked for in its own block always runs before it's asked
+        // for again, which starts the walk over, so only a read in that block can see it.
+        let skipped = if *at == start && (read_at != start || !to_read_comes_back(&to_read, &before, start)) {
+            first
+        } else {
+            0
+        };
         function
             .blocks
             .get(*at)
@@ -3083,7 +3395,10 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
             }
         }
         let of_text = function.locals.get(list.0).is_some_and(|local| local.ty == Type::Str);
-        let walks = matches!(name.as_str(), "Table.items" | "Table.values");
+        let walks = matches!(
+            name.as_str(),
+            "Table.items" | "Table.values" | "dict.items" | "dict.values" | "dict.keys"
+        );
         // A loop over a map can't change it, as the checker sees to, so a walk only needs nothing
         // to change it from when this was asked for until its loop's done. Something else can
         // reach a map through a `shared` handle, so unless it's known steady, the local holds an
@@ -3141,7 +3456,9 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 .all(|(_, _, walked_at, _)| walk_leaves_alone(function, *made, *list, *walked_at));
         }
         // Each pair is only taken apart, after it's read, in its block.
-        for (pair, _, at, index) in pairs.iter().filter(|_| name != "Table.values") {
+        for (pair, _, at, index) in
+            pairs.iter().filter(|_| !matches!(name.as_str(), "Table.values" | "dict.values" | "dict.keys"))
+        {
             let Some(block) = function.blocks.get(*at) else { continue };
             let later = block.insts.get(index + 1..).unwrap_or_default();
             let mut uses = 0;
@@ -3168,7 +3485,12 @@ fn find_unmade_enumerates(function: &Function, known: &mut Analysis) {
                 known.map_walks.insert(local.0, *list);
             }
             for (item, _, _, _) in pairs {
-                known.walk_items.insert(item.0, (*list, name == "Table.items"));
+                known
+                    .walk_items
+                    .insert(item.0, (*list, matches!(name.as_str(), "Table.items" | "dict.items")));
+                if name == "dict.keys" {
+                    known.walk_keys.insert(item.0);
+                }
             }
         } else if fine {
             for local in &group {
@@ -3210,6 +3532,18 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
                 && from.0 >= function.params
             {
                 known.last_copies.insert((at, index));
+            }
+            if let InstKind::Make { fields, .. } = &inst.kind {
+                for field in fields {
+                    if let Operand::Local(from) = field
+                        && fields.iter().filter(|other| *other == field).count() == 1
+                        && !live.contains(&from.0)
+                        && !leaned_on.contains(&from.0)
+                        && from.0 >= function.params
+                    {
+                        known.last_made.insert((at, index, from.0));
+                    }
+                }
             }
             let (mut reads, mut writes) = (Vec::new(), Vec::new());
             visit(&inst.kind, |operand| reads.extend(local_of(operand)), |local| writes.push(local.0));
@@ -3655,7 +3989,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
 mod tests {
     use super::*;
 
-    const TYPES: &str = "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n    log: list[int]\n\nerror Bad:\n    why: str\n\ndef total(units: list[Unit]) -> int:\n    units.len()\n\ndef size(world: World) -> int:\n    world.log.len()\n\n";
+    const TYPES: &str = "struct Unit:\n    tags: list[int]\n    hp: int\n\nstruct World:\n    units: list[Unit]\n    log: list[int]\n\nerror Bad:\n    why: str\n\ndef total(units: list[Unit]) -> int:\n    return len(units)\n\ndef size(world: World) -> int:\n    return len(world.log)\n\n";
 
     /// Whether the `unit` of a function called `go` is taken out for its loop's whole body.
     fn taken(body: &str) -> Result<bool, String> {
@@ -3674,8 +4008,8 @@ mod tests {
         for body in [
             "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.tags.append(1)\n",
             "def go(ref units: list[Unit]):\n    for ref unit in units:\n        if unit.hp == 0:\n            continue\n        unit.tags.append(1)\n        if unit.hp == 1:\n            break\n        unit.hp = 2\n",
-            "def go(ref units: list[Unit]) -> int:\n    for ref unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            return unit.tags.len()\n    0\n",
-            "def go(ref units: list[Unit]) -> int fails Bad:\n    for ref unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            fail Bad(\"no\")\n    0\n",
+            "def go(ref units: list[Unit]) -> int:\n    for ref unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            return len(unit.tags)\n    return 0\n",
+            "def go(ref units: list[Unit]) -> int fails Bad:\n    for ref unit in units:\n        unit.tags.append(1)\n        if unit.hp == 1:\n            fail Bad(\"no\")\n    return 0\n",
             "def go(ref world: World):\n    for ref unit in world.units:\n        unit.tags.append(1)\n",
             "def go(ref world: World):\n    for ref unit in world.units:\n        world.log.append(unit.hp)\n        unit.tags.append(1)\n",
         ] {
@@ -3701,7 +4035,7 @@ mod tests {
     /// appends somewhere other than its body's first block, so those keep the check.
     #[test]
     fn only_a_list_filled_within_its_room_skips_the_check() -> Result<(), String> {
-        let filled = |body: &str| format!("def go(n: int) -> int:\n{body}    xs.len()\n");
+        let filled = |body: &str| format!("def go(n: int) -> int:\n{body}    return len(xs)\n");
         for body in ["    xs = [i * 2 for i in range(n)]\n", "    xs = [i for i in range(1, n)]\n"] {
             assert!(within_room(&filled(body))?, "kept the check: {body}");
         }
@@ -3745,11 +4079,11 @@ mod tests {
     fn a_for_mut_item_is_not_taken_when_the_body_can_read_its_list() -> Result<(), String> {
         for body in [
             "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.tags.append(units[0].hp)\n",
-            "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp += units.len()\n",
+            "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp += len(units)\n",
             "def go(ref units: list[Unit]):\n    for ref unit in units:\n        unit.hp += total(units)\n",
-            "def go(ref world: World):\n    for ref unit in world.units:\n        unit.hp += world.units.len()\n",
+            "def go(ref world: World):\n    for ref unit in world.units:\n        unit.hp += len(world.units)\n",
             "def go(ref world: World):\n    for ref unit in world.units:\n        unit.hp += size(world)\n",
-            "def go(units: list[Unit]) -> int:\n    mut found = 0\n    for unit in units:\n        found += unit.hp\n    found\n",
+            "def go(units: list[Unit]) -> int:\n    mut found = 0\n    for unit in units:\n        found += unit.hp\n    return found\n",
         ] {
             assert!(!taken(body)?, "taken: {body}");
         }

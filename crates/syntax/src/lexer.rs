@@ -12,6 +12,9 @@ pub(crate) fn lex(source: &str, base: u32) -> Result<Vec<Token>, Diagnostic> {
 
 /// Lexes `source`, also returning where each comment is, for the formatter.
 pub(crate) fn lex_with_comments(source: &str, base: u32) -> Result<(Vec<Token>, Vec<Span>), Diagnostic> {
+    if let Some(problem) = hidden_direction(source, base) {
+        return Err(problem);
+    }
     let lexer = Lexer {
         source,
         chars: source.char_indices().collect(),
@@ -24,6 +27,30 @@ pub(crate) fn lex_with_comments(source: &str, base: u32) -> Result<(Vec<Token>, 
         comments: Vec::new(),
     };
     lexer.run()
+}
+
+/// The characters that change the direction text is shown in without showing themselves: the
+/// embeddings, overrides and isolates, and the marks. One in a comment or a string can make code
+/// read differently from what it does, as `if access != "user\u202e \u2066// admin"` does.
+pub(crate) const HIDDEN_DIRECTION: [char; 12] = [
+    '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}', '\u{2068}',
+    '\u{2069}', '\u{200e}', '\u{200f}', '\u{061c}',
+];
+
+/// The first character of `source` that changes the direction text is shown in, refused wherever
+/// it is, comments and strings included. A string that needs one writes its escape.
+fn hidden_direction(source: &str, base: u32) -> Option<Diagnostic> {
+    let (at, c) = source.char_indices().find(|(_, c)| HIDDEN_DIRECTION.contains(c))?;
+    let code = u32::from(c);
+    Some(
+        Diagnostic::new(
+            format!("this line has a hidden character, U+{code:04X}, that changes the direction text is shown in"),
+            Span::new(at, at + c.len_utf8()).shifted(base),
+        )
+        .with_help(format!(
+            "it can make code read differently from what it does: take it out, or write `\\u{code:04x}` in a string that needs it"
+        )),
+    )
 }
 
 struct Lexer<'a> {

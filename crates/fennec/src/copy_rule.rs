@@ -21,10 +21,11 @@ pub(crate) fn implicit_copies(
         return problems;
     }
     let lowered = fennec_ir::lower(module, signatures);
-    let findings = fennec_ir::costs(&lowered);
+    let findings = crate::copies::without_what_changes_in_place(fennec_ir::costs(&lowered), &lowered);
     let keys: Vec<String> = hot.iter().map(|(key, _)| key.clone()).collect();
     let reach = fennec_ir::reached_from_hot(&lowered, &keys);
     problems.extend(fennec_lint::hot_costs(&findings, &reach));
+    problems.extend(copies_made(&fennec_llvm::copies_made(&lowered), &findings, &reach));
     problems.extend(checks_kept(&fennec_llvm::checks_left(&lowered), &reach));
     for (key, span) in hot {
         let base = |name: &str| name.split_once('[').map_or(name, |(base, _)| base).to_owned();
@@ -83,6 +84,47 @@ fn checks_kept(checks: &[fennec_llvm::CheckLeft], reach: &fennec_ir::HotReach) -
             };
             let message = format!("{what} in {whose}");
             Some(Diagnostic::new(message, check.span).with_help(format!("{help}, or take `@hot` off")))
+        })
+        .collect()
+}
+
+/// Each item a `@hot` function, or what it calls, reads out of where it is, changes and puts
+/// back, which the native code copies on its first change: the code generator couldn't show
+/// that nothing reads the place meanwhile. One the copy model already reports isn't said twice.
+fn copies_made(
+    copies: &[fennec_llvm::CopyMade],
+    findings: &[fennec_ir::Finding],
+    reach: &fennec_ir::HotReach,
+) -> Vec<Diagnostic> {
+    let key = |name: &str| name.split_once('[').map_or(name, |(key, _)| key).to_owned();
+    copies
+        .iter()
+        .filter(|copy| !copy.span.in_prelude())
+        .filter(|copy| !findings.iter().any(|finding| finding.span == copy.span && finding.function == copy.function))
+        .filter_map(|copy| {
+            let (_, root) = reach.reached.iter().find(|(name, _)| *name == copy.function)?;
+            let whose = if key(&copy.function) == *root {
+                format!("`@hot` `{root}`")
+            } else {
+                format!("`{}`, which `@hot` `{root}` calls", key(&copy.function))
+            };
+            if copy.why == fennec_llvm::CopyWhy::Sent {
+                let message = format!(
+                    "{} is copied as it's sent in {whose}, since the receiving end may be on another thread",
+                    crate::copies::sent(&copy.from)
+                );
+                return Some(Diagnostic::new(message, copy.span).with_help(
+                    "send what holds no block, like an int or a struct of numbers, or take `@hot` off",
+                ));
+            }
+            let message = format!(
+                "what this reads out of `{}` is copied to change it in {whose}, since `{}` may be read before it goes back",
+                copy.from, copy.from
+            );
+            Some(Diagnostic::new(message, copy.span).with_help(format!(
+                "change it where it is, through `for ref` or `{}[key].field = ...`, with nothing else reading `{}` meanwhile, or take `@hot` off",
+                copy.from, copy.from
+            )))
         })
         .collect()
 }

@@ -1,13 +1,13 @@
-source 0a4f84d1cc7acde2df44f2c849846f5b170324edd50ac38480fb17e602c1a7e8
+source 1cce3885598aa1d99483952493b19c22fbc5e29f61a17e623191e2108c40b96a
 code 1
 stdout 7
 before
-stderr 293
+stderr 308
 error: this calculation overflows an int
- --> <dir>/overflow.fen:2:5
+ --> <dir>/overflow.fen:2:12
   |
-2 |     n * 9223372036854775807
-  |     ^^^^^^^^^^^^^^^^^^^^^^^
+2 |     return n * 9223372036854775807
+  |            ^^^^^^^^^^^^^^^^^^^^^^^
   |
   = help: ints are 64-bit; check the values involved, or use floats for very large numbers
   = in `f`

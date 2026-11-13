@@ -11,4 +11,4 @@ def main(net: Net, stdout: Stdout) fails NetError:
     stdout.print(joined[3])
     mut more = words
     more.append("x")
-    stdout.print(more.len(), more[5000])
+    stdout.print(len(more), more[5000])

@@ -1,7 +1,7 @@
 error: can't take the square root of a negative number
- --> examples/errors/negative_sqrt.fen:4:5
+ --> examples/errors/negative_sqrt.fen:4:12
   |
-4 |     math.sqrt(squared)
-  |     ^^^^^^^^^^^^^^^^^^
+4 |     return math.sqrt(squared)
+  |            ^^^^^^^^^^^^^^^^^^
   = in `distance`
   = called from `main` at examples/errors/negative_sqrt.fen:8:18

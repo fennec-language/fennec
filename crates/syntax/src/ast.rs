@@ -283,11 +283,13 @@ pub enum StmtKind {
         body: Vec<Stmt>,
     },
     /// `lend value`, in a function that gives back `with T`: the caller's `with` block runs
-    /// here, with `value` lent to it. `otherwise` is the `else:` block, which runs when the
-    /// caller's block fails, empty when there's none.
+    /// here, with `value` lent to it. `otherwise` is the `except:` block, which runs when the
+    /// caller's block fails, empty when there's none. `except` says it was written so, rather
+    /// than with the `else:` of before 2026-11-11, which is refused.
     Lend {
         value: Expr,
         otherwise: Vec<Stmt>,
+        except: bool,
     },
     Break,
     Continue,
@@ -421,6 +423,52 @@ pub enum ExprKind {
         subject: Box<Expr>,
         arms: Vec<MatchArm>,
     },
+}
+
+impl TypeExpr {
+    /// The type as an expression spells it, where code names a type in brackets, as in
+    /// `Sender[Order](_channel=c)`: the other way from [`Expr::as_type`], built straight from it,
+    /// with every part at `span`. `None` for a type an expression can't spell, like a function
+    /// type.
+    pub fn as_expr(&self, span: Span) -> Option<Expr> {
+        let at = |kind: ExprKind| Expr { kind, span };
+        if self.optional {
+            let inner = TypeExpr { optional: false, ..self.clone() };
+            return Some(at(ExprKind::Try { value: Box::new(inner.as_expr(span)?), context: None }));
+        }
+        let all =
+            |items: &[TypeExpr]| items.iter().map(|item| item.as_expr(span)).collect::<Option<Vec<_>>>();
+        Some(match self.name.as_str() {
+            "->" | "fails" | "shared" | "with" => return None,
+            "|" => {
+                let mut members = all(&self.args)?.into_iter();
+                let first = members.next()?;
+                members.fold(first, |lhs, rhs| {
+                    at(ExprKind::Binary { op: BinOp::BitOr, lhs: Box::new(lhs), rhs: Box::new(rhs) })
+                })
+            }
+            // A tuple type in brackets starts after the bracket's own start, so it's read as one
+            // type, not as the brackets' several.
+            "tuple" => {
+                let later = Span { start: span.start + 1, end: span.end };
+                let items = self.args.iter().map(|item| item.as_expr(later)).collect::<Option<Vec<_>>>()?;
+                Expr { kind: ExprKind::Tuple(items), span }
+            }
+            "None" if self.args.is_empty() => at(ExprKind::None),
+            name if self.args.is_empty() => match name.parse::<i64>() {
+                Ok(size) => at(ExprKind::Int(size)),
+                Err(_) => at(ExprKind::Name(name.to_owned())),
+            },
+            name => {
+                let object = Box::new(at(ExprKind::Name(name.to_owned())));
+                let index = match all(&self.args)?.as_slice() {
+                    [one] => one.clone(),
+                    several => Expr { kind: ExprKind::Tuple(several.to_vec()), span },
+                };
+                at(ExprKind::Index { object, index: Box::new(index) })
+            }
+        })
+    }
 }
 
 impl Expr {
@@ -707,6 +755,51 @@ impl BinOp {
             | BinOp::Lt
             | BinOp::Eq => Some(self.symbol()),
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Expr, Span, StmtKind, TypeExpr};
+    use crate::Item;
+
+    /// The value of `x = {text}`, an expression naming a type as code in brackets does.
+    fn value(text: &str) -> Expr {
+        let module = crate::parse(&format!("x = {text}\n")).unwrap();
+        match module.items.into_iter().next() {
+            Some(Item::Const { value, .. }) => value,
+            Some(Item::Stmt(stmt)) => match stmt.kind {
+                StmtKind::Assign { value, .. } => value,
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A written type with its spans left out, to compare two that came from different places.
+    fn shape(ty: &TypeExpr) -> String {
+        let args: Vec<String> = ty.args.iter().map(shape).collect();
+        format!("{}[{}]{}", ty.name, args.join(","), if ty.optional { "?" } else { "" })
+    }
+
+    /// A type as an expression reads back as the same type, every kind code names in brackets.
+    #[test]
+    fn a_type_as_an_expression_reads_back_as_itself() {
+        for text in [
+            "Order",
+            "list[int]",
+            "dict[str, list[(int, Order?)]]",
+            "array[float, 16]",
+            "Lost | Late",
+            "Order?",
+            "list[(int,)]",
+            "Sender[dict[str, set[Delivery]]]",
+            "None",
+        ] {
+            let written = value(text).as_type().unwrap();
+            let back = written.as_expr(Span { start: 0, end: 0 }).unwrap().as_type().unwrap();
+            assert_eq!(shape(&back), shape(&written), "{text}");
         }
     }
 }

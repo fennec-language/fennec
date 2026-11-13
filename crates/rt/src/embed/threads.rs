@@ -67,6 +67,73 @@ thread_local! {
     static STOP: std::cell::RefCell<Option<Arc<AtomicU8>>> = const { std::cell::RefCell::new(None) };
     /// How many crashes' cleanups the task running on this thread is in.
     static CLEANING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// What this thread, or the task running on it, waits in as the code that launched tasks: so a
+    /// task of its that crashes can cut those waits short (see [`Launcher`]). Made the first time
+    /// it launches one.
+    static LAUNCHER: std::cell::RefCell<Option<Arc<Launcher>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The code that launched tasks, as they see it: how many of them crashed or failed with their
+/// `with launch` block yet to say so, and how to wake what it's waiting in now. While any has, each
+/// wait it's in, or comes to, is cut short, as a stop cuts a task's short: it would otherwise wait
+/// for good on a task that's gone, never reaching the block's end, which says `Crashed`.
+#[cfg(any(test, feature = "threads"))]
+#[derive(Default)]
+pub(in crate::embed) struct Launcher {
+    crashed: std::sync::atomic::AtomicUsize,
+    waking: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Launcher {
+    /// This thread's, or the task's running on it, made the first time it's asked for.
+    pub(in crate::embed) fn here() -> Arc<Launcher> {
+        LAUNCHER.with_borrow_mut(|launcher| Arc::clone(launcher.get_or_insert_with(Arc::default)))
+    }
+
+    /// Whether a task this thread or task launched has crashed or failed, unreported: what it
+    /// waits in ends.
+    pub(in crate::embed) fn cut_short_here() -> bool {
+        LAUNCHER.with_borrow(|launcher| launcher.as_ref().is_some_and(|launcher| launcher.cut_short()))
+    }
+
+    fn cut_short(&self) -> bool {
+        self.crashed.load(Ordering::SeqCst) > 0
+    }
+
+    /// Says how to wake what this thread or task is about to wait in, for a crash to cut it short.
+    /// Said before the wait's last look, so a crash between the two is never missed. None when it
+    /// launched nothing.
+    pub(in crate::embed) fn waiting_here(waking: Box<dyn Fn() + Send + Sync>) {
+        LAUNCHER.with_borrow(|launcher| {
+            if let Some(launcher) = launcher {
+                *launcher.waking.lock().unwrap_or_else(PoisonError::into_inner) = Some(waking);
+            }
+        });
+    }
+
+    /// The wait's over: nothing to wake.
+    pub(in crate::embed) fn waited_here() {
+        LAUNCHER.with_borrow(|launcher| {
+            if let Some(launcher) = launcher {
+                *launcher.waking.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            }
+        });
+    }
+
+    /// A task it launched crashed or failed: its waits end from now on, and the one it's in wakes.
+    pub(in crate::embed) fn task_crashed(&self) {
+        self.crashed.fetch_add(1, Ordering::SeqCst);
+        let waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(wake) = waking {
+            wake();
+        }
+    }
+
+    /// The block that launched a task that crashed or failed has ended, saying so.
+    pub(in crate::embed) fn crash_said(&self) {
+        let _ = self.crashed.try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1));
+    }
 }
 
 /// A launched task's stop: each of its waits is cut short, unless it's cleaning up after a crash.
@@ -289,6 +356,8 @@ pub(crate) struct Accounts {
     replay: Option<crate::replay::Task>,
     /// Whether what it prints is written as it goes.
     writes: bool,
+    /// What it waits in as the code that launched tasks, once it has.
+    launcher: Option<Arc<Launcher>>,
     /// The mark in the blocks it makes, so that when it ends it takes only its own.
     task: u64,
     /// The capture of the test that launched it, if a test did, for what it prints.
@@ -345,6 +414,7 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         std::mem::swap(&mut state.heap.serving, &mut accounts.serving);
         std::mem::swap(&mut *state.output.0.borrow_mut(), &mut accounts.printed);
         STOP.with_borrow_mut(|stop| std::mem::swap(stop, &mut accounts.stop));
+        LAUNCHER.with_borrow_mut(|launcher| std::mem::swap(launcher, &mut accounts.launcher));
         accounts.writes = super::swap_task_writes(accounts.writes);
         super::swap_capture(&mut accounts.capture);
         accounts.cleaning = CLEANING.replace(accounts.cleaning);

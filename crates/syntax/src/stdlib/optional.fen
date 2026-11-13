@@ -9,4 +9,4 @@ extend Optional[T: Serializable]:
 extend Optional[T: Deserializable]:
     def deserialize(ref src: Deserializer) -> T? fails ParseError:
         if src.none()?: return None
-        src.value[T]()?
+        return src.value[T]()?

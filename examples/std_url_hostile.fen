@@ -1,8 +1,8 @@
 # A URL from outside can be built to fool whatever reads it next, so `url.parse` refuses what
 # two readers could take for different hosts: a name in brackets, which is connected to as a
-# name past a check that took it for an address; brackets, `@`, `%` or `\` in a host; a port
-# that isn't one; and a space or a control character anywhere. What's merely long or odd reads,
-# without making a run of it.
+# name past a check that took it for an address; brackets, `@`, `%` or `\` in a host; a `\`
+# anywhere before the query, which a browser reads as `/`; a port that isn't one; and a space
+# or a control character anywhere. What's merely long or odd reads, without making a run of it.
 from std import url
 
 ## Why `text` isn't a URL, or "parsed" if it is.
@@ -34,17 +34,26 @@ test "only an IPv6 address goes in brackets"():
 
 test "a host can't hold what would make it another host to the next reader"():
     said = "its host can't hold `@`, `%`, `\\`, `[` or `]`"
-    for text in [
-        "http://a@b@c/",
-        "http://h%41/",
-        "http://h\\evil.com/",
-        "http://[a@b]/",
-        "http://a]b/",
-    ]:
+    for text in ["http://a@b@c/", "http://h%41/", "http://[a@b]/", "http://a]b/"]:
         assert why_not(text) == f"`{text}` isn't a URL: {said}"
     long = "http://" + "a" * 254 + "/"
     assert why_not(long).endswith("isn't a URL: its host is longer than 253 characters")
     assert where("http://" + "a" * 253 + "/").startswith("a" * 253)
+
+test "a backslash before the query is refused, since a browser reads it as a slash"():
+    said = "it can't hold `\\` before its query, since a browser reads it as `/`"
+    # To a browser, all but the last go to evil.com, and the last is another path.
+    for text in [
+        "http://evil.com\\@good.com/",
+        "http://evil.com\\＠good.com/",
+        "/\\evil.com",
+        "http://h\\evil.com/",
+        "\\\\evil.com/x",
+        "https://good.com/a\\b",
+    ]:
+        assert why_not(text) == f"`{text}` isn't a URL: {said}"
+    # In the query or the fragment, it's only text.
+    assert url.parse("http://h/p?q=a\\b#c\\d")?.query == {"q": "a\\b"}
 
 test "a port is from 1 to 65535, written in digits"():
     for port in ["0", "65536", "-1", "ab", "99999999999999999999", "+80"]:
@@ -60,7 +69,7 @@ test "a space or a control character is refused anywhere"():
 
 test "what's merely long, deep or odd reads, as its escapes are"():
     deep = url.parse("http://h/" + "a/" * 100_000)?
-    assert deep.path.len() == 200_001
+    assert len(deep.path) == 200_001
     many = url.parse("http://h/?" + "k=v&" * 50_000)?
     assert many.query == {"k": "v"}
     # An escape that isn't one is left as it's written, as Python leaves it.

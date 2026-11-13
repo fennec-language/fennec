@@ -71,6 +71,9 @@ mod real {
             path: String,
             file: FileId,
         },
+        /// Any of those, opened through an `Fs` narrowed with `read_only`: for reading only, and
+        /// never made.
+        ReadOnly(Box<Place>),
     }
 
     /// An open database.
@@ -120,7 +123,7 @@ mod real {
                 // it's open, so the test's own are closed first.
                 let ours = |entry: &Entry| {
                     let (Entry::Database(opened) | Entry::Transaction(opened, _)) = entry;
-                    matches!(&opened.place, Place::Test(path) if std::path::Path::new(path).starts_with(&folder))
+                    matches!(path_of_test(&opened.place), Some(path) if std::path::Path::new(path).starts_with(&folder))
                 };
                 let closed: Vec<Entry> = {
                     let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
@@ -171,14 +174,25 @@ mod real {
     /// A new connection, which never waits on a lock itself: see the module's comment.
     fn connect(place: &Place) -> rusqlite::Result<Connection> {
         // Serialized: SQLite takes a lock of its own around each call, as well as ours.
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
+        let (place, read_only) = match place {
+            Place::ReadOnly(inner) => (&**inner, true),
+            other => (other, false),
+        };
+        let flags = if read_only {
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_FULL_MUTEX
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_FULL_MUTEX
+        };
         let (path, flags) = match place {
+            // Nothing's made for a database read only: one that isn't there fails to open.
+            Place::File(path) | Place::Test(path) if read_only => (path, flags),
             Place::File(path) | Place::Test(path) => (path, flags | OpenFlags::SQLITE_OPEN_CREATE),
             // The narrowed `Fs` made the file already, beneath its folder, so SQLite makes none,
             // and refuses a path with a link in it, which the `Fs` resolved to one with none: a
             // link swapped in on the way can't lead it to make or open a file outside.
             #[cfg(any(unix, windows))]
             Place::Checked { path, .. } => (path, flags | OpenFlags::SQLITE_OPEN_NOFOLLOW),
+            Place::ReadOnly(_) => return Err(rusqlite::Error::InvalidPath(path_of(place).into())),
         };
         let mut conn = Connection::open_with_flags(path, flags)?;
         kept_to_its_file(&mut conn)?;
@@ -196,8 +210,11 @@ mod real {
             ));
         }
         // Readers go on while a writer writes, and a commit is on the disk before it's done,
-        // as SQLite's default `synchronous=FULL` has it.
-        let _: String = conn.query_row("pragma journal_mode=wal", [], |row| row.get(0))?;
+        // as SQLite's default `synchronous=FULL` has it. One read only can't change its file's
+        // journal, and reads it as it is.
+        if !read_only {
+            let _: String = conn.query_row("pragma journal_mode=wal", [], |row| row.get(0))?;
+        }
         if let Place::Test(_) = place {
             // A test's database is gone when the test ends, so there's nothing to keep through
             // a power cut, and its commits needn't wait on the disk.
@@ -285,9 +302,34 @@ mod real {
         Ok(kept(Entry::Database(Arc::new(opened))))
     }
 
-    /// `fs._sqlite_open(path)` on the real disk: the handle of the database in the file at `path`.
-    pub(crate) fn open_file(path: &str) -> Value {
-        match open(Place::File(path.to_owned())) {
+    /// Where `place` is, for a message.
+    fn path_of(place: &Place) -> &str {
+        match place {
+            Place::File(path) | Place::Test(path) => path,
+            #[cfg(any(unix, windows))]
+            Place::Checked { path, .. } => path,
+            Place::ReadOnly(inner) => path_of(inner),
+        }
+    }
+
+    /// Where a test's database is, read only or not, or `None` for one that isn't a test's.
+    fn path_of_test(place: &Place) -> Option<&str> {
+        match place {
+            Place::Test(path) => Some(path),
+            Place::ReadOnly(inner) => path_of_test(inner),
+            _ => None,
+        }
+    }
+
+    /// `place`, read only when `read_only` says so.
+    fn reading(place: Place, read_only: bool) -> Place {
+        if read_only { Place::ReadOnly(Box::new(place)) } else { place }
+    }
+
+    /// `fs._sqlite_open(path)` on the real disk: the handle of the database in the file at `path`,
+    /// for reading only when it's opened through an `Fs` narrowed with `read_only`.
+    pub(crate) fn open_file(path: &str, read_only: bool) -> Value {
+        match open(reading(Place::File(path.to_owned()), read_only)) {
             Ok(handle) => Value::Ok(Rc::new(held("Database", handle))),
             Err(reason) => io_error(&reason),
         }
@@ -318,8 +360,8 @@ mod real {
     /// `fs._sqlite_open(path)` for an `Fs` narrowed with `only`, on the real disk: the database in
     /// the file at `path`, refused unless SQLite opened `file`, the one the narrowed `Fs` found.
     #[cfg(any(unix, windows))]
-    pub(crate) fn open_checked(path: &str, file: FileId) -> Value {
-        match open(Place::Checked { path: path.to_owned(), file }) {
+    pub(crate) fn open_checked(path: &str, file: FileId, read_only: bool) -> Value {
+        match open(reading(Place::Checked { path: path.to_owned(), file }, read_only)) {
             Ok(handle) => Value::Ok(Rc::new(held("Database", handle))),
             Err(reason) => io_error(&reason),
         }
@@ -327,12 +369,12 @@ mod real {
 
     /// `fs._sqlite_open(path)` in a test: the test's own database for `path`, by the path's key
     /// in its fake file system.
-    pub(crate) fn open_fake(fakes: &mut Fakes, key: &str) -> Value {
+    pub(crate) fn open_fake(fakes: &mut Fakes, key: &str, read_only: bool) -> Value {
         let file = match fakes.file(key) {
             Ok(file) => file,
             Err(err) => return io_error(&err.to_string()),
         };
-        match open(Place::Test(file.to_string_lossy().into_owned())) {
+        match open(reading(Place::Test(file.to_string_lossy().into_owned()), read_only)) {
             Ok(handle) => Value::Ok(Rc::new(held("Database", handle))),
             Err(reason) => io_error(&reason),
         }

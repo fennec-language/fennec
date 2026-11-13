@@ -54,8 +54,16 @@ fn an_error_from_the_operating_system_reads_back_as_the_same_failure() {
     assert_eq!((back.message.as_str(), back.help.as_deref()), ("disk full", Some("free some room")));
 }
 
-/// A log with `entries`, each a task's call and what it gave, after the worker count.
+/// A log with `entries`, each a task's call and what it gave, after the worker count, ending with
+/// the mark its run wrote as it ended.
 fn log_of(entries: &[(&str, &str, &[u8])]) -> Vec<u8> {
+    let mut log = log_cut_short(entries);
+    log.extend(entry("", END, &[]));
+    log
+}
+
+/// `log_of` without its end mark: as a run killed partway, or whose log couldn't be written, leaves.
+fn log_cut_short(entries: &[(&str, &str, &[u8])]) -> Vec<u8> {
     let mut log = MAGIC.to_vec();
     log.extend(3_u32.to_le_bytes());
     log.extend(b"run");
@@ -70,6 +78,39 @@ fn log_of(entries: &[(&str, &str, &[u8])]) -> Vec<u8> {
 
 fn player(entries: &[(&str, &str, &[u8])]) -> Mutex<Player> {
     Mutex::new(player_of(&log_of(entries)).unwrap())
+}
+
+/// A replay that runs past the end of a recording cut short says so, rather than calling the run
+/// a different one: the log's fault, not the program's. One that runs past a whole recording's end
+/// says the program has changed.
+#[test]
+fn a_recording_cut_short_is_said_to_be_cut_short() {
+    let entries: &[(&str, &str, &[u8])] = &[("0", "Clock.now", &5_i64.to_le_bytes())];
+    let cut = Mutex::new(player_of(&log_cut_short(entries)).unwrap());
+    assert_eq!(replayed(&cut, "Clock.now").unwrap(), 5_i64.to_le_bytes());
+    let why = replayed(&cut, "Clock.now").unwrap_err();
+    assert!(why.contains("past the end of its recording, which was cut short"), "{why}");
+    let whole = player(entries);
+    assert_eq!(replayed(&whole, "Clock.now").unwrap(), 5_i64.to_le_bytes());
+    let why = replayed(&whole, "Clock.now").unwrap_err();
+    assert!(why.contains("its recording had nothing more"), "{why}");
+}
+
+/// A recorded value nested deeper than anything a capability gives back reads as damaged, rather
+/// than taking `fennec replay` down with it.
+#[test]
+fn a_value_nested_past_the_limit_reads_as_damaged() {
+    let nested = |depth: usize| {
+        let mut payload = Vec::new();
+        for _ in 0..depth {
+            payload.push(tag::LIST);
+            payload.extend(1_u32.to_le_bytes());
+        }
+        payload.push(tag::UNIT);
+        payload
+    };
+    assert!(decode_result(&nested(10), Span::default()).is_some());
+    assert!(decode_result(&nested(100_000), Span::default()).is_none());
 }
 
 #[test]

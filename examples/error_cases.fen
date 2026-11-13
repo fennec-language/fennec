@@ -1,7 +1,7 @@
 # decision: A function that can fail says so with `fails Name`, and every exit is visible.
 
 # One error can list several cases, each failing its own way. A case is made like an enum's,
-# `fail`ed like any error, and told apart by name in a `match` on what `else as why:` names. Where
+# `fail`ed like any error, and told apart by name in the `case` arms of `except why:`. Where
 # the function says what it fails with, a leading dot is enough.
 
 error DialError:
@@ -13,18 +13,17 @@ def connect(host: str, port: int) -> int fails DialError:
     if host == "": fail .NotFound(host)
     if port == 0: fail .Closed
     if port < 0: fail .Refused(host, port)
-    port
+    return port
 
 def described(host: str, port: int) -> str:
-    connected = connect(host, port) else as why:
-        match why:
-            case .Refused(host, port):
-                return f"refused by {host}:{port}"
-            case .NotFound(host):
-                return f"no host called \"{host}\""
-            case _:
-                return f"failed: {why}"
-    f"connected on {connected}"
+    connected = connect(host, port) except why:
+        case .Refused(host, port):
+            return f"refused by {host}:{port}"
+        case .NotFound(host):
+            return f"no host called \"{host}\""
+        case _:
+            return f"failed: {why}"
+    return f"connected on {connected}"
 
 def main(stdout: Stdout):
     stdout.print(described("db", 5432))

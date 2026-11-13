@@ -2,23 +2,23 @@
 
 def down(n: int) -> int:
     if n <= 0: return 0
-    down(n - 1) + 1
+    return down(n - 1) + 1
 
 def fib(n: int) -> int:
     if n < 2: return n
-    fib(n - 1) + fib(n - 2)
+    return fib(n - 1) + fib(n - 2)
 
 def sign(n: int) -> int:
     if n > 0:
         return 1
     elif n < 0:
         return -1
-    0
+    return 0
 
 def clamp(x: float) -> float:
     if x > 1.0: return 1.0
     if x < 0.0: return 0.0
-    x
+    return x
 
 def tell(n: int, stdout: Stdout):
     if n > 2:
@@ -28,7 +28,7 @@ def tell(n: int, stdout: Stdout):
 
 def narrowed(n: int) -> int:
     if not (n > 5 and n < 10): return n - 9_223_372_036_854_775_807
-    n + 9_223_372_036_854_775_797
+    return n + 9_223_372_036_854_775_797
 
 def main(stdout: Stdout):
     stdout.print(down(50), fib(15), sign(-4), sign(4), sign(0))

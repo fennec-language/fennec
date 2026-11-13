@@ -13,7 +13,7 @@ struct Particle:
             self.hits += 1
 
     def +(self, other: Particle) -> Particle:
-        Particle(
+        return Particle(
             x=self.x + other.x,
             velocity=self.velocity + other.velocity,
             hits=self.hits + other.hits,
@@ -33,7 +33,7 @@ struct Swarm:
             if particle.hits > 0:
                 particle.x = 0.0
                 return True
-        False
+        return False
 
 def main(stdout: Stdout):
     mut swarm = Swarm(particles=[Particle(velocity=float(i)) for i in range(4)])

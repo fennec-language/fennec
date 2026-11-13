@@ -2,7 +2,7 @@ from std.concurrent import Crashed
 
 def show(name: str, stdout: Stdout):
     data = embed_file("embed_in_tasks.txt")
-    stdout.print(name, data.len(), data.hex().len(), (data + data).len())
+    stdout.print(name, len(data), len(data.hex()), len(data + data))
 
 def main(stdout: Stdout) fails Crashed:
     with launch(() => show("first", stdout))?:

@@ -12,15 +12,16 @@ struct Countdown:
     def next(ref self) -> int fails Empty:
         if self.left == 0: fail Empty("nothing left")
         self.left -= 1
-        self.left
+        return self.left
 
 def two(ref source: Source) -> int fails Empty:
-    source.next()? + source.next()?
+    return source.next()? + source.next()?
 
 def main(stdout: Stdout):
     mut enough = Countdown()
-    stdout.print(two(ref enough) else -1)
+    two_value = two(ref enough) except Empty(): -1
+    stdout.print(two_value)
     mut short = Countdown(left=1)
-    _ = two(ref short) else as why:
+    _ = two(ref short) except why:
         stdout.print(why.what)
         0

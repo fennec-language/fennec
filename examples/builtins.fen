@@ -3,26 +3,25 @@
 from std.math import PI, ceil, cos, floor, sin, sqrt
 
 def square(n: int) -> int:
-    n * n
+    return n * n
 
 def main(stdout: Stdout):
     # Converting between numbers. `int` truncates toward zero.
     stdout.print(float(2), 0.5, int(2.9), int(-2.9), int(-9223372036854775808.0), 7)
     # Text might not be a number, so reading one can fail with an `InvalidValue`.
-    stdout.print(
-        float("2.5") else 0.0,
-        float(" 1e3 ") else 0.0,
-        int(" 42 ") else 0,
-        int("4x2") else -1,
-    )
-    # `else as why:` names the failure; its block gives a value in its place, or leaves.
-    twelve = int("twelve") else as why:
+    float_value = float("2.5") except InvalidValue(): 0.0
+    float_value2 = float(" 1e3 ") except InvalidValue(): 0.0
+    int_value = int(" 42 ") except InvalidValue(): 0
+    int_value2 = int("4x2") except InvalidValue(): -1
+    stdout.print(float_value, float_value2, int_value, int_value2)
+    # `except why:` names the failure; its block gives a value in its place, or leaves.
+    twelve = int("twelve") except why:
         stdout.print(why.message)
         12
     stdout.print(twelve)
 
     # Rounding goes to the even neighbour on a tie, as in Python.
-    stdout.print((-3).abs(), (-2.5).abs(), 4.abs())
+    stdout.print(abs(-3), abs(-2.5), abs(4))
     stdout.print(round(2.5), round(3.5), round(-2.5), round(3.14159, 2), round(1234.5, -2))
     stdout.print(floor(2.7), floor(-2.5), ceil(2.1), ceil(-2.5))
     stdout.print(sqrt(16), sqrt(2.25), sqrt(0), sin(0), cos(0), sin(PI / 2.0), cos(PI))
@@ -30,7 +29,7 @@ def main(stdout: Stdout):
     # Walking through collections.
     stdout.print(reversed("fennec"), reversed([1, 2, 3]), reversed((1, 2)))
     no_numbers: set[int] = set()
-    stdout.print(no_numbers, set([3, 1, 3, 2, 1]), set("hello").len())
+    stdout.print(no_numbers, set([3, 1, 3, 2, 1]), len(set("hello")))
     stdout.print(
         range(3),
         range(2, 5),

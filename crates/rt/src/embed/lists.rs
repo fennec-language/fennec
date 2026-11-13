@@ -409,7 +409,15 @@ fn grow_in(state: &mut State, list: i64, more: usize) -> Option<i64> {
 /// `grow_in`, with room for at least `least` items afterwards.
 fn grow_to(state: &mut State, list: i64, more: usize, least: usize) -> Option<i64> {
     let address = u64::try_from(list).ok()?;
-    let block = state.heap.block(address)?;
+    let Some(block) = state.heap.block(address) else {
+        // A list native code changes that this thread can't find is a bug: going on as if it were
+        // changed would drop what was added, as a task once did with a constant it couldn't see.
+        // The fuzzer hands made-up addresses on purpose, and goes on.
+        if address != 0 && !super::made_up_inputs() {
+            super::heap::runtime_bug("a list native code changed isn't one this thread can find");
+        }
+        return None;
+    };
     let at =
         usize::try_from(shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
             .ok()?;
@@ -836,10 +844,15 @@ pub extern "C" fn clear(list: i64) {
         let Some(block) = state.heap.block(address) else { return };
         let Some(element) = element_of(state, block) else { return };
         let stride = element.words();
-        let old = items(block, stride).to_vec();
-        release_items(state, &element, &old);
+        let used = items(block, stride).len();
+        // Items that hold nothing, like ints, have nothing to let go of, so they aren't copied out
+        // to be: the words are only zeroed, as a list's room is kept.
+        if super::heap::holds_blocks(&element) {
+            let old = items(block, stride).to_vec();
+            release_items(state, &element, &old);
+        }
         if let Some(block) = state.heap.block_mut(address) {
-            block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + old.len()).unwrap_or_default().fill(0);
+            block.get_mut(LIST_HEADER_WORDS..LIST_HEADER_WORDS + used).unwrap_or_default().fill(0);
             if let Some(length) = block.get_mut(2) {
                 *length = 0;
             }

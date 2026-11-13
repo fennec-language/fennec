@@ -6,10 +6,10 @@ struct Enemy:
     health = 100
 
     def at(name: str, position: Vec3) -> Enemy:
-        Enemy(name=name, position=position)
+        return Enemy(name=name, position=position)
 
     def is_alive(self) -> bool:
-        self.health > 0
+        return self.health > 0
 
     def take_damage(ref self, amount: int):
         self.health -= amount

@@ -319,6 +319,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     entry(i64::try_from(limit).unwrap_or(0));
     let (output, failure, leftovers) = super::finish_for_exit();
+    crate::replay::ended();
     // A replay that ended with its recording not all read isn't the run that was recorded.
     let failure = failure.or_else(|| {
         crate::replay::unfinished()
@@ -382,7 +383,10 @@ fn report_counts(counts: &heap::Counts, live: usize) {
     let blocked = super::serve::blocked_waits();
     #[cfg(not(any(test, feature = "threads")))]
     let blocked = 0;
-    let said = counts_line(counts, super::parallel::calls(), blocked);
+    // The main thread's, with every worker's, whose tasks the main thread's counts never see.
+    let mut all = *counts;
+    all.add(&heap::worker_counts());
+    let said = counts_line(&all, super::parallel::calls(), blocked);
     let said = match super::dicts::found_puts() {
         0 => said,
         puts => format!("{said} found_puts {puts}"),
@@ -418,6 +422,7 @@ pub(super) fn counts_line(counts: &heap::Counts, parallel_calls: u64, blocked_wa
 
 /// Ends the program at once with `code`.
 pub(crate) fn stop_now(code: i32) -> ! {
+    crate::replay::ended();
     if let Some(stop) = STOP.get() {
         stop(code);
     }

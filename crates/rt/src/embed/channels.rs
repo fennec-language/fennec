@@ -48,6 +48,9 @@ struct Channel {
     queue: Mutex<Queue>,
     /// For waits that block their thread.
     changed: Condvar,
+    /// Whether it's been freed, and is gone from `CHANNELS`: a thread that found it before, and kept
+    /// it to find again, takes it for gone as `CHANNELS` would.
+    freed: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -73,15 +76,43 @@ struct Waiter {
 #[cfg(not(any(test, feature = "threads")))]
 struct Waiter;
 
-static CHANNELS: Mutex<Option<HashMap<i64, Arc<Channel>>>> = Mutex::new(None);
+/// Channels by number. A channel's number is never given out again, so a number names one channel
+/// for the whole run.
+type ByNumber<T> = HashMap<i64, T, std::hash::BuildHasherDefault<heap::AddressHasher>>;
+
+static CHANNELS: Mutex<Option<ByNumber<Arc<Channel>>>> = Mutex::new(None);
 static NEXT: AtomicI64 = AtomicI64::new(1);
 
-fn channels<T>(use_them: impl FnOnce(&mut HashMap<i64, Arc<Channel>>) -> T) -> T {
-    use_them(CHANNELS.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
+/// How many channels a thread keeps to find again before it lets go of those that are gone.
+const FOUND_KEPT: usize = 64;
+
+thread_local! {
+    /// The channels this thread found lately, kept to find again without taking `CHANNELS`' lock,
+    /// which every thread's sends and receives took each time, and waited on each other for.
+    static FOUND: std::cell::RefCell<ByNumber<std::sync::Weak<Channel>>> =
+        std::cell::RefCell::new(ByNumber::default());
+}
+
+fn channels<T>(use_them: impl FnOnce(&mut ByNumber<Arc<Channel>>) -> T) -> T {
+    use_them(CHANNELS.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(ByNumber::default))
 }
 
 fn find(channel: i64) -> Option<Arc<Channel>> {
-    channels(|channels| channels.get(&channel).cloned())
+    let kept = FOUND.with_borrow(|found| found.get(&channel).and_then(std::sync::Weak::upgrade));
+    if let Some(kept) = kept {
+        return (!kept.freed.load(Ordering::Acquire)).then_some(kept);
+    }
+    let found = channels(|channels| channels.get(&channel).cloned())?;
+    FOUND.with_borrow_mut(|kept| {
+        if kept.len() >= FOUND_KEPT {
+            kept.retain(|_, channel| channel.strong_count() > 0);
+            if kept.len() >= FOUND_KEPT {
+                kept.clear();
+            }
+        }
+        kept.insert(channel, Arc::downgrade(&found));
+    });
+    Some(found)
 }
 
 impl Channel {
@@ -109,6 +140,7 @@ pub extern "C" fn channel_new(size: i64) -> i64 {
         replay: crate::replay::place("c"),
         queue: Mutex::new(Queue::default()),
         changed: Condvar::new(),
+        freed: std::sync::atomic::AtomicBool::new(false),
     };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));
@@ -295,6 +327,7 @@ pub extern "C" fn channel_close(channel: i64) {
 pub extern "C" fn channel_free(channel: i64) {
     every::forget(channel);
     let Some(channel) = channels(|channels| channels.remove(&channel)) else { return };
+    channel.freed.store(true, Ordering::Release);
     let mut queue = channel.queue();
     queue.closed = true;
     let left: Vec<Message> = queue.messages.drain(..).collect();

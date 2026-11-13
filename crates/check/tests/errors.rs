@@ -604,7 +604,7 @@ fn else_as_is_for_what_can_fail_and_its_block_leaves() {
     );
 }
 
-/// An `else:` block, or `else as why:`, leaves or gives the value in place of what failed or was
+/// An `else:` block, or `except why:`, leaves or gives the value in place of what failed or was
 /// `None`, as its last line, of that one's type. One that ends on nothing says what it must give
 /// and what its last line is.
 #[test]
@@ -655,7 +655,7 @@ fn a_one_line_if_and_a_fallback_else_need_parentheses_to_mix() {
 
 /// On `T? fails E`, a plain `else` would handle the failure and the `None` alike, so it's refused,
 /// on one line or in a chain, with `?` first as the fix to make by hand. `?` then `else`, and
-/// `else as why:`, which handles only the failure, check.
+/// `except why:`, which handles only the failure, check.
 #[test]
 fn a_plain_else_cant_handle_a_failure_and_a_none_alike() {
     let declared = "error Bad:\n    why: str\n\ndef cached(n: int) -> int? fails Bad:\n    if n > 5:\n        fail Bad('broken')\n    if n > 2:\n        return None\n    return n\n";
@@ -719,7 +719,7 @@ fn an_assert_that_something_fails_takes_what_can_fail() {
     );
 }
 
-/// What `else as why:` names when a call can fail several ways is matched as any union is: each
+/// What `except why:` names when a call can fail several ways is matched as any union is: each
 /// error has a case or `_` catches the rest, a later case holds what the earlier ones left, and
 /// what can fail can't be compared as it is.
 #[test]
@@ -763,7 +763,7 @@ fn ok_err_and_result_are_refused_with_what_to_write() {
 }
 
 /// `failure_of` is only for tests. Anywhere else, in `main` or in a helper a test calls, it's
-/// refused, and the help points at `else as why:`, which names a failure where it happens.
+/// refused, and the help points at `except why:`, which names a failure where it happens.
 #[test]
 fn failure_of_is_only_for_tests() {
     let declared = "error Bad:\n    why: str\n\ndef half(n: int) -> int fails Bad:\n    if n < 0:\n        fail Bad(\"small\")\n    return n - 1\n";

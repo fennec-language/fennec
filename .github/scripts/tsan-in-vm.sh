@@ -28,9 +28,12 @@ apt-get update -qq > /dev/null && apt-get install -y -qq git binutils perl > /de
 rustup component add llvm-tools-preview > /dev/null
 rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src > /dev/null
 mkdir -p /src
-cd /repo && tar --exclude=./target -cf - . | (cd /src && tar -xf -)
+# Without `target`, and without `.git`, which in a worktree points back to the Mac: the scripts ask
+# git only where the checkout starts, which a fresh repository answers.
+cd /repo && tar --exclude=./target --exclude=./.git -cf - . | (cd /src && tar -xf -)
 cd /src
 git config --global --add safe.directory /src
+git init -q .
 .github/scripts/tsan-runtime.sh
 .github/scripts/tsan-programs.sh target/release/fennec "$SECONDS_OF_FUZZING"
 '

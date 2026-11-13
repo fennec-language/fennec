@@ -1,0 +1,79 @@
+# `json.loads` reads text from outside, so every way it can be wrong is a `ParseError`, never a
+# crash: nesting past the limit, an escape that writes no character, a number too big for what
+# it's read as, a key given twice, and text cut short anywhere. And a reader that had to keep
+# track of where it was, for a failure's path, objects inside objects, or a tuple, starts the
+# next read fresh.
+from std import json
+
+struct Point:
+    x: int
+    y: int
+
+struct Box:
+    name: str
+    corner: Point
+    pair: (int, str)
+    tags: list[str]
+
+def failure[T](run: () -> T fails ParseError) -> str:
+    _ = run() except why:
+        return why.message
+    return "loaded"
+
+def box() -> Box:
+    return Box(name="crate", corner=Point(x=3, y=-4), pair=(7, "seven"), tags=["a", "b"])
+
+test "nesting past the limit fails, in objects, arrays and both"():
+    deep = 501
+    assert failure(() => json.loads[list[int]]("[" * deep + "]" * deep)?).startswith(
+        "arrays and objects nest more than 500 deep here",
+    )
+    objects = "{\"x\": " * deep + "1" + "}" * deep
+    assert failure(() => json.loads[Point](objects)?).startswith(
+        "arrays and objects nest more than 500 deep here",
+    )
+    both = "[{\"x\": " * 300 + "1" + "}]" * 300
+    assert failure(() => json.loads[list[Point]](both)?).startswith(
+        "arrays and objects nest more than 500 deep here",
+    )
+    assert json.loads[Box](json.dumps(box()))? == box()
+
+test "escapes and surrogate pairs read as the characters they write"():
+    assert json.loads[str]("\"\\ud83e\\udd8a\"")? == "🦊"
+    assert json.loads[str]("\"a\\u00e9\\n\\t\\\"\\\\\\/\"")? == "aé\n\t\"\\/"
+    # A surrogate alone, or two of the same half, writes no character.
+    for text in [
+        "\"\\ud83e\"", "\"\\udd8a\"", "\"\\ud83e\\ud83e\"", "\"\\ud83ex\"", "\"\\u12g4\"",
+        "\"\\x\"",
+    ]:
+        assert failure(() => json.loads[str](text)?) != "loaded"
+    assert json.loads[Box](json.dumps(box()))? == box()
+
+test "a number too big for what it's read as fails"():
+    assert json.loads[int]("9223372036854775807")? == 9223372036854775807
+    assert json.loads[int]("-9223372036854775808")? == -9223372036854775807 - 1
+    for text in ["9223372036854775808", "-9223372036854775809", "1" * 400]:
+        assert failure(() => json.loads[int](text)?) != "loaded"
+    assert json.loads[float]("1e308")? == 1e308
+    assert failure(() => json.loads[float]("1e400")?) != "loaded"
+    assert failure(() => json.loads[Point]("{\"x\": 99999999999999999999, \"y\": 1}")?) != "loaded"
+    assert json.loads[Box](json.dumps(box()))? == box()
+
+test "a key given twice fails, at the top and inside"():
+    assert (
+        failure(() => json.loads[Point]("{\"x\": 1, \"x\": 2, \"y\": 3}")?)
+        == "the text has `x` twice"
+    )
+    inside = "{\"name\": \"c\", \"corner\": {\"x\": 1, \"y\": 2, \"y\": 3}, \"pair\": [1, \"a\"], \"tags\": []}"
+    assert failure(() => json.loads[Box](inside)?) == "`corner` has `y` twice"
+    assert failure(() => json.loads[dict[str, int]]("{\"a\": 1, \"a\": 2}")?) != "loaded"
+    assert json.loads[Box](json.dumps(box()))? == box()
+
+test "text cut short anywhere fails, and the next read starts fresh"():
+    whole = json.dumps(box())
+    for end in range(len(whole)):
+        assert failure(() => json.loads[Box](whole[0:end])?) != "loaded"
+        assert json.loads[Box](whole)? == box()
+
+def main(stdout: Stdout):
+    stdout.print(json.dumps(box()))

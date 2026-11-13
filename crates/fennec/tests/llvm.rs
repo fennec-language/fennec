@@ -9078,6 +9078,74 @@ def main(stdout: Stdout):
     stdout.print(total, lines)
 "#;
 
+/// What a function value or an arrow gives back held in place, an enum holding a text or a struct
+/// holding one, is the caller's, as a direct call's is: kept, read and let go of, or thrown away,
+/// with nothing left held. Each call once kept a second owner of its text.
+#[test]
+fn a_result_held_in_place_through_a_function_value_is_let_go_of() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("in_place_through_values")?;
+    std::fs::write(dir.join("in_place_through_values.fen"), IN_PLACE_THROUGH_VALUES)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "in_place_through_values", how)?;
+        assert_eq!(printed, "185 185 185 55\n", "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const IN_PLACE_THROUGH_VALUES: &str = r#"enum Outcome:
+    Good(value: int)
+    Bad(reason: str)
+
+struct Said:
+    text: str
+    count: int
+
+def judge(n: int) -> Outcome:
+    if n % 2 == 0:
+        return .Good(value=n)
+    return .Bad(reason="this failed for a reason number " + str(n))
+
+def said(n: int) -> Said:
+    return Said(text="a text long enough for a block, number " + str(n), count=n)
+
+def use(got: Outcome) -> int:
+    match got:
+        case .Bad(reason):
+            return len(reason)
+        case .Good(value):
+            return value
+
+def apply(run: (int) -> Outcome, n: int) -> int:
+    got = run(n)
+    return use(got)
+
+def thrown(run: (int) -> Outcome, n: int) -> int:
+    _ = run(n)
+    return 1
+
+def counted(make: (int) -> Said, n: int) -> int:
+    kept = make(n)
+    return kept.count + len(kept.text) - 40
+
+def main(stdout: Stdout):
+    mut direct = 0
+    mut valued = 0
+    mut arrowed = 0
+    mut other = 0
+    for n in range(10):
+        direct += use(judge(n))
+        valued += apply(judge, n=n)
+        arrowed += apply((k) => judge(k), n=n)
+        other += thrown(judge, n=n) + counted(said, n=n)
+    stdout.print(direct, valued, arrowed, other)
+    return
+"#;
+
 /// Closures kept where the runtime reads them, as a list's items and in a generator's block, come
 /// out as pinned: appended, read in a loop and by index, shared by a copy of the list, popped,
 /// replaced, and captured by a generator that calls one. A list of closures and a generator keeping

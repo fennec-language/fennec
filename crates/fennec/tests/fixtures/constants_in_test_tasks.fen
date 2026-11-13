@@ -1,0 +1,27 @@
+## A constant a test's launched task works out first, then the test itself, and the other way
+## round: each pushes to a struct field that starts as it, and finds it.
+from std.concurrent import Crashed
+
+NOTHING = list[int]()
+
+struct Holder:
+    items = NOTHING
+
+def pushed() -> int:
+    mut holder = Holder()
+    holder.items.append(7)
+    return len(holder.items)
+
+def in_task():
+    assert pushed() == 1
+
+test "a task works it out first, then the test"():
+    with launch(() => in_task())?:
+        pass
+    assert pushed() == 1
+
+test "the test works it out first, then a task"():
+    assert pushed() == 1
+    with launch(() => in_task())?:
+        pass
+    assert pushed() == 1

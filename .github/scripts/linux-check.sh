@@ -59,7 +59,9 @@ if ! docker --context "$context" info > /dev/null 2>&1; then
   # Fennec's own VM, stopped: started, leaving Docker's context as it is.
   if [ "$context" = colima-fennec ] && command -v colima > /dev/null \
     && colima list 2> /dev/null | awk '{ print $1 }' | grep -qx fennec; then
-    colima start fennec --activate=false > /dev/null 2>&1 \
+    # Without the lock's descriptor: the VM's host agent lives on after this check, and holding it
+    # would keep every later check waiting.
+    eval "colima start fennec --activate=false > /dev/null 2>&1 ${FENNEC_LINUX_CHECK_HELD}>&-" \
       || unavailable "Fennec's Linux VM, colima's \`fennec\`, wouldn't start"
   fi
   docker --context "$context" info > /dev/null 2>&1 \

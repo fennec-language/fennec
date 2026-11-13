@@ -35,7 +35,7 @@ fennec_parse_int unchecked 2
 fennec_regex_groups unchecked 1
 fennec_regex_is_valid unchecked 3
 fennec_str_compare in-cant-fail 5
-fennec_str_find unchecked 0
+fennec_str_find_header unchecked 0
 fennec_text_contains unchecked 0
 fennec_trace_allocated in-cant-fail 0
 fennec_trace_allocated unchecked 0

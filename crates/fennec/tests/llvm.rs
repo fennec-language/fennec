@@ -6025,6 +6025,205 @@ def main(stdout: Stdout):
     )
 }
 
+/// A struct holding a text, sent to a task and read there through its inbox's loop, then sent back
+/// as it is and inside an f-string, comes back whole at every length around the most a header
+/// holds in itself, on one thread and on many. The inbox's generator once kept each `Event` in its
+/// item slot without an owner of its text, so a text in a block of its own was freed under it.
+#[test]
+fn a_received_struct_s_text_sent_on_comes_back_whole_at_every_length() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("received_text_sent_on")?;
+    let program = dir.join("sent_on.fen");
+    std::fs::write(
+        &program,
+        r#"from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+struct Event:
+    user: int
+    text: str
+
+def reader(inbox: Inbox[Event], out: Sender[str]) fails Closed:
+    for event in inbox:
+        out.send(event.text)?
+        out.send(f"got {event.text}")?
+    return
+
+def text_of(length: int, n: int) -> str:
+    return "".join(["x" for _ in range(length - 1)]) + str(n)
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    for length in [20, 23, 24, 28, 31, 32, 40, 64]:
+        mut whole = 0
+        with channel[str](size=16) as results:
+            back = results.sender()
+            with launch((inbox) => reader(inbox, back)?, inbox_size=4)? as to_reader:
+                for n in range(5):
+                    to_reader.send(Event(user=n, text=text_of(length, n=n)))?
+            for n in range(5):
+                sent = text_of(length, n=n)
+                if (results.receive() else "") == sent:
+                    whole += 1
+                if (results.receive() else "") == f"got {sent}":
+                    whole += 1
+        stdout.print(length, whole)
+    return
+"#,
+    )?;
+    let wanted = "20 10\n23 10\n24 10\n28 10\n31 10\n32 10\n40 10\n64 10\n";
+    prints_with_nothing_left(&dir, &program, wanted, &["1", "4", "16"])
+}
+
+/// Builds `program` in both builds and runs it at each count of `threads` under `FENNEC_COUNTS`:
+/// it prints `wanted`, and has no block left live at the end, so nothing it holds was let go of
+/// too soon or kept too long.
+fn prints_with_nothing_left(
+    dir: &Path,
+    program: &Path,
+    wanted: &str,
+    threads: &[&str],
+) -> std::io::Result<()> {
+    let output = program.with_extension("");
+    let (program, output) = (program.to_string_lossy().into_owned(), output.to_string_lossy().into_owned());
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for count in threads {
+            let ran = Command::new(&output)
+                .env("FENNEC_THREADS", count)
+                .env("FENNEC_COUNTS", "1")
+                .output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(said.0, wanted, "{how:?} on {count} threads: {}", said.1);
+            assert!(said.1.contains(" live 0"), "{how:?} on {count} threads left blocks live: {}", said.1);
+        }
+    }
+    std::fs::remove_dir_all(dir)
+}
+
+/// A message a task reads with `for ... in inbox` stays its own while it makes other values: a
+/// struct's text and an enum case's text and list, checked with `==` after fifty other texts are
+/// made, where a text freed under it read as one of those. Fable's thread-crossing reproducer, and
+/// its three-case enum, which came out wrong silently.
+#[test]
+fn a_message_read_in_an_inbox_loop_stays_whole_while_the_task_makes_others() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("message_stays_whole")?;
+    let program = dir.join("message_stays_whole.fen");
+    std::fs::write(
+        &program,
+        r#"from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+struct Event:
+    user: int
+    text: str
+
+enum Message:
+    Said(text: str)
+    Count(n: int)
+    Many(texts: list[str])
+
+def long(n: int) -> str:
+    return "xxxxxxxxxxxxxxxxxxxxxxxxxx" + str(n % 9) + "y"
+
+def filler() -> int:
+    mut made = list[str]()
+    for at in range(50):
+        made.append("zzzzzzzzzzzzzzzzzzzzzzzzzz" + str(at % 9) + "!")
+    return len(made)
+
+def shown(message: Message) -> str:
+    match message:
+        case .Said(text):
+            return f"said {text}"
+        case .Count(n):
+            return f"count {n}"
+        case .Many(texts):
+            joined = "".join(texts)
+            return f"many {joined}"
+
+def events(inbox: Inbox[Event], out: Sender[str]) fails Closed:
+    for event in inbox:
+        made = filler()
+        out.send(f"{event.text}|{made}")?
+    return
+
+def messages(inbox: Inbox[Message], out: Sender[str]) fails Closed:
+    for message in inbox:
+        made = filler()
+        out.send(f"{shown(message)}|{made}")?
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    mut wrong = 0
+    with channel[str](size=4) as results:
+        back = results.sender()
+        with launch((inbox) => events(inbox, out=back)?, inbox_size=4)? as to_reader:
+            for n in range(6):
+                to_reader.send(Event(user=n, text=long(n)))?
+                if (results.receive() else "nothing") != f"{long(n)}|50":
+                    wrong += 1
+        with launch((inbox) => messages(inbox, out=back)?, inbox_size=4)? as to_reader:
+            for n in range(60):
+                message = Message.Said(text=long(n)) if n % 3 == 0 else (Message.Count(n=n) if n % 3 == 1 else Message.Many(texts=[long(n), long(n + 1)]))
+                to_reader.send(message)?
+                if (results.receive() else "nothing") != f"{shown(message)}|50":
+                    wrong += 1
+    stdout.print("wrong", wrong)
+    return
+"#,
+    )?;
+    prints_with_nothing_left(&dir, &program, "wrong 0\n", &["1", "4"])
+}
+
+/// A generator's item and what it keeps across a `yield` are its own: a struct holding a text in a
+/// block of its own, yielded, and another kept from one item to the next, both read whole after.
+#[test]
+fn a_generator_owns_the_struct_it_yields_and_the_one_it_keeps() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("generator_owns_structs")?;
+    let program = dir.join("generator_owns_structs.fen");
+    std::fs::write(
+        &program,
+        r#"struct Note:
+    at: int
+    text: str
+
+def long_text(n: int) -> str:
+    return f"a note long enough to need a block of its own, number {n}"
+
+def notes(count: int) -> Iterator[Note]:
+    mut kept = Note(at=-1, text=long_text(-1))
+    for at in range(count):
+        yield Note(at=at, text=long_text(at))
+        yield kept
+        kept = Note(at=at, text=long_text(at * 10))
+    return
+
+def main(stdout: Stdout):
+    mut whole = 0
+    mut seen = 0
+    for note in notes(6):
+        seen += 1
+        if note.text == long_text(note.at) or note.text == long_text(note.at * 10):
+            whole += 1
+    stdout.print(seen, whole)
+    return
+"#,
+    )?;
+    prints_with_nothing_left(&dir, &program, "12 12\n", &["1"])
+}
+
 /// A struct field that starts as a module constant, pushed to and popped through `ref self` methods,
 /// gives back what was pushed in a launched task as it does on the main thread, after the main
 /// thread has read the constant over and over. Each read there once took the constant's count down,
@@ -11499,12 +11698,26 @@ fn measured(peak: Option<u64>) -> Option<u64> {
 
 /// What a program printed, and the most memory it held, where `/usr/bin/time` can say.
 fn with_peak_memory(executable: &Path, dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
+    peak_memory_of(executable, &[], dir)
+}
+
+/// What a command printed, given `args` and run with `dir` as its folder and its Fennec home,
+/// and the most memory it held, where `/usr/bin/time` can say.
+fn peak_memory_of(program: &Path, args: &[&str], dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
     let time = Path::new("/usr/bin/time");
     let flag = if cfg!(target_os = "macos") { "-l" } else { "-v" };
     if cfg!(windows) || !time.exists() {
-        return Ok((Command::new(executable).current_dir(dir).output_within()?, None));
+        let ran =
+            Command::new(program).args(args).current_dir(dir).env("FENNEC_HOME", dir).output_within()?;
+        return Ok((ran, None));
     }
-    let ran = Command::new(time).arg(flag).arg(executable).current_dir(dir).output_within()?;
+    let ran = Command::new(time)
+        .arg(flag)
+        .arg(program)
+        .args(args)
+        .current_dir(dir)
+        .env("FENNEC_HOME", dir)
+        .output_within()?;
     let said = String::from_utf8_lossy(&ran.stderr);
     let peak = said.lines().find_map(|line| {
         let line = line.trim();
@@ -13798,6 +14011,91 @@ def main(net: Net, stdout: Stdout) fails NetError:
     std::fs::remove_dir_all(&dir)?;
     // 10,000 leaked rounds would be about 18 MB.
     assert!(after < before + 4_096, "the server grew from {before} KB to {after} KB");
+    Ok(())
+}
+
+/// A program's own types named like the library's, `Delivery`, `Duration` and `Match`, go through
+/// a launched task's inbox and a `with` of two channels. Each is checked under a name no source
+/// can write, and the source the checker writes in for a `with launch` and for a channel's type
+/// names it that way too; the library's own `Duration`, which `stop_after` takes, stays the
+/// library's. A channel of one once kept the checker going round until it ran out of memory.
+#[test]
+fn a_program_type_named_like_a_library_type_goes_through_inboxes_and_channels() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "renamed_inbox",
+        r#"from std.concurrent import Closed, Crashed, Inbox, channel
+
+struct Delivery:
+    user: int
+
+struct Match:
+    at: int
+
+enum Duration:
+    Short
+    Long(minutes: int)
+
+def quiet(inbox: Inbox[Delivery], stdout: Stdout):
+    mut total = 0
+    for delivery in inbox:
+        total += delivery.user
+    stdout.print(total)
+    return
+
+def timed(inbox: Inbox[Duration], stdout: Stdout):
+    for length in inbox:
+        match length:
+            case .Short:
+                stdout.print("short")
+            case .Long(minutes):
+                stdout.print("long", minutes)
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with launch((inbox) => quiet(inbox, stdout), inbox_size=4)? as first:
+        first.send(Delivery(user=1))?
+        first.send(Delivery(user=2))?
+    with launch((inbox) => timed(inbox, stdout), stop_after=5s, inbox_size=4)? as second:
+        second.send(.Short)?
+        second.send(.Long(minutes=3))?
+    with channel[Delivery](size=4) as deliveries, channel[list[Match]](size=2) as matches:
+        deliveries.send(Delivery(user=5))?
+        matches.send([Match(at=7), Match(at=8)])?
+        delivery = deliveries.receive() else return
+        found = matches.receive() else return
+        stdout.print(delivery.user, len(found), found[1].at)
+    return
+"#,
+        "3\nshort\nlong 3\n5 2 8\n",
+    )
+}
+
+/// Checking a channel of a program's own type named like a library type takes the memory checking
+/// anything small does. The checker once went round and round on it, checking the whole program
+/// again a dozen times a second, past 2 GB in seconds, because the source it wrote in for the
+/// channel's type couldn't be parsed; a check that never settles can't come back unseen.
+#[test]
+fn checking_a_channel_of_a_type_named_like_the_librarys_settles() -> std::io::Result<()> {
+    let dir = folder("renamed_channel_check")?;
+    let program = dir.join("renamed.fen");
+    std::fs::write(
+        &program,
+        "from std.concurrent import Closed, channel\n\nstruct Match:\n    at: int\n\n\
+         def main(stdout: Stdout) fails Closed:\n    with channel[Match](size=2) as matches:\n\
+         \x20       matches.send(Match(at=7))?\n        found = matches.receive() else return\n\
+         \x20       stdout.print(found.at)\n    return\n",
+    )?;
+    runtime_built();
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let (checked, peak) = peak_memory_of(fennec, &["check", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
+    if let Some(peak) = measured(peak) {
+        assert!(peak < 400 << 20, "checking it held {} MB", peak >> 20);
+    }
     Ok(())
 }
 
@@ -18922,59 +19220,6 @@ fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
 const TEXT_GROWN_PRINTS: &str = r"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
 ";
 
-/// `text += "," + f()?` that fails leaves the text as it was, in a field, a `ref` parameter, and
-/// `text = text + "," + f()?`: the pieces aren't added one at a time when a later one can fail,
-/// since those before it would be in already.
-#[test]
-fn a_text_grown_by_pieces_one_of_which_fails_keeps_what_it_had() -> std::io::Result<()> {
-    if !ready() {
-        return Ok(());
-    }
-    prints_in_both_builds(
-        "pieces_failing",
-        r#"error Bad:
-    why: str
-
-struct Writer:
-    text = "start"
-
-def risky(value: int, stdout: Stdout) -> str fails Bad:
-    stdout.print("called", value)
-    if value > 2: fail Bad(why="too big")
-    return str(value)
-
-def grow(ref out: Writer, value: int, stdout: Stdout) fails Bad:
-    out.text += "," + risky(value, stdout)? + "!"
-    return
-
-def grow_text(ref text: str, value: int, stdout: Stdout) fails Bad:
-    text += "," + risky(value, stdout)?
-    return
-
-def rebuilt(ref text: str, value: int, stdout: Stdout) fails Bad:
-    text = text + "," + risky(value, stdout)?
-    return
-
-def main(stdout: Stdout):
-    mut out = Writer()
-    mut text = "t"
-    mut other = "o"
-    for value in [2, 3]:
-        grow(ref out, value, stdout) except Bad(why):
-            stdout.print("failed", why)
-        grow_text(ref text, value, stdout) except Bad(why):
-            stdout.print("failed", why)
-        rebuilt(ref other, value, stdout) except Bad(why):
-            stdout.print("failed", why)
-        stdout.print(out.text, text, other)
-    return
-"#,
-        "called 2\ncalled 2\ncalled 2\nstart,2! t,2 o,2\n\
-         called 3\nfailed too big\ncalled 3\nfailed too big\ncalled 3\nfailed too big\n\
-         start,2! t,2 o,2\n",
-    )
-}
-
 /// A field's text grown by what a call makes, `self.text += str(value)`, grows where it is: the
 /// call can't change the field, so the field is read after it, its only owner as it's added to.
 /// It once read the field first, so the text was copied every time, quadratically. A call given
@@ -19075,6 +19320,131 @@ def main(stdout: Stdout):
     third.counted(5)
     third.counted(6)
     stdout.print(other.text, third.text)
+    return
+"#;
+
+/// `text += "," + f()?` that fails leaves the text as it was, in a field, a `ref` parameter, and
+/// `text = text + "," + f()?`: the pieces aren't added one at a time when a later one can fail,
+/// since those before it would be in already.
+#[test]
+fn a_text_grown_by_pieces_one_of_which_fails_keeps_what_it_had() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "pieces_failing",
+        r#"error Bad:
+    why: str
+
+struct Writer:
+    text = "start"
+
+def risky(value: int, stdout: Stdout) -> str fails Bad:
+    stdout.print("called", value)
+    if value > 2: fail Bad(why="too big")
+    return str(value)
+
+def grow(ref out: Writer, value: int, stdout: Stdout) fails Bad:
+    out.text += "," + risky(value, stdout)? + "!"
+    return
+
+def grow_text(ref text: str, value: int, stdout: Stdout) fails Bad:
+    text += "," + risky(value, stdout)?
+    return
+
+def rebuilt(ref text: str, value: int, stdout: Stdout) fails Bad:
+    text = text + "," + risky(value, stdout)?
+    return
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    mut text = "t"
+    mut other = "o"
+    for value in [2, 3]:
+        grow(ref out, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        grow_text(ref text, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        rebuilt(ref other, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        stdout.print(out.text, text, other)
+    return
+"#,
+        "called 2\ncalled 2\ncalled 2\nstart,2! t,2 o,2\n\
+         called 3\nfailed too big\ncalled 3\nfailed too big\ncalled 3\nfailed too big\n\
+         start,2! t,2 o,2\n",
+    )
+}
+
+/// A failure in the first, a middle or the last piece of a `+=` leaves what's added to exactly as
+/// it was: a text field, a `ref` text, `x = x + a? + b? + c?` and a list field, each failing at
+/// each piece in turn, then with none failing, which adds every piece. Nothing is left held.
+#[test]
+fn a_failure_in_any_piece_of_a_sum_added_on_leaves_the_target_as_it_was() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("pieces_failing_anywhere")?;
+    std::fs::write(dir.join("pieces_failing_anywhere.fen"), PIECES_FAILING_ANYWHERE)?;
+    let failed = |at: u32| {
+        let what = ["piece", "piece", "piece", "items"].map(|kind| format!("failed {kind} {at}\n")).concat();
+        format!("{what}{at} t u v [0]\n")
+    };
+    let wanted = format!("{}{}{}0 t1-2-3 u1-2-3 v123 [0, 1, 2, 3]\n", failed(1), failed(2), failed(3));
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "pieces_failing_anywhere", how)?;
+        assert_eq!(printed, wanted, "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const PIECES_FAILING_ANYWHERE: &str = r#"error Bad:
+    why: str
+
+struct Box:
+    text = "t"
+    items = [0]
+
+def piece(n: int, fails_at: int) -> str fails Bad:
+    if n == fails_at: fail Bad(why=f"piece {n}")
+    return str(n)
+
+def items(n: int, fails_at: int) -> list[int] fails Bad:
+    if n == fails_at: fail Bad(why=f"items {n}")
+    return [n]
+
+def grow_field(ref box: Box, fails_at: int) fails Bad:
+    box.text += piece(1, fails_at=fails_at)? + "-" + piece(2, fails_at=fails_at)? + "-" + piece(3, fails_at=fails_at)?
+    return
+
+def grow_text(ref text: str, fails_at: int) fails Bad:
+    text += piece(1, fails_at=fails_at)? + "-" + piece(2, fails_at=fails_at)? + "-" + piece(3, fails_at=fails_at)?
+    return
+
+def rebuild_text(ref text: str, fails_at: int) fails Bad:
+    text = text + piece(1, fails_at=fails_at)? + piece(2, fails_at=fails_at)? + piece(3, fails_at=fails_at)?
+    return
+
+def grow_items(ref box: Box, fails_at: int) fails Bad:
+    box.items += items(1, fails_at=fails_at)? + items(2, fails_at=fails_at)? + items(3, fails_at=fails_at)?
+    return
+
+def main(stdout: Stdout):
+    for fails_at in [1, 2, 3, 0]:
+        mut box = Box()
+        mut text = "u"
+        mut other = "v"
+        grow_field(ref box, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        grow_text(ref text, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        rebuild_text(ref other, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        grow_items(ref box, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        stdout.print(fails_at, box.text, text, other, box.items)
     return
 "#;
 
@@ -20370,6 +20740,31 @@ fn a_texts_start_and_end_are_compared_where_they_are() -> std::io::Result<()> {
     return
 "#,
         "11 00 00 00 00 00 00 00 00 00 00 00\n11 11 00 00 00 00 00 00 00 00 00 00\n11 10 01 11 00 00 00 00 00 00 00 00\n11 00 10 00 00 01 00 00 00 11 00 00\n11 00 00 00 00 10 10 01 00 00 00 00\n11 10 00 00 00 00 00 00 01 00 11 00\n",
+    )
+}
+
+/// `find` hands the runtime its text and part as their headers, inline or in a block, and gives
+/// back where the part starts in characters: an empty part, two-byte characters before it, the
+/// whole text, and a part that isn't there.
+#[test]
+fn a_find_reads_its_text_and_part_however_they_are_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "find_headers",
+        r#"def main(stdout: Stdout):
+    texts = ["", "a: b", "café: au lait", "a header line long enough for a block: its value", "été, then a long tail past twenty-three bytes: été"]
+    parts = ["", ": ", "a", "é", "été", "its value", "a header line long enough for a block: its value", "absent"]
+    for text in texts:
+        mut said = list[str]()
+        for part in parts:
+            at = text.find(part) else -1
+            said.append(str(at))
+        stdout.print(" ".join(said))
+    return
+"#,
+        "0 -1 -1 -1 -1 -1 -1 -1\n0 1 0 -1 -1 -1 -1 -1\n0 4 1 3 -1 -1 -1 -1\n0 37 0 -1 -1 39 0 -1\n0 45 10 0 0 -1 -1 -1\n",
     )
 }
 

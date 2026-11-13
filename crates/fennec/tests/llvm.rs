@@ -11389,6 +11389,7 @@ pub(crate) fn serving(report: &Path, at_least: usize) {
 
 /// Waits until the live count at `report` says `stopping 1`: the server has taken the stop and is
 /// draining, on either runtime. Fails if it never does.
+#[cfg(unix)]
 pub(crate) fn stopping(report: &Path) {
     let started = std::time::Instant::now();
     loop {

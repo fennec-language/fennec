@@ -535,6 +535,153 @@ mod tests {
         super::agreed(&program, &first, &finished)
     }
 
+    /// Fable's ten shapes of types that hold themselves, and which are blocks: only a type that
+    /// contains itself by value, however far round, every declared type in such a cycle. A list, a
+    /// dict or an optional of a block breaks a cycle; an array of optionals or a union doesn't.
+    #[test]
+    fn only_a_type_that_contains_itself_is_a_block() -> Result<(), String> {
+        if !fennec_layout::types_in_place() {
+            return Ok(());
+        }
+        let mut module = fennec_syntax::parse(SHAPES).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let layouts = super::layouts_of(&program)?;
+        // A program's own type named as one of the standard library's is marked apart, with a `'`.
+        let boxed = |name: &str| {
+            let id = layouts.id(name).or_else(|| layouts.id(&format!("{name}'")))?;
+            layouts.get(id).map(|layout| layout.boxed)
+        };
+        for (name, wanted) in [
+            ("Node", true),
+            ("Forest", false),
+            ("Tree", true),
+            ("Pair", true),
+            ("Bush", false),
+            ("Dir", false),
+            ("Linked[str]", true),
+            ("Grid", true),
+            ("Wrap", true),
+            ("Leaf", false),
+            ("Pairs", false),
+            ("Expr", true),
+        ] {
+            assert_eq!(boxed(name), Some(wanted), "{name}");
+        }
+        Ok(())
+    }
+
+    const SHAPES: &str = r#"# The recursive shapes the block decision has to get right.
+
+struct Node:
+    value: int
+    next: Node?
+
+struct Forest:
+    root: Node?
+    name: str
+
+struct Pair:
+    left: Tree?
+    right: Tree?
+
+struct Tree:
+    kids: Pair
+    value: int
+
+struct Bush:
+    kids: list[Bush]
+    name: str
+
+struct Dir:
+    entries: dict[str, Dir]
+    size: int
+
+struct Linked[T]:
+    value: T
+    next: Linked[T]?
+
+struct Grid:
+    cells: array[Grid?, 2]
+    value: int
+
+struct Leaf:
+    name: str
+
+struct Wrap:
+    inner: Shape
+    depth: int
+
+type Shape = Wrap | Leaf
+
+struct Pairs:
+    items: list[(int, Pairs)]
+    name: str
+
+enum Expr:
+    Num(value: int)
+    Neg(inner: Expr)
+    Add(left: Expr, right: Expr)
+
+def chain(n: int) -> Node:
+    mut node = Node(value=0, next=None)
+    for at in range(1, n):
+        node = Node(value=at, next=node)
+    return node
+
+def length(node: Node) -> int:
+    rest = node.next else return 1
+    return 1 + length(rest)
+
+def bush(depth: int) -> Bush:
+    if depth == 0:
+        return Bush(kids=[], name="leaf with a long enough name")
+    return Bush(kids=[bush(depth - 1), bush(depth - 1)], name=f"bush at depth {depth} with a long name")
+
+def count(bush: Bush) -> int:
+    return 1 + sum(count(kid) for kid in bush.kids)
+
+def value(expr: Expr) -> int:
+    match expr:
+        case .Num(n):
+            return n
+        case .Neg(inner):
+            return -value(inner)
+        case .Add(left, right):
+            return value(left) + value(right)
+
+def main(stdout: Stdout):
+    node = chain(5)
+    forest = Forest(root=node, name="a forest with a long enough name")
+    other = forest
+    stdout.print(length(node), forest == other, forest)
+    tree = Tree(kids=Pair(left=Tree(kids=Pair(left=None, right=None), value=1), right=None), value=2)
+    stdout.print(tree)
+    made = bush(3)
+    stdout.print(count(made), made.kids[1].kids[0].name)
+    mut dir = Dir(entries={}, size=1)
+    dir.entries["sub"] = Dir(entries={"deep": Dir(entries={}, size=3)}, size=2)
+    copy = dir
+    dir.entries["sub"].size += 10
+    stdout.print(copy.entries["sub"].size, dir.entries["sub"].size, dir.entries["sub"].entries["deep"].size, copy == dir)
+    linked = Linked[str](value="first with a long enough text", next=Linked[str](value="second", next=None))
+    rest = linked.next else linked
+    stdout.print(linked.value, rest.value, rest.next is None)
+    grid = Grid(cells=[Grid(cells=[None, None], value=1), None], value=2)
+    first = grid.cells[0] else grid
+    stdout.print(grid.value, first.value, grid.cells[1] is None)
+    shape: Shape = Wrap(inner=Wrap(inner=Leaf(name="a leaf with a long enough name"), depth=1), depth=2)
+    stdout.print(shape)
+    pairs = Pairs(items=[(1, Pairs(items=[], name="inner pairs with a long name"))], name="outer")
+    stdout.print(pairs.items[0][1].name, len(pairs.items))
+    expr = Expr.Add(left=.Num(value=3), right=.Neg(inner=.Num(value=1)))
+    stdout.print(value(expr), expr)
+    many = [forest, other]
+    held = {1: tree}
+    stdout.print(len(many), many[1].name, held[1].value)
+    return
+"#;
+
     const OPTIONAL_TEXTS: &str = r#"error Lost:
     place: str
     hint: str?

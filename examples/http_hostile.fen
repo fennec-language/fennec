@@ -1,0 +1,108 @@
+# A server reads requests from anyone, so every way a request can lie is answered with why, never
+# a crash and never a request read differently from how a proxy in front would read it: a NUL
+# decoded into the path or query, a request line that isn't three words, a target that isn't
+# ASCII, a length that's too big, signed or not a number, headers past their limit in bytes
+# however their characters are written, a byte that has no place in a header, and a request cut
+# short anywhere. And what the program answers can't make the client read its body as anything
+# but what the server wrote.
+from std.net import NetError, Request, Response
+
+def respond(request: Request) -> Response:
+    if request.path == "/chunks":
+        # A header only the server may write: it would have a client read the body as chunks.
+        return Response(status=200, headers={"transfer-encoding": "chunked"}, body="hello".encode())
+    return Response(
+        status=200,
+        body=f"{request.method} {request.path} {len(request.body)}".encode(),
+    )
+
+## Every line a server answers `raw` with, waiting at most `timeout` for the request.
+def sent(net: Net, raw: bytes, timeout = 30s) -> list[str] fails NetError:
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.write(raw)?
+            server.serve(respond, timeout=timeout)
+            return list(client.lines()?)
+    return []
+
+## Every line a server answers the request `raw` with.
+def answer(net: Net, raw: str, timeout = 30s) -> list[str] fails NetError:
+    return sent(net, raw.encode(), timeout=timeout)?
+
+## The status line a server answers `raw` with, or "no answer".
+def status_of(net: Net, raw: str) -> str fails NetError:
+    lines = sent(net, raw.encode())?
+    return lines[0] if len(lines) > 0 else "no answer"
+
+def status_of_bytes(net: Net, raw: bytes) -> str fails NetError:
+    lines = sent(net, raw)?
+    return lines[0] if len(lines) > 0 else "no answer"
+
+BAD = "HTTP/1.1 400 Bad Request"
+GOOD = "HTTP/1.1 200 OK"
+TOO_BIG = "HTTP/1.1 431 Request Header Fields Too Large"
+END = "connection: close\r\n\r\n"
+
+test "a NUL decoded from the path or the query is refused"(net: Net):
+    assert status_of(net, f"GET /a%00b HTTP/1.1\r\n{END}")? == BAD
+    assert status_of(net, f"GET /a?q=%00 HTTP/1.1\r\n{END}")? == BAD
+    assert status_of(net, f"GET /a?%00=1 HTTP/1.1\r\n{END}")? == BAD
+    # Dots are decoded and left to the program, which checks a path with `Path.inside`.
+    assert answer(net, f"GET /%2e%2e/etc HTTP/1.1\r\n{END}")?[-1] == "GET /../etc 0"
+
+test "a request line that isn't three words is refused"(net: Net):
+    for line in [
+        "GET  / HTTP/1.1", "GET / HTTP/1.1 x", "GET\t/ HTTP/1.1", "GET /", " GET / HTTP/1.1",
+    ]:
+        assert status_of(net, f"{line}\r\n{END}")? == BAD
+
+test "a target that isn't ASCII is refused, and a header's other bytes are read"(net: Net):
+    head = "GET /".encode() + bytes([255, 254]) + f" HTTP/1.1\r\n{END}".encode()
+    assert status_of_bytes(net, head)? == BAD
+    assert status_of(net, f"GET /é HTTP/1.1\r\n{END}")? == BAD
+    assert status_of(net, f"GET /%C3%A9 HTTP/1.1\r\n{END}")? == GOOD
+    header = "GET / HTTP/1.1\r\nx-a: ".encode() + bytes([192, 175]) + f"\r\n{END}".encode()
+    assert status_of_bytes(net, header)? == GOOD
+
+test "a length that's too big, signed, or not only digits is refused"(net: Net):
+    for length in ["99999999999999999999999", "-1", "+1", "1e3", "0x10", " ", "1 1"]:
+        assert status_of(net, f"POST / HTTP/1.1\r\ncontent-length: {length}\r\n{END}x")? == BAD
+    assert (
+        status_of(net, f"POST / HTTP/1.1\r\ncontent-length: 10485761\r\n{END}")?
+        == "HTTP/1.1 413 Content Too Large"
+    )
+
+test "the headers' limit is in bytes, however their characters are written"(net: Net):
+    # 9,000 characters, written in 18,000 bytes: past 16,384.
+    wide = "é" * 9_000
+    assert status_of(net, f"GET / HTTP/1.1\r\nx-wide: {wide}\r\n{END}")? == TOO_BIG
+    narrow = "e" * 9_000
+    assert status_of(net, f"GET / HTTP/1.1\r\nx-wide: {narrow}\r\n{END}")? == GOOD
+    many = "x-a: 1\r\n" * 101
+    assert status_of(net, f"GET / HTTP/1.1\r\n{many}{END}")? == TOO_BIG
+
+test "a byte with no place in a header is refused"(net: Net):
+    for header in ["x-a\x00: 1", "x-a: 1\x7f", "x a: 1", ": 1", "x-a: 1\x0bb", "x-a: \x1b[31m"]:
+        assert status_of(net, f"GET / HTTP/1.1\r\n{header}\r\n{END}")? == BAD
+
+test "a program's transfer-encoding isn't written, so the body is read as it was sent"(net: Net):
+    lines = answer(net, f"GET /chunks HTTP/1.1\r\n{END}")?
+    assert lines[0] == GOOD
+    assert "transfer-encoding: chunked" not in lines
+    assert "content-length: 5" in lines and lines[-1] == "hello"
+
+test "two requests in one write are answered in turn"(net: Net):
+    two = "POST /a HTTP/1.1\r\ncontent-length: 0\r\n\r\nGET /b HTTP/1.1\r\n" + END
+    # Each body has no line ending, so the next response's status line follows it on its line.
+    text = "\n".join(answer(net, two)?)
+    assert text.count(GOOD) == 2
+    assert text.find("POST /a 0") is not None and text.endswith("GET /b 0")
+
+test "a request cut short anywhere gets no answer, and a whole one gets one"(net: Net):
+    whole = "POST /a?b=c HTTP/1.1\r\nhost: h\r\ncontent-length: 3\r\nconnection: close\r\n\r\nabc"
+    for end in range(0, len(whole), 7):
+        assert answer(net, whole[0:end], timeout=100ms)? == []
+    assert answer(net, whole, timeout=100ms)?[-1] == "POST /a 3"
+
+def main(stdout: Stdout):
+    stdout.print("run with `fennec test`")

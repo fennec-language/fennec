@@ -377,10 +377,19 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
     parts = first.split(" ")
     if len(parts) != 3 or (parts[2] != "HTTP/1.1" and parts[2] != "HTTP/1.0"):
         return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
-    if not is_token(parts[0]) or parts[1] == "" or has_control(parts[1], False):
+    # A target is ASCII, as HTTP has it: a byte past 127 reaches the program as something a proxy
+    # in front didn't see, once it's read as text.
+    if (
+        not is_token(parts[0])
+        or parts[1] == ""
+        or has_control(parts[1], False)
+        or not is_ascii(parts[1])
+    ):
         return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
     mut headers: dict[str, str] = {}
-    mut size = len(first)
+    # In bytes, as the limit is: a header of characters UTF-8 writes in two or more bytes counts
+    # each of them.
+    mut size = text_size(first)
     mut lines = 0
     while True:
         line = connection.read_line(timeout=timeout, crlf=True)? else return .Bad(
@@ -388,7 +397,7 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
             reason="the headers didn't end",
         )
         if line == "": break
-        size += len(line)
+        size += text_size(line)
         lines += 1
         if lines > MOST_HEADERS or size > MOST_HEADER_BYTES:
             return .Bad(status=431, reason="the headers are too big")
@@ -436,14 +445,15 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
     if at is not None:
         path = target[:at]
         query = decode_query(target[at + 1:])
+    decoded = unquote(path)
+    # `%00` decodes to a NUL, which no path or query has a use for, and which a file name or C
+    # code would take as where the text ends.
+    if decoded.find("\x00") is not None: return .Bad(status=400, reason="the path holds a NUL byte")
+    for name, value in query.items():
+        if name.find("\x00") is not None or value.find("\x00") is not None:
+            return .Bad(status=400, reason="the query holds a NUL byte")
     return .Got(
-        request=Request(
-            method=parts[0],
-            path=unquote(path),
-            query=query,
-            headers=headers,
-            body=body,
-        ),
+        request=Request(method=parts[0], path=decoded, query=query, headers=headers, body=body),
         keep=keep,
     )
 
@@ -484,6 +494,12 @@ def has_control(text: str, tab: bool) -> bool:
         if (b < 32 and not (tab and b == 9)) or b == 127: return True
     return False
 
+## Whether every byte of `text` is ASCII.
+def is_ascii(text: str) -> bool:
+    for at in range(text_size(text)):
+        if text_byte(text, at) > 127: return False
+    return True
+
 ## Whether `text` is one or more digits and nothing else.
 def only_digits(text: str) -> bool:
     size = text_size(text)
@@ -509,7 +525,10 @@ def write_response(
             write_response(connection, refused, keep, head_only)?
             return
         lower = name.lower()
-        if lower != "content-length" and lower != "connection":
+        # The server writes how the body's sent and whether the connection stays itself. A
+        # `transfer-encoding` beside its `content-length` would have a client read the body as
+        # chunks, which it isn't, and take what follows for the next response.
+        if lower != "content-length" and lower != "connection" and lower != "transfer-encoding":
             head += f"{name}: {value}\r\n"
     head += f"content-length: {len(response.body)}\r\n"
     if not keep:

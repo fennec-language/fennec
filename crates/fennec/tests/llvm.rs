@@ -14328,6 +14328,68 @@ fn launched_tasks_run_beside_their_block_natively() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Launches whose messages and errors are of types a text form can't carry, for the test below.
+const LAUNCHED_ANY_TYPE: &str = "from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+# The library has a `Delivery` too: this one is the program's own.
+struct Delivery:
+    parcel: str
+    if: int
+
+error Lost:
+    where: str
+
+error Late:
+    by: int
+
+def deliver(inbox: Inbox[Delivery], stdout: Stdout) fails Lost | Late:
+    for delivery in inbox:
+        if delivery.if > 9: fail Lost(where=delivery.parcel)
+        stdout.print(f\"{delivery.parcel} {delivery.if}\")
+
+def tally(inbox: Inbox[dict[str, list[(int, Delivery)]]], stdout: Stdout):
+    for batch in inbox:
+        for name, items in batch.items():
+            stdout.print(name, len(items))
+
+def main(stdout: Stdout) fails Closed | Crashed | Lost | Late | Timeout:
+    with launch((inbox) => deliver(inbox, stdout)?, inbox_size=2)? as deliveries:
+        deliveries.send(Delivery(parcel=\"box\", if=3))?
+    with launch((inbox) => tally(inbox, stdout))? as batches:
+        batches.send({\"a\": [(1, Delivery(parcel=\"x\", if=1)), (2, Delivery(parcel=\"y\", if=2))]})?
+    with launch((inbox) => deliver(inbox, stdout)?)? as more:
+        more.send(Delivery(parcel=\"far\", if=12))?
+";
+
+/// What a `with launch` is written in as holds the checked types themselves, never their text:
+/// a program's own type named like a library one, which the checker holds under a name a
+/// program can't write, a field named by a keyword, a message of nested generics, and a task that
+/// fails with a union of errors all come through unchanged. Read back as text, the first didn't
+/// build.
+#[test]
+fn a_launch_carries_any_type_the_checker_holds_through_unchanged() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("launched-any-type")?;
+    let program = dir.join("shadow.fen");
+    std::fs::write(&program, LAUNCHED_ANY_TYPE)?;
+    let executable = dir.join("shadow");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "box 3\na 2\n");
+    assert!(String::from_utf8_lossy(&ran.stderr).starts_with("error: `main` failed: Lost(where=\"far\")\n"));
+    assert_eq!(ran.status.code(), Some(1));
+    Ok(())
+}
+
 /// A channel that couldn't hold a message fails where it's made, rather than quietly holding one.
 #[test]
 fn a_channel_of_no_size_fails_where_its_made() -> std::io::Result<()> {

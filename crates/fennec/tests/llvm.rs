@@ -10629,6 +10629,36 @@ def main(stdout: Stdout):
 
 /// `json.dumps` of plain structs, lists, strings and ints, and `json.loads` reading a struct, a
 /// list of plain structs, and failing on bad text, as pinned.
+/// `json.dumps` writes into one text that grows in place, so writing twice as many items does
+/// about twice the work, counted, not timed: each int's text was added to the writer's straight
+/// from `str(value)`, which copied the whole text each time, so it allocated twice per item.
+#[test]
+fn json_dumps_grows_its_text_in_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let allocated = |count: usize| -> std::io::Result<(u64, u64)> {
+        let source = format!(
+            "from std import json\n\ndef main(stdout: Stdout):\n    items = [at for at in range({count})]\n    stdout.print(len(json.dumps(items)))\n    return\n"
+        );
+        let said = counts_of(&format!("json_dumps_linear_{count}"), &source)?;
+        let number = |name: &str| {
+            let mut words = said.split(' ');
+            words.by_ref().find(|word| *word == name);
+            words.next().and_then(|word| word.parse::<u64>().ok()).unwrap_or(u64::MAX)
+        };
+        Ok((number("allocations"), number("allocated_bytes")))
+    };
+    let (small, small_bytes) = allocated(10_000)?;
+    let (big, big_bytes) = allocated(40_000)?;
+    // A handful, whatever the count: the list, the text and its few regrowths.
+    assert!(small < 100 && big < 100, "{small} and {big} allocations");
+    // Four times the items, at most about four times the bytes, where copying the text for each
+    // item made it sixteen times.
+    assert!(big_bytes < small_bytes * 6, "{small_bytes} bytes, then {big_bytes}");
+    Ok(())
+}
+
 #[test]
 fn json_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -19411,6 +19441,65 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// A loop over a `Table` that only reads its items' fields borrows each from its slot, rather than
+/// giving it an owner and letting go again each time round, when nothing in the loop changes the
+/// `Table`. One that keeps the item, as `held.append(unit)` does, gives it an owner: the item kept
+/// stays as it was when the `Table`'s is changed after. Through a parameter, a local and a field.
+#[test]
+fn a_tables_items_only_read_in_a_loop_are_borrowed() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("table_items_borrowed")?;
+    std::fs::write(dir.join("table_items_borrowed.fen"), TABLE_ITEMS_BORROWED)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "table_items_borrowed", how)?;
+        assert_eq!(printed, "259000 2450 u1 changed 50 0\n", "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TABLE_ITEMS_BORROWED: &str = r#"from std.collections import Id, Table
+
+struct Unit:
+    hp: int
+    bag: dict[str, int]
+    name: str
+
+struct World:
+    units: Table[Unit]
+
+def total(units: Table[Unit]) -> int:
+    mut sum_hp = 0
+    for unit in units:
+        sum_hp += unit.hp + len(unit.name) + (unit.bag.get("g") else 0)
+    return sum_hp
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    mut ids = list[Id[Unit]]()
+    for n in range(50):
+        ids.append(units.add(Unit(hp=n, bag={"g": n}, name=f"u{n}")))
+    mut t = 0
+    for _ in range(100):
+        t += total(units)
+    kept = list[Unit]()
+    mut seen = 0
+    for unit in units:
+        seen += unit.hp
+    mut world = World(units=units)
+    for unit in world.units:
+        seen += unit.hp
+    mut held = list[Unit]()
+    for unit in units:
+        held.append(unit)
+    units[ids[1]].name = "changed"
+    stdout.print(t, seen, held[1].name, units[ids[1]].name, len(held), len(kept))
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -20256,6 +20345,32 @@ fn a_split_reads_its_text_and_separator_however_they_are_held() -> std::io::Resu
         Some("error: `split` was called with the wrong arguments")
     );
     Ok(())
+}
+
+/// `startswith` and `endswith` compare a text's bytes with its part's where both are, inline or
+/// in a block: with an empty part, a part as long as the text or longer, and characters of two
+/// bytes either side of where they'd meet.
+#[test]
+fn a_texts_start_and_end_are_compared_where_they_are() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "text_affixes",
+        r#"def main(stdout: Stdout):
+    texts = ["", "a", "abc", "café", "été long enough to need a block of its own", "a text that's long enough to be held in a block"]
+    parts = ["", "a", "c", "abc", "abcd", "é", "été", "own", "block", "café", "a text that's long enough to be held in a block", "x"]
+    for text in texts:
+        mut said = list[str]()
+        for part in parts:
+            starts = "1" if text.startswith(part) else "0"
+            ends = "1" if text.endswith(part) else "0"
+            said.append(starts + ends)
+        stdout.print(" ".join(said))
+    return
+"#,
+        "11 00 00 00 00 00 00 00 00 00 00 00\n11 11 00 00 00 00 00 00 00 00 00 00\n11 10 01 11 00 00 00 00 00 00 00 00\n11 00 10 00 00 01 00 00 00 11 00 00\n11 00 00 00 00 10 10 01 00 00 00 00\n11 10 00 00 00 00 00 00 01 00 11 00\n",
+    )
 }
 
 /// Strings let go of where nothing takes them, and a `str?` from a dict of strings.

@@ -14514,6 +14514,44 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A generic `with` source and a generic function's copy hold the types they're given
+/// themselves, never their text: a program's own `Delivery`, which the checker holds under a
+/// name a program can't write, a field named by a keyword, and nested generics come through
+/// unchanged.
+#[test]
+fn a_generic_source_and_copy_carry_any_type_the_checker_holds_through_unchanged() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "held_any_type",
+            r#"# The library has a `Delivery` too: this one is the program's own.
+struct Delivery:
+    parcel: str
+    if: int
+
+def held[T](value: T) -> with T:
+    lend value
+
+def first[T](items: list[T]) -> T:
+    return items[0]
+
+def main(stdout: Stdout):
+    with held(Delivery(parcel="box", if=3)) as delivery:
+        stdout.print(delivery.parcel, delivery.if)
+    nested: dict[str, list[(int, Delivery)]] = {"a": [(1, Delivery(parcel="x", if=1))]}
+    with held(nested) as kept:
+        stdout.print(len(kept["a"]), kept["a"][0][1].if)
+    stdout.print(first([Delivery(parcel="y", if=2)]).parcel)
+    stdout.print(first([[(1, Delivery(parcel="z", if=4))]])[0][1].parcel)
+"#
+        )?,
+        "box 3\n1 1\ny\nz\n"
+    );
+    Ok(())
+}
+
 /// A program's own types named like the library's, `Delivery`, `Duration` and `Match`, go through
 /// a launched task's inbox and a `with` of two channels. Each is checked under a name no source
 /// can write, and the source the checker writes in for a `with launch` and for a channel's type

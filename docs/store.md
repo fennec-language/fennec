@@ -85,7 +85,7 @@ Every build gets a root hash: one hash of everything the finished program depend
 - each of the program's files, by its module and the hash of its text;
 - the Fennec version and the build of `fennec`, and so the standard library;
 - the target, as the LLVM triple and the CPU it's built for;
-- the flags that change what's built: a release build, a static one, `--cpu baseline`;
+- the flags and switches that change what's built: a release build, a static one, `--cpu baseline`, and `FENNEC_SANITIZE`, `FENNEC_CHECK_PROOFS` and `FENNEC_STRIP_FACTS`, so a program built one way is never handed back for another;
 - the runtime library linked in, by the hash of its file.
 
 The finished program is kept in the store under its root hash, with the list of its functions'

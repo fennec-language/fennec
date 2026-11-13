@@ -378,9 +378,15 @@ impl Emit<'_, '_, '_> {
             shown.push(format!("{text} {value}"));
         }
         let result = self.call_closure_with(&held, &returns, &shown, span);
+        // What's given back in place is owned already, as a direct call's is: it's taken over, and
+        // let go of when nobody keeps it.
         match dest {
-            Some(dest) if returns.in_memory() => self.assign_memory(dest, &result, ""),
+            Some(dest) if returns.in_memory() => self.assign_memory_owned(dest, &result),
             Some(dest) if !matches!(*returns, Kind::Unit) => self.assign(dest, &result),
+            None if returns.in_memory() => {
+                self.release_inline(&returns, &result);
+                Ok(())
+            }
             None if returns.counted() => {
                 self.release_kind(&result, &returns);
                 Ok(())

@@ -1040,6 +1040,26 @@ impl Emit<'_, '_, '_> {
         self.read_into(dest, &held, &at, "")
     }
 
+    /// After a result's value or error is read out with an owner of its own, where that's the
+    /// last anything does with a result kept in place: the result is let go of and left holding
+    /// nothing, so what was read has one owner again, and a change to it copies nothing.
+    pub(crate) fn let_go_after_last_read(&mut self, dest: LocalId, value: &Operand) -> Result<(), String> {
+        let Operand::Local(result) = value else { return Ok(()) };
+        let kind = self.kind_of(*result)?.clone();
+        if !matches!(kind, Kind::Enum(_))
+            || !self.holds_inline(&kind)
+            || self.known.is_borrowed(dest)
+            || !self.known.is_last_read(self.at.0, self.at.1)
+        {
+            return Ok(());
+        }
+        let slot = self.slot(*result);
+        self.release_inline(&kind, &slot);
+        let zero = self.zero_line(&kind, &slot);
+        self.line(&zero);
+        Ok(())
+    }
+
     /// An operator on two plain structs or tuples at these addresses: `==` field by field, and
     /// an order by the first field that differs.
     pub(crate) fn compare_structs(

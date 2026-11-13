@@ -3148,8 +3148,14 @@ impl Emit<'_, '_, '_> {
             InstKind::MakeOk { dest, value } => self.make_case(*dest, "Ok", value.as_slice()),
             InstKind::MakeErr { dest, error } => self.make_case(*dest, "Err", std::slice::from_ref(error)),
             InstKind::IsErr { dest, value } => self.is_case(*dest, value, "Err"),
-            InstKind::GetOk { dest, value } => self.get_case_field(*dest, value, "Ok", "value"),
-            InstKind::GetErr { dest, value } => self.get_case_field(*dest, value, "Err", "error"),
+            InstKind::GetOk { dest, value } => {
+                self.get_case_field(*dest, value, "Ok", "value")?;
+                self.let_go_after_last_read(*dest, value)
+            }
+            InstKind::GetErr { dest, value } => {
+                self.get_case_field(*dest, value, "Err", "error")?;
+                self.let_go_after_last_read(*dest, value)
+            }
             InstKind::IsError { dest, value, type_name } => self.is_case(*dest, value, type_name),
             InstKind::AsError { dest, value } => self.as_error(*dest, value),
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),

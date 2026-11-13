@@ -111,7 +111,7 @@ pub(crate) fn name_in(sources: &Sources, span: Span, name: &str) -> Span {
     Span { start, end: start.saturating_add(u32::try_from(name.len()).unwrap_or(0)) }
 }
 
-/// The name `except why:` or `else as why:` gives the failure, where it's written and the block
+/// The name `except why:` gives the failure, where it's written and the block
 /// that sees it. The name comes before the block, where the one case's span starts, as the last
 /// word of that name on the line.
 fn failure_written<'e>(sources: &Sources, handler: &'e Expr) -> Option<(&'e str, Span, &'e [Stmt])> {
@@ -486,7 +486,7 @@ impl Finder<'_> {
                 finder.expr(body);
             }),
             ExprKind::Else { value, default, .. } => match failure_written(self.sources, default) {
-                // `except why:` and `else as why:` name the failure before the block, declared
+                // `except why:` names the failure before the block, declared
                 // by what failed, as the checker records its type.
                 Some((name, at, body)) => {
                     self.expr(value);

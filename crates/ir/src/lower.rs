@@ -885,7 +885,7 @@ impl<'a> Lowering<'a> {
         let ExprKind::Name(name) = &target.kind else {
             return self.assign_place(target, op, value, span);
         };
-        // `_ = save(path) else as why:` keeps nothing, and what gives nothing is only run.
+        // `_ = save(path) except why:` keeps nothing, and what gives nothing is only run.
         let discarded =
             name.strip_prefix('_').is_some_and(|rest| rest.starts_with(fennec_syntax::visit::HIDDEN));
         if discarded && op.is_none() && self.type_at(value.span) == Some(Type::Unit) {
@@ -1001,7 +1001,7 @@ impl<'a> Lowering<'a> {
         if let ExprKind::Try { value, context } = &expr.kind {
             return self.try_value(value, context.as_deref(), expr.span).map(|_| ());
         }
-        // `conn.write(line) else: continue`: what fails gives nothing back when it doesn't.
+        // `conn.write(line) except IoError(): continue`: what fails gives nothing back otherwise.
         if let ExprKind::Else { value, default, .. } = &expr.kind
             && self.type_at(expr.span) == Some(Type::Unit)
         {

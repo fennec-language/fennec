@@ -225,5 +225,28 @@ test "every kind of value reads back as it was"():
     for ratio in [1e308, 5e-324, -1.5, math.NAN, math.INFINITY, -math.INFINITY]:
         assert pack.loads[float](pack.dumps(ratio))? == ratio
 
+test "an int takes the bytes its zigzag form needs, either side of where one more is needed"():
+    # Zigzag puts 0, -1, 1, -2, ... in that order, then 7 bits go in each byte: 1 byte up to 63
+    # and down to -64, 2 bytes up to 8191 and down to -8192, and 10 for the largest either way.
+    sizes = [
+        (0, 1),
+        (1, 1),
+        (-1, 1),
+        (63, 1),
+        (-64, 1),
+        (64, 2),
+        (-65, 2),
+        (8191, 2),
+        (-8192, 2),
+        (8192, 3),
+        (-8193, 3),
+        (9223372036854775807, 10),
+        (-9223372036854775807 - 1, 10),
+    ]
+    for n, size in sizes:
+        data = pack.dumps(n)
+        assert pack.loads[int](data)? == n
+        assert len(data) - value_at(data) == size
+
 def main(stdout: Stdout):
     stdout.print(len(pack.dumps(Point(x=1, y=2))))

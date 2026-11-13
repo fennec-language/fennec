@@ -64,6 +64,7 @@ mod saving;
 mod secrets;
 mod shapes;
 mod shared;
+mod slots;
 mod stdlib;
 mod stmt;
 mod sum;

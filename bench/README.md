@@ -29,6 +29,7 @@ cargo build --release -p fennec -p fennec-bench
 | A chat server | `chat_server`: a hub task owning the rooms fans each message out over channels to four shard tasks owning the users' mailboxes, which send back what each user got |
 | A nightly job | `data_pipeline`: CSV parsed by `std.csv` into structs, totalled, and every order through `std.pack` and `std.json` and back |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
+| A JSON API | `api_handler`: requests parsed from their text, bodies loaded into structs with `where` rules, users in a dict of structs written in place, orders in a dict of lists, and responses built with `json.dumps` and by joining text |
 | A log cruncher | `log_crunch`: log lines split and counted into dicts of structs and counters, times appended to a dict of lists, sorted for percentiles, and a report built with f-strings and `+=` |
 
 These are what languages have historically been judged on: most of the Computer Language Benchmarks Game, and `richards` and `deltablue` from Are We Fast Yet. **The suite is locked.** Each target records a hash of its kernel and twin, and a run fails if they've changed, or if a kernel has come or gone. Changing one means pinning it again, and the pull request has to say why. The fix for a slow kernel goes in the compiler.

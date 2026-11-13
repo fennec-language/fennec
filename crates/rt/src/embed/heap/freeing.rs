@@ -34,18 +34,26 @@ pub extern "C" fn free(address: i64) {
     }
 }
 
-/// Frees a list of this thread's whose items hold nothing, the most usual block let go of: out
-/// of the table and kept for reuse, with nothing to walk. False, having done nothing, for any
-/// other block, which [`free_block`] frees.
+/// Frees a string or a list whose items hold nothing of this thread's, the most usual blocks let
+/// go of: out of the table and kept for reuse, with nothing to walk. A string's place kept in it,
+/// and the runtime's copy of its text, are forgotten, as [`free_block`] does. False, having done
+/// nothing, for any other block, which [`free_block`] frees.
 fn free_plain_list(state: &mut State, address: u64) -> bool {
     if crate::embed::threads::held_elsewhere(address) {
         return false;
     }
-    let first_list = crate::embed::lists::first_list_shape(state);
-    let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, first_list))
+    let (first_list, str_shape) = (crate::embed::lists::first_list_shape(state), state.tables.str_shape);
+    let Some(block) =
+        usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, first_list, str_shape))
     else {
         return false;
     };
+    if shape_word(&block) == Some(str_shape) {
+        state.heap.forget_place(address);
+        if !state.heap.texts.get_mut().is_empty() {
+            forget_text(state, address);
+        }
+    }
     state.heap.recycle(block);
     true
 }
@@ -510,12 +518,33 @@ fn release_planned_holds(
     lent_owners: &mut HashMap<u64, i64, BuildHasherDefault<super::AddressHasher>>,
     freeing: &mut Freeing<'_>,
 ) {
-    for child in holds.blocks_in(fields).filter(|child| *child != 0) {
-        release_planned_child(blocks, lent, lent_owners, freeing, child);
+    // What holds no enum, which is most of what's freed, goes straight through its words: the walk
+    // that follows an enum's case, run for every free, cost `json.loads` 5%.
+    if holds.fixed() {
+        for child in holds.blocks_in(fields).filter(|child| *child != 0) {
+            release_planned_child(blocks, lent, lent_owners, freeing, child);
+        }
+        for child in holds.texts_in(fields).filter(|child| *child != 0) {
+            release_planned_child(blocks, lent, lent_owners, freeing, child);
+        }
+        return;
     }
-    for child in holds.texts_in(fields).filter(|child| *child != 0) {
-        release_planned_child(blocks, lent, lent_owners, freeing, child);
-    }
+    release_planned_by_case(holds, fields, blocks, lent, lent_owners, freeing);
+}
+
+/// [`release_planned_holds`] for a value with an enum inside, which its case decides: kept out
+/// of line, so the free of everything else stays as small as it was.
+#[cold]
+#[inline(never)]
+fn release_planned_by_case(
+    holds: &Holds,
+    fields: &[u64],
+    blocks: &mut crate::embed::table::Table,
+    lent: Option<&std::sync::Arc<crate::embed::table::Table>>,
+    lent_owners: &mut HashMap<u64, i64, BuildHasherDefault<super::AddressHasher>>,
+    freeing: &mut Freeing<'_>,
+) {
+    holds.each_block(fields, &mut |child| release_planned_child(blocks, lent, lent_owners, freeing, child));
 }
 
 /// Gives up one owner of a block a struct or enum held, queueing it to be freed if that was the

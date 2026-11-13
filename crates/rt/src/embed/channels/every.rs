@@ -56,6 +56,7 @@ pub extern "C" fn channel_new_every(size: i64) -> i64 {
         replay: crate::replay::place("c"),
         queue: Mutex::new(queue),
         changed: Condvar::new(),
+        freed: std::sync::atomic::AtomicBool::new(false),
     };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));

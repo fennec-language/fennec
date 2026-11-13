@@ -950,6 +950,9 @@ thread_local! {
     /// like the part a `find` looks for, kept to save making them anew for each call.
     static READ: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
     static READ_PART: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The items a `split` makes, kept to save growing a new list of them for each call: it grows
+    /// to the most a split has made, and no more.
+    static SPLIT_ITEMS: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Copies a string block's text into `bytes` a word at a time. False when `address` isn't a
@@ -1068,15 +1071,19 @@ fn copy_words((words, length): (&[u64], usize), bytes: &mut Vec<u8>) {
 /// once. An empty separator fails.
 pub extern "C" fn split(address: i64, separator: i64, start: i64, end: i64) -> i64 {
     attempt(|state: &mut State| {
-        let at = span(start, end);
-        let split = if separator == 0 {
-            read_text(state, address, |state, whole| split_into(state, whole, None, at))
+        // Both copied out into bytes kept for them, with no `String` made of either.
+        let (mut text, mut between) = (READ.take(), READ_PART.take());
+        let separated = separator != 0;
+        let found =
+            copy_out(state, address, &mut text) && (!separated || copy_out(state, separator, &mut between));
+        let split = if found {
+            split_bytes(state, &text, separated.then_some(between.as_slice()), span(start, end))
         } else {
-            read_two(state, (address, separator), |state, whole, between| {
-                split_into(state, whole, Some(between), at)
-            })
+            Err(lost(start, end))
         };
-        split.ok_or_else(|| lost(start, end))?
+        READ.set(text);
+        READ_PART.set(between);
+        split
     })
 }
 
@@ -1103,16 +1110,97 @@ pub extern "C" fn split_header(
         } else {
             between.clear();
         }
-        let split = match (std::str::from_utf8(&text), std::str::from_utf8(&between)) {
-            (Ok(whole), Ok(between)) => {
-                split_into(state, whole, separated.then_some(between), span(start, end))
-            }
-            _ => Err(lost(start, end)),
-        };
+        let split = split_bytes(state, &text, separated.then_some(between.as_slice()), span(start, end));
         READ.set(text);
         READ_PART.set(between);
         split
     })
+}
+
+/// The list `whole.split(between)` gives, or `whole.split()` without `between`, owned once, from
+/// the bytes of both. They're strings', so UTF-8 already, and aren't read as `str` again where
+/// that's not needed:
+/// - A separator of one byte is an ASCII character, which in UTF-8 is never part of another
+///   character, so the parts between where its byte is found are whole characters.
+/// - Splitting ASCII text by whitespace looks for the bytes of ASCII's whitespace, which are all
+///   of `str`'s whitespace that ASCII has.
+///
+/// Any other separator, and any other text split by whitespace, is split as a `str`.
+///
+/// A part of 23 bytes or fewer is held inline in its header, with no block, when lists hold
+/// headers. The items go into a list kept from one call to the next, then into the list made, so
+/// the list is made once at its size.
+fn split_bytes(state: &mut State, whole: &[u8], between: Option<&[u8]>, at: Span) -> Result<i64, Diagnostic> {
+    let mut items = SPLIT_ITEMS.take();
+    items.clear();
+    let headers = state.tables.text_headers;
+    match between {
+        Some([byte]) => {
+            let mut rest = whole;
+            while let Some((part, after)) =
+                find_byte(rest, *byte).and_then(|found| rest.split_at_checked(found))
+            {
+                put_part(state, &mut items, headers, part);
+                rest = after.get(1..).unwrap_or_default();
+            }
+            put_part(state, &mut items, headers, rest);
+        }
+        None if whole.is_ascii() => {
+            // `str`'s whitespace, for ASCII: tab to carriage return, and space.
+            for part in
+                whole.split(|byte| matches!(byte, b'\t'..=b'\r' | b' ')).filter(|part| !part.is_empty())
+            {
+                put_part(state, &mut items, headers, part);
+            }
+        }
+        _ => {
+            SPLIT_ITEMS.set(items);
+            let lost = |_| Diagnostic::new("the native code lost a string", at);
+            let between = between.map(std::str::from_utf8).transpose().map_err(lost)?;
+            return split_into(state, std::str::from_utf8(whole).map_err(lost)?, between, at);
+        }
+    }
+    let list = super::lists::list_of_texts(state, &items);
+    SPLIT_ITEMS.set(items);
+    Ok(list)
+}
+
+/// Adds a part `split` found to its items: inline in its header when it fits and lists hold
+/// headers, and otherwise a string of its own, counting its characters from its bytes, which
+/// are UTF-8 already.
+fn put_part(state: &mut State, items: &mut Vec<u64>, headers: bool, part: &[u8]) {
+    if headers && part.len() <= super::text::INLINE_BYTES {
+        items.extend(super::text::inline(part));
+        return;
+    }
+    // A character's bytes after its first all start with the bits 10.
+    let chars = part.iter().filter(|byte| **byte & 0xC0 != 0x80).count();
+    let address = text_from_bytes(state, part, chars).cast_unsigned();
+    if headers {
+        items.extend([address, u64::try_from(part.len()).unwrap_or(0), 0]);
+    } else {
+        items.push(address);
+    }
+}
+
+/// Where `wanted` is first in `bytes`, looking eight bytes at a time.
+fn find_byte(bytes: &[u8], wanted: u8) -> Option<usize> {
+    const ONES: u64 = u64::from_ne_bytes([0x01; 8]);
+    const HIGHS: u64 = u64::from_ne_bytes([0x80; 8]);
+    let spread = u64::from(wanted) * ONES;
+    let (chunks, rest) = bytes.as_chunks::<8>();
+    for (number, chunk) in chunks.iter().enumerate() {
+        // Each byte equal to `wanted` is zero here, and the lowest zero byte has its high bit set
+        // below. A byte above it can be set wrongly too, but never one below it.
+        let differs = u64::from_le_bytes(*chunk) ^ spread;
+        let zeros = differs.wrapping_sub(ONES) & !differs & HIGHS;
+        if zeros != 0 {
+            let within = usize::try_from(zeros.trailing_zeros() / 8).unwrap_or(0);
+            return Some(number * 8 + within);
+        }
+    }
+    let position = rest.iter().position(|byte| *byte == wanted)?;
+    Some(chunks.len() * 8 + position)
 }
 
 /// The list `whole.split(between)` gives, or `whole.split()` without `between`, owned once. Each
@@ -1122,24 +1210,20 @@ fn split_into(state: &mut State, whole: &str, between: Option<&str>, at: Span) -
     if between == Some("") {
         return crate::collections::str_method(whole, "split", &[Value::str("")], at).map(|_| 0);
     }
-    let element = super::text::string_element(state);
-    let headers = *element == Element::Text;
-    let mut items = Vec::new();
-    let mut put = |state: &mut State, part: &str| {
-        if headers {
-            items.extend(super::text::header(state, part));
-        } else {
-            items.push(text_address(state, part).cast_unsigned());
-        }
-    };
+    let headers = state.tables.text_headers;
+    let mut items = SPLIT_ITEMS.take();
+    items.clear();
+    let mut put = |state: &mut State, part: &str| put_part(state, &mut items, headers, part.as_bytes());
     let mut one = between.map(str::chars);
     match (one.as_mut().and_then(Iterator::next), one.as_mut().and_then(Iterator::next), between) {
         (_, _, None) => whole.split_whitespace().for_each(|part| put(state, part)),
-        // One character, like "/" or " ", is looked for as a character, which is quicker.
+        // One character, like "é", is looked for as a character, which is quicker.
         (Some(character), None, _) => whole.split(character).for_each(|part| put(state, part)),
         (_, _, Some(between)) => whole.split(between).for_each(|part| put(state, part)),
     }
-    Ok(super::lists::list_of_items(state, &element, &items))
+    let list = super::lists::list_of_texts(state, &items);
+    SPLIT_ITEMS.set(items);
+    Ok(list)
 }
 
 #[cfg(test)]

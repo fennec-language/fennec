@@ -176,6 +176,23 @@ pub fn sanitize_flag() -> Option<String> {
     sanitizer().map(|name| format!("-fsanitize={name}"))
 }
 
+/// Every switch outside the program that changes what a build makes, as a line for a cache key: the
+/// sanitizer, whether proofs are checked and facts stripped, and whether results are kept in place.
+/// A program built one way is never handed back for another, as a plain one was for a build asked
+/// for the address sanitizer. The objects' own key has the pipeline, which names the sanitizer's
+/// passes; checked proofs, stripped facts and boxed results change the text too. Said here as
+/// well, so no key leans on that.
+#[must_use]
+pub fn output_switches() -> String {
+    format!(
+        "sanitize={:?} proofs_checked={} facts_stripped={} results_in_place={}",
+        sanitizer(),
+        crate::emit::proofs_checked(),
+        crate::emit::facts_stripped(),
+        fennec_layout::results_in_place()
+    )
+}
+
 /// The passes `opt` runs.
 fn pipeline() -> String {
     match sanitizer() {

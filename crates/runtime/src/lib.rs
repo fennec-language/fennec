@@ -127,6 +127,8 @@ pub const NEVER_FAIL: &[&str] = &[
     // for as an answer. It runs under `with`, which sets no flag, and only reads the text's bytes
     // and parses them.
     "fennec_parse_float_header",
+    // One atomic add to the count of native blocks made and not freed.
+    "fennec_native_live",
 ];
 
 /// Whether `symbol` is in [`NEVER_FAIL`], worked out as each export is compiled.
@@ -458,6 +460,7 @@ export! {
     fennec_aot_test_done(a0: i64) => aot::test_done(a0);
     fennec_trace_at(a0: i64) => aot::trace_at(a0);
     fennec_trace_allocated(a0: i64) => aot::trace_allocated(a0);
+    fennec_native_live(a0: i64) => aot::native_live(a0);
     fennec_counting() -> i64 => aot::counting();
     fennec_aot_test_world(a0: i64) => aot::test_world(a0);
     fennec_aot_attempt_failed() => aot::attempt_failed();

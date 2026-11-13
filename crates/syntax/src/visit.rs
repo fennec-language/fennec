@@ -4,7 +4,8 @@
 use std::collections::HashSet;
 
 use crate::ast::{
-    BinOp, Expr, ExprKind, FStrPart, FnDef, Generic, Item, Module, Pattern, Stmt, StmtKind, TypeDef, UnaryOp,
+    BinOp, Expr, ExprKind, FStrPart, FnDef, Generic, Item, Module, Pattern, Stmt, StmtKind, TypeDef,
+    TypeExpr, UnaryOp,
 };
 
 /// Calls `change` on every expression in `module`, outer ones before the ones inside them.
@@ -229,6 +230,63 @@ pub fn in_function(def: &mut FnDef, change: &mut dyn FnMut(&mut Expr)) {
 /// Calls `change` on every expression in some statements.
 pub fn in_stmts(body: &mut [Stmt], change: &mut dyn FnMut(&mut Expr)) {
     stmts(body, change);
+}
+
+/// Calls `change` on each type written in some statements: each local's declared type, and each
+/// nested function's, in nested blocks and `match` cases too.
+pub fn written_types_in(body: &mut [Stmt], change: &mut dyn FnMut(&mut TypeExpr)) {
+    stmt_types(body, change);
+    stmts(body, &mut |value| {
+        if let ExprKind::Match { arms, .. } = &mut value.kind {
+            for arm in arms {
+                stmt_types(&mut arm.body, change);
+            }
+        }
+    });
+}
+
+/// The types statements write, not their expressions': those inside a `match` are reached through
+/// it.
+fn stmt_types(body: &mut [Stmt], change: &mut dyn FnMut(&mut TypeExpr)) {
+    for each in body {
+        match &mut each.kind {
+            StmtKind::Assign { ty: Some(ty), .. } => change(ty),
+            StmtKind::If { branches, otherwise } => {
+                for (_, body) in branches {
+                    stmt_types(body, change);
+                }
+                stmt_types(otherwise.as_deref_mut().unwrap_or_default(), change);
+            }
+            StmtKind::With { body, .. }
+            | StmtKind::While { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::Lend { otherwise: body, .. } => stmt_types(body, change),
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                stmt_types(cleanup, change);
+                stmt_types(body, change);
+            }
+            StmtKind::Def(def) => {
+                for ty in def
+                    .ret
+                    .iter_mut()
+                    .chain(def.fails.iter_mut())
+                    .chain(def.params.iter_mut().filter_map(|param| param.ty.as_mut()))
+                {
+                    change(ty);
+                }
+                stmt_types(&mut def.body, change);
+            }
+            StmtKind::Expr(_)
+            | StmtKind::Assign { .. }
+            | StmtKind::Return(_)
+            | StmtKind::Fail(_)
+            | StmtKind::Yield(_)
+            | StmtKind::Assert(_)
+            | StmtKind::Break
+            | StmtKind::Continue
+            | StmtKind::Pass => {}
+        }
+    }
 }
 
 /// Changes every span in some statements through `moved`: each statement's, each expression's,

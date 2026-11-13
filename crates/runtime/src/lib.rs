@@ -123,6 +123,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_dict_find_slice",
     // A text's header, the empty string's for anything that isn't a text.
     "fennec_text_of",
+    // One atomic add to the count of native blocks made and not freed.
+    "fennec_native_live",
 ];
 
 /// Whether `symbol` is in [`NEVER_FAIL`], worked out as each export is compiled.
@@ -397,7 +399,9 @@ export! {
     fennec_str_with_room(a0: i64) -> i64 => strings::with_room(a0);
     fennec_text_block(a0: u64, a1: u64, a2: u64) -> i64 => text::block(a0, a1, a2);
     fennec_text_contains(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::contains(a0, a1, a2, a3, a4, a5);
+    fennec_str_same_at(a0: u64, a1: u64, a2: u64, a3: i64, a4: u64, a5: u64, a6: u64) -> i8 => text::same_at(a0, a1, a2, a3, a4, a5, a6);
     fennec_str_append_header(a0: i64, a1: u64, a2: u64, a3: u64) -> i64 => text::append_header(a0, a1, a2, a3);
+    fennec_str_append_int(a0: i64, a1: i64) -> i64 => text::append_int(a0, a1);
     fennec_str_find_header(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 => text::find_header(a0, a1, a2, a3, a4, a5);
     fennec_text_starts_with(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::starts_with(a0, a1, a2, a3, a4, a5);
     fennec_text_ends_with(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::ends_with(a0, a1, a2, a3, a4, a5);
@@ -451,6 +455,7 @@ export! {
     fennec_aot_test_done(a0: i64) => aot::test_done(a0);
     fennec_trace_at(a0: i64) => aot::trace_at(a0);
     fennec_trace_allocated(a0: i64) => aot::trace_allocated(a0);
+    fennec_native_live(a0: i64) => aot::native_live(a0);
     fennec_counting() -> i64 => aot::counting();
     fennec_aot_test_world(a0: i64) => aot::test_world(a0);
     fennec_aot_attempt_failed() => aot::attempt_failed();

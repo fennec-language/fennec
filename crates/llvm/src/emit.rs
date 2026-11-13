@@ -4056,6 +4056,24 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A build that checks proofs checks a text joined into a block is past 23 bytes, as its
+    /// header, made from the block with nothing looked up, takes it to be. A plain build doesn't.
+    #[test]
+    fn checking_proofs_checks_a_joined_text_is_past_a_header() -> Result<(), String> {
+        let source = "def join(a: str, b: str) -> str:\n    return a + b\n\ndef main(stdout: Stdout):\n    stdout.print(join(\"a string long enough\", \" to need a block\"))\n    return\n";
+        let program = lowered(source)?;
+        let proof = "a text joined in a block is past 23 bytes";
+        let (plain, plain_shared, _) = emit(&program)?;
+        let plain: String = plain.iter().map(|unit| unit.text.as_str()).collect();
+        assert!(!plain.contains(proof) && !plain_shared.literals.values().any(|said| said.contains(proof)));
+        let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
+        let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        let said: Vec<&String> = shared.strings.values().chain(shared.literals.values()).collect();
+        assert!(text.contains(proof) || said.iter().any(|said| said.contains(proof)), "{text}");
+        Ok(())
+    }
+
     /// A build that checks proofs writes the checks they left out, each saying which proof broke:
     /// a loop's count can't overflow, and its index is inside the list it goes through.
     #[test]
@@ -4207,6 +4225,26 @@ def main(stdout: Stdout):
         assert!(!shared.native.is_empty(), "Doc's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
         assert!(text.contains("call void @fennec_free(ptr %list"), "{text}");
+        Ok(())
+    }
+
+    /// A native block's drop never calls itself, whichever field a chain runs through: those of
+    /// its own type it lets go of wait in a list in one loop. Recursing through `left`, a chain
+    /// 200,000 deep once ran past the thread sanitizer's 64K-frame stack, which then said a list was
+    /// freed twice and hung.
+    #[test]
+    fn a_native_drop_never_calls_itself() -> Result<(), String> {
+        let source = "enum Named:\n    Leaf(name: str)\n    Pair(left: Named, right: Named, label: str, tags: list[str])\n\ndef chain(depth: int) -> Named:\n    mut named = Named.Leaf(name=\"leaf\")\n    for at in range(depth):\n        named = .Pair(left=named, right=.Leaf(name=\"r\"), label=\"pair\", tags=[\"t\"])\n    return named\n\ndef size(named: Named) -> int:\n    match named:\n        case .Leaf(name):\n            return len(name)\n        case .Pair(left, right, label, tags):\n            return size(left) + size(right) + len(label) + len(tags)\n\ndef main(stdout: Stdout):\n    stdout.print(size(chain(4)))\n";
+        let (units, shared, _) = emit(&lowered(source)?)?;
+        assert!(!shared.native.is_empty(), "Named's blocks are native");
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        let drops: Vec<&str> = text.split("define internal void @fen_drop_").skip(1).collect();
+        assert!(!drops.is_empty(), "{text}");
+        for drop in drops {
+            let body = drop.split("\n}\n").next().unwrap_or_default();
+            assert!(!body.contains("call void @fen_drop_"), "{body}");
+            assert!(body.contains("%waiting"), "{body}");
+        }
         Ok(())
     }
 

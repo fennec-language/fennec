@@ -88,6 +88,14 @@ else
   echo "FAILED: a program stuck past its wall-clock limit wasn't stopped"
   failures=$((failures + 1))
 fi
+# And the log says what it was doing when it was stopped: what it had started, and where it was.
+if grep -q "it and what it started:" "$work/log" \
+  && { ! command -v sample > /dev/null || grep -q "where it was, sampled for a second:" "$work/log"; }; then
+  echo "ok: what a stopped program was doing is kept"
+else
+  echo "FAILED: the log doesn't say what the stopped program was doing: $(cat "$work/log")"
+  failures=$((failures + 1))
+fi
 
 # The memory limit holds for every program, a tool's name or not, and comes before any time limit.
 for named in swelling cargo; do

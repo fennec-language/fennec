@@ -906,6 +906,9 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br i1 {none}, label %{first}, label %{ready}, !prof !0"));
         self.start_block(&first);
         let made = self.new_block(id)?;
+        if self.is_native(id) {
+            self.uncount_native();
+        }
         self.line(&format!("store i64 {SHARED_CASE_COUNT}, ptr {made}{HEADER_ACCESS}"));
         // No thread's, as every block that's never freed is, so no thread but this one, which
         // hasn't shared it yet, reads its count.

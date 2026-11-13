@@ -693,37 +693,22 @@ fn match_params(
     }
 }
 
-/// A type as written where a type goes and as written in brackets, parsed from its source and
-/// moved to spans of its own, which no program's text reaches.
+/// A type as written where a type goes and as written in brackets, built straight from it, never
+/// from its text, so a name the checker holds that a program couldn't write, as `Delivery'` for a
+/// program's own `Delivery`, comes through as it is. It has spans of its own, which no program's
+/// text reaches. `None` for a type with no written form, nothing and several errors among them.
 pub(crate) fn written_type(ty: &crate::types::Type) -> Option<(TypeExpr, Expr)> {
-    // A program's own type named like the library's is `Delivery'`, which is written so it
-    // parses and named back after.
-    let source = fennec_syntax::rename::writable(&ty.source()?);
-    let text = format!("def held__(held: {source}):\n    _ = held[{source}]\n");
-    let mut module = fennec_syntax::parse(&text).ok()?;
-    fennec_syntax::rename::rename_types(&mut module, &fennec_syntax::rename::written_names(&text));
-    let Some(Item::Function(def)) = module.items.first() else { return None };
-    let mut written = def.params.first()?.ty.clone()?;
-    let StmtKind::Assign { value, .. } = &def.body.first()?.kind else { return None };
-    let ExprKind::Index { index, .. } = &value.kind else { return None };
-    let mut bracketed = index.as_ref().clone();
-    // Spans of their own, apart from every other's, keeping where each starts against the others.
-    let length = u32::try_from(text.len()).ok()?;
-    let mut low = here(Span::default()).start;
-    for _ in 1..length {
-        low = here(Span::default()).start;
+    if matches!(ty, crate::types::Type::Unit | crate::types::Type::Errors(_)) {
+        return None;
     }
-    let moved = |span: Span| Span { start: low + span.start, end: low + span.end };
-    fennec_syntax::visit::in_expr(&mut bracketed, &mut |expr| expr.span = moved(expr.span));
-    respan(&mut written, &moved);
+    // Two spans of its own: a tuple of types in brackets starts one after its first item, as
+    // `TypeExpr::as_expr` writes it, so it reads back as one type, not as the brackets' several.
+    here(Span::default());
+    let low = here(Span::default()).start;
+    let span = Span { start: low, end: low + 1 };
+    let written = ty.written(span)?;
+    let bracketed = written.as_expr(span)?;
     Some((written, bracketed))
-}
-
-fn respan(written: &mut TypeExpr, moved: &dyn Fn(Span) -> Span) {
-    written.span = moved(written.span);
-    for arg in &mut written.args {
-        respan(arg, moved);
-    }
 }
 
 /// Writes in what each type parameter stands for: in written types, as in `held: list[T]`, and in

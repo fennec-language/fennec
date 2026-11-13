@@ -12238,11 +12238,25 @@ fn with_peak_memory(executable: &Path, dir: &Path) -> std::io::Result<(Output, O
 /// What a command printed, given `args` and run with `dir` as its folder and its Fennec home,
 /// and the most memory it held, where `/usr/bin/time` can say.
 fn peak_memory_of(program: &Path, args: &[&str], dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
+    peak_memory_with(program, args, &[], dir)
+}
+
+/// [`peak_memory_of`], with these set in the command's environment.
+fn peak_memory_with(
+    program: &Path,
+    args: &[&str],
+    set: &[(&str, &str)],
+    dir: &Path,
+) -> std::io::Result<(Output, Option<u64>)> {
     let time = Path::new("/usr/bin/time");
     let flag = if cfg!(target_os = "macos") { "-l" } else { "-v" };
     if cfg!(windows) || !time.exists() {
-        let ran =
-            Command::new(program).args(args).current_dir(dir).env("FENNEC_HOME", dir).output_within()?;
+        let ran = Command::new(program)
+            .args(args)
+            .current_dir(dir)
+            .env("FENNEC_HOME", dir)
+            .envs(set.iter().copied())
+            .output_within()?;
         return Ok((ran, None));
     }
     let ran = Command::new(time)
@@ -12251,6 +12265,7 @@ fn peak_memory_of(program: &Path, args: &[&str], dir: &Path) -> std::io::Result<
         .args(args)
         .current_dir(dir)
         .env("FENNEC_HOME", dir)
+        .envs(set.iter().copied())
         .output_within()?;
     let said = String::from_utf8_lossy(&ran.stderr);
     let peak = said.lines().find_map(|line| {
@@ -22829,6 +22844,144 @@ def main(stdout: Stdout, clock: Clock):
 ",
     )
 }
+
+/// Native blocks made in a launched task and in `parallel`'s workers are freed there: chains
+/// through the first field, a block holding the one below it twice, and one subtree under two
+/// roots, at 1, 4 and 18 threads, each printing the same with nothing left held, native blocks
+/// counted, and holding little memory. A native block's shape word carries no thread's number, so
+/// on any thread but the first each let-go was handed to the runtime, which knows no such block,
+/// and none was ever freed: 80 chains of 100,000 held over a gigabyte.
+#[test]
+fn native_blocks_made_in_tasks_and_workers_are_freed_there() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for (name, source, wanted, how) in [
+        ("native_in_tasks", NATIVE_IN_TASKS, "done 1999980 999\n", &["--llvm", "--release"][..]),
+        ("native_shared", NATIVE_SHARED, "done 3600000 3000\n", &["--llvm"][..]),
+        ("native_shared", NATIVE_SHARED, "done 3600000 3000\n", &["--llvm", "--release"][..]),
+    ] {
+        let dir = folder(name)?;
+        let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+        std::fs::write(&program, source)?;
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "18"] {
+            let set = [("FENNEC_COUNTS", "1"), ("FENNEC_THREADS", threads)];
+            let (ran, peak) = peak_memory_with(&executable, &[], &set, &dir)?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{name} {how:?} at {threads}: {said}");
+            assert!(
+                said.lines().any(|line| line.ends_with(" live 0")),
+                "{name} {how:?} at {threads}: {said}"
+            );
+            // Freed as they go, the chains hold 6 to 74 MB here, by how many threads hold one at
+            // once; never freed, 600 MB to 1.5 GB. A sanitizer's own share is no part of that.
+            if let Some(peak) = measured(peak)
+                && std::env::var_os("FENNEC_SANITIZE").is_none()
+            {
+                assert!(
+                    peak < 300 * 1024 * 1024,
+                    "{name} {how:?} at {threads} held {} MB",
+                    peak / (1024 * 1024)
+                );
+            }
+        }
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
+const NATIVE_IN_TASKS: &str = r#"from std.concurrent import Crashed
+
+enum Plain:
+    End
+    Two(left: Plain, right: Plain, n: int)
+
+def plain_chain(depth: int) -> Plain:
+    mut made = Plain.End
+    for at in range(depth):
+        made = .Two(left=made, right=.End, n=at)
+    return made
+
+def dropped(depth: int) -> int:
+    plain = plain_chain(depth)
+    match plain:
+        case .Two(_, _, n):
+            return n
+        case _:
+            return 0
+
+def in_a_task(depth: int) fails Crashed:
+    with launch(() => dropped(depth)) as task:
+        pass
+
+def main(stdout: Stdout):
+    for round in range(60):
+        in_a_task(100_000) except Crashed():
+            stdout.print("the task crashed")
+    mut sizes = [100_000 for _ in range(20)]
+    for ref size in parallel(sizes):
+        size = dropped(size)
+    stdout.print("done", sum(sizes), dropped(1_000))
+    return
+"#;
+
+const NATIVE_SHARED: &str = r#"from std.concurrent import Crashed
+
+enum Plain:
+    End
+    Two(left: Plain, right: Plain, n: int)
+
+def plain_chain(depth: int) -> Plain:
+    mut made = Plain.End
+    for at in range(depth):
+        made = .Two(left=made, right=.End, n=at)
+    return made
+
+## A chain whose every block holds the one below it twice.
+def doubled(depth: int) -> Plain:
+    mut made = Plain.End
+    for at in range(depth):
+        made = .Two(left=made, right=made, n=at)
+    return made
+
+def top(made: Plain) -> int:
+    match made:
+        case .Two(_, _, n):
+            return n
+        case _:
+            return -1
+
+## One subtree under two roots, each let go of in turn, the subtree last held by the second.
+def two_roots(depth: int) -> int:
+    under = plain_chain(depth)
+    first = Plain.Two(left=under, right=.End, n=1)
+    second = Plain.Two(left=.End, right=under, n=2)
+    return top(first) + top(second) + top(under)
+
+def worked(depth: int) -> int:
+    return top(plain_chain(depth)) + top(doubled(depth)) + two_roots(depth)
+
+def in_a_task(depth: int) fails Crashed:
+    with launch(() => worked(depth)) as task:
+        pass
+
+def main(stdout: Stdout):
+    for round in range(40):
+        in_a_task(50_000) except Crashed():
+            stdout.print("the task crashed")
+    mut sizes = [50_000 for _ in range(24)]
+    for ref size in parallel(sizes):
+        size = worked(size)
+    stdout.print("done", sum(sizes), worked(1_000))
+    return
+"#;
 
 /// Chains 200,000 deep let go of at 1, 4 and 18 threads, in dev and release, nothing left held:
 /// enums of native blocks through their first field, one holding strings and a list where no

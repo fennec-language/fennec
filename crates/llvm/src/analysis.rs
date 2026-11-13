@@ -112,6 +112,9 @@ pub(crate) struct Analysis {
     /// Copies, by block and place in it, whose source nothing reads again or leans on: the
     /// copy takes over its owner.
     last_copies: HashSet<(usize, usize)>,
+    /// Reads of a result's value or error that are the last anything does with the result, so
+    /// what's read can be handed over, the result let go of straight after.
+    last_reads: HashSet<(usize, usize)>,
     /// Fields a struct is made with, by block, place in it and local, that nothing reads again or
     /// leans on: the struct takes over the local's owner.
     last_made: HashSet<(usize, usize, usize)>,
@@ -3061,6 +3064,7 @@ impl Analysis {
             room_enough: HashSet::new(),
             length_kept: HashMap::new(),
             last_copies: HashSet::new(),
+            last_reads: HashSet::new(),
             last_made: HashSet::new(),
             enumerated: HashMap::new(),
             map_walks: HashMap::new(),
@@ -3110,6 +3114,12 @@ impl Analysis {
     /// Whether the copy at this place in this block is the last anything does with its source.
     pub(crate) fn is_last_copy(&self, block: usize, index: usize) -> bool {
         self.last_copies.contains(&(block, index))
+    }
+
+    /// Whether reading a result's value or error at this place is the last anything does with
+    /// the result.
+    pub(crate) fn is_last_read(&self, block: usize, index: usize) -> bool {
+        self.last_reads.contains(&(block, index))
     }
 
     /// Whether a struct made at this place in this block is the last anything does with this
@@ -3532,6 +3542,14 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
                 && from.0 >= function.params
             {
                 known.last_copies.insert((at, index));
+            }
+            if let InstKind::GetOk { value: Operand::Local(from), .. }
+            | InstKind::GetErr { value: Operand::Local(from), .. } = &inst.kind
+                && !live.contains(&from.0)
+                && !leaned_on.contains(&from.0)
+                && from.0 >= function.params
+            {
+                known.last_reads.insert((at, index));
             }
             if let InstKind::Make { fields, .. } = &inst.kind {
                 for field in fields {

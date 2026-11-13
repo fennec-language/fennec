@@ -23,10 +23,7 @@ pub extern "C" fn free(address: i64) {
         if crate::embed::threads::any_waiting() {
             free_waiting(state);
         }
-        let address = u64::try_from(address).unwrap_or(0);
-        if !free_plain_list(state, address) {
-            free_block(state, address);
-        }
+        free_one(state, u64::try_from(address).unwrap_or(0));
         !state.heap.abandoning.is_empty()
     });
     if abandoning {
@@ -34,20 +31,32 @@ pub extern "C" fn free(address: i64) {
     }
 }
 
-/// Frees a list of this thread's whose items hold nothing, the most usual block let go of: out
-/// of the table and kept for reuse, with nothing to walk. False, having done nothing, for any
-/// other block, which [`free_block`] frees.
-fn free_plain_list(state: &mut State, address: u64) -> bool {
+/// Frees the block at `address`, taken out of the table once. One that holds no other block, the
+/// most usual kind let go of, is kept for reuse with nothing to walk: a string's place kept in it,
+/// and the runtime's copy of its text, are forgotten first, as [`free_block`] does. Any other is
+/// freed by [`free_block`], from the block taken. A block another thread still counts is left to
+/// it, and one this table doesn't hold, like a `shared` value's handle, goes to [`free_block`] to
+/// be found.
+fn free_one(state: &mut State, address: u64) {
     if crate::embed::threads::held_elsewhere(address) {
-        return false;
+        return;
     }
-    let first_list = crate::embed::lists::first_list_shape(state);
-    let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_plain_list(at, first_list))
-    else {
-        return false;
+    let Some(block) = usize::try_from(address).ok().and_then(|at| state.heap.take_block(at)) else {
+        free_block(state, address);
+        return;
     };
+    let (first_list, str_shape) = (crate::embed::lists::first_list_shape(state), state.tables.str_shape);
+    if !state.heap.holds_no_block(&block, first_list, str_shape) {
+        free_taken(state, block);
+        return;
+    }
+    if shape_word(&block) == Some(str_shape) {
+        state.heap.forget_place(address);
+        if !state.heap.texts.get_mut().is_empty() {
+            forget_text(state, address);
+        }
+    }
     state.heap.recycle(block);
-    true
 }
 
 /// Frees what other threads let go of last, which waits for this one, which made it. Only a
@@ -121,12 +130,12 @@ pub extern "C" fn free_text(address: i64) {
 /// before that, takes it up from `ABANDONS` when it next frees something.
 pub extern "C" fn set_abandon(shape: i64, abandon: extern "C" fn(i64)) {
     let shape = u64::try_from(shape).unwrap_or(u64::MAX);
-    if SHARES_ABANDONS.get() {
-        let mut all = ABANDONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        all.get_or_insert_with(HashMap::new).insert(shape, abandon);
-        ABANDONS_SET.store(all.as_ref().map_or(0, HashMap::len), std::sync::atomic::Ordering::Release);
-    }
     with(|state| {
+        if state.tables.shares_abandons {
+            let mut all = ABANDONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            all.get_or_insert_with(HashMap::new).insert(shape, abandon);
+            ABANDONS_SET.store(all.as_ref().map_or(0, HashMap::len), std::sync::atomic::Ordering::Release);
+        }
         state.tables.abandons.insert(shape, abandon);
     });
 }
@@ -136,22 +145,15 @@ static ABANDONS: std::sync::Mutex<Option<HashMap<u64, extern "C" fn(i64)>>> = st
 /// How many `ABANDONS` holds, read without the lock on every free.
 static ABANDONS_SET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-thread_local! {
-    /// Whether this thread's runtime runs the process's program, as `main`'s thread and the
-    /// workers started from it do, and so shares what closes its generators. A runtime started
-    /// any other way, as a test's is, has shapes of its own.
-    static SHARES_ABANDONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// This thread's runtime runs the process's program: see `SHARES_ABANDONS`.
+/// This thread's runtime runs the process's program: see `Tables::shares_abandons`.
 pub(in crate::embed) fn share_abandons() {
-    SHARES_ABANDONS.set(true);
+    with(|state| state.tables.shares_abandons = true);
 }
 
 /// Brings this thread's runtime up to date with what closes generators, if the program has said
 /// more since it last looked: a worker started before `main`'s thread said it.
 fn take_up_abandons(state: &mut State) {
-    if !SHARES_ABANDONS.get()
+    if !state.tables.shares_abandons
         || state.tables.abandons.len() >= ABANDONS_SET.load(std::sync::atomic::Ordering::Acquire)
     {
         return;
@@ -223,10 +225,24 @@ fn is_abandoned(state: &State, block: &[u64]) -> bool {
 /// Frees a block and releases its boxed fields, freeing those with no other owner, all the
 /// way down.
 fn free_block(state: &mut State, address: u64) {
-    take_up_abandons(state);
     let mut pending = std::mem::take(&mut state.heap.pending);
-    let mut taken = std::mem::take(&mut state.heap.taken);
     pending.push(address);
+    let taken = std::mem::take(&mut state.heap.taken);
+    free_all(state, pending, taken);
+}
+
+/// [`free_block`] for a block already taken out of the table.
+fn free_taken(state: &mut State, block: Box<[u64]>) {
+    let mut taken = std::mem::take(&mut state.heap.taken);
+    taken.push(block);
+    let pending = std::mem::take(&mut state.heap.pending);
+    free_all(state, pending, taken);
+}
+
+/// Frees each block `taken` holds and each `pending` names, and what each held the last owner of,
+/// all the way down.
+fn free_all(state: &mut State, mut pending: Vec<u64>, mut taken: Vec<Box<[u64]>>) {
+    take_up_abandons(state);
     while let Some((address, block)) = next_to_free(state, &mut pending, &mut taken) {
         if super::is_handle_block(&block) {
             state.heap.blocks.insert(block);

@@ -193,6 +193,11 @@ pub struct Tables {
     /// Whether native code holds a `str` as its 24-byte header (see `text`), so a list of
     /// strings the runtime makes holds headers.
     pub text_headers: bool,
+    /// Whether this thread's runtime runs the process's program, as `main`'s thread and the
+    /// workers started from it do, and so shares what closes its generators. A runtime started any
+    /// other way, as a test's is, has shapes of its own. Kept here, not in a thread-local, so a
+    /// free looks the thread's state up once.
+    pub shares_abandons: bool,
 }
 
 impl Tables {

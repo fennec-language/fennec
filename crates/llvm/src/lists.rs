@@ -102,10 +102,27 @@ impl Emit<'_, '_, '_> {
         access: &str,
     ) -> Result<(), String> {
         let (value, fresh) = self.value_for(operand, kind)?;
-        if kind.counted() && !fresh {
+        // A block in a local read only here is handed over, as a copy from one is: the list a
+        // struct is made with, built just before, then has one owner.
+        let handed = match operand {
+            Operand::Local(local)
+                if kind.counted()
+                    && !fresh
+                    && self.owns(*local)
+                    && (self.known.moves(*local) || self.made_here_last(*local)) =>
+            {
+                Some(*local)
+            }
+            _ => None,
+        };
+        if kind.counted() && !fresh && handed.is_none() {
             self.retain_value(&value, kind);
         }
         self.store_field(kind, &value, at, access);
+        if let Some(local) = handed {
+            let (slot, text) = (self.slot(local), self.text_of(kind));
+            self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
+        }
         // An inline struct in a local read only here moves its blocks over; any other gets
         // another owner for each.
         let moved = !fresh
@@ -298,6 +315,11 @@ impl Emit<'_, '_, '_> {
         if matches!(kind, Kind::Boxed(_)) { self.offset(base, FIELDS_OFFSET) } else { base.to_owned() }
     }
 
+    /// Whether the struct being made here is the last thing to read a local it's made with.
+    fn made_here_last(&self, local: LocalId) -> bool {
+        self.known.is_last_made((self.at.0, self.at.1), local)
+    }
+
     pub(crate) fn make(&mut self, dest: LocalId, fields: &[Operand]) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
         let (Kind::Struct(id) | Kind::Boxed(id)) = kind else {
@@ -347,6 +369,15 @@ impl Emit<'_, '_, '_> {
 
     pub(crate) fn get_field(&mut self, dest: LocalId, object: &Operand, field: &str) -> Result<(), String> {
         if let Some((root, list_path, index)) = self.known.path_home(dest).cloned() {
+            let held = self.place_kind(root, &list_path)?;
+            if self.is_id_map(&held) {
+                let span = self.here_span();
+                return self.take_from_table_item(dest, (root, &list_path, &index), field, span);
+            }
+            if matches!(held, Kind::Dict(..)) {
+                let span = self.here_span();
+                return self.take_from_dict_value(dest, (root, &list_path, &index), field, span);
+            }
             return self.take_from_item(dest, (root, &list_path, &index), field);
         }
         let (base, kind) = self.operand(object)?;
@@ -1473,6 +1504,9 @@ impl Emit<'_, '_, '_> {
             return self.array_get(dest, (object, shape), index, span);
         }
         if let Some((map, _)) = self.known.walk_items.get(&dest.0).copied() {
+            if matches!(self.kind_of(map)?, Kind::Dict(..)) {
+                return self.dict_walk_to_next(dest, map, index, span);
+            }
             return self.walk_to_next(dest, map, index, span);
         }
         // A pair from an `enumerate` never made isn't made either: where it points in the list
@@ -1923,6 +1957,9 @@ impl Emit<'_, '_, '_> {
         }
         if let Kind::Dict(key, value_word) = kind {
             let place = self.place_of(object, path)?;
+            if matches!(value, Operand::Local(local) if self.known.is_taken(*local)) {
+                return self.dict_put_back(&place, (key, value_word), index, value, span);
+            }
             // A lookup on this dict, or on a local read from this field holding it: where it
             // found the key, or for a slice where it found the value.
             let same_dict = |dict: LocalId| match path {
@@ -1980,6 +2017,7 @@ impl Emit<'_, '_, '_> {
         };
         let index_operand = index;
         let (index, _) = self.operand(index)?;
+        let value_operand = value;
         let (value, fresh) = self.value_for(value, &held)?;
         let memory = held.memory(self.module.layouts);
         let at = if let Some(at) = from_here {
@@ -2004,6 +2042,7 @@ impl Emit<'_, '_, '_> {
             self.item_address(&list, &memory, &position)
         };
         if put_back && held.counted() {
+            self.proof_goes_back(value_operand, &at);
             let text = self.text_of(&held);
             self.line(&format!("store {text} {value}, ptr {at}{ITEM_ACCESS}"));
         } else if held.counted() {
@@ -2015,6 +2054,9 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store {text} {value}, ptr {at}{ITEM_ACCESS}"));
             self.release_kind(&old, &held);
         } else {
+            if put_back {
+                self.proof_goes_back(value_operand, &at);
+            }
             // An inline struct's blocks: the old item's let go of, the new one's owned, unless
             // it's the item that was taken out coming back.
             if !put_back {

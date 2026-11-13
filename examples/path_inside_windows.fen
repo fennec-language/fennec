@@ -1,0 +1,32 @@
+# `Path.inside` refuses what Windows reads as other than its text, so a path from outside means
+# the same there as anywhere: a name ending in `.` or a space, which Windows drops, so `.. `
+# climbs as `..` does and `secret.` is `secret`, and a device's name, like `CON`, `nul.txt` or
+# `COM1`, which opens the console, the null device or a port rather than a file. It refuses them
+# on every system, so a program checked on Linux is safe on Windows. Either separator on its own
+# was already handled: a `\` is refused, and `/` is the only one `inside` reads.
+from std.path import Path
+
+## Where `asked` is inside `www`, or why it can't be.
+def within_www(asked: str) -> str:
+    found = Path("www").inside(asked) except why:
+        return why.message
+    return found.text
+
+test "a name Windows would cut short is refused"():
+    for asked in [".. /secret", "a/... /x", "a/../../.. "]:
+        assert within_www(asked) == f"`{asked}` would leave `www`"
+    for asked in ["secret.", "notes.txt ", "a/b./c"]:
+        assert within_www(asked) == f"`{asked}` can't be a path inside `www`"
+
+test "a device's name is refused, in any case and before any extension"():
+    for asked in ["CON", "nul.txt", "a/Aux", "com1", "LPT9.log", "CON .txt", "prn.tar.gz", "COM²"]:
+        assert within_www(asked) == f"`{asked}` can't be a path inside `www`"
+
+test "names that only look like a device are fine"():
+    for asked in [
+        "console.txt", "COM10", "nullable", "a.con", "LPT", "auxiliary/x", ".hidden", "v1.2/x",
+    ]:
+        assert within_www(asked) == f"www/{asked}"
+
+def main(stdout: Stdout):
+    stdout.print(within_www("nul.txt"), within_www("a.con"))

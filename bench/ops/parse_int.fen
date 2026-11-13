@@ -1,0 +1,15 @@
+# `int.parse(text)` of a number of up to 3 digits, done OPS times on inputs that vary.
+# `fennec-bench ops` counts its instructions per operation beside its Rust twin's.
+
+OPS = 20_000
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    texts = [str(i * 37) for i in range(shift, shift + 16)]
+    mut total = 0
+    for at in range(OPS):
+        number = int.parse(texts[(at + shift) % 16]) except InvalidValue(): -1
+        total += number
+    stdout.print(total)
+    return

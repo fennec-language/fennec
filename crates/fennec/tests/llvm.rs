@@ -489,8 +489,8 @@ fn same_as_expected_in_both_builds(name: &str, source: &str) -> std::io::Result<
     Ok(())
 }
 
-/// An `else` block that gives a value: `else as why:` with what failed in it, a plain `else:`
-/// after a failure or a `None`, a `match` on the failure before the value, and one that leaves.
+/// An `except` block that gives a value: `except why:` with what failed in it, an `else:` after
+/// a `None`, `case` arms on the failure before the value, and one that leaves.
 #[test]
 fn an_else_block_gives_the_value_on_its_last_line() -> std::io::Result<()> {
     if !ready() {
@@ -733,7 +733,7 @@ def main(stdout: Stdout):
 "#;
 
 /// On what can fail as well as give `None`, `?` passes the failure up and `else` handles the
-/// `None`, and `else as why:` handles only the failure, its block giving a value that may be `None`.
+/// `None`, and `except why:` handles only the failure, its block giving a value that may be `None`.
 #[test]
 fn a_failure_and_a_none_are_handled_apart() -> std::io::Result<()> {
     if !ready() {
@@ -5421,7 +5421,7 @@ def main(stdout: Stdout) fails Bad:
     )
 }
 
-/// `else as name:` gives the block what failed, and it still has to leave: by `return`, `continue`
+/// `except name:` gives the block what failed, and it still has to leave: by `return`, `continue`
 /// or `fail`, here with a failure that's counted, after a call that gives nothing and one that
 /// gives a value.
 #[test]
@@ -5653,7 +5653,7 @@ def main(stdout: Stdout):
 
 /// Every way out of a `with` block runs its source's cleanup, innermost first when several are left
 /// at once: the code after `lend` for a success-style way out (`return`, `break`, `continue`, an
-/// `else` doing one of those, a `return` in a nested `if` or a `match`), and `lend x else:` for a
+/// `else` doing one of those, a `return` in a nested `if` or a `match`), and `lend x except:` for a
 /// failure-style one (`fail`, `?` on a line, kept, or in an expression, an `else` that fails, a
 /// A `?` failing inside an expression inside a `with` block runs the source's cleanup wherever it
 /// sits: inside another `?`'s call, in a `return`, an assignment or a line of its own, a field read
@@ -5716,7 +5716,7 @@ fn every_way_out_of_a_with_block_runs_its_cleanup() -> std::io::Result<()> {
             "  ended else return\n-1\n  ended else return in a line\n-2\n  failed else fail\n-10\n  failed else as\n-11\n  ended continue 0\n  ended continue 1\n  ended continue 2\n  ended break 0\n  ended break 1\n  ended break 2\n1\n  failed ? on a line\n-12\n  failed ? kept\n-13\n  failed ? in an expression\n-14\n  ended return in an if\n7\n  ended return in a match\n8\n  failed fail in an if\n-15\n  ended inner, else return\n  ended outer, else return\n-3\n  failed inner, else fail\n  failed outer, else fail\n-16\n  failed inner, ?\n  failed outer, ?\n-17\n  ended inner 0, else break\n  ended outer 0, else break\n  ended inner 1, else break\n  ended outer 1, else break\n  ended inner 2, else break\n  ended outer 2, else break\n2\n  failed inner, crash\n  failed outer, crash\n",
             "{how:?}: {err}"
         );
-        // The last way out is a crash, through both its blocks' `lend x else:`.
+        // The last way out is a crash, through both its blocks' `lend x except:`.
         assert!(!ran.status.success(), "{how:?}");
         assert!(err.contains("index 2 is out of range for length 1"), "{how:?}: {err}");
     }
@@ -5756,7 +5756,7 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
     Ok(())
 }
 
-/// A crash in a `with` block runs its sources' `lend x else:` cleanups on the way out, innermost
+/// A crash in a `with` block runs its sources' `lend x except:` cleanups on the way out, innermost
 /// first, and only those whose blocks haven't ended. A cleanup's own calls run as normal while the
 /// crash waits, and a cleanup that crashes too is said, with the first crash the one that ends
 /// the program.
@@ -5975,7 +5975,7 @@ fn a_crashing_task_s_cleanup_ends_where_it_fails_and_says_so() -> std::io::Resul
     Ok(())
 }
 
-/// A task that crashes inside a `with` runs the block's `lend x else:` before its crash ends it,
+/// A task that crashes inside a `with` runs the block's `lend x except:` before its crash ends it,
 /// and a task that doesn't runs the rest of the source instead.
 #[test]
 fn a_crashing_task_runs_its_blocks_cleanup() -> std::io::Result<()> {
@@ -6023,6 +6023,205 @@ def main(stdout: Stdout):
 "#,
         "ended finished\ncrashed crashed\n",
     )
+}
+
+/// A struct holding a text, sent to a task and read there through its inbox's loop, then sent back
+/// as it is and inside an f-string, comes back whole at every length around the most a header
+/// holds in itself, on one thread and on many. The inbox's generator once kept each `Event` in its
+/// item slot without an owner of its text, so a text in a block of its own was freed under it.
+#[test]
+fn a_received_struct_s_text_sent_on_comes_back_whole_at_every_length() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("received_text_sent_on")?;
+    let program = dir.join("sent_on.fen");
+    std::fs::write(
+        &program,
+        r#"from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+struct Event:
+    user: int
+    text: str
+
+def reader(inbox: Inbox[Event], out: Sender[str]) fails Closed:
+    for event in inbox:
+        out.send(event.text)?
+        out.send(f"got {event.text}")?
+    return
+
+def text_of(length: int, n: int) -> str:
+    return "".join(["x" for _ in range(length - 1)]) + str(n)
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    for length in [20, 23, 24, 28, 31, 32, 40, 64]:
+        mut whole = 0
+        with channel[str](size=16) as results:
+            back = results.sender()
+            with launch((inbox) => reader(inbox, back)?, inbox_size=4)? as to_reader:
+                for n in range(5):
+                    to_reader.send(Event(user=n, text=text_of(length, n=n)))?
+            for n in range(5):
+                sent = text_of(length, n=n)
+                if (results.receive() else "") == sent:
+                    whole += 1
+                if (results.receive() else "") == f"got {sent}":
+                    whole += 1
+        stdout.print(length, whole)
+    return
+"#,
+    )?;
+    let wanted = "20 10\n23 10\n24 10\n28 10\n31 10\n32 10\n40 10\n64 10\n";
+    prints_with_nothing_left(&dir, &program, wanted, &["1", "4", "16"])
+}
+
+/// Builds `program` in both builds and runs it at each count of `threads` under `FENNEC_COUNTS`:
+/// it prints `wanted`, and has no block left live at the end, so nothing it holds was let go of
+/// too soon or kept too long.
+fn prints_with_nothing_left(
+    dir: &Path,
+    program: &Path,
+    wanted: &str,
+    threads: &[&str],
+) -> std::io::Result<()> {
+    let output = program.with_extension("");
+    let (program, output) = (program.to_string_lossy().into_owned(), output.to_string_lossy().into_owned());
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for count in threads {
+            let ran = Command::new(&output)
+                .env("FENNEC_THREADS", count)
+                .env("FENNEC_COUNTS", "1")
+                .output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(said.0, wanted, "{how:?} on {count} threads: {}", said.1);
+            assert!(said.1.contains(" live 0"), "{how:?} on {count} threads left blocks live: {}", said.1);
+        }
+    }
+    std::fs::remove_dir_all(dir)
+}
+
+/// A message a task reads with `for ... in inbox` stays its own while it makes other values: a
+/// struct's text and an enum case's text and list, checked with `==` after fifty other texts are
+/// made, where a text freed under it read as one of those. Fable's thread-crossing reproducer, and
+/// its three-case enum, which came out wrong silently.
+#[test]
+fn a_message_read_in_an_inbox_loop_stays_whole_while_the_task_makes_others() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("message_stays_whole")?;
+    let program = dir.join("message_stays_whole.fen");
+    std::fs::write(
+        &program,
+        r#"from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+struct Event:
+    user: int
+    text: str
+
+enum Message:
+    Said(text: str)
+    Count(n: int)
+    Many(texts: list[str])
+
+def long(n: int) -> str:
+    return "xxxxxxxxxxxxxxxxxxxxxxxxxx" + str(n % 9) + "y"
+
+def filler() -> int:
+    mut made = list[str]()
+    for at in range(50):
+        made.append("zzzzzzzzzzzzzzzzzzzzzzzzzz" + str(at % 9) + "!")
+    return len(made)
+
+def shown(message: Message) -> str:
+    match message:
+        case .Said(text):
+            return f"said {text}"
+        case .Count(n):
+            return f"count {n}"
+        case .Many(texts):
+            joined = "".join(texts)
+            return f"many {joined}"
+
+def events(inbox: Inbox[Event], out: Sender[str]) fails Closed:
+    for event in inbox:
+        made = filler()
+        out.send(f"{event.text}|{made}")?
+    return
+
+def messages(inbox: Inbox[Message], out: Sender[str]) fails Closed:
+    for message in inbox:
+        made = filler()
+        out.send(f"{shown(message)}|{made}")?
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    mut wrong = 0
+    with channel[str](size=4) as results:
+        back = results.sender()
+        with launch((inbox) => events(inbox, out=back)?, inbox_size=4)? as to_reader:
+            for n in range(6):
+                to_reader.send(Event(user=n, text=long(n)))?
+                if (results.receive() else "nothing") != f"{long(n)}|50":
+                    wrong += 1
+        with launch((inbox) => messages(inbox, out=back)?, inbox_size=4)? as to_reader:
+            for n in range(60):
+                message = Message.Said(text=long(n)) if n % 3 == 0 else (Message.Count(n=n) if n % 3 == 1 else Message.Many(texts=[long(n), long(n + 1)]))
+                to_reader.send(message)?
+                if (results.receive() else "nothing") != f"{shown(message)}|50":
+                    wrong += 1
+    stdout.print("wrong", wrong)
+    return
+"#,
+    )?;
+    prints_with_nothing_left(&dir, &program, "wrong 0\n", &["1", "4"])
+}
+
+/// A generator's item and what it keeps across a `yield` are its own: a struct holding a text in a
+/// block of its own, yielded, and another kept from one item to the next, both read whole after.
+#[test]
+fn a_generator_owns_the_struct_it_yields_and_the_one_it_keeps() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("generator_owns_structs")?;
+    let program = dir.join("generator_owns_structs.fen");
+    std::fs::write(
+        &program,
+        r#"struct Note:
+    at: int
+    text: str
+
+def long_text(n: int) -> str:
+    return f"a note long enough to need a block of its own, number {n}"
+
+def notes(count: int) -> Iterator[Note]:
+    mut kept = Note(at=-1, text=long_text(-1))
+    for at in range(count):
+        yield Note(at=at, text=long_text(at))
+        yield kept
+        kept = Note(at=at, text=long_text(at * 10))
+    return
+
+def main(stdout: Stdout):
+    mut whole = 0
+    mut seen = 0
+    for note in notes(6):
+        seen += 1
+        if note.text == long_text(note.at) or note.text == long_text(note.at * 10):
+            whole += 1
+    stdout.print(seen, whole)
+    return
+"#,
+    )?;
+    prints_with_nothing_left(&dir, &program, "12 12\n", &["1"])
 }
 
 /// A struct field that starts as a module constant, pushed to and popped through `ref self` methods,
@@ -6293,6 +6492,95 @@ def main(stdout: Stdout) fails Crashed:
 "#,
         "before\ntask\nafter\n",
     )
+}
+
+/// A task that crashes while the code that launched it waits on a channel inside the `with launch`
+/// block ends that wait, so the block ends and says `Crashed`, rather than leaving its launcher
+/// waiting for good: a `receive` gives nothing, as from a closed channel, and a `send` fails with
+/// `Closed`. On the main thread, and in a task that launched one, on one thread and on many.
+#[test]
+fn a_task_s_crash_ends_its_launcher_s_wait_on_a_channel() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash_ends_launcher_wait")?;
+    let program = dir.join("crash_ends_wait.fen");
+    std::fs::write(
+        &program,
+        r#"from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, channel
+
+# Crashes before it sends its answer.
+def worker(out: Sender[int], n: int) fails Closed:
+    short = [1, 2]
+    out.send(short[n])?
+    return
+
+def waited(back: Sender[int], results: Channel[int]) -> int fails Closed | Crashed:
+    mut got = 0
+    with launch(() => worker(back, n=5)?)?:
+        got = results.receive() else -1
+    return got
+
+def receives() -> str:
+    with channel[int](size=1) as results:
+        got = waited(results.sender(), results) except Crashed() | Closed():
+            return "receive: crashed"
+        return f"receive: {got}"
+
+# Crashes at its first message, leaving its inbox full.
+def reader(inbox: Inbox[int]) fails Closed:
+    short = [1, 2]
+    for n in inbox:
+        _ = short[n + 5]
+    return
+
+def sent_until_closed() -> int fails Closed | Crashed:
+    mut sent = 0
+    with launch((inbox) => reader(inbox)?, inbox_size=1)? as to_reader:
+        for n in range(100):
+            to_reader.send(n) except Closed():
+                break
+            sent += 1
+    return sent
+
+def sends() -> str:
+    _ = sent_until_closed() except Crashed() | Closed():
+        return "send: crashed"
+    return "send: ended"
+
+# A task that launches the worker, and waits on it in its turn.
+def middle(out: Sender[str]) fails Closed:
+    out.send(receives())?
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    stdout.print(receives())
+    stdout.print(sends())
+    with channel[str](size=1) as said:
+        with launch(() => middle(said.sender())?)?:
+            stdout.print("in a task:", said.receive() else "nothing")
+    return
+"#,
+    )?;
+    let wanted = "receive: crashed\nsend: crashed\nin a task: receive: crashed\n";
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("crash_ends_wait"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "16"] {
+            let ran = Command::new(&output).env("FENNEC_THREADS", threads).output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(said.0, wanted, "{how:?} on {threads} threads: {}", said.1);
+            assert!(ran.status.success(), "{how:?} on {threads} threads: {}", said.1);
+        }
+    }
+    std::fs::remove_dir_all(&dir)
 }
 
 /// A launched task runs only on the runtime's threads, which have no way to run it in order the way
@@ -11499,12 +11787,26 @@ fn measured(peak: Option<u64>) -> Option<u64> {
 
 /// What a program printed, and the most memory it held, where `/usr/bin/time` can say.
 fn with_peak_memory(executable: &Path, dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
+    peak_memory_of(executable, &[], dir)
+}
+
+/// What a command printed, given `args` and run with `dir` as its folder and its Fennec home,
+/// and the most memory it held, where `/usr/bin/time` can say.
+fn peak_memory_of(program: &Path, args: &[&str], dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
     let time = Path::new("/usr/bin/time");
     let flag = if cfg!(target_os = "macos") { "-l" } else { "-v" };
     if cfg!(windows) || !time.exists() {
-        return Ok((Command::new(executable).current_dir(dir).output_within()?, None));
+        let ran =
+            Command::new(program).args(args).current_dir(dir).env("FENNEC_HOME", dir).output_within()?;
+        return Ok((ran, None));
     }
-    let ran = Command::new(time).arg(flag).arg(executable).current_dir(dir).output_within()?;
+    let ran = Command::new(time)
+        .arg(flag)
+        .arg(program)
+        .args(args)
+        .current_dir(dir)
+        .env("FENNEC_HOME", dir)
+        .output_within()?;
     let said = String::from_utf8_lossy(&ran.stderr);
     let peak = said.lines().find_map(|line| {
         let line = line.trim();
@@ -13798,6 +14100,91 @@ def main(net: Net, stdout: Stdout) fails NetError:
     std::fs::remove_dir_all(&dir)?;
     // 10,000 leaked rounds would be about 18 MB.
     assert!(after < before + 4_096, "the server grew from {before} KB to {after} KB");
+    Ok(())
+}
+
+/// A program's own types named like the library's, `Delivery`, `Duration` and `Match`, go through
+/// a launched task's inbox and a `with` of two channels. Each is checked under a name no source
+/// can write, and the source the checker writes in for a `with launch` and for a channel's type
+/// names it that way too; the library's own `Duration`, which `stop_after` takes, stays the
+/// library's. A channel of one once kept the checker going round until it ran out of memory.
+#[test]
+fn a_program_type_named_like_a_library_type_goes_through_inboxes_and_channels() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "renamed_inbox",
+        r#"from std.concurrent import Closed, Crashed, Inbox, channel
+
+struct Delivery:
+    user: int
+
+struct Match:
+    at: int
+
+enum Duration:
+    Short
+    Long(minutes: int)
+
+def quiet(inbox: Inbox[Delivery], stdout: Stdout):
+    mut total = 0
+    for delivery in inbox:
+        total += delivery.user
+    stdout.print(total)
+    return
+
+def timed(inbox: Inbox[Duration], stdout: Stdout):
+    for length in inbox:
+        match length:
+            case .Short:
+                stdout.print("short")
+            case .Long(minutes):
+                stdout.print("long", minutes)
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with launch((inbox) => quiet(inbox, stdout), inbox_size=4)? as first:
+        first.send(Delivery(user=1))?
+        first.send(Delivery(user=2))?
+    with launch((inbox) => timed(inbox, stdout), stop_after=5s, inbox_size=4)? as second:
+        second.send(.Short)?
+        second.send(.Long(minutes=3))?
+    with channel[Delivery](size=4) as deliveries, channel[list[Match]](size=2) as matches:
+        deliveries.send(Delivery(user=5))?
+        matches.send([Match(at=7), Match(at=8)])?
+        delivery = deliveries.receive() else return
+        found = matches.receive() else return
+        stdout.print(delivery.user, len(found), found[1].at)
+    return
+"#,
+        "3\nshort\nlong 3\n5 2 8\n",
+    )
+}
+
+/// Checking a channel of a program's own type named like a library type takes the memory checking
+/// anything small does. The checker once went round and round on it, checking the whole program
+/// again a dozen times a second, past 2 GB in seconds, because the source it wrote in for the
+/// channel's type couldn't be parsed; a check that never settles can't come back unseen.
+#[test]
+fn checking_a_channel_of_a_type_named_like_the_librarys_settles() -> std::io::Result<()> {
+    let dir = folder("renamed_channel_check")?;
+    let program = dir.join("renamed.fen");
+    std::fs::write(
+        &program,
+        "from std.concurrent import Closed, channel\n\nstruct Match:\n    at: int\n\n\
+         def main(stdout: Stdout) fails Closed:\n    with channel[Match](size=2) as matches:\n\
+         \x20       matches.send(Match(at=7))?\n        found = matches.receive() else return\n\
+         \x20       stdout.print(found.at)\n    return\n",
+    )?;
+    runtime_built();
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let (checked, peak) = peak_memory_of(fennec, &["check", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
+    if let Some(peak) = measured(peak) {
+        assert!(peak < 400 << 20, "checking it held {} MB", peak >> 20);
+    }
     Ok(())
 }
 
@@ -17631,6 +18018,37 @@ def main(stdout: Stdout):
     )
 }
 
+/// A tuple of plainer items written or kept where one with optional items goes, as
+/// `(1, Parcel(name="x"))` where `(int, Parcel?)` goes: alone, in a list, in a list in a dict's
+/// value, in a list of lists, and a tuple kept in a name first. Each item becomes the optional it
+/// goes to, in both builds, with nothing left held.
+#[test]
+fn a_tuple_widens_to_its_optional_items_wherever_it_goes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "tuples_widened",
+        r#"struct Parcel:
+    name: str
+
+def main(stdout: Stdout):
+    batch: dict[str, list[(int, Parcel?)]] = {"a": [(1, Parcel(name="x")), (2, None)]}
+    pairs: list[(int, Parcel?)] = [(3, Parcel(name="y"))]
+    one: (int, Parcel?) = (4, Parcel(name="z"))
+    nested: list[list[(str, int?)]] = [[("a", 1)], [("b", None)]]
+    numbers: dict[str, list[int?]] = {"n": [1]}
+    kept = (5, Parcel(name="w"))
+    widened: (int, Parcel?) = kept
+    stdout.print(batch, pairs, one)
+    stdout.print(nested, numbers, widened, kept)
+    return
+"#,
+        "{\"a\": [(1, Parcel(name=\"x\")), (2, None)]} [(3, Parcel(name=\"y\"))] (4, Parcel(name=\"z\"))\n\
+         [[(\"a\", 1)], [(\"b\", None)]] {\"n\": [1]} (5, Parcel(name=\"w\")) (5, Parcel(name=\"w\"))\n",
+    )
+}
+
 #[test]
 fn tuples_and_structs_compare_as_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -18984,6 +19402,234 @@ fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
 const TEXT_GROWN_PRINTS: &str = r"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
 ";
 
+/// A field's text grown by what a call makes, `self.text += str(value)`, grows where it is: the
+/// call can't change the field, so the field is read after it, its only owner as it's added to.
+/// It once read the field first, so the text was copied every time, quadratically. A call given
+/// the field's holder by `ref`, or a method on it, still sees the field as it was before.
+#[test]
+fn a_field_grown_by_a_calls_text_grows_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("field_grown_by_call")?;
+    std::fs::write(dir.join("field_grown_by_call.fen"), FIELD_GROWN_BY_CALL)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "field_grown_by_call", how)?;
+        assert_eq!(printed, "7000\na? <5:1><6:2>\n", "{how:?}");
+        assert!(
+            count(&counts, "allocations") < Some(200) && counts.ends_with(" live 0"),
+            "{how:?}: {counts}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A field grown by a call that fails keeps what it had: the call runs before the field is read,
+/// so a failure out of it leaves the field as the last `+=` that finished left it, and what the
+/// calls print comes out in order.
+#[test]
+fn a_field_grown_by_a_call_that_fails_keeps_what_it_had() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "field_grown_by_failing_call",
+        r#"error Bad:
+    why: str
+
+struct Writer:
+    text = "start"
+    total = 0
+
+def risky(value: int, stdout: Stdout) -> str fails Bad:
+    stdout.print("called", value)
+    if value > 2: fail Bad(why="too big")
+    return str(value)
+
+def grow(ref out: Writer, value: int, stdout: Stdout) fails Bad:
+    out.text += risky(value, stdout)?
+    out.text += "," + risky(value + 1, stdout)?
+    return
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    for value in [1, 2]:
+        grow(ref out, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        stdout.print(out.text)
+    got = risky(5, stdout) except Bad(why): f"<{why}>"
+    out.text += got
+    stdout.print(out.text)
+    return
+"#,
+        "called 1\ncalled 2\nstart1,2\ncalled 2\ncalled 3\nfailed too big\nstart1,22\ncalled 5\nstart1,22<too big>\n",
+    )
+}
+
+const FIELD_GROWN_BY_CALL: &str = r#"struct Writer:
+    text = ""
+    n = 0
+
+    def int(ref self, value: int):
+        self.text += str(value)
+
+    def pair(ref self, a: int, b: int):
+        self.text += "," + str(a) + str(b)
+
+    def counted(ref self, value: int):
+        self.n += 1
+        self.text += self.label(value)
+
+    def label(self, value: int) -> str:
+        return f"<{value}:{self.n}>"
+
+def bump(ref writer: Writer) -> str:
+    writer.text += "!"
+    return "?"
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    for i in range(4000):
+        out.int(i % 10)
+    for i in range(1000):
+        out.pair(i % 3, i % 7)
+    stdout.print(len(out.text))
+    mut other = Writer()
+    other.text = "a"
+    other.text += bump(ref other)
+    mut third = Writer()
+    third.counted(5)
+    third.counted(6)
+    stdout.print(other.text, third.text)
+    return
+"#;
+
+/// `text += "," + f()?` that fails leaves the text as it was, in a field, a `ref` parameter, and
+/// `text = text + "," + f()?`: the pieces aren't added one at a time when a later one can fail,
+/// since those before it would be in already.
+#[test]
+fn a_text_grown_by_pieces_one_of_which_fails_keeps_what_it_had() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "pieces_failing",
+        r#"error Bad:
+    why: str
+
+struct Writer:
+    text = "start"
+
+def risky(value: int, stdout: Stdout) -> str fails Bad:
+    stdout.print("called", value)
+    if value > 2: fail Bad(why="too big")
+    return str(value)
+
+def grow(ref out: Writer, value: int, stdout: Stdout) fails Bad:
+    out.text += "," + risky(value, stdout)? + "!"
+    return
+
+def grow_text(ref text: str, value: int, stdout: Stdout) fails Bad:
+    text += "," + risky(value, stdout)?
+    return
+
+def rebuilt(ref text: str, value: int, stdout: Stdout) fails Bad:
+    text = text + "," + risky(value, stdout)?
+    return
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    mut text = "t"
+    mut other = "o"
+    for value in [2, 3]:
+        grow(ref out, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        grow_text(ref text, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        rebuilt(ref other, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        stdout.print(out.text, text, other)
+    return
+"#,
+        "called 2\ncalled 2\ncalled 2\nstart,2! t,2 o,2\n\
+         called 3\nfailed too big\ncalled 3\nfailed too big\ncalled 3\nfailed too big\n\
+         start,2! t,2 o,2\n",
+    )
+}
+
+/// A failure in the first, a middle or the last piece of a `+=` leaves what's added to exactly as
+/// it was: a text field, a `ref` text, `x = x + a? + b? + c?` and a list field, each failing at
+/// each piece in turn, then with none failing, which adds every piece. Nothing is left held.
+#[test]
+fn a_failure_in_any_piece_of_a_sum_added_on_leaves_the_target_as_it_was() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("pieces_failing_anywhere")?;
+    std::fs::write(dir.join("pieces_failing_anywhere.fen"), PIECES_FAILING_ANYWHERE)?;
+    let failed = |at: u32| {
+        let what = ["piece", "piece", "piece", "items"].map(|kind| format!("failed {kind} {at}\n")).concat();
+        format!("{what}{at} t u v [0]\n")
+    };
+    let wanted = format!("{}{}{}0 t1-2-3 u1-2-3 v123 [0, 1, 2, 3]\n", failed(1), failed(2), failed(3));
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "pieces_failing_anywhere", how)?;
+        assert_eq!(printed, wanted, "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const PIECES_FAILING_ANYWHERE: &str = r#"error Bad:
+    why: str
+
+struct Box:
+    text = "t"
+    items = [0]
+
+def piece(n: int, fails_at: int) -> str fails Bad:
+    if n == fails_at: fail Bad(why=f"piece {n}")
+    return str(n)
+
+def items(n: int, fails_at: int) -> list[int] fails Bad:
+    if n == fails_at: fail Bad(why=f"items {n}")
+    return [n]
+
+def grow_field(ref box: Box, fails_at: int) fails Bad:
+    box.text += piece(1, fails_at=fails_at)? + "-" + piece(2, fails_at=fails_at)? + "-" + piece(3, fails_at=fails_at)?
+    return
+
+def grow_text(ref text: str, fails_at: int) fails Bad:
+    text += piece(1, fails_at=fails_at)? + "-" + piece(2, fails_at=fails_at)? + "-" + piece(3, fails_at=fails_at)?
+    return
+
+def rebuild_text(ref text: str, fails_at: int) fails Bad:
+    text = text + piece(1, fails_at=fails_at)? + piece(2, fails_at=fails_at)? + piece(3, fails_at=fails_at)?
+    return
+
+def grow_items(ref box: Box, fails_at: int) fails Bad:
+    box.items += items(1, fails_at=fails_at)? + items(2, fails_at=fails_at)? + items(3, fails_at=fails_at)?
+    return
+
+def main(stdout: Stdout):
+    for fails_at in [1, 2, 3, 0]:
+        mut box = Box()
+        mut text = "u"
+        mut other = "v"
+        grow_field(ref box, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        grow_text(ref text, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        rebuild_text(ref other, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        grow_items(ref box, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        stdout.print(fails_at, box.text, text, other, box.items)
+    return
+"#;
+
 const TEXT_CHAINED: &str = r#"def main(stdout: Stdout):
     mut route = "GET "
     for part in ["a", "1", "b"]:
@@ -20276,6 +20922,31 @@ fn a_texts_start_and_end_are_compared_where_they_are() -> std::io::Result<()> {
     return
 "#,
         "11 00 00 00 00 00 00 00 00 00 00 00\n11 11 00 00 00 00 00 00 00 00 00 00\n11 10 01 11 00 00 00 00 00 00 00 00\n11 00 10 00 00 01 00 00 00 11 00 00\n11 00 00 00 00 10 10 01 00 00 00 00\n11 10 00 00 00 00 00 00 01 00 11 00\n",
+    )
+}
+
+/// `find` hands the runtime its text and part as their headers, inline or in a block, and gives
+/// back where the part starts in characters: an empty part, two-byte characters before it, the
+/// whole text, and a part that isn't there.
+#[test]
+fn a_find_reads_its_text_and_part_however_they_are_held() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "find_headers",
+        r#"def main(stdout: Stdout):
+    texts = ["", "a: b", "café: au lait", "a header line long enough for a block: its value", "été, then a long tail past twenty-three bytes: été"]
+    parts = ["", ": ", "a", "é", "été", "its value", "a header line long enough for a block: its value", "absent"]
+    for text in texts:
+        mut said = list[str]()
+        for part in parts:
+            at = text.find(part) else -1
+            said.append(str(at))
+        stdout.print(" ".join(said))
+    return
+"#,
+        "0 -1 -1 -1 -1 -1 -1 -1\n0 1 0 -1 -1 -1 -1 -1\n0 4 1 3 -1 -1 -1 -1\n0 37 0 -1 -1 39 0 -1\n0 45 10 0 0 -1 -1 -1\n",
     )
 }
 
@@ -22016,8 +22687,8 @@ def named(present: bool) -> str?:
     Ok(())
 }
 
-/// `_ = check(n) else as why:` on a call that gives nothing but can fail keeps nothing and runs
-/// the call, as the statement `check(n) else as why:` does.
+/// `_ = check(n) except why:` on a call that gives nothing but can fail keeps nothing and runs
+/// the call, as the statement `check(n) except why:` does.
 #[test]
 fn discarding_what_gives_nothing_runs_it() -> std::io::Result<()> {
     if !ready() {

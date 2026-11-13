@@ -26,6 +26,7 @@ cargo build --release -p fennec -p fennec-bench
 | Game AI | `pathfind`: A* on a 512 by 512 map for many units, with a `Heap` of structs ordered by `<` and a dict of the cells visited |
 | Physics | `physics`: balls in a box as lists of `std.math`'s `Vec3`, filed in a grid by a counting sort for the broad phase, and pushed apart and bounced |
 | A developer's tool | `grep_tool`: a tree of source files written and walked through an `Fs` narrowed with `only`, read in chunks and matched line by line with `std.re` |
+| A chat server | `chat_server`: a hub task owning the rooms fans each message out over channels to four shard tasks owning the users' mailboxes, which send back what each user got |
 | A nightly job | `data_pipeline`: CSV parsed by `std.csv` into structs, totalled, and every order through `std.pack` and `std.json` and back |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
 | A log cruncher | `log_crunch`: log lines split and counted into dicts of structs and counters, times appended to a dict of lists, sorted for percentiles, and a report built with f-strings and `+=` |
@@ -136,6 +137,14 @@ The twins beside the kernels are idiomatic code for the same work, in Rust, full
 Everyday runs don't build or run the twins. They only read the targets.
 
 Re-pin only when a kernel's work or a twin changes, by running the **Pin benchmark targets** workflow, which pins each architecture the same way, then copying what it prints into `targets/`.
+
+## Single operations
+
+`fennec-bench ops` measures what one call of an everyday operation costs, in instructions: `find`, `split`, a slice, `+`, `int.parse`, `removesuffix`, an f-string, `json.loads` and `json.dumps` of a small struct, a dict's `get` and set with `str` keys, and making a struct. Each is a program in `bench/ops` that does its operation `OPS` times on inputs that vary, beside a Rust twin doing the same the idiomatic way.
+
+- Each is built twice, as it is and with `OPS = 0`, and the difference over `OPS` is one operation's cost, with setup, startup and printing left out.
+- Each operation's cost is pinned per architecture in `bench/ops/<architecture>.txt`, with its twin's and a hash of what both print. CI's bench job fails when an operation takes more than its pin, by more than 5% and 10 instructions. So a slow path fails the day it's added, and an improvement shows as a lower count until it's pinned again.
+- The **Pin benchmark targets** workflow pins them with the suite's targets, checking that each prints what its twin prints. Copy what it prints into `bench/ops/`.
 
 ## Adding a kernel
 

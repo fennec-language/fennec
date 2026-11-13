@@ -111,12 +111,14 @@ impl FnCx<'_> {
         }
     }
 
-    /// A list, set, dict or tuple literal written where one holding sized numbers goes: each
-    /// item goes where its sized number does, so it takes that size and is checked to fit, as in
-    /// `bytes: list[u8] = [1, 2, 255]` and `pair: (u8, int) = (3, 1)`. `None` for anything else.
+    /// A list, set, dict or tuple literal written where one holding sized numbers or optionals
+    /// goes: each item goes where its own type does, so it takes that size, or becomes that
+    /// optional, and is checked to fit, as in `bytes: list[u8] = [1, 2, 255]`, `pair: (u8, int) =
+    /// (3, 1)` and `batch: dict[str, list[(int, Parcel?)]] = {"a": [(1, Parcel(...))]}`. `None` for
+    /// anything else.
     fn sized_collection(&mut self, expr: &Expr, expected: &Type) -> Option<Type> {
         let wanted = self.checker.settled(expected).without_none();
-        if !holds_sized(&wanted) {
+        if !holds_sized(&wanted) && !holds_optional(&wanted) {
             return None;
         }
         match (&expr.kind, wanted) {
@@ -442,6 +444,21 @@ pub(crate) fn number_literal(expr: &Expr) -> bool {
 }
 
 /// Whether a type has a sized number in it, as an item, a key, a value or a tuple's part.
+/// Whether a collection or tuple type holds an optional somewhere in its items, as
+/// `list[(int, Parcel?)]` does, which a literal of it only fits written where it goes.
+fn holds_optional(ty: &Type) -> bool {
+    match ty {
+        Type::List(item) | Type::Set(item) => matches!(**item, Type::Optional(_)) || holds_optional(item),
+        Type::Dict(key, value) => {
+            matches!(**value, Type::Optional(_)) || holds_optional(key) || holds_optional(value)
+        }
+        Type::Tuple(items) => {
+            items.iter().any(|item| matches!(item, Type::Optional(_)) || holds_optional(item))
+        }
+        _ => false,
+    }
+}
+
 fn holds_sized(ty: &Type) -> bool {
     match ty {
         Type::Sized(_) => true,

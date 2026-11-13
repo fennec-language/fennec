@@ -587,6 +587,20 @@ fn sorted_texts(state: &mut State, list: u64) -> Option<i64> {
         usize::try_from(shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?)
             .ok()?;
     let headers = items(block, 3).to_vec();
+    let order = text_order(state, &headers);
+    let words: Vec<u64> = order
+        .iter()
+        .flat_map(|place| headers.get(place * 3..place * 3 + 3).unwrap_or_default())
+        .copied()
+        .collect();
+    retain_items(state, &element, &words);
+    let block = build(state, at, 3, &words, 0);
+    Some(state.heap.insert(block))
+}
+
+/// The places of strings held as headers, three words each, in the order of their text, kept
+/// stable.
+fn text_order(state: &State, headers: &[u64]) -> Vec<usize> {
     // An inline string's words with byte 23 cleared are zero after its end, as a block's are.
     let cleared: Vec<[u64; 3]> =
         headers.as_chunks::<3>().0.iter().map(|&[a, b, c]| [a, b, c & (u64::MAX >> 8)]).collect();
@@ -602,15 +616,7 @@ fn sorted_texts(state: &mut State, list: u64) -> Option<i64> {
             let used = usize::try_from(length).unwrap_or(0).div_ceil(8);
             (words.get(..used).unwrap_or_default(), length, place)
         });
-    let order = text_places(texts.collect());
-    let words: Vec<u64> = order
-        .iter()
-        .flat_map(|place| headers.get(place * 3..place * 3 + 3).unwrap_or_default())
-        .copied()
-        .collect();
-    retain_items(state, &element, &words);
-    let block = build(state, at, 3, &words, 0);
-    Some(state.heap.insert(block))
+    text_places(texts.collect())
 }
 
 /// A new list owned once holding these words, one an item, of a kind of item by its number.
@@ -751,6 +757,127 @@ pub extern "C" fn sorted_by(list: i64, keys: i64, kind: i64) -> i64 {
         let keys = items(keys, 1).to_vec();
         in_order(state, list, &keys, kind).unwrap_or(0)
     })
+}
+
+/// `list.sort()`: puts a list only its caller holds in the order `sorted` would give, where its
+/// items lie. Each item's owners go with it, so nothing is counted, where a sorted copy counts every
+/// item it holds twice: once for the copy, and once as the list it replaces is let go of.
+pub extern "C" fn sort(list: i64, kind: i64) {
+    with(|state| {
+        let list = u64::try_from(list).unwrap_or(0);
+        let Some(block) = state.heap.block(list) else { return };
+        let places = if element_in(state, block) == Some(&Element::Text) {
+            text_order(state, items(block, 3))
+        } else {
+            sorted_places(state, items(block, 1), kind)
+        };
+        moved_to(state, list, &places);
+    });
+}
+
+/// `list.sort(key=f)`: as `sort`, in the order of `keys`, a list as long as it.
+pub extern "C" fn sort_by(list: i64, keys: i64, kind: i64) {
+    with(|state| {
+        let list = u64::try_from(list).unwrap_or(0);
+        let keys = u64::try_from(keys).ok().and_then(|keys| state.heap.block(keys)).unwrap_or_default();
+        let places = if element_in(state, keys) == Some(&Element::Text) {
+            let texts = super::text::texts(state, items(keys, 3));
+            let mut places: Vec<usize> = (0..texts.len()).collect();
+            places.sort_by(|a, b| texts.get(*a).cmp(&texts.get(*b)));
+            places
+        } else {
+            sorted_places(state, items(keys, 1), kind)
+        };
+        moved_to(state, list, &places);
+    });
+}
+
+/// `list.sort()` of tuples: as `sort`, by a function comparing two items by their addresses, as
+/// `sorted_with` does. The items don't move until every comparison is made, and none is asked
+/// for once one has failed.
+pub extern "C" fn sort_with(list: i64, compare: extern "C" fn(i64, i64) -> i64) {
+    let Some((base, stride, count)) = with(|state| item_places(state, list)) else { return };
+    let address = |place: usize| i64::try_from(base + place * stride * 8).unwrap_or(0);
+    let order = sorted_order(count, |a, b| {
+        if super::failed() {
+            return std::cmp::Ordering::Equal;
+        }
+        compare(address(a), address(b)).cmp(&0)
+    });
+    with(|state| moved_to(state, u64::try_from(list).unwrap_or(0), &order));
+}
+
+/// `list.sort(key=f)` where the keys are tuples: as `sort_with`, comparing the keys, a list as
+/// long as it, and putting its items in their keys' order.
+pub extern "C" fn sort_by_keys_with(list: i64, keys: i64, compare: extern "C" fn(i64, i64) -> i64) {
+    let Some((base, stride, count)) = with(|state| item_places(state, keys)) else { return };
+    let address = |place: usize| i64::try_from(base + place * stride * 8).unwrap_or(0);
+    let mut places: Vec<usize> = (0..count).collect();
+    places.sort_by(|a, b| {
+        if super::failed() {
+            return std::cmp::Ordering::Equal;
+        }
+        compare(address(*a), address(*b)).cmp(&0)
+    });
+    with(|state| moved_to(state, u64::try_from(list).unwrap_or(0), &places));
+}
+
+/// `list.reverse()`: a list only its caller holds, its items turned end for end where they lie.
+pub extern "C" fn reverse(list: i64) {
+    with(|state| {
+        let list = u64::try_from(list).unwrap_or(0);
+        let Some(block) = state.heap.block(list) else { return };
+        if !state.heap.is_alone(list, block) {
+            super::heap::runtime_bug("a list reversed where it lies has another owner");
+        }
+        let Some(stride) = element_in(state, block).map(Element::words).filter(|stride| *stride > 0) else {
+            return;
+        };
+        let count = usize::try_from(block.get(2).copied().unwrap_or(0)).unwrap_or(0);
+        let Some(words) = state.heap.block_mut(list).and_then(|block| block.get_mut(LIST_HEADER_WORDS..))
+        else {
+            return;
+        };
+        let Some(items) = words.get_mut(..count * stride) else { return };
+        // The first half's items swap with the second half's, from the outside in.
+        let (front, back) = items.split_at_mut(count / 2 * stride);
+        let back = back.get_mut(count % 2 * stride..).unwrap_or_default();
+        for (first, last) in front.chunks_exact_mut(stride).zip(back.chunks_exact_mut(stride).rev()) {
+            first.swap_with_slice(last);
+        }
+    });
+}
+
+/// Where a list's items start, how many words apart they are, and how many there are.
+fn item_places(state: &State, list: i64) -> Option<(usize, usize, usize)> {
+    let block = state.heap.block(u64::try_from(list).ok()?)?;
+    let stride = element_in(state, block)?.words().max(1);
+    let words = items(block, stride);
+    Some((words.as_ptr().addr(), stride, words.len() / stride))
+}
+
+/// Puts the items of a list only its caller holds in the order of `places`, where they lie. What
+/// each holds moves with it, so no owner is gained or lost.
+fn moved_to(state: &mut State, list: u64, places: &[usize]) {
+    let Some(block) = state.heap.block(list) else { return };
+    if !state.heap.is_alone(list, block) {
+        super::heap::runtime_bug("a list sorted where it lies has another owner");
+    }
+    let Some(stride) = element_in(state, block).map(Element::words).filter(|stride| *stride > 0) else {
+        return;
+    };
+    let Some(words) = state.heap.block_mut(list).and_then(|block| block.get_mut(LIST_HEADER_WORDS..)) else {
+        return;
+    };
+    let old: Vec<u64> = words.get(..places.len() * stride).unwrap_or_default().to_vec();
+    for (to, from) in places.iter().enumerate() {
+        let (Some(source), Some(target)) =
+            (old.get(from * stride..(from + 1) * stride), words.get_mut(to * stride..(to + 1) * stride))
+        else {
+            return;
+        };
+        target.copy_from_slice(source);
+    }
 }
 
 /// A list's block as a `Value`: a packed list.

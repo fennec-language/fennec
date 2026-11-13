@@ -137,6 +137,14 @@ Everyday runs don't build or run the twins. They only read the targets.
 
 Re-pin only when a kernel's work or a twin changes, by running the **Pin benchmark targets** workflow, which pins each architecture the same way, then copying what it prints into `targets/`.
 
+## Single operations
+
+`fennec-bench ops` measures what one call of an everyday operation costs, in instructions: `find`, `split`, a slice, `+`, `int.parse`, `removesuffix`, an f-string, `json.loads` and `json.dumps` of a small struct, a dict's `get` and set with `str` keys, and making a struct. Each is a program in `bench/ops` that does its operation `OPS` times on inputs that vary, beside a Rust twin doing the same the idiomatic way.
+
+- Each is built twice, as it is and with `OPS = 0`, and the difference over `OPS` is one operation's cost, with setup, startup and printing left out.
+- Each operation's cost is pinned per architecture in `bench/ops/<architecture>.txt`, with its twin's and a hash of what both print. CI's bench job fails when an operation takes more than its pin, by more than 5% and 10 instructions. So a slow path fails the day it's added, and an improvement shows as a lower count until it's pinned again.
+- The **Pin benchmark targets** workflow pins them with the suite's targets, checking that each prints what its twin prints. Copy what it prints into `bench/ops/`.
+
 ## Adding a kernel
 
 The suite is locked, so a new kernel needs a stated reason. Add `name.fen` and `name.rs` to `kernels/`, then re-pin.

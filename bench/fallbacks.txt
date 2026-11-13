@@ -21,6 +21,7 @@ json 0
 json_unicode 0
 k_nucleotide 0
 locks 0
+log_crunch 0
 mandelbrot 0
 method_chain 0
 nbody 0

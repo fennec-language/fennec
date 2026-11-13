@@ -1074,7 +1074,7 @@ impl FnCx<'_> {
             self.else_chain.remove(step);
         }
         // On `T? fails E`, `?` handles the failure and `else` the `None`: a plain `else` would
-        // handle both, so only `else as why:` takes the failure, giving a `T?`.
+        // handle both, so only `except why:` takes the failure, giving a `T?`.
         if let Type::Result(inner, _) = self.checker.settled(&value)
             && matches!(self.checker.settled(&inner), Type::Optional(_) | Type::None)
             && default.failure_named().is_none()
@@ -1124,7 +1124,7 @@ impl FnCx<'_> {
         }
     }
 
-    /// An `else:` block, or `else as failure:`, whose block sees what failed under that name. It
+    /// An `else:` block, or `except failure:`, whose block sees what failed under that name. It
     /// leaves, and then gives `None` here, or its last line is the value in place of the one that
     /// failed or was `None`, of that one's type.
     fn else_block(

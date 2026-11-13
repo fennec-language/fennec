@@ -1912,7 +1912,28 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{block} = load ptr, ptr {place}"));
             return block;
         }
-        let block = self.alone_at(place, helper);
+        // Found alone or not on the way in, and nothing has unsettled it since: where it was
+        // alone, it still is, and only where it wasn't is it checked, and copied if it's shared.
+        let flag = if self.alone_if.contains(&key) { self.alone_flags.get(&key).cloned() } else { None };
+        let block = if let Some(flag) = flag {
+            let (was_alone, check, have) =
+                (self.label("was_alone"), self.label("was_shared"), self.label("have_alone"));
+            self.line(&format!("br i1 {flag}, label %{was_alone}, label %{check}, !prof !8"));
+            self.start_block(&was_alone);
+            let kept = self.temp();
+            self.line(&format!("{kept} = load ptr, ptr {place}"));
+            self.line(&format!("br label %{have}"));
+            self.start_block(&check);
+            let made = self.alone_at(place, helper);
+            let check_end = self.current.clone();
+            self.line(&format!("br label %{have}"));
+            self.start_block(&have);
+            let block = self.temp();
+            self.line(&format!("{block} = phi ptr [ {kept}, %{was_alone} ], [ {made}, %{check_end} ]"));
+            block
+        } else {
+            self.alone_at(place, helper)
+        };
         self.alone_fields.push(key);
         block
     }

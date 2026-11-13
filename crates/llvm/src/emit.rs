@@ -293,13 +293,6 @@ pub(crate) fn facts_stripped() -> bool {
     FACTS_STRIPPED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The most instructions a callee can have and still be copied into a caller that found what it
-/// may change alone already (see `call`). Measured: from 30 to 100, `pathfind`, whose `Heap.pop`
-/// is such a callee, and `game_tick` both run as they did when callers made the block alone; with
-/// no callee copied in, `pathfind` takes 8% more instructions, and at 150, where `game_tick`'s
-/// whole `tick` is copied into `main`, `game_tick` takes 1.5% more.
-const COPIED_IN_WHEN_ALONE: usize = 60;
-
 pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,
@@ -684,6 +677,8 @@ impl<'p> Module<'_, 'p> {
             alone_slots: HashSet::new(),
             alone_dicts: HashSet::new(),
             alone_fields: Vec::new(),
+            alone_if: Vec::new(),
+            alone_flags: HashMap::new(),
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
             places_out: HashMap::new(),
@@ -812,6 +807,11 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) alone_dicts: HashSet<String>,
     /// Field paths from locals whose blocks are known alone here.
     pub(crate) alone_fields: Vec<FieldPath>,
+    /// The field paths found alone or not on the way in, and not unsettled since: a change through
+    /// one goes by what was found, kept in `alone_flags`.
+    pub(crate) alone_if: Vec<FieldPath>,
+    /// For each path looked at on the way in, the `i1` saying every block along it was alone then.
+    pub(crate) alone_flags: HashMap<FieldPath, String>,
     /// Items taken out of a list to change: the list's local and field path, and the step to
     /// the item.
     pub(crate) taken_items: HashMap<usize, (LocalId, Vec<String>, String)>,
@@ -1045,6 +1045,14 @@ impl Emit<'_, '_, '_> {
         if let Some(needs) = whole.needs.get(function.name.as_str()) {
             self.alone_fields.clone_from(needs);
         }
+        // What this function only may change through: looked at once here, nothing copied.
+        let mut looked_at = Vec::new();
+        for (root, path) in whole.may_need.get(function.name.as_str()).map_or(&[][..], Vec::as_slice) {
+            if let Some(alone) = self.alone_along_as_it_is(*root, path)? {
+                self.alone_flags.insert((*root, path.clone()), alone);
+                looked_at.push((*root, path.clone()));
+            }
+        }
         for (at, kind) in kinds.iter().take(function.params).enumerate() {
             let local = LocalId(at);
             if matches!(kind, Kind::List(_)) && self.known.alone_once_checked(local) {
@@ -1105,6 +1113,7 @@ impl Emit<'_, '_, '_> {
         let mut alone_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
         let mut inside_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
         let on_entry = std::mem::take(&mut self.alone_fields);
+        let mut alone_if_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
         let settles = (&whole.settles, Tracked::Owners);
         let lengths = (&whole.lengths, Tracked::Lengths);
         // Each block after every one leading to it, but for loops, so what's known carries on.
@@ -1118,6 +1127,8 @@ impl Emit<'_, '_, '_> {
             let ways_in = before.get(&at).map_or(&[][..], Vec::as_slice);
             self.alone_fields =
                 coming_in(function, self.known, settles, (at, &before, &done), (&on_entry, &alone_left));
+            self.alone_if =
+                coming_in(function, self.known, settles, (at, &before, &done), (&looked_at, &alone_if_left));
             self.inside_items =
                 coming_in(function, self.known, lengths, (at, &before, &done), (&[], &inside_left));
             self.found_entries = match ways_in.split_first() {
@@ -1160,9 +1171,10 @@ impl Emit<'_, '_, '_> {
                 } else {
                     self.inst(&inst.kind, inst.span, at)?;
                 }
-                if !self.alone_fields.is_empty() {
+                if !self.alone_fields.is_empty() || !self.alone_if.is_empty() {
                     let hit = unsettled(function, self.known, &inst.kind, settles);
                     self.alone_fields.retain(|path| !hit.iter().any(|unsettled| unsettled.hits(path)));
+                    self.alone_if.retain(|path| !hit.iter().any(|unsettled| unsettled.hits(path)));
                 }
                 if !self.inside_items.is_empty() {
                     let hit = unsettled(function, self.known, &inst.kind, lengths);
@@ -1183,6 +1195,7 @@ impl Emit<'_, '_, '_> {
             }
             left_with.insert(at, std::mem::take(&mut self.found_entries));
             alone_left.insert(at, std::mem::take(&mut self.alone_fields));
+            alone_if_left.insert(at, std::mem::take(&mut self.alone_if));
             inside_left.insert(at, std::mem::take(&mut self.inside_items));
             done.insert(at);
             if let Some((list, limit)) = self.known.reservations.get(&at).cloned()
@@ -2713,53 +2726,8 @@ impl Emit<'_, '_, '_> {
         for borrowed in &borrows_lent {
             self.when_made(borrowed, |emit| emit.retain(borrowed));
         }
-        // What the callee only may change through, which stays as it is until it does: whether
-        // each block on the way is alone already is looked at here, nothing copied, and the same
-        // call is made either way. Where it is alone, a small callee is copied in, so each check
-        // it makes before a change is one LLVM sees the answer to, as when callers made the block
-        // alone before calling; where it isn't, the call stays a call.
-        let mut alone_already: Option<String> = None;
-        let may = self.module.whole.may_need.get(name).map_or(&[][..], Vec::as_slice);
-        for (param, path) in may {
-            let Some(Operand::Local(given)) = args.get(param.0) else { continue };
-            let Some(alone) = self.alone_along_as_it_is(*given, path)? else { continue };
-            alone_already = Some(match alone_already {
-                Some(so_far) => {
-                    let both = self.temp();
-                    self.line(&format!("{both} = and i1 {so_far}, {alone}"));
-                    both
-                }
-                None => alone,
-            });
-        }
         let result = self.temp();
-        if let Some(alone) = alone_already {
-            let (sure, unsure, called) =
-                (self.label("alone_call"), self.label("shared_call"), self.label("called"));
-            self.line(&format!("br i1 {alone}, label %{sure}, label %{unsure}, !prof !8"));
-            self.start_block(&sure);
-            let small =
-                callee.blocks.iter().map(|block| block.insts.len()).sum::<usize>() <= COPIED_IN_WHEN_ALONE;
-            let copied_in = if small && name != self.function.name { " alwaysinline" } else { "" };
-            let (first, second) = (self.temp(), self.temp());
-            if ret == "void" {
-                self.line(&format!("call swiftcc void {target}({shown}){copied_in}"));
-            } else {
-                self.line(&format!("{first} = call swiftcc {ret} {target}({shown}){copied_in}"));
-            }
-            self.line(&format!("br label %{called}"));
-            self.start_block(&unsure);
-            if ret == "void" {
-                self.line(&format!("call swiftcc void {target}({shown}) noinline"));
-            } else {
-                self.line(&format!("{second} = call swiftcc {ret} {target}({shown}) noinline"));
-            }
-            self.line(&format!("br label %{called}"));
-            self.start_block(&called);
-            if ret != "void" {
-                self.line(&format!("{result} = phi {ret} [ {first}, %{sure} ], [ {second}, %{unsure} ]"));
-            }
-        } else if ret == "void" {
+        if ret == "void" {
             self.line(&format!("call swiftcc void {target}({shown})"));
         } else {
             self.line(&format!("{result} = call swiftcc {ret} {target}({shown})"));

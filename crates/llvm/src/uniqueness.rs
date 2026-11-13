@@ -461,10 +461,13 @@ pub(crate) fn needed<'p>(
     functions: &HashMap<&'p str, &'p Function>,
     analyses: &HashMap<&'p str, Analysis>,
 ) -> Needs<'p> {
-    let always = changed_through(program, functions, analyses, true);
-    // What a function only may change through: its callers see whether it's alone already, with
-    // nothing copied, so a call where it is runs as fast as one whose callers saw to it.
-    let mut may: HashMap<&str, Vec<FieldPath>> = changed_through(program, functions, analyses, false);
+    let always = changed_through(program, functions, analyses, Reached::Always);
+    // What a function only may change through stays as it is until it does. The function looks
+    // once, on the way in, at whether each such block is alone already, copying nothing, and each
+    // change goes by that: straight in where it was, and by a check, and a copy if it's shared,
+    // where it wasn't. So a call that changes nothing takes nothing for its own, and one that
+    // does costs a branch more than when its callers made the block alone first.
+    let mut may: HashMap<&str, Vec<FieldPath>> = changed_through(program, functions, analyses, Reached::Any);
     #[expect(clippy::iter_over_hash_type, reason = "each function's paths are filtered where they are")]
     for (name, paths) in &mut may {
         if let Some(sure) = always.get(name) {
@@ -475,23 +478,31 @@ pub(crate) fn needed<'p>(
 }
 
 /// What each function changes through its `mut` parameters: the paths every call changes, which
-/// its callers make alone first, and those a call only may change, which stay as they are until
-/// it does.
+/// its callers make alone first, and those a call only may change, which it looks at on the way in
+/// and leaves as they are until it changes one.
 pub(crate) struct Needs<'p> {
     pub(crate) always: HashMap<&'p str, Vec<FieldPath>>,
     pub(crate) may: HashMap<&'p str, Vec<FieldPath>>,
 }
 
-/// [`needed`]'s paths: those every call changes through when `certain`, and otherwise every one
-/// any call may.
+/// Which of a function's blocks count as run by a call, for [`changed_through`].
+#[derive(Clone, Copy, PartialEq)]
+enum Reached {
+    /// Those every call that returns runs.
+    Always,
+    /// Every block.
+    Any,
+}
+
+/// [`needed`]'s paths: those changed through in the blocks `reached` says a call runs.
 fn changed_through<'p>(
     program: &'p Program,
     functions: &HashMap<&'p str, &'p Function>,
     analyses: &HashMap<&'p str, Analysis>,
-    certain: bool,
+    reached: Reached,
 ) -> HashMap<&'p str, Vec<FieldPath>> {
     let reached = |function: &Function| {
-        if certain { always_reached(function) } else { vec![true; function.blocks.len()] }
+        if reached == Reached::Any { vec![true; function.blocks.len()] } else { always_reached(function) }
     };
     let mut needs: HashMap<&str, HashSet<FieldPath>> = HashMap::new();
     #[expect(clippy::iter_over_hash_type, reason = "each function's needs go into its own set")]

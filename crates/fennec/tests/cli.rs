@@ -3950,6 +3950,7 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
             "FENNEC_CHECK_PROOFS",
             "FENNEC_STRIP_FACTS",
             "FENNEC_THREADS_RUNTIME",
+            "FENNEC_BOXED_RESULTS",
             "FENNEC_NO_CACHE",
         ] {
             command.env_remove(name);
@@ -3978,10 +3979,14 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
     let plain = build(None, "plain")?;
     assert!(plain.status.success(), "{}", text(&plain.stderr));
     assert_eq!(kept(), 1);
-    for (at, (name, value)) in
-        [("FENNEC_CHECK_PROOFS", "1"), ("FENNEC_STRIP_FACTS", "1"), ("FENNEC_THREADS_RUNTIME", "0")]
-            .into_iter()
-            .enumerate()
+    for (at, (name, value)) in [
+        ("FENNEC_CHECK_PROOFS", "1"),
+        ("FENNEC_STRIP_FACTS", "1"),
+        ("FENNEC_THREADS_RUNTIME", "0"),
+        ("FENNEC_BOXED_RESULTS", "1"),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let switched = build(Some((name, value)), name)?;
         assert!(switched.status.success(), "{name}: {}", text(&switched.stderr));

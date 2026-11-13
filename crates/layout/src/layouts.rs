@@ -137,11 +137,7 @@ impl Layouts {
         let mut layouts = Layouts {
             one_word_optionals: true,
             native_buffers: true,
-            in_place: InPlace {
-                text_headers: true,
-                counted_fields: true,
-                results: std::env::var("FENNEC_BOXED_RESULTS").as_deref() != Ok("1"),
-            },
+            in_place: InPlace { text_headers: true, counted_fields: true, results: results_in_place() },
             ..Layouts::default()
         };
         for (name, def) in definitions {
@@ -677,6 +673,13 @@ impl Layouts {
             _ => Ty::Obj,
         }
     }
+}
+
+/// Whether a result is kept in place, as it is unless `FENNEC_BOXED_RESULTS=1` keeps each a block of
+/// its own. It changes what a build makes, so a build's cache key says it.
+#[must_use]
+pub fn results_in_place() -> bool {
+    std::env::var("FENNEC_BOXED_RESULTS").as_deref() != Ok("1")
 }
 
 /// Every field of a type, in every case of an enum.

@@ -102,6 +102,34 @@ fn a_page_is_never_loaded() {
     );
 }
 
+/// A capability is handed down from `main`, never made: loading one from text would make one nobody
+/// handed over. Neither one nor anything holding one is saved or loaded, by JSON, TOML or pack, as a
+/// `Secret` isn't.
+#[test]
+fn a_capability_is_never_saved_or_loaded() {
+    let program = "
+        a = json.loads[Fs]('{}')
+        b = json.loads[Holder]('{}')
+        c = toml.loads[Outputs]('')
+        d = pack.loads[Reaches](bytes([]))
+        e = json.dumps(stdout)
+    ";
+    let declarations = "from std import json, pack, toml\n\n\
+                        struct Holder:\n    files: Fs\n\n\
+                        struct Outputs:\n    out: list[Stdout]\n\n\
+                        struct Reaches:\n    net: Net?\n";
+    assert_eq!(
+        with_imports(declarations, program),
+        [
+            "JSON can't hold an `Fs` @ Fs",
+            "JSON can't hold `Holder.files`, which is an `Fs` @ Holder",
+            "TOML can't hold `Outputs.out`, which is a `Stdout` @ Outputs",
+            "`Reaches` isn't a `Deserializable`: `Reaches.net` is a `Net`, which can't be saved @ pack.loads[Reaches](bytes([]))",
+            "JSON can't hold a `Stdout` @ json.dumps(stdout)",
+        ]
+    );
+}
+
 /// A database URL written in the source can't hold its password, which would be in a plain `str`
 /// and in the source too. Without one, or as a `Secret`, it's fine.
 #[test]

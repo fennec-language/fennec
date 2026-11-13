@@ -23,6 +23,10 @@ cargo build --release -p fennec -p fennec-bench
 | Shared state under a lock | `locks`, a counter and a dict changed under `lock ... as ref` in a loop |
 | What falls off the fast path | `dict_field`, `struct_keys`, `method_chain`, `comp_helpers` |
 | A game server's tick | `game_tick`: a `Table` of entities with inventory dicts, commands through a channel, a grid lookup with `parallel` over its cells, and a `pack` snapshot |
+| Game AI | `pathfind`: A* on a 512 by 512 map for many units, with a `Heap` of structs ordered by `<` and a dict of the cells visited |
+| Physics | `physics`: balls in a box as lists of `std.math`'s `Vec3`, filed in a grid by a counting sort for the broad phase, and pushed apart and bounced |
+| A developer's tool | `grep_tool`: a tree of source files written and walked through an `Fs` narrowed with `only`, read in chunks and matched line by line with `std.re` |
+| A nightly job | `data_pipeline`: CSV parsed by `std.csv` into structs, totalled, and every order through `std.pack` and `std.json` and back |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
 | A log cruncher | `log_crunch`: log lines split and counted into dicts of structs and counters, times appended to a dict of lists, sorted for percentiles, and a report built with f-strings and `+=` |
 
@@ -46,6 +50,8 @@ Instructions aren't time, though. They can disagree by a lot, in either directio
 The table also counts the functions in each kernel that LLVM doesn't take yet, from `fennec dev fallbacks --llvm`, and the run warns about them. A kernel with any doesn't build, so the run fails on it too. `fallbacks.txt` holds those counts, which are all zero, and a test keeps them so. CI's "Every example and kernel built natively" job also builds every kernel natively and checks that it links and prints what it should.
 
 Each kernel also has to print exactly what its target expects, which the target file holds as a hash.
+
+`copies.txt` holds how many copies each kernel's run makes: values changed while something else still held them, so the change went to a copy. A test builds each kernel for release, runs it on one thread under `FENNEC_COUNTS` and keeps the counts exact. They don't move with the machine or its load, so a copy the code generator starts making fails there, however small its cost in time.
 
 Targets come from twins built with overflow checks on, because Fennec always checks and that's the work being compared. The run's last column shows the percentage against the same twins without those checks, from `targets/unchecked/`. It's for reference only: nothing is judged on it.
 

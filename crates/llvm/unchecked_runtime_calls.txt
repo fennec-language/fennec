@@ -18,8 +18,8 @@ fennec_constant_kept in-cant-fail 3
 fennec_constant_kept unchecked 0
 fennec_dict_popped unchecked 0
 fennec_error_of unchecked 0
-fennec_free in-cant-fail 59
-fennec_free unchecked 1086
+fennec_free in-cant-fail 63
+fennec_free unchecked 1095
 fennec_input unchecked 0
 fennec_list_contains unchecked 0
 fennec_native_freed in-cant-fail 0

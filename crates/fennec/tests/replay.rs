@@ -780,6 +780,96 @@ fn serves(source: &str) -> bool {
     source.contains(".serve(")
 }
 
+/// A program that makes a database, writes to it and reads it back.
+const DATABASE: &str = "from std import sqlite
+from std.sql import SqlError
+
+struct Item:
+    name: str
+    count: int
+
+def main(stdout: Stdout, fs: Fs) fails SqlError:
+    with sqlite.open(fs, \"items.db\")? as db:
+        _ = db.execute(t\"create table items (name text, count int)\")?
+        for n in range(3):
+            name = f\"item{n}\"
+            _ = db.execute(t\"insert into items values ({name}, {n})\")?
+        for item in db.query[Item](t\"select name, count from items order by count\")?:
+            stdout.print(item.name, item.count)
+    return
+";
+
+/// A program writing to standard output and standard error in turn.
+const BOTH_OUTPUTS: &str = "def main(stdout: Stdout, stderr: Stderr) fails IoError:
+    for n in range(3):
+        stdout.print(\"out\", n)
+        stderr.write_line(f\"err {n}\")?
+    return
+";
+
+/// What a run read from and wrote to a database replays without the database: each call's result
+/// is in the recording, under the task that made it, so the replay opens nothing, and gives the
+/// same output with the file gone.
+#[test]
+fn a_run_that_reads_and_writes_a_database_replays_identically() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("database-replay")?;
+    let program = dir.join("database.fen");
+    std::fs::write(&program, DATABASE)?;
+    let log = dir.join("database.log");
+    let recorded = outcome(
+        &fennec_command()
+            .args(["run", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .current_dir(&dir)
+            .output_before(DEADLINE)?,
+    );
+    assert_eq!((recorded.0.as_str(), recorded.2), ("item0 0\nitem1 1\nitem2 2\n", Some(0)), "{}", recorded.1);
+    std::fs::remove_file(dir.join("items.db"))?;
+    let replayed = outcome(
+        &fennec_command()
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_before(DEADLINE)?,
+    );
+    assert_eq!(replayed, recorded);
+    assert!(!dir.join("items.db").exists(), "the replay opened the database");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A replay writes standard error as the run did, beside standard output.
+#[test]
+fn a_replay_writes_standard_error_too() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("stderr-replay")?;
+    let program = dir.join("both.fen");
+    std::fs::write(&program, BOTH_OUTPUTS)?;
+    let log = dir.join("both.log");
+    let recorded = outcome(
+        &fennec_command()
+            .args(["run", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .current_dir(&dir)
+            .output_before(DEADLINE)?,
+    );
+    assert_eq!(recorded.0, "out 0\nout 1\nout 2\n", "{}", recorded.1);
+    assert!(recorded.1.ends_with("err 0\nerr 1\nerr 2\n"), "{}", recorded.1);
+    let replayed = outcome(
+        &fennec_command()
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_before(DEADLINE)?,
+    );
+    assert_eq!(replayed, recorded);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// Whether an example runs more than one task, which needs the threads runtime.
 fn several_tasks(source: &str) -> bool {
     ["parallel(", "launch(", "Channel["].iter().any(|marker| source.contains(marker))

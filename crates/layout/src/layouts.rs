@@ -8,7 +8,7 @@
 //! is a machine int: floats keep their bits and bools are 0 or 1, and words a case doesn't
 //! use are 0. So two enum values are equal exactly when their words are.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Expr, TypeDef, TypeExpr};
@@ -68,6 +68,11 @@ pub struct Layouts {
     /// The types laid out by `add_through_lists`, whose items a list's description names by
     /// their place here.
     through_lists: Vec<u32>,
+    /// The types decided to be blocks before anything was laid out, when they were (see
+    /// [`boxed_types`]): no pass lays one of them out in place, and every other is.
+    decided: Option<BTreeSet<String>>,
+    /// Why these layouts can't be built from, when they can't: a bug in deciding them.
+    problem: Option<String>,
 }
 
 /// What a backend holds in place, where others hold the address of a block.
@@ -154,6 +159,158 @@ impl Layouts {
         layouts.add_through_lists(&sources, &names);
         layouts.add_boxed(&sources, &names);
         layouts
+    }
+
+    /// The layouts of types already worked out, as [`Self::from_definitions`] makes them, but with
+    /// which are blocks decided already, by [`boxed_types`]: exactly those are blocks, and every
+    /// other type is held in place, whatever its fields hold.
+    #[must_use]
+    pub fn from_definitions_boxing(definitions: &[(String, Written)], boxed: &BTreeSet<String>) -> Layouts {
+        let sources = Sources {
+            signatures: None,
+            enums: HashMap::new(),
+            definitions: definitions.iter().map(|(name, def)| (name.as_str(), def)).collect(),
+        };
+        let mut layouts = Layouts {
+            one_word_optionals: true,
+            native_buffers: true,
+            in_place: InPlace { text_headers: true, counted_fields: true, results: results_in_place() },
+            decided: Some(boxed.clone()),
+            ..Layouts::default()
+        };
+        for (name, def) in definitions {
+            if let Written::Enum(cases) = def {
+                for (case, _) in cases {
+                    layouts.owners.entry(case.clone()).or_default().push(name.clone());
+                }
+            }
+        }
+        let names: Vec<String> = definitions.iter().map(|(name, _)| name.clone()).collect();
+        for name in names.iter().filter(|name| !boxed.contains(*name)) {
+            layouts.add(&sources, name, &mut Vec::new());
+        }
+        layouts.add_all_in_place(&sources, &names, boxed);
+        if layouts.problem.is_none() {
+            layouts.add_boxed(&sources, &names);
+        }
+        if layouts.problem.is_none() {
+            layouts.problem = names.iter().find_map(|name| {
+                let laid = layouts.id(name).and_then(|id| layouts.get(id))?;
+                (laid.boxed != boxed.contains(name)).then(|| {
+                    format!(
+                        "`{name}` was decided to be {}a block but wasn't laid out so",
+                        if laid.boxed { "not " } else { "" }
+                    )
+                })
+            });
+        }
+        layouts
+    }
+
+    /// Why these layouts can't be built from, when they can't: a type that was decided one way
+    /// and laid out another, or one in place that can't be, which is a bug in the compiler.
+    #[must_use]
+    pub fn problem(&self) -> Option<&str> {
+        self.problem.as_deref()
+    }
+
+    /// Lays out every type that isn't a block and isn't laid out yet, in place, with a number for
+    /// a list's description to name it by: what's directly inside each first. The blocks get their
+    /// numbers here too, after these, so a field can name one before it's laid out.
+    fn add_all_in_place(&mut self, sources: &Sources<'_>, names: &[String], boxed: &BTreeSet<String>) {
+        let candidates: BTreeMap<String, Written> = names
+            .iter()
+            .filter(|name| !self.by_name.contains_key(*name) && !boxed.contains(*name))
+            .filter_map(|name| Some((name.clone(), written(sources, name)?)))
+            .collect();
+        let order = match inside_first(&candidates) {
+            Ok(order) => order,
+            Err(stuck) => {
+                self.problem = Some(format!(
+                    "`{}` would be inside itself in place, though it wasn't decided to be a block",
+                    stuck.join("`, `")
+                ));
+                return;
+            }
+        };
+        let first = self.all.len();
+        let numbered = |names: &mut dyn Iterator<Item = String>, from: usize| -> HashMap<String, u32> {
+            names.enumerate().filter_map(|(at, name)| Some((name, u32::try_from(from + at).ok()?))).collect()
+        };
+        let place = numbered(&mut order.iter().cloned(), first);
+        let blocks: Vec<String> = names
+            .iter()
+            .filter(|name| !self.by_name.contains_key(*name) && boxed.contains(*name))
+            .filter(|name| written(sources, name).is_some())
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let block_ids = numbered(&mut blocks.into_iter(), first + order.len());
+        for name in &order {
+            let Some(def) = candidates.get(name) else { continue };
+            let layout = self.in_place_layout(name, def, (&place, &block_ids));
+            match layout {
+                Ok(layout) => {
+                    let Some(id) = place.get(name) else { return };
+                    self.all.push(layout);
+                    self.by_name.insert(name.clone(), *id);
+                    self.through_lists.push(*id);
+                }
+                Err(field) => {
+                    self.problem = Some(match field {
+                        Some(field) => format!("`{name}.{field}` can't be held in place"),
+                        None => format!("`{name}` can't be laid out in place"),
+                    });
+                    return;
+                }
+            }
+        }
+    }
+
+    /// A type's layout in place, given the numbers of the types laid out in place with it and of
+    /// the blocks; or the field that can't be held in place, if one can't.
+    fn in_place_layout(
+        &self,
+        name: &str,
+        def: &Written,
+        ids: (&HashMap<String, u32>, &HashMap<String, u32>),
+    ) -> Result<Layout, Option<String>> {
+        let fields = |fields: &[WrittenField], start: u32| -> Result<(Vec<Field>, u32), Option<String>> {
+            let mut typed = Vec::with_capacity(fields.len());
+            for (field, ty, default) in fields {
+                let held = in_place_field_ty(self, ids, ty);
+                if held == Ty::Obj {
+                    return Err(Some(field.clone()));
+                }
+                typed.push((field.clone(), held, default.clone()));
+            }
+            self.place_fields(typed, start).ok_or(None)
+        };
+        match def {
+            Written::Struct(written) => {
+                let (placed, size) = fields(written, 0)?;
+                Ok(Layout {
+                    name: name.to_owned(),
+                    fields: placed,
+                    size: size.max(WORD),
+                    cases: None,
+                    boxed: false,
+                    cell: false,
+                })
+            }
+            Written::Enum(cases) => {
+                let mut placed = Vec::with_capacity(cases.len());
+                let mut size = WORD;
+                for (case, written) in cases {
+                    let (case_fields, end) = fields(written, WORD)?;
+                    size = size.max(end);
+                    placed.push(Case { name: case.clone(), fields: case_fields });
+                }
+                Ok(enum_of(name, placed, size, false))
+            }
+            Written::Generator(_) | Written::Cell(_) => Err(None),
+        }
     }
 
     /// Lays out a type given by name if it's plain.
@@ -416,6 +573,10 @@ impl Layouts {
         if let Some(id) = self.by_name.get(name) {
             return Some(*id);
         }
+        // A type decided to be a block is never laid out in place, even as what a plain one holds.
+        if self.decided.as_ref().is_some_and(|decided| decided.contains(name)) {
+            return None;
+        }
         if visiting.iter().any(|seen| seen == name) {
             return None;
         }
@@ -675,6 +836,14 @@ impl Layouts {
     }
 }
 
+/// Whether every type that doesn't contain itself is held in place, as it is unless
+/// `FENNEC_BOXED_TYPES=1` lays types out as before step 4: a type holding a dict, an optional or a
+/// block a block too. It changes what a build makes, so a build's cache key says it.
+#[must_use]
+pub fn types_in_place() -> bool {
+    std::env::var("FENNEC_BOXED_TYPES").as_deref() != Ok("1")
+}
+
 /// Whether a result is kept in place, as it is unless `FENNEC_BOXED_RESULTS=1` keeps each a block of
 /// its own. It changes what a build makes, so a build's cache key says it.
 #[must_use]
@@ -787,6 +956,225 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
             Block::of(boxed_field_ty(layouts, reserved, inner)).map_or(Ty::Obj, Ty::Maybe)
         }
         _ => Ty::Obj,
+    }
+}
+
+/// How a field of a type held in place is held, given the numbers of the types being laid out in
+/// place with it, `place`, and of the blocks, `blocks`, which may not be laid out yet.
+fn in_place_field_ty(
+    layouts: &Layouts,
+    (place, blocks): (&HashMap<String, u32>, &HashMap<String, u32>),
+    ty: &Type,
+) -> Ty {
+    let held = |ty: &Type| in_place_field_ty(layouts, (place, blocks), ty);
+    // A key held in place, whose layout may not be made yet: by its number.
+    let key = |key: &Type| match key {
+        Type::Named(name) if Cap::named(name).is_none() => place
+            .get(name)
+            .copied()
+            .or_else(|| layouts.id(name).filter(|id| layouts.get(*id).is_some_and(|layout| !layout.boxed)))
+            .map(Word::Plain),
+        other => key_word(layouts, other),
+    };
+    match ty {
+        Type::Named(name) if Cap::named(name).is_some() => Cap::named(name).map_or(Ty::Obj, Ty::Cap),
+        Type::Named(name) => match (blocks.get(name), place.get(name), layouts.id(name)) {
+            (Some(id), ..) => Ty::Boxed(*id),
+            (None, Some(id), _) => Ty::Struct(*id),
+            (None, None, Some(id)) if layouts.get(id).is_some_and(|layout| layout.boxed) => Ty::Boxed(id),
+            (None, None, Some(id)) => Ty::Struct(id),
+            (None, None, None) => Ty::Obj,
+        },
+        Type::List(item) | Type::Buffer(item) => layouts.list_item(held(item)).map_or(Ty::Obj, Ty::List),
+        Type::Dict(key_ty, value) => {
+            let word = match value.as_ref() {
+                Type::Int => Some(Word::Int),
+                Type::Sized(num) => Some(sized_word(*num)),
+                Type::Float => Some(Word::Float),
+                Type::Bool => Some(Word::Bool),
+                Type::Str => Some(Word::Str),
+                other => layouts.value_word(held(other)),
+            };
+            match (key(key_ty), word) {
+                (Some(key), Some(value)) => Ty::Dict(key, value),
+                _ => Ty::Obj,
+            }
+        }
+        Type::Set(item) => key(item).map_or(Ty::Obj, |key| Ty::Dict(key, Word::Nothing)),
+        Type::Optional(inner) => Block::of(held(inner)).map_or(Ty::Obj, Ty::Maybe),
+        other => boxed_field_ty(layouts, &HashMap::new(), other),
+    }
+}
+
+/// Which of a program's types are blocks, decided once from the types as written, every optional
+/// still an `Option[...]` enum, before anything is laid out, and never changed after. Only a type
+/// that contains itself is a block: one in a cycle of types each holding the next by value. In
+/// each such cycle every type the program `declared` is a block, which breaks it, as a block is
+/// held by one word; a cycle of only types made from others, which the checker shouldn't allow,
+/// is all blocks. A list, set, dict, closure or generator is a block of its own, so holding a type
+/// through one is no cycle. Besides those, `kept` are blocks, as are generators', closures' and
+/// `shared` types' blocks, `Table`s, which are shared until they change, and a regex's `Match`,
+/// which native code builds as a block itself; and so is a type with a field native code can only
+/// hold as a runtime value, which nothing in place takes.
+#[must_use]
+pub fn boxed_types(
+    definitions: &[(String, Written)],
+    declared: &BTreeSet<String>,
+    kept: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let defined: BTreeMap<&str, &Written> =
+        definitions.iter().map(|(name, def)| (name.as_str(), def)).collect();
+    let mut boxed: BTreeSet<String> = kept.clone();
+    for (name, def) in &defined {
+        if matches!(def, Written::Generator(_) | Written::Cell(_))
+            || name.starts_with("Table[")
+            || *name == "Match"
+        {
+            boxed.insert((*name).to_owned());
+        }
+    }
+    loop {
+        let before = boxed.len();
+        // A field held as a runtime value, now some types are blocks: a dict keyed by a block is one.
+        let unheld: Vec<String> = defined
+            .iter()
+            .filter(|(name, _)| !boxed.contains(**name))
+            .filter(|(_, def)| written_fields(def).any(|(_, ty, _)| !natively_held(ty, &defined, &boxed)))
+            .map(|(name, _)| (*name).to_owned())
+            .collect();
+        boxed.extend(unheld);
+        for cycle in cycles(&defined, &boxed) {
+            let mine: Vec<&String> = cycle.iter().filter(|name| declared.contains(*name)).collect();
+            if mine.is_empty() {
+                boxed.extend(cycle.iter().cloned());
+            } else {
+                boxed.extend(mine.into_iter().cloned());
+            }
+        }
+        if boxed.len() == before {
+            return boxed;
+        }
+    }
+}
+
+/// Whether native code holds a field of this type itself, rather than as a runtime value.
+fn natively_held(ty: &Type, defined: &BTreeMap<&str, &Written>, boxed: &BTreeSet<String>) -> bool {
+    let keyed = |key: &Type| match key {
+        Type::Int | Type::Sized(_) | Type::Float | Type::Str => true,
+        Type::Named(name) => defined.contains_key(name.as_str()) && !boxed.contains(name),
+        _ => false,
+    };
+    match ty {
+        Type::Int
+        | Type::Sized(_)
+        | Type::Float
+        | Type::Bool
+        | Type::Str
+        | Type::Bytes
+        | Type::None
+        | Type::Unit
+        | Type::Iterator(_)
+        | Type::Arrow(..) => true,
+        Type::Named(name) => Cap::named(name).is_some() || defined.contains_key(name.as_str()),
+        Type::List(item) | Type::Buffer(item) | Type::Optional(item) => natively_held(item, defined, boxed),
+        Type::Set(item) => keyed(item),
+        Type::Dict(key, value) => keyed(key) && natively_held(value, defined, boxed),
+        _ => false,
+    }
+}
+
+/// The cycles among the types that aren't blocks yet, each a strongly connected set of types each
+/// holding the next by value, a type holding itself included.
+fn cycles(defined: &BTreeMap<&str, &Written>, boxed: &BTreeSet<String>) -> Vec<Vec<String>> {
+    let names: Vec<&str> = defined.keys().copied().filter(|name| !boxed.contains(*name)).collect();
+    let number: HashMap<&str, usize> = names.iter().enumerate().map(|(at, name)| (*name, at)).collect();
+    let edges: Vec<Vec<usize>> = names
+        .iter()
+        .map(|name| {
+            defined.get(name).map_or_else(Vec::new, |def| {
+                written_fields(def)
+                    .filter_map(|(_, ty, _)| match ty {
+                        Type::Named(inner) => number.get(inner.as_str()).copied(),
+                        _ => None,
+                    })
+                    .collect()
+            })
+        })
+        .collect();
+    let mut walk = Walk {
+        edges: &edges,
+        index: vec![None; names.len()],
+        low: vec![0; names.len()],
+        stack: Vec::new(),
+        on_stack: vec![false; names.len()],
+        next: 0,
+        found: Vec::new(),
+    };
+    for at in 0..names.len() {
+        if walk.index.get(at).is_some_and(Option::is_none) {
+            walk.visit(at);
+        }
+    }
+    walk.found
+        .into_iter()
+        .map(|component| {
+            component.into_iter().filter_map(|at| names.get(at).map(|name| (*name).to_owned())).collect()
+        })
+        .collect()
+}
+
+/// Tarjan's walk for [`cycles`]: each type's place in the walk, and the earliest place it reaches.
+struct Walk<'e> {
+    edges: &'e [Vec<usize>],
+    index: Vec<Option<usize>>,
+    low: Vec<usize>,
+    stack: Vec<usize>,
+    on_stack: Vec<bool>,
+    next: usize,
+    found: Vec<Vec<usize>>,
+}
+
+impl Walk<'_> {
+    fn visit(&mut self, at: usize) {
+        let place = self.next;
+        if let (Some(index), Some(low)) = (self.index.get_mut(at), self.low.get_mut(at)) {
+            (*index, *low) = (Some(place), place);
+        }
+        self.next += 1;
+        self.stack.push(at);
+        if let Some(on) = self.on_stack.get_mut(at) {
+            *on = true;
+        }
+        let edges = self.edges;
+        for &to in edges.get(at).map_or(&[][..], Vec::as_slice) {
+            let reached = match self.index.get(to).copied().flatten() {
+                None => {
+                    self.visit(to);
+                    self.low.get(to).copied()
+                }
+                Some(index) if self.on_stack.get(to).copied().unwrap_or(false) => Some(index),
+                Some(_) => None,
+            };
+            if let (Some(reached), Some(low)) = (reached, self.low.get_mut(at)) {
+                *low = (*low).min(reached);
+            }
+        }
+        if self.low.get(at).copied() == Some(place) {
+            let mut component = Vec::new();
+            while let Some(top) = self.stack.pop() {
+                if let Some(on) = self.on_stack.get_mut(top) {
+                    *on = false;
+                }
+                component.push(top);
+                if top == at {
+                    break;
+                }
+            }
+            let holds_itself = component.len() > 1 || edges.get(at).is_some_and(|out| out.contains(&at));
+            if holds_itself {
+                self.found.push(component);
+            }
+        }
     }
 }
 

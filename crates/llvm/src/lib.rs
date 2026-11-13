@@ -187,25 +187,56 @@ pub struct Shared {
 pub fn layouts_of(program: &Program) -> Result<Layouts, String> {
     // Which named types are blocks doesn't depend on how optionals are held, so a first layout
     // with every optional as an enum says which optionals can be one word.
-    let first = laid_out(program, None);
-    let finished = laid_out(program, Some(&first));
+    let (first, finished) = if fennec_layout::types_in_place() {
+        // Which types are blocks is decided once, from the types as written, and both layouts keep
+        // to it: only a type that contains itself is a block.
+        let written = definitions_of(program, None);
+        let boxed = fennec_layout::boxed_types(&written, &declared(program), &kept_as_blocks(program));
+        let first = Layouts::from_definitions_boxing(&written, &boxed);
+        let finished = Layouts::from_definitions_boxing(&definitions_of(program, Some(&first)), &boxed);
+        if let Some(problem) = first.problem().or(finished.problem()) {
+            return Err(format!("{problem}, which is a bug in the compiler"));
+        }
+        (first, finished)
+    } else {
+        let first = laid_out(program, None);
+        let finished = laid_out(program, Some(&first));
+        (first, finished)
+    };
     agreed(program, &first, &finished)?;
     Ok(finished)
 }
 
-/// Whether the finished layout keeps what the first decided: each type a block in one is a block in
-/// the other, and each optional the program mentions, however deep, is held the same way by both.
-fn agreed(program: &Program, first: &Layouts, finished: &Layouts) -> Result<(), String> {
-    let ids = (0..first.len()).filter_map(|id| u32::try_from(id).ok());
-    for layout in ids.filter_map(|id| first.get(id)) {
-        let other = finished.id(&layout.name).and_then(|id| finished.get(id));
-        if other.is_some_and(|other| other.boxed != layout.boxed) {
-            return Err(format!(
-                "the layouts disagree on whether `{}` is a block, which is a bug in the compiler",
-                layout.name
-            ));
-        }
+/// The types the program declares, its own and the standard library's: structs, enums and errors,
+/// by where they're defined, never by their names.
+fn declared(program: &Program) -> BTreeSet<String> {
+    let structs = program.structs.iter().chain(&program.errors).map(|def| def.name.clone());
+    structs.chain(program.enums.iter().map(|def| def.name.clone())).collect()
+}
+
+/// The types kept as blocks whatever holds them, for now: errors and unions of errors, whose
+/// failures cross between tasks as blocks, and results too when `FENNEC_BOXED_RESULTS` says so.
+fn kept_as_blocks(program: &Program) -> BTreeSet<String> {
+    use fennec_check::Type;
+    let mut kept: BTreeSet<String> = program.errors.iter().map(|def| def.name.clone()).collect();
+    let results = !fennec_layout::results_in_place();
+    for ty in mentioned(program) {
+        each_type(ty, &mut |ty| match ty {
+            Type::Errors(_) => {
+                kept.insert(ty.to_string());
+            }
+            Type::Result(value, error) if results => {
+                kept.insert(format!("Result[{value}, {error}]"));
+            }
+            _ => {}
+        });
     }
+    kept
+}
+
+/// Every type a program mentions where it's held: fields, what functions give back, locals, and
+/// generators' items and slots.
+fn mentioned(program: &Program) -> Vec<&fennec_check::Type> {
     let mut mentioned: Vec<&fennec_check::Type> = Vec::new();
     for def in program.structs.iter().chain(&program.errors) {
         mentioned.extend(def.fields.iter().map(|(_, ty)| ty));
@@ -221,7 +252,55 @@ fn agreed(program: &Program, first: &Layouts, finished: &Layouts) -> Result<(), 
         mentioned.push(&def.item);
         mentioned.extend(&def.slots);
     }
-    mentioned.into_iter().try_for_each(|ty| optionals_agree(ty, first, finished))
+    mentioned
+}
+
+/// Calls `found` with a type and every type inside it, however deep.
+fn each_type(ty: &fennec_check::Type, found: &mut dyn FnMut(&fennec_check::Type)) {
+    use fennec_check::Type;
+    found(ty);
+    match ty {
+        Type::Optional(inner)
+        | Type::List(inner)
+        | Type::Buffer(inner)
+        | Type::Set(inner)
+        | Type::Iterator(inner)
+        | Type::Id(inner)
+        | Type::Table(inner)
+        | Type::Array(inner, _) => each_type(inner, found),
+        Type::Dict(a, b) | Type::Result(a, b) => {
+            each_type(a, found);
+            each_type(b, found);
+        }
+        Type::Tuple(items) | Type::Union(items) | Type::Generic(_, items) => {
+            for item in items {
+                each_type(item, found);
+            }
+        }
+        Type::Arrow(params, returns) => {
+            for param in params {
+                each_type(param, found);
+            }
+            each_type(returns, found);
+        }
+        _ => {}
+    }
+}
+
+/// Whether the finished layout keeps what the first decided: each type a block in one is a block in
+/// the other, and each optional the program mentions, however deep, is held the same way by both.
+fn agreed(program: &Program, first: &Layouts, finished: &Layouts) -> Result<(), String> {
+    let ids = (0..first.len()).filter_map(|id| u32::try_from(id).ok());
+    for layout in ids.filter_map(|id| first.get(id)) {
+        let other = finished.id(&layout.name).and_then(|id| finished.get(id));
+        if other.is_some_and(|other| other.boxed != layout.boxed) {
+            return Err(format!(
+                "the layouts disagree on whether `{}` is a block, which is a bug in the compiler",
+                layout.name
+            ));
+        }
+    }
+    mentioned(program).into_iter().try_for_each(|ty| optionals_agree(ty, first, finished))
 }
 
 /// Whether every optional in a type is one word in both layouts or in neither.
@@ -292,6 +371,12 @@ pub fn wrap_main(program: &mut Program, span: fennec_syntax::Span) {
 }
 
 fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
+    Layouts::from_definitions(&definitions_of(program, blocks))
+}
+
+/// Every type a program defines and uses, by name, as the layouts take them: `blocks` says which
+/// optionals are one word, and with none every optional is an enum.
+fn definitions_of(program: &Program, blocks: Option<&Layouts>) -> Vec<(String, Written)> {
     let fields = |fields: &[(String, fennec_check::Type)]| {
         fields.iter().map(|(name, ty)| (name.clone(), kinds::canon_in(blocks, ty), None)).collect::<Vec<_>>()
     };
@@ -366,7 +451,7 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
         .chain(generators)
         .chain(closures)
         .collect();
-    Layouts::from_definitions(&definitions)
+    definitions
 }
 
 /// The module text for this machine starts with this, or says what's missing. Each module is

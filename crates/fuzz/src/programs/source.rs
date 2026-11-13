@@ -6,9 +6,10 @@ use std::fmt::Write as _;
 
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
-    KEYS, Kept, LEDGER, Leave, Nested, Op, Place, Program, ROOMS, RefPlace, STARTING, Stmt, StreamMap,
-    StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
+    KEYS, Kept, LEDGER, Leave, Nested, Op, Place, Program, ROOMS, Reading, RefPlace, STARTING, Stmt,
+    StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
+use super::ast::{Calling, Field, FieldCall, FieldCalls, Waking, Yielding};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -538,7 +539,11 @@ pub(crate) fn source(program: &Program) -> String {
     writer.block(&program.body, 1);
     writer.line(1, "stdout.print(\"done\")");
     let tasks = if program.threadless { "" } else { TASKS };
-    format!("{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
+    // Only a `Yielded` statement's task sends back over a channel, so only a program holding one
+    // imports what that takes, and every other program is written as it always was.
+    let channels =
+        if writer.helpers.contains("Sender[") { "from std.concurrent import Sender, channel\n" } else { "" };
+    format!("{channels}{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
 }
 
 /// `streamed{id}`, the function a `Streamed` calls: its stream, made and read.
@@ -570,6 +575,55 @@ fn streamed_written(streaming: &Streaming) -> String {
     out.push('\n');
     out
 }
+
+/// `yielded{id}`, the function a `Yielded` calls, after its types, generators and task.
+fn yielded_written(yielding: &Yielding) -> String {
+    let Yielding { id, count, widths: [notes, pairs, words] } = *yielding;
+    format!(
+        "struct Note{id}:\n    text: str\n    items: list[int]\n    counts: dict[str, int]\n\n\
+         enum Word{id}:\n    Plain{id}(text: str)\n    Many{id}(items: list[int])\n\n\
+         def notes{id}(count: int, width: int) -> Iterator[Note{id}]:\n    \
+         mut kept = Note{id}(text=\"k\" * width, items=[0], counts={{\"k\": 0}})\n    for at in range(count):\n        \
+         yield Note{id}(text=str(at) + \"n\" * width, items=[at, at + 1], counts={{\"a\": at}})\n        \
+         kept.items.append(at)\n        kept.counts[\"k\"] += at\n        yield kept\n\n\
+         def pairs{id}(count: int, width: int) -> Iterator[(str, list[int])]:\n    for at in range(count):\n        \
+         yield (str(at) + \"p\" * width, [at])\n\n\
+         def words{id}(count: int, width: int) -> Iterator[Word{id}]:\n    for at in range(count):\n        \
+         if at % 2 == 0:\n            yield .Plain{id}(text=str(at) + \"w\" * width)\n        else:\n            \
+         yield .Many{id}(items=[at, at])\n\n\
+         def echoed{id}(inbox: Inbox[Note{id}], back: Sender[Note{id}]) fails Closed:\n    for note in inbox:\n        \
+         back.send(note)?\n    return\n\n\
+         def yielded{id}(stdout: Stdout) fails Crashed | Closed | Timeout:\n    mut got = list[Note{id}]()\n    \
+         for note in notes{id}({count}, width={notes}):\n        got.append(note)\n    for note in got:\n        \
+         stdout.print(\"note\", note)\n    mut firsts = list[(str, list[int])]()\n    \
+         for pair in pairs{id}({count}, width={pairs}):\n        firsts.append(pair)\n    stdout.print(\"pairs\", firsts)\n    \
+         for word in words{id}({count}, width={words}):\n        match word:\n            case .Plain{id}(text):\n                \
+         stdout.print(\"plain\", text)\n            case .Many{id}(items):\n                stdout.print(\"many\", items)\n    \
+         with channel[Note{id}](size=64) as replies:\n        back = replies.sender()\n        \
+         with launch((inbox) => echoed{id}(inbox, back)?)? as sends:\n            for note in got:\n                \
+         sends.send(note)?\n        for _ in range(len(got)):\n            note = replies.receive() else break\n            \
+         stdout.print(\"back\", note)\n    return\n\n"
+    )
+}
+
+/// `woken{id}`, the function a `Woken` calls, after the task it launches.
+fn woken_written(waking: &Waking) -> String {
+    let Waking { id, count, at, failing, .. } = *waking;
+    let leaving = if failing { "fail Refused(code=number)" } else { "_ = [1][number - at + 1]" };
+    format!(
+        "def answering{id}(inbox: Inbox[int], back: Sender[int], at: int) fails Closed | Refused:\n    \
+         for number in inbox:\n        if number == at:\n            {leaving}\n        back.send(number * 2)?\n    \
+         return\n\n\
+         def woken{id}(stdout: Stdout) fails Crashed | Closed | Timeout | Refused:\n    \
+         with channel[int](size=1) as replies:\n        back = replies.sender()\n        \
+         with launch((inbox) => answering{id}(inbox, back, at={at})?)? as sends:\n            \
+         for number in range({count}):\n                sends.send(number)?\n                \
+         got = replies.receive() else break\n                stdout.print(\"got\", got)\n    return\n\n"
+    )
+}
+
+/// A piece of text past the 23 bytes a str holds in place, with letters past ASCII.
+pub(crate) const LONG_PIECE: &str = "a piece of text past 23 bytes, é and 🦊, ";
 
 /// A list of ints as Fennec writes one.
 fn ints_written(items: &[i64]) -> String {
@@ -673,18 +727,36 @@ fn aliased_written(aliasing: &Aliasing) -> String {
     let held = aliasing.names();
     let changed: Vec<usize> = steps
         .iter()
-        .filter_map(|step| if let Alias::Written { to, .. } = step { Some(*to) } else { None })
+        .filter_map(|step| match step {
+            Alias::Written { to, .. } | Alias::Read { from: to, how: Reading::Replaced, .. } => Some(*to),
+            _ => None,
+        })
         .collect();
     let mutable =
         |n: usize| if n == TABLE || n == LEDGER || n == ROOMS || changed.contains(&n) { "mut " } else { "" };
     let mut out = format!(
         "struct Ledger{id}:\n    points: Table[Point]\n    count: int\n\nstruct Room{id}:\n    counts: dict[str, \
-         int]\n    label: str\n\n"
+         int]\n    label: str\n\n    def labeled(ref self, first: str, second: str):\n        self.label += first + \
+         second\n\n"
     );
     if steps.iter().any(|step| matches!(step, Alias::Written { how: Writing::Ref, .. })) {
         let _ = write!(
             out,
             "def poked{id}(ref items: list[int], n: int):\n    items.append(n)\n    items[0] += n\n    return\n\n"
+        );
+    }
+    if steps.iter().any(|step| matches!(step, Alias::Read { how: Reading::Returned, .. })) {
+        let _ = write!(
+            out,
+            "def first_over{id}(table: Table[Point], n: int) -> Point?:\n    for point in table:\n        if point.x > n:\n            \
+             return point\n    return None\n\n"
+        );
+    }
+    if steps.iter().any(|step| matches!(step, Alias::Read { how: Reading::Failed, .. })) {
+        let _ = write!(
+            out,
+            "def refused_over{id}(table: Table[Point], n: int) -> int fails Refused:\n    mut total = 0\n    for point in table:\n        \
+             if point.x > n:\n            fail Refused(code=point.x)\n        total += point.y\n    return total\n\n"
         );
     }
     let mut handed: Vec<&str> = Vec::new();
@@ -786,6 +858,22 @@ fn aliased_written(aliasing: &Aliasing) -> String {
                     held.get(from).copied().unwrap_or(Held::Counts),
                 ));
             }
+            Alias::Read { from, how, n } => {
+                let kind = held.get(from).copied().unwrap_or(Held::Table);
+                let name = alias_name(from);
+                let table = if kind == Held::Ledger { format!("{name}.points") } else { name };
+                if how == Reading::Kept {
+                    let kept = alias_name(made);
+                    made += 1;
+                    let _ = write!(
+                        out,
+                        "    mut {kept} = Point(x=0, y=0)\n    for point in {table}:\n        if point.x >= {n}:\n            \
+                         {kept} = point\n"
+                    );
+                } else {
+                    out.push_str(&read_written(*id, &table, kind == Held::Rooms, how, n, s));
+                }
+            }
             Alias::Drained { from, at, n } => {
                 let fresh = fresh_written(held.get(from).copied().unwrap_or(Held::Counts), n);
                 let _ = writeln!(
@@ -834,6 +922,40 @@ fn entry_written(at: usize) -> &'static str {
 
 fn room_written(at: usize) -> &'static str {
     if at == 0 { "room_a" } else { "room_b" }
+}
+
+/// A `Read` step's loop over `table`, a table of rooms when `rooms`, read as `how`, as step `s`
+/// of `aliased{id}`. `Reading::Kept` is written where it makes its name.
+fn read_written(id: usize, table: &str, rooms: bool, how: Reading, n: i64, s: usize) -> String {
+    match (rooms, how) {
+        (true, Reading::Broken) => format!(
+            "    mut total{s} = 0\n    for room in {table}:\n        if sum(room.counts.values()) > {n}:\n            break\n        \
+             total{s} += len(room.label)\n    stdout.print(\"broke\", total{s})\n"
+        ),
+        (true, _) => format!(
+            "    mut total{s} = 0\n    for room in {table}:\n        total{s} += sum(room.counts.values()) + len(room.label)\n    \
+             stdout.print(\"read\", total{s})\n"
+        ),
+        (false, Reading::Replaced) => format!(
+            "    mut spare{s} = {table}\n    for ref point in spare{s}:\n        point.y += 0\n    mut swapped{s} = False\n    \
+             for point in {table}:\n        if not swapped{s}:\n            {table} = spare{s}\n            swapped{s} = True\n        \
+             stdout.print(\"item\", point.x, point.y)\n"
+        ),
+        (false, Reading::Broken) => format!(
+            "    mut total{s} = 0\n    for point in {table}:\n        if point.x > {n}:\n            break\n        total{s} += \
+             point.y + 1\n    stdout.print(\"broke\", total{s})\n"
+        ),
+        (false, Reading::Returned) => format!(
+            "    found{s} = first_over{id}({table}, n={n}) else Point(x=-1, y=-1)\n    stdout.print(\"first\", found{s})\n"
+        ),
+        (false, Reading::Failed) => format!(
+            "    got{s} = refused_over{id}({table}, n={n}) except Refused(): -1\n    stdout.print(\"refused\", got{s})\n"
+        ),
+        (false, _) => format!(
+            "    mut total{s} = 0\n    for point in {table}:\n        total{s} += point.x * 3 + point.y\n    \
+             stdout.print(\"read\", total{s})\n"
+        ),
+    }
 }
 
 /// A fresh value for a dict holding `held`, made from `n`.
@@ -907,6 +1029,7 @@ fn written_change(id: usize, to: &str, held: Held, (how, at, n): (Writing, usize
         (Held::Counts, _) => format!("    {to}[\"{key}\"] += {n}\n"),
         (Held::Rooms, Writing::Set) => format!("    {to}[{room}].counts[\"b\"] = {n}\n"),
         (Held::Rooms, Writing::Field) => format!("    {to}[{room}].label += \"q{n}\"\n"),
+        (Held::Rooms, Writing::Method) => format!("    {to}[{room}].labeled(\"a{n}\", second=\"é{n}\")\n"),
         (Held::Rooms, Writing::PutBack) => format!(
             "    mut taken{s} = {to}[{room}]\n    taken{s}.counts[\"a\"] += {n}\n    {to}[{room}] = taken{s}\n"
         ),
@@ -930,6 +1053,9 @@ fn written_change(id: usize, to: &str, held: Held, (how, at, n): (Writing, usize
         (Held::Point, _) => format!("    {to}.moved({n})\n"),
         (Held::Text, Writing::Added) => format!("    {to} += \"q{n}\"\n"),
         (Held::Text, Writing::Formatted) => format!("    {to} = f\"{{{to}}}r{n}\"\n"),
+        (Held::Text, Writing::Chained) => format!("    {to} = {to} + \"a{n}\" + {to}\n"),
+        (Held::Text, Writing::Summed) => format!("    {to} += \"b{n}\" + {to} + \"ç\"\n"),
+        (Held::Text, Writing::Long) => format!("    {to} += \"{LONG_PIECE}{n}\"\n"),
         (Held::Text, _) => format!("    {to} = {to} + \"p{n}\"\n"),
     }
 }
@@ -951,10 +1077,14 @@ fn constants_written(constants: &Constants) -> String {
         "def used{id}(n: int) -> str:\n    mut bin = Bin{id}()\n    bin.pushed(n)\n    top = bin.top()\n    mut mine = \
          NUMBERS{id}\n    mine.append(n)\n    mine[0] = n\n    mut spot = SPOT{id}\n    spot.moved(n)\n    mut counts = \
          COUNTS{id}\n    counts[\"m\"] = n\n    return f\"{{top}} {{len(bin.items)}} {{bin.counts}} {{bin.numbers}} {{mine}} \
-         {{spot}} {{counts}} {{len(NOTHING{id})}} {{NUMBERS{id}}} {{COUNTS{id}}} {{SPOT{id}}}\"\n\ndef tasked{id}(stdout: \
-         Stdout):\n    stdout.print(\"task\", used{id}(2))\n    return\n\n"
+         {{spot}} {{counts}} {{len(NOTHING{id})}} {{NUMBERS{id}}} {{COUNTS{id}}} {{SPOT{id}}}\"\n\nstruct Said{id}:\n    \
+         texts: list[str]\n\ndef tasked{id}(said: shared Said{id}):\n    text = used{id}(2)\n    lock said as ref held:\n        \
+         held.texts.append(text)\n    return\n\n"
     );
     let _ = writeln!(out, "def constants{id}(stdout: Stdout) fails Crashed:");
+    // The task hands back what it worked out rather than printing it, so what's checked is what
+    // it saw, whatever order the threads' output comes in.
+    let _ = writeln!(out, "    shared said = Said{id}(texts=list[str]())");
     for _ in 0..reads {
         let _ = writeln!(
             out,
@@ -964,7 +1094,10 @@ fn constants_written(constants: &Constants) -> String {
     if main_first {
         let _ = writeln!(out, "    stdout.print(\"main\", used{id}(1))");
     }
-    let launched = format!("    with launch(() => tasked{id}(stdout))?:\n        pass\n");
+    let launched = format!(
+        "    with launch(() => tasked{id}(said))?:\n        pass\n    lock said as held:\n        for text in held.texts:\n            \
+         stdout.print(\"task\", text)\n"
+    );
     let parallel = format!(
         "    for line in [used{id}(i) for i in parallel(range(3))]:\n        stdout.print(\"parallel\", line)\n"
     );
@@ -980,6 +1113,108 @@ fn constants_written(constants: &Constants) -> String {
         "    stdout.print(\"after\", used{id}(3), NUMBERS{id}, COUNTS{id}, len(NOTHING{id}))\n    return\n"
     );
     out
+}
+
+/// `fielded{id}`, the function a `FieldCalls` calls, after its struct and the functions its
+/// calls go to: each `+=` made, the field printed after it, then the struct and its `shared`
+/// one printed.
+fn field_calls_written(calls: &FieldCalls) -> String {
+    let FieldCalls { id, base, steps } = calls;
+    let mut out = format!(
+        "struct Box{id}:\n    text: str\n    count: int\n    items: list[int]\n\n\
+         def told{id}(stdout: Stdout, n: int) -> int:\n    stdout.print(\"told\", n)\n    return n\n\n\
+         def said{id}(stdout: Stdout, n: int) -> str:\n    stdout.print(\"said\", n)\n    return f\"s{{n}}\"\n\n\
+         def given{id}(stdout: Stdout, n: int) -> list[int]:\n    stdout.print(\"given\", n)\n    return [n, n]\n\n\
+         def capped_count{id}(n: int) -> int fails Refused:\n    if n > 5:\n        fail Refused(code=n)\n    return n\n\n\
+         def capped_text{id}(n: int) -> str fails Refused:\n    if n > 5:\n        fail Refused(code=n)\n    return f\"c{{n}}\"\n\n\
+         def capped_items{id}(n: int) -> list[int] fails Refused:\n    if n > 5:\n        fail Refused(code=n)\n    return [n]\n\n\
+         def peeked_count{id}(stdout: Stdout, other: Box{id}) -> int:\n    stdout.print(\"peek\", other.count)\n    return other.count\n\n\
+         def peeked_text{id}(stdout: Stdout, other: Box{id}) -> str:\n    stdout.print(\"peek\", other.text)\n    return other.text\n\n\
+         def peeked_items{id}(stdout: Stdout, other: Box{id}) -> list[int]:\n    stdout.print(\"peek\", other.items)\n    return other.items\n\n"
+    );
+    for (s, step) in steps.iter().enumerate() {
+        if step.call == Calling::Failed {
+            let (field, _) = field_names(step.field);
+            let _ = write!(
+                out,
+                "def failed{id}_{s}(ref box: Box{id}, n: int) fails Refused:\n    box.{field} += {}capped_{field}{id}(n)?\n    return\n\n",
+                plus_written(step.field, step.plus, step.n)
+            );
+        }
+    }
+    let _ = write!(
+        out,
+        "def fielded{id}(stdout: Stdout):\n    mut box = Box{id}(text=\"t{base}\", count={base}, items=[{base}])\n    \
+         shared kept = Box{id}(text=\"k\", count=0, items=list[int]())\n"
+    );
+    for (s, step) in steps.iter().enumerate() {
+        let FieldCall { field, call, plus, n } = *step;
+        let (name, _) = field_names(field);
+        let plus = plus_written(field, plus, n);
+        let maker = match field {
+            Field::Count => "told",
+            Field::Text => "said",
+            Field::Items => "given",
+        };
+        match call {
+            Calling::Printed => {
+                let _ = writeln!(out, "    box.{name} += {plus}{maker}{id}(stdout, {n})");
+            }
+            Calling::Failed => {
+                let _ = writeln!(
+                    out,
+                    "    failed{id}_{s}(ref box, n={n}) except Refused():\n        stdout.print(\"refused\")"
+                );
+            }
+            Calling::Copied => {
+                let _ = writeln!(
+                    out,
+                    "    snap{s} = box\n    box.{name} += {plus}peeked_{name}{id}(stdout, snap{s})"
+                );
+            }
+            Calling::Listed => {
+                let _ = writeln!(
+                    out,
+                    "    held{s} = [box]\n    box.{name} += {plus}peeked_{name}{id}(stdout, held{s}[0])"
+                );
+            }
+            Calling::Closure => {
+                let _ = writeln!(out, "    look{s} = () => box.{name}\n    box.{name} += {plus}look{s}()");
+            }
+            Calling::Shared => {
+                let _ = writeln!(
+                    out,
+                    "    lock kept as ref held:\n        held.{name} += {plus}{maker}{id}(stdout, {n})"
+                );
+            }
+        }
+        if call != Calling::Shared {
+            let _ = writeln!(out, "    stdout.print(\"now\", box.{name})");
+        }
+    }
+    out.push_str("    stdout.print(\"box\", box)\n    lock kept as held:\n        stdout.print(\"kept\", held)\n    return\n\n");
+    out
+}
+
+/// A field's name, and the kind its calls make.
+const fn field_names(field: Field) -> (&'static str, &'static str) {
+    match field {
+        Field::Text => ("text", "str"),
+        Field::Count => ("count", "int"),
+        Field::Items => ("items", "list[int]"),
+    }
+}
+
+/// The `a + ` before the call on a `+=`'s right side, when it has one.
+fn plus_written(field: Field, plus: bool, n: i64) -> String {
+    if !plus {
+        return String::new();
+    }
+    match field {
+        Field::Text => format!("\"a{n}\" + "),
+        Field::Count => format!("{n} + "),
+        Field::Items => format!("[{n}] + "),
+    }
 }
 
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
@@ -1633,6 +1868,34 @@ impl Writer {
             Stmt::Streamed(streaming) => {
                 let _ = write!(self.helpers, "{}", streamed_written(streaming));
                 self.line(indent, &format!("streamed{}(stdout)", streaming.id));
+            }
+            Stmt::Woken(waking) => {
+                let _ = write!(self.helpers, "{}", woken_written(waking));
+                self.line(indent, &format!("for _ in range({}):", waking.rounds));
+                let indent = indent + 1;
+                self.line(indent, &format!("woken{}(stdout) except why:", waking.id));
+                for (case, then) in [
+                    ("Crashed()", "stdout.print(\"crashed\")"),
+                    ("Closed()", "stdout.print(\"closed\")"),
+                    ("Timeout()", "stdout.print(\"timeout\")"),
+                    ("Refused(code=code)", "stdout.print(\"refused\", code)"),
+                ] {
+                    self.line(indent + 1, &format!("case {case}:"));
+                    self.line(indent + 2, then);
+                }
+            }
+            Stmt::Yielded(yielding) => {
+                let _ = write!(self.helpers, "{}", yielded_written(yielding));
+                self.handled(
+                    indent,
+                    &format!("yielded{}(stdout)", yielding.id),
+                    &["Crashed", "Closed", "Timeout"],
+                    "stdout.print(\"crashed\")",
+                );
+            }
+            Stmt::FieldCalls(calls) => {
+                let _ = write!(self.helpers, "{}", field_calls_written(calls));
+                self.line(indent, &format!("fielded{}(stdout)", calls.id));
             }
             Stmt::Constants(constants) => {
                 let _ = write!(self.helpers, "{}", constants_written(constants));

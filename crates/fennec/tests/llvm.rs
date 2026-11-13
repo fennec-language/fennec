@@ -10695,6 +10695,27 @@ fn a_field_changed_with_any_argument_is_never_copied() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A list or dict that starts as a shared empty constant, as json's reader and writer start
+/// theirs, is made anew the first time it's written, with nothing copied and no copy counted, and
+/// the constant stays empty. Each write counted a copy of nothing, 2,537 in `api_handler`.
+#[test]
+fn a_shared_empty_list_or_dict_written_once_copies_nothing() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "NO_ITEMS = list[int]()\nNO_TAGS = dict[str, int]()\n\nstruct Holder:\n    items = NO_ITEMS\n    tags = NO_TAGS\n\ndef main(stdout: Stdout):\n    mut total = 0\n    for i in range(50):\n        mut holder = Holder()\n        holder.items.append(i)\n        holder.tags[\"a\"] = i\n        total += len(holder.items) + len(holder.tags) + holder.items[0]\n    stdout.print(total, len(NO_ITEMS), len(NO_TAGS))\n    return\n";
+    let dir = folder("shared_empty_written")?;
+    std::fs::write(dir.join("shared_empty_written.fen"), source)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "shared_empty_written", how)?;
+        assert_eq!(printed, "1325 0 0\n", "{how:?}");
+        assert_eq!(count(&counts, "copies"), Some(0), "{how:?}: {counts}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what
 /// changes it next finds the list with one owner: a `ref` function changing the items, then a
 /// plain loop reading them, round after round, copies nothing.

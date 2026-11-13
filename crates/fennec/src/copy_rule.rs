@@ -21,7 +21,7 @@ pub(crate) fn implicit_copies(
         return problems;
     }
     let lowered = fennec_ir::lower(module, signatures);
-    let findings = fennec_ir::costs(&lowered);
+    let findings = crate::copies::without_what_changes_in_place(fennec_ir::costs(&lowered), &lowered);
     let keys: Vec<String> = hot.iter().map(|(key, _)| key.clone()).collect();
     let reach = fennec_ir::reached_from_hot(&lowered, &keys);
     problems.extend(fennec_lint::hot_costs(&findings, &reach));
@@ -108,6 +108,15 @@ fn copies_made(
             } else {
                 format!("`{}`, which `@hot` `{root}` calls", key(&copy.function))
             };
+            if copy.why == fennec_llvm::CopyWhy::Sent {
+                let message = format!(
+                    "{} is copied as it's sent in {whose}, since the receiving end may be on another thread",
+                    crate::copies::sent(&copy.from)
+                );
+                return Some(Diagnostic::new(message, copy.span).with_help(
+                    "send what holds no block, like an int or a struct of numbers, or take `@hot` off",
+                ));
+            }
             let message = format!(
                 "what this reads out of `{}` is copied to change it in {whose}, since `{}` may be read before it goes back",
                 copy.from, copy.from

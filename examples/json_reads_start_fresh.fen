@@ -4,7 +4,6 @@
 # read kept can reach the next, however the first went.
 from std import json
 from std.collections import Id, Table
-from std.concurrent import Crashed
 
 struct Inner:
     n: int
@@ -68,16 +67,23 @@ test "the Tables one write found don't reach the next"():
         assert with_ids.find("\"target\": 0") is not None
         assert json.dumps(World()) == "{\"units\": [], \"selected\": []}"
 
-## Each of the reads above, twice, in a task of its own: a program that runs tasks shares its
-## constants between them too.
+## Each of the reads above, twice, failing if one doesn't start fresh: a task runs this, and a
+## program that runs tasks shares its constants between them too.
 def read_twice() fails ParseError:
     for _ in range(2):
-        assert (
-            failure(() => json.loads[int]("\"x\"")?) == "the text should be an int, but it's a str"
+        explained = failure(() => json.loads[int]("\"x\"")?)
+        units = len(json.loads[World](two_units())?.units)
+        lone = failure(() => json.loads[Id[Unit]]("0")?)
+        both = json.loads[Pair]("{\"both\": [3, \"c\"]}")?.both
+        fresh = (
+            explained == "the text should be an int, but it's a str"
+            and units == 2
+            and lone != "loaded"
+            and both == (3, "c")
         )
-        assert len(json.loads[World](two_units())?.units) == 2
-        assert failure(() => json.loads[Id[Unit]]("0")?) != "loaded"
-        assert json.loads[Pair]("{\"both\": [3, \"c\"]}")?.both == (3, "c")
+        if not fresh:
+            fail ParseError(message="a read in a task didn't start fresh", line=0, column=0)
+    return
 
 test "reads in tasks start fresh too"():
     for _ in range(2):

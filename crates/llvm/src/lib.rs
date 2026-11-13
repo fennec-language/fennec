@@ -191,7 +191,8 @@ pub fn layouts_of(program: &Program) -> Result<Layouts, String> {
         // Which types are blocks is decided once, from the types as written, and both layouts keep
         // to it: only a type that contains itself is a block.
         let written = definitions_of(program, None);
-        let boxed = fennec_layout::boxed_types(&written, &declared(program), &kept_as_blocks(program));
+        let boxed =
+            fennec_layout::boxed_types(&written, &declared(program), &kept_as_blocks(program, &written));
         let first = Layouts::from_definitions_boxing(&written, &boxed);
         let finished = Layouts::from_definitions_boxing(&definitions_of(program, Some(&first)), &boxed);
         if let Some(problem) = first.problem().or(finished.problem()) {
@@ -216,9 +217,22 @@ fn declared(program: &Program) -> BTreeSet<String> {
 
 /// The types kept as blocks whatever holds them, for now: errors and unions of errors, whose
 /// failures cross between tasks as blocks, and results too when `FENNEC_BOXED_RESULTS` says so.
-fn kept_as_blocks(program: &Program) -> BTreeSet<String> {
+fn kept_as_blocks(program: &Program, written: &[(String, Written)]) -> BTreeSet<String> {
     use fennec_check::Type;
-    let mut kept: BTreeSet<String> = program.errors.iter().map(|def| def.name.clone()).collect();
+    // An error is known by its notes, whether the program or the standard library defines it.
+    let notes = |fields: &[fennec_layout::WrittenField]| {
+        fields.iter().any(|(name, ..)| name == fennec_rt::packed::NOTES)
+    };
+    let mut kept: BTreeSet<String> = written
+        .iter()
+        .filter(|(_, def)| match def {
+            Written::Struct(fields) => notes(fields),
+            Written::Enum(cases) => cases.iter().any(|(_, fields)| notes(fields)),
+            Written::Generator(_) | Written::Cell(_) => false,
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    kept.extend(program.errors.iter().map(|def| def.name.clone()));
     let results = !fennec_layout::results_in_place();
     for ty in mentioned(program) {
         each_type(ty, &mut |ty| match ty {

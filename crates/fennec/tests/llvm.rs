@@ -23496,6 +23496,66 @@ def main(stdout: Stdout):
     )
 }
 
+/// An error and a struct holding a `str?`, each held as `X?` in another struct, compared, printed and
+/// handed to a task and back: one layout, so a field and a local hold each the same way, where the
+/// first layout held them in place and the finished one as blocks. The counts are as pinned: the
+/// copies and blocks made converting between the two ways are gone.
+#[test]
+fn an_error_and_a_struct_holding_a_str_optional_are_held_one_way_everywhere() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "optional_texts_one_way",
+        OPTIONAL_TEXTS_ONE_WAY,
+        "Inner(label=\"a label long enough for a block 1\", note=None) True Lost(place=\"a place long enough for a block 2\", hint=None) True\nInner(label=\"a label long enough for a block 3\", note=None) None Lost(place=\"a place long enough for a block 2\", hint=None) True True 3\n",
+    )?;
+    assert_eq!(
+        counts_of("optional_texts_one_way_counts", OPTIONAL_TEXTS_ONE_WAY)?,
+        "copies 29 copied_bytes 1968 largest_copy 88 allocations 94 allocated_bytes 6440 live 0"
+    );
+    Ok(())
+}
+
+const OPTIONAL_TEXTS_ONE_WAY: &str = r#"error Lost:
+    place: str
+    hint: str?
+
+struct Inner:
+    label: str
+    note: str?
+
+struct Holder:
+    maybe: Inner?
+    why: Lost?
+    count: int
+
+def made(n: int) -> Holder:
+    inner = Inner(label=f"a label long enough for a block {n}", note=f"a note long enough for a block {n}" if n % 2 == 0 else None)
+    lost = Lost(place=f"a place long enough for a block {n}", hint=None if n % 2 == 0 else f"a hint long enough for a block {n}")
+    return Holder(maybe=inner, why=lost, count=n)
+
+def put(out: shared list[Holder], holder: Holder):
+    lock out as ref held:
+        held.append(holder)
+    return
+
+def main(stdout: Stdout):
+    noise = [made(n + 10) for n in range(3)]
+    holders = [made(n) for n in range(4)]
+    first = holders[1].maybe else return
+    stdout.print(first, first == made(1).maybe, holders[2].why, holders[2].why == made(2).why)
+    shared out = list[Holder]()
+    for at in [3, 2]:
+        given = holders[at]
+        with launch(() => put(out, given)):
+            pass
+    lock out as held:
+        kept = held[0].maybe else return
+        stdout.print(kept, kept.note, held[1].why, held[0] == holders[3], held[1] == holders[2], len(noise))
+    return
+"#;
+
 /// `==` and `!=` on an optional string, against a string, another optional string or `None`:
 /// short and long strings, and `None`, whose header is all zero, on either side.
 #[test]

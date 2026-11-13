@@ -169,7 +169,14 @@ impl Diagnostic {
         let (line_number, line_start) = line_of(start);
         let line_end =
             source.get(start..).and_then(|rest| rest.find('\n')).map_or(source.len(), |at| start + at);
-        let line = source.get(line_start..line_end).unwrap_or("");
+        // A character that changes the direction text is shown in is shown as U+FFFD, so the line
+        // is printed as it reads and the carets stay under what they point at.
+        let line: String = source
+            .get(line_start..line_end)
+            .unwrap_or("")
+            .chars()
+            .map(|c| if crate::lexer::HIDDEN_DIRECTION.contains(&c) { '\u{fffd}' } else { c })
+            .collect();
         let column = source.get(line_start..start).map_or(0, |text| text.chars().count());
         let end = usize::try_from(self.span.end).unwrap_or(start).clamp(start, line_end);
         let width = source.get(start..end).map_or(1, |text| text.chars().count()).max(1);

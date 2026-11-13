@@ -518,12 +518,7 @@ fn release_planned_holds(
     lent_owners: &mut HashMap<u64, i64, BuildHasherDefault<super::AddressHasher>>,
     freeing: &mut Freeing<'_>,
 ) {
-    for child in holds.blocks_in(fields).filter(|child| *child != 0) {
-        release_planned_child(blocks, lent, lent_owners, freeing, child);
-    }
-    for child in holds.texts_in(fields).filter(|child| *child != 0) {
-        release_planned_child(blocks, lent, lent_owners, freeing, child);
-    }
+    holds.each_block(fields, &mut |child| release_planned_child(blocks, lent, lent_owners, freeing, child));
 }
 
 /// Gives up one owner of a block a struct or enum held, queueing it to be freed if that was the

@@ -651,7 +651,7 @@ impl Expr {
             && matches!(kind, StmtKind::Continue | StmtKind::Break | StmtKind::Return(_) | StmtKind::Fail(_))
     }
 
-    /// The block an `else:` or `else as name:` holds, with the name it gives the failure, when this
+    /// The block an `else:` or `except name:` holds, with the name it gives the failure, when this
     /// is what one parsed to: one case, over a value nothing wrote. The block leaves, or its last
     /// line is the value. `else continue`, `else return` and `else fail` are blocks of one line.
     pub fn else_block(&self) -> Option<(Option<&str>, &[Stmt])> {
@@ -676,7 +676,7 @@ impl Expr {
         }
     }
 
-    /// The name `else as name:` gives the failure and the block it holds, when this is what one
+    /// The name `except name:` gives the failure and the block it holds, when this is what one
     /// parsed to.
     pub fn failure_named(&self) -> Option<(&str, &[Stmt])> {
         match self.else_block()? {

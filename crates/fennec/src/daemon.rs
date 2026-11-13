@@ -792,6 +792,7 @@ mod unix {
 
     /// What came of sending a request, which here is always that there's no daemon.
     pub(super) enum Reply {
+        #[expect(dead_code, reason = "no daemon runs here to answer, but `fennec daemon` names it")]
         Answered(Outcome),
         Unreached,
     }

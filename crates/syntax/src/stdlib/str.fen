@@ -61,16 +61,14 @@ extend str:
 
     ## The text without `prefix` at its start, or as it is if it doesn't start with it.
     def removeprefix(self, prefix: str) -> str:
-        if not self.startswith(prefix):
-            return self
+        if not self.startswith(prefix): return self
         # The prefix's bytes end where one of the text's characters does, as a string's bytes start
         # with a character's first, so the rest is cut by bytes, with no characters counted.
         return text_part(self, text_size(prefix), text_size(self))
 
     ## The text without `suffix` at its end, or as it is if it doesn't end with it.
     def removesuffix(self, suffix: str) -> str:
-        if suffix == "" or not self.endswith(suffix):
-            return self
+        if suffix == "" or not self.endswith(suffix): return self
         # The suffix's bytes start where one of the text's characters does, as a string's bytes
         # start with a character's first, so the text is cut by bytes, with no characters counted.
         return text_part(self, 0, text_size(self) - text_size(suffix))

@@ -398,3 +398,47 @@ fn a_channel_found_and_kept_is_gone_once_it_s_freed() {
     assert_eq!(channel_receive(channel, FOREVER, &mut got), CLOSED);
     finish();
 }
+
+/// The channels the freed-while-kept test's task uses: the one it finds and keeps, one to say it
+/// has, and one to be told it's been freed. Then what a send on the kept one came to.
+static KEPT: AtomicI64 = AtomicI64::new(0);
+static READY: AtomicI64 = AtomicI64::new(0);
+static GO: AtomicI64 = AtomicI64::new(0);
+static AFTER_FREE: AtomicI64 = AtomicI64::new(-1);
+
+/// Finds and keeps a channel by receiving from it, says so, waits to be told it's been freed on
+/// another thread, then sends on it.
+extern "C" fn keeps_then_sends(_env: i64, _thread: i64) -> i64 {
+    let (kept, ready, go) =
+        (KEPT.load(Ordering::SeqCst), READY.load(Ordering::SeqCst), GO.load(Ordering::SeqCst));
+    let mut value = 0;
+    if channel_receive(kept, PATIENCE, &mut value) != DONE || channel_send(ready, 1, 0, PATIENCE) != DONE {
+        return 0;
+    }
+    if channel_receive(go, PATIENCE, &mut value) == DONE {
+        AFTER_FREE.store(channel_send(kept, 9, 0, PATIENCE), Ordering::SeqCst);
+    }
+    0
+}
+
+/// A channel another thread found and keeps to find again, freed on this one, is closed to that
+/// thread's next send: it never reaches the freed channel.
+#[test]
+fn a_channel_freed_while_another_thread_keeps_it_is_closed_to_that_thread() {
+    begin();
+    let (kept, ready, go) = (channel_new(2), channel_new(2), channel_new(2));
+    KEPT.store(kept, Ordering::SeqCst);
+    READY.store(ready, Ordering::SeqCst);
+    GO.store(go, Ordering::SeqCst);
+    let task = launch(keeps_then_sends);
+    assert_eq!(channel_send(kept, 1, 0, PATIENCE), DONE);
+    let mut value = 0;
+    assert_eq!(channel_receive(ready, PATIENCE, &mut value), DONE, "the task found it");
+    channel_free(kept);
+    assert_eq!(channel_send(go, 1, 0, PATIENCE), DONE);
+    assert_eq!(end(task), 0);
+    assert_eq!(AFTER_FREE.load(Ordering::SeqCst), CLOSED);
+    channel_free(ready);
+    channel_free(go);
+    finish();
+}

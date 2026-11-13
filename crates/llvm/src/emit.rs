@@ -283,6 +283,16 @@ pub fn strip_facts(on: bool) {
     FACTS_STRIPPED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether builds check proofs, as [`check_proofs`] last said.
+pub(crate) fn proofs_checked() -> bool {
+    PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Whether builds leave out the facts, as [`strip_facts`] last said.
+pub(crate) fn facts_stripped() -> bool {
+    FACTS_STRIPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,

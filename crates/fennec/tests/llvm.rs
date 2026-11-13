@@ -10629,6 +10629,36 @@ def main(stdout: Stdout):
 
 /// `json.dumps` of plain structs, lists, strings and ints, and `json.loads` reading a struct, a
 /// list of plain structs, and failing on bad text, as pinned.
+/// `json.dumps` writes into one text that grows in place, so writing twice as many items does
+/// about twice the work, counted, not timed: each int's text was added to the writer's straight
+/// from `str(value)`, which copied the whole text each time, so it allocated twice per item.
+#[test]
+fn json_dumps_grows_its_text_in_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let allocated = |count: usize| -> std::io::Result<(u64, u64)> {
+        let source = format!(
+            "from std import json\n\ndef main(stdout: Stdout):\n    items = [at for at in range({count})]\n    stdout.print(len(json.dumps(items)))\n    return\n"
+        );
+        let said = counts_of(&format!("json_dumps_linear_{count}"), &source)?;
+        let number = |name: &str| {
+            let mut words = said.split(' ');
+            words.by_ref().find(|word| *word == name);
+            words.next().and_then(|word| word.parse::<u64>().ok()).unwrap_or(u64::MAX)
+        };
+        Ok((number("allocations"), number("allocated_bytes")))
+    };
+    let (small, small_bytes) = allocated(10_000)?;
+    let (big, big_bytes) = allocated(40_000)?;
+    // A handful, whatever the count: the list, the text and its few regrowths.
+    assert!(small < 100 && big < 100, "{small} and {big} allocations");
+    // Four times the items, at most about four times the bytes, where copying the text for each
+    // item made it sixteen times.
+    assert!(big_bytes < small_bytes * 6, "{small_bytes} bytes, then {big_bytes}");
+    Ok(())
+}
+
 #[test]
 fn json_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -11469,12 +11499,26 @@ fn measured(peak: Option<u64>) -> Option<u64> {
 
 /// What a program printed, and the most memory it held, where `/usr/bin/time` can say.
 fn with_peak_memory(executable: &Path, dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
+    peak_memory_of(executable, &[], dir)
+}
+
+/// What a command printed, given `args` and run with `dir` as its folder and its Fennec home,
+/// and the most memory it held, where `/usr/bin/time` can say.
+fn peak_memory_of(program: &Path, args: &[&str], dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
     let time = Path::new("/usr/bin/time");
     let flag = if cfg!(target_os = "macos") { "-l" } else { "-v" };
     if cfg!(windows) || !time.exists() {
-        return Ok((Command::new(executable).current_dir(dir).output_within()?, None));
+        let ran =
+            Command::new(program).args(args).current_dir(dir).env("FENNEC_HOME", dir).output_within()?;
+        return Ok((ran, None));
     }
-    let ran = Command::new(time).arg(flag).arg(executable).current_dir(dir).output_within()?;
+    let ran = Command::new(time)
+        .arg(flag)
+        .arg(program)
+        .args(args)
+        .current_dir(dir)
+        .env("FENNEC_HOME", dir)
+        .output_within()?;
     let said = String::from_utf8_lossy(&ran.stderr);
     let peak = said.lines().find_map(|line| {
         let line = line.trim();
@@ -13768,6 +13812,91 @@ def main(net: Net, stdout: Stdout) fails NetError:
     std::fs::remove_dir_all(&dir)?;
     // 10,000 leaked rounds would be about 18 MB.
     assert!(after < before + 4_096, "the server grew from {before} KB to {after} KB");
+    Ok(())
+}
+
+/// A program's own types named like the library's, `Delivery`, `Duration` and `Match`, go through
+/// a launched task's inbox and a `with` of two channels. Each is checked under a name no source
+/// can write, and the source the checker writes in for a `with launch` and for a channel's type
+/// names it that way too; the library's own `Duration`, which `stop_after` takes, stays the
+/// library's. A channel of one once kept the checker going round until it ran out of memory.
+#[test]
+fn a_program_type_named_like_a_library_type_goes_through_inboxes_and_channels() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "renamed_inbox",
+        r#"from std.concurrent import Closed, Crashed, Inbox, channel
+
+struct Delivery:
+    user: int
+
+struct Match:
+    at: int
+
+enum Duration:
+    Short
+    Long(minutes: int)
+
+def quiet(inbox: Inbox[Delivery], stdout: Stdout):
+    mut total = 0
+    for delivery in inbox:
+        total += delivery.user
+    stdout.print(total)
+    return
+
+def timed(inbox: Inbox[Duration], stdout: Stdout):
+    for length in inbox:
+        match length:
+            case .Short:
+                stdout.print("short")
+            case .Long(minutes):
+                stdout.print("long", minutes)
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with launch((inbox) => quiet(inbox, stdout), inbox_size=4)? as first:
+        first.send(Delivery(user=1))?
+        first.send(Delivery(user=2))?
+    with launch((inbox) => timed(inbox, stdout), stop_after=5s, inbox_size=4)? as second:
+        second.send(.Short)?
+        second.send(.Long(minutes=3))?
+    with channel[Delivery](size=4) as deliveries, channel[list[Match]](size=2) as matches:
+        deliveries.send(Delivery(user=5))?
+        matches.send([Match(at=7), Match(at=8)])?
+        delivery = deliveries.receive() else return
+        found = matches.receive() else return
+        stdout.print(delivery.user, len(found), found[1].at)
+    return
+"#,
+        "3\nshort\nlong 3\n5 2 8\n",
+    )
+}
+
+/// Checking a channel of a program's own type named like a library type takes the memory checking
+/// anything small does. The checker once went round and round on it, checking the whole program
+/// again a dozen times a second, past 2 GB in seconds, because the source it wrote in for the
+/// channel's type couldn't be parsed; a check that never settles can't come back unseen.
+#[test]
+fn checking_a_channel_of_a_type_named_like_the_librarys_settles() -> std::io::Result<()> {
+    let dir = folder("renamed_channel_check")?;
+    let program = dir.join("renamed.fen");
+    std::fs::write(
+        &program,
+        "from std.concurrent import Closed, channel\n\nstruct Match:\n    at: int\n\n\
+         def main(stdout: Stdout) fails Closed:\n    with channel[Match](size=2) as matches:\n\
+         \x20       matches.send(Match(at=7))?\n        found = matches.receive() else return\n\
+         \x20       stdout.print(found.at)\n    return\n",
+    )?;
+    runtime_built();
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let (checked, peak) = peak_memory_of(fennec, &["check", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
+    if let Some(peak) = measured(peak) {
+        assert!(peak < 400 << 20, "checking it held {} MB", peak >> 20);
+    }
     Ok(())
 }
 
@@ -19380,6 +19509,65 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// A loop over a `Table` that only reads its items' fields borrows each from its slot, rather than
+/// giving it an owner and letting go again each time round, when nothing in the loop changes the
+/// `Table`. One that keeps the item, as `held.append(unit)` does, gives it an owner: the item kept
+/// stays as it was when the `Table`'s is changed after. Through a parameter, a local and a field.
+#[test]
+fn a_tables_items_only_read_in_a_loop_are_borrowed() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("table_items_borrowed")?;
+    std::fs::write(dir.join("table_items_borrowed.fen"), TABLE_ITEMS_BORROWED)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "table_items_borrowed", how)?;
+        assert_eq!(printed, "259000 2450 u1 changed 50 0\n", "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const TABLE_ITEMS_BORROWED: &str = r#"from std.collections import Id, Table
+
+struct Unit:
+    hp: int
+    bag: dict[str, int]
+    name: str
+
+struct World:
+    units: Table[Unit]
+
+def total(units: Table[Unit]) -> int:
+    mut sum_hp = 0
+    for unit in units:
+        sum_hp += unit.hp + len(unit.name) + (unit.bag.get("g") else 0)
+    return sum_hp
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    mut ids = list[Id[Unit]]()
+    for n in range(50):
+        ids.append(units.add(Unit(hp=n, bag={"g": n}, name=f"u{n}")))
+    mut t = 0
+    for _ in range(100):
+        t += total(units)
+    kept = list[Unit]()
+    mut seen = 0
+    for unit in units:
+        seen += unit.hp
+    mut world = World(units=units)
+    for unit in world.units:
+        seen += unit.hp
+    mut held = list[Unit]()
+    for unit in units:
+        held.append(unit)
+    units[ids[1]].name = "changed"
+    stdout.print(t, seen, held[1].name, units[ids[1]].name, len(held), len(kept))
+    return
+"#;
+
 #[test]
 fn id_maps_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -20225,6 +20413,32 @@ fn a_split_reads_its_text_and_separator_however_they_are_held() -> std::io::Resu
         Some("error: `split` was called with the wrong arguments")
     );
     Ok(())
+}
+
+/// `startswith` and `endswith` compare a text's bytes with its part's where both are, inline or
+/// in a block: with an empty part, a part as long as the text or longer, and characters of two
+/// bytes either side of where they'd meet.
+#[test]
+fn a_texts_start_and_end_are_compared_where_they_are() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "text_affixes",
+        r#"def main(stdout: Stdout):
+    texts = ["", "a", "abc", "café", "été long enough to need a block of its own", "a text that's long enough to be held in a block"]
+    parts = ["", "a", "c", "abc", "abcd", "é", "été", "own", "block", "café", "a text that's long enough to be held in a block", "x"]
+    for text in texts:
+        mut said = list[str]()
+        for part in parts:
+            starts = "1" if text.startswith(part) else "0"
+            ends = "1" if text.endswith(part) else "0"
+            said.append(starts + ends)
+        stdout.print(" ".join(said))
+    return
+"#,
+        "11 00 00 00 00 00 00 00 00 00 00 00\n11 11 00 00 00 00 00 00 00 00 00 00\n11 10 01 11 00 00 00 00 00 00 00 00\n11 00 10 00 00 01 00 00 00 11 00 00\n11 00 00 00 00 10 10 01 00 00 00 00\n11 10 00 00 00 00 00 00 01 00 11 00\n",
+    )
 }
 
 /// Strings let go of where nothing takes them, and a `str?` from a dict of strings.

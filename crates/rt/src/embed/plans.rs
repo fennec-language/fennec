@@ -9,16 +9,46 @@ pub(super) struct Holds {
     blocks: Box<[usize]>,
     /// Where a string's header starts, which holds a block or not by its string.
     texts: Box<[usize]>,
+    /// The enums inside that hold blocks, whose case says which words do.
+    enums: Box<[Inner]>,
+}
+
+/// An enum inside a value: where its case's number is, and what each case holds, counting from the
+/// value's first word too.
+struct Inner {
+    at: usize,
+    cases: Box<[Holds]>,
 }
 
 impl Holds {
+    /// Whether the words holding blocks are the same in every value, with no enum inside to ask.
+    fn fixed(&self) -> bool {
+        self.enums.is_empty()
+    }
+
+    /// Every block a value's words hold, zero left out: in its words, its strings' headers and the
+    /// enums inside it, by their cases.
+    pub(super) fn each_block(&self, words: &[u64], found: &mut impl FnMut(u64)) {
+        for block in self.blocks_in(words).chain(self.texts_in(words)) {
+            if block != 0 {
+                found(block);
+            }
+        }
+        for inner in &self.enums {
+            let case = words.get(inner.at).and_then(|case| usize::try_from(*case).ok());
+            if let Some(holds) = case.and_then(|case| inner.cases.get(case)) {
+                holds.each_block(words, found);
+            }
+        }
+    }
+
     /// The addresses in a value's words, zero for no block, which most values have all of.
-    pub(super) fn blocks_in<'w>(&'w self, words: &'w [u64]) -> impl Iterator<Item = u64> + 'w {
+    fn blocks_in<'w>(&'w self, words: &'w [u64]) -> impl Iterator<Item = u64> + 'w {
         self.blocks.iter().filter_map(|at| words.get(*at).copied())
     }
 
     /// The blocks of the strings in a value's words, zero for an optional string that's `None`.
-    pub(super) fn texts_in<'w>(&'w self, words: &'w [u64]) -> impl Iterator<Item = u64> + 'w {
+    fn texts_in<'w>(&'w self, words: &'w [u64]) -> impl Iterator<Item = u64> + 'w {
         self.texts.iter().filter_map(|at| {
             let header = <&[u64; 3]>::try_from(words.get(*at..*at + 3)?).ok()?;
             super::text::block_of(header)
@@ -52,21 +82,16 @@ impl Plan {
     }
 }
 
-/// Adds where a value laid out from `at` holds blocks, if that's the same for every value of the
-/// element: not for an enum inside it that holds any, whose case decides.
-fn fixed_words(
-    element: &Element,
-    at: &mut usize,
-    blocks: &mut Vec<usize>,
-    texts: &mut Vec<usize>,
-) -> Option<()> {
+/// Adds where a value laid out from `at` holds blocks: the words, the strings' headers, and each enum
+/// inside that holds any, with what each of its cases holds.
+fn fixed_words(element: &Element, at: &mut usize, holds: &mut Found) -> Option<()> {
     match element {
         Element::Text => {
-            texts.push(*at);
+            holds.texts.push(*at);
             *at += 3;
         }
         element if element.is_optional_text() => {
-            texts.push(*at);
+            holds.texts.push(*at);
             *at += 3;
         }
         Element::Boxed(_)
@@ -75,27 +100,44 @@ fn fixed_words(
         | Element::ListOf(_)
         | Element::Object
         | Element::Maybe(_) => {
-            blocks.push(*at);
+            holds.blocks.push(*at);
             *at += 1;
         }
         Element::Struct { fields, .. } => {
             for (_, field) in fields {
-                fixed_words(field, at, blocks, texts)?;
+                fixed_words(field, at, holds)?;
             }
         }
         Element::Enum { words, .. } if !super::heap::holds_blocks(element) => *at += words,
-        Element::Enum { .. } => return None,
+        Element::Enum { cases, words, .. } => {
+            let cases: Option<Vec<Holds>> =
+                cases.iter().map(|(_, fields)| holds_of(fields.iter().map(|(_, field)| field), *at + 1)).collect();
+            holds.enums.push(Inner { at: *at, cases: cases?.into_boxed_slice() });
+            *at += words;
+        }
         Element::Int | Element::Float | Element::Bool | Element::U64 | Element::F32 => *at += 1,
     }
     Some(())
 }
 
+/// What `fixed_words` finds, as it goes.
+#[derive(Default)]
+struct Found {
+    blocks: Vec<usize>,
+    texts: Vec<usize>,
+    enums: Vec<Inner>,
+}
+
 fn holds_of<'e>(fields: impl Iterator<Item = &'e Element>, mut at: usize) -> Option<Holds> {
-    let (mut blocks, mut texts) = (Vec::new(), Vec::new());
+    let mut found = Found::default();
     for field in fields {
-        fixed_words(field, &mut at, &mut blocks, &mut texts)?;
+        fixed_words(field, &mut at, &mut found)?;
     }
-    Some(Holds { blocks: blocks.into_boxed_slice(), texts: texts.into_boxed_slice() })
+    Some(Holds {
+        blocks: found.blocks.into_boxed_slice(),
+        texts: found.texts.into_boxed_slice(),
+        enums: found.enums.into_boxed_slice(),
+    })
 }
 
 /// How to find the blocks a value of a kind holds.
@@ -104,13 +146,13 @@ pub(super) fn plan(element: &Element) -> Plan {
         let cases: Option<Vec<Holds>> =
             cases.iter().map(|(_, fields)| holds_of(fields.iter().map(|(_, field)| field), 1)).collect();
         let Some(cases) = cases else { return Plan::Walk };
-        if cases.iter().any(|holds| !holds.texts.is_empty()) {
+        if cases.iter().any(|holds| !holds.texts.is_empty() || !holds.fixed()) {
             return Plan::CasesWithTexts(cases.into_boxed_slice());
         }
         return Plan::Cases(cases.into_iter().map(|holds| holds.blocks).collect());
     }
     match holds_of(std::iter::once(element), 0) {
-        Some(holds) if holds.texts.is_empty() => Plan::Fixed(holds.blocks),
+        Some(holds) if holds.texts.is_empty() && holds.fixed() => Plan::Fixed(holds.blocks),
         Some(holds) => Plan::FixedWithTexts(Box::new(holds)),
         None => Plan::Walk,
     }
@@ -161,6 +203,8 @@ pub(super) fn places(plan: &Plan, fields: &[u64], base: usize, found: &mut impl 
     let holds_block = |at: &usize| fields.get(*at).is_some_and(|word| *word != 0);
     match plan {
         Plan::Fixed(words) => found.extend(words.iter().copied().filter(holds_block).map(|at| at + base)),
+        // An enum inside decides by its case, which this doesn't follow.
+        Plan::FixedWithTexts(holds) if !holds.fixed() => return None,
         Plan::FixedWithTexts(holds) => {
             found.extend(holds.blocks.iter().copied().filter(holds_block).map(|at| at + base));
             found.extend(
@@ -182,8 +226,7 @@ pub(super) fn places(plan: &Plan, fields: &[u64], base: usize, found: &mut impl 
 }
 
 fn holds_addresses(holds: &Holds, fields: &[u64], found: &mut impl Extend<u64>) {
-    found.extend(holds.blocks_in(fields).filter(|address| *address != 0));
-    found.extend(holds.texts_in(fields).filter(|address| *address != 0));
+    holds.each_block(fields, &mut |address| found.extend(std::iter::once(address)));
 }
 
 #[cfg(test)]
@@ -284,10 +327,10 @@ mod tests {
         assert_eq!(found, [88]);
     }
 
-    /// An enum with no data inside a value takes its words and holds nothing, and one with data
-    /// leaves the value to be walked.
+    /// An enum with no data inside a value takes its words and holds nothing, and one with data is
+    /// followed by its case, as an optional of an in-place struct is.
     #[test]
-    fn an_enum_inside_is_stepped_over_only_when_it_holds_nothing() {
+    fn an_enum_inside_is_stepped_over_when_it_holds_nothing_and_followed_by_its_case_otherwise() {
         let plain = Element::Enum {
             name: Rc::from("Kind"),
             cases: vec![(Rc::from("One"), Vec::new()), (Rc::from("Two"), Vec::new())],
@@ -308,12 +351,34 @@ mod tests {
             ],
             words: 4,
         };
-        let outer =
-            Element::Struct { name: Rc::from("Outer"), fields: vec![(Rc::from("order"), holding.clone())] };
-        assert!(matches!(plan(&outer), Plan::Walk));
-        let order = plan(&holding);
+        let outer = Element::Struct {
+            name: Rc::from("Outer"),
+            fields: vec![
+                (Rc::from("first"), Element::Str),
+                (Rc::from("order"), holding.clone()),
+                (Rc::from("last"), Element::Str),
+            ],
+        };
+        let planned = plan(&outer);
+        assert!(!matches!(planned, Plan::Walk));
         found.clear();
         let [a, b, c] = in_block(72);
+        addresses(&planned, &[40, 1, a, b, c, 48], &mut found).unwrap();
+        assert_eq!(found, [40, 48, 72]);
+        found.clear();
+        addresses(&planned, &[40, 0, 0, 0, 0, 48], &mut found).unwrap();
+        assert_eq!(found, [40, 48]);
+        found.clear();
+        // An item of a list goes the same way, item after item.
+        let items = item_plan(&outer);
+        assert_eq!(items.stride, 6);
+        for item in [[0, 1, a, b, c, 0], [56, 0, 0, 0, 0, 0]] {
+            addresses(&items.plan, &item, &mut found).unwrap();
+        }
+        assert_eq!(found, [72, 56]);
+        found.clear();
+        let order = plan(&holding);
+        found.clear();
         addresses(&order, &[1, a, b, c], &mut found).unwrap();
         assert_eq!(found, [72]);
         found.clear();

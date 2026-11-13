@@ -208,10 +208,8 @@ impl Emit<'_, '_, '_> {
             }
             ("set.discard", [Operand::Local(set), key], _) => self.set_remove(*set, key, false, span),
             ("set.remove", [Operand::Local(set), key], _) => self.set_remove(*set, key, true, span),
-            ("list.sort", [Operand::Local(list)], _) => self.sorted(*list, &Operand::Local(*list)),
-            ("list.sort.key", [Operand::Local(list), key], _) => {
-                self.sorted_by(*list, &Operand::Local(*list), key, span)
-            }
+            ("list.sort", [Operand::Local(list)], _) => self.sort_in_place(*list),
+            ("list.sort.key", [Operand::Local(list), key], _) => self.sort_by_in_place(*list, key, span),
             ("list.clear", [Operand::Local(list)], _) => {
                 let owned = self.unshared(*list);
                 self.declare("declare void @fennec_list_clear(ptr) nounwind");

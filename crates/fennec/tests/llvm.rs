@@ -563,6 +563,187 @@ fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
     )
 }
 
+/// A result kept in place, its value or its error in the caller's slot, for every kind of value:
+/// nothing, an int, a long text, a list, a dict, an optional, a struct in place and one in a block,
+/// on success and on failure, `fails A | B`, and a failure passed up through three `?`. Called
+/// directly, through a function value and an arrow, by `parallel` workers, out of `lock ... as ref`
+/// and in a launched task. Built both ways, kept in place and as a block (`FENNEC_BOXED_RESULTS`),
+/// in dev and release, each printing the same and holding nothing at the end.
+#[test]
+fn a_result_of_every_kind_is_kept_in_place_wherever_it_is_given_back() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for boxed in ["0", "1"] {
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder("results_in_place")?;
+            let (program, executable) = (dir.join("results.fen"), dir.join("results"));
+            std::fs::write(&program, RESULTS_IN_PLACE)?;
+            let mut command = crate::executables::fennec_command();
+            command.arg("build").args(how).arg(&program).arg("-o").arg(&executable).env("FENNEC_HOME", &dir);
+            if boxed == "1" {
+                command.env("FENNEC_BOXED_RESULTS", "1");
+            }
+            let built = command.output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "5157 1164 5157 566 570 140\n",
+                "boxed {boxed} {how:?}: {said}"
+            );
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "boxed {boxed} {how:?}: {said}");
+        }
+    }
+    Ok(())
+}
+
+const RESULTS_IN_PLACE: &str = r#"from std.concurrent import Closed, Crashed
+
+error Oops:
+    why: str
+
+error Other:
+    code: int
+
+struct Point:
+    x: int
+    y: int
+
+struct Named:
+    name: str
+    tags: list[str]
+
+struct Counter:
+    seen: int
+
+def reason(n: int) -> str:
+    return "this failed for a reason long enough to need a block " + str(n)
+
+def nothing(n: int) fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return
+
+def number(n: int) -> int fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return n
+
+def text(n: int) -> str fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return "a text that's longer than any header holds " + str(n)
+
+def items(n: int) -> list[int] fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return [n, n + 1]
+
+def table(n: int) -> dict[str, int] fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return {"n": n, "twice": n * 2}
+
+def maybe(n: int) -> int? fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    if n % 2 == 0: return n
+    return None
+
+def point(n: int) -> Point fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return Point(x=n, y=-n)
+
+def named(n: int) -> Named fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return Named(name="a name longer than any header holds " + str(n), tags=["tag " + str(n)])
+
+def either(n: int) -> int fails Oops | Other:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    if n % 3 == 1: fail Other(code=n)
+    return n
+
+def deep_one(n: int) -> str fails Oops:
+    return text(n)? + "!"
+
+def deep_two(n: int) -> str fails Oops:
+    return deep_one(n)? + "!"
+
+def deep_three(n: int) -> str fails Oops:
+    return deep_two(n)? + "!"
+
+# Every kind, called directly, each failure caught: a number that says what came back.
+def every(n: int) -> int:
+    mut total = 0
+    nothing(n) except Oops(why):
+        total += len(why)
+    got_number = number(n) except Oops(why): len(why)
+    got_text = text(n) except Oops(why): why
+    got_items = items(n) except Oops(why): [len(why)]
+    got_table = table(n) except Oops(why): {why: 1}
+    got_maybe = maybe(n) except Oops(why): len(why)
+    got_point = point(n) except Oops(why): Point(x=len(why), y=0)
+    got_named = named(n) except Oops(why): Named(name=why, tags=list[str]())
+    got_either = either(n) except why:
+        case Oops(text):
+            len(text)
+        case Other(code):
+            code * 100
+    got_deep = deep_three(n) except Oops(why): why
+    total += got_number + len(got_text) + len(got_items) + len(got_table) + (got_maybe else 7)
+    total += got_point.x + len(got_named.name) + len(got_named.tags) + got_either + len(got_deep)
+    return total
+
+def through(run: (int) -> str fails Oops, n: int) -> int:
+    got = run(n) except Oops(why):
+        return len(why)
+    return len(got)
+
+def counted(n: int) -> int:
+    return through(text, n=n) + through((k) => deep_three(k)?, n=n)
+
+def lengths(rounds: int) -> Iterator[int]:
+    for n in range(rounds):
+        got = text(n) except Oops(why): why
+        kept = named(n) except Oops(why): Named(name=why, tags=list[str]())
+        yield len(got) + len(kept.tags) - 1
+
+def generated(rounds: int) -> int:
+    mut total = 0
+    for length in lengths(rounds):
+        total += length
+    return total
+
+def tasked(n: int, out: shared Counter) fails Oops:
+    said = text(n)?
+    lock out as ref held:
+        held.seen += len(said)
+    return
+
+def locked(out: shared Counter, n: int) -> int:
+    lock out as ref held:
+        got = text(n) except Oops(why):
+            return len(why)
+        held.seen += 1
+        return len(got)
+
+def main(stdout: Stdout) fails Crashed | Oops:
+    rounds = 12
+    mut direct = 0
+    mut valued = 0
+    for n in range(rounds):
+        direct += every(n)
+        valued += counted(n)
+    workers = sum(every(n) for n in parallel(range(rounds)))
+    shared out = Counter(seen=0)
+    mut in_lock = 0
+    for n in range(rounds):
+        in_lock += locked(out, n=n)
+    for n in [0, 3, 6]:
+        with launch(() => tasked(n, out)?)?:
+            pass
+    lock out as held:
+        stdout.print(direct, valued, workers, generated(rounds), in_lock, held.seen)
+    return
+"#;
+
 const EXCEPT_FORMS: &str = r#"error Bad:
     Empty
     Long(size: int)
@@ -4022,6 +4203,46 @@ fn a_u64_to_a_power() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A struct held in place compares, orders as a tuple and crosses a lock whatever its fields hold, as
+/// it would boxed: here a `u64` and an `f32` beside a text, which `==` refused in place while the
+/// same struct boxed, with a `dict` beside them, compared fine. A `u64` orders unsigned.
+#[test]
+fn a_struct_in_place_compares_and_crosses_a_lock_whatever_its_fields_hold() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "in_place_any_field",
+        IN_PLACE_ANY_FIELD,
+        "True False True\nTrue False True\nPart(big=6, small=6.0, name=\"a name long enough for a block 6\") True 3\n",
+    )?;
+    assert!(counts_of("in_place_any_field_counts", IN_PLACE_ANY_FIELD)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const IN_PLACE_ANY_FIELD: &str = r#"struct Part:
+    big: u64
+    small: f32
+    name: str
+
+
+def make(n: int) -> Part:
+    return Part(big=u64(n), small=f32(n), name=f"a name long enough for a block {n}")
+
+def main(stdout: Stdout):
+    noise = [make(n + 100) for n in range(3)]
+    stdout.print(make(1) == make(1), make(1) == make(2), make(1) != make(2))
+    stdout.print((u64(1), "a") < (u64(2), "a"), (u64(2) * u64(1 << 62), "b") < (u64(1), "b"), (u64(3), "c") <= (u64(3), "c"))
+    shared store = [make(5)]
+    lock store as ref held:
+        held.append(make(6))
+    mut taken = make(0)
+    lock store as held:
+        taken = held[1]
+    stdout.print(taken, taken == make(6), len(noise))
+    return
+"#;
+
 /// `u64`s sort as unsigned numbers natively, those past `int`'s top after the rest: by themselves,
 /// in place, by a key, and as a tuple's first item. `f32`s sort as the floats they are, and both
 /// can be what a key gives.
@@ -4654,6 +4875,81 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// `sort`, `reverse` and `swap` move a list's in-place items where they lie, each keeping what it
+/// holds, and a dict's set writes a value held in place into its entry's own block: what each
+/// prints, a list shared before it's turned round keeping its order, and the blocks made,
+/// one copy for that shared list and none for a sort, are as pinned, with nothing left held.
+#[test]
+fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("moved_in_place", MOVED_IN_PLACE, MOVED_IN_PLACE_PRINTS)?;
+    assert_eq!(
+        counts_of("moved_in_place_counts", MOVED_IN_PLACE)?,
+        "copies 1 copied_bytes 672 largest_copy 672 allocations 114 allocated_bytes 11840 live 0"
+    );
+    Ok(())
+}
+
+const MOVED_IN_PLACE: &str = r#"enum Outcome:
+    Good(value: int)
+    Bad(reason: str)
+
+struct Inner:
+    label: str
+    weights: list[int]
+
+struct Item:
+    id: int
+    name: str
+    inner: Inner
+    state: Outcome
+
+def make(n: int) -> Item:
+    state = Outcome.Good(value=n) if n % 3 == 0 else Outcome.Bad(reason=f"a reason long enough for a block {n}")
+    return Item(id=n, name=f"a name long enough for a block {n}", inner=Inner(label=f"a label long enough for a block {n}", weights=[n, n * 2]), state=state)
+
+def main(stdout: Stdout):
+    mut items = [make(n) for n in range(7)]
+    noise = [make(n + 100) for n in range(3)]
+    items.reverse()
+    items.swap(0, -1)
+    kept = items
+    items.reverse()
+    stdout.print([item.id for item in items], [item.id for item in kept])
+    items.sort(key=item => item.name)
+    stdout.print([item.id for item in items])
+    items.sort(key=item => (item.id % 2, -item.id))
+    stdout.print([item.id for item in items], items[0] == make(5), items[6])
+    mut pairs = [(n % 3, f"a text long enough for a block {n}") for n in range(5)]
+    pairs.sort()
+    pairs.reverse()
+    stdout.print(pairs[0], pairs[4])
+    mut by_key = dict[int, Item]()
+    for round in range(3):
+        for n in range(3):
+            mut item = make(n + round * 10)
+            item.inner.weights.append(round)
+            by_key[n] = item
+    held = by_key[1]
+    by_key[1] = make(77)
+    stdout.print(held.inner, by_key[1].id, by_key[2].inner.weights)
+    mut maybes: list[Inner?] = [Inner(label=f"a label long enough for a block {n}", weights=[n]) if n % 2 == 0 else None for n in range(5)]
+    maybes.reverse()
+    maybes.swap(0, 1)
+    stdout.print(maybes[1], maybes[0], len(noise))
+    return
+"#;
+
+const MOVED_IN_PLACE_PRINTS: &str = r#"[6, 1, 2, 3, 4, 5, 0] [0, 5, 4, 3, 2, 1, 6]
+[0, 1, 2, 3, 4, 5, 6]
+[6, 4, 2, 0, 5, 3, 1] False Item(id=1, name="a name long enough for a block 1", inner=Inner(label="a label long enough for a block 1", weights=[1, 2]), state=Outcome.Bad(reason="a reason long enough for a block 1"))
+(2, "a text long enough for a block 2") (0, "a text long enough for a block 0")
+Inner(label="a label long enough for a block 21", weights=[21, 42, 2]) 77 [22, 44, 2]
+Inner(label="a label long enough for a block 4", weights=[4]) None 3
+"#;
 
 /// `sorted` of a type with its own `<` sorts by it: stable, so items `<` says are
 /// neither before nor after keep their order, and the standard library's `Uuid` too.

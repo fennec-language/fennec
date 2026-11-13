@@ -713,9 +713,23 @@ impl Emit<'_, '_, '_> {
             entry_value(key_word)
         ));
         if value_kind.in_memory() {
-            let word = self.dict_word(&value_kind, &held, true);
-            let (old, block) = (self.temp(), self.temp());
+            // The value's block, when the dict is its only owner, takes the new value where it is:
+            // what the new value holds gains an owner, what the old one held loses one, and no
+            // block is made. Otherwise the value goes in a block of its own.
+            let old = self.temp();
             self.line(&format!("{old} = load ptr, ptr {value_at}"));
+            let alone = self.alone(&old);
+            let (reuse, fresh) = (self.label("value_in_place"), self.label("value_block"));
+            self.line(&format!("br i1 {alone}, label %{reuse}, label %{fresh}"));
+            self.start_block(&reuse);
+            let fields = self.offset(&old, crate::lists::FIELDS_OFFSET);
+            self.retain_inline(&value_kind, &held);
+            self.release_inline(&value_kind, &fields);
+            self.store_field(&value_kind, &held, &fields, "");
+            self.line(&format!("br label %{done}"));
+            self.start_block(&fresh);
+            let word = self.dict_word(&value_kind, &held, true);
+            let block = self.temp();
             self.line(&format!("{block} = inttoptr i64 {word} to ptr"));
             self.line(&format!("store ptr {block}, ptr {value_at}"));
             self.release(&old);

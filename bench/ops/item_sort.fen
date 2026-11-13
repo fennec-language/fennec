@@ -1,0 +1,44 @@
+# `items.sort(key=...)` on a list of 16 structs held in place, turned round first, done OPS times.
+# `fennec-bench ops` counts its instructions per operation beside its Rust twin's. `Item` is held in
+# place: six counted fields, two texts, two lists, a struct and an enum.
+
+OPS = 20_000
+
+enum Outcome:
+    Good(value: int)
+    Bad(reason: str)
+
+struct Inner:
+    label: str
+    weights: list[int]
+
+struct Item:
+    id: int
+    name: str
+    tags: list[str]
+    scores: list[int]
+    inner: Inner
+    state: Outcome
+
+def make(n: int) -> Item:
+    return Item(
+        id=n,
+        name=f"a name long enough for a block {n}",
+        tags=["one", "two"],
+        scores=[n, n + 1],
+        inner=Inner(label=f"a label long enough for a block {n}", weights=[n]),
+        state=.Bad(reason=f"a reason long enough for a block {n}"),
+    )
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    mut items = [make(n + shift) for n in range(16)]
+    one = make(7 + shift)
+    mut total = 0
+    for at in range(OPS):
+        items.reverse()
+        items.sort(key=item => item.id)
+        total += items[at % 16].id
+    stdout.print(total, len(items), items[shift].id, one.name)
+    return

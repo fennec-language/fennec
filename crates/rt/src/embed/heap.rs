@@ -113,6 +113,9 @@ pub(crate) struct Heap {
     item_plans: Vec<super::plans::ItemPlan>,
     /// Which of those hold no blocks at all, as most lists' items don't, to free them at once.
     empty_items: Vec<bool>,
+    /// Which of those are strings held as their headers, which hold no block when every one is
+    /// inline, so a list of them all inline is freed at once too.
+    text_items: Vec<bool>,
     /// How many words an item of each kind takes, worked out once rather than at each new list.
     /// A worker's heap has none, and works it out.
     item_words: Vec<usize>,
@@ -520,6 +523,18 @@ fn zero_words<const N: usize>(block: &mut [u64]) -> bool {
     <&mut [u64; N]>::try_from(block).map(|words| *words = [0; N]).is_ok()
 }
 
+/// Whether every item of a list of strings' headers is inline, holding its text in itself: then
+/// the list holds no block. A header's last byte has the inline mark when it's inline.
+fn all_inline(block: &[u64]) -> bool {
+    let start = super::lists::LIST_HEADER_WORDS;
+    let count = block.get(2).and_then(|count| usize::try_from(*count).ok()).unwrap_or(usize::MAX);
+    let Some(items) = count.checked_mul(3).and_then(|words| block.get(start..start + words)) else {
+        return false;
+    };
+    let inline = u64::from(super::text::INLINE) << 56;
+    items.as_chunks::<3>().0.iter().all(|[_, _, last]| last & inline != 0)
+}
+
 impl Heap {
     /// Whether a list of this kind of item is known to hold no blocks. A worker's heap has no
     /// plans, so it doesn't know, and looks.
@@ -538,6 +553,7 @@ impl Heap {
         self.plans = shapes.iter().map(|shape| super::plans::plan(shape)).collect();
         self.item_plans = elements.iter().map(|element| super::plans::item_plan(element)).collect();
         self.empty_items = self.item_plans.iter().map(|items| items.plan.holds_nothing()).collect();
+        self.text_items = elements.iter().map(|element| **element == Element::Text).collect();
         self.item_words = elements.iter().map(|element| element.words()).collect();
         self.sizes = shapes.iter().map(|shape| HEADER_WORDS + shape.words()).collect();
         self
@@ -947,20 +963,24 @@ impl Heap {
         first_list: u64,
         str_shape: u64,
     ) -> Option<Box<[u64]>> {
-        let empty_items = &self.empty_items;
+        let (empty_items, text_items) = (&self.empty_items, &self.text_items);
         self.blocks.take_if(at, |block| {
             // A string, which holds no other block, or a list of a kind whose items hold nothing,
-            // or one with no items at all, as a list made empty and never added to is. Only a kind
-            // of list's shape is looked at: past them are other blocks, like cells, whose third
-            // word means something else.
+            // or one with no items at all, as a list made empty and never added to is, or one of
+            // strings' headers all inline, as a `split` into short parts makes. Only a kind of
+            // list's shape is looked at: past them are other blocks, like cells, whose third word
+            // means something else.
             !is_handle_block(block)
                 && shape_word(block).is_some_and(|shape| {
                     shape == str_shape
                         || shape
                             .checked_sub(first_list)
                             .and_then(|number| usize::try_from(number).ok())
-                            .and_then(|number| empty_items.get(number))
-                            .is_some_and(|empty| *empty || block.get(2) == Some(&0))
+                            .is_some_and(|number| {
+                                empty_items.get(number).is_some_and(|empty| *empty)
+                                    || block.get(2) == Some(&0)
+                                    || (text_items.get(number).is_some_and(|text| *text) && all_inline(block))
+                            })
                 })
         })
     }

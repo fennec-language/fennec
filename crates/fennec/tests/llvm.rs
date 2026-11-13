@@ -563,6 +563,187 @@ fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
     )
 }
 
+/// A result kept in place, its value or its error in the caller's slot, for every kind of value:
+/// nothing, an int, a long text, a list, a dict, an optional, a struct in place and one in a block,
+/// on success and on failure, `fails A | B`, and a failure passed up through three `?`. Called
+/// directly, through a function value and an arrow, by `parallel` workers, out of `lock ... as ref`
+/// and in a launched task. Built both ways, kept in place and as a block (`FENNEC_BOXED_RESULTS`),
+/// in dev and release, each printing the same and holding nothing at the end.
+#[test]
+fn a_result_of_every_kind_is_kept_in_place_wherever_it_is_given_back() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for boxed in ["0", "1"] {
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder("results_in_place")?;
+            let (program, executable) = (dir.join("results.fen"), dir.join("results"));
+            std::fs::write(&program, RESULTS_IN_PLACE)?;
+            let mut command = crate::executables::fennec_command();
+            command.arg("build").args(how).arg(&program).arg("-o").arg(&executable).env("FENNEC_HOME", &dir);
+            if boxed == "1" {
+                command.env("FENNEC_BOXED_RESULTS", "1");
+            }
+            let built = command.output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "5157 1164 5157 566 570 140\n",
+                "boxed {boxed} {how:?}: {said}"
+            );
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "boxed {boxed} {how:?}: {said}");
+        }
+    }
+    Ok(())
+}
+
+const RESULTS_IN_PLACE: &str = r#"from std.concurrent import Closed, Crashed
+
+error Oops:
+    why: str
+
+error Other:
+    code: int
+
+struct Point:
+    x: int
+    y: int
+
+struct Named:
+    name: str
+    tags: list[str]
+
+struct Counter:
+    seen: int
+
+def reason(n: int) -> str:
+    return "this failed for a reason long enough to need a block " + str(n)
+
+def nothing(n: int) fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return
+
+def number(n: int) -> int fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return n
+
+def text(n: int) -> str fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return "a text that's longer than any header holds " + str(n)
+
+def items(n: int) -> list[int] fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return [n, n + 1]
+
+def table(n: int) -> dict[str, int] fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return {"n": n, "twice": n * 2}
+
+def maybe(n: int) -> int? fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    if n % 2 == 0: return n
+    return None
+
+def point(n: int) -> Point fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return Point(x=n, y=-n)
+
+def named(n: int) -> Named fails Oops:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    return Named(name="a name longer than any header holds " + str(n), tags=["tag " + str(n)])
+
+def either(n: int) -> int fails Oops | Other:
+    if n % 3 == 2: fail Oops(why=reason(n))
+    if n % 3 == 1: fail Other(code=n)
+    return n
+
+def deep_one(n: int) -> str fails Oops:
+    return text(n)? + "!"
+
+def deep_two(n: int) -> str fails Oops:
+    return deep_one(n)? + "!"
+
+def deep_three(n: int) -> str fails Oops:
+    return deep_two(n)? + "!"
+
+# Every kind, called directly, each failure caught: a number that says what came back.
+def every(n: int) -> int:
+    mut total = 0
+    nothing(n) except Oops(why):
+        total += len(why)
+    got_number = number(n) except Oops(why): len(why)
+    got_text = text(n) except Oops(why): why
+    got_items = items(n) except Oops(why): [len(why)]
+    got_table = table(n) except Oops(why): {why: 1}
+    got_maybe = maybe(n) except Oops(why): len(why)
+    got_point = point(n) except Oops(why): Point(x=len(why), y=0)
+    got_named = named(n) except Oops(why): Named(name=why, tags=list[str]())
+    got_either = either(n) except why:
+        case Oops(text):
+            len(text)
+        case Other(code):
+            code * 100
+    got_deep = deep_three(n) except Oops(why): why
+    total += got_number + len(got_text) + len(got_items) + len(got_table) + (got_maybe else 7)
+    total += got_point.x + len(got_named.name) + len(got_named.tags) + got_either + len(got_deep)
+    return total
+
+def through(run: (int) -> str fails Oops, n: int) -> int:
+    got = run(n) except Oops(why):
+        return len(why)
+    return len(got)
+
+def counted(n: int) -> int:
+    return through(text, n=n) + through((k) => deep_three(k)?, n=n)
+
+def lengths(rounds: int) -> Iterator[int]:
+    for n in range(rounds):
+        got = text(n) except Oops(why): why
+        kept = named(n) except Oops(why): Named(name=why, tags=list[str]())
+        yield len(got) + len(kept.tags) - 1
+
+def generated(rounds: int) -> int:
+    mut total = 0
+    for length in lengths(rounds):
+        total += length
+    return total
+
+def tasked(n: int, out: shared Counter) fails Oops:
+    said = text(n)?
+    lock out as ref held:
+        held.seen += len(said)
+    return
+
+def locked(out: shared Counter, n: int) -> int:
+    lock out as ref held:
+        got = text(n) except Oops(why):
+            return len(why)
+        held.seen += 1
+        return len(got)
+
+def main(stdout: Stdout) fails Crashed | Oops:
+    rounds = 12
+    mut direct = 0
+    mut valued = 0
+    for n in range(rounds):
+        direct += every(n)
+        valued += counted(n)
+    workers = sum(every(n) for n in parallel(range(rounds)))
+    shared out = Counter(seen=0)
+    mut in_lock = 0
+    for n in range(rounds):
+        in_lock += locked(out, n=n)
+    for n in [0, 3, 6]:
+        with launch(() => tasked(n, out)?)?:
+            pass
+    lock out as held:
+        stdout.print(direct, valued, workers, generated(rounds), in_lock, held.seen)
+    return
+"#;
+
 const EXCEPT_FORMS: &str = r#"error Bad:
     Empty
     Long(size: int)
@@ -19917,20 +20098,6 @@ fn texts_joined_past_a_header_are_made_once() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A Fennec string literal of `text`, for programs written by tests.
-fn text_literal(text: &str) -> String {
-    let escaped: String = text
-        .chars()
-        .map(|character| match character {
-            '"' => "\\\"".to_owned(),
-            '\\' => "\\\\".to_owned(),
-            '\n' => "\\n".to_owned(),
-            other => other.to_string(),
-        })
-        .collect();
-    format!("\"{escaped}\"")
-}
-
 /// `a + b` gives a text equal to the same text made any other way, at every length either side of
 /// what a header holds: 22, 23, 24 and 25 bytes, empty either side, and characters of two and
 /// three bytes where 23 bytes end. Each joined text is compared with the same text from a list,
@@ -19960,10 +20127,10 @@ fn a_join_at_every_length_past_a_header_equals_the_same_text_made_another_way() 
         ("a\"b{c}".to_owned(), "\\".repeat(20)),
         ("x".repeat(40), "y".repeat(40)),
     ];
-    let lefts: Vec<String> = rows.iter().map(|(left, _)| text_literal(left)).collect();
-    let rights: Vec<String> = rows.iter().map(|(_, right)| text_literal(right)).collect();
+    let lefts: Vec<String> = rows.iter().map(|(left, _)| fennec_literal(left)).collect();
+    let rights: Vec<String> = rows.iter().map(|(_, right)| fennec_literal(right)).collect();
     let wanted: Vec<String> =
-        rows.iter().map(|(left, right)| text_literal(&format!("{left}{right}"))).collect();
+        rows.iter().map(|(left, right)| fennec_literal(&format!("{left}{right}"))).collect();
     let source = format!(
         r#"def main(stdout: Stdout):
     lefts = [{}]
@@ -21114,6 +21281,107 @@ fn a_split_reads_its_text_and_separator_however_they_are_held() -> std::io::Resu
         Some("error: `split` was called with the wrong arguments")
     );
     Ok(())
+}
+
+/// What a list of parts prints as in `a_split_gives_what_rust_gives_at_every_edge`: each part's
+/// length in characters and its text, between bars.
+fn parts_shown<'a>(parts: impl Iterator<Item = &'a str>) -> String {
+    parts.map(|part| format!("{}:{part}", part.chars().count())).collect::<Vec<_>>().join("|")
+}
+
+/// A Fennec string literal of `text`.
+fn fennec_literal(text: &str) -> String {
+    let escaped: String = text
+        .chars()
+        .map(|character| match character {
+            '"' => "\\\"".to_owned(),
+            '\\' => "\\\\".to_owned(),
+            '\n' => "\\n".to_owned(),
+            '\t' => "\\t".to_owned(),
+            '\r' => "\\r".to_owned(),
+            other => other.to_string(),
+        })
+        .collect();
+    format!("\"{escaped}\"")
+}
+
+/// `split` gives what Rust's `str::split` and `split_whitespace` give, on rows chosen for where it
+/// could go wrong: empty parts, separators at both ends, separators of two and three bytes, parts
+/// of exactly 23 bytes, which are held inline, and of 24, which take a block, of ASCII and of
+/// two-byte characters, and whitespace of ASCII and beyond it. The texts and separators come out
+/// of lists, so each split is the runtime's. Every list and part is freed after, with no block
+/// left.
+#[test]
+fn a_split_gives_what_rust_gives_at_every_edge() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let (a23, b24) = ("a".repeat(23), "b".repeat(24));
+    let (e23, e24) = (format!("{}a", "é".repeat(11)), "é".repeat(12));
+    let separated: Vec<(String, &str)> = vec![
+        ("a,,b".to_owned(), ","),
+        (",,".to_owned(), ","),
+        (String::new(), ","),
+        (",a,b,".to_owned(), ","),
+        (" x ".to_owned(), " "),
+        ("x".to_owned(), "x"),
+        ("aéb€éc".to_owned(), "é"),
+        ("é".to_owned(), "é"),
+        ("日本語本".to_owned(), "本"),
+        ("→a→→b→".to_owned(), "→"),
+        ("a, b,, c".to_owned(), ", "),
+        (format!("{a23},{b24},{e23},{e24},"), ","),
+        (format!("{a23}é{b24}é{e23}"), "é"),
+        (format!(",{e24},,{a23}"), ","),
+        (format!("{a23}{b24}"), "ab"),
+        (b24.clone(), b24.as_str()),
+        ("ab".to_owned(), "abc"),
+        ("a\tb\nc".to_owned(), "\n"),
+        ("x,y,z,w,v,u,t,s,r,q,p,o,n,m,l,k".to_owned(), ","),
+    ];
+    let spaced: Vec<String> = vec![
+        "  a\tb\nc  ".to_owned(),
+        "a\u{3000}b  c\u{a0}d".to_owned(),
+        format!(" {a23} {b24}\t{e23}\n{e24} "),
+        String::new(),
+        " \t\n ".to_owned(),
+    ];
+    let texts: Vec<String> = separated.iter().map(|(text, _)| fennec_literal(text)).collect();
+    let separators: Vec<String> = separated.iter().map(|(_, separator)| fennec_literal(separator)).collect();
+    let spaced_texts: Vec<String> = spaced.iter().map(|text| fennec_literal(text)).collect();
+    let source = format!(
+        r#"def shown(parts: list[str]) -> str:
+    mut said = list[str]()
+    for part in parts:
+        said.append(f"{{len(part)}}:{{part}}")
+    return "|".join(said)
+
+def main(stdout: Stdout):
+    texts = [{}]
+    separators = [{}]
+    for at in range(len(texts)):
+        stdout.print(shown(texts[at].split(separators[at])))
+    for text in [{}]:
+        stdout.print(shown(text.split()))
+    return
+"#,
+        texts.join(", "),
+        separators.join(", "),
+        spaced_texts.join(", ")
+    );
+    let mut expected = String::new();
+    for (text, separator) in &separated {
+        expected.push_str(&parts_shown(text.split(*separator)));
+        expected.push('\n');
+    }
+    for text in &spaced {
+        expected.push_str(&parts_shown(text.split_whitespace()));
+        expected.push('\n');
+    }
+    let dir = folder("split_edges")?;
+    let program = dir.join("split_edges.fen");
+    std::fs::write(&program, &source)?;
+    prints_with_nothing_left(&dir, &program, &expected, &["1"])
 }
 
 /// `startswith` and `endswith` compare a text's bytes with its part's where both are, inline or

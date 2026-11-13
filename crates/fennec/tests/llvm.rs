@@ -14514,6 +14514,44 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A generic `with` source and a generic function's copy hold the types they're given
+/// themselves, never their text: a program's own `Delivery`, which the checker holds under a
+/// name a program can't write, a field named by a keyword, and nested generics come through
+/// unchanged.
+#[test]
+fn a_generic_source_and_copy_carry_any_type_the_checker_holds_through_unchanged() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "held_any_type",
+            r#"# The library has a `Delivery` too: this one is the program's own.
+struct Delivery:
+    parcel: str
+    if: int
+
+def held[T](value: T) -> with T:
+    lend value
+
+def first[T](items: list[T]) -> T:
+    return items[0]
+
+def main(stdout: Stdout):
+    with held(Delivery(parcel="box", if=3)) as delivery:
+        stdout.print(delivery.parcel, delivery.if)
+    nested: dict[str, list[(int, Delivery)]] = {"a": [(1, Delivery(parcel="x", if=1))]}
+    with held(nested) as kept:
+        stdout.print(len(kept["a"]), kept["a"][0][1].if)
+    stdout.print(first([Delivery(parcel="y", if=2)]).parcel)
+    stdout.print(first([[(1, Delivery(parcel="z", if=4))]])[0][1].parcel)
+"#
+        )?,
+        "box 3\n1 1\ny\nz\n"
+    );
+    Ok(())
+}
+
 /// A program's own types named like the library's, `Delivery`, `Duration` and `Match`, go through
 /// a launched task's inbox and a `with` of two channels. Each is checked under a name no source
 /// can write, and the source the checker writes in for a `with launch` and for a channel's type
@@ -23106,6 +23144,63 @@ fn a_struct_constant_is_worked_out_ahead_for_parallel() -> std::io::Result<()> {
     assert_eq!(printed_by("struct_constant_ahead", source)?, "[2000, 2001, 2002, 2003]\n");
     Ok(())
 }
+
+/// A constant struct held in place, holding a list and a text, read by `parallel`'s workers: the
+/// blocks it holds live for the whole run, as a constant held in a block does, so no worker's
+/// count of them races another's and none is left held at the end, at 1, 4 and 18 threads, in dev
+/// and release. They were never marked, and the list was left held.
+#[test]
+fn a_constant_struct_in_place_keeps_its_blocks_for_the_whole_run() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("constant_blocks_kept")?;
+    let (program, executable) = (dir.join("kept.fen"), dir.join("kept"));
+    std::fs::write(&program, CONSTANT_BLOCKS_KEPT)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "18"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                "97399 Settings(id=0, title=\"a title long enough for a block of its own\", limits=[1, 2, 3])\n",
+                "{how:?} at {threads}: {said}"
+            );
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "{how:?} at {threads}: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const CONSTANT_BLOCKS_KEPT: &str = r#"struct Settings:
+    id: int
+    title: str
+    limits: list[int]
+
+SETTINGS = Settings(id=0, title="a title long enough for a block of its own", limits=[1, 2, 3])
+
+def score(n: int) -> int:
+    settings = SETTINGS
+    return settings.limits[n % 3] + len(settings.title) + n
+
+def main(stdout: Stdout):
+    mut values = [n for n in range(400)]
+    for ref value in parallel(values):
+        value = score(value)
+    stdout.print(sum(values), SETTINGS)
+    return
+"#;
 
 /// A constant keeps its value whatever a read does with what it was given.
 #[test]

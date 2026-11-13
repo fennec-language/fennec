@@ -6,6 +6,7 @@ binary_trees 0
 closures 0
 comp_helpers 0
 comprehensions 0
+data_pipeline 0
 deltablue 0
 dict_field 0
 dicts 0
@@ -14,15 +15,19 @@ fib 0
 game_tick 0
 generators 0
 generics 0
+grep_tool 0
 id_maps 0
 json 0
 json_unicode 0
 k_nucleotide 0
 locks 0
+log_crunch 0
 mandelbrot 0
 method_chain 0
 nbody 0
 particles 0
+pathfind 0
+physics 0
 regex 0
 richards 0
 sieve 0

@@ -182,7 +182,7 @@ fn with_crashed(error: Option<&Type>) -> Type {
 /// that fails cuts the task short at once.
 pub(crate) fn source(launch: &Launch) -> Option<crate::lend_lowering::Source> {
     let (text, message) = source_text(launch)?;
-    let mut module = fennec_syntax::parse_prelude(&text).ok()?;
+    let mut module = parse_written(&text)?;
     // `intrinsics.launch` is the intrinsic's own name, as the standard library's calls to it are.
     fennec_syntax::visit::exprs_mut(&mut module, &mut |expr| {
         if let ExprKind::Attr { object, name, optional: false } = &expr.kind
@@ -207,6 +207,15 @@ pub(crate) fn source(launch: &Launch) -> Option<crate::lend_lowering::Source> {
         gives: Type::Generic(crate::lend::WITH.to_owned(), vec![lent]),
         generics: Vec::new(),
     })
+}
+
+/// Source written in for a `with launch`, parsed, with the names in it that can't be written,
+/// as `Delivery'` for a program's own `Delivery`, named as the checker names them.
+fn parse_written(text: &str) -> Option<fennec_syntax::Module> {
+    let writable = fennec_syntax::rename::writable(text);
+    let mut module = fennec_syntax::parse_prelude(&writable).ok()?;
+    fennec_syntax::rename::rename_types(&mut module, &fennec_syntax::rename::written_names(&writable));
+    Some(module)
 }
 
 /// A `launch(...)` call with its task taken out, leaving `launch`'s own options to give the
@@ -285,10 +294,9 @@ fn with_task(def: &mut fennec_syntax::FnDef, launch: &Launch, message: Option<&s
     let ExprKind::Lambda { params, body } = &launch.task.kind else { return None };
     let mut called = body.as_ref().clone();
     if let (Some(inbox), Some(message)) = (params.first(), message) {
-        let made = fennec_syntax::parse_prelude(&format!(
+        let made = parse_written(&format!(
             "def inbox__made(channel__made: int) -> Inbox[{message}]:\n    return Inbox[{message}](_channel=channel__made)\n"
-        ))
-        .ok()?;
+        ))?;
         let Some(Item::Function(maker)) = made.items.into_iter().next() else { return None };
         let Some(fennec_syntax::StmtKind::Return(Some(inbox_made))) =
             maker.body.into_iter().next().map(|stmt| stmt.kind)

@@ -1,0 +1,89 @@
+# Each JSON read and write starts fresh. What one keeps only now and then, as the path to explain
+# a failure, the `Id`s and `Table`s it's seen, tags and tuples, starts as a shared empty value,
+# and a read that writes into one makes its own, leaving the shared one empty. So nothing one
+# read kept can reach the next, however the first went.
+from std import json
+from std.collections import Id, Table
+from std.concurrent import Crashed
+
+struct Inner:
+    n: int
+
+struct Outer:
+    inner: Inner
+
+struct Pair:
+    both: (int, str)
+
+struct Unit:
+    name: str
+    health: int
+    target: Id[Unit]? = None
+
+struct World:
+    units = Table[Unit]()
+    selected = list[Id[Unit]]()
+
+## Why reading `run` failed, or "loaded".
+def failure[T](run: () -> T fails ParseError) -> str:
+    _ = run() except why:
+        return why.message
+    return "loaded"
+
+## A world of two units, one targeting the other, as JSON.
+def two_units() -> str:
+    mut world = World()
+    ash = world.units.add(Unit(name="ash", health=10))
+    _ = world.units.add(Unit(name="vex", health=8, target=ash))
+    world.selected = [ash]
+    return json.dumps(world)
+
+test "a failure's path doesn't reach the next read"():
+    for _ in range(2):
+        assert (
+            failure(() => json.loads[Outer]("{\"inner\": {\"n\": \"x\"}}")?)
+            == "`inner.n` should be an int, but it's a str"
+        )
+        assert (
+            failure(() => json.loads[int]("\"x\"")?) == "the text should be an int, but it's a str"
+        )
+
+test "the Ids and Tables one read saw don't reach the next"():
+    for _ in range(2):
+        loaded = json.loads[World](two_units())?
+        assert len(loaded.units) == 2
+        assert (
+            failure(() => json.loads[Id[Unit]]("0")?)
+            == "the text is an Id, but the text has no `Table[Unit]` for it to be in"
+        )
+
+test "a tuple left half read doesn't reach the next"():
+    for _ in range(2):
+        assert failure(() => json.loads[Pair]("{\"both\": [1]}")?) != "loaded"
+        assert json.loads[Pair]("{\"both\": [3, \"c\"]}")?.both == (3, "c")
+
+test "the Tables one write found don't reach the next"():
+    for _ in range(2):
+        with_ids = two_units()
+        assert with_ids.find("\"target\": 0") is not None
+        assert json.dumps(World()) == "{\"units\": [], \"selected\": []}"
+
+## Each of the reads above, twice, in a task of its own: a program that runs tasks shares its
+## constants between them too.
+def read_twice() fails ParseError:
+    for _ in range(2):
+        assert (
+            failure(() => json.loads[int]("\"x\"")?) == "the text should be an int, but it's a str"
+        )
+        assert len(json.loads[World](two_units())?.units) == 2
+        assert failure(() => json.loads[Id[Unit]]("0")?) != "loaded"
+        assert json.loads[Pair]("{\"both\": [3, \"c\"]}")?.both == (3, "c")
+
+test "reads in tasks start fresh too"():
+    for _ in range(2):
+        with launch(() => read_twice()?)?:
+            pass
+        read_twice()?
+
+def main(stdout: Stdout):
+    stdout.print(failure(() => json.loads[int]("\"x\"")?))

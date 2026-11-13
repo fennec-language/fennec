@@ -4237,6 +4237,46 @@ fn a_u64_to_a_power() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A struct held in place compares, orders as a tuple and crosses a lock whatever its fields hold, as
+/// it would boxed: here a `u64` and an `f32` beside a text, which `==` refused in place while the
+/// same struct boxed, with a `dict` beside them, compared fine. A `u64` orders unsigned.
+#[test]
+fn a_struct_in_place_compares_and_crosses_a_lock_whatever_its_fields_hold() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "in_place_any_field",
+        IN_PLACE_ANY_FIELD,
+        "True False True\nTrue False True\nPart(big=6, small=6.0, name=\"a name long enough for a block 6\") True 3\n",
+    )?;
+    assert!(counts_of("in_place_any_field_counts", IN_PLACE_ANY_FIELD)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const IN_PLACE_ANY_FIELD: &str = r#"struct Part:
+    big: u64
+    small: f32
+    name: str
+
+
+def make(n: int) -> Part:
+    return Part(big=u64(n), small=f32(n), name=f"a name long enough for a block {n}")
+
+def main(stdout: Stdout):
+    noise = [make(n + 100) for n in range(3)]
+    stdout.print(make(1) == make(1), make(1) == make(2), make(1) != make(2))
+    stdout.print((u64(1), "a") < (u64(2), "a"), (u64(2) * u64(1 << 62), "b") < (u64(1), "b"), (u64(3), "c") <= (u64(3), "c"))
+    shared store = [make(5)]
+    lock store as ref held:
+        held.append(make(6))
+    mut taken = make(0)
+    lock store as held:
+        taken = held[1]
+    stdout.print(taken, taken == make(6), len(noise))
+    return
+"#;
+
 /// `u64`s sort as unsigned numbers natively, those past `int`'s top after the rest: by themselves,
 /// in place, by a key, and as a tuple's first item. `f32`s sort as the floats they are, and both
 /// can be what a key gives.
@@ -21618,7 +21658,8 @@ fn fennec_literal(text: &str) -> String {
 }
 
 /// `split` gives what Rust's `str::split` and `split_whitespace` give, on rows chosen for where it
-/// could go wrong: empty parts, separators at both ends, separators of two and three bytes, parts
+/// could go wrong: empty parts, separators at both ends, separators of one to nine bytes, ones
+/// that overlap themselves, ones that end at, start at and lie across a word of the text, parts
 /// of exactly 23 bytes, which are held inline, and of 24, which take a block, of ASCII and of
 /// two-byte characters, and whitespace of ASCII and beyond it. The texts and separators come out
 /// of lists, so each split is the runtime's. Every list and part is freed after, with no block
@@ -21650,6 +21691,22 @@ fn a_split_gives_what_rust_gives_at_every_edge() -> std::io::Result<()> {
         ("ab".to_owned(), "abc"),
         ("a\tb\nc".to_owned(), "\n"),
         ("x,y,z,w,v,u,t,s,r,q,p,o,n,m,l,k".to_owned(), ","),
+        // Separators of two to eight bytes are found a word at a time, and of nine as a `str`.
+        ("GET /a HTTP/1.1\r\nHost: fox\r\nAccept: */*\r\n\r\nbody".to_owned(), "\r\n"),
+        ("\r\n\r\n".to_owned(), "\r\n"),
+        ("aaa".to_owned(), "aa"),
+        ("aaaa".to_owned(), "aa"),
+        ("abababab".to_owned(), "abab"),
+        // A separator ending at, starting at and lying across the end of the text's first word.
+        ("123456--rest".to_owned(), "--"),
+        ("12345678--rest".to_owned(), "--"),
+        ("1234567--rest".to_owned(), "--"),
+        ("one12345678two12345678three".to_owned(), "12345678"),
+        ("one123456789two123456789three".to_owned(), "123456789"),
+        ("one1234567".to_owned(), "12345678"),
+        (format!("{a23}::{b24}::{e23}::{e24}::"), "::"),
+        (format!("{e24}→é{a23}→é"), "→é"),
+        ("a\r\nb\rc\nd\r".to_owned(), "\r\n"),
     ];
     let spaced: Vec<String> = vec![
         "  a\tb\nc  ".to_owned(),

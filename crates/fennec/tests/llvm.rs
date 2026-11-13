@@ -4836,6 +4836,81 @@ def main(stdout: Stdout):
     )
 }
 
+/// `sort`, `reverse` and `swap` move a list's in-place items where they lie, each keeping what it
+/// holds, and a dict's set writes a value held in place into its entry's own block: what each
+/// prints, a list shared before it's turned round keeping its order, and the blocks made,
+/// one copy for that shared list and none for a sort, are as pinned, with nothing left held.
+#[test]
+fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("moved_in_place", MOVED_IN_PLACE, MOVED_IN_PLACE_PRINTS)?;
+    assert_eq!(
+        counts_of("moved_in_place_counts", MOVED_IN_PLACE)?,
+        "copies 1 copied_bytes 672 largest_copy 672 allocations 114 allocated_bytes 11840 live 0"
+    );
+    Ok(())
+}
+
+const MOVED_IN_PLACE: &str = r#"enum Outcome:
+    Good(value: int)
+    Bad(reason: str)
+
+struct Inner:
+    label: str
+    weights: list[int]
+
+struct Item:
+    id: int
+    name: str
+    inner: Inner
+    state: Outcome
+
+def make(n: int) -> Item:
+    state = Outcome.Good(value=n) if n % 3 == 0 else Outcome.Bad(reason=f"a reason long enough for a block {n}")
+    return Item(id=n, name=f"a name long enough for a block {n}", inner=Inner(label=f"a label long enough for a block {n}", weights=[n, n * 2]), state=state)
+
+def main(stdout: Stdout):
+    mut items = [make(n) for n in range(7)]
+    noise = [make(n + 100) for n in range(3)]
+    items.reverse()
+    items.swap(0, -1)
+    kept = items
+    items.reverse()
+    stdout.print([item.id for item in items], [item.id for item in kept])
+    items.sort(key=item => item.name)
+    stdout.print([item.id for item in items])
+    items.sort(key=item => (item.id % 2, -item.id))
+    stdout.print([item.id for item in items], items[0] == make(5), items[6])
+    mut pairs = [(n % 3, f"a text long enough for a block {n}") for n in range(5)]
+    pairs.sort()
+    pairs.reverse()
+    stdout.print(pairs[0], pairs[4])
+    mut by_key = dict[int, Item]()
+    for round in range(3):
+        for n in range(3):
+            mut item = make(n + round * 10)
+            item.inner.weights.append(round)
+            by_key[n] = item
+    held = by_key[1]
+    by_key[1] = make(77)
+    stdout.print(held.inner, by_key[1].id, by_key[2].inner.weights)
+    mut maybes: list[Inner?] = [Inner(label=f"a label long enough for a block {n}", weights=[n]) if n % 2 == 0 else None for n in range(5)]
+    maybes.reverse()
+    maybes.swap(0, 1)
+    stdout.print(maybes[1], maybes[0], len(noise))
+    return
+"#;
+
+const MOVED_IN_PLACE_PRINTS: &str = r#"[6, 1, 2, 3, 4, 5, 0] [0, 5, 4, 3, 2, 1, 6]
+[0, 1, 2, 3, 4, 5, 6]
+[6, 4, 2, 0, 5, 3, 1] False Item(id=1, name="a name long enough for a block 1", inner=Inner(label="a label long enough for a block 1", weights=[1, 2]), state=Outcome.Bad(reason="a reason long enough for a block 1"))
+(2, "a text long enough for a block 2") (0, "a text long enough for a block 0")
+Inner(label="a label long enough for a block 21", weights=[21, 42, 2]) 77 [22, 44, 2]
+Inner(label="a label long enough for a block 4", weights=[4]) None 3
+"#;
+
 /// `sorted` of a type with its own `<` sorts by it: stable, so items `<` says are
 /// neither before nor after keep their order, and the standard library's `Uuid` too.
 #[test]

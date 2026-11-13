@@ -571,6 +571,42 @@ impl Emit<'_, '_, '_> {
     /// `_waiting` when that body may wait, so the scheduler can park a range rather than its
     /// thread, and nothing for one that only computes. A body made here is known; one passed
     /// in may be any closure, and waits if any the program makes may.
+    /// Which of a `for` or `map` call over a range: one that may wait (`_waiting`), one whose body
+    /// has a loop or a call of its own (`_heavy`), which the runtime cuts into more pieces so every
+    /// core has some, or the plain one. It's worked out from the program alone, so the cut, and
+    /// so what's made and in what order, is the same on every run.
+    fn weighed(&self, range: &Operand) -> &'static str {
+        let waiting = self.waiting(range);
+        if !waiting.is_empty() {
+            return waiting;
+        }
+        let ranges = self.ranges_written(range);
+        let heavy = !ranges.is_empty()
+            && ranges.iter().any(|name| self.module.function_named(name).is_ok_and(heavy_body));
+        if heavy { "_heavy" } else { "" }
+    }
+
+    /// Every function a range local is made a closure of, when only closures made here are written
+    /// to it: none otherwise.
+    fn ranges_written(&self, range: &Operand) -> Vec<String> {
+        let Operand::Local(local) = range else { return Vec::new() };
+        let writes: Vec<Option<&String>> = self
+            .function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.insts)
+            .filter(|inst| inst.kind.dest() == Some(*local))
+            .map(|inst| match &inst.kind {
+                InstKind::MakeClosure { function, .. } => Some(function),
+                _ => None,
+            })
+            .collect();
+        if writes.is_empty() || writes.iter().any(Option::is_none) {
+            return Vec::new();
+        }
+        writes.into_iter().flatten().cloned().collect()
+    }
+
     fn waiting(&self, range: &Operand) -> &'static str {
         let shared = &self.module.shared;
         let any_closure = !shared.waiting_closures.is_empty();
@@ -675,7 +711,7 @@ impl Emit<'_, '_, '_> {
     /// `parallel.for(list, range)`: each range of the list's positions, as the runtime splits
     /// them.
     fn parallel_for(&mut self, list: &Operand, range: &Operand) -> Result<(), String> {
-        let call = format!("fennec_parallel_for{}", self.waiting(range));
+        let call = format!("fennec_parallel_for{}", self.weighed(range));
         let (list, env) = self.list_and_env(list, range)?;
         let shim = self.shim(Shape::Each);
         self.declare(&format!("declare i64 @{call}(ptr, ptr, i64) nounwind"));
@@ -689,7 +725,7 @@ impl Emit<'_, '_, '_> {
     /// in it.
     fn parallel_map(&mut self, dest: LocalId, list: &Operand, range: &Operand) -> Result<(), String> {
         let item = list_item(&self.kind_of(dest)?.clone())?;
-        let call = format!("fennec_parallel_map{}", self.waiting(range));
+        let call = format!("fennec_parallel_map{}", self.weighed(range));
         let (list, env) = self.list_and_env(list, range)?;
         let symbol = element_symbol(self.module.layouts, item);
         self.module.shared.elements.insert(symbol.clone(), item);
@@ -887,6 +923,40 @@ mod tests {
         Ok(units.into_iter().map(|unit| unit.text).collect())
     }
 
+    /// A `parallel` body that calls a function or has a loop of its own is run through the
+    /// runtime's `_heavy` calls, which cut the work finer so every core gets some; one of a few
+    /// steps an item isn't. Which is decided from the program alone.
+    #[test]
+    fn a_heavy_parallel_body_is_cut_finer() -> Result<(), String> {
+        let source = "\
+def health(cell: int, cells: list[list[int]]) -> int:
+    mut total = 0
+    for me in cells[cell]:
+        total += me
+    return total
+
+def heavy(cells: list[list[int]]) -> list[int]:
+    return [health(cell, cells=cells) for cell in parallel(range(len(cells)))]
+
+def looped(cells: list[list[int]]) -> list[int]:
+    return [sum(n for n in cells[cell]) for cell in parallel(range(len(cells)))]
+
+def light(xs: list[int]) -> list[int]:
+    return [x * x for x in parallel(xs)]
+
+def main(stdout: Stdout):
+    cells = [[1, 2], [3]]
+    stdout.print(heavy(cells), looped(cells), light([2]))
+";
+        let text = texts(source)?;
+        // `heavy` calls a function in its body and `looped` has a loop of its own; `light` doesn't.
+        let called = |call: &str| text.matches(&format!("= call ptr @{call}(")).count();
+        // A function's text can be in more than one unit, as a copy to inline, so it's the share.
+        let (heavy, light) = (called("fennec_parallel_map_heavy"), called("fennec_parallel_map"));
+        assert!(light > 0 && heavy == 2 * light, "{heavy} heavy, {light} light:\n{text}");
+        Ok(())
+    }
+
     #[test]
     fn a_loop_a_comprehension_and_a_sum_over_parallel_run_through_the_runtime() -> Result<(), String> {
         let source = "\
@@ -1047,4 +1117,21 @@ def main(stdout: Stdout):
         assert!(!text.contains("fennec_list_copy"), "{text}");
         Ok(())
     }
+}
+
+/// Whether a range's body does more than a few steps an item: it calls a function, or it has a
+/// loop of its own besides the range's count over its positions.
+fn heavy_body(function: &Function) -> bool {
+    let calls = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .any(|inst| matches!(inst.kind, InstKind::Call { .. } | InstKind::CallClosure { .. }));
+    let back_edges = function
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(at, block)| block.end.targets().into_iter().filter(move |target| target.0 <= at))
+        .count();
+    calls || back_edges > 1
 }

@@ -6025,6 +6025,110 @@ def main(stdout: Stdout):
     )
 }
 
+/// A struct holding a text, sent to a task and read there through its inbox's loop, then sent back
+/// as it is and inside an f-string, comes back whole at every length around the most a header
+/// holds in itself, on one thread and on many. The inbox's generator once kept each `Event` in its
+/// item slot without an owner of its text, so a text in a block of its own was freed under it.
+#[test]
+fn a_received_struct_s_text_sent_on_comes_back_whole_at_every_length() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("received_text_sent_on")?;
+    let program = dir.join("sent_on.fen");
+    std::fs::write(
+        &program,
+        r#"from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+struct Event:
+    user: int
+    text: str
+
+def reader(inbox: Inbox[Event], out: Sender[str]) fails Closed:
+    for event in inbox:
+        out.send(event.text)?
+        out.send(f"got {event.text}")?
+    return
+
+def text_of(length: int, n: int) -> str:
+    return "".join(["x" for _ in range(length - 1)]) + str(n)
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    for length in [20, 23, 24, 28, 31, 32, 40, 64]:
+        mut whole = 0
+        with channel[str](size=16) as results:
+            back = results.sender()
+            with launch((inbox) => reader(inbox, back)?, inbox_size=4)? as to_reader:
+                for n in range(5):
+                    to_reader.send(Event(user=n, text=text_of(length, n=n)))?
+            for n in range(5):
+                sent = text_of(length, n=n)
+                if (results.receive() else "") == sent:
+                    whole += 1
+                if (results.receive() else "") == f"got {sent}":
+                    whole += 1
+        stdout.print(length, whole)
+    return
+"#,
+    )?;
+    let wanted = "20 10\n23 10\n24 10\n28 10\n31 10\n32 10\n40 10\n64 10\n";
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("sent_on"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "16"] {
+            let ran = Command::new(&output).env("FENNEC_THREADS", threads).output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(said.0, wanted, "{how:?} on {threads} threads: {}", said.1);
+        }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
+/// A generator's item and what it keeps across a `yield` are its own: a struct holding a text in a
+/// block of its own, yielded, and another kept from one item to the next, both read whole after.
+#[test]
+fn a_generator_owns_the_struct_it_yields_and_the_one_it_keeps() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generator_owns_structs",
+        r#"struct Note:
+    at: int
+    text: str
+
+def long_text(n: int) -> str:
+    return f"a note long enough to need a block of its own, number {n}"
+
+def notes(count: int) -> Iterator[Note]:
+    mut kept = Note(at=-1, text=long_text(-1))
+    for at in range(count):
+        yield Note(at=at, text=long_text(at))
+        yield kept
+        kept = Note(at=at, text=long_text(at * 10))
+    return
+
+def main(stdout: Stdout):
+    mut whole = 0
+    mut seen = 0
+    for note in notes(6):
+        seen += 1
+        if note.text == long_text(note.at) or note.text == long_text(note.at * 10):
+            whole += 1
+    stdout.print(seen, whole)
+    return
+"#,
+        "12 12\n",
+    )
+}
+
 /// A struct field that starts as a module constant, pushed to and popped through `ref self` methods,
 /// gives back what was pushed in a launched task as it does on the main thread, after the main
 /// thread has read the constant over and over. Each read there once took the constant's count down,

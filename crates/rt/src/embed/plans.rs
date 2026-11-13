@@ -22,7 +22,7 @@ struct Inner {
 
 impl Holds {
     /// Whether the words holding blocks are the same in every value, with no enum inside to ask.
-    fn fixed(&self) -> bool {
+    pub(super) fn fixed(&self) -> bool {
         self.enums.is_empty()
     }
 
@@ -43,12 +43,12 @@ impl Holds {
     }
 
     /// The addresses in a value's words, zero for no block, which most values have all of.
-    fn blocks_in<'w>(&'w self, words: &'w [u64]) -> impl Iterator<Item = u64> + 'w {
+    pub(super) fn blocks_in<'w>(&'w self, words: &'w [u64]) -> impl Iterator<Item = u64> + 'w {
         self.blocks.iter().filter_map(|at| words.get(*at).copied())
     }
 
     /// The blocks of the strings in a value's words, zero for an optional string that's `None`.
-    fn texts_in<'w>(&'w self, words: &'w [u64]) -> impl Iterator<Item = u64> + 'w {
+    pub(super) fn texts_in<'w>(&'w self, words: &'w [u64]) -> impl Iterator<Item = u64> + 'w {
         self.texts.iter().filter_map(|at| {
             let header = <&[u64; 3]>::try_from(words.get(*at..*at + 3)?).ok()?;
             super::text::block_of(header)
@@ -228,6 +228,19 @@ pub(super) fn places(plan: &Plan, fields: &[u64], base: usize, found: &mut impl 
 }
 
 fn holds_addresses(holds: &Holds, fields: &[u64], found: &mut impl Extend<u64>) {
+    // What holds no enum, which is most of what's freed, goes straight through its words.
+    if holds.fixed() {
+        found.extend(holds.blocks_in(fields).filter(|address| *address != 0));
+        found.extend(holds.texts_in(fields).filter(|address| *address != 0));
+        return;
+    }
+    addresses_by_case(holds, fields, found);
+}
+
+/// [`holds_addresses`] for a value with an enum inside, which its case decides: out of line.
+#[cold]
+#[inline(never)]
+fn addresses_by_case(holds: &Holds, fields: &[u64], found: &mut impl Extend<u64>) {
     holds.each_block(fields, &mut |address| found.extend(std::iter::once(address)));
 }
 

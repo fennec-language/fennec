@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use fennec_syntax::{Expr, ExprKind, Field, Item, Module, TypeDef};
+use fennec_syntax::{Expr, ExprKind, Field, Item, Module, Pattern, TypeDef};
 
 use crate::checker::Checker;
 use crate::types::Type;
@@ -106,15 +106,22 @@ pub(crate) fn generate(module: &mut Module) {
         }
     }
     let mut unions = Unions::default();
-    for def in types.iter().filter(|def| generated.contains(&def.name)) {
-        if let Some(items) = pair_for(&mut checker, &mut unions, def) {
-            module.items.extend(items);
+    let mut written = Written::default();
+    let mut made = Vec::new();
+    for (number, def) in types.iter().filter(|def| generated.contains(&def.name)).enumerate() {
+        if let Some(items) = pair_for((&mut checker, &mut unions, &mut written), number, def) {
+            made.extend(items);
         }
     }
     if !unions.text.is_empty()
         && let Ok(parsed) = fennec_syntax::parse_prelude(&unions.text)
     {
-        module.items.extend(parsed.items);
+        made.extend(parsed.items);
+    }
+    // Every slot is put in at once, since a type's pair names the functions its unions are saved
+    // through, which are written last.
+    if written.fill(&mut made).is_some() {
+        module.items.extend(made);
     }
 }
 
@@ -246,12 +253,127 @@ fn has_both(checker: &Checker, name: &str) -> bool {
         && ["serialize", "deserialize"].iter().all(|method| checker.program.method(name, method).is_some())
 }
 
-/// One field to read: its type as it's written, and whether it holds an optional already.
+/// What the saving functions' text names by a slot of its own, put in once it's parsed, so nothing
+/// a program names is ever read again: each type, as a written type built from it (see `slots`);
+/// each string that holds a name, as `@serialize(name=...)` gives one; and each field's name where
+/// code names the field, as `self.if` would be, since a field may be named by any word, keywords
+/// included. A local holding a field's value keeps its slot's name.
+#[derive(Default)]
+struct Written {
+    types: Vec<(String, Type)>,
+    texts: Vec<(String, String)>,
+    fields: Vec<(String, String)>,
+}
+
+/// What stands for the type a pair is written for, where it's extended.
+const OWNER: &str = "Owner__slot";
+
+impl Written {
+    /// The slot standing for a type.
+    fn ty(&mut self, ty: &Type) -> String {
+        if let Some((slot, _)) = self.types.iter().find(|(_, held)| held == ty) {
+            return slot.clone();
+        }
+        let slot = format!("Type{}__slot", self.types.len());
+        self.types.push((slot.clone(), ty.clone()));
+        slot
+    }
+
+    /// A string literal holding `text`.
+    fn text(&mut self, text: &str) -> String {
+        let slot = format!("text{}__slot", self.texts.len());
+        self.texts.push((slot.clone(), text.to_owned()));
+        format!("\"{slot}\"")
+    }
+
+    /// The slot standing for a field's name.
+    fn field(&mut self, name: &str) -> String {
+        if let Some((slot, _)) = self.fields.iter().find(|(_, held)| held == name) {
+            return slot.clone();
+        }
+        let slot = format!("field{}__slot", self.fields.len());
+        self.fields.push((slot.clone(), name.to_owned()));
+        slot
+    }
+
+    /// Puts what each slot stands for in, in each item. `None` when a type has no written form.
+    fn fill(&self, items: &mut [Item]) -> Option<()> {
+        let types: Vec<(&str, Type)> =
+            self.types.iter().map(|(slot, ty)| (slot.as_str(), ty.clone())).collect();
+        for item in items {
+            match item {
+                Item::Function(def) => self.fill_function(def, &types)?,
+                Item::Extend(extension) => {
+                    for method in &mut extension.methods {
+                        self.fill_function(method, &types)?;
+                    }
+                }
+                Item::Struct(def) => {
+                    for ty in def.fields.iter_mut().filter_map(|field| field.ty.as_mut()) {
+                        crate::slots::fill_type(ty, &types)?;
+                    }
+                }
+                Item::Const { value, .. } => {
+                    fennec_syntax::visit::in_expr(value, &mut |expr| self.texts_in(expr));
+                }
+                _ => {}
+            }
+        }
+        Some(())
+    }
+
+    fn fill_function(&self, def: &mut fennec_syntax::FnDef, types: &[(&str, Type)]) -> Option<()> {
+        crate::slots::fill(def, types)?;
+        fennec_syntax::visit::in_function(def, &mut |expr| {
+            self.texts_in(expr);
+            match &mut expr.kind {
+                // `self.if`: the field, by its own name.
+                ExprKind::Attr { name, .. } => self.field_named(name),
+                // `Self(if=...)`: the field given, by its own name, from the local holding it.
+                ExprKind::Call { args, .. } => {
+                    for name in args.iter_mut().filter_map(|arg| arg.name.as_mut()) {
+                        self.field_named(name);
+                    }
+                }
+                // `case .Gate(if=field0__slot)`: the case's field, read into the local.
+                ExprKind::Match { arms, .. } => {
+                    for arm in arms {
+                        if let Pattern::Variant { fields, .. } = &mut arm.pattern {
+                            for name in fields {
+                                self.field_named(name);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        });
+        Some(())
+    }
+
+    fn texts_in(&self, expr: &mut Expr) {
+        if let ExprKind::Str(written) = &expr.kind
+            && let Some((_, text)) = self.texts.iter().find(|(slot, _)| slot == written)
+        {
+            expr.kind = ExprKind::Str(text.clone());
+        }
+    }
+
+    fn field_named(&self, name: &mut String) {
+        if let Some((_, field)) = self.fields.iter().find(|(slot, _)| slot == name) {
+            field.clone_into(name);
+        }
+    }
+}
+
+/// One field to read: the slot standing for its type, and whether it holds an optional already.
 /// One that holds a union is saved as what `Unions` makes for its type.
 struct Read<'f> {
     field: &'f Field,
+    /// The local holding its value.
+    local: String,
     ty: String,
-    /// Its type made optional, as it's written, when it isn't one already.
+    /// Its type made optional, when it isn't one already.
     or_none: String,
     optional: bool,
     union: Option<Changed>,
@@ -270,9 +392,9 @@ impl Read<'_> {
     fn read(&self) -> String {
         match &self.union {
             Some(changed) => {
-                format!("loaded_union__{}(src__.value[{}]()?)", changed.helper, one_type(&changed.saved_as))
+                format!("loaded_union__{}(src__.value[{}]()?)", changed.helper, changed.saved_as)
             }
-            None => format!("src__.value[{}]()?", one_type(&self.ty)),
+            None => format!("src__.value[{}]()?", self.ty),
         }
     }
 }
@@ -297,7 +419,7 @@ struct Unions {
 
 impl Unions {
     /// How a value of `ty` is saved, when it holds a union.
-    fn change(&mut self, ty: &Type) -> Option<Changed> {
+    fn change(&mut self, written: &mut Written, ty: &Type) -> Option<Changed> {
         if !holds_union(ty) {
             return None;
         }
@@ -307,33 +429,33 @@ impl Unions {
         }
         let (saved_as, saving, loading) = match ty {
             Type::Union(members) => {
-                let wrapper = self.wrapper(ty, members)?;
+                let wrapper = self.wrapper(written, ty, members)?;
                 (wrapper.clone(), format!("return {wrapper}(value=x__)"), "return x__.value".to_owned())
             }
             Type::Optional(inner) => {
-                let Changed { saved_as, helper } = self.change(inner)?;
+                let Changed { saved_as, helper } = self.change(written, inner)?;
                 let saving = format!("y__ = x__ else return None\n    return saved_union__{helper}(y__)");
                 let loading = format!("y__ = x__ else return None\n    return loaded_union__{helper}(y__)");
                 (format!("{saved_as}?"), saving, loading)
             }
             Type::List(inner) => {
-                let Changed { saved_as, helper } = self.change(inner)?;
+                let Changed { saved_as, helper } = self.change(written, inner)?;
                 let each = |way: &str| format!("return [{way}_union__{helper}(item__) for item__ in x__]");
                 (format!("list[{saved_as}]"), each("saved"), each("loaded"))
             }
             Type::Dict(key, value) => {
-                let Changed { saved_as, helper } = self.change(value)?;
+                let Changed { saved_as, helper } = self.change(written, value)?;
                 let each = |way: &str| {
                     format!(
                         "return {{key__: {way}_union__{helper}(value__) for key__, value__ in x__.items()}}"
                     )
                 };
-                (format!("dict[{}, {saved_as}]", key.source()?), each("saved"), each("loaded"))
+                (format!("dict[{}, {saved_as}]", written.ty(key)), each("saved"), each("loaded"))
             }
             _ => return None,
         };
         let helper = self.helpers.len();
-        let source = ty.source()?;
+        let source = written.ty(ty);
         let _ = writeln!(
             self.text,
             "def saved_union__{helper}(x__: {source}) -> {saved_as}:\n    {saving}\n\ndef loaded_union__{helper}(x__: {saved_as}) -> {source}:\n    {loading}\n"
@@ -345,7 +467,7 @@ impl Unions {
 
     /// The struct a union is saved through: its member, by the member's type's name and where it
     /// is among the members, in the union's own order, then the member's own value.
-    fn wrapper(&mut self, ty: &Type, members: &[Type]) -> Option<String> {
+    fn wrapper(&mut self, written: &mut Written, ty: &Type, members: &[Type]) -> Option<String> {
         let key = ty.to_string();
         let number = match self.wrappers.get(&key) {
             Some(&number) => return Some(format!("SavedUnion__{number}")),
@@ -353,21 +475,26 @@ impl Unions {
         };
         self.wrappers.insert(key, number);
         let name = format!("SavedUnion__{number}");
-        let names: Vec<String> = members.iter().map(Type::source).collect::<Option<_>>()?;
-        let listed: Vec<String> = names.iter().map(|member| format!("\"{member}\"")).collect();
+        // Each member is saved under its name as the program writes it.
+        let shown: Vec<String> = members
+            .iter()
+            .map(|member| member.source().map(|source| fennec_syntax::rename::shown_key(&source)))
+            .collect::<Option<_>>()?;
+        let listed: Vec<String> = shown.iter().map(|member| written.text(member)).collect();
         let mut saving = String::new();
         let mut loading = format!("        at__ = src__.member([{}])?\n", listed.join(", "));
-        for (at, member) in names.iter().enumerate() {
+        for (at, (member, shown)) in members.iter().zip(&shown).enumerate() {
+            let member = written.ty(member);
+            let shown = written.text(shown);
             // Each test on its own, so each sees every member.
             let _ = writeln!(
                 saving,
-                "        if self.value is {member}:\n            out__.member(\"{member}\", {at})\n            out__.value(self.value)"
+                "        if self.value is {member}:\n            out__.member({shown}, {at})\n            out__.value(self.value)"
             );
             let read = format!(
-                "value__ = src__.value[{}]()?\n            src__.end_member()?\n            return {name}(value=value__)",
-                one_type(member)
+                "value__ = src__.value[{member}]()?\n            src__.end_member()?\n            return {name}(value=value__)"
             );
-            if at + 1 < names.len() {
+            if at + 1 < members.len() {
                 let _ = writeln!(loading, "        if at__ == {at}:\n            {read}");
             } else {
                 let read = read.replace("\n    ", "\n");
@@ -378,16 +505,10 @@ impl Unions {
         let _ = writeln!(
             self.text,
             "struct {name}:\n    value: {}\n\nextend {name}:\n    def serialize(self, ref out__: Serializer):\n{saving}\n    def deserialize(ref src__: Deserializer) -> {name} fails ParseError:\n{loading}",
-            ty.source()?
+            written.ty(ty)
         );
         Some(name)
     }
-}
-
-/// A type written as the one type in brackets: a tuple type gets a comma after it, so `[(int, str),]`
-/// is one type, not two.
-pub(crate) fn one_type(written: &str) -> String {
-    if written.starts_with('(') { format!("{written},") } else { written.to_owned() }
 }
 
 /// Whether a type is a union, or holds one.
@@ -411,13 +532,12 @@ pub(crate) fn tested_by_name(member: &Type) -> bool {
     }
 }
 
-/// What loading a type's fields needs: those it reads, and those it leaves out, with what's known
-/// of their types.
+/// What loading a type's fields needs: those it reads, and those it leaves out, with the slot of
+/// each one's type, when it has a written form.
 type Fields<'f> = (Vec<Read<'f>>, Vec<(&'f Field, Option<String>)>);
 
 fn reads<'f>(
-    checker: &mut Checker,
-    unions: &mut Unions,
+    (checker, unions, written): (&mut Checker, &mut Unions, &mut Written),
     owner: &str,
     case: Option<&str>,
     fields: &'f [Field],
@@ -425,57 +545,87 @@ fn reads<'f>(
     let mut saved = Vec::new();
     let mut left_out = Vec::new();
     for field in fields {
-        let ty = checker.field_type(owner, case, &field.name);
+        let held = checker.field_type(owner, case, &field.name);
         if skipped(field) {
-            left_out.push((field, ty.source()));
+            left_out.push((field, held.source().map(|_| written.ty(&held))));
         } else {
-            let optional = matches!(ty, Type::Optional(_));
-            let union = unions.change(&ty);
-            let or_none = Type::optional(ty.clone()).source()?;
-            saved.push(Read { field, ty: ty.source()?, or_none, optional, union });
+            held.source()?;
+            let optional = matches!(held, Type::Optional(_));
+            let union = unions.change(written, &held);
+            let or_none = written.ty(&Type::optional(held.clone()));
+            let ty = written.ty(&held);
+            let local = written.field(&field.name);
+            saved.push(Read { field, local, ty, or_none, optional, union });
         }
     }
     Some((saved, left_out))
 }
 
-/// The constant and the extension for a type, parsed.
-fn pair_for(checker: &mut Checker, unions: &mut Unions, def: &TypeDef) -> Option<Vec<Item>> {
+/// The constant and the extension for the type numbered `number`, parsed, with their slots put in
+/// by `written` once every type's are written.
+fn pair_for(
+    (checker, unions, written): (&mut Checker, &mut Unions, &mut Written),
+    number: usize,
+    def: &TypeDef,
+) -> Option<Vec<Item>> {
     let name = &def.name;
+    let owner = written.ty(&Type::named(name));
+    let shown = written.text(name);
     let mut text = String::new();
     let (saving, loading) = if def.cases.is_empty() {
-        let fields = reads(checker, unions, name, None, &def.fields)?;
-        let list = field_list(&def.fields);
-        let _ = writeln!(text, "{} = [{list}]\n", constant(name, ""));
-        (save_struct(name, &fields.0), load_struct(name, &def.fields, &fields))
+        let fields = reads((checker, unions, written), name, None, &def.fields)?;
+        let list = field_list(written, &def.fields);
+        let _ = writeln!(text, "{} = [{list}]\n", constant(number, None));
+        let saving = save_struct(written, &shown, &fields.0);
+        (saving, load_struct((written, &shown), number, &def.fields, &fields))
     } else {
-        let cases = def.cases.iter().map(|case| {
-            format!("(\"{}\", {})", case.name, if case.fields.is_empty() { "False" } else { "True" })
-        });
-        let list = cases.collect::<Vec<_>>().join(", ");
-        let _ = writeln!(text, "{} = [{list}]\n", constant(name, ""));
+        let cases: Vec<String> = def
+            .cases
+            .iter()
+            .map(|case| {
+                format!(
+                    "({}, {})",
+                    written.text(&case.name),
+                    if case.fields.is_empty() { "False" } else { "True" }
+                )
+            })
+            .collect();
+        let _ = writeln!(text, "{} = [{}]\n", constant(number, None), cases.join(", "));
         let mut saving = String::from("        match self:\n");
-        let mut loading = format!("        match src__.enum_case(\"{name}\", {})?:\n", constant(name, ""));
+        let mut loading = format!("        match src__.enum_case({shown}, {})?:\n", constant(number, None));
         for (at, case) in def.cases.iter().enumerate() {
-            let fields = reads(checker, unions, name, Some(&case.name), &case.fields)?;
-            save_case(&mut saving, name, (at, &case.name), &fields.0);
-            load_case(&mut text, &mut loading, name, (at, &case.name), (&case.fields, &fields));
+            let fields = reads((checker, unions, written), name, Some(&case.name), &case.fields)?;
+            save_case(written, &mut saving, &shown, (at, &case.name), &fields.0);
+            load_case(
+                written,
+                (&mut text, &mut loading),
+                (number, &owner),
+                (at, &case.name),
+                (&case.fields, &fields),
+            );
         }
         let _ = writeln!(
             loading,
-            "            case _:\n                fail src__.rule(\"`{name}` has no such case\")"
+            "            case _:\n                fail src__.rule({})",
+            written.text(&format!("`{name}` has no such case"))
         );
         (saving, loading)
     };
-    let shown = bounded(def, "Serializable");
+    let bounds = bounded(def, "Serializable");
     let _ =
-        writeln!(text, "extend {name}{shown}:\n    def serialize(self, ref out__: Serializer):\n{saving}");
-    let shown = bounded(def, "Deserializable");
+        writeln!(text, "extend {OWNER}{bounds}:\n    def serialize(self, ref out__: Serializer):\n{saving}");
+    let bounds = bounded(def, "Deserializable");
     let _ = writeln!(
         text,
-        "extend {name}{shown}:\n    def deserialize(ref src__: Deserializer) -> Self fails ParseError:\n{loading}"
+        "extend {OWNER}{bounds}:\n    def deserialize(ref src__: Deserializer) -> Self fails ParseError:\n{loading}"
     );
     let mut parsed = fennec_syntax::parse_prelude(&text).ok()?;
-    fill_in(&mut parsed, def);
+    for item in &mut parsed.items {
+        if let Item::Extend(extension) = item {
+            name.clone_into(&mut extension.name);
+        }
+    }
+    fill_in(&mut parsed, written, def);
     Some(parsed.items)
 }
 
@@ -488,73 +638,99 @@ fn bounded(def: &TypeDef, bound: &str) -> String {
     format!("[{}]", params.join(", "))
 }
 
-fn constant(owner: &str, case: &str) -> String {
-    let owner = owner.replace('.', "_");
-    format!("SAVED_NAMES_{owner}_{case}")
+/// The constant listing the fields of the type numbered `number`, or of one of its cases, by
+/// where the case is among them.
+fn constant(number: usize, case: Option<usize>) -> String {
+    match case {
+        Some(case) => format!("SAVED_NAMES_{number}_{case}"),
+        None => format!("SAVED_NAMES_{number}_"),
+    }
 }
 
-fn field_list(fields: &[Field]) -> String {
-    let saved = fields.iter().filter(|field| !skipped(field));
-    let saved =
-        saved.map(|field| format!("(\"{}\", \"{}\")", renamed(field).unwrap_or(&field.name), field.name));
-    let left_out =
-        fields.iter().filter(|field| skipped(field)).map(|field| format!("(\"\", \"{}\")", field.name));
-    saved.chain(left_out).collect::<Vec<_>>().join(", ")
+fn field_list(written: &mut Written, fields: &[Field]) -> String {
+    let mut listed = Vec::new();
+    for field in fields.iter().filter(|field| !skipped(field)) {
+        let shown = written.text(renamed(field).unwrap_or(&field.name));
+        listed.push(format!("({shown}, {})", written.text(&field.name)));
+    }
+    for field in fields.iter().filter(|field| skipped(field)) {
+        listed.push(format!("(\"\", {})", written.text(&field.name)));
+    }
+    listed.join(", ")
 }
 
-fn save_fields(out: &mut String, indent: &str, fields: &[Read<'_>], value: impl Fn(&str) -> String) {
+fn save_fields(
+    written: &mut Written,
+    out: &mut String,
+    indent: &str,
+    fields: &[Read<'_>],
+    value: impl Fn(&Read<'_>) -> String,
+) {
     for read in fields {
-        let name = &read.field.name;
+        let saved = read.saved(&value(read));
         let _ = match renamed(read.field) {
-            Some(shown) => writeln!(out, "{indent}out__.renamed(\"{shown}\", {})", read.saved(&value(name))),
-            None => writeln!(out, "{indent}out__.field(\"{name}\", {})", read.saved(&value(name))),
+            Some(shown) => writeln!(out, "{indent}out__.renamed({}, {saved})", written.text(shown)),
+            None => writeln!(out, "{indent}out__.field({}, {saved})", written.text(&read.field.name)),
         };
     }
     let _ = writeln!(out, "{indent}out__.end()");
 }
 
-fn save_struct(name: &str, fields: &[Read<'_>]) -> String {
-    let mut out = format!("        out__.record(\"{name}\", {})\n", fields.len());
-    save_fields(&mut out, "        ", fields, |field| format!("self.{field}"));
+fn save_struct(written: &mut Written, shown: &str, fields: &[Read<'_>]) -> String {
+    let mut out = format!("        out__.record({shown}, {})\n", fields.len());
+    save_fields(written, &mut out, "        ", fields, |read| format!("self.{}", read.local));
     out
 }
 
 /// Writes a case by its name, and by `at`, where it is among the type's cases, for a format that
 /// saves no names.
-fn save_case(out: &mut String, name: &str, (at, case): (usize, &str), fields: &[Read<'_>]) {
+fn save_case(
+    written: &mut Written,
+    out: &mut String,
+    shown: &str,
+    (at, case): (usize, &str),
+    fields: &[Read<'_>],
+) {
+    let case_shown = written.text(case);
     if fields.is_empty() {
         let _ = writeln!(
             out,
-            "            case .{case}:\n                out__.enum_case(\"{name}\", \"{case}\", {at})"
+            "            case .{case}:\n                out__.enum_case({shown}, {case_shown}, {at})"
         );
         return;
     }
-    let names: Vec<&str> = fields.iter().map(|read| read.field.name.as_str()).collect();
+    // Each field by its own name, read into the local that holds it.
+    let names: Vec<String> = fields.iter().map(|read| format!("{0}={0}", read.local)).collect();
     let _ = writeln!(out, "            case .{case}({}):", names.join(", "));
-    let _ =
-        writeln!(out, "                out__.case_record(\"{name}\", \"{case}\", {at}, {})", fields.len());
-    save_fields(out, "                ", fields, str::to_owned);
+    let _ = writeln!(out, "                out__.case_record({shown}, {case_shown}, {at}, {})", fields.len());
+    save_fields(written, out, "                ", fields, |read| read.local.clone());
     let _ = writeln!(out, "                out__.end()");
 }
 
 /// Reads fields into names of their own, each what the type's constructor is given.
-fn load_fields(out: &mut String, indent: &str, list: &str, (fields, left_out): &Fields<'_>) {
+fn load_fields(
+    written: &mut Written,
+    out: &mut String,
+    indent: &str,
+    list: &str,
+    (fields, left_out): &Fields<'_>,
+) {
     for read in fields {
-        let _ = writeln!(out, "{indent}mut read_{}: {} = None", read.field.name, read.or_none);
+        let _ = writeln!(out, "{indent}mut read_{}: {} = None", read.local, read.or_none);
         // An optional field's own None can't be told from one not read, so whether it was read
         // is kept apart, and a None read stays None rather than taking the default.
         if read.optional && read.field.default.is_some() {
-            let _ = writeln!(out, "{indent}mut seen_{} = False", read.field.name);
+            let _ = writeln!(out, "{indent}mut seen_{} = False", read.local);
         }
     }
     let _ = writeln!(out, "{indent}while src__.next_field({list})?:\n{indent}    match src__.field_at():");
     for (at, read) in fields.iter().enumerate() {
-        let name = &read.field.name;
+        let local = &read.local;
         let _ = writeln!(out, "{indent}        case {at}:");
         if read.optional {
-            let _ = writeln!(out, "{indent}            read_{name} = {}", read.read());
+            let _ = writeln!(out, "{indent}            read_{local} = {}", read.read());
             if read.field.default.is_some() {
-                let _ = writeln!(out, "{indent}            seen_{name} = True");
+                let _ = writeln!(out, "{indent}            seen_{local} = True");
             }
             continue;
         }
@@ -565,138 +741,147 @@ fn load_fields(out: &mut String, indent: &str, list: &str, (fields, left_out): &
         // wrapped as an optional on the way.
         let _ = writeln!(
             out,
-            "{indent}            if src__.none_next() and src__.none()?:\n{indent}                read_{name} = None\n{indent}            else:\n{indent}                read_{name} = {}",
+            "{indent}            if src__.none_next() and src__.none()?:\n{indent}                read_{local} = None\n{indent}            else:\n{indent}                read_{local} = {}",
             read.read()
         );
     }
     let _ = writeln!(out, "{indent}        case _:\n{indent}            pass");
     for read in fields {
-        let name = &read.field.name;
-        let shown = renamed(read.field).unwrap_or(name);
+        let local = &read.local;
         if read.field.default.is_some() && read.optional {
             // Read, it holds what was read, None included; left out, it takes its default.
             let _ = writeln!(
                 out,
-                "{indent}mut {name}: {} = DEFAULT_{name}\n{indent}if seen_{name}: {name} = read_{name}",
+                "{indent}mut {local}: {} = DEFAULT_{local}\n{indent}if seen_{local}: {local} = read_{local}",
                 read.ty
             );
         } else if read.field.default.is_some() && read.union.is_some() {
             // A default that's one of a union's members is given as the union.
             let _ = writeln!(
                 out,
-                "{indent}mut {name}: {} = DEFAULT_{name}\n{indent}if read_{name} is not None: {name} = read_{name}",
+                "{indent}mut {local}: {} = DEFAULT_{local}\n{indent}if read_{local} is not None: {local} = read_{local}",
                 read.ty
             );
         } else if read.field.default.is_some() {
-            let _ = writeln!(out, "{indent}{name} = read_{name} else DEFAULT_{name}");
+            let _ = writeln!(out, "{indent}{local} = read_{local} else DEFAULT_{local}");
         } else if read.optional {
-            let _ = writeln!(out, "{indent}{name} = read_{name}");
+            let _ = writeln!(out, "{indent}{local} = read_{local}");
         } else {
-            let _ = writeln!(out, "{indent}if read_{name} is None: fail src__.missing(\"{shown}\")");
-            let _ = writeln!(out, "{indent}{name} = read_{name}");
+            let shown = written.text(renamed(read.field).unwrap_or(&read.field.name));
+            let _ = writeln!(out, "{indent}if read_{local} is None: fail src__.missing({shown})");
+            let _ = writeln!(out, "{indent}{local} = read_{local}");
         }
     }
     for (field, ty) in left_out {
-        let name = &field.name;
+        let local = written.field(&field.name);
         let _ = match ty {
-            Some(ty) => writeln!(out, "{indent}{name}: {ty} = DEFAULT_{name}"),
-            None => writeln!(out, "{indent}{name} = DEFAULT_{name}"),
+            Some(ty) => writeln!(out, "{indent}{local}: {ty} = DEFAULT_{local}"),
+            None => writeln!(out, "{indent}{local} = DEFAULT_{local}"),
         };
     }
 }
 
-fn given(all: &[Field]) -> String {
-    all.iter().map(|field| format!("{0}={0}", field.name)).collect::<Vec<_>>().join(", ")
+/// Each field given to the type's constructor by its own name, from the local holding it.
+fn given(written: &mut Written, all: &[Field]) -> String {
+    all.iter().map(|field| format!("{0}={0}", written.field(&field.name))).collect::<Vec<_>>().join(", ")
 }
 
 /// Gives back the value. One with a `where` rule fails to load when what was read breaks it.
-fn made(out: &mut String, indent: &str, make: &str, all: &[Field]) {
-    let value = make.strip_prefix("return ").unwrap_or(make);
+fn made(written: &mut Written, out: &mut String, indent: &str, make: &str, all: &[Field]) {
+    let given = given(written, all);
     if all.iter().all(|field| field.rule.is_none()) {
-        let _ = writeln!(out, "{indent}return {value}({})", given(all));
+        let _ = writeln!(out, "{indent}return {make}({given})");
         return;
     }
-    let _ = writeln!(out, "{indent}value__ = {value}({}) except broken__:", given(all));
+    let _ = writeln!(out, "{indent}value__ = {make}({given}) except broken__:");
     let _ = writeln!(out, "{indent}    fail src__.rule(broken__.message)\n{indent}return value__");
 }
 
 /// Reads fields that come in order, every one there, as a format that saves no names gives them,
 /// each straight into a name of its own, then gives back the value made of them.
 fn load_in_order(
+    written: &mut Written,
     out: &mut String,
     indent: &str,
-    (name, make): (&str, &str),
+    (shown, make, case): (&str, &str, bool),
     all: &[Field],
     fields: &Fields<'_>,
 ) {
     let (reads, left_out) = fields;
-    let _ = writeln!(out, "{indent}if src__.ordered(\"{name}\")?:");
+    let _ = writeln!(out, "{indent}if src__.ordered({shown})?:");
     for read in reads {
-        let _ = writeln!(out, "{indent}    in_{} = {}", read.field.name, read.read());
+        let _ = writeln!(out, "{indent}    in_{} = {}", read.local, read.read());
     }
     let _ = writeln!(out, "{indent}    src__.end_ordered()");
-    if make != "Self" {
+    if case {
         let _ = writeln!(out, "{indent}    src__.end_case()?");
     }
     let given: Vec<String> = all
         .iter()
         .map(|field| {
+            let local = written.field(&field.name);
             if left_out.iter().any(|(gone, _)| gone.name == field.name) {
-                format!("{0}=DEFAULT_{0}", field.name)
+                format!("{local}=DEFAULT_{local}")
             } else {
-                format!("{0}=in_{0}", field.name)
+                format!("{local}=in_{local}")
             }
         })
         .collect();
-    let value = make.strip_prefix("return ").unwrap_or(make);
     if all.iter().all(|field| field.rule.is_none()) {
-        let _ = writeln!(out, "{indent}    return {value}({})", given.join(", "));
+        let _ = writeln!(out, "{indent}    return {make}({})", given.join(", "));
         return;
     }
-    let _ = writeln!(out, "{indent}    value__ = {value}({}) except broken__:", given.join(", "));
+    let _ = writeln!(out, "{indent}    value__ = {make}({}) except broken__:", given.join(", "));
     let _ = writeln!(out, "{indent}        fail src__.rule(broken__.message)\n{indent}    return value__");
 }
 
-fn load_struct(name: &str, all: &[Field], fields: &Fields<'_>) -> String {
+fn load_struct(
+    (written, shown): (&mut Written, &str),
+    number: usize,
+    all: &[Field],
+    fields: &Fields<'_>,
+) -> String {
     let mut out = String::new();
-    load_in_order(&mut out, "        ", (name, "Self"), all, fields);
-    let _ = writeln!(out, "        src__.record(\"{name}\")?");
-    load_fields(&mut out, "        ", &constant(name, ""), fields);
-    made(&mut out, "        ", "Self", all);
+    load_in_order(written, &mut out, "        ", (shown, "Self", false), all, fields);
+    let _ = writeln!(out, "        src__.record({shown})?");
+    load_fields(written, &mut out, "        ", &constant(number, None), fields);
+    made(written, &mut out, "        ", "Self", all);
     out
 }
 
 fn load_case(
-    text: &mut String,
-    out: &mut String,
-    name: &str,
+    written: &mut Written,
+    (text, out): (&mut String, &mut String),
+    (number, owner): (usize, &str),
     (at, case): (usize, &str),
     (all, fields): (&[Field], &Fields<'_>),
 ) {
     let _ = writeln!(out, "            case {at}:");
     let indent = "                ";
     if all.is_empty() {
-        let _ = writeln!(out, "{indent}return {name}.{case}");
+        let _ = writeln!(out, "{indent}return {owner}.{case}");
         return;
     }
-    let list = constant(name, case);
-    let _ = writeln!(text, "{list} = [{}]\n", field_list(all));
-    load_in_order(out, indent, (case, &format!("{name}.{case}")), all, fields);
-    let _ = writeln!(out, "{indent}src__.record(\"{case}\")?");
-    load_fields(out, indent, &list, fields);
+    let list = constant(number, Some(at));
+    let _ = writeln!(text, "{list} = [{}]\n", field_list(written, all));
+    let case_shown = written.text(case);
+    load_in_order(written, out, indent, (&case_shown, &format!("{owner}.{case}"), true), all, fields);
+    let _ = writeln!(out, "{indent}src__.record({case_shown})?");
+    load_fields(written, out, indent, &list, fields);
     let _ = writeln!(out, "{indent}src__.end_case()?");
-    made(out, indent, &format!("return {name}.{case}"), all);
+    made(written, out, indent, &format!("{owner}.{case}"), all);
 }
 
 /// Puts each field's default where the generated code names it, as it's written in the type.
-fn fill_in(parsed: &mut Module, def: &TypeDef) {
+fn fill_in(parsed: &mut Module, written: &Written, def: &TypeDef) {
     let fields: Vec<&Field> =
         def.fields.iter().chain(def.cases.iter().flat_map(|case| &case.fields)).collect();
     fennec_syntax::visit::exprs_mut(parsed, &mut |expr: &mut Expr| {
         let ExprKind::Name(name) = &expr.kind else { return };
-        let Some(wanted) = name.strip_prefix("DEFAULT_") else { return };
+        let Some(slot) = name.strip_prefix("DEFAULT_") else { return };
+        let Some((_, wanted)) = written.fields.iter().find(|(held, _)| held == slot) else { return };
         if let Some(default) =
-            fields.iter().find(|field| field.name == wanted).and_then(|field| field.default.as_ref())
+            fields.iter().find(|field| field.name == *wanted).and_then(|field| field.default.as_ref())
         {
             *expr = default.clone();
         }

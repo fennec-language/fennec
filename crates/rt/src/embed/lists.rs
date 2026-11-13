@@ -1271,6 +1271,25 @@ pub(super) fn list_of_items(state: &mut State, element: &Rc<Element>, words: &[u
     state.heap.insert(block)
 }
 
+/// A new list owned once of the strings `items` holds: three words of each one's header when
+/// native code holds strings as headers, and each one's block's address otherwise (see
+/// `text::string_element`). The kind of item is found by its variant, with nothing made to compare.
+pub(super) fn list_of_texts(state: &mut State, items: &[u64]) -> i64 {
+    let headers = state.tables.text_headers;
+    let found = state.tables.elements.iter().position(|known| match **known {
+        Element::Text => headers,
+        Element::Str => !headers,
+        _ => false,
+    });
+    let at = found.unwrap_or_else(|| {
+        state.tables.elements.push(super::text::string_element(state));
+        state.tables.elements.len() - 1
+    });
+    let stride = if headers { Element::Text.words() } else { Element::Str.words() };
+    let block = build(state, at, stride, items, 0);
+    state.heap.insert(block)
+}
+
 /// `a ** b` on ints. Fails for a negative power or an overflow.
 pub extern "C" fn int_power(a: i64, b: i64, start: i64, end: i64) -> i64 {
     attempt(|_: &mut State| {

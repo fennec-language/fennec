@@ -315,6 +315,10 @@ impl TestWorld {
         match capability {
             Capability::Fs => {
                 let paths: Vec<Value> = args.iter().map(crate::stdlib::fs::path_text).collect();
+                // Refused as the real file system refuses it, so a test sees what a run would.
+                if let Some(refused) = crate::stdlib::fs::holding_nul(&paths) {
+                    return Some(Ok(refused));
+                }
                 crate::stdlib::fs::fake_method(self, method, &paths, span)
             }
             Capability::Clock => Some(self.clock(method, args, span)),

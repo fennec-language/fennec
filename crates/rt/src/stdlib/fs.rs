@@ -462,6 +462,14 @@ pub(crate) fn fake_method(
 /// A method of the real `Fs`, which needs nothing of a program's, on paths as `path_text` gives
 /// them.
 pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    if let Some(refused) = holding_nul(paths) {
+        return Ok(refused);
+    }
+    on_real_fs(method, paths, span)
+}
+
+/// `real_fs` for a path it's checked.
+fn on_real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let wrong = || Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
     let io = Fail::from;
     Ok(match (method, paths) {
@@ -557,6 +565,9 @@ pub(crate) fn beneath(
     paths: &[Value],
     span: Span,
 ) -> Result<Value, Diagnostic> {
+    if let Some(refused) = holding_nul(paths) {
+        return Ok(refused);
+    }
     let folder = match cap_std::fs::Dir::open_ambient_dir(folder, cap_std::ambient_authority()) {
         Ok(folder) => Arc::new(folder),
         Err(err) => return Ok(io_failed(&Fail::from(err))),
@@ -916,8 +927,35 @@ impl From<std::io::Error> for Fail {
         // system's are said in Fennec's words, which are the same on every system, where its own,
         // like "No such file or directory (os error 2)", differ from one to the next.
         let reason = if err.get_ref().is_some() { err.to_string() } else { in_own_words(err.kind()) };
+        // cap-std's words for a link that leads out of a narrowed `Fs`'s folder, in this `Fs`'s.
+        let reason = if reason == "a path led outside of the filesystem" {
+            "a link on the path leads outside what this Fs can reach".to_owned()
+        } else {
+            reason
+        };
         Self { case, reason }
     }
+}
+
+/// The failure for a path that holds a NUL, if the path, the first of `args`, does: the rest are
+/// what's written, which may hold any character. The system can't take a NUL in a path, and says
+/// only that its input was bad; C code given the path would stop at it, so the file it reached
+/// would be another than the one named.
+pub(crate) fn holding_nul(args: &[Value]) -> Option<Value> {
+    args.first().and_then(|path| match path {
+        Value::Str(text) if text.contains('\0') => {
+            // Shown with the NUL written as `\0`, and cut short, as a path from outside may be long.
+            let mut shown: String = text.replace('\0', "\\0").chars().take(80).collect();
+            if text.chars().count() > 80 {
+                shown.push('…');
+            }
+            Some(io_failed(&Fail {
+                case: "Other",
+                reason: format!("`{shown}` can't be a path: it holds a NUL"),
+            }))
+        }
+        _ => None,
+    })
 }
 
 /// A failure of the system's, in Fennec's words.

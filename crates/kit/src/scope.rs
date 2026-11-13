@@ -55,6 +55,11 @@ impl Kit {
         format!("{prefix}{name}")
     }
 
+    /// Whether `file` is of a dependency rather than the program's own kit.
+    fn is_dependency(&self, file: usize) -> bool {
+        self.files.get(file).is_some_and(|part| !part.prefix.is_empty())
+    }
+
     /// Whether the files `reader` and `file` are of different kits.
     fn apart(&self, reader: usize, file: usize) -> bool {
         self.files.get(reader).map(|part| &part.prefix) != self.files.get(file).map(|part| &part.prefix)
@@ -336,9 +341,11 @@ impl Resolver<'_> {
                     self.function(method, &[]);
                 }
             }
-            // The type has to be one this file can see, like any other name it uses.
+            // The type has to be one this file can see, like any other name it uses, and one its
+            // own kit declares: another kit's type keeps the methods its kit gave it.
             Item::Extend(extension) => {
                 self.qualified(&mut extension.name, extension.span);
+                self.own_kits_type(&extension.name, extension.span);
                 let params: Vec<String> =
                     extension.generics.iter().map(|generic| generic.name.clone()).collect();
                 self.locals = params.iter().cloned().collect();
@@ -653,6 +660,28 @@ impl Resolver<'_> {
         }
     }
 
+    /// Refuses extending `name`, as the merged module calls it, when another kit declares it: an
+    /// extension there would change what that kit's own code does with its type, as `==` or `len`.
+    fn own_kits_type(&mut self, name: &str, span: Span) {
+        if self.collecting {
+            return;
+        }
+        let Some(&owner) = self.kit.owners.get(name) else { return };
+        if !self.kit.apart(self.file, owner) {
+            return;
+        }
+        let shown = name.rsplit(fennec_syntax::KIT_MARK).next().unwrap_or(name);
+        let kit = self.kit.files.get(owner).map_or("", |part| part.prefix.as_str());
+        let declared = match kit.strip_suffix(fennec_syntax::KIT_MARK) {
+            Some(kit) => format!("the kit `{kit}`"),
+            None => "the program's own kit".to_owned(),
+        };
+        self.errors.push(
+            Diagnostic::new(format!("`{shown}` is declared in {declared}, so only that kit can extend it"), span)
+                .with_help("an extension adds methods to one of this kit's own types; write a function that takes it instead"),
+        );
+    }
+
     fn name(&mut self, name: &str, span: Span) {
         if self.collecting
             || self.locals.contains(name)
@@ -672,6 +701,29 @@ impl Resolver<'_> {
             if let Some(at) = self.kit.files.get(self.file).and_then(|part| part.imports_end) {
                 problem = problem.with_fix(at, format!("\n{import}"));
             }
+            self.errors.push(problem);
+            return;
+        }
+        // A dependency reaches its own kit's names, what it imports and the language's. The
+        // program's own names have no prefix in the merged module, so one a dependency writes
+        // without defining it would be read as the program's, private ones included.
+        if self.kit.is_dependency(self.file)
+            && let Some(&owner) = self.kit.owners.get(name)
+            && self.kit.apart(self.file, owner)
+        {
+            // The program's own `len` hides the language's from a dependency too, which can only
+            // be mended in the program.
+            let problem = if fennec_check::provided_everywhere(name) || fennec_check::reserved_name(name) {
+                Diagnostic::new(
+                    format!("`{name}` here would be the program's own `{name}`, not the language's"),
+                    span,
+                )
+                .with_help(format!(
+                    "rename the program's `{name}`: it hides the language's from the kits it uses"
+                ))
+            } else {
+                Diagnostic::new(format!("`{name}` doesn't exist"), span)
+            };
             self.errors.push(problem);
         }
     }

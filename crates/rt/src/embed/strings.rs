@@ -558,7 +558,7 @@ fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> Op
 
 /// How many characters the first `bytes` bytes of a string's words hold: the bytes that don't carry
 /// on a character begun before them, whose top two bits are `10`, counted eight at a time.
-fn chars_before(words: &[u64], bytes: usize) -> usize {
+pub(super) fn chars_before(words: &[u64], bytes: usize) -> usize {
     let mut count = 0;
     for (at, word) in words.iter().enumerate().take(bytes.div_ceil(8)) {
         let taken = (bytes - at * 8).min(8);
@@ -862,15 +862,53 @@ fn add_text(joined: &mut [u64], at: usize, part: &[u64]) -> (usize, u64) {
     (length, chars)
 }
 
-/// `separator.join(list)` for a list whose items are strings' headers.
+/// `separator.join(list)` for a list whose items are strings' headers, each one's bytes copied
+/// straight from where they are, inline or in a block, into the joined block, whose lengths are
+/// theirs and the separators' added up.
 fn join_headers(state: &mut State, separator: i64, list: i64) -> Option<i64> {
     let block = state.heap.block(u64::try_from(list).ok()?)?;
     if super::lists::element_in(state, block) != Some(&Element::Text) {
         return None;
     }
-    let parts = super::text::texts(state, super::lists::items(block, 3));
-    let between = text(state, separator).unwrap_or_default();
-    Some(text_address(state, &parts.join(&between)))
+    let headers = super::lists::items(block, 3).as_chunks::<3>().0;
+    let between = u64::try_from(separator).ok().and_then(|at| state.heap.block(at));
+    let between = between.filter(|block| super::heap::is_text(state, block)).unwrap_or_default();
+    let (between_bytes, between_chars) = lengths(between);
+    let between_words = between.get(TEXT_HEADER_WORDS..).unwrap_or_default();
+    let gaps = headers.len().saturating_sub(1);
+    let (mut bytes, mut chars) = (between_bytes * gaps, between_chars * u64::try_from(gaps).unwrap_or(0));
+    for header in headers {
+        let (_, length, count) = super::text::measured(state, header);
+        (bytes, chars) = (bytes + length, chars + count);
+    }
+    // Made here rather than taken from the heap, which the parts are borrowed from.
+    let mut joined = vec![0; TEXT_HEADER_WORDS + bytes.div_ceil(8).max(1)].into_boxed_slice();
+    let mut at = 0;
+    for (n, header) in headers.iter().enumerate() {
+        if n > 0 {
+            put_words(&mut joined, at, between_words, between_bytes);
+            at += between_bytes;
+        }
+        let (words, length) = super::text::bytes_of(state, header);
+        put_words(&mut joined, at, words, length);
+        at += length;
+    }
+    // A string of one ASCII character is the one block every such string shares.
+    if at == 1
+        && let Some(address) = joined
+            .get(TEXT_HEADER_WORDS)
+            .and_then(|word| usize::try_from(word & 0xff).ok())
+            .and_then(|byte| state.tables.ascii.get(byte))
+    {
+        return i64::try_from(*address).ok();
+    }
+    let room = u64::try_from(joined.len() - TEXT_HEADER_WORDS).unwrap_or(0) * 8;
+    let header = [1, state.tables.str_shape, 0, 0, room, 0];
+    if let Some(start) = joined.get_mut(..TEXT_HEADER_WORDS) {
+        start.copy_from_slice(&header);
+    }
+    set_lengths(&mut joined, at, chars);
+    Some(state.heap.insert(joined))
 }
 
 /// `separator.join(list)`, for a list of strings, written straight into the joined block.
@@ -982,25 +1020,48 @@ pub extern "C" fn replace(address: i64, old: i64, new: i64) -> i64 {
 /// `text.find(part)`: which character `part` first starts at, or -1 when it isn't there.
 pub extern "C" fn find(address: i64, part: i64) -> i64 {
     with(|state| {
-        // A part of a word or less, as most are, is looked for where both strings are.
         let looked_for = u64::try_from(part).ok().and_then(|at| state.heap.block(at));
-        if looked_for
-            .is_some_and(|block| super::heap::is_text(state, block) && lengths(block).0 <= WORD_BYTES)
-        {
-            let (whole, (words, size)) = (bytes_in_block(state, address), bytes_in_block(state, part));
-            if size == 0 {
-                return Some(0);
-            }
-            let first = words.first().map_or(0, |word| u64::from_le(*word));
-            let found = word_in_place(whole, first, size);
-            return Some(found.map_or(-1, |at| i64::try_from(chars_before(whole.0, at)).unwrap_or(-1)));
+        if !looked_for.is_some_and(|block| super::heap::is_text(state, block)) {
+            return -1;
         }
-        read_two(state, (address, part), |_, text, part| {
-            let before = text.find(part).and_then(|at| text.get(..at));
-            before.map_or(-1, |before| i64::try_from(before.chars().count()).unwrap_or(-1))
-        })
+        find_in(bytes_in_block(state, address), bytes_in_block(state, part))
     })
-    .unwrap_or(-1)
+}
+
+/// Which character `part` first starts at in `whole`, each given as the words its bytes are in and
+/// how many bytes, or -1 when it isn't there. A part of a word or less, as most are, is looked for
+/// where both are, the characters before it counted eight bytes at a time. A longer one is copied
+/// out with `whole` into bytes kept for them, for `str`'s search, which stays linear however the
+/// two repeat themselves.
+pub(super) fn find_in(whole: (&[u64], usize), (part, size): (&[u64], usize)) -> i64 {
+    if size == 0 {
+        return 0;
+    }
+    if size <= WORD_BYTES {
+        let first = part.first().map_or(0, |word| u64::from_le(*word));
+        let found = word_in_place(whole, first, size);
+        return found.map_or(-1, |at| i64::try_from(chars_before(whole.0, at)).unwrap_or(-1));
+    }
+    let (mut text, mut looked) = (READ.take(), READ_PART.take());
+    copy_words(whole, &mut text);
+    copy_words((part, size), &mut looked);
+    let found = match (std::str::from_utf8(&text), std::str::from_utf8(&looked)) {
+        (Ok(text), Ok(part)) => text.find(part).and_then(|at| text.get(..at)),
+        _ => None,
+    };
+    let at = found.map_or(-1, |before| i64::try_from(before.chars().count()).unwrap_or(-1));
+    READ.set(text);
+    READ_PART.set(looked);
+    at
+}
+
+/// Copies `length` bytes, packed in `words`, into `bytes` a word at a time.
+fn copy_words((words, length): (&[u64], usize), bytes: &mut Vec<u8>) {
+    bytes.clear();
+    for word in words.iter().take(length.div_ceil(8)) {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    bytes.truncate(length);
 }
 
 /// `text.split(separator)`, or `text.split()` when `separator` is 0: a list of str owned
@@ -1033,10 +1094,24 @@ pub extern "C" fn split_header(
     end: i64,
 ) -> i64 {
     attempt(|state: &mut State| {
-        let whole = super::text::text_of(state, &[t0, t1, t2]);
-        let between = (s0, s1, s2) != (0, 0, 0);
-        let between = between.then(|| super::text::text_of(state, &[s0, s1, s2]));
-        split_into(state, &whole, between.as_deref(), span(start, end))
+        // Both copied out into bytes kept for them, with no `String` made of either.
+        let (mut text, mut between) = (READ.take(), READ_PART.take());
+        let separated = (s0, s1, s2) != (0, 0, 0);
+        copy_words(super::text::bytes_of(state, &[t0, t1, t2]), &mut text);
+        if separated {
+            copy_words(super::text::bytes_of(state, &[s0, s1, s2]), &mut between);
+        } else {
+            between.clear();
+        }
+        let split = match (std::str::from_utf8(&text), std::str::from_utf8(&between)) {
+            (Ok(whole), Ok(between)) => {
+                split_into(state, whole, separated.then_some(between), span(start, end))
+            }
+            _ => Err(lost(start, end)),
+        };
+        READ.set(text);
+        READ_PART.set(between);
+        split
     })
 }
 

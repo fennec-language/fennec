@@ -100,6 +100,22 @@ impl Lowering<'_> {
             Type::Union(members) if let Type::Union(held) = &from => {
                 Ok(self.union_as_union(value, held, members, span))
             }
+            // A tuple where a tuple of wider items goes, as `(1, Parcel(...))` where
+            // `(int, Parcel?)` goes: each item read out and made to fit where it goes.
+            Type::Tuple(wanted)
+                if let Type::Tuple(held) = &from
+                    && held.len() == wanted.len() =>
+            {
+                let mut items = Vec::with_capacity(wanted.len());
+                for (at, (held, wanted)) in held.iter().zip(wanted).enumerate() {
+                    let item = self.temporary(held.clone());
+                    self.emit(InstKind::GetTupleItem { dest: item, value: value.clone(), at }, span);
+                    items.push(self.coerce(Operand::Local(item), wanted, span)?);
+                }
+                let dest = self.temporary(to.clone());
+                self.emit(InstKind::MakeTuple { dest, items }, span);
+                Ok(Operand::Local(dest))
+            }
             _ => Err(format!("it gives {from} where {to} goes")),
         }
     }
@@ -172,8 +188,44 @@ impl Lowering<'_> {
                 self.emit(InstKind::AsError { dest, value }, expr.span);
                 Ok(Operand::Local(dest))
             }
+            // A tuple held with optional items the checker knows are there, as a name given
+            // `(5, Parcel(...))` and kept where `(int, Parcel?)` goes too: each item read as it is.
+            (Type::Tuple(held), Type::Tuple(wanted)) if held.len() == wanted.len() => {
+                self.tuple_narrowed(&value, (held, &wanted), expr.span)
+            }
             (from, read) => Err(format!("it reads {from} as {read}")),
         }
+    }
+
+    /// A tuple read item by item as the tuple the checker narrowed it to: an optional item it
+    /// knows holds something read out of it, a tuple item read the same way, the rest as they are.
+    fn tuple_narrowed(
+        &mut self,
+        value: &Operand,
+        (held, wanted): (&[Type], &[Type]),
+        span: Span,
+    ) -> Lowered<Operand> {
+        let mut items = Vec::with_capacity(wanted.len());
+        for (at, (held, wanted)) in held.iter().zip(wanted).enumerate() {
+            let item = self.temporary(held.clone());
+            self.emit(InstKind::GetTupleItem { dest: item, value: value.clone(), at }, span);
+            let item = Operand::Local(item);
+            items.push(match (held, wanted) {
+                (held, wanted) if held == wanted => item,
+                (Type::Optional(inner), wanted) if **inner == *wanted => {
+                    let dest = self.temporary(wanted.clone());
+                    self.emit(InstKind::GetSome { dest, value: item }, span);
+                    Operand::Local(dest)
+                }
+                (Type::Tuple(inner), Type::Tuple(read)) if inner.len() == read.len() => {
+                    self.tuple_narrowed(&item, (inner, read), span)?
+                }
+                (held, wanted) => return Err(format!("it reads {held} as {wanted}")),
+            });
+        }
+        let dest = self.temporary(Type::Tuple(wanted.to_vec()));
+        self.emit(InstKind::MakeTuple { dest, items }, span);
+        Ok(Operand::Local(dest))
     }
 
     /// `s is Circle`: whether a union holds that member. A value the checker already narrowed to
@@ -257,7 +309,7 @@ impl Lowering<'_> {
         Ok(())
     }
 
-    /// The block of an `else`, which `else as failure:` runs with what failed. It leaves, or its
+    /// The block of an `except`, which `except failure:` runs with what failed. It leaves, or its
     /// last line goes where `tail` says.
     fn else_block(&mut self, default: &Expr, value: &Operand, tail: Tail, span: Span) -> Lowered<()> {
         let Some((failure, block)) = default.else_block() else {

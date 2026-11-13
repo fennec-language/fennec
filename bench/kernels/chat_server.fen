@@ -1,0 +1,235 @@
+# A chat server's core, in one process with no sockets, so every run is the same. What clients
+# send comes in as events, made from one seed: joining and leaving rooms, saying something in a
+# room, and whispering to one other user. A hub task owns the rooms. It checks each event, keeps
+# each room's members and recent history, and fans every message out to the inbox of each member
+# it's for. The users are split among shard tasks by number, each owning its users' mailboxes: it
+# renders each message as its user would see it, keeps the last few, and counts mentions. When
+# everything's been delivered, each shard sends back what its users got, their last lines
+# included, and the checksum covers all of it. Each task has one sender, so the order of what it
+# reads is fixed, and the result is the same on any number of threads.
+
+from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+USERS = 400
+ROOMS = 40
+EVENTS = 20_000
+HISTORY = 50
+KEPT = 16
+WORDS = ["hey", "anyone", "seen", "the", "new", "map", "lag", "again", "gg", "raid", "at", "nine"]
+
+# What a client sends, with the room by number.
+enum Event:
+    Join(user: int, room: int)
+    Leave(user: int, room: int)
+    Say(user: int, room: int, text: str)
+    Whisper(user: int, to: int, text: str)
+
+# A message on its way to one user's mailbox.
+struct Message:
+    user: int
+    room: str
+    author: int
+    text: str
+
+# One room, as the hub keeps it.
+struct Room:
+    members = list[int]()
+    history = list[str]()
+    said = 0
+
+# One user's mailbox, as a shard keeps it.
+struct Mailbox:
+    received = 0
+    bytes = 0
+    mentions = 0
+    recent = list[str]()
+
+# What a shard sends back about one of its users.
+struct Summary:
+    user: int
+    received: int
+    bytes: int
+    mentions: int
+    last: str
+
+# What the hub sends back when every event has been handled.
+struct HubReport:
+    refused: int
+    rooms: list[(int, str)]
+    history: int
+
+# The next state of a small linear congruential generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+# A number from 0 up to `top` taken from a generator's state.
+def below(seed: int, top: int) -> int:
+    return seed // 65_536 % top
+
+# Every client's event, in the order the server takes them.
+def events(seed: int) -> list[Event]:
+    mut state = seed
+    mut made = list[Event]()
+    for number in range(EVENTS):
+        state = next(state)
+        roll = below(state, top=100)
+        state = next(state)
+        user = below(state, top=USERS)
+        state = next(state)
+        room = below(state, top=ROOMS)
+        if roll < 14:
+            made.append(.Join(user=user, room=room))
+        elif roll < 18:
+            made.append(.Leave(user=user, room=room))
+        else:
+            state = next(state)
+            first = below(state, top=1_000)
+            count = 1 + below(state, top=6)
+            mention = below(next(state), top=USERS) if roll % 10 == 0 else -1
+            text = rendered(number, first=first, count=count, mention=mention)
+            if roll < 22:
+                made.append(.Whisper(user=user, to=below(next(state), top=USERS), text=text))
+            else:
+                made.append(.Say(user=user, room=room, text=text))
+    return made
+
+# What a client said, as text.
+def rendered(number: int, first: int, count: int, mention: int) -> str:
+    mut words = list[str]()
+    for at in range(count):
+        words.append(WORDS[(first + at * 7) % len(WORDS)])
+    if mention >= 0:
+        words.append(f"@u{mention}")
+    return f"{number}: " + " ".join(words)
+
+# A hash of a line's bytes.
+def hashed(line: str) -> int:
+    mut hash = len(line)
+    for byte in line.encode():
+        hash = (hash * 31 + byte) % 1_000_000_007
+    return hash
+
+# The hub: owns the rooms, checks each event and fans each message out to the shards.
+def hub(inbox: Inbox[Event], shards: list[Sender[Message]], out: Sender[HubReport]) fails Closed:
+    mut rooms = dict[str, Room]()
+    mut refused = 0
+    for event in inbox:
+        match event:
+            case .Join(user, room):
+                name = f"room-{room}"
+                if name not in rooms:
+                    rooms[name] = Room()
+                if user in rooms[name].members:
+                    refused += 1
+                else:
+                    rooms[name].members.append(user)
+            case .Leave(user, room):
+                name = f"room-{room}"
+                if name in rooms and user in rooms[name].members:
+                    rooms[name].members = [
+                        member for member in rooms[name].members if member != user
+                    ]
+                else:
+                    refused += 1
+            case .Say(user, room, text):
+                name = f"room-{room}"
+                if name not in rooms or user not in rooms[name].members:
+                    refused += 1
+                    continue
+                rooms[name].said += 1
+                rooms[name].history.append(f"u{user}: {text}")
+                if len(rooms[name].history) > 2 * HISTORY:
+                    rooms[name].history = rooms[name].history[HISTORY:]
+                for member in rooms[name].members:
+                    if member != user:
+                        shards[member % len(shards)].send(
+                            Message(user=member, room=name, author=user, text=text),
+                        )?
+            case .Whisper(user, to, text):
+                shards[to % len(shards)].send(Message(user=to, room="dm", author=user, text=text))?
+    busiest = sorted([(-room.said, name) for name, room in rooms.items()])
+    history = sum(len(room.history) for room in rooms.values())
+    out.send(HubReport(refused=refused, rooms=busiest[:5], history=history))?
+    return
+
+# A shard: the mailboxes of the users it owns. Sends back what each got once its inbox closes.
+def shard(inbox: Inbox[Message], out: Sender[list[Summary]]) fails Closed:
+    mut boxes = dict[int, Mailbox]()
+    for message in inbox:
+        line = f"[{message.room}] u{message.author}: {message.text}"
+        if message.user not in boxes:
+            boxes[message.user] = Mailbox()
+        boxes[message.user].received += 1
+        boxes[message.user].bytes += len(line)
+        if f"@u{message.user}" in message.text:
+            boxes[message.user].mentions += 1
+        boxes[message.user].recent.append(line)
+        if len(boxes[message.user].recent) > 2 * KEPT:
+            boxes[message.user].recent = boxes[message.user].recent[KEPT:]
+    mut summaries = list[Summary]()
+    for user, mailbox in boxes.items():
+        summaries.append(
+            Summary(
+                user=user,
+                received=mailbox.received,
+                bytes=mailbox.bytes,
+                mentions=mailbox.mentions,
+                last=mailbox.recent[-1],
+            ),
+        )
+    out.send(summaries)?
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    sent = events(2026)
+    mut everyone = list[Summary]()
+    mut report = HubReport(refused=-1, rooms=[], history=0)
+    with channel[list[Summary]](size=8) as results:
+        with channel[HubReport](size=1) as reports:
+            back = results.sender()
+            report_to = reports.sender()
+            with launch((inbox) => shard(inbox, back)?, inbox_size=256)? as first:
+                with launch((inbox) => shard(inbox, back)?, inbox_size=256)? as second:
+                    with launch((inbox) => shard(inbox, back)?, inbox_size=256)? as third:
+                        with launch((inbox) => shard(inbox, back)?, inbox_size=256)? as fourth:
+                            shards = [first, second, third, fourth]
+                            with launch(
+                                (inbox) => hub(inbox, shards, report_to)?,
+                                inbox_size=64,
+                            )? as to_hub:
+                                for event in sent:
+                                    to_hub.send(event)?
+            for _ in range(4):
+                got = results.receive() else break
+                everyone.extend(got)
+            report = reports.receive() else report
+    everyone.sort(key=(summary) => summary.user)
+    mut received = 0
+    mut volume = 0
+    mut mentions = 0
+    mut checksum = 0
+    for summary in everyone:
+        received += summary.received
+        volume += summary.bytes
+        mentions += summary.mentions
+        checksum = (
+            (checksum * 31 + summary.user * 7 + summary.received + hashed(summary.last))
+            % 1_000_000_007
+        )
+    stdout.print(
+        len(everyone),
+        "users",
+        received,
+        "delivered",
+        volume,
+        "bytes",
+        mentions,
+        "mentions",
+    )
+    stdout.print(report.refused, "refused", report.history, "kept in history")
+    for said, name in report.rooms:
+        stdout.print(name, -said)
+    stdout.print(everyone[0].last)
+    stdout.print(everyone[-1].last)
+    stdout.print("checksum", checksum)
+    return

@@ -145,27 +145,58 @@ pub(super) fn texts(state: &State, words: &[u64]) -> Vec<String> {
     words.as_chunks::<3>().0.iter().map(|header| text_of(state, header)).collect()
 }
 
-/// Whether a byte of UTF-8 carries on a character begun before it.
-fn is_continuation(byte: u8) -> bool {
-    byte & 0xC0 == 0x80
-}
-
 /// `fennec_text_block(a, b, c)`: a string's block, owned once, for the runtime's string calls,
 /// which take blocks. An inline string is copied into a new block; a string in a block gives
 /// that block, with one more owner.
 pub extern "C" fn block(a: u64, b: u64, c: u64) -> i64 {
     let words = [a, b, c];
     super::made_with("fennec_text_block", |state| {
-        if let Some(bytes) = inline_bytes(&words) {
-            // A header's bytes are a string's, already UTF-8, so its characters are its bytes
-            // that don't carry on one before them.
-            let chars = bytes.iter().filter(|byte| !is_continuation(**byte)).count();
-            return text_from_bytes(state, &bytes, chars);
+        if tag(&words) & INLINE != 0 {
+            return block_of_inline(state, &words);
         }
         let address = block_of(&words).unwrap_or(0);
         retain(state, address);
         address.cast_signed()
     })
+}
+
+/// A new block owned once holding an inline header's text, its words copied across whole and its
+/// characters counted eight bytes at a time: a header's bytes are a string's, already UTF-8, so its
+/// characters are its bytes that don't carry on one before them. One ASCII character is the block
+/// every such string shares.
+fn block_of_inline(state: &mut State, words: &[u64; 3]) -> i64 {
+    let length = usize::from(tag(words) & !INLINE).min(INLINE_BYTES);
+    let [first, ..] = *words;
+    if length == 1
+        && let Some(address) =
+            usize::try_from(first & 0xff).ok().and_then(|byte| state.tables.ascii.get(byte))
+    {
+        return i64::try_from(*address).unwrap_or(0);
+    }
+    let chars = super::strings::chars_before(words, length);
+    let used = length.div_ceil(8);
+    let room = used.max(1);
+    // The header and each word with bytes in it are written here, and only an empty string's one
+    // word is left to be zero.
+    let mut block = state.heap.fresh_written(TEXT_HEADER_WORDS + room, TEXT_HEADER_WORDS + used);
+    let number = |n: usize| u64::try_from(n).unwrap_or(0);
+    let header = [1, state.tables.str_shape, number(length), number(chars), number(room * 8), 0];
+    if let Some(start) = block.get_mut(..TEXT_HEADER_WORDS) {
+        start.copy_from_slice(&header);
+    }
+    if let Some(text) = block.get_mut(TEXT_HEADER_WORDS..TEXT_HEADER_WORDS + used)
+        && let Some(from) = words.get(..used)
+    {
+        text.copy_from_slice(from);
+        // Past the last byte, the tag among them, is zero, as native code compares words whole.
+        let tail = u32::try_from(length % 8 * 8).unwrap_or(0);
+        if tail > 0
+            && let Some(last) = text.last_mut()
+        {
+            *last &= u64::MAX >> (64 - tail);
+        }
+    }
+    state.heap.insert(block)
 }
 
 /// A header's bytes where they are: in its own words when it's inline, and in its block otherwise.

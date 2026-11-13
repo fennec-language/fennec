@@ -460,6 +460,18 @@ fn added_pieces(value: &Expr) -> Vec<Expr> {
     }
 }
 
+/// Whether an expression can leave the function partway, by a `?` anywhere in it. A piece after
+/// the first that can isn't split off, since the pieces before it would be added already, and
+/// `text += "," + f()?` failing must leave the text as it was.
+fn leaves_early(piece: &Expr) -> bool {
+    let mut found = matches!(&piece.kind, ExprKind::Try { .. });
+    let mut looked = piece.clone();
+    fennec_syntax::visit::in_expr(&mut looked, &mut |inner| {
+        found |= matches!(&inner.kind, ExprKind::Try { .. });
+    });
+    found
+}
+
 /// Whether an expression reads a name anywhere in it.
 fn mentions(piece: &Expr, name: &str) -> bool {
     let mut found = matches!(&piece.kind, ExprKind::Name(held) if held == name);
@@ -476,7 +488,7 @@ fn mentions(piece: &Expr, name: &str) -> bool {
 fn grown_by(name: &str, value: &Expr) -> Option<Vec<Expr>> {
     let pieces = pieces_grown_by(name, value)?;
     // A piece after the first that reads the text itself would see it grown by the ones before.
-    (!pieces.iter().skip(1).any(|piece| mentions(piece, name))).then_some(pieces)
+    (!pieces.iter().skip(1).any(|piece| mentions(piece, name) || leaves_early(piece))).then_some(pieces)
 }
 
 fn pieces_grown_by(name: &str, value: &Expr) -> Option<Vec<Expr>> {
@@ -852,7 +864,8 @@ impl<'a> Lowering<'a> {
         }
         // `text += a + b + c` adds each piece in turn, as `text += a`, `text += b`, `text += c`,
         // with no texts made to join first. A piece that reads what the target is reached from
-        // isn't split off, since it would see the text grown already.
+        // isn't split off, since it would see the text grown already, and nor is one that can
+        // fail with `?`, since the pieces before it would be added already.
         if op == Some(BinOp::Add)
             && let Some(root) = root_name(target)
             && self.type_at(target.span) == Some(Type::Str)
@@ -861,6 +874,7 @@ impl<'a> Lowering<'a> {
             let pieces = added_pieces(value);
             if pieces.iter().all(|piece| self.type_at(piece.span) == Some(Type::Str))
                 && !pieces.iter().any(|piece| mentions(piece, root))
+                && !pieces.iter().skip(1).any(leaves_early)
             {
                 for piece in &pieces {
                     self.assign(target, (Some(BinOp::Add), false), piece, span)?;

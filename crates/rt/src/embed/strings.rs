@@ -558,7 +558,7 @@ fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> Op
 
 /// How many characters the first `bytes` bytes of a string's words hold: the bytes that don't carry
 /// on a character begun before them, whose top two bits are `10`, counted eight at a time.
-fn chars_before(words: &[u64], bytes: usize) -> usize {
+pub(super) fn chars_before(words: &[u64], bytes: usize) -> usize {
     let mut count = 0;
     for (at, word) in words.iter().enumerate().take(bytes.div_ceil(8)) {
         let taken = (bytes - at * 8).min(8);

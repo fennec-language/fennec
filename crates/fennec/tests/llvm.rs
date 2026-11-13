@@ -19309,6 +19309,109 @@ fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
 const TEXT_GROWN_PRINTS: &str = r"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
 ";
 
+/// A field's text grown by what a call makes, `self.text += str(value)`, grows where it is: the
+/// call can't change the field, so the field is read after it, its only owner as it's added to.
+/// It once read the field first, so the text was copied every time, quadratically. A call given
+/// the field's holder by `ref`, or a method on it, still sees the field as it was before.
+#[test]
+fn a_field_grown_by_a_calls_text_grows_where_it_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("field_grown_by_call")?;
+    std::fs::write(dir.join("field_grown_by_call.fen"), FIELD_GROWN_BY_CALL)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "field_grown_by_call", how)?;
+        assert_eq!(printed, "7000\na? <5:1><6:2>\n", "{how:?}");
+        assert!(
+            count(&counts, "allocations") < Some(200) && counts.ends_with(" live 0"),
+            "{how:?}: {counts}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A field grown by a call that fails keeps what it had: the call runs before the field is read,
+/// so a failure out of it leaves the field as the last `+=` that finished left it, and what the
+/// calls print comes out in order.
+#[test]
+fn a_field_grown_by_a_call_that_fails_keeps_what_it_had() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "field_grown_by_failing_call",
+        r#"error Bad:
+    why: str
+
+struct Writer:
+    text = "start"
+    total = 0
+
+def risky(value: int, stdout: Stdout) -> str fails Bad:
+    stdout.print("called", value)
+    if value > 2: fail Bad(why="too big")
+    return str(value)
+
+def grow(ref out: Writer, value: int, stdout: Stdout) fails Bad:
+    out.text += risky(value, stdout)?
+    out.text += "," + risky(value + 1, stdout)?
+    return
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    for value in [1, 2]:
+        grow(ref out, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        stdout.print(out.text)
+    got = risky(5, stdout) except Bad(why): f"<{why}>"
+    out.text += got
+    stdout.print(out.text)
+    return
+"#,
+        "called 1\ncalled 2\nstart1,2\ncalled 2\ncalled 3\nfailed too big\nstart1,22\ncalled 5\nstart1,22<too big>\n",
+    )
+}
+
+const FIELD_GROWN_BY_CALL: &str = r#"struct Writer:
+    text = ""
+    n = 0
+
+    def int(ref self, value: int):
+        self.text += str(value)
+
+    def pair(ref self, a: int, b: int):
+        self.text += "," + str(a) + str(b)
+
+    def counted(ref self, value: int):
+        self.n += 1
+        self.text += self.label(value)
+
+    def label(self, value: int) -> str:
+        return f"<{value}:{self.n}>"
+
+def bump(ref writer: Writer) -> str:
+    writer.text += "!"
+    return "?"
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    for i in range(4000):
+        out.int(i % 10)
+    for i in range(1000):
+        out.pair(i % 3, i % 7)
+    stdout.print(len(out.text))
+    mut other = Writer()
+    other.text = "a"
+    other.text += bump(ref other)
+    mut third = Writer()
+    third.counted(5)
+    third.counted(6)
+    stdout.print(other.text, third.text)
+    return
+"#;
+
 /// `text += "," + f()?` that fails leaves the text as it was, in a field, a `ref` parameter, and
 /// `text = text + "," + f()?`: the pieces aren't added one at a time when a later one can fail,
 /// since those before it would be in already.

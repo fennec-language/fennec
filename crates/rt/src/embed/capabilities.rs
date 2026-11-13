@@ -188,6 +188,10 @@ pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, en
         super::write_kept_output();
     }
     let result = match &receiver {
+        // Standard error is output, not input: a replay writes it as the run did.
+        Value::Capability(Capability::Stderr) => {
+            crate::replay::written(format_args!("{:?}.{name}", Capability::Stderr), at, live)
+        }
         Value::Capability(capability) if name != "only" => {
             crate::replay::value(format_args!("{capability:?}.{name}"), at, live)
         }
@@ -244,8 +248,15 @@ pub extern "C" fn net_call(handle: i64, method: i64, count: i64, start: i64, end
     // A `File` is a handle in the same table in a test as anywhere, its fake files with the rest,
     // so it never goes to the fake network.
     // A database's handle, like a file's, is in a table of its own, a test's with the rest.
+    // What a database gives is an outside input too, recorded under the task asking, so a replay
+    // gives it back without opening the database, as it never opened its file.
     if let Some(method) = name.strip_prefix("Database.").or_else(|| name.strip_prefix("Transaction.")) {
-        let done = crate::stdlib::sqlite::call(handle, method, &given, at);
+        if crate::replay::active() {
+            super::write_kept_output();
+        }
+        let done = crate::replay::value(format_args!("{name}"), at, || {
+            crate::stdlib::sqlite::call(handle, method, &given, at)
+        });
         return attempt(|state: &mut State| done.map(|value| state.push(value)));
     }
     if let Some(method) = name.strip_prefix("File.") {

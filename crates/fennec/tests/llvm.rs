@@ -10629,6 +10629,36 @@ def main(stdout: Stdout):
 
 /// `json.dumps` of plain structs, lists, strings and ints, and `json.loads` reading a struct, a
 /// list of plain structs, and failing on bad text, as pinned.
+/// `json.dumps` writes into one text that grows in place, so writing twice as many items does
+/// about twice the work, counted, not timed: each int's text was added to the writer's straight
+/// from `str(value)`, which copied the whole text each time, so it allocated twice per item.
+#[test]
+fn json_dumps_grows_its_text_in_place() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let allocated = |count: usize| -> std::io::Result<(u64, u64)> {
+        let source = format!(
+            "from std import json\n\ndef main(stdout: Stdout):\n    items = [at for at in range({count})]\n    stdout.print(len(json.dumps(items)))\n    return\n"
+        );
+        let said = counts_of(&format!("json_dumps_linear_{count}"), &source)?;
+        let number = |name: &str| {
+            let mut words = said.split(' ');
+            words.by_ref().find(|word| *word == name);
+            words.next().and_then(|word| word.parse::<u64>().ok()).unwrap_or(u64::MAX)
+        };
+        Ok((number("allocations"), number("allocated_bytes")))
+    };
+    let (small, small_bytes) = allocated(10_000)?;
+    let (big, big_bytes) = allocated(40_000)?;
+    // A handful, whatever the count: the list, the text and its few regrowths.
+    assert!(small < 100 && big < 100, "{small} and {big} allocations");
+    // Four times the items, at most about four times the bytes, where copying the text for each
+    // item made it sixteen times.
+    assert!(big_bytes < small_bytes * 6, "{small_bytes} bytes, then {big_bytes}");
+    Ok(())
+}
+
 #[test]
 fn json_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

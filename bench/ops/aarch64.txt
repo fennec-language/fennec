@@ -18,5 +18,6 @@ json_loads 2808 2125 31892504485fcc05
 parse_int 58 52 b6183ab1f49e0410
 removesuffix 86 44 c681687395f67e8b
 slice 69 57 8d902c28b52fde04
-split 1163 441 26cc9da55878ca96
+split 991 441 26cc9da55878ca96
+split_lines 2456 984 ffd4968b601ef24f
 struct_new 46 20 6d31aee4c54b4aa0

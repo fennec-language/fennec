@@ -209,10 +209,10 @@ pub(crate) fn source(launch: &Launch) -> Option<crate::lend_lowering::Source> {
     slots.extend(launch.message.clone().map(|message| (MESSAGE, message)));
     let mut items = module.items.into_iter();
     let Some(Item::Function(mut def)) = items.next() else { return None };
-    fill(&mut def, &slots)?;
+    crate::slots::fill(&mut def, &slots)?;
     let inbox = match items.next() {
         Some(Item::Function(mut maker)) => {
-            fill(&mut maker, &slots)?;
+            crate::slots::fill(&mut maker, &slots)?;
             let Some(fennec_syntax::StmtKind::Return(Some(made))) =
                 maker.body.into_iter().next().map(|stmt| stmt.kind)
             else {
@@ -238,42 +238,6 @@ pub(crate) fn source(launch: &Launch) -> Option<crate::lend_lowering::Source> {
 const MESSAGE: &str = "Message__slot";
 const ENDED: &str = "Ended__slot";
 const FAILS: &str = "Fails__slot";
-
-/// Puts each slot's type in, wherever a slot is in `def`: in its signature as a written type, and
-/// in its code, as in `Sender[Message__slot](...)`, as the expression that names that type.
-fn fill(def: &mut fennec_syntax::FnDef, slots: &[(&str, Type)]) -> Option<()> {
-    let mut whole = true;
-    for ty in def
-        .ret
-        .iter_mut()
-        .chain(def.fails.iter_mut())
-        .chain(def.params.iter_mut().filter_map(|param| param.ty.as_mut()))
-    {
-        whole &= fill_type(ty, slots).is_some();
-    }
-    fennec_syntax::visit::in_function(def, &mut |expr| {
-        if let ExprKind::Name(name) = &expr.kind
-            && let Some((_, ty)) = slots.iter().find(|(slot, _)| slot == name)
-        {
-            match ty.written(expr.span).and_then(|written| written.as_expr(expr.span)) {
-                Some(named) => *expr = named,
-                None => whole = false,
-            }
-        }
-    });
-    whole.then_some(())
-}
-
-/// Puts each slot's type in where a slot is in a written type, keeping a `?` written after it.
-fn fill_type(ty: &mut fennec_syntax::TypeExpr, slots: &[(&str, Type)]) -> Option<()> {
-    if let Some((_, filled)) = slots.iter().find(|(slot, _)| *slot == ty.name) {
-        let optional = ty.optional;
-        *ty = filled.written(ty.span)?;
-        ty.optional |= optional;
-        return Some(());
-    }
-    ty.args.iter_mut().try_for_each(|arg| fill_type(arg, slots))
-}
 
 /// A `launch(...)` call with its task taken out, leaving `launch`'s own options to give the
 /// source written in for it.

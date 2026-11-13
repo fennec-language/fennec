@@ -577,7 +577,7 @@ fn yielded_written(yielding: &Yielding) -> String {
     let Yielding { id, count, widths: [notes, pairs, words] } = *yielding;
     format!(
         "struct Note{id}:\n    text: str\n    items: list[int]\n    counts: dict[str, int]\n\n\
-         enum Word{id}:\n    Plain(text: str)\n    Many(items: list[int])\n\n\
+         enum Word{id}:\n    Plain{id}(text: str)\n    Many{id}(items: list[int])\n\n\
          def notes{id}(count: int, width: int) -> Iterator[Note{id}]:\n    \
          mut kept = Note{id}(text=\"k\" * width, items=[0], counts={{\"k\": 0}})\n    for at in range(count):\n        \
          yield Note{id}(text=str(at) + \"n\" * width, items=[at, at + 1], counts={{\"a\": at}})\n        \
@@ -585,16 +585,16 @@ fn yielded_written(yielding: &Yielding) -> String {
          def pairs{id}(count: int, width: int) -> Iterator[(str, list[int])]:\n    for at in range(count):\n        \
          yield (str(at) + \"p\" * width, [at])\n\n\
          def words{id}(count: int, width: int) -> Iterator[Word{id}]:\n    for at in range(count):\n        \
-         if at % 2 == 0:\n            yield .Plain(text=str(at) + \"w\" * width)\n        else:\n            \
-         yield .Many(items=[at, at])\n\n\
+         if at % 2 == 0:\n            yield .Plain{id}(text=str(at) + \"w\" * width)\n        else:\n            \
+         yield .Many{id}(items=[at, at])\n\n\
          def echoed{id}(inbox: Inbox[Note{id}], back: Sender[Note{id}]) fails Closed:\n    for note in inbox:\n        \
          back.send(note)?\n    return\n\n\
          def yielded{id}(stdout: Stdout) fails Crashed | Closed | Timeout:\n    mut got = list[Note{id}]()\n    \
          for note in notes{id}({count}, width={notes}):\n        got.append(note)\n    for note in got:\n        \
          stdout.print(\"note\", note)\n    mut firsts = list[(str, list[int])]()\n    \
          for pair in pairs{id}({count}, width={pairs}):\n        firsts.append(pair)\n    stdout.print(\"pairs\", firsts)\n    \
-         for word in words{id}({count}, width={words}):\n        match word:\n            case .Plain(text):\n                \
-         stdout.print(\"plain\", text)\n            case .Many(items):\n                stdout.print(\"many\", items)\n    \
+         for word in words{id}({count}, width={words}):\n        match word:\n            case .Plain{id}(text):\n                \
+         stdout.print(\"plain\", text)\n            case .Many{id}(items):\n                stdout.print(\"many\", items)\n    \
          with channel[Note{id}](size=64) as replies:\n        back = replies.sender()\n        \
          with launch((inbox) => echoed{id}(inbox, back)?)? as sends:\n            for note in got:\n                \
          sends.send(note)?\n        for _ in range(len(got)):\n            note = replies.receive() else break\n            \

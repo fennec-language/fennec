@@ -14,12 +14,12 @@ fennec_args_len unchecked 0
 fennec_box_equal in-cant-fail 8
 fennec_box_equal unchecked 0
 fennec_box_to_value unchecked 0
-fennec_constant_kept in-cant-fail 3
+fennec_constant_kept in-cant-fail 4
 fennec_constant_kept unchecked 0
 fennec_dict_popped unchecked 0
 fennec_error_of unchecked 0
-fennec_free in-cant-fail 63
-fennec_free unchecked 1095
+fennec_free in-cant-fail 64
+fennec_free unchecked 1144
 fennec_input unchecked 0
 fennec_list_contains unchecked 0
 fennec_native_freed in-cant-fail 0

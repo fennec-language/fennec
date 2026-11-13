@@ -179,7 +179,13 @@ impl<'p> Emit<'_, '_, 'p> {
             self.line(&format!("store {text} {value}, ptr {at}"));
             self.release_kind(&old, &kind);
         } else {
+            // A slot owns what it holds, as a field does, and reading it takes an owner more: so
+            // what an inline value held before goes, and what it holds now gets an owner of the
+            // slot's. Without it the local it came from, let go of as the generator stops at its
+            // `yield`, took the slot's owner too, and a struct's text yielded was freed under it.
+            self.release_inline(&kind, &at);
             self.store_field(&kind, &value, &at, "");
+            self.retain_inline(&kind, &at);
         }
         Ok(())
     }

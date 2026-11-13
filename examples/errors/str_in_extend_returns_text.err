@@ -1,0 +1,7 @@
+error: `P`'s `def str` writes into `ref out: StrWriter` and gives back nothing
+ --> examples/errors/str_in_extend_returns_text.fen:5:5
+  |
+5 |     def str(self) -> str:
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: write `def str(self, ref out: StrWriter)`, and add its text with `out.write(...)`

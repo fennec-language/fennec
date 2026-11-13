@@ -1,7 +1,7 @@
 # decision: A function that can fail says so with `fails Name`, and every exit is visible.
 
 # One error can list several cases, each failing its own way. A case is made like an enum's,
-# `fail`ed like any error, and told apart by name in a `match` on what `else as why:` names. Where
+# `fail`ed like any error, and told apart by name in the `case` arms of `except why:`. Where
 # the function says what it fails with, a leading dot is enough.
 
 error DialError:

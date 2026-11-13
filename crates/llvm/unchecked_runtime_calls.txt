@@ -11,15 +11,15 @@
 # back 0, and 4 give back 0 only as an answer emitted code already tests. All 46, and text_of, are
 # in NEVER_FAIL, so none is listed here.
 fennec_args_len unchecked 0
-fennec_box_equal in-cant-fail 0
+fennec_box_equal in-cant-fail 8
 fennec_box_equal unchecked 0
 fennec_box_to_value unchecked 0
-fennec_constant_kept in-cant-fail 0
+fennec_constant_kept in-cant-fail 4
 fennec_constant_kept unchecked 0
 fennec_dict_popped unchecked 0
 fennec_error_of unchecked 0
-fennec_free in-cant-fail 16
-fennec_free unchecked 564
+fennec_free in-cant-fail 64
+fennec_free unchecked 1144
 fennec_input unchecked 0
 fennec_list_contains unchecked 0
 fennec_native_freed in-cant-fail 0
@@ -27,15 +27,15 @@ fennec_native_made in-cant-fail 0
 fennec_native_made unchecked 0
 fennec_notes_add unchecked 0
 fennec_notes_frame in-cant-fail 0
-fennec_notes_frame unchecked 0
+fennec_notes_frame unchecked 2
 fennec_notes_list unchecked 0
 fennec_parse_float in-cant-fail 0
 fennec_parse_float unchecked 0
-fennec_parse_int unchecked 0
+fennec_parse_int unchecked 2
 fennec_regex_groups unchecked 1
 fennec_regex_is_valid unchecked 3
-fennec_str_compare in-cant-fail 1
-fennec_str_find unchecked 0
+fennec_str_compare in-cant-fail 5
+fennec_str_find_header unchecked 0
 fennec_text_contains unchecked 0
 fennec_trace_allocated in-cant-fail 0
 fennec_trace_allocated unchecked 0

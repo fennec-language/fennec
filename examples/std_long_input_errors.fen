@@ -68,6 +68,31 @@ test "a long key from outside is cut in what a message says of it"():
     toml_said = parse_error(() => toml.loads[dict[str, int]](f"{key} = 1\n{key} = 2")?)
     assert len(toml_said) < 100
 
+struct Event:
+    at: Time
+    id: uuid.Uuid
+
+test "a time or a UUID in loaded data is quoted by its start and its length"():
+    head = "`abcdefghijabcdefghij…` (5,000 characters)"
+    said = parse_error(() => json.loads[Event](f"{{\"at\": \"{letters()}\", \"id\": \"x\"}}")?)
+    assert said.startswith(f"`at` is {head}, which isn't an RFC 3339 time")
+    at = "2026-11-12T00:00:00Z"
+    said_id = parse_error(
+        () => json.loads[Event](f"{{\"at\": \"{at}\", \"id\": \"{letters()}\"}}")?,
+    )
+    assert said_id.startswith(f"`id` is {head}, which isn't a UUID")
+
+test "a control character from outside is written as an escape, so it can't break a line"():
+    # A line break, and the start of a terminal's colour code.
+    sneaky = "ok\nFAKE LOG LINE\x1b[31m"
+    said = invalid(() => uuid.Uuid.parse(sneaky)?)
+    assert said.startswith("`ok\\nFAKE LOG LINE\\u{1b}[31m` isn't a UUID")
+    assert said.find("\n") is None and said.find("\x1b") is None
+    # JSON's escapes for a carriage return and a tab, which the key holds once it's read.
+    key = "k\\r\\tk"
+    twice = parse_error(() => json.loads[dict[str, int]](f"{{\"{key}\": 1, \"{key}\": 2}}")?)
+    assert twice.startswith("the text has `k\\r\\tk` twice")
+
 test "text 40 characters long or shorter is quoted whole, as before"():
     forty = "1" * 40
     assert invalid(() => int.parse("4_2")?) == "\"4_2\" isn't an int"

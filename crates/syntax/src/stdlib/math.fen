@@ -592,7 +592,7 @@ def fixed_sum(items: list[float], start = 0.0) -> float:
     return start + (((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)))
 
 ## The sum of `a[at] * b[at]` at each place, added in the order `sum` adds floats in, so it's
-## `sum(a[at] * b[at] for at in range(a.len()))` to the bit. `a` and `b` have to be the same length.
+## `sum(a[at] * b[at] for at in range(len(a)))` to the bit. `a` and `b` have to be the same length.
 export def dot(a: list[float], b: list[float]) -> float:
     assert len(a) == len(b)
     n = len(a)

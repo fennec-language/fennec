@@ -1,0 +1,9 @@
+struct P:
+    x: int
+
+extend P:
+    def str(self) -> str:
+        return f"P{self.x}"
+
+def main(stdout: Stdout):
+    stdout.print(str(P(x=1)))

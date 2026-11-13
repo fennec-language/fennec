@@ -11,16 +11,21 @@ impl Checker {
         let mut problems = Vec::new();
         for info in self.program.types.values().filter(|info| !info.prelude) {
             for method in &info.def.methods {
-                let name = &info.def.name;
-                problems.extend(match method.name.as_str() {
-                    "str" => str_problem(name, method),
-                    "[]mut" => mut_index_problem(name, method),
-                    "is_live" => is_live_problem(name, method),
-                    _ => None,
-                });
+                problems.extend(protocol_problem(&info.def.name, method));
             }
         }
         self.diagnostics.extend(problems);
+    }
+}
+
+/// What's wrong with a protocol method of a type, if it is one and anything is, wherever it's
+/// written: in the type's body or in an `extend`.
+pub(crate) fn protocol_problem(type_name: &str, method: &FnDef) -> Option<Diagnostic> {
+    match method.name.as_str() {
+        "str" => str_problem(type_name, method),
+        "[]mut" => mut_index_problem(type_name, method),
+        "is_live" => is_live_problem(type_name, method),
+        _ => None,
     }
 }
 

@@ -1,0 +1,160 @@
+# Pathfinding for a game's AI, as a server runs it for units asking their way. A map of 512 by 512
+# cells, made from one seed: open ground, walls, rooms with doors, and mud that costs more to
+# cross. Many units ask for a path from where they stand to where they're going, and each is
+# found by A* with a heap of open cells, ordered by a struct's `<`, and a dict of the cells
+# visited, each with its best cost and the cell it was reached from. Each path is walked back to
+# count its steps and add up what it passes, and the checksum covers every path and how much
+# each search looked at.
+
+from std.collections import Heap
+
+SIDE = 512
+SEARCHES = 16
+REACH = 120
+MUD = 3
+GROUND = 1
+
+# A cell waiting to be looked at: its estimated total cost, its estimate of what's left, and
+# where it is. The cheapest total comes out first, the one nearer the goal among equals, then
+# the lower cell, so every search goes the same way.
+struct Open:
+    total: int
+    left: int
+    cell: int
+
+    def <(self, other: Open) -> bool:
+        if self.total != other.total: return self.total < other.total
+        if self.left != other.left: return self.left < other.left
+        return self.cell < other.cell
+
+# A cell a search has reached: the cheapest cost so far, and the cell before it on that way.
+struct Visit:
+    cost: int
+    came_from: int
+
+# What one search found.
+struct Found:
+    steps: int
+    cost: int
+    looked: int
+    passed: int
+
+# The next state of a small linear congruential generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+# A number from 0 up to `top` taken from a generator's state.
+def below(seed: int, top: int) -> int:
+    return seed // 65_536 % top
+
+# The map: what it costs to step onto each cell, 0 for a wall.
+def world(seed: int) -> list[int]:
+    mut costs = [GROUND for _ in range(SIDE * SIDE)]
+    mut state = seed
+    # Scattered rocks and patches of mud.
+    for cell in range(SIDE * SIDE):
+        state = next(state)
+        roll = below(state, top=100)
+        if roll < 18:
+            costs[cell] = 0
+        elif roll < 30:
+            costs[cell] = MUD
+    # Rooms: walls around a square, with a door in each side.
+    for _ in range(220):
+        state = next(state)
+        left = below(state, top=SIDE - 40)
+        state = next(state)
+        top = below(state, top=SIDE - 40)
+        state = next(state)
+        size = 8 + below(state, top=24)
+        for at in range(size + 1):
+            costs[top * SIDE + left + at] = 0
+            costs[(top + size) * SIDE + left + at] = 0
+            costs[(top + at) * SIDE + left] = 0
+            costs[(top + at) * SIDE + left + size] = 0
+        half = size // 2
+        costs[top * SIDE + left + half] = GROUND
+        costs[(top + size) * SIDE + left + half] = GROUND
+        costs[(top + half) * SIDE + left] = GROUND
+        costs[(top + half) * SIDE + left + size] = GROUND
+    return costs
+
+# How far apart two cells are in steps, if nothing were in the way.
+def distance(a: int, b: int) -> int:
+    return abs(a % SIDE - b % SIDE) + abs(a // SIDE - b // SIDE)
+
+# The way from `start` to `goal` by A*, or a `Found` with no steps if there's none.
+def search(costs: list[int], start: int, goal: int) -> Found:
+    mut open = Heap[Open]()
+    mut seen = dict[int, Visit]()
+    seen[start] = Visit(cost=0, came_from=-1)
+    open.push(Open(total=distance(start, goal), left=distance(start, goal), cell=start))
+    mut looked = 0
+    while True:
+        here = open.pop() else break
+        cost = here.total - here.left
+        # A cell is in the heap once for each time a cheaper way to it was found.
+        if cost > seen[here.cell].cost: continue
+        looked += 1
+        if here.cell == goal:
+            mut steps = 0
+            mut passed = 0
+            mut at = goal
+            while at != start:
+                steps += 1
+                passed = (passed * 31 + at) % 1_000_000_007
+                at = seen[at].came_from
+            return Found(steps=steps, cost=cost, looked=looked, passed=passed)
+        x = here.cell % SIDE
+        y = here.cell // SIDE
+        for step in range(4):
+            mut there = -1
+            if step == 0 and x + 1 < SIDE:
+                there = here.cell + 1
+            elif step == 1 and x > 0:
+                there = here.cell - 1
+            elif step == 2 and y + 1 < SIDE:
+                there = here.cell + SIDE
+            elif step == 3 and y > 0:
+                there = here.cell - SIDE
+            if there < 0 or costs[there] == 0: continue
+            reached = cost + costs[there]
+            known = seen.get(there)
+            if known is not None and known.cost <= reached: continue
+            seen[there] = Visit(cost=reached, came_from=here.cell)
+            left = distance(there, goal)
+            open.push(Open(total=reached + left, left=left, cell=there))
+    return Found(steps=0, cost=0, looked=looked, passed=0)
+
+# Where a unit stands or goes: an open cell near `around`, found from a generator's state.
+def open_cell(costs: list[int], around: int, state: int) -> int:
+    x = (around % SIDE + below(state, top=2 * REACH) - REACH + SIDE) % SIDE
+    y = (around // SIDE + below(next(state), top=2 * REACH) - REACH + SIDE) % SIDE
+    mut cell = y * SIDE + x
+    while costs[cell] == 0:
+        cell = (cell + 1) % (SIDE * SIDE)
+    return cell
+
+def main(stdout: Stdout):
+    costs = world(2026)
+    mut state = 99
+    mut checksum = 0
+    mut steps = 0
+    mut looked = 0
+    mut stuck = 0
+    for search_number in range(SEARCHES):
+        state = next(state)
+        start = open_cell(costs, around=below(state, top=SIDE * SIDE), state=next(state))
+        state = next(next(state))
+        goal = open_cell(costs, around=start, state=state)
+        state = next(state)
+        found = search(costs, start=start, goal=goal)
+        if found.steps == 0 and start != goal:
+            stuck += 1
+        steps += found.steps
+        looked += found.looked
+        checksum = (
+            (checksum * 7 + found.cost * 1_009 + found.passed + search_number) % 1_000_000_007
+        )
+    stdout.print(checksum, steps, looked, stuck)
+    return

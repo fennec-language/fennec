@@ -3596,6 +3596,48 @@ fn a_hot_loop_over_a_table_makes_nothing() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `@hot` refuses an item the native code copies to change: one read out of a list, changed and
+/// put back with the list read in between, so the code generator can't take it out. The same
+/// with nothing read in between, and a `for ref` loop over a `Table` of items holding a dict,
+/// change their items where they are, so they check. `fennec dev copies` lists the copy too.
+/// Before this, `@hot` saw none of these copies, though the program made them.
+#[test]
+fn a_hot_function_refuses_an_item_it_copies_to_change() {
+    let dir = scratch("hot_item_copy").unwrap();
+    let program = dir.join("hot.fen");
+    let types =
+        "from std.collections import Table\n\nstruct Enemy:\n    hp: int\n    bag: dict[str, int]\n\n";
+    let main = "\ndef main(stdout: Stdout):\n    mut enemies = [Enemy(hp=3, bag={\"a\": 1}), Enemy(hp=4, bag={\"a\": 2})]\n    \
+                mut table = Table[Enemy]()\n    _ = table.add(Enemy(hp=5, bag={\"a\": 3}))\n    \
+                step(ref enemies, ref table)\n    stdout.print(enemies[0].hp, enemies[1].hp)\n";
+    let step = |between: &str| {
+        format!(
+            "@hot\ndef step(ref enemies: list[Enemy], ref table: Table[Enemy]):\n    \
+             for ref held in table:\n        held.hp -= 1\n    \
+             for i in range(len(enemies)):\n        mut enemy = enemies[i]\n{between}        enemy.hp -= 1\n        \
+             enemies[i] = enemy\n"
+        )
+    };
+    let copying =
+        format!("{types}{}{main}", step("        for other in enemies:\n            enemy.hp -= other.hp\n"));
+    std::fs::write(&program, &copying).unwrap();
+    let output = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    assert!(!output.status.success());
+    let refused = "what this reads out of `enemies` is copied to change it in `@hot` `step`";
+    assert!(text(&output.stderr).contains(refused), "{}", text(&output.stderr));
+    std::fs::write(&program, copying.replace("@hot\n", "")).unwrap();
+    let listed = fennec(&["dev", "copies", program.to_str().unwrap()], "").unwrap();
+    assert!(
+        text(&listed.stdout).contains("what this reads out of `enemies` is copied to change it"),
+        "{}",
+        text(&listed.stdout)
+    );
+    std::fs::write(&program, format!("{types}{}{main}", step(""))).unwrap();
+    let checked = fennec(&["check", program.to_str().unwrap()], "").unwrap();
+    assert!(checked.status.success(), "{}", text(&checked.stderr));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// `@hot` on a function means it, and everything it calls, may not allocate or copy: each place
 /// that may is a compile error that says why, and one that does neither builds and runs.
 #[test]

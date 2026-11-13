@@ -20194,6 +20194,75 @@ fn texts_joined_past_a_header_are_made_once() -> std::io::Result<()> {
     Ok(())
 }
 
+/// `a + b` gives a text equal to the same text made any other way, at every length either side of
+/// what a header holds: 22, 23, 24 and 25 bytes, empty either side, and characters of two and
+/// three bytes where 23 bytes end. Each joined text is compared with the same text from a list,
+/// is a dict's key found by that text, and says its length in characters. The texts come out of
+/// lists, so each join is made where it runs, and every block is freed after, with none left.
+#[test]
+fn a_join_at_every_length_past_a_header_equals_the_same_text_made_another_way() -> std::io::Result<()> {
+    use std::fmt::Write as _;
+    if !ready() {
+        return Ok(());
+    }
+    let (e11, d7) = ("é".repeat(11), "日".repeat(7));
+    let rows: Vec<(String, String)> = vec![
+        (String::new(), String::new()),
+        (String::new(), "x".to_owned()),
+        ("a".repeat(11), "b".repeat(11)),
+        ("a".repeat(11), "b".repeat(12)),
+        ("a".repeat(12), "b".repeat(12)),
+        ("a".repeat(12), "b".repeat(13)),
+        (String::new(), "c".repeat(24)),
+        ("d".repeat(24), String::new()),
+        (e11.clone(), "a".to_owned()),
+        ("é".repeat(6), "é".repeat(6)),
+        (d7.clone(), "é".to_owned()),
+        (d7.clone(), "日".to_owned()),
+        (format!("{d7}é"), "日".to_owned()),
+        ("a\"b{c}".to_owned(), "\\".repeat(20)),
+        ("x".repeat(40), "y".repeat(40)),
+    ];
+    let lefts: Vec<String> = rows.iter().map(|(left, _)| fennec_literal(left)).collect();
+    let rights: Vec<String> = rows.iter().map(|(_, right)| fennec_literal(right)).collect();
+    let wanted: Vec<String> =
+        rows.iter().map(|(left, right)| fennec_literal(&format!("{left}{right}"))).collect();
+    let source = format!(
+        r#"def main(stdout: Stdout):
+    lefts = [{}]
+    rights = [{}]
+    wanted = [{}]
+    mut seen = dict[str, int]()
+    for at in range(len(lefts)):
+        joined = lefts[at] + rights[at]
+        seen[joined] = at
+        same = "same" if joined == wanted[at] else "differs"
+        stdout.print(f"{{len(joined)}} {{same}} {{joined}}")
+    for text in wanted:
+        stdout.print(seen.get(text) else -1)
+    return
+"#,
+        lefts.join(", "),
+        rights.join(", "),
+        wanted.join(", ")
+    );
+    let mut expected = String::new();
+    let mut last = std::collections::HashMap::new();
+    for (at, (left, right)) in rows.iter().enumerate() {
+        let joined = format!("{left}{right}");
+        let _ = writeln!(expected, "{} same {joined}", joined.chars().count());
+        last.insert(joined, at);
+    }
+    for (left, right) in &rows {
+        let found = last.get(&format!("{left}{right}")).copied().unwrap_or(usize::MAX);
+        let _ = writeln!(expected, "{found}");
+    }
+    let dir = folder("joins_past_a_header")?;
+    let program = dir.join("joins_past_a_header.fen");
+    std::fs::write(&program, &source)?;
+    prints_with_nothing_left(&dir, &program, &expected, &["1"])
+}
+
 const TEXTS_ADDED_IN_TURN: &str = r#"struct Writer:
     text = ""
     parts = ["", ""]

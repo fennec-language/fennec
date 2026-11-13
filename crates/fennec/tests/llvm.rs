@@ -22609,6 +22609,162 @@ def main(stdout: Stdout, clock: Clock):
     )
 }
 
+/// Chains 200,000 deep let go of at 1, 4 and 18 threads, in dev and release, nothing left held:
+/// enums of native blocks through their first field, one holding strings and a list where no
+/// other thread runs and one holding numbers in a task and in `parallel`'s workers, and enums
+/// through a list and a dict. A native drop recursing through `left` ran 200,000 calls deep,
+/// past the thread sanitizer's stack, which then said a list was freed twice and hung.
+#[test]
+fn deep_chains_are_let_go_of_anywhere_with_no_stack() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for (name, source, wanted) in [
+        ("deep_threadless", DEEP_THREADLESS, "200032 35\n"),
+        ("deep_threaded", DEEP_THREADED, "[599997, 2997, 599997] 599997\n"),
+    ] {
+        let dir = folder(name)?;
+        let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+        std::fs::write(&program, source)?;
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let args: Vec<&str> = ["build"]
+                .into_iter()
+                .chain(how.iter().copied())
+                .chain([program.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+                .collect();
+            let built = fennec(&args, &dir)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            for threads in ["1", "4", "18"] {
+                let ran = Command::new(&executable)
+                    .env("FENNEC_COUNTS", "1")
+                    .env("FENNEC_THREADS", threads)
+                    .output_within()?;
+                let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+                assert_eq!(
+                    String::from_utf8_lossy(&ran.stdout),
+                    wanted,
+                    "{name} {how:?} at {threads}: {said}"
+                );
+                assert!(
+                    said.lines().any(|line| line.ends_with(" live 0")),
+                    "{name} {how:?} at {threads}: {said}"
+                );
+            }
+        }
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
+const DEEP_THREADLESS: &str = r#"enum Plain:
+    End
+    Two(left: Plain, right: Plain, n: int)
+
+enum Named:
+    Leaf(name: str)
+    Pair(left: Named, right: Named, label: str, tags: list[str])
+
+def plain_chain(depth: int) -> Plain:
+    mut made = Plain.End
+    for at in range(depth):
+        made = .Two(left=made, right=.End, n=at)
+    return made
+
+def named_chain(depth: int) -> Named:
+    mut named = Named.Leaf(name="a leaf long enough for a block of its own")
+    for at in range(depth):
+        named = .Pair(left=named, right=.Leaf(name=f"<{at}>"), label="a label long enough for a block", tags=["t", f"tag {at}"])
+    return named
+
+def dropped(depth: int) -> int:
+    plain = plain_chain(depth)
+    named = named_chain(depth)
+    mut total = 0
+    match plain:
+        case .Two(_, _, n):
+            total += n
+        case _:
+            pass
+    match named:
+        case .Pair(_, _, label, tags):
+            total += len(label) + len(tags)
+        case _:
+            pass
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(dropped(200_000), dropped(3))
+    return
+"#;
+
+const DEEP_THREADED: &str = r#"from std.concurrent import Crashed
+
+enum Plain:
+    End
+    Two(left: Plain, right: Plain, n: int)
+
+enum Tree:
+    Leaf(n: int)
+    Branch(kids: list[Tree], n: int)
+
+enum Map:
+    Leaf(n: int)
+    Branch(kids: dict[int, Map], n: int)
+
+def plain_chain(depth: int) -> Plain:
+    mut made = Plain.End
+    for at in range(depth):
+        made = .Two(left=made, right=.End, n=at)
+    return made
+
+def tree_chain(depth: int) -> Tree:
+    mut made = Tree.Leaf(n=0)
+    for at in range(depth):
+        made = .Branch(kids=[made], n=at)
+    return made
+
+def map_chain(depth: int) -> Map:
+    mut made = Map.Leaf(n=0)
+    for at in range(depth):
+        made = .Branch(kids={at: made}, n=at)
+    return made
+
+def dropped(depth: int) -> int:
+    plain = plain_chain(depth)
+    tree = tree_chain(depth)
+    map = map_chain(depth)
+    mut total = 0
+    match plain:
+        case .Two(_, _, n):
+            total += n
+        case _:
+            pass
+    match tree:
+        case .Branch(_, n):
+            total += n
+        case _:
+            pass
+    match map:
+        case .Branch(_, n):
+            total += n
+        case _:
+            pass
+    return total
+
+def in_a_task(depth: int) fails Crashed:
+    with launch(() => dropped(depth)) as task:
+        pass
+
+def main(stdout: Stdout):
+    in_a_task(200_000) except Crashed():
+        stdout.print("the task crashed")
+    mut sizes = [200_000, 1_000, 200_000]
+    for ref size in parallel(sizes):
+        size = dropped(size)
+    stdout.print(sizes, dropped(200_000))
+    return
+"#;
+
 /// `parallel` puts items back by their case, letting go of what each item held.
 #[test]
 fn parallel_loops_over_enums_holding_blocks_match_what_was_pinned() -> std::io::Result<()> {

@@ -7,6 +7,12 @@ dict_get 133 238 81d02fe2c588940a
 dict_put 126 249 ab39a7ea05ce9935
 find 309 271 4e050ac418a81c6a
 fstring 151 441 39ea2f884cc5e6b7
+item_append 848 3148 3c7a1d5a1060105c
+item_copy_change 129 855 e5c4517945d7d51f
+item_dict_set 127 989 cf8002fe848b737e
+item_put_back 103 847 b682349c0503b22b
+item_reverse 1210 235 adf72e6a83cfef86
+item_sort 5519 2594 c850c0d83e882bc0
 json_dumps 3384 1842 61c1c49ae8b00250
 json_loads 14186 1825 31892504485fcc05
 parse_int 995 64 b6183ab1f49e0410

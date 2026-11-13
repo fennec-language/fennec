@@ -18892,6 +18892,59 @@ fn text_added_to_itself_grows_where_it_is() -> std::io::Result<()> {
 const TEXT_GROWN_PRINTS: &str = r"4001 4000 ab! 4001 x0,1,2,3,4,5 ababab 64 a 0 1,000 2,000
 ";
 
+/// `text += "," + f()?` that fails leaves the text as it was, in a field, a `ref` parameter, and
+/// `text = text + "," + f()?`: the pieces aren't added one at a time when a later one can fail,
+/// since those before it would be in already.
+#[test]
+fn a_text_grown_by_pieces_one_of_which_fails_keeps_what_it_had() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "pieces_failing",
+        r#"error Bad:
+    why: str
+
+struct Writer:
+    text = "start"
+
+def risky(value: int, stdout: Stdout) -> str fails Bad:
+    stdout.print("called", value)
+    if value > 2: fail Bad(why="too big")
+    return str(value)
+
+def grow(ref out: Writer, value: int, stdout: Stdout) fails Bad:
+    out.text += "," + risky(value, stdout)? + "!"
+    return
+
+def grow_text(ref text: str, value: int, stdout: Stdout) fails Bad:
+    text += "," + risky(value, stdout)?
+    return
+
+def rebuilt(ref text: str, value: int, stdout: Stdout) fails Bad:
+    text = text + "," + risky(value, stdout)?
+    return
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    mut text = "t"
+    mut other = "o"
+    for value in [2, 3]:
+        grow(ref out, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        grow_text(ref text, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        rebuilt(ref other, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        stdout.print(out.text, text, other)
+    return
+"#,
+        "called 2\ncalled 2\ncalled 2\nstart,2! t,2 o,2\n\
+         called 3\nfailed too big\ncalled 3\nfailed too big\ncalled 3\nfailed too big\n\
+         start,2! t,2 o,2\n",
+    )
+}
+
 const TEXT_CHAINED: &str = r#"def main(stdout: Stdout):
     mut route = "GET "
     for part in ["a", "1", "b"]:

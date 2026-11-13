@@ -132,11 +132,14 @@ fn fix(path: &Path, why: &str) -> String {
 }
 
 /// Whether a path is at or below a folder named in `FENNEC_TRUST`, a list of folders as `PATH` is.
+/// Only where there are owners to tell, as on Windows there aren't.
+#[cfg(unix)]
 fn listed(path: &Path) -> bool {
     std::env::var_os("FENNEC_TRUST").is_some_and(|named| listed_in(path, &named))
 }
 
 /// Whether a path is at or below one of the folders `named` lists.
+#[cfg(unix)]
 fn listed_in(path: &Path, named: &std::ffi::OsStr) -> bool {
     std::env::split_paths(named)
         .filter(|folder| !folder.as_os_str().is_empty())

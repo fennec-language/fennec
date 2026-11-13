@@ -55,6 +55,11 @@ impl Kit {
         format!("{prefix}{name}")
     }
 
+    /// Whether `file` is of a dependency rather than the program's own kit.
+    fn is_dependency(&self, file: usize) -> bool {
+        self.files.get(file).is_some_and(|part| !part.prefix.is_empty())
+    }
+
     /// Whether the files `reader` and `file` are of different kits.
     fn apart(&self, reader: usize, file: usize) -> bool {
         self.files.get(reader).map(|part| &part.prefix) != self.files.get(file).map(|part| &part.prefix)
@@ -696,6 +701,29 @@ impl Resolver<'_> {
             if let Some(at) = self.kit.files.get(self.file).and_then(|part| part.imports_end) {
                 problem = problem.with_fix(at, format!("\n{import}"));
             }
+            self.errors.push(problem);
+            return;
+        }
+        // A dependency reaches its own kit's names, what it imports and the language's. The
+        // program's own names have no prefix in the merged module, so one a dependency writes
+        // without defining it would be read as the program's, private ones included.
+        if self.kit.is_dependency(self.file)
+            && let Some(&owner) = self.kit.owners.get(name)
+            && self.kit.apart(self.file, owner)
+        {
+            // The program's own `len` hides the language's from a dependency too, which can only
+            // be mended in the program.
+            let problem = if fennec_check::provided_everywhere(name) || fennec_check::reserved_name(name) {
+                Diagnostic::new(
+                    format!("`{name}` here would be the program's own `{name}`, not the language's"),
+                    span,
+                )
+                .with_help(format!(
+                    "rename the program's `{name}`: it hides the language's from the kits it uses"
+                ))
+            } else {
+                Diagnostic::new(format!("`{name}` doesn't exist"), span)
+            };
             self.errors.push(problem);
         }
     }

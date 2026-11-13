@@ -146,6 +146,7 @@ step "format" cargo fmt --check || exit 1
 step "build the command and the runtimes" runtime || exit 1
 step "clippy" cargo clippy --all-targets --locked -- -D warnings || exit 1
 step "the workspace and its tests compile on Linux" .github/scripts/linux-check.sh || exit 1
+step "the workspace and its tests compile for Windows" .github/scripts/windows-check.sh || exit 1
 step "tests" watched cargo test --locked || exit 1
 step "examples and kits" watched examples || exit 1
 step "every example as x86-64 under Rosetta" watched x86 || exit 1

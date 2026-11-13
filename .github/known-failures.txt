@@ -1,0 +1,8 @@
+# What main is known to fail, which the gate lets a change through on: one line each, the exact
+# name, then ` | `, then the change that broke it, as a pull request (#1609) or a commit (a1b2c3d).
+#
+#   cli::a_release_built_anywhere_is_the_same_bytes | #1488
+#   examples/fizzbuzz.fen | a8b1dec6d
+#
+# A test is named as `cargo test` names it; a program, as the examples and Rosetta steps do, by its
+# path. Whoever fixes one takes its line out in the same change. Empty when main is green.

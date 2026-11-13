@@ -85,26 +85,6 @@ pub(crate) fn made_name(held: &str) -> String {
     fennec_syntax::shared_declaration(held)
 }
 
-/// A type written as its text says, like `dict[str, int]`.
-/// A program's own type named like one of the standard library's is checked under a hidden name,
-/// `Log'`, which isn't written that way, so it's parsed as a name and given back.
-fn type_from(text: &str) -> Option<TypeExpr> {
-    const STANDS_IN: &str = "hidden__mark__";
-    let written = text.replace(fennec_syntax::visit::HIDDEN, STANDS_IN);
-    let module = fennec_syntax::parse(&format!("def held(value: {written}):\n    pass\n")).ok()?;
-    let Some(Item::Function(def)) = module.items.into_iter().next() else { return None };
-    let mut ty = def.params.into_iter().next().and_then(|param| param.ty)?;
-    hidden_again(&mut ty, STANDS_IN);
-    Some(ty)
-}
-
-fn hidden_again(ty: &mut TypeExpr, stands_in: &str) {
-    ty.name = ty.name.replace(stands_in, &fennec_syntax::visit::HIDDEN.to_string());
-    for arg in &mut ty.args {
-        hidden_again(arg, stands_in);
-    }
-}
-
 impl Lowering<'_> {
     /// The `shared` declaration holding a `held`, made the first time it's asked for.
     fn made(&mut self, held: TypeExpr) -> String {
@@ -156,8 +136,11 @@ impl Lowering<'_> {
             StmtKind::Assign { target, value, ty, .. } => {
                 let shared = ty.as_ref().is_some_and(|ty| ty.name == SHARED && ty.args.is_empty());
                 if shared {
-                    let held = self.declared.get(&(value.span.start, value.span.end)).and_then(Type::source);
-                    if let Some(held) = held.as_deref().and_then(type_from) {
+                    // The held type, written in as a written type built from it, never as text, so a
+                    // program's own type the checker holds under a name no source can write, as
+                    // `Log'`, comes through as it is.
+                    let held = self.declared.get(&(value.span.start, value.span.end));
+                    if let Some(held) = held.and_then(|held| held.written(Span::default())) {
                         let name = self.made(held);
                         // Types are found by span, so what's made has spans of its own: the call
                         // runs from the name to the value's end, and its callee is empty.

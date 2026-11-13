@@ -518,6 +518,32 @@ fn release_planned_holds(
     lent_owners: &mut HashMap<u64, i64, BuildHasherDefault<super::AddressHasher>>,
     freeing: &mut Freeing<'_>,
 ) {
+    // What holds no enum, which is most of what's freed, goes straight through its words: the walk
+    // that follows an enum's case, run for every free, cost `json.loads` 5%.
+    if holds.fixed() {
+        for child in holds.blocks_in(fields).filter(|child| *child != 0) {
+            release_planned_child(blocks, lent, lent_owners, freeing, child);
+        }
+        for child in holds.texts_in(fields).filter(|child| *child != 0) {
+            release_planned_child(blocks, lent, lent_owners, freeing, child);
+        }
+        return;
+    }
+    release_planned_by_case(holds, fields, blocks, lent, lent_owners, freeing);
+}
+
+/// [`release_planned_holds`] for a value with an enum inside, which its case decides: kept out
+/// of line, so the free of everything else stays as small as it was.
+#[cold]
+#[inline(never)]
+fn release_planned_by_case(
+    holds: &Holds,
+    fields: &[u64],
+    blocks: &mut crate::embed::table::Table,
+    lent: Option<&std::sync::Arc<crate::embed::table::Table>>,
+    lent_owners: &mut HashMap<u64, i64, BuildHasherDefault<super::AddressHasher>>,
+    freeing: &mut Freeing<'_>,
+) {
     holds.each_block(fields, &mut |child| release_planned_child(blocks, lent, lent_owners, freeing, child));
 }
 

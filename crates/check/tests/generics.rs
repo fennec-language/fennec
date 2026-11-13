@@ -584,6 +584,26 @@ fn brackets_only_name_the_type_parameters_that_are_written() {
     assert_eq!(problems(text), ["`one` takes 1 type in brackets, but this gives 2 @ one[int, str](1)"]);
 }
 
+/// A tuple type written alone in brackets is one type, as `show[(str, int)]`: the brackets'
+/// several types are a tuple starting where its first type does.
+#[test]
+fn a_tuple_type_alone_in_brackets_is_one_type() {
+    let shown = "def show[T](label: T, shape: Shape) -> float:\n    return shape.area()\n\n";
+    let text = format!(
+        "{AREAS}{shown}def main(stdout: Stdout):\n    stdout.print(show[(str, int)]((\"x\", 1), Square()))\n"
+    );
+    assert_eq!(problems(&text), Vec::<String>::new());
+    let text = format!(
+        "{AREAS}{shown}def main(stdout: Stdout):\n    stdout.print(show[(str, int), Square]((\"x\", 1), Square()))\n"
+    );
+    assert_eq!(
+        problems(&text),
+        [
+            "`show` takes 1 type in brackets, but this gives 2 @ show[(str, int), Square]((\"x\", 1), Square())"
+        ]
+    );
+}
+
 #[test]
 fn an_interface_is_only_a_parameters_type_by_itself() {
     for written in [

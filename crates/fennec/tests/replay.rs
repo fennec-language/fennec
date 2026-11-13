@@ -483,6 +483,74 @@ fn tasks_contending_for_a_lock_replay_the_order_they_took_it() -> std::io::Resul
     Ok(())
 }
 
+/// The main thread and a task trading messages through two channels with waits of 5 µs, so how
+/// many sends and receives time out, and what's received, are the machine's to say.
+const WAITS_TIMED_OUT_OR_NOT: &str = "from std.concurrent import Channel, Closed, Crashed, Timeout, channel
+from std.time import Duration
+
+def echo(to: Channel[int], back: Channel[int]):
+    for n in to:
+        if n < 0:
+            return
+        back.send(n * 2) except Closed():
+            return
+
+def trade(stdout: Stdout, to: Channel[int], back: Channel[int]):
+    mut waited = 0
+    mut total = 0
+    for n in range(3000):
+        to.send_within(n, Duration(nanos=5_000)) except Timeout() | Closed():
+            waited += 1
+        got: int? = back.receive_within(Duration(nanos=5_000)) except Timeout():
+            waited += 1
+            None
+        if got is not None:
+            total += got
+    stdout.print(waited, total)
+
+def main(stdout: Stdout) fails Closed | Crashed | Timeout:
+    with channel[int](size=1) as to:
+        with channel[int](size=4096) as back:
+            with launch(() => echo(to, back=back))?:
+                trade(stdout, to=to, back=back)
+                to.send(-1)?
+";
+
+/// Every send and receive that waited, whether what it waited for came or it timed out, replays to
+/// what it came to in the recording, however many threads the replay is given.
+#[test]
+fn a_wait_that_timed_out_or_not_replays_as_it_came_out() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("waits")?;
+    let program = dir.join("waits.fen");
+    std::fs::write(&program, WAITS_TIMED_OUT_OR_NOT)?;
+    for recorded_threads in ["1", "4"] {
+        let log = dir.join(format!("waits-{recorded_threads}.log"));
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", recorded_threads);
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = outcome(&record.output_before(DEADLINE)?);
+        assert_eq!(recorded.2, Some(0), "recorded with FENNEC_THREADS={recorded_threads}: {}", recorded.1);
+        for threads in ["1", "4", "7"] {
+            let replayed = outcome(
+                &fennec_command()
+                    .env("FENNEC_THREADS", threads)
+                    .args(["replay", &log.to_string_lossy()])
+                    .current_dir(&dir)
+                    .output_before(DEADLINE)?,
+            );
+            assert_eq!(
+                replayed, recorded,
+                "recorded with FENNEC_THREADS={recorded_threads}, replayed with {threads}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A program connecting to a server of its own and printing what it made.
 const NET_LABELS: &str = "from std.net import NetError
 

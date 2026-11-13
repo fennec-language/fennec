@@ -4371,6 +4371,35 @@ fn an_int_read_from_text_is_read_the_same_however_its_written() -> std::io::Resu
     )
 }
 
+/// A `u64` too big, from text as long as it likes, is quoted by its first 20 digits and how many
+/// it has, so a hostile number can't make a message as long as itself. One just past the top is
+/// quoted whole, as before.
+#[test]
+fn a_u64_too_big_is_quoted_by_its_start_and_its_length() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "u64_too_big_quoted",
+        r#"def said(run: () -> u64 fails InvalidValue) -> str:
+    n = run() except why:
+        return why.message
+    return f"{n}"
+
+def main(stdout: Stdout):
+    digits = "1234567890" * 500
+    stdout.print(said(() => u64.parse(digits)?))
+    stdout.print(said(() => u64.parse("18446744073709551616")?))
+"#,
+    )?;
+    assert_eq!(
+        printed,
+        "12345678901234567890… (5,000 digits) doesn't fit in u64, which holds 0 to 18446744073709551615\n\
+         18446744073709551616 doesn't fit in u64, which holds 0 to 18446744073709551615\n"
+    );
+    Ok(())
+}
+
 /// A `u64` from outside: `u64.from(x)?` and `u64.parse(text)?`, which reads what's past the
 /// largest `int` a digit at a time, failing cleanly past the top. And `u64`'s `wrapping_` and
 /// `saturating_` methods, worked out on its 64 bits without going past them.

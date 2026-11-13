@@ -82,17 +82,6 @@ test "a time or a UUID in loaded data is quoted by its start and its length"():
     )
     assert said_id.startswith(f"`id` is {head}, which isn't a UUID")
 
-test "a u64 too big is quoted by its start and its length"():
-    said = invalid(() => u64.parse(digits())?)
-    assert (
-        said
-        == "12345678901234567890… (5,000 digits) doesn't fit in u64, which holds 0 to 18446744073709551615"
-    )
-    assert (
-        invalid(() => u64.parse("18446744073709551616")?)
-        == "18446744073709551616 doesn't fit in u64, which holds 0 to 18446744073709551615"
-    )
-
 test "a control character from outside is written as an escape, so it can't break a line"():
     # A line break, and the start of a terminal's colour code.
     sneaky = "ok\nFAKE LOG LINE\x1b[31m"

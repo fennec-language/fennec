@@ -1,0 +1,17 @@
+# `stamp[11:16]`, the minute out of a timestamp, compared with another, done OPS times on inputs that vary.
+# `fennec-bench ops` counts its instructions per operation beside its Rust twin's.
+
+OPS = 20_000
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    stamps = [f"2026-11-12T09:{i}:00.000Z" for i in range(shift + 10, shift + 26)]
+    mut total = 0
+    for at in range(OPS):
+        minute = stamps[(at + shift) % 16][11:16]
+        total += len(minute)
+        if minute == "09:15":
+            total += 1
+    stdout.print(total)
+    return

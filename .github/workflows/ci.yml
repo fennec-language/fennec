@@ -486,6 +486,10 @@ jobs:
           # until the instruction count proves stable on no-op pull requests. Wrong output, or a
           # kernel below an enforced floor, still fails the job.
           ./target/release/fennec-bench --report-only "${previous[@]}"
+      # What one call of each everyday operation in bench/ops costs, against its pin. An operation
+      # that takes more than it did when pinned fails the job.
+      - name: Measure each operation against its pin
+        run: ./target/release/fennec-bench ops
 
   # Limits on how long editing, checking, testing and formatting take. A budget that's enforced
   # fails this job; one not met yet shows as a warning. See crates/bench/src/budgets.rs.

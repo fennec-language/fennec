@@ -18,7 +18,7 @@ use super::ast::{
     Kept, LEDGER, Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming,
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
-use super::ast::{Calling, Field, FieldCall, FieldCalls, Yielding};
+use super::ast::{Calling, Field, FieldCall, FieldCalls, Waking, Yielding};
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1610,6 +1610,7 @@ impl Machine {
             Stmt::Constants(constants) => self.constants(constants)?,
             Stmt::FieldCalls(calls) => self.fielded(calls)?,
             Stmt::Yielded(yielding) => self.yielded(yielding),
+            Stmt::Woken(waking) => self.woken(waking),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1963,6 +1964,22 @@ impl Machine {
             }
         }
         Ok(())
+    }
+
+    /// What `woken{id}` prints: each answer before the task's crash or failure, then how its
+    /// block ended, if it did.
+    fn woken(&mut self, waking: &Waking) {
+        let Waking { count, at, failing, .. } = *waking;
+        for number in 0..count.min(at.max(0)) {
+            let _ = writeln!(self.out, "got {}", number * 2);
+        }
+        if (0..count).contains(&at) {
+            if failing {
+                let _ = writeln!(self.out, "refused {at}");
+            } else {
+                self.out.push_str("crashed\n");
+            }
+        }
     }
 
     /// What `yielded{id}` prints: every value as it was yielded, however much was yielded after

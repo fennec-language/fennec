@@ -9,7 +9,7 @@ use super::ast::{
     KEYS, Kept, LEDGER, Leave, Nested, Op, Place, Program, ROOMS, Reading, RefPlace, STARTING, Stmt,
     StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
-use super::ast::{Calling, Field, FieldCall, FieldCalls, Yielding};
+use super::ast::{Calling, Field, FieldCall, FieldCalls, Waking, Yielding};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -603,6 +603,22 @@ fn yielded_written(yielding: &Yielding) -> String {
          with launch((inbox) => echoed{id}(inbox, back)?)? as sends:\n            for note in got:\n                \
          sends.send(note)?\n        for _ in range(len(got)):\n            note = replies.receive() else break\n            \
          stdout.print(\"back\", note)\n    return\n\n"
+    )
+}
+
+/// `woken{id}`, the function a `Woken` calls, after the task it launches.
+fn woken_written(waking: &Waking) -> String {
+    let Waking { id, count, at, failing } = *waking;
+    let leaving = if failing { "fail Refused(code=number)" } else { "_ = [1][number - at + 1]" };
+    format!(
+        "def answering{id}(inbox: Inbox[int], back: Sender[int], at: int) fails Closed | Refused:\n    \
+         for number in inbox:\n        if number == at:\n            {leaving}\n        back.send(number * 2)?\n    \
+         return\n\n\
+         def woken{id}(stdout: Stdout) fails Crashed | Closed | Timeout | Refused:\n    \
+         with channel[int](size=1) as replies:\n        back = replies.sender()\n        \
+         with launch((inbox) => answering{id}(inbox, back, at={at})?)? as sends:\n            \
+         for number in range({count}):\n                sends.send(number)?\n                \
+         got = replies.receive() else break\n                stdout.print(\"got\", got)\n    return\n\n"
     )
 }
 
@@ -1852,6 +1868,19 @@ impl Writer {
             Stmt::Streamed(streaming) => {
                 let _ = write!(self.helpers, "{}", streamed_written(streaming));
                 self.line(indent, &format!("streamed{}(stdout)", streaming.id));
+            }
+            Stmt::Woken(waking) => {
+                let _ = write!(self.helpers, "{}", woken_written(waking));
+                self.line(indent, &format!("woken{}(stdout) except why:", waking.id));
+                for (case, then) in [
+                    ("Crashed()", "stdout.print(\"crashed\")"),
+                    ("Closed()", "stdout.print(\"closed\")"),
+                    ("Timeout()", "stdout.print(\"timeout\")"),
+                    ("Refused(code=code)", "stdout.print(\"refused\", code)"),
+                ] {
+                    self.line(indent + 1, &format!("case {case}:"));
+                    self.line(indent + 2, then);
+                }
             }
             Stmt::Yielded(yielding) => {
                 let _ = write!(self.helpers, "{}", yielded_written(yielding));

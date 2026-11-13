@@ -663,6 +663,17 @@ pub(crate) struct Yielding {
     pub(crate) widths: [i64; 3],
 }
 
+/// A `Woken` statement: a launched task answering each of `count` numbers over a channel, which
+/// crashes on `at`, or fails with `Refused` when `failing`, while its launcher waits for the
+/// answer. The launcher's wait has to end, and its block with the task's crash or failure.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Waking {
+    pub(crate) id: usize,
+    pub(crate) count: i64,
+    pub(crate) at: i64,
+    pub(crate) failing: bool,
+}
+
 /// How a `Streamed` stream is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StreamRead {
@@ -951,6 +962,8 @@ pub(crate) enum Stmt {
     /// `yielded{id}(stdout)`: generators yielding structs, tuples and enums holding texts, lists
     /// and dicts, and an inbox loop sending them back.
     Yielded(Yielding),
+    /// `woken{id}(stdout)`: a task that crashes or fails while its launcher waits on a channel.
+    Woken(Waking),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

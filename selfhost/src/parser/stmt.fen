@@ -21,7 +21,7 @@ extend Parser:
         if self.at_keyword("while"): return self.while_stmt()?
         if self.at_keyword("for"): return self.for_stmt()?
         if self.at_keyword("with"): return self.with_stmt(False)?
-        # `lend value`, or `lend value else:` with a block, in a `with` source.
+        # `lend value`, or `lend value except:` with a block, in a `with` source.
         if self.at_soft("lend") and starts_value(self.peek_at(1)): return self.lend_stmt()?
         # `lock scores as ref current:`, where a name follows `lock`.
         if self.at_soft("lock") and is_name(self.peek_at(1)): return self.with_stmt(True)?
@@ -87,7 +87,8 @@ extend Parser:
             and not (self.peek_at(1) in [.Punct("="), .Punct("."), .Punct("("), .Punct("[")])
         )
 
-    ## `lend value`, or `lend value else:` and the block that runs when the caller's fails.
+    ## `lend value`, or `lend value except:` and the block that runs when the caller's fails.
+    ## `lend value else:`, its form before 2026-11-11, is read too.
     def lend_stmt(ref self) -> Stmt fails Diagnostic:
         start = self.advance().span
         value = self.or_expr()?

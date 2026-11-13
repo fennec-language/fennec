@@ -26,6 +26,7 @@ cargo build --release -p fennec -p fennec-bench
 | Game AI | `pathfind`: A* on a 512 by 512 map for many units, with a `Heap` of structs ordered by `<` and a dict of the cells visited |
 | Physics | `physics`: balls in a box as lists of `std.math`'s `Vec3`, filed in a grid by a counting sort for the broad phase, and pushed apart and bounced |
 | A developer's tool | `grep_tool`: a tree of source files written and walked through an `Fs` narrowed with `only`, read in chunks and matched line by line with `std.re` |
+| A chat server | `chat_server`: a hub task owning the rooms fans each message out over channels to four shard tasks owning the users' mailboxes, which send back what each user got |
 | A nightly job | `data_pipeline`: CSV parsed by `std.csv` into structs, totalled, and every order through `std.pack` and `std.json` and back |
 | A real program | `selfhost`, the self-hosted front end parsing the kernels' own source |
 | A log cruncher | `log_crunch`: log lines split and counted into dicts of structs and counters, times appended to a dict of lists, sorted for percentiles, and a report built with f-strings and `+=` |

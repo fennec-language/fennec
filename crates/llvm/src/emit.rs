@@ -1045,20 +1045,25 @@ impl Emit<'_, '_, '_> {
             }
         }
         // A `mut` parameter changed through more than once, which nothing here can share, is
-        // made alone once, on the way in, rather than at every change.
+        // made alone once, on the way in, rather than at every change: when one of those changes
+        // is made by every call. Where each is in a branch a call may not take, a call that makes
+        // none takes nothing for its own, and each is checked where it's made.
+        let always = crate::uniqueness::always_reached(function);
         for at in 0..function.params {
             let local = LocalId(at);
-            let changes = function
+            let changing = |inst: &&fennec_ir::Inst| match &inst.kind {
+                InstKind::SetField { object, .. } => *object == local,
+                InstKind::SetIndex { object, path, .. } => *object == local && !path.is_empty(),
+                _ => false,
+            };
+            let changes = function.blocks.iter().flat_map(|block| &block.insts).filter(changing).count();
+            let certain = function
                 .blocks
                 .iter()
-                .flat_map(|block| &block.insts)
-                .filter(|inst| match &inst.kind {
-                    InstKind::SetField { object, .. } => *object == local,
-                    InstKind::SetIndex { object, path, .. } => *object == local && !path.is_empty(),
-                    _ => false,
-                })
-                .count();
+                .zip(&always)
+                .any(|(block, always)| *always && block.insts.iter().any(|inst| changing(&inst)));
             if self.is_mut_param(local)
+                && certain
                 && matches!(kinds.get(at), Some(Kind::Boxed(_)))
                 && !kinds.get(at).is_some_and(|kind| self.is_cell(kind))
                 && !self.known.is_shared(local)

@@ -410,8 +410,38 @@ fn prefixes(path: &[String]) -> impl Iterator<Item = Vec<String>> + '_ {
     (0..=path.len()).map(|end| path.iter().take(end).cloned().collect())
 }
 
-/// The field paths of its `mut` parameters a function changes through, itself or in what it
-/// calls, before anything there can say otherwise: those its callers see to, so it needn't.
+/// Whether each block is one every call that returns runs: with it left out, no `return` can be
+/// reached from the start. A change anywhere else may never happen, as in a branch not taken or a
+/// loop that never goes round.
+pub(crate) fn always_reached(function: &Function) -> Vec<bool> {
+    let count = function.blocks.len();
+    (0..count)
+        .map(|left_out| {
+            if left_out == 0 {
+                return true;
+            }
+            let mut seen = vec![false; count];
+            let mut waiting = vec![0];
+            while let Some(at) = waiting.pop() {
+                let Some(visited) = seen.get_mut(at) else { continue };
+                if at == left_out || std::mem::replace(visited, true) {
+                    continue;
+                }
+                let Some(block) = function.blocks.get(at) else { continue };
+                if matches!(block.end, Terminator::Return(_)) {
+                    return false;
+                }
+                waiting.extend(block.end.targets().into_iter().map(|target| target.0));
+            }
+            true
+        })
+        .collect()
+}
+
+/// The field paths of its `mut` parameters a function always changes through, itself or in what
+/// it always calls, before anything there can say otherwise: those its callers see to, so it
+/// needn't. A change it only may make is checked where it's made, so a call that makes none takes
+/// nothing for its own: only a write does, once.
 /// None for a function called any other way than by name, or where a call hands it, beside
 /// the parameter, something leaning on what's in it.
 pub(crate) fn needed<'p>(
@@ -425,7 +455,12 @@ pub(crate) fn needed<'p>(
         let Some(known) = analyses.get(name) else { continue };
         let mut found = HashSet::new();
         let mutable = |local: LocalId| function.mut_params.contains(&local.0) && local.0 < function.params;
-        for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+        // Only a change every call makes is the callers' to see to: one in a branch a call may
+        // never take is checked where it's made, so a call that only reads copies nothing.
+        let always = always_reached(function);
+        let certain =
+            function.blocks.iter().zip(&always).filter(|(_, always)| **always).map(|(block, _)| block);
+        for inst in certain.flat_map(|block| &block.insts) {
             let mut paths: Vec<(LocalId, &[String])> = Vec::new();
             match &inst.kind {
                 InstKind::SetIndex { object, path, .. } => paths.push((*object, path)),
@@ -455,7 +490,11 @@ pub(crate) fn needed<'p>(
             reason = "a round reads what the last one left and only adds to sets, so it settles the same in any order"
         )]
         for (name, function) in functions {
-            for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+            // A call every run makes, as for a change.
+            let always = always_reached(function);
+            let certain =
+                function.blocks.iter().zip(&always).filter(|(_, always)| **always).map(|(block, _)| block);
+            for inst in certain.flat_map(|block| &block.insts) {
                 let InstKind::Call { function: callee, args, .. } = &inst.kind else { continue };
                 let Some(theirs) = needs.get(callee.as_str()) else { continue };
                 #[expect(

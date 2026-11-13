@@ -22851,6 +22851,105 @@ def main(stdout: Stdout):
     )
 }
 
+/// A struct handed on by `ref` to a function that only may change what one of its fields holds:
+/// a call that doesn't change it takes nothing for its own, so 1,000 reads copy nothing, where each
+/// copied the 40-byte struct the field shares with a constant, twice. The first write copies it,
+/// once, and no later one does: here 3 copies in all, one for each of two values' first write and
+/// one for the empty list a copy still shared. The constant and an earlier copy don't change.
+#[test]
+fn a_read_through_ref_copies_nothing_and_the_first_write_copies_once() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let reads = format!("{OWNED_ON_WRITE}{OWNED_ON_WRITE_READS}");
+    let writes = format!("{OWNED_ON_WRITE}{OWNED_ON_WRITE_WRITES}");
+    prints_in_both_builds("ref_reads", &reads, "999000 Rare(path=[], seen={}, tags=[])\n")?;
+    assert_eq!(
+        counts_of("ref_reads_counts", &reads)?,
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 1004 allocated_bytes 32584 live 0"
+    );
+    prints_in_both_builds(
+        "ref_writes",
+        &writes,
+        "999000 Reader(at=4, rare=Rare(path=[], seen={}, tags=[-1, -1, -2, -2])) Reader(at=0, rare=Rare(path=[], seen={}, tags=[])) Rare(path=[\"deep\"], seen={}, tags=[-30]) Rare(path=[], seen={}, tags=[])\n",
+    )?;
+    assert_eq!(
+        counts_of("ref_writes_counts", &writes)?,
+        "copies 3 copied_bytes 112 largest_copy 40 allocations 1013 allocated_bytes 33176 live 0"
+    );
+    Ok(())
+}
+
+const OWNED_ON_WRITE: &str = r#"struct Rare:
+    path: list[str]
+    seen: dict[str, int]
+    tags: list[int]
+
+NO_RARE = Rare(path=[], seen={}, tags=[])
+
+struct Reader:
+    at: int
+    rare: Rare
+
+    def noted(ref self, n: int):
+        if n < 0:
+            self.rare.tags.append(n)
+        self.at += n
+        return
+
+def note(ref reader: Reader, n: int):
+    if n < 0:
+        reader.rare.tags.append(n)
+    reader.at += n
+    return
+
+def step(ref reader: Reader, n: int):
+    note(ref reader, n)
+    reader.noted(n)
+    return
+
+def marked(ref rare: Rare, n: int):
+    if n < 0:
+        rare.tags = [n]
+    if n < -10:
+        rare.path = ["deep"]
+    return
+
+def read(n: int) -> int:
+    mut reader = Reader(at=0, rare=NO_RARE)
+    step(ref reader, n)
+    mut rare = NO_RARE
+    marked(ref rare, n)
+    return reader.at + len(reader.rare.tags) + len(rare.tags)
+
+"#;
+
+const OWNED_ON_WRITE_READS: &str = r"def main(stdout: Stdout, args: Args):
+    rounds = len(args) + 1000
+    mut total = 0
+    for n in range(rounds):
+        total += read(n)
+    stdout.print(total, NO_RARE)
+    return
+";
+
+const OWNED_ON_WRITE_WRITES: &str = r"def main(stdout: Stdout, args: Args):
+    rounds = len(args) + 1000
+    mut total = 0
+    for n in range(rounds):
+        total += read(n)
+    mut reader = Reader(at=0, rare=NO_RARE)
+    kept = reader
+    step(ref reader, -1)
+    step(ref reader, -2)
+    step(ref reader, 5)
+    mut rare = NO_RARE
+    marked(ref rare, -20)
+    marked(ref rare, -30)
+    stdout.print(total, reader, kept, rare, NO_RARE)
+    return
+";
+
 /// What's written whole through a `mut` parameter belongs to the caller's local, and what `pop`
 /// and `remove_where` take out of a list keeps or loses the owners the list had. A string made
 /// for the call has no other owner, so an owner too few frees it while it's still in use.

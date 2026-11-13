@@ -11499,12 +11499,26 @@ fn measured(peak: Option<u64>) -> Option<u64> {
 
 /// What a program printed, and the most memory it held, where `/usr/bin/time` can say.
 fn with_peak_memory(executable: &Path, dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
+    peak_memory_of(executable, &[], dir)
+}
+
+/// What a command printed, given `args` and run with `dir` as its folder and its Fennec home,
+/// and the most memory it held, where `/usr/bin/time` can say.
+fn peak_memory_of(program: &Path, args: &[&str], dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
     let time = Path::new("/usr/bin/time");
     let flag = if cfg!(target_os = "macos") { "-l" } else { "-v" };
     if cfg!(windows) || !time.exists() {
-        return Ok((Command::new(executable).current_dir(dir).output_within()?, None));
+        let ran =
+            Command::new(program).args(args).current_dir(dir).env("FENNEC_HOME", dir).output_within()?;
+        return Ok((ran, None));
     }
-    let ran = Command::new(time).arg(flag).arg(executable).current_dir(dir).output_within()?;
+    let ran = Command::new(time)
+        .arg(flag)
+        .arg(program)
+        .args(args)
+        .current_dir(dir)
+        .env("FENNEC_HOME", dir)
+        .output_within()?;
     let said = String::from_utf8_lossy(&ran.stderr);
     let peak = said.lines().find_map(|line| {
         let line = line.trim();
@@ -13798,6 +13812,91 @@ def main(net: Net, stdout: Stdout) fails NetError:
     std::fs::remove_dir_all(&dir)?;
     // 10,000 leaked rounds would be about 18 MB.
     assert!(after < before + 4_096, "the server grew from {before} KB to {after} KB");
+    Ok(())
+}
+
+/// A program's own types named like the library's, `Delivery`, `Duration` and `Match`, go through
+/// a launched task's inbox and a `with` of two channels. Each is checked under a name no source
+/// can write, and the source the checker writes in for a `with launch` and for a channel's type
+/// names it that way too; the library's own `Duration`, which `stop_after` takes, stays the
+/// library's. A channel of one once kept the checker going round until it ran out of memory.
+#[test]
+fn a_program_type_named_like_a_library_type_goes_through_inboxes_and_channels() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "renamed_inbox",
+        r#"from std.concurrent import Closed, Crashed, Inbox, channel
+
+struct Delivery:
+    user: int
+
+struct Match:
+    at: int
+
+enum Duration:
+    Short
+    Long(minutes: int)
+
+def quiet(inbox: Inbox[Delivery], stdout: Stdout):
+    mut total = 0
+    for delivery in inbox:
+        total += delivery.user
+    stdout.print(total)
+    return
+
+def timed(inbox: Inbox[Duration], stdout: Stdout):
+    for length in inbox:
+        match length:
+            case .Short:
+                stdout.print("short")
+            case .Long(minutes):
+                stdout.print("long", minutes)
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with launch((inbox) => quiet(inbox, stdout), inbox_size=4)? as first:
+        first.send(Delivery(user=1))?
+        first.send(Delivery(user=2))?
+    with launch((inbox) => timed(inbox, stdout), stop_after=5s, inbox_size=4)? as second:
+        second.send(.Short)?
+        second.send(.Long(minutes=3))?
+    with channel[Delivery](size=4) as deliveries, channel[list[Match]](size=2) as matches:
+        deliveries.send(Delivery(user=5))?
+        matches.send([Match(at=7), Match(at=8)])?
+        delivery = deliveries.receive() else return
+        found = matches.receive() else return
+        stdout.print(delivery.user, len(found), found[1].at)
+    return
+"#,
+        "3\nshort\nlong 3\n5 2 8\n",
+    )
+}
+
+/// Checking a channel of a program's own type named like a library type takes the memory checking
+/// anything small does. The checker once went round and round on it, checking the whole program
+/// again a dozen times a second, past 2 GB in seconds, because the source it wrote in for the
+/// channel's type couldn't be parsed; a check that never settles can't come back unseen.
+#[test]
+fn checking_a_channel_of_a_type_named_like_the_librarys_settles() -> std::io::Result<()> {
+    let dir = folder("renamed_channel_check")?;
+    let program = dir.join("renamed.fen");
+    std::fs::write(
+        &program,
+        "from std.concurrent import Closed, channel\n\nstruct Match:\n    at: int\n\n\
+         def main(stdout: Stdout) fails Closed:\n    with channel[Match](size=2) as matches:\n\
+         \x20       matches.send(Match(at=7))?\n        found = matches.receive() else return\n\
+         \x20       stdout.print(found.at)\n    return\n",
+    )?;
+    runtime_built();
+    let fennec = Path::new(env!("CARGO_BIN_EXE_fennec"));
+    let (checked, peak) = peak_memory_of(fennec, &["check", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
+    if let Some(peak) = measured(peak) {
+        assert!(peak < 400 << 20, "checking it held {} MB", peak >> 20);
+    }
     Ok(())
 }
 

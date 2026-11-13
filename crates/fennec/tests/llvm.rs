@@ -15082,6 +15082,45 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A tuple holding a program's own type saves and loads: written alone in `loads`' brackets, as
+/// `json.loads[(int, Parcel)]`, which is one type, not two; in a list; and in a tuple in a dict,
+/// through JSON and `std.pack`.
+#[test]
+fn tuples_holding_a_programs_types_save_and_load_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "tuples_of_program_types",
+            r#"from std import json, pack
+
+struct Parcel:
+    name: str
+
+struct Shipment:
+    legs: list[(int, Parcel)]
+    by_name: dict[str, (Parcel, list[(int, Parcel)])]
+
+def main(stdout: Stdout):
+    one = json.loads[(int, Parcel)]("[1, {\"name\": \"x\"}]") except ParseError(): return
+    stdout.print(one[1].name)
+    shipment = Shipment(legs=[(1, Parcel(name="a"))], by_name={"k": (Parcel(name="b"), [(2, Parcel(name="c"))])})
+    text = json.dumps(shipment)
+    stdout.print(text)
+    back = json.loads[Shipment](text) except ParseError(): return
+    stdout.print(back == shipment)
+    packed = pack.loads[Shipment](pack.dumps(shipment)) except ParseError(): return
+    stdout.print(packed == shipment)
+    pairs = json.loads[list[(Parcel, int)]]("[[{\"name\": \"d\"}, 4]]") except ParseError(): return
+    stdout.print(pairs[0][0].name, pairs[0][1])
+"#
+        )?,
+        "x\n{\"legs\": [[1, {\"name\": \"a\"}]], \"by_name\": {\"k\": [{\"name\": \"b\"}, [[2, {\"name\": \"c\"}]]]}}\nTrue\nTrue\nd 4\n"
+    );
+    Ok(())
+}
+
 /// A tuple saves as an array of its items, as in Python's `json.dumps`, and loads back, through
 /// std's readers and writers in Fennec: in a list, in a field, inside
 /// another tuple, in an enum's case, as a dict's and a `SortedMap`'s keys, with an item that's

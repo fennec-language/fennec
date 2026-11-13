@@ -1149,8 +1149,14 @@ impl FnCx<'_> {
     /// The types written in brackets after a generic function or type: `int` in
     /// `largest[int]`, `str, int` in `Pair[str, int]`.
     fn types_in(&mut self, index: &Expr) -> Vec<Type> {
+        // Several types are a tuple of them, starting where the first does; a tuple that starts
+        // at its own `(`, as in `loads[(int, Parcel)]`, is one type, as `Expr::as_type` reads it.
         let written = match &index.kind {
-            ExprKind::Tuple(items) => items.iter().map(Expr::as_type).collect::<Option<Vec<_>>>(),
+            ExprKind::Tuple(items)
+                if items.first().is_some_and(|first| first.span.start == index.span.start) =>
+            {
+                items.iter().map(Expr::as_type).collect::<Option<Vec<_>>>()
+            }
             _ => index.as_type().map(|ty| vec![ty]),
         };
         let Some(written) = written else {

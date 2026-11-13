@@ -416,6 +416,13 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
             return .Bad(status=400, reason=f"there's more than one `{name}` header")
         headers[name] = line[colon + 1:].strip()
     if "transfer-encoding" in headers:
+        # Both, or a coding that isn't plainly `chunked`, is where two servers in a row disagree on
+        # where the body ends: one goes by the length and one by the chunks, and a request hides
+        # in what's left.
+        if "content-length" in headers:
+            return .Bad(status=400, reason="there's both a transfer-encoding and a content-length")
+        if headers["transfer-encoding"].lower() != "chunked":
+            return .Bad(status=400, reason="the only transfer-encoding taken is `chunked`")
         return .Bad(status=501, reason="chunked bodies aren't taken yet")
     mut body = bytes([])
     if "content-length" in headers:

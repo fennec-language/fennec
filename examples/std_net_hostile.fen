@@ -85,6 +85,41 @@ test "a byte with no place in a header is refused"(net: Net):
     for header in ["x-a\x00: 1", "x-a: 1\x7f", "x a: 1", ": 1", "x-a: 1\x0bb", "x-a: \x1b[31m"]:
         assert status_of(net, f"GET / HTTP/1.1\r\n{header}\r\n{END}")? == BAD
 
+test "where a body ends is never left to a guess"(net: Net):
+    # A server behind a proxy that read these another way would take a second request from the
+    # first one's body: request smuggling.
+    for headers in [
+        "transfer-encoding: chunked\r\ncontent-length: 3",
+        "content-length: 3\r\ntransfer-encoding: chunked",
+        "content-length: 3\r\ncontent-length: 4",
+        "content-length: 3\r\ncontent-length: 3",
+        "content-length: +3",
+        "content-length: 0 3",
+        "transfer-encoding: chunked, chunked",
+        "transfer-encoding: gzip, chunked",
+        "transfer-encoding: xchunked",
+        "transfer-encoding: chunked\r\ntransfer-encoding: chunked",
+        "transfer-encoding : chunked",
+        "content-length : 3",
+        "x-a: 1\r\n content-length: 3",
+        "x-a: 1\x00",
+        "x-a: 1\rb",
+    ]:
+        assert status_of(net, f"POST / HTTP/1.1\r\n{headers}\r\n{END}abc")? == BAD
+    # `chunked` alone isn't taken yet, junk after a chunk's size or not.
+    for body in [
+        "3\r\nabc\r\n0\r\n\r\n",
+        "3;x\x00\r\nabc\r\n0\r\n\r\n",
+        "3 junk\r\nabc\r\n0\r\n\r\n",
+    ]:
+        assert (
+            status_of(net, f"POST / HTTP/1.1\r\ntransfer-encoding: chunked\r\n{END}{body}")?
+            == "HTTP/1.1 501 Not Implemented"
+        )
+    # A line ended by a line feed alone, anywhere in the head.
+    assert status_of(net, f"POST / HTTP/1.1\ncontent-length: 3\r\n{END}abc")? == BAD
+    assert status_of(net, f"POST / HTTP/1.1\r\ncontent-length: 3\n{END}abc")? == BAD
+
 test "a program's transfer-encoding isn't written, so the body is read as it was sent"(net: Net):
     lines = answer(net, f"GET /chunks HTTP/1.1\r\n{END}")?
     assert lines[0] == GOOD

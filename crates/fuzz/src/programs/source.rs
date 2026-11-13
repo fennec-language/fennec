@@ -1029,7 +1029,7 @@ fn written_change(id: usize, to: &str, held: Held, (how, at, n): (Writing, usize
         (Held::Counts, _) => format!("    {to}[\"{key}\"] += {n}\n"),
         (Held::Rooms, Writing::Set) => format!("    {to}[{room}].counts[\"b\"] = {n}\n"),
         (Held::Rooms, Writing::Field) => format!("    {to}[{room}].label += \"q{n}\"\n"),
-        (Held::Rooms, Writing::Method) => format!("    {to}[{room}].labeled(\"a{n}\", \"é{n}\")\n"),
+        (Held::Rooms, Writing::Method) => format!("    {to}[{room}].labeled(\"a{n}\", second=\"é{n}\")\n"),
         (Held::Rooms, Writing::PutBack) => format!(
             "    mut taken{s} = {to}[{room}]\n    taken{s}.counts[\"a\"] += {n}\n    {to}[{room}] = taken{s}\n"
         ),

@@ -24,7 +24,7 @@ memory=$((memory * 7 / 8 / 1024 / 1024))m
 # shellcheck disable=SC2016
 inside='
 set -euo pipefail
-# GCC's ThreadSanitizer runtime, which links the programs, as CI's image has it.
+# The ThreadSanitizer runtime of GCC, which links the programs, as the image CI runs on has it.
 apt-get update -qq > /dev/null && apt-get install -y -qq git binutils perl libtsan2 > /dev/null
 rustup component add llvm-tools-preview > /dev/null
 rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src > /dev/null

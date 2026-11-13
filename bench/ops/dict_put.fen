@@ -1,0 +1,16 @@
+# `counts[key] = at` on a dict of 16 str keys, done OPS times on inputs that vary.
+# `fennec-bench ops` counts its instructions per operation beside its Rust twin's.
+
+OPS = 20_000
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    keys = [f"key-{i}" for i in range(shift, shift + 16)]
+    mut counts = dict[str, int]()
+    mut total = 0
+    for at in range(OPS):
+        counts[keys[(at + shift) % 16]] = at + shift
+        total += len(counts)
+    stdout.print(total)
+    return

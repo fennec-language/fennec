@@ -19,6 +19,34 @@ pub fn shown_key(key: &str) -> String {
 /// What marks a renamed type. It can't be written, so it can't clash with anything.
 pub const RENAMED: &str = "'";
 
+/// What stands for a name's `'` in source the checker writes and parses itself: a program's own
+/// type named like one of the library's is checked as `Delivery'`, and a hidden type parameter
+/// is `Shape'1`, which no source can write. Each is written with this and named back once
+/// parsed, by [`named_back`].
+pub const WRITTEN_QUOTE: &str = "__quote__";
+
+/// Text the checker writes to parse, with each `'` written so it parses.
+#[must_use]
+pub fn writable(text: &str) -> String {
+    text.replace('\'', WRITTEN_QUOTE)
+}
+
+/// A name from text [`writable`] wrote, as the checker names it.
+#[must_use]
+pub fn named_back(name: &str) -> String {
+    name.replace(WRITTEN_QUOTE, "'")
+}
+
+/// The names in text [`writable`] wrote that stand for ones with a `'`, each beside the name it
+/// stands for, to give [`rename_types`].
+#[must_use]
+pub fn written_names(text: &str) -> BTreeMap<String, String> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|name| name.contains(WRITTEN_QUOTE))
+        .map(|name| (name.to_owned(), named_back(name)))
+        .collect()
+}
+
 /// Renames the types a program declares in `names`, everywhere the program names them.
 pub fn rename_types(module: &mut Module, names: &BTreeMap<String, String>) {
     if names.is_empty() {

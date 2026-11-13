@@ -2572,6 +2572,11 @@ impl Emit<'_, '_, '_> {
         if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
             return self.header_isdigit(dest, text);
         }
+        if let ("str.startswith" | "str.endswith", Some(dest), [text, part], true) =
+            (name, dest, args, self.headers())
+        {
+            return self.header_affix(dest, (text, part), name == "str.endswith");
+        }
         // What `fennec test` calls before each input of a property test with capabilities: a new
         // world of fakes, with nothing left by the input before.
         if name == "test:world" && args.is_empty() {

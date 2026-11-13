@@ -47,7 +47,28 @@ while kill -0 "$root" 2> /dev/null; do
         else if (!tool && age(elapsed[pid]) > wall) print pid, "time", elapsed[pid], text
       }
     }' | while read -r pid why amount text; do
-    echo "gate-watch: stopped pid $pid over its $why limit ($amount): ${text:0:200}" >> "$log"
+    # What it was doing, before it's stopped: which limit, how long and how big it had grown,
+    # what it had started, and where it was, by a second's sampling on a Mac, or what the kernel
+    # says it waits on elsewhere. A program stopped with no output says nothing of its own.
+    {
+      echo "gate-watch: stopped pid $pid over its $why limit ($amount) at $(date '+%H:%M:%S'): ${text:0:200}"
+      echo "  it and what it started:"
+      ps -axo pid=,ppid=,stat=,etime=,time=,rss=,command= | awk -v top="$pid" '
+        { parent[$1] = $2; line[$1] = $0 }
+        END {
+          for (at in parent) {
+            up = at
+            while (up != top && up in parent && up > 1) up = parent[up]
+            if (up == top) print "    " substr(line[at], 1, 200)
+          }
+        }'
+      if command -v sample > /dev/null; then
+        echo "  where it was, sampled for a second:"
+        sample "$pid" 1 -mayDie 2> /dev/null | sed -n '/^Call graph:/,/^Total number in stack/p' | head -60 | sed 's/^/    /'
+      elif [ -r "/proc/$pid/wchan" ]; then
+        echo "  what it waits on: $(cat "/proc/$pid/wchan" 2> /dev/null), $(cut -d' ' -f3 "/proc/$pid/stat" 2> /dev/null)"
+      fi
+    } >> "$log" 2>&1
     kill -9 "$pid" 2> /dev/null
   done
   sleep 2

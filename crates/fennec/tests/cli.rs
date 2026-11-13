@@ -3925,6 +3925,42 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
 /// build is the same bytes in one folder a second later: a kit built by its whole path, as `.`, and with a dependency it names by a path, and
 /// a single file built by its whole path. Nothing of where or when it was built goes in: the files
 /// it carries to show a failure in are named from the kit, not from the root of the disk, and its
+/// A program built again to the path of one that has run is a new file there, and runs: macOS
+/// remembers the code signature of a file it has launched, and kills, with signal 9 and nothing
+/// printed, a program written into that same file. Built three times over, changed each time,
+/// each build has to start and print what it says.
+#[test]
+fn a_program_built_again_where_one_ran_runs() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("built-again")?;
+    let program = dir.join("again.fen");
+    let output = dir.join("again");
+    for round in 1..=3 {
+        std::fs::write(
+            &program,
+            format!("def main(stdout: Stdout):\n    stdout.print({round})\n    return\n"),
+        )?;
+        let built = crate::executables::fennec_command()
+            .args(["build", "again.fen", "-o", "again"])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output_within()?;
+        assert!(built.status.success(), "round {round}: {}", text(&built.stderr));
+        let ran = std::process::Command::new(&output).output_within()?;
+        assert_eq!(
+            (text(&ran.stdout), ran.status.code()),
+            (format!("{round}\n"), Some(0)),
+            "round {round}: {}",
+            text(&ran.stderr)
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A switch that changes what a build makes keys the store, so a program built one way is never
 /// handed back for another: a plain program once came back for a build asked for the address
 /// sanitizer. Each switch, set after a plain build of the same program, finds no program

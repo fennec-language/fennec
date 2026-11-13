@@ -18945,6 +18945,78 @@ def main(stdout: Stdout):
     )
 }
 
+/// A failure in the first, a middle or the last piece of a `+=` leaves what's added to exactly as
+/// it was: a text field, a `ref` text, `x = x + a? + b? + c?` and a list field, each failing at
+/// each piece in turn, then with none failing, which adds every piece. Nothing is left held.
+#[test]
+fn a_failure_in_any_piece_of_a_sum_added_on_leaves_the_target_as_it_was() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("pieces_failing_anywhere")?;
+    std::fs::write(dir.join("pieces_failing_anywhere.fen"), PIECES_FAILING_ANYWHERE)?;
+    let failed = |at: u32| {
+        let what = ["piece", "piece", "piece", "items"].map(|kind| format!("failed {kind} {at}\n")).concat();
+        format!("{what}{at} t u v [0]\n")
+    };
+    let wanted = format!("{}{}{}0 t1-2-3 u1-2-3 v123 [0, 1, 2, 3]\n", failed(1), failed(2), failed(3));
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "pieces_failing_anywhere", how)?;
+        assert_eq!(printed, wanted, "{how:?}");
+        assert!(counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+const PIECES_FAILING_ANYWHERE: &str = r#"error Bad:
+    why: str
+
+struct Box:
+    text = "t"
+    items = [0]
+
+def piece(n: int, fails_at: int) -> str fails Bad:
+    if n == fails_at: fail Bad(why=f"piece {n}")
+    return str(n)
+
+def items(n: int, fails_at: int) -> list[int] fails Bad:
+    if n == fails_at: fail Bad(why=f"items {n}")
+    return [n]
+
+def grow_field(ref box: Box, fails_at: int) fails Bad:
+    box.text += piece(1, fails_at=fails_at)? + "-" + piece(2, fails_at=fails_at)? + "-" + piece(3, fails_at=fails_at)?
+    return
+
+def grow_text(ref text: str, fails_at: int) fails Bad:
+    text += piece(1, fails_at=fails_at)? + "-" + piece(2, fails_at=fails_at)? + "-" + piece(3, fails_at=fails_at)?
+    return
+
+def rebuild_text(ref text: str, fails_at: int) fails Bad:
+    text = text + piece(1, fails_at=fails_at)? + piece(2, fails_at=fails_at)? + piece(3, fails_at=fails_at)?
+    return
+
+def grow_items(ref box: Box, fails_at: int) fails Bad:
+    box.items += items(1, fails_at=fails_at)? + items(2, fails_at=fails_at)? + items(3, fails_at=fails_at)?
+    return
+
+def main(stdout: Stdout):
+    for fails_at in [1, 2, 3, 0]:
+        mut box = Box()
+        mut text = "u"
+        mut other = "v"
+        grow_field(ref box, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        grow_text(ref text, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        rebuild_text(ref other, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        grow_items(ref box, fails_at=fails_at) except Bad(why):
+            stdout.print("failed", why)
+        stdout.print(fails_at, box.text, text, other, box.items)
+    return
+"#;
+
 const TEXT_CHAINED: &str = r#"def main(stdout: Stdout):
     mut route = "GET "
     for part in ["a", "1", "b"]:

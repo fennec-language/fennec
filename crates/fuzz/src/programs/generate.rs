@@ -1027,7 +1027,8 @@ impl Writer<'_> {
         let count = 1 + i64::from(self.byte() % 5);
         let at = i64::from(self.byte() % 7);
         let failing = self.choice(2) == 0;
-        body.push(Stmt::Woken(Waking { id, count, at, failing }));
+        let rounds = if self.choice(4) == 0 { 70 } else { 1 };
+        body.push(Stmt::Woken(Waking { id, count, at, failing, rounds }));
     }
 
     /// Generators yielding structs, tuples and enums holding texts from 20 to 66 bytes, and an

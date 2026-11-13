@@ -1969,15 +1969,17 @@ impl Machine {
     /// What `woken{id}` prints: each answer before the task's crash or failure, then how its
     /// block ended, if it did.
     fn woken(&mut self, waking: &Waking) {
-        let Waking { count, at, failing, .. } = *waking;
-        for number in 0..count.min(at.max(0)) {
-            let _ = writeln!(self.out, "got {}", number * 2);
-        }
-        if (0..count).contains(&at) {
-            if failing {
-                let _ = writeln!(self.out, "refused {at}");
-            } else {
-                self.out.push_str("crashed\n");
+        let Waking { count, at, failing, rounds, .. } = *waking;
+        for _ in 0..rounds {
+            for number in 0..count.min(at.max(0)) {
+                let _ = writeln!(self.out, "got {}", number * 2);
+            }
+            if (0..count).contains(&at) {
+                if failing {
+                    let _ = writeln!(self.out, "refused {at}");
+                } else {
+                    self.out.push_str("crashed\n");
+                }
             }
         }
     }

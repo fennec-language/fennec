@@ -608,7 +608,7 @@ fn yielded_written(yielding: &Yielding) -> String {
 
 /// `woken{id}`, the function a `Woken` calls, after the task it launches.
 fn woken_written(waking: &Waking) -> String {
-    let Waking { id, count, at, failing } = *waking;
+    let Waking { id, count, at, failing, .. } = *waking;
     let leaving = if failing { "fail Refused(code=number)" } else { "_ = [1][number - at + 1]" };
     format!(
         "def answering{id}(inbox: Inbox[int], back: Sender[int], at: int) fails Closed | Refused:\n    \
@@ -1871,6 +1871,8 @@ impl Writer {
             }
             Stmt::Woken(waking) => {
                 let _ = write!(self.helpers, "{}", woken_written(waking));
+                self.line(indent, &format!("for _ in range({}):", waking.rounds));
+                let indent = indent + 1;
                 self.line(indent, &format!("woken{}(stdout) except why:", waking.id));
                 for (case, then) in [
                     ("Crashed()", "stdout.print(\"crashed\")"),

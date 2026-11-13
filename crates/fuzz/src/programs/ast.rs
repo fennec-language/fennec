@@ -672,6 +672,9 @@ pub(crate) struct Waking {
     pub(crate) count: i64,
     pub(crate) at: i64,
     pub(crate) failing: bool,
+    /// How many times it's done, each with a channel of its own made and freed, as many as 70
+    /// so threads' caches of the channels they found have to trim.
+    pub(crate) rounds: i64,
 }
 
 /// How a `Streamed` stream is read.

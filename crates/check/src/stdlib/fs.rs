@@ -23,6 +23,8 @@ fn method(type_name: &str, name: &str) -> Option<Method> {
         ("Fs", "metadata") => reads(&[path()], io(Type::named("Metadata"))),
         // An `Fs` that reaches only what's in one folder.
         ("Fs", "only") => reads(&[path()], Type::named("Fs")),
+        // An `Fs` that reads and never changes anything.
+        ("Fs", "read_only") => reads(&[], Type::named("Fs")),
         // What `fs.create` and `fs.open` are written with, in fs.fen: a file to write beside
         // `path` or one to read, and finishing or dropping it.
         ("Fs", "_create") => reads(&[path(), Type::Bool], io(Type::named("File"))),

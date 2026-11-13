@@ -313,7 +313,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `int(text)` or `float(text)`: `Ok` with the number, or `Err` with an `InvalidValue`.
-    fn number_of_text(&mut self, dest: LocalId, name: &str, text: &Operand) -> Result<(), String> {
+    pub(crate) fn number_of_text(&mut self, dest: LocalId, name: &str, text: &Operand) -> Result<(), String> {
         let kind = self.kind_of(dest)?.clone();
         let (ok_case, ok_fields) = self.case_of(&kind, "Ok")?;
         let (err_case, err_fields) = self.case_of(&kind, "Err")?;

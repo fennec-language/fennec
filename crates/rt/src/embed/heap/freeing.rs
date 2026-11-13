@@ -202,6 +202,17 @@ fn next_abandoned(state: &mut State) -> Option<(u64, extern "C" fn(i64))> {
     Some((address, *state.tables.abandons.get(&shape)?))
 }
 
+/// Whether a list or a dict holds nothing to let go of as it is now, whatever its kind: a list with
+/// no items, or a dict with no entries used, which a struct's empty fields mostly are. `number` is
+/// the list's kind, which a dict has none of.
+fn holds_nothing_now(state: &State, block: &[u64], number: Option<usize>) -> bool {
+    match number {
+        // Past the kinds of list are other blocks, like cells, whose third word means something else.
+        Some(number) => number < state.tables.elements.len() && block.get(2) == Some(&0),
+        None => crate::embed::dicts::is_dict(state, block) && block.get(3) == Some(&0),
+    }
+}
+
 /// Whether a block being freed is a generator stopped at a `yield` with something to close.
 fn is_abandoned(state: &State, block: &[u64]) -> bool {
     !state.tables.abandons.is_empty()
@@ -240,7 +251,9 @@ fn free_block(state: &mut State, address: u64) {
         } else if shape >= state.tables.str_shape {
             // A list of numbers, the most usual kind, has nothing to look through.
             let number = crate::embed::lists::element_number(state, &block);
-            if !number.is_some_and(|number| state.heap.items_hold_nothing(number)) {
+            if !number.is_some_and(|number| state.heap.items_hold_nothing(number))
+                && !holds_nothing_now(state, &block, number)
+            {
                 free_unplanned(state, &block, &mut pending, &mut taken);
             }
         } else if !release_planned(&mut state.heap, &block, &mut pending, &mut taken) {

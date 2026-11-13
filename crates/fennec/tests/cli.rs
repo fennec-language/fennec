@@ -436,6 +436,32 @@ fn what_tasks_and_parallel_bodies_print_is_captured_by_their_test() {
     }
 }
 
+/// A constant a test's launched task works out before the test does is one the test finds too: a
+/// test works out its program's constants first, as `main` does in a program that uses tasks.
+/// Before, the task worked it out on its worker, where the test's own push to a field starting as
+/// it couldn't find it, and stopped.
+#[test]
+fn a_constant_a_test_s_task_reads_first_is_found_by_the_test() {
+    if !crate::executables::threads_runtime_built() {
+        return;
+    }
+    for threads in ["1", "4", "16"] {
+        let output = crate::executables::fennec_command()
+            .args(["test", "crates/fennec/tests/fixtures/constants_in_test_tasks.fen"])
+            .current_dir(repo())
+            .env("FENNEC_NO_CACHE", "1")
+            .env("FENNEC_THREADS", threads)
+            .output()
+            .unwrap();
+        assert_eq!(
+            text(&output.stdout),
+            "2 passed, 0 failed\n",
+            "{threads} threads: {}",
+            text(&output.stderr)
+        );
+    }
+}
+
 /// Each line a test and its tasks print reaches the test's capture whole. A `print` arrives in
 /// pieces, and before the fix, pieces of a task's line and the test's own mixed in most runs of
 /// this fixture: 42 of 50 at 4 threads and 30 of 50 at 1 thread, both stressed. So three runs at
@@ -1183,6 +1209,98 @@ fn a_run_counts_what_a_hot_loop_allocates() {
     let allocations: u64 = allocations.and_then(|count| count.parse().ok()).unwrap_or(0);
     assert!(allocations >= 100, "{counted}");
 }
+
+/// `dev copies` says what the native code copies, where it does: an item copied out, changed and
+/// put back where it was, which the native code changes in place, isn't listed, and a value sent on
+/// a channel, which the receiving end gets a copy of, is, at the send. A number sent isn't.
+#[test]
+fn dev_copies_names_the_copies_the_native_code_makes() {
+    let dir = scratch("copies_where_made").unwrap();
+    let report = |name: &str, source: &str| {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source).unwrap();
+        let output = fennec(&["dev", "copies", &program.to_string_lossy()], "").unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        text(&output.stdout)
+    };
+    let put_back = report("put_back", PUT_BACK);
+    assert!(!put_back.contains("copied"), "{put_back}");
+    let sends = report("sends", SENDS);
+    assert!(sends.contains("sends.fen:11:13 in `main`: what this sends is copied as it's sent"), "{sends}");
+    let numbers = report("numbers", NUMBERS_SENT);
+    assert!(!numbers.contains("copied"), "{numbers}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+const PUT_BACK: &str = r#"from std.collections import Id, Table
+
+struct Entity:
+    health: int
+    inventory: dict[str, int]
+    x: int
+
+def step(ref entities: Table[Entity], ids: list[Id[Entity]], order: list[int]):
+    for me in order:
+        mut entity = entities[ids[me]]
+        entity.health -= 1
+        if entity.health <= 0:
+            gold = entity.inventory.get("gold") else 0
+            entity.inventory["gold"] = gold // 2
+            entity.x = me * 3 + 1
+        entities[ids[me]] = entity
+    return
+
+def main(stdout: Stdout):
+    mut entities = Table[Entity]()
+    mut ids = list[Id[Entity]]()
+    for n in range(100):
+        ids.append(entities.add(Entity(health=n % 3, inventory={"gold": n}, x=0)))
+    order = [n for n in range(100)]
+    step(ref entities, ids, order)
+    mut total = 0
+    for entity in entities:
+        total += entity.inventory["gold"] + entity.x
+    stdout.print(total)
+    return
+"#;
+
+const SENDS: &str = r"from std.concurrent import Closed, channel
+
+enum Command:
+    Move(who: int, vx: int, vy: int)
+    Heal(who: int, amount: int)
+
+def main(stdout: Stdout) fails Closed:
+    mut total = 0
+    with channel[Command](size=64) as commands:
+        for n in range(50):
+            commands.send(.Move(who=n, vx=1, vy=2))?
+            command = commands.receive() else break
+            match command:
+                case .Move(who, vx, vy):
+                    total += who + vx + vy
+                case .Heal(who, amount):
+                    total += who * amount
+    stdout.print(total)
+    return
+";
+
+const NUMBERS_SENT: &str = r"from std.concurrent import Closed, channel
+
+enum Command:
+    Move(who: int, vx: int, vy: int)
+    Heal(who: int, amount: int)
+
+def main(stdout: Stdout) fails Closed:
+    mut total = 0
+    with channel[int](size=64) as commands:
+        for n in range(50):
+            commands.send(n)?
+            command = commands.receive() else break
+            total += command
+    stdout.print(total)
+    return
+";
 
 #[test]
 fn dev_copies_reports_a_mistake_instead_of_a_list() {
@@ -3807,6 +3925,85 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
 /// build is the same bytes in one folder a second later: a kit built by its whole path, as `.`, and with a dependency it names by a path, and
 /// a single file built by its whole path. Nothing of where or when it was built goes in: the files
 /// it carries to show a failure in are named from the kit, not from the root of the disk, and its
+/// A switch that changes what a build makes keys the store, so a program built one way is never
+/// handed back for another: a plain program once came back for a build asked for the address
+/// sanitizer. Each switch, set after a plain build of the same program, finds no program
+/// kept and builds one, kept under a key of its own; a sanitized one is never the plain one.
+#[test]
+fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("switches")?;
+    // It runs `parallel`, so which runtime it links is the threads switch's to say.
+    std::fs::write(
+        dir.join("alone.fen"),
+        "def main(stdout: Stdout):\n    mut values = [1, 2, 3, 4]\n    for ref value in parallel(values):\n        value += 1\n    stdout.print(values)\n    return\n",
+    )?;
+    let home = dir.join("home");
+    let build = |switch: Option<(&str, &str)>, out: &str| -> std::io::Result<Output> {
+        let mut command = crate::executables::fennec_command();
+        command.args(["build", "alone.fen", "-o", out]).current_dir(&dir).env("FENNEC_HOME", &home);
+        for name in [
+            "FENNEC_SANITIZE",
+            "FENNEC_CHECK_PROOFS",
+            "FENNEC_STRIP_FACTS",
+            "FENNEC_THREADS_RUNTIME",
+            "FENNEC_BOXED_RESULTS",
+            "FENNEC_NO_CACHE",
+        ] {
+            command.env_remove(name);
+        }
+        if let Some((name, value)) = switch {
+            command.env(name, value);
+        }
+        command.output_within()
+    };
+    // The programs the store keeps, by their keys.
+    let kept = || -> usize {
+        let Ok(builds) = std::fs::read_dir(home.join("cache")) else { return 0 };
+        builds
+            .flatten()
+            .filter_map(|build| std::fs::read_dir(build.path().join("programs")).ok())
+            .flat_map(Iterator::flatten)
+            // A program's hash and its list of functions are kept beside it, under its key.
+            .filter(|entry| {
+                let path = entry.path();
+                !path.extension().is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("sum") || ext.eq_ignore_ascii_case("functions")
+                })
+            })
+            .count()
+    };
+    let plain = build(None, "plain")?;
+    assert!(plain.status.success(), "{}", text(&plain.stderr));
+    assert_eq!(kept(), 1);
+    for (at, (name, value)) in [
+        ("FENNEC_CHECK_PROOFS", "1"),
+        ("FENNEC_STRIP_FACTS", "1"),
+        ("FENNEC_THREADS_RUNTIME", "0"),
+        ("FENNEC_BOXED_RESULTS", "1"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let switched = build(Some((name, value)), name)?;
+        assert!(switched.status.success(), "{name}: {}", text(&switched.stderr));
+        assert_eq!(kept(), 2 + at, "{name}={value} was handed a program built without it");
+    }
+    // A sanitized build either links its sanitizer, a program unlike the plain one, or can't
+    // where its runtime isn't to be had, but it's never the plain program handed back.
+    let sanitized = build(Some(("FENNEC_SANITIZE", "address")), "sanitized")?;
+    if sanitized.status.success() {
+        // Compared whole, but not printed: a program is megabytes.
+        let same = std::fs::read(dir.join("plain"))? == std::fs::read(dir.join("sanitized"))?;
+        assert!(!same, "a sanitized build was the plain program");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// cache key goes by the runtime library's build, not by where that is or when it changed.
 #[test]
 fn a_release_built_anywhere_is_the_same_bytes() -> std::io::Result<()> {

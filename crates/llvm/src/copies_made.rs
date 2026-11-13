@@ -17,15 +17,30 @@ use fennec_layout::Layouts;
 
 use crate::kinds::Kind;
 
-/// An item or field the native code copies to change and put back.
+/// A copy the native code makes: an item or field copied to change and put back, or a value sent
+/// on a channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CopyMade {
     /// The function it's in, by its name in the IR.
     pub function: String,
-    /// Where it's read out.
+    /// Where it's read out, or sent.
     pub span: Span,
-    /// What it's read out of, as the source names it where it can: `units` or `world.units`.
+    /// What it's read out of, as the source names it where it can: `units` or `world.units`. For
+    /// a send, what's sent.
     pub from: String,
+    /// Why it's copied.
+    pub why: Why,
+}
+
+/// Why the native code copies a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// It's read out of its place, changed, and put back, with nothing showing its place isn't
+    /// read meanwhile.
+    PutBack,
+    /// It's sent on a channel, which the receiving end gets a copy of, as it may be on another
+    /// thread.
+    Sent,
 }
 
 /// Every item or field the native code reads out to change and put back and copies on its
@@ -57,6 +72,19 @@ pub fn copies_made(program: &Program) -> Vec<CopyMade> {
                         function: function.name.clone(),
                         span: inst.span,
                         from: named(function, known, from),
+                        why: Why::PutBack,
+                    });
+                }
+            }
+            for inst in &block.insts {
+                if let Some(Operand::Local(sent)) = sent_on_a_channel(&inst.kind)
+                    && goes_as_a_block(&layouts, function, *sent)
+                {
+                    found.push(CopyMade {
+                        function: function.name.clone(),
+                        span: inst.span,
+                        from: named(function, known, *sent),
+                        why: Why::Sent,
                     });
                 }
             }
@@ -65,6 +93,37 @@ pub fn copies_made(program: &Program) -> Vec<CopyMade> {
     let mut seen = std::collections::HashSet::new();
     found.retain(|copy| seen.insert((copy.function.clone(), copy.span.start, copy.span.end)));
     found
+}
+
+/// The locals the native code changes where they are, by function and name: an item taken out of
+/// its place and put back with nothing copied. A model of the language sees each as shared with
+/// the place it came from, so one of these isn't a copy, whatever that model says.
+#[must_use]
+pub fn changed_in_place(program: &Program) -> std::collections::HashSet<(String, String)> {
+    let everything = whole(program);
+    let mut found = std::collections::HashSet::new();
+    for function in program.functions.iter().chain(&program.constants) {
+        let Some(known) = everything.analyses.get(function.name.as_str()) else { continue };
+        for (at, local) in function.locals.iter().enumerate() {
+            if let Some(name) = &local.name
+                && known.is_taken(LocalId(at))
+            {
+                found.insert((function.name.clone(), name.clone()));
+            }
+        }
+    }
+    found
+}
+
+/// What a call sends on a channel: the message given to `Channel.send` or `Sender.send`, or their
+/// `send_within`.
+fn sent_on_a_channel(inst: &InstKind) -> Option<&Operand> {
+    let InstKind::Call { function: callee, args, .. } = inst else { return None };
+    let plain = |part: &str| part.split_once('[').map_or(part, |(base, _)| base).to_owned();
+    let (owner, method) = callee.rsplit_once('.')?;
+    let sends = matches!(plain(method).as_str(), "send" | "send_within");
+    let channel = matches!(plain(owner).as_str(), "Channel" | "Sender");
+    (sends && channel).then(|| args.get(1)).flatten()
 }
 
 /// What an instruction reads an item or field out of into a local of its own.
@@ -92,6 +151,14 @@ fn held_in_a_block(layouts: &Layouts, function: &Function, local: LocalId) -> bo
         Ok(Kind::Struct(id) | Kind::Enum(id)) => layouts.holds_counted(id),
         _ => matches!(ty, Type::Set(_) | Type::Table(_)),
     }
+}
+
+/// Whether a message goes on a channel as a block, which the receiving end gets a copy of: all
+/// but a number or a bool, which go as the word they are. A struct or enum kept in place is put
+/// in a block of its own to go.
+fn goes_as_a_block(layouts: &Layouts, function: &Function, local: LocalId) -> bool {
+    let Some(ty) = function.locals.get(local.0).map(|local| &local.ty) else { return false };
+    !matches!(Kind::of(layouts, ty), Ok(Kind::Int | Kind::U64 | Kind::Bool | Kind::Float | Kind::F32))
 }
 
 /// Whether anything changes what a local holds in place: a field or item set, a builtin that

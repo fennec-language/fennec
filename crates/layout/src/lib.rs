@@ -17,6 +17,7 @@ mod layouts;
 
 pub use layouts::{
     Case, Field, Layout, Layouts, WORD, Written, WrittenField, closure_definition, generator_definition,
+    results_in_place,
 };
 
 /// How native code holds a value.

@@ -18,6 +18,7 @@ use super::ast::{
     Kept, LEDGER, Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming,
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
+use super::ast::{Calling, Field, FieldCall, FieldCalls};
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -456,6 +457,75 @@ fn sum_of(items: &[i64]) -> Ran<i64> {
 }
 
 /// A value as `stdout.print` writes it.
+/// A `FieldCalls` struct, as the evaluator keeps it.
+struct Boxed {
+    text: String,
+    count: i64,
+    items: Vec<i64>,
+}
+
+/// What a `FieldCalls` call gives, or a field holds.
+enum Piece {
+    Text(String),
+    Count(i64),
+    Items(Vec<i64>),
+}
+
+impl Piece {
+    /// As `stdout.print` writes it on its own.
+    fn shown(&self) -> String {
+        match self {
+            Piece::Text(text) => text.clone(),
+            Piece::Count(count) => count.to_string(),
+            Piece::Items(items) => shown(&Value::Ints(items.clone())),
+        }
+    }
+}
+
+impl Boxed {
+    fn read(&self, field: Field) -> Piece {
+        match field {
+            Field::Text => Piece::Text(self.text.clone()),
+            Field::Count => Piece::Count(self.count),
+            Field::Items => Piece::Items(self.items.clone()),
+        }
+    }
+
+    /// `field += given`, or `field += a + given` when `plus`, with `a` made from `n`.
+    fn added(&mut self, field: Field, plus: bool, n: i64, given: Piece) -> Option<()> {
+        match (field, given) {
+            (Field::Text, Piece::Text(given)) => {
+                if plus {
+                    let _ = write!(self.text, "a{n}");
+                }
+                self.text.push_str(&given);
+            }
+            (Field::Count, Piece::Count(given)) => {
+                let added = if plus { n.checked_add(given)? } else { given };
+                self.count = self.count.checked_add(added)?;
+            }
+            (Field::Items, Piece::Items(given)) => {
+                if plus {
+                    self.items.push(n);
+                }
+                self.items.extend(given);
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
+    /// As `stdout.print` writes the `Box{id}` it is.
+    fn shown(&self, id: usize) -> String {
+        format!(
+            "Box{id}(text=\"{}\", count={}, items={})",
+            self.text,
+            self.count,
+            shown(&Value::Ints(self.items.clone()))
+        )
+    }
+}
+
 /// The value at `KEYS[at]` among a dict's entries.
 fn keyed<T>(pairs: &mut [(String, T)], at: usize) -> Option<&mut T> {
     let key = KEYS.get(at)?;
@@ -1538,6 +1608,7 @@ impl Machine {
             Stmt::Streamed(streaming) => self.streamed(streaming)?,
             Stmt::Aliased(aliasing) => self.aliased(aliasing)?,
             Stmt::Constants(constants) => self.constants(constants)?,
+            Stmt::FieldCalls(calls) => self.fielded(calls)?,
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1890,6 +1961,57 @@ impl Machine {
                 let _ = writeln!(self.out, "{}", shown(&Value::Ints(plus.ok_or(Stop::Unsure)?)));
             }
         }
+        Ok(())
+    }
+
+    /// What `fielded{id}` prints: each call's own print, then the field it added to; then the
+    /// struct and the `shared` one.
+    fn fielded(&mut self, calls: &FieldCalls) -> Ran<()> {
+        let base = calls.base;
+        let mut boxed = Boxed { text: format!("t{base}"), count: base, items: vec![base] };
+        let mut kept = Boxed { text: "k".to_owned(), count: 0, items: Vec::new() };
+        for step in &calls.steps {
+            let FieldCall { field, call, plus, n } = *step;
+            let target = if call == Calling::Shared { &mut kept } else { &mut boxed };
+            let given = match call {
+                Calling::Printed | Calling::Shared => {
+                    let maker = match field {
+                        Field::Count => "told",
+                        Field::Text => "said",
+                        Field::Items => "given",
+                    };
+                    let _ = writeln!(self.out, "{maker} {n}");
+                    Some(match field {
+                        Field::Count => Piece::Count(n),
+                        Field::Text => Piece::Text(format!("s{n}")),
+                        Field::Items => Piece::Items(vec![n, n]),
+                    })
+                }
+                Calling::Failed if n > 5 => {
+                    self.out.push_str("refused\n");
+                    None
+                }
+                Calling::Failed => Some(match field {
+                    Field::Count => Piece::Count(n),
+                    Field::Text => Piece::Text(format!("c{n}")),
+                    Field::Items => Piece::Items(vec![n]),
+                }),
+                Calling::Copied | Calling::Listed => {
+                    let read = target.read(field);
+                    let _ = writeln!(self.out, "peek {}", read.shown());
+                    Some(read)
+                }
+                Calling::Closure => Some(target.read(field)),
+            };
+            if let Some(given) = given {
+                target.added(field, plus, n, given).ok_or(Stop::Unsure)?;
+            }
+            if call != Calling::Shared {
+                let _ = writeln!(self.out, "now {}", boxed.read(field).shown());
+            }
+        }
+        let _ = writeln!(self.out, "box {}", boxed.shown(calls.id));
+        let _ = writeln!(self.out, "kept {}", kept.shown(calls.id));
         Ok(())
     }
 

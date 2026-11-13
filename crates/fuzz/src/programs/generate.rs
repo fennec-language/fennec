@@ -19,6 +19,7 @@ use super::ast::{
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
+use super::ast::{Calling, Field, FieldCall, FieldCalls};
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
 /// It does since #1333; turned off, only a block that fails is given `guarded_noted`'s cleanup.
@@ -46,6 +47,13 @@ const ALIASING: bool = false;
 /// and `parallel`'s bodies. Off until the runtime's count fix for never-freed blocks lands;
 /// off, no input reads the byte that picks it.
 const CONSTANTS_IN_TASKS: bool = false;
+
+/// Whether random programs make `box.field += f(...)` on a struct's `str`, `int` and list fields,
+/// with calls that print, fail, or read the field through a copy, a list or a closure, and on a
+/// `shared` struct's: the field's read now comes after the call, so this shows if the order or
+/// a failure leaves the field wrong. Off until that change lands; off, no input reads the byte
+/// that picks it.
+const FIELD_CALLS: bool = false;
 
 /// Whether a failure passed up by a `?` nested inside another call's argument, as in
 /// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.
@@ -606,6 +614,7 @@ impl Writer<'_> {
             26 if ALIASING && self.choice(4) == 0 => self.aliasing(body),
             26 => self.change_counts(body),
             27 if CONSTANTS_IN_TASKS && !self.threadless && self.choice(4) == 0 => self.constants(body),
+            27 if FIELD_CALLS && self.choice(4) == 0 => self.field_calls(body),
             27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
             29 => {
@@ -1001,6 +1010,34 @@ impl Writer<'_> {
             _ => StreamRead::Loop(None),
         };
         body.push(Stmt::Streamed(Streaming { id, items, map, read }));
+    }
+
+    /// `+=` on a struct's fields, each with a call on its right that prints, fails, or reads the
+    /// field through another path, or on a `shared` struct's under `lock`.
+    fn field_calls(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 20);
+        let mut steps = Vec::new();
+        for _ in 0..4 + self.choice(8) {
+            let field = match self.choice(3) {
+                0 => Field::Text,
+                1 => Field::Count,
+                _ => Field::Items,
+            };
+            let call = match self.choice(6) {
+                0 => Calling::Printed,
+                1 => Calling::Failed,
+                2 => Calling::Copied,
+                3 => Calling::Listed,
+                4 => Calling::Closure,
+                _ => Calling::Shared,
+            };
+            let plus = self.choice(2) == 0;
+            let n = i64::from(self.byte() % 9);
+            steps.push(FieldCall { field, call, plus, n });
+        }
+        body.push(Stmt::FieldCalls(FieldCalls { id, base, steps }));
     }
 
     /// Module constants read on the main thread `reads` times, then used and changed in copies

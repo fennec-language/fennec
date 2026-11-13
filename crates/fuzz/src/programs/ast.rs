@@ -607,6 +607,51 @@ pub(crate) struct Constants {
     pub(crate) launch_first: bool,
 }
 
+/// A `FieldCalls` statement: `box.field += f(...)` on a struct's `str`, `int` and `list[int]`
+/// fields, each call printing, failing, or reading the field through another path, so the order
+/// the field is read in and the call made shows, and a failure must leave the field as it was.
+#[derive(Clone, Debug)]
+pub(crate) struct FieldCalls {
+    pub(crate) id: usize,
+    pub(crate) base: i64,
+    pub(crate) steps: Vec<FieldCall>,
+}
+
+/// One `+=` of a `FieldCalls`: on `field`, the call made as `call`, with `a + f(b)` when `plus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FieldCall {
+    pub(crate) field: Field,
+    pub(crate) call: Calling,
+    pub(crate) plus: bool,
+    pub(crate) n: i64,
+}
+
+/// A field of a `FieldCalls` struct.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Field {
+    Text,
+    Count,
+    Items,
+}
+
+/// What the call on a `FieldCall`'s right side does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Calling {
+    /// Prints, then gives a value made from `n`.
+    Printed,
+    /// `f(n)?` in a function taking the struct by `ref`, failing when `n` is over 5, which is
+    /// handled with `except` where it's called.
+    Failed,
+    /// Reads the field through a copy of the struct, made just before, and prints it.
+    Copied,
+    /// Reads the field through a list holding a copy of the struct, and prints it.
+    Listed,
+    /// A closure made just before, which captured the struct, gives the field.
+    Closure,
+    /// The `+=` is to a `shared` struct's field, under `lock`, with a call that prints.
+    Shared,
+}
+
 /// How a `Streamed` stream is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StreamRead {
@@ -890,6 +935,8 @@ pub(crate) enum Stmt {
     /// `constants{id}(stdout)`: module constants read on the main thread, then used and changed
     /// in copies there, in a launched task and in `parallel`'s bodies.
     Constants(Constants),
+    /// `fielded{id}(stdout)`: `+=` on a struct's fields with calls on the right.
+    FieldCalls(FieldCalls),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

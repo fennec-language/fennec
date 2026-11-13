@@ -9,6 +9,7 @@ use super::ast::{
     KEYS, Kept, LEDGER, Leave, Nested, Op, Place, Program, ROOMS, Reading, RefPlace, STARTING, Stmt,
     StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
+use super::ast::{Calling, Field, FieldCall, FieldCalls};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -1064,6 +1065,108 @@ fn constants_written(constants: &Constants) -> String {
     out
 }
 
+/// `fielded{id}`, the function a `FieldCalls` calls, after its struct and the functions its
+/// calls go to: each `+=` made, the field printed after it, then the struct and its `shared`
+/// one printed.
+fn field_calls_written(calls: &FieldCalls) -> String {
+    let FieldCalls { id, base, steps } = calls;
+    let mut out = format!(
+        "struct Box{id}:\n    text: str\n    count: int\n    items: list[int]\n\n\
+         def told{id}(stdout: Stdout, n: int) -> int:\n    stdout.print(\"told\", n)\n    return n\n\n\
+         def said{id}(stdout: Stdout, n: int) -> str:\n    stdout.print(\"said\", n)\n    return f\"s{{n}}\"\n\n\
+         def given{id}(stdout: Stdout, n: int) -> list[int]:\n    stdout.print(\"given\", n)\n    return [n, n]\n\n\
+         def capped_count{id}(n: int) -> int fails Refused:\n    if n > 5:\n        fail Refused(code=n)\n    return n\n\n\
+         def capped_text{id}(n: int) -> str fails Refused:\n    if n > 5:\n        fail Refused(code=n)\n    return f\"c{{n}}\"\n\n\
+         def capped_items{id}(n: int) -> list[int] fails Refused:\n    if n > 5:\n        fail Refused(code=n)\n    return [n]\n\n\
+         def peeked_count{id}(stdout: Stdout, other: Box{id}) -> int:\n    stdout.print(\"peek\", other.count)\n    return other.count\n\n\
+         def peeked_text{id}(stdout: Stdout, other: Box{id}) -> str:\n    stdout.print(\"peek\", other.text)\n    return other.text\n\n\
+         def peeked_items{id}(stdout: Stdout, other: Box{id}) -> list[int]:\n    stdout.print(\"peek\", other.items)\n    return other.items\n\n"
+    );
+    for (s, step) in steps.iter().enumerate() {
+        if step.call == Calling::Failed {
+            let (field, _) = field_names(step.field);
+            let _ = write!(
+                out,
+                "def failed{id}_{s}(ref box: Box{id}, n: int) fails Refused:\n    box.{field} += {}capped_{field}{id}(n)?\n    return\n\n",
+                plus_written(step.field, step.plus, step.n)
+            );
+        }
+    }
+    let _ = write!(
+        out,
+        "def fielded{id}(stdout: Stdout):\n    mut box = Box{id}(text=\"t{base}\", count={base}, items=[{base}])\n    \
+         shared kept = Box{id}(text=\"k\", count=0, items=list[int]())\n"
+    );
+    for (s, step) in steps.iter().enumerate() {
+        let FieldCall { field, call, plus, n } = *step;
+        let (name, _) = field_names(field);
+        let plus = plus_written(field, plus, n);
+        let maker = match field {
+            Field::Count => "told",
+            Field::Text => "said",
+            Field::Items => "given",
+        };
+        match call {
+            Calling::Printed => {
+                let _ = writeln!(out, "    box.{name} += {plus}{maker}{id}(stdout, {n})");
+            }
+            Calling::Failed => {
+                let _ = writeln!(
+                    out,
+                    "    failed{id}_{s}(ref box, n={n}) except Refused():\n        stdout.print(\"refused\")"
+                );
+            }
+            Calling::Copied => {
+                let _ = writeln!(
+                    out,
+                    "    snap{s} = box\n    box.{name} += {plus}peeked_{name}{id}(stdout, snap{s})"
+                );
+            }
+            Calling::Listed => {
+                let _ = writeln!(
+                    out,
+                    "    held{s} = [box]\n    box.{name} += {plus}peeked_{name}{id}(stdout, held{s}[0])"
+                );
+            }
+            Calling::Closure => {
+                let _ = writeln!(out, "    look{s} = () => box.{name}\n    box.{name} += {plus}look{s}()");
+            }
+            Calling::Shared => {
+                let _ = writeln!(
+                    out,
+                    "    lock kept as ref held:\n        held.{name} += {plus}{maker}{id}(stdout, {n})"
+                );
+            }
+        }
+        if call != Calling::Shared {
+            let _ = writeln!(out, "    stdout.print(\"now\", box.{name})");
+        }
+    }
+    out.push_str("    stdout.print(\"box\", box)\n    lock kept as held:\n        stdout.print(\"kept\", held)\n    return\n\n");
+    out
+}
+
+/// A field's name, and the kind its calls make.
+const fn field_names(field: Field) -> (&'static str, &'static str) {
+    match field {
+        Field::Text => ("text", "str"),
+        Field::Count => ("count", "int"),
+        Field::Items => ("items", "list[int]"),
+    }
+}
+
+/// The `a + ` before the call on a `+=`'s right side, when it has one.
+fn plus_written(field: Field, plus: bool, n: i64) -> String {
+    if !plus {
+        return String::new();
+    }
+    match field {
+        Field::Text => format!("\"a{n}\" + "),
+        Field::Count => format!("{n} + "),
+        Field::Items => format!("[{n}] + "),
+    }
+}
+
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
 /// turn, printed with what each use of it gives.
 fn turned_written(turning: &Turning) -> String {
@@ -1715,6 +1818,10 @@ impl Writer {
             Stmt::Streamed(streaming) => {
                 let _ = write!(self.helpers, "{}", streamed_written(streaming));
                 self.line(indent, &format!("streamed{}(stdout)", streaming.id));
+            }
+            Stmt::FieldCalls(calls) => {
+                let _ = write!(self.helpers, "{}", field_calls_written(calls));
+                self.line(indent, &format!("fielded{}(stdout)", calls.id));
             }
             Stmt::Constants(constants) => {
                 let _ = write!(self.helpers, "{}", constants_written(constants));

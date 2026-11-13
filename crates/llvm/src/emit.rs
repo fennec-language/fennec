@@ -963,7 +963,11 @@ impl Emit<'_, '_, '_> {
         if self.keeps_its_value() {
             self.give_back_what_it_kept();
         }
-        if function.name == "main" && self.module.threads {
+        // A test runs as a program's `main` does, so in a program that uses `parallel` it works out
+        // the constants first too: a task it launches only reads them then. Worked out first in a
+        // task instead, a constant's block stayed on that task's worker, where the test couldn't
+        // find it.
+        if (function.name == "main" || is_test(&function.name)) && self.module.threads {
             self.work_out_constants()?;
         }
         let kinds = self.kinds.clone();
@@ -4289,6 +4293,14 @@ def main(stdout: Stdout):
 fn written_in_std(function: &Function) -> bool {
     let mut spans = function.blocks.iter().flat_map(|block| &block.insts).map(|inst| inst.span);
     spans.find(|span| *span != Span::default()).is_some_and(Span::in_prelude)
+}
+
+/// Whether a function is one `fennec test` makes for a test, named `test:` and its number, or for
+/// an attempt of a property test's shrinking.
+fn is_test(name: &str) -> bool {
+    name.strip_prefix("test:")
+        .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+        || is_attempt(name)
 }
 
 /// Whether a function is one `fennec test` makes for an attempt of a property test's shrinking,

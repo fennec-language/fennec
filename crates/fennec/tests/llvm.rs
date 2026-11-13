@@ -21479,7 +21479,8 @@ fn fennec_literal(text: &str) -> String {
 }
 
 /// `split` gives what Rust's `str::split` and `split_whitespace` give, on rows chosen for where it
-/// could go wrong: empty parts, separators at both ends, separators of two and three bytes, parts
+/// could go wrong: empty parts, separators at both ends, separators of one to nine bytes, ones
+/// that overlap themselves, ones that end at, start at and lie across a word of the text, parts
 /// of exactly 23 bytes, which are held inline, and of 24, which take a block, of ASCII and of
 /// two-byte characters, and whitespace of ASCII and beyond it. The texts and separators come out
 /// of lists, so each split is the runtime's. Every list and part is freed after, with no block
@@ -21511,6 +21512,22 @@ fn a_split_gives_what_rust_gives_at_every_edge() -> std::io::Result<()> {
         ("ab".to_owned(), "abc"),
         ("a\tb\nc".to_owned(), "\n"),
         ("x,y,z,w,v,u,t,s,r,q,p,o,n,m,l,k".to_owned(), ","),
+        // Separators of two to eight bytes are found a word at a time, and of nine as a `str`.
+        ("GET /a HTTP/1.1\r\nHost: fox\r\nAccept: */*\r\n\r\nbody".to_owned(), "\r\n"),
+        ("\r\n\r\n".to_owned(), "\r\n"),
+        ("aaa".to_owned(), "aa"),
+        ("aaaa".to_owned(), "aa"),
+        ("abababab".to_owned(), "abab"),
+        // A separator ending at, starting at and lying across the end of the text's first word.
+        ("123456--rest".to_owned(), "--"),
+        ("12345678--rest".to_owned(), "--"),
+        ("1234567--rest".to_owned(), "--"),
+        ("one12345678two12345678three".to_owned(), "12345678"),
+        ("one123456789two123456789three".to_owned(), "123456789"),
+        ("one1234567".to_owned(), "12345678"),
+        (format!("{a23}::{b24}::{e23}::{e24}::"), "::"),
+        (format!("{e24}→é{a23}→é"), "→é"),
+        ("a\r\nb\rc\nd\r".to_owned(), "\r\n"),
     ];
     let spaced: Vec<String> = vec![
         "  a\tb\nc  ".to_owned(),

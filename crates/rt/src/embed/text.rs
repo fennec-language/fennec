@@ -81,6 +81,24 @@ pub(super) fn inline(bytes: &[u8]) -> [u64; 3] {
     [first, second, last]
 }
 
+/// An inline header holding the `length` bytes, 23 or fewer, that start at byte `start` of
+/// `words`, a text's bytes packed eight to a word: each of its words is shifted out of theirs,
+/// with no byte copied on its own.
+pub(super) fn inline_from_words(words: &[u64], start: usize, length: usize) -> [u64; 3] {
+    let length = length.min(INLINE_BYTES);
+    // The bytes of the part that word `number` of the header holds, with zeros after them.
+    let word = |number: usize| {
+        let left = length.saturating_sub(number * 8);
+        if left == 0 {
+            return 0;
+        }
+        let mask = if left >= 8 { u64::MAX } else { (1_u64 << (left * 8)) - 1 };
+        eight_bytes_at(words, start + number * 8) & mask
+    };
+    // The tag goes in the last byte, which 23 bytes leave free.
+    [word(0), word(1), word(2) | (u64::from(INLINE | u8::try_from(length).unwrap_or(0)) << 56)]
+}
+
 /// The header of `packed`, whose first `length` bytes, 23 or fewer, are a text's, with its tag
 /// put in the last.
 fn packed_header(mut packed: [u8; 24], length: usize) -> [u64; 3] {
@@ -314,7 +332,7 @@ fn words_same_at(
 /// The eight bytes of `words` from byte `at` on, as a word, zero past the words' end. Bytes are
 /// packed into words in order from each word's lowest byte, as a block and an inline header hold
 /// them.
-fn eight_bytes_at(words: &[u64], at: usize) -> u64 {
+pub(super) fn eight_bytes_at(words: &[u64], at: usize) -> u64 {
     let (number, shift) = (at / 8, (at % 8) * 8);
     let low = words.get(number).copied().unwrap_or(0) >> shift;
     if shift == 0 {

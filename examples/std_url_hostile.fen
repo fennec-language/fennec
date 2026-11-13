@@ -154,11 +154,16 @@ test "a host a browser would map to ASCII punctuation or letters is refused"():
 
 test "a Url is written so it reads back as the same URL"():
     # Each would otherwise be read back as a host, a scheme, or a host and path run together.
-    assert str(url.Url(path="//evil.com/x")) == "/.//evil.com/x"
+    assert str(url.Url(path="//evil.com/x")) == "/%2Fevil.com/x"
     assert url.parse(str(url.Url(path="//evil.com/x")))?.host == ""
-    assert str(url.Url(path="javascript:alert(1)")) == "./javascript:alert(1)"
+    assert url.parse(str(url.Url(path="//evil.com/x")))?.path == "//evil.com/x"
+    assert str(url.Url(path="javascript:alert(1)")) == "javascript%3Aalert(1)"
     assert url.parse(str(url.Url(path="javascript:alert(1)")))?.scheme == ""
-    assert str(url.Url(scheme="foo", path="//x")) == "foo:/.//x"
+    assert url.parse(str(url.Url(path="javascript:alert(1)")))?.path == "javascript:alert(1)"
+    # Found by the fuzzer: a first segment with brackets, then a `:`, reads back as itself.
+    odd = url.parse("ma[::1]ilto:fox@example.com")?
+    assert url.parse(str(odd))?.path == odd.path
+    assert str(url.Url(scheme="foo", path="//x")) == "foo:/%2Fx"
     assert str(url.Url(scheme="http", host="h", path="p")) == "http://h/p"
     assert str(url.Url(path="a/b:c")) == "a/b:c"
     who = url.Url(scheme="http", user="a/b@c#d", host="h", path="/p")
@@ -167,6 +172,9 @@ test "a Url is written so it reads back as the same URL"():
     # What parse read is written as it was.
     for text in [
         "http://user:p%40ss@h:8080/a%2Fb/c?q=red+fox&q=2#top",
+        "s://user:p[::1]w@h",
+        ":%A9",
+        "a:%A9/b",
         "https://[::1]/",
         "mailto:fox@den.example",
         "file:///etc/hosts",

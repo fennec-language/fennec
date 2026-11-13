@@ -58,8 +58,10 @@ export struct Url:
         if authority:
             out.write("//")
             if self.user != "":
-                # `%` stays, so what parse read is written as it was.
-                out.write(quoted(self.user, keep="!$&'()*+,;=:%") + "@")
+                # Only what would end it early is escaped: what parse read holds none of these,
+                # so it's written as it was.
+                user = self.user.replace("/", "%2F").replace("?", "%3F").replace("#", "%23")
+                out.write(user.replace("@", "%40") + "@")
             refused = host_refused(self.host)
             if refused != "":
                 stop(f"a Url's host can't be {quoted_input(self.host)}: {refused}")
@@ -68,16 +70,12 @@ export struct Url:
         mut path = quoted(self.path, keep="/:@!$&'()*+,;=")
         if self._raw_path != "" and unquote(self._raw_path) == self.path:
             path = self._raw_path
-        if authority:
-            # After a host, a path starts with `/`, or the two would run together.
-            if path != "" and not path.startswith("/"):
-                path = "/" + path
-        elif path.startswith("//"):
-            # Written as it is, it would be read as a host.
-            path = "/." + path
-        elif self.scheme == "" and (path[:path.find("/") else len(path)]).find(":") is not None:
-            # Written as it is, the part before its `:` would be read as a scheme.
-            path = "./" + path
+        path = led_in(path, authority, self.scheme)
+        # An escape that doesn't decode, like a lone `%A9`, leaves the whole path undecoded, so
+        # one escape added could change what the rest reads as. Then it's written escaped from
+        # what it holds, which always reads back.
+        if unquote(path) != self.path:
+            path = led_in(quoted(self.path, keep="/:@!$&'()*+,;="), authority, self.scheme)
         out.write(path)
         # As it was written, repeated names and all, unless the query has been changed since.
         if self._raw_query != "" and decode_query(self._raw_query) == self.query:
@@ -155,6 +153,22 @@ export def parse(text: str) -> Url fails InvalidValue:
 ## The schemes a browser reads with a host whatever the slashes after them, as WHATWG's URL
 ## standard has it. `file` is left out: `file:///etc/hosts` has no host.
 SPECIAL_SCHEMES = ["http", "https", "ws", "wss", "ftp"]
+
+## `path` as written, changed where it would otherwise be read as something else: after a host it
+## starts with `/`, or the two would run together; with no host, a leading `//` would be read as
+## a host, and with no scheme either, a first segment like `javascript:alert(1)` as a scheme.
+## What's escaped reads back as the same path.
+def led_in(path: str, authority: bool, scheme: str) -> str:
+    if authority:
+        if path != "" and not path.startswith("/"): return "/" + path
+        return path
+    if path.startswith("//"): return "/%2F" + path[2:]
+    if scheme == "":
+        end = path.find("/") else len(path)
+        colon = path[:end].find(":")
+        if colon is not None and colon > 0 and is_scheme(path[:colon]):
+            return path[:end].replace(":", "%3A") + path[end:]
+    return path
 
 ## Whether text can be a URL's scheme: a letter, then letters, digits, `+`, `-` or `.`.
 def is_scheme(text: str) -> bool:

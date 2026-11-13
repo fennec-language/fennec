@@ -49,7 +49,15 @@ fn recorded_and_replayed(program: &Path, input: &[u8], log: &Path) -> std::io::R
         .args(["replay", &log.to_string_lossy()])
         .current_dir(program.parent().unwrap_or(Path::new(".")))
         .output_before(DEADLINE)?;
-    Ok((outcome(&recorded), outcome(&replayed)))
+    Ok((without_build_hints(outcome(&recorded)), without_build_hints(outcome(&replayed))))
+}
+
+/// What a run said, less the hints its build gave. Only a build that wasn't cached gives them, so
+/// the recording, which builds, has them when no test built the program first, and the replay,
+/// which finds it cached, never does.
+fn without_build_hints((out, said, code): Outcome) -> Outcome {
+    let said = said.split_inclusive('\n').filter(|line| !line.starts_with("hint: ")).collect();
+    (out, said, code)
 }
 
 const DICE: &str = "from std.random import Random

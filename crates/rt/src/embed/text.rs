@@ -274,6 +274,55 @@ pub extern "C" fn find_header(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u
     })
 }
 
+/// `fennec_str_same_at(text, start, word)`: whether `text`'s bytes from byte `start` on begin
+/// with all of `word`'s, for two headers. False when `start` is negative or `word` would run past
+/// `text`'s end. Compared eight bytes at a time, with neither copied, for matching a JSON field's
+/// name where it's found in what's read.
+pub extern "C" fn same_at(t0: u64, t1: u64, t2: u64, start: i64, w0: u64, w1: u64, w2: u64) -> i8 {
+    with(|state| {
+        let (text, word) = ([t0, t1, t2], [w0, w1, w2]);
+        i8::from(
+            usize::try_from(start)
+                .is_ok_and(|start| words_same_at(bytes_of(state, &text), start, bytes_of(state, &word))),
+        )
+    })
+}
+
+/// [`same_at`] on two texts' words, each with its length in bytes.
+fn words_same_at(
+    (text, text_length): (&[u64], usize),
+    start: usize,
+    (word, length): (&[u64], usize),
+) -> bool {
+    if start.checked_add(length).is_none_or(|end| end > text_length) {
+        return false;
+    }
+    let mut at = 0;
+    while at < length {
+        let left = length - at;
+        // The bytes past the word's end in its last eight aren't compared.
+        let mask = if left >= 8 { u64::MAX } else { (1_u64 << (left * 8)) - 1 };
+        let wanted = word.get(at / 8).copied().unwrap_or(0);
+        if (eight_bytes_at(text, start + at) ^ wanted) & mask != 0 {
+            return false;
+        }
+        at += 8;
+    }
+    true
+}
+
+/// The eight bytes of `words` from byte `at` on, as a word, zero past the words' end. Bytes are
+/// packed into words in order from each word's lowest byte, as a block and an inline header hold
+/// them.
+fn eight_bytes_at(words: &[u64], at: usize) -> u64 {
+    let (number, shift) = (at / 8, (at % 8) * 8);
+    let low = words.get(number).copied().unwrap_or(0) >> shift;
+    if shift == 0 {
+        return low;
+    }
+    low | (words.get(number + 1).copied().unwrap_or(0) << (64 - shift))
+}
+
 /// `fennec_text_starts_with(text, part)`: `text.startswith(part)` for two headers.
 pub extern "C" fn starts_with(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u64) -> i8 {
     with(|state| i8::from(bytes_vec(state, &[t0, t1, t2]).starts_with(&bytes_vec(state, &[p0, p1, p2]))))
@@ -540,6 +589,56 @@ mod tests {
 
     fn live() -> usize {
         with(|state| state.heap.live())
+    }
+
+    /// `same_at` says what comparing the bytes one at a time says, for every start and every word
+    /// that's a piece of the text or one byte off from one: texts inline and in blocks, of 23 and
+    /// 24 bytes, of characters of one to four bytes, starts before, inside and past the end, and
+    /// words running past the end.
+    #[test]
+    fn a_word_is_the_same_at_a_place_exactly_when_its_bytes_are() {
+        begin();
+        let texts = [
+            "",
+            "a",
+            "\"user\": 1",
+            "aaaaaaaaaaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbbbbbbbbbb",
+            "{\"user\": 12, \"item\": \"arrow-12\", \"quantity\": 13}",
+            "caf\u{e9} \u{65e5}\u{672c} \u{1f98a} long enough to be held in a block",
+        ];
+        for text in texts {
+            let held = header(text);
+            let bytes = text.as_bytes();
+            let mut words: Vec<Vec<u8>> = Vec::new();
+            for from in 0..=bytes.len() {
+                for to in from..=bytes.len().min(from + 30) {
+                    let piece = bytes.get(from..to).unwrap_or_default().to_vec();
+                    let mut changed = piece.clone();
+                    if let Some(last) = changed.last_mut() {
+                        *last ^= 1;
+                    }
+                    words.push(piece);
+                    words.push(changed);
+                }
+            }
+            words.push(b"past the end of every text here, and longer".to_vec());
+            for word in &words {
+                let Ok(word_text) = std::str::from_utf8(word) else { continue };
+                let word_held = header(word_text);
+                for start in -1..=i64::try_from(bytes.len()).unwrap() + 1 {
+                    let wanted = usize::try_from(start)
+                        .ok()
+                        .and_then(|start| bytes.get(start..start + word.len()))
+                        .is_some_and(|there| there == word.as_slice());
+                    let [t0, t1, t2] = held;
+                    let [w0, w1, w2] = word_held;
+                    let said = super::same_at(t0, t1, t2, start, w0, w1, w2) == 1;
+                    assert_eq!(said, wanted, "{word_text:?} at {start} in {text:?}");
+                }
+            }
+        }
+        finish();
     }
 
     /// An int's text, as a header or as a string's block, is what Rust writes for it, at both ends

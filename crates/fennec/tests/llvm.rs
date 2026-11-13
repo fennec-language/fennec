@@ -21518,6 +21518,82 @@ def main(stdout: Stdout):
     prints_with_nothing_left(&dir, &program, &expected, &["1"])
 }
 
+/// `removesuffix` and `removeprefix` give what Rust's `strip_suffix` and `strip_prefix` do, or the
+/// text as it is: with an empty text or affix, an affix as long as the text or longer, one found
+/// only elsewhere, one twice over, characters of two and three bytes, and results either side of
+/// what a header holds, from texts of 23 to 27 bytes. Each result is compared with the same text
+/// made another way, is a dict's key found by it, and says its length in characters. The texts
+/// come out of lists, so each is cut where it runs, and no block is left after.
+#[test]
+fn an_affix_removed_gives_what_rust_gives_at_every_edge() -> std::io::Result<()> {
+    use std::fmt::Write as _;
+    if !ready() {
+        return Ok(());
+    }
+    let (a23, e12) = ("a".repeat(23), "é".repeat(12));
+    let rows: Vec<(String, &str)> = vec![
+        (String::new(), ""),
+        (String::new(), "ms"),
+        ("ms".to_owned(), ""),
+        ("ms".to_owned(), "ms"),
+        ("s".to_owned(), "ms"),
+        ("42ms".to_owned(), "ms"),
+        ("42msms".to_owned(), "ms"),
+        ("ms42".to_owned(), "ms"),
+        ("café".to_owned(), "é"),
+        ("caf".to_owned(), "é"),
+        ("日本語".to_owned(), "本語"),
+        ("日本語".to_owned(), "日本"),
+        (format!("{a23}ms"), "ms"),
+        (format!("{a23}bms"), "ms"),
+        (format!("{a23}bbms"), "bms"),
+        (format!("{e12}é"), "é"),
+        (format!("ms{a23}b"), "ms"),
+    ];
+    let texts: Vec<String> = rows.iter().map(|(text, _)| fennec_literal(text)).collect();
+    let affixes: Vec<String> = rows.iter().map(|(_, affix)| fennec_literal(affix)).collect();
+    let source = format!(
+        r#"def main(stdout: Stdout):
+    texts = [{}]
+    affixes = [{}]
+    mut seen = dict[str, int]()
+    for at in range(len(texts)):
+        without_suffix = texts[at].removesuffix(affixes[at])
+        without_prefix = texts[at].removeprefix(affixes[at])
+        seen[without_suffix] = at
+        stdout.print(f"{{len(without_suffix)}}:{{without_suffix}}|{{len(without_prefix)}}:{{without_prefix}}")
+    for text in [{}]:
+        stdout.print(seen.get(text) else -1)
+    return
+"#,
+        texts.join(", "),
+        affixes.join(", "),
+        rows.iter()
+            .map(|(text, affix)| fennec_literal(text.strip_suffix(affix).unwrap_or(text)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut expected = String::new();
+    let mut last = std::collections::HashMap::new();
+    for (at, (text, affix)) in rows.iter().enumerate() {
+        let (suffixless, prefixless) =
+            (text.strip_suffix(affix).unwrap_or(text), text.strip_prefix(affix).unwrap_or(text));
+        expected.push_str(&parts_shown([suffixless].into_iter()));
+        expected.push('|');
+        expected.push_str(&parts_shown([prefixless].into_iter()));
+        expected.push('\n');
+        last.insert(suffixless.to_owned(), at);
+    }
+    for (text, affix) in &rows {
+        let found = last.get(text.strip_suffix(affix).unwrap_or(text)).copied().unwrap_or(usize::MAX);
+        let _ = writeln!(expected, "{found}");
+    }
+    let dir = folder("affixes_removed")?;
+    let program = dir.join("affixes_removed.fen");
+    std::fs::write(&program, &source)?;
+    prints_with_nothing_left(&dir, &program, &expected, &["1"])
+}
+
 /// `startswith` and `endswith` compare a text's bytes with its part's where both are, inline or
 /// in a block: with an empty part, a part as long as the text or longer, and characters of two
 /// bytes either side of where they'd meet.

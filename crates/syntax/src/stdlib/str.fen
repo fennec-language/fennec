@@ -1,5 +1,5 @@
 ## `str`'s methods written in Fennec. The rest are machine operations the engines provide.
-from std.intrinsics import stop
+from std.intrinsics import stop, text_part, text_size
 
 extend str:
     ## `"ab" * 3` is `"ababab"`: the text repeated. Repeating it fewer than once gives "".
@@ -61,11 +61,19 @@ extend str:
 
     ## The text without `prefix` at its start, or as it is if it doesn't start with it.
     def removeprefix(self, prefix: str) -> str:
-        return self[len(prefix):] if self.startswith(prefix) else self
+        if not self.startswith(prefix):
+            return self
+        # The prefix's bytes end where one of the text's characters does, as a string's bytes start
+        # with a character's first, so the rest is cut by bytes, with no characters counted.
+        return text_part(self, text_size(prefix), text_size(self))
 
     ## The text without `suffix` at its end, or as it is if it doesn't end with it.
     def removesuffix(self, suffix: str) -> str:
-        return self[:len(self) - len(suffix)] if suffix != "" and self.endswith(suffix) else self
+        if suffix == "" or not self.endswith(suffix):
+            return self
+        # The suffix's bytes start where one of the text's characters does, as a string's bytes
+        # start with a character's first, so the text is cut by bytes, with no characters counted.
+        return text_part(self, 0, text_size(self) - text_size(suffix))
 
     ## How many times `part` is in the text, not counting ones that overlap. "" is counted
     ## between every two characters and at each end.

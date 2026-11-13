@@ -319,6 +319,7 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
     entry(i64::try_from(limit).unwrap_or(0));
     let (output, failure, leftovers) = super::finish_for_exit();
+    crate::replay::ended();
     // A replay that ended with its recording not all read isn't the run that was recorded.
     let failure = failure.or_else(|| {
         crate::replay::unfinished()
@@ -421,6 +422,7 @@ pub(super) fn counts_line(counts: &heap::Counts, parallel_calls: u64, blocked_wa
 
 /// Ends the program at once with `code`.
 pub(crate) fn stop_now(code: i32) -> ! {
+    crate::replay::ended();
     if let Some(stop) = STOP.get() {
         stop(code);
     }

@@ -4228,6 +4228,26 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A native block's drop never calls itself, whichever field a chain runs through: those of
+    /// its own type it lets go of wait in a list in one loop. Recursing through `left`, a chain
+    /// 200,000 deep once ran past the thread sanitizer's 64K-frame stack, which then said a list was
+    /// freed twice and hung.
+    #[test]
+    fn a_native_drop_never_calls_itself() -> Result<(), String> {
+        let source = "enum Named:\n    Leaf(name: str)\n    Pair(left: Named, right: Named, label: str, tags: list[str])\n\ndef chain(depth: int) -> Named:\n    mut named = Named.Leaf(name=\"leaf\")\n    for at in range(depth):\n        named = .Pair(left=named, right=.Leaf(name=\"r\"), label=\"pair\", tags=[\"t\"])\n    return named\n\ndef size(named: Named) -> int:\n    match named:\n        case .Leaf(name):\n            return len(name)\n        case .Pair(left, right, label, tags):\n            return size(left) + size(right) + len(label) + len(tags)\n\ndef main(stdout: Stdout):\n    stdout.print(size(chain(4)))\n";
+        let (units, shared, _) = emit(&lowered(source)?)?;
+        assert!(!shared.native.is_empty(), "Named's blocks are native");
+        let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
+        let drops: Vec<&str> = text.split("define internal void @fen_drop_").skip(1).collect();
+        assert!(!drops.is_empty(), "{text}");
+        for drop in drops {
+            let body = drop.split("\n}\n").next().unwrap_or_default();
+            assert!(!body.contains("call void @fen_drop_"), "{body}");
+            assert!(body.contains("%waiting"), "{body}");
+        }
+        Ok(())
+    }
+
     /// A build that watches native blocks, as a dev build does, tells the runtime of each one it
     /// makes and frees, for it to stop if it's ever given one.
     #[test]

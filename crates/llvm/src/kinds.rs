@@ -31,13 +31,28 @@ pub(crate) fn canon(ty: &Type) -> Type {
 
 /// As [`canon`], but an optional of a block, outside a list or dict, stays an optional: one
 /// word, the block or null for `None`. `layouts` says which named types are blocks.
+/// With no layouts, as the first is made, an optional of what's a block whatever the layouts say,
+/// like a string or a list, is one word already, as it is in the finished layout: only an optional
+/// of a named type waits to know whether that type is a block.
 pub(crate) fn canon_in(layouts: Option<&Layouts>, ty: &Type) -> Type {
-    if let (Type::Optional(inner), Some(layouts)) = (ty, layouts)
-        && one_word_optional(layouts, inner)
-    {
-        return Type::Optional(Box::new(canon(inner)));
+    if let Type::Optional(inner) = ty {
+        let one_word = match layouts {
+            Some(layouts) => one_word_optional(layouts, inner),
+            None => always_a_block(inner),
+        };
+        if one_word {
+            return Type::Optional(Box::new(canon(inner)));
+        }
     }
     canon(ty)
+}
+
+/// Whether a value of this type is held by a block whatever the layouts say.
+fn always_a_block(ty: &Type) -> bool {
+    matches!(
+        canon(ty),
+        Type::Str | Type::List(_) | Type::Dict(..) | Type::Set(_) | Type::Bytes | Type::Buffer(_)
+    )
 }
 
 /// Whether an optional of `inner` is one word, the address of the block `inner` is held by or null

@@ -215,7 +215,8 @@ impl Parser {
     /// An `else:` block, which leaves or gives the value, as in `text = fs.read(path) else:` with
     /// `stdout.print(...)` and `return` under it, or `""` as its last line. It's the same `match`
     /// as `else return`, with more statements in its case, and the checker sees that it leaves or
-    /// gives a value of the right type. `else as failure:` names what failed in the block.
+    /// gives a value of the right type. `else as failure:`, its form for a failure before
+    /// 2026-11-11, is read too, for the checker to refuse with `except failure:` as the fix.
     fn leaving_block(&mut self, failure: Option<String>) -> Result<Expr, Diagnostic> {
         let start = self.advance().span;
         let indented = self.at(&Tok::Newline);

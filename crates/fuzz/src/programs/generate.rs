@@ -618,11 +618,13 @@ impl Writer<'_> {
             26 if PARALLEL_STREAMS && !self.threadless && self.choice(4) == 0 => self.streams(body),
             26 if ALIASING && self.choice(4) == 0 => self.aliasing(body),
             26 => self.change_counts(body),
+            // The guarded shapes are tried first, as they were before the shapes after them, so
+            // each of their cases still comes up as often.
+            27 if self.choice(3) == 0 => self.guards(body),
             27 if CONSTANTS_IN_TASKS && !self.threadless && self.choice(4) == 0 => self.constants(body),
             27 if FIELD_CALLS && self.choice(4) == 0 => self.field_calls(body),
             27 if YIELDS && !self.threadless && self.choice(4) == 0 => self.yields(body),
             27 if CRASH_WAKES && !self.threadless && self.choice(4) == 0 => self.wakes(body),
-            27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();

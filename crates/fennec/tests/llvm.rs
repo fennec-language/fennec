@@ -18915,6 +18915,48 @@ fn a_field_grown_by_a_calls_text_grows_where_it_is() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A field grown by a call that fails keeps what it had: the call runs before the field is read,
+/// so a failure out of it leaves the field as the last `+=` that finished left it, and what the
+/// calls print comes out in order.
+#[test]
+fn a_field_grown_by_a_call_that_fails_keeps_what_it_had() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "field_grown_by_failing_call",
+        r#"error Bad:
+    why: str
+
+struct Writer:
+    text = "start"
+    total = 0
+
+def risky(value: int, stdout: Stdout) -> str fails Bad:
+    stdout.print("called", value)
+    if value > 2: fail Bad(why="too big")
+    return str(value)
+
+def grow(ref out: Writer, value: int, stdout: Stdout) fails Bad:
+    out.text += risky(value, stdout)?
+    out.text += "," + risky(value + 1, stdout)?
+    return
+
+def main(stdout: Stdout):
+    mut out = Writer()
+    for value in [1, 2]:
+        grow(ref out, value, stdout) except Bad(why):
+            stdout.print("failed", why)
+        stdout.print(out.text)
+    got = risky(5, stdout) except Bad(why): f"<{why}>"
+    out.text += got
+    stdout.print(out.text)
+    return
+"#,
+        "called 1\ncalled 2\nstart1,2\ncalled 2\ncalled 3\nfailed too big\nstart1,22\ncalled 5\nstart1,22<too big>\n",
+    )
+}
+
 const FIELD_GROWN_BY_CALL: &str = r#"struct Writer:
     text = ""
     n = 0

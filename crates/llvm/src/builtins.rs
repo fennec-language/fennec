@@ -370,8 +370,11 @@ impl Emit<'_, '_, '_> {
     /// gains or loses an owner, where a sorted copy would count every one twice.
     pub(crate) fn sort_in_place(&mut self, list: LocalId) -> Result<(), String> {
         let held = self.items_held(list)?;
-        let compare =
-            if matches!(held, Kind::Struct(_) | Kind::Boxed(_)) { Some(self.tuple_comparison(&held)?) } else { None };
+        let compare = if matches!(held, Kind::Struct(_) | Kind::Boxed(_)) {
+            Some(self.tuple_comparison(&held)?)
+        } else {
+            None
+        };
         let how = if compare.is_none() { Self::sort_kind(&held)? } else { 0 };
         let owned = self.unshared(list);
         if let Some(compare) = compare {
@@ -386,14 +389,21 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `list.sort(key=f)`: as `sort_in_place`, in the order of the keys `f` gives.
-    pub(crate) fn sort_by_in_place(&mut self, list: LocalId, key: &Operand, span: Span) -> Result<(), String> {
+    pub(crate) fn sort_by_in_place(
+        &mut self,
+        list: LocalId,
+        key: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
         let held = self.items_held(list)?;
         let owned = self.unshared(list);
         let (keys, kind) = self.keys_of(&owned, &held, key, span)?;
         if matches!(kind, Kind::Struct(_) | Kind::Boxed(_)) {
             let compare = self.tuple_comparison(&kind)?;
             self.declare("declare void @fennec_list_sort_by_keys_with(ptr, ptr, ptr) nounwind");
-            self.line(&format!("call void @fennec_list_sort_by_keys_with(ptr {owned}, ptr {keys}, ptr {compare})"));
+            self.line(&format!(
+                "call void @fennec_list_sort_by_keys_with(ptr {owned}, ptr {keys}, ptr {compare})"
+            ));
             self.release(&keys);
             self.leave_if_failed();
             return Ok(());
@@ -415,7 +425,9 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Option<Result<(), String>> {
-        let named = |method: &str| name.strip_prefix(method).is_some_and(|rest| rest.is_empty() || rest.starts_with('['));
+        let named = |method: &str| {
+            name.strip_prefix(method).is_some_and(|rest| rest.is_empty() || rest.starts_with('['))
+        };
         let list = match args.first() {
             Some(Operand::Local(list)) if matches!(self.kind_of(*list), Ok(Kind::List(_))) => *list,
             _ => return None,
@@ -434,7 +446,13 @@ impl Emit<'_, '_, '_> {
 
     /// `list.swap(i, j)`: each index checked as `list[i]` checks it, then the two items' words
     /// swapped in the list made its caller's alone.
-    fn swap_items(&mut self, list: LocalId, first: &Operand, second: &Operand, span: Span) -> Result<(), String> {
+    fn swap_items(
+        &mut self,
+        list: LocalId,
+        first: &Operand,
+        second: &Operand,
+        span: Span,
+    ) -> Result<(), String> {
         let held = self.items_held(list)?;
         let memory = held.memory(self.module.layouts);
         let (shared, _) = self.operand(&Operand::Local(list))?;
@@ -442,7 +460,8 @@ impl Emit<'_, '_, '_> {
         let first = self.position(&shared, &first, span);
         let second = self.position(&shared, &second, span);
         let owned = self.unshared(list);
-        let (a, b) = (self.item_address(&owned, &memory, &first), self.item_address(&owned, &memory, &second));
+        let (a, b) =
+            (self.item_address(&owned, &memory, &first), self.item_address(&owned, &memory, &second));
         let (x, y) = (self.temp(), self.temp());
         self.line(&format!("{x} = load {memory}, ptr {a}"));
         self.line(&format!("{y} = load {memory}, ptr {b}"));
@@ -453,7 +472,9 @@ impl Emit<'_, '_, '_> {
 
     /// How a list local's items are held.
     fn items_held(&self, list: LocalId) -> Result<Kind, String> {
-        let Kind::List(item) = self.kind_of(list)? else { return Err("it sorts something that isn't a list".to_owned()) };
+        let Kind::List(item) = self.kind_of(list)? else {
+            return Err("it sorts something that isn't a list".to_owned());
+        };
         self.item_kind(*item)
     }
 

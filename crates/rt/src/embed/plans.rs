@@ -110,8 +110,10 @@ fn fixed_words(element: &Element, at: &mut usize, holds: &mut Found) -> Option<(
         }
         Element::Enum { words, .. } if !super::heap::holds_blocks(element) => *at += words,
         Element::Enum { cases, words, .. } => {
-            let cases: Option<Vec<Holds>> =
-                cases.iter().map(|(_, fields)| holds_of(fields.iter().map(|(_, field)| field), *at + 1)).collect();
+            let cases: Option<Vec<Holds>> = cases
+                .iter()
+                .map(|(_, fields)| holds_of(fields.iter().map(|(_, field)| field), *at + 1))
+                .collect();
             holds.enums.push(Inner { at: *at, cases: cases?.into_boxed_slice() });
             *at += words;
         }

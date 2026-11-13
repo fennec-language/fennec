@@ -18,7 +18,7 @@ use super::ast::{
     Kept, LEDGER, Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming,
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
-use super::ast::{Calling, Field, FieldCall, FieldCalls};
+use super::ast::{Calling, Field, FieldCall, FieldCalls, Yielding};
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1609,6 +1609,7 @@ impl Machine {
             Stmt::Aliased(aliasing) => self.aliased(aliasing)?,
             Stmt::Constants(constants) => self.constants(constants)?,
             Stmt::FieldCalls(calls) => self.fielded(calls)?,
+            Stmt::Yielded(yielding) => self.yielded(yielding),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1962,6 +1963,46 @@ impl Machine {
             }
         }
         Ok(())
+    }
+
+    /// What `yielded{id}` prints: every value as it was yielded, however much was yielded after
+    /// it, and the notes again as they come back from the task.
+    fn yielded(&mut self, yielding: &Yielding) {
+        let Yielding { id, count, widths: [notes, pairs, words] } = *yielding;
+        let repeat = |letter: &str, width: i64| letter.repeat(usize::try_from(width).unwrap_or(0));
+        let mut got = Vec::new();
+        let mut kept_items = vec![0_i64];
+        let mut kept_count = 0_i64;
+        for at in 0..count {
+            got.push(format!(
+                "Note{id}(text=\"{at}{}\", items=[{at}, {}], counts={{\"a\": {at}}})",
+                repeat("n", notes),
+                at + 1
+            ));
+            kept_items.push(at);
+            kept_count += at;
+            got.push(format!(
+                "Note{id}(text=\"{}\", items={}, counts={{\"k\": {kept_count}}})",
+                repeat("k", notes),
+                shown(&Value::Ints(kept_items.clone()))
+            ));
+        }
+        for note in &got {
+            let _ = writeln!(self.out, "note {note}");
+        }
+        let firsts: Vec<String> =
+            (0..count).map(|at| format!("(\"{at}{}\", [{at}])", repeat("p", pairs))).collect();
+        let _ = writeln!(self.out, "pairs [{}]", firsts.join(", "));
+        for at in 0..count {
+            if at % 2 == 0 {
+                let _ = writeln!(self.out, "plain {at}{}", repeat("w", words));
+            } else {
+                let _ = writeln!(self.out, "many [{at}, {at}]");
+            }
+        }
+        for note in &got {
+            let _ = writeln!(self.out, "back {note}");
+        }
     }
 
     /// What `fielded{id}` prints: each call's own print, then the field it added to; then the

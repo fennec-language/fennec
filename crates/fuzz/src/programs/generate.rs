@@ -19,7 +19,7 @@ use super::ast::{
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
-use super::ast::{Calling, Field, FieldCall, FieldCalls};
+use super::ast::{Calling, Field, FieldCall, FieldCalls, Yielding};
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
 /// It does since #1333; turned off, only a block that fails is given `guarded_noted`'s cleanup.
@@ -54,6 +54,12 @@ const CONSTANTS_IN_TASKS: bool = false;
 /// a failure leaves the field wrong. Off until that change lands; off, no input reads the byte
 /// that picks it.
 const FIELD_CALLS: bool = false;
+
+/// Whether random programs have generators yield structs, tuples and enums holding texts past
+/// 23 bytes, lists and dicts, keep a struct in a local across yields, and send what they yield
+/// through a task's inbox loop and back. Off until the runtime's fix for what a yield's slot
+/// owns lands; off, no input reads the byte that picks it.
+const YIELDS: bool = false;
 
 /// Whether a failure passed up by a `?` nested inside another call's argument, as in
 /// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.
@@ -615,6 +621,7 @@ impl Writer<'_> {
             26 => self.change_counts(body),
             27 if CONSTANTS_IN_TASKS && !self.threadless && self.choice(4) == 0 => self.constants(body),
             27 if FIELD_CALLS && self.choice(4) == 0 => self.field_calls(body),
+            27 if YIELDS && !self.threadless && self.choice(4) == 0 => self.yields(body),
             27 if self.choice(3) == 0 => self.guards(body),
             27 => self.change_buffer(body),
             29 => {
@@ -1010,6 +1017,17 @@ impl Writer<'_> {
             _ => StreamRead::Loop(None),
         };
         body.push(Stmt::Streamed(Streaming { id, items, map, read }));
+    }
+
+    /// Generators yielding structs, tuples and enums holding texts from 20 to 66 bytes, and an
+    /// inbox loop sending what they yielded back.
+    fn yields(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let count = 2 + i64::from(self.byte() % 5);
+        let mut width = || 20 + i64::from(self.byte() % 47);
+        let widths = [width(), width(), width()];
+        body.push(Stmt::Yielded(Yielding { id, count, widths }));
     }
 
     /// `+=` on a struct's fields, each with a call on its right that prints, fails, or reads the

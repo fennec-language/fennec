@@ -652,6 +652,17 @@ pub(crate) enum Calling {
     Shared,
 }
 
+/// A `Yielded` statement: generators yielding a struct holding a text, a list and a dict, one
+/// kept in a local and changed across yields, tuples and enum cases holding texts and lists,
+/// each value kept and read after more yields, then sent through a task's inbox loop and back.
+/// The texts are `widths` long, past the 23 bytes a str holds in place.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Yielding {
+    pub(crate) id: usize,
+    pub(crate) count: i64,
+    pub(crate) widths: [i64; 3],
+}
+
 /// How a `Streamed` stream is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StreamRead {
@@ -937,6 +948,9 @@ pub(crate) enum Stmt {
     Constants(Constants),
     /// `fielded{id}(stdout)`: `+=` on a struct's fields with calls on the right.
     FieldCalls(FieldCalls),
+    /// `yielded{id}(stdout)`: generators yielding structs, tuples and enums holding texts, lists
+    /// and dicts, and an inbox loop sending them back.
+    Yielded(Yielding),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

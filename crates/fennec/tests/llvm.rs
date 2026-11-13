@@ -15289,6 +15289,62 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// The `serialize` and `deserialize` written for a program's types hold their names, types and
+/// fields themselves, never their text: fields named by keywords, in a struct and in an enum's
+/// case, a name given with `@serialize` that has quotes in it, a program's own `Delivery`, a
+/// union, and tuples inside dicts all save and load back, through JSON and `std.pack`. Read back
+/// as text, none of it built.
+#[test]
+fn saving_carries_any_name_type_and_field_through_unchanged() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "saving_any_name",
+            r#"from std import json, pack
+
+struct Circle:
+    radius: int
+
+struct Square:
+    side: int
+
+enum Move:
+    Stay
+    Step(if: int, for: str)
+
+# The library has a `Delivery` too: this one is the program's own.
+struct Delivery:
+    if: int
+    @serialize(name="the \"label\"")
+    label: str
+    sizes: dict[str, list[(int, str)]]
+    shape: Circle | Square
+    moves: list[Move]
+    for = "all"
+    note: str? = None
+
+def main(stdout: Stdout):
+    delivery = Delivery(if=3, label="box", sizes={"a": [(1, "one")]}, shape=Square(side=2), moves=[Move.Stay, Move.Step(if=1, for="x")])
+    text = json.dumps(delivery)
+    stdout.print(text)
+    back = json.loads[Delivery](text) except ParseError(): return
+    stdout.print(back == delivery, back.if, back.for, back.label, back.sizes["a"][0][1])
+    packed = pack.loads[Delivery](pack.dumps(delivery)) except ParseError(): return
+    stdout.print(packed == delivery)
+    _ = json.loads[Delivery]("{\"if\": 1}") except why:
+        stdout.print(why)
+        return
+"#
+        )?,
+        "{\"if\": 3, \"the \\\"label\\\"\": \"box\", \"sizes\": {\"a\": [[1, \"one\"]]}, \"shape\": {\"Square\": {\"side\": 2}}, \
+         \"moves\": [\"Stay\", {\"Step\": {\"if\": 1, \"for\": \"x\"}}], \"for\": \"all\", \"note\": null}\n\
+         True 3 all box one\nTrue\nParseError(message=\"`the \\\"label\\\"` is missing\", line=0, column=0)\n"
+    );
+    Ok(())
+}
+
 /// The functions that save and load a tuple hold its types themselves, never their text: tuples
 /// inside lists of tuples of dicts, and an optional list inside a tuple, save and load back, and a
 /// wrong one is refused naming the tuple as it's written.

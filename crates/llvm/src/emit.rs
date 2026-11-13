@@ -2576,6 +2576,15 @@ impl Emit<'_, '_, '_> {
         if let ("str.isdigit", Some(dest), [text], true) = (name, dest, args, self.headers()) {
             return self.header_isdigit(dest, text);
         }
+        // `int.parse(text)` and `float.parse(text)` are `int(text)?` and `float(text)?` given back:
+        // the result is made where the caller keeps it, rather than made, read and made again.
+        if let ("int.parse" | "float.parse", Some(dest), [text @ Operand::Local(held)]) = (name, dest, args)
+            && self.function.locals.get(held.0).is_some_and(|local| local.ty == fennec_check::Type::Str)
+            && self.kind_of(dest).is_ok_and(|kind| self.case_of(&kind.clone(), "Ok").is_ok())
+        {
+            let number = if name == "int.parse" { "int" } else { "float" };
+            return self.number_of_text(dest, number, text);
+        }
         if let ("str.startswith" | "str.endswith", Some(dest), [text, part], true) =
             (name, dest, args, self.headers())
         {

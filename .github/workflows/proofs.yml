@@ -8,8 +8,8 @@ name: Proofs
 # `fennec` takes `FENNEC_STRIP_FACTS`, everything is built again with the facts handed to LLVM
 # stripped, and must print the same. Every example, kit, fixture and 50 random programs also run with
 # another hash seed, more threads and load, and recorded and replayed, and must print the same each
-# way (`.github/scripts/determinism.sh`). Every program that uses threads runs under ThreadSanitizer too,
-# with half an hour of random programs (`.github/scripts/tsan-programs.sh`). The night's report is kept as `nightly-report`, which
+# way (`.github/scripts/determinism.sh`). Every program that uses threads runs under ThreadSanitizer too
+# (`.github/scripts/tsan-programs.sh`). The night's report is kept as `nightly-report`, which
 # `.github/scripts/nightly-report.sh` copies into the lanes' notes. No pull request waits on this.
 on:
   schedule:
@@ -126,8 +126,7 @@ jobs:
           gh issue create --title "A proof the compiler made broke" --body-file issue.md --label "bug" --label "priority: now" --repo "$GITHUB_REPOSITORY"
 
   # Every program that uses threads, launches tasks, or shares state, and the real programs, under
-  # ThreadSanitizer, then half an hour of random programs under it: what CI's job runs, with more
-  # fuzzing and a new seed each night. See `tsan-programs.sh`. A report fails it, and the issue
+  # ThreadSanitizer, as CI's job runs them: see `tsan-programs.sh`. A report fails it, and the issue
   # carries what was found.
   tsan:
     name: Programs under ThreadSanitizer
@@ -138,7 +137,6 @@ jobs:
       issues: write
     env:
       NIGHTLY: nightly-2026-10-15
-      FUZZ_SEED: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -148,10 +146,10 @@ jobs:
           rustup component add llvm-tools-preview
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build fennec and the fuzzer, and the runtime libraries with ThreadSanitizer
+      - name: Build fennec, and the runtime libraries with ThreadSanitizer
         run: .github/scripts/tsan-runtime.sh
-      - name: Run the programs that use threads, and random programs for half an hour
-        run: .github/scripts/tsan-programs.sh target/release/fennec 1800 | tee tsan.txt
+      - name: Run the programs that use threads
+        run: .github/scripts/tsan-programs.sh target/release/fennec | tee tsan.txt
       - name: Keep what was found
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

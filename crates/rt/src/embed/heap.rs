@@ -597,7 +597,8 @@ impl Heap {
             Some(mut block) => {
                 self.spare_words -= block.len();
                 match block.get_mut(written..) {
-                    Some(rest) if written > 0 => rest.fill(0),
+                    // What's left after what's written is a few words, mostly, for plain stores.
+                    Some(rest) if written > 0 => zero(rest),
                     _ => zero(&mut block),
                 }
                 block

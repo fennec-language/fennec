@@ -177,7 +177,8 @@ pub fn sanitize_flag() -> Option<String> {
 }
 
 /// Every switch outside the program that changes what a build makes, as a line for a cache key: the
-/// sanitizer, whether proofs are checked and facts stripped, and whether results are kept in place.
+/// sanitizer, whether proofs are checked and facts stripped, whether results are kept in place, and
+/// whether it's built for a heap audit.
 /// A program built one way is never handed back for another, as a plain one was for a build asked
 /// for the address sanitizer. The objects' own key has the pipeline, which names the sanitizer's
 /// passes; checked proofs, stripped facts and boxed results change the text too. Said here as
@@ -185,12 +186,21 @@ pub fn sanitize_flag() -> Option<String> {
 #[must_use]
 pub fn output_switches() -> String {
     format!(
-        "sanitize={:?} proofs_checked={} facts_stripped={} results_in_place={}",
+        "sanitize={:?} proofs_checked={} facts_stripped={} results_in_place={} audited={}",
         sanitizer(),
         crate::emit::proofs_checked(),
         crate::emit::facts_stripped(),
-        fennec_layout::results_in_place()
+        fennec_layout::results_in_place(),
+        audited()
     )
+}
+
+/// Whether the program is built for a heap audit, as `FENNEC_AUDIT=1` asks: one that checks every
+/// block's owners as it ends. Generated code keeps no native blocks then, since the audit walks
+/// only what the runtime holds and can't see what a native block does. It changes what a build
+/// makes, so a build's cache key says it.
+pub(crate) fn audited() -> bool {
+    std::env::var("FENNEC_AUDIT").as_deref() == Ok("1")
 }
 
 /// The passes `opt` runs.

@@ -3922,6 +3922,49 @@ def main(stdout: Stdout):
     stdout.print(kind)
 "#;
 
+/// `for key, ref value in x.items()` changes each value of a dict, or item of a `Table`, where it
+/// is, natively, with its key or its `Id`, and a `continue` leaves the rest of that one as it was.
+#[test]
+fn a_ref_over_items_changes_each_value_where_it_is_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "ref_over_items",
+            r#"from std.collections import Table
+
+struct Unit:
+    health: int
+    target = 0
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    first = units.add(Unit(health=1))
+    _ = units.add(Unit(health=5))
+    for id, ref unit in units.items():
+        unit.health += 1
+        if id == first:
+            unit.target = 7
+    stdout.print(units)
+    mut by_name = {"a": Unit(health=1), "b": Unit(health=2)}
+    for name, ref unit in by_name.items():
+        if name == "b":
+            continue
+        unit.health += 10
+    stdout.print(by_name)
+    mut scores = {"x": 1}
+    for key, ref score in scores.items():
+        score *= 3
+    stdout.print(scores)
+"#
+        )?,
+        "Table([Unit(health=2, target=7), Unit(health=6, target=0)])\n\
+         {\"a\": Unit(health=11, target=0), \"b\": Unit(health=2, target=0)}\n{\"x\": 3}\n"
+    );
+    Ok(())
+}
+
 /// `for at, ref item in enumerate(items)` changes each item where it is, natively, as the
 /// language says: numbers, structs and lists, a `continue` that still counts what it skips, and a
 /// nested one over the items' own lists.
@@ -23940,6 +23983,100 @@ def main(stdout: Stdout, clock: Clock):
 ",
     )
 }
+
+/// A constant is kept for the whole run whatever kind of value it is, and never counted as left
+/// over. A string worked out into a block, an optional held as one word and an optional string
+/// were kept with an owner but not marked as living for the run, so each ended a run as a block
+/// left: 3 for this program, which is `examples/constants_kept.fen`. A list, a dict, a boxed
+/// value and anything held in place were marked already. Its constants can't fail, so a program
+/// that uses `parallel` keeps them too, and it reads them in a `parallel` loop as well.
+#[test]
+fn a_constant_of_any_kind_is_kept_for_the_run_and_never_left_over() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let (source, wanted) = (
+        include_str!("../../../examples/constants_kept.fen"),
+        include_str!("../../../examples/constants_kept.out"),
+    );
+    prints_in_both_builds("constants_kept", source, wanted)?;
+    assert!(counts_of("constants_kept_counts", source)?.ends_with(" live 0"));
+    Ok(())
+}
+
+/// A program built for a heap audit, with `FENNEC_AUDIT=1`, keeps no native blocks: the audit
+/// walks what the runtime holds, and can't see what a native block does. An enum of numbers and
+/// itself gets a drop of its own in a plain build and none in an audited one, where its blocks
+/// are the runtime's, and both print the same.
+#[test]
+fn a_program_built_for_a_heap_audit_keeps_no_native_blocks() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let mut drops = Vec::new();
+    for audited in [false, true] {
+        let dir = folder("audit_no_native")?;
+        let (program, executable) = (dir.join("audit_no_native.fen"), dir.join("audit_no_native"));
+        std::fs::write(&program, AUDIT_NO_NATIVE)?;
+        let mut command = crate::executables::fennec_command();
+        command.arg("build").arg(&program).arg("-o").arg(&executable);
+        command.env("FENNEC_HOME", &dir).env("FENNEC_LLVM_KEEP", "1").env("FENNEC_NO_CACHE", "1");
+        if audited {
+            command.env("FENNEC_AUDIT", "1");
+        } else {
+            command.env_remove("FENNEC_AUDIT");
+        }
+        let built = command.output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env_remove("FENNEC_AUDIT").output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "99
+",
+            "audited {audited}"
+        );
+        // The text of every function it built, kept under its home.
+        let mut with_a_drop = 0;
+        for work in std::fs::read_dir(dir.join("work"))?.flatten() {
+            for kept in std::fs::read_dir(work.path())?.flatten() {
+                if kept.path().extension().is_some_and(|ext| ext == "ll")
+                    && std::fs::read_to_string(kept.path())?.contains("@fen_drop_")
+                {
+                    with_a_drop += 1;
+                }
+            }
+        }
+        drops.push(with_a_drop);
+        std::fs::remove_dir_all(&dir)?;
+    }
+    let [plain, audited] = drops.as_slice() else { unreachable!("two builds") };
+    assert!(*plain > 0, "a plain build's enum should be native");
+    assert_eq!(*audited, 0, "an audited build kept a native drop");
+    Ok(())
+}
+
+const AUDIT_NO_NATIVE: &str = r"enum Plain:
+    End
+    Two(left: Plain, right: Plain, n: int)
+
+def chain(depth: int) -> Plain:
+    mut made = Plain.End
+    for at in range(depth):
+        made = .Two(left=made, right=.End, n=at)
+    return made
+
+def top(depth: int) -> int:
+    plain = chain(depth)
+    match plain:
+        case .Two(_, _, n):
+            return n
+        case _:
+            return 0
+
+def main(stdout: Stdout):
+    stdout.print(top(100))
+    return
+";
 
 /// Native blocks made in a launched task and in `parallel`'s workers are freed there: chains
 /// through the first field, a block holding the one below it twice, and one subtree under two

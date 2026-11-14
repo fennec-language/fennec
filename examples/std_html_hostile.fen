@@ -1,0 +1,155 @@
+# A value from outside, rendered into a page, can't change what the page does, in every place
+# `html.render` lets it go: escaped between tags and in a quoted attribute, held to `http`,
+# `https`, `mailto` or relative in a link, and refused where escaping isn't enough. The page is
+# read as a browser reads it, so the two never disagree on where a value landed: an SVG
+# animation that sets a link at run time is a link, a `<script>` that a browser keeps going past
+# its `</script>` is still a script, and a comment ends where a browser ends it.
+from std import html
+from std.html import Html, HtmlError
+
+## The page made, or why it couldn't be.
+def made(run: () -> Html fails HtmlError) -> str:
+    page = run() except why:
+        return "refused: " + why.message()
+    return page.text()
+
+BAD = "javascript:alert(1)"
+SHOUTED = "\"><script>alert(1)</script>"
+ENTITY = "&#106;avascript:alert(1)"
+LISTED = "a;javascript:alert(1)"
+RED = "red"
+
+test "between tags and in a quoted attribute, a value stays text"():
+    assert (
+        made(() => html.render(t"<p>{SHOUTED}</p>")?)
+        == "<p>&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;</p>"
+    )
+    assert made(() => html.render(t"<p title='{SHOUTED}'>x</p>")?).startswith(
+        "<p title='&quot;&gt;&lt;script",
+    )
+    assert made(() => html.render(t"<p title=\"a&#39;{SHOUTED}\">x</p>")?).startswith(
+        "<p title=\"a&#39;&quot;",
+    )
+    # An entity in a value is written out, so a browser never decodes it into what it names.
+    assert (
+        made(() => html.render(t"<a href=\"{ENTITY}\">x</a>")?)
+        == ("<a href=\"&amp;#106;avascript:alert(1)\">x</a>")
+    )
+
+test "a link is http, https, mailto or relative, however its scheme is written"():
+    said = "refused: `{link}` can't go there: a link has to be `http`, `https`, `mailto` or relative"
+    for link in [
+        BAD,
+        "JAVASCRIPT:alert(1)",
+        " javascript:alert(1)",
+        "java\tscript:alert(1)",
+        "java\nscript:alert(1)",
+        "\x01javascript:alert(1)",
+        "data:text/html,<script>alert(1)</script>",
+        "vbscript:msgbox(1)",
+    ]:
+        assert made(() => html.render(t"<a href=\"{link}\">x</a>")?) == said
+    for link in [
+        "https://den.example/a?b=c",
+        "mailto:fox@den.example",
+        "/den",
+        "den#a",
+        "?q=1",
+        "//den.example/",
+    ]:
+        assert made(() => html.render(t"<a href=\"{link}\">x</a>")?).startswith("<a href=")
+    # Two values that make one scheme between them are one link.
+    first = "java"
+    rest = "script:alert(1)"
+    assert made(() => html.render(t"<a href=\"{first}{rest}\">x</a>")?).startswith("refused")
+
+test "an SVG animation that sets a link is held to what a link is"():
+    for page in [
+        made(() => html.render(t"<svg><a><set attributeName=\"href\" to=\"{BAD}\"/></a></svg>")?),
+        made(
+            () => html.render(
+                t"<svg><a><animate attributeName=\"href\" values=\"{BAD}\"/></a></svg>",
+            )?,
+        ),
+        made(
+            () => html.render(
+                t"<svg><a><animate attributeName=\"href\" from=\"{BAD}\"/></a></svg>",
+            )?,
+        ),
+        made(
+            () => html.render(
+                t"<svg><a><animate attributeName=\"href\" values=\"{LISTED}\"/></a></svg>",
+            )?,
+        ),
+    ]:
+        assert page.endswith("a link has to be `http`, `https`, `mailto` or relative")
+    assert (
+        made(() => html.render(t"<svg><set attributeName=\"fill\" to=\"{RED}\"/></svg>")?)
+        == ("<svg><set attributeName=\"fill\" to=\"red\"/></svg>")
+    )
+
+test "a script a browser keeps going past its </script> is still a script"():
+    # `<!--` then `<script` inside a script is its double-escaped state, which `</script>` only
+    # leaves, without ending the script: what follows is still code to the browser.
+    assert made(() => html.render(t"<script>/*<!--<script>*/</script><p>{BAD}</p>")?).startswith(
+        "refused: `{BAD}` can't go there: text inside a `<script>` or `<style>` is code",
+    )
+    # A `-->` leaves both states, and the script ends at its next `</script>`.
+    assert made(() => html.render(t"<script><!--<script>--></script><p>{BAD}</p>")?).endswith(
+        "<p>javascript:alert(1)</p>",
+    )
+    assert made(() => html.render(t"<script><!-- old --></script><p>{BAD}</p>")?).endswith(
+        "<p>javascript:alert(1)</p>",
+    )
+    assert made(() => html.render(t"<SCRIPT>x</SCRIPT ><p>{BAD}</p>")?).endswith(
+        "<p>javascript:alert(1)</p>",
+    )
+    assert made(() => html.render(t"<script>x</scripty><p>{BAD}</p>")?).startswith("refused")
+
+test "a comment ends where a browser ends it"():
+    for page in ["<!-->", "<!--->", "<!-- a -->", "<!-- a --!>"]:
+        assert made(() => html.render(t"{page}<p>{BAD}</p>")?).endswith(
+            "<p>javascript:alert(1)</p>",
+        )
+    assert made(() => html.render(t"<!-- {BAD} -->")?).startswith("refused")
+    assert made(() => html.render(t"<!-- -> {BAD}")?).startswith("refused")
+
+test "where escaping isn't enough, the value is refused, naming why"():
+    for page, why in [
+        (
+            made(() => html.render(t"<a onclick=\"{BAD}\">x</a>")?),
+            "an `on...` attribute runs its value as a script"
+        ),
+        (
+            made(() => html.render(t"<p style=\"{BAD}\">x</p>")?),
+            "a `style` attribute reads its value as CSS"
+        ),
+        (
+            made(() => html.render(t"<iframe srcdoc=\"{BAD}\"></iframe>")?),
+            "a `srcdoc` attribute reads its value as a page"
+        ),
+        (
+            made(() => html.render(t"<p title={BAD}>x</p>")?),
+            "an attribute's value without quotes ends at a space"
+        ),
+        (
+            made(() => html.render(t"<p {BAD}>x</p>")?),
+            "it would be part of a tag's or an attribute's name"
+        ),
+        (
+            made(() => html.render(t"<{BAD}>")?),
+            "it would be part of a tag's or an attribute's name"
+        ),
+        (
+            made(() => html.render(t"<style>{BAD}</style>")?),
+            "text inside a `<script>` or `<style>` is code"
+        ),
+    ]:
+        assert page.find(why) is not None
+    assert (
+        made(() => html.render(t"<p title=\"{BAD}")?)
+        == "refused: the template ends inside an attribute"
+    )
+
+def main(stdout: Stdout):
+    stdout.print(made(() => html.render(t"<p>{SHOUTED}</p>")?))

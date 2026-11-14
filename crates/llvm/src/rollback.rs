@@ -860,12 +860,25 @@ impl Emit<'_, '_, '_> {
             .map(|(number, label)| format!("i64 {number}, label %{label}"))
             .collect();
         self.line(&format!("switch i64 {tag}, label %{done} [ {} ]", arms.join(" ")));
+        let size = Kind::Enum(id).size(self.module.layouts);
         for (fields, label) in cases.iter().zip(&labels) {
             self.start_block(label);
+            // The words this case's fields take, each saved as its field is held.
+            let mut taken = Vec::new();
             for (offset, field) in fields {
                 let field = field.clone().ok_or("a field this backend doesn't take yet")?;
                 let at = self.offset(place, *offset);
                 self.save_words(block, &at, &field)?;
+                taken.push((*offset, *offset + field.size(self.module.layouts)));
+            }
+            // The rest of the enum's words, which this case doesn't use, are saved too. What's
+            // written over it may be a wider case, with a block in one of them: only a saved word
+            // is put back, and only there is what a crash or a failure finds let go of.
+            for word in (8..size).step_by(8) {
+                if !taken.iter().any(|(from, to)| (*from..*to).contains(&word)) {
+                    let at = self.offset(place, word);
+                    self.save_word(block, &at, Word::Plain);
+                }
             }
             self.line(&format!("br label %{done}"));
         }

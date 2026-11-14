@@ -114,7 +114,10 @@ fn bad_patterns_say_what_is_wrong() {
     assert_eq!(error("a{3,2}"), "in `{m,n}`, m can't be bigger than n");
     assert_eq!(error("a{1001}"), "repeats are limited to 1000");
     assert_eq!(error("(?=a)"), "the only group extension so far is `(?:...)`");
-    assert_eq!(error("(a{1000}){1000}"), "this pattern is too big");
+    assert_eq!(
+        error("(a{1000}){1000}"),
+        "it compiles to 1,002,003 steps, and the most a pattern may is 10,000, since each character of a text costs that many"
+    );
     assert_eq!(Regex::new("ab(c").unwrap_err().at, 2);
 }
 
@@ -142,4 +145,71 @@ fn a_pattern_nested_ten_thousand_deep_fails_as_too_deep() {
     assert_eq!(error(&deep("(", 251)), "groups nest more than 250 deep");
     assert_eq!(error(&deep("(", 250)), "<valid>");
     assert_eq!(search(&deep("(", 250), "xay"), Some("a".to_owned()));
+}
+
+/// What a pattern counts as its size is what it compiles to, so the limit refuses exactly the
+/// patterns it should, and says how big each is.
+#[test]
+fn a_patterns_size_is_counted_before_it_compiles() {
+    let commas = |n: usize| {
+        let digits = n.to_string();
+        let mut out = String::new();
+        for (at, digit) in digits.chars().enumerate() {
+            if at > 0 && (digits.len() - at).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(digit);
+        }
+        out
+    };
+    for pattern in
+        ["a", "abc", "a|b|c", "(a)", "(?:a)", "a*", "a+?", "a{3}", "a{2,5}", "(a|bc){0,4}d", "\\bx\\b", ""]
+    {
+        let size = Regex::new(pattern).unwrap().size();
+        // Twenty of it, or a thousand, and the three instructions every program has.
+        for times in [20, 1000] {
+            let wanted = (size - 3) * times + 3;
+            match Regex::new(&format!("(?:{pattern}){{{times}}}")) {
+                Ok(regex) => assert_eq!(regex.size(), wanted, "{pattern} {times} times"),
+                Err(error) => {
+                    assert!(wanted > fennec_re::MAX_SIZE, "{pattern} {times} times: {}", error.message);
+                    assert!(
+                        error.message.starts_with(&format!("it compiles to {} steps", commas(wanted))),
+                        "{}",
+                        error.message
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The most a pattern may compile to is pinned, so a later change can't quietly let a pattern
+/// from outside cost more per character: just under it builds, and just over it says both sizes.
+#[test]
+fn the_most_a_pattern_may_cost_is_pinned() {
+    assert_eq!(fennec_re::MAX_SIZE, 10_000);
+    // `a?` is 2 steps: 4,998 of them and the 3 every program has make 9,999.
+    let under = Regex::new("(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){3}").unwrap();
+    assert_eq!(under.size(), 9_999);
+    let over = Regex::new("(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){4}b").unwrap_err();
+    assert_eq!(
+        over.message,
+        "it compiles to 10,002 steps, and the most a pattern may is 10,000, since each character of a text costs that many"
+    );
+    // Too big to build at all is counted without building it.
+    let huge = Regex::new("(?:(?:(?:a?){1000}){1000}){1000}").unwrap_err();
+    assert!(huge.message.starts_with("it compiles to 2,000,000,003 steps"), "{}", huge.message);
+}
+
+/// The costliest pattern the limit lets through, with a live thread at nearly every one of its
+/// steps, runs through text in time that grows with the text, and finishes: 10 KB here, in a
+/// debug build; the docs give release times for a megabyte.
+#[test]
+fn the_costliest_pattern_allowed_runs_through_text() {
+    let worst = Regex::new("(?:(?:a?){1000}){4}b").unwrap();
+    assert!(worst.size() > 8_000 && worst.size() <= fennec_re::MAX_SIZE, "{}", worst.size());
+    let text = "a".repeat(10_000);
+    assert_eq!(worst.find_at(&text, 0, Anchor::Search), None);
+    assert!(worst.find_at(&format!("{text}b"), 0, Anchor::Search).is_some());
 }

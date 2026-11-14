@@ -193,6 +193,14 @@ fn run(launched: &Launched, body: TaskBody, copy: Option<(u64, Box<crate::embed:
             Ok(())
         });
     }
+    // Native code that left by a failure, as a task stopped while it waited does, leaves the
+    // temporaries of the call it was in, and one may hold an owner of a block this task made.
+    // They're dropped and those owners let go of here, while the block is still this thread's to
+    // count: once it's handed over it's another's, and letting go of it would reach nothing.
+    with(|state| {
+        state.temps.clear();
+        state.let_go();
+    });
     let blocks = with(|state| state.heap.hand_over(0));
     let (lent_owners, printed) = threads::range_ends();
     let outcome = Outcome { how, failure, blocks, lent_owners, printed };

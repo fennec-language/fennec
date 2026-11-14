@@ -1588,9 +1588,27 @@ struct JsonReader:
             column=0,
         )
 
+    ## The `}` after an enum's case and its data: the case is the object's only key.
     def end_case(ref self) fails ParseError:
-        if self._space() != 125: fail no_reason()
+        if self._space() != 125: fail self._after_case()
         self._at += 1
+
+    ## The error for an enum's object with more after its case, naming the key that follows.
+    def _after_case(ref self) -> ParseError:
+        if not self._explain: return no_reason()
+        if self._space() == 44:
+            self._at += 1
+            key = self.text() except ParseError(): return no_reason()
+            return ParseError(
+                message=f"{self._where()} has \"{cut_input(key)}\" after its case, but an enum is written as an object with its case as the only key",
+                line=0,
+                column=0,
+            )
+        return ParseError(
+            message=f"{self._where()} should end after its case, but it goes on with {self._found()}",
+            line=0,
+            column=0,
+        )
 
     def member(ref self, names: list[str]) -> int fails ParseError:
         union = " | ".join(names)

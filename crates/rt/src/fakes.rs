@@ -443,6 +443,7 @@ impl TestWorld {
     /// The fake `Env`, holding only what the test set.
     pub(crate) fn env(&mut self, method: &str, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
         match (method, args) {
+            ("get", [Value::Str(name)]) if !crate::env::is_a_name(name) => Ok(Value::None),
             ("get", [Value::Str(name)]) => {
                 Ok(self.variables.get(name.as_ref()).map_or(Value::None, |value| Value::str(value)))
             }
@@ -450,6 +451,14 @@ impl TestWorld {
                 self.variables.iter().map(|(name, value)| (name.as_str(), value.as_str())),
             )),
             ("set", [Value::Str(name), Value::Str(value)]) => {
+                // What no real environment can hold, a test's can't either, so a test never
+                // passes on a variable a run could never have.
+                if !crate::env::is_a_name(name) || value.contains('\0') {
+                    return Err(Diagnostic::new(
+                        "a variable's name can't be empty or hold `=` or a NUL, and its value can't hold a NUL",
+                        span,
+                    ));
+                }
                 self.variables.insert(name.to_string(), value.to_string());
                 Ok(Value::Unit)
             }

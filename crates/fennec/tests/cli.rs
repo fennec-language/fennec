@@ -1529,6 +1529,53 @@ fn a_single_files_kept_image_is_passed_over_when_any_file_it_read_changes() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The same program in two folders is two programs to the store: each run's failure names its own
+/// folder, and quotes its own text, as a comment changed to one just as long, which leaves the
+/// program the same, shows.
+#[test]
+fn a_failure_names_the_folder_and_quotes_the_text_its_run_was_given() {
+    let dir = scratch("kept_by_path").unwrap();
+    let source = "def main(stdout: Stdout):\n    zero = len(\"\")\n    stdout.print(1 // zero)  # first\n";
+    for folder in ["one", "two"] {
+        std::fs::create_dir_all(dir.join(folder)).unwrap();
+        std::fs::write(dir.join(folder).join("main.fen"), source).unwrap();
+    }
+    let run = |folder: &str| {
+        let output = crate::executables::fennec_command()
+            .args(["run", "--no-test", "main.fen"])
+            .current_dir(dir.join(folder))
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{}", text(&output.stdout));
+        text(&output.stderr)
+    };
+    // Each twice, so the second run of each is the one the store has.
+    for folder in ["one", "two", "one", "two"] {
+        let said = run(folder);
+        assert!(said.contains("division by zero") && said.contains("# first"), "{said}");
+    }
+    std::fs::write(dir.join("one/main.fen"), source.replace("# first", "# other")).unwrap();
+    for _ in 0..2 {
+        let said = run("one");
+        assert!(said.contains("# other") && !said.contains("# first"), "{said}");
+    }
+    // Run from outside the folder, so the path it's given names it.
+    for folder in ["one", "two", "one", "two"] {
+        let output = crate::executables::fennec_command()
+            .args(["run", "--no-test", &format!("{folder}/main.fen")])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap();
+        let said = text(&output.stderr);
+        assert!(said.contains(&format!("{folder}/main.fen")), "{folder}: {said}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A kit's kept image holds its manifest and the files of what it depends on by path: a manifest
 /// that names another dependency, or an edit to a dependency's file, runs the new program.
 #[test]

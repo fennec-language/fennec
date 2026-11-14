@@ -15,6 +15,13 @@ struct Box:
     pair: (int, str)
     tags: list[str]
 
+enum Shape:
+    Dot
+    Box(width: int, height: int)
+
+struct Drawing:
+    shape: Shape
+
 def failure[T](run: () -> T fails ParseError) -> str:
     _ = run() except why:
         return why.message
@@ -74,6 +81,23 @@ test "text cut short anywhere fails, and the next read starts fresh"():
     for end in range(len(whole)):
         assert failure(() => json.loads[Box](whole[0:end])?) != "loaded"
         assert json.loads[Box](whole)? == box()
+
+test "an enum's object holds its case and nothing after, saying what follows"():
+    said = "after its case, but an enum is written as an object with its case as the only key"
+    assert (
+        failure(() => json.loads[Shape]("{\"Box\": {\"width\": 1, \"height\": 2}, \"extra\": 1}")?)
+        == f"the text has \"extra\" {said}"
+    )
+    assert (
+        failure(() => json.loads[Shape]("{\"Dot\": {}, \"extra\": 1}")?)
+        == f"the text has \"extra\" {said}"
+    )
+    inside = "{\"shape\": {\"Box\": {\"width\": 1, \"height\": 2}, \"x\": 2}}"
+    assert failure(() => json.loads[Drawing](inside)?) == f"`shape` has \"x\" {said}"
+    assert (
+        json.loads[Shape]("{\"Box\": {\"width\": 1, \"height\": 2}}")? == .Box(width=1, height=2)
+    )
+    assert json.loads[Box](json.dumps(box()))? == box()
 
 def main(stdout: Stdout):
     stdout.print(json.dumps(box()))

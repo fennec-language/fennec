@@ -630,8 +630,13 @@ impl Emit<'_, '_, '_> {
                 }
                 PlaceStep::Item(index_operand) => {
                     let list = match (taking, along.is_empty()) {
+                        // A list handed in to change may be one a lock's log marked.
+                        (true, true) if self.asks_the_log() && self.is_mut_param(root) => {
+                            let (index, _) = self.operand(index_operand)?;
+                            self.item_to_set(&at, &index)
+                        }
                         (true, true) => self.unshared(root),
-                        (true, false) if !self.saving.is_empty() => {
+                        (true, false) if self.asks_the_log() => {
                             let (index, _) = self.operand(index_operand)?;
                             self.item_to_set(&at, &index)
                         }
@@ -1775,7 +1780,7 @@ impl Emit<'_, '_, '_> {
     /// The list at `place`, ready for its item at `index` to be set, under a lock that saves what it
     /// changes. A list the lock's log marked stays where it is, the item noted for a crash to put
     /// back, so every set asks the runtime, and the list is never taken as alone after.
-    fn item_to_set(&mut self, place: &str, index: &str) -> String {
+    pub(crate) fn item_to_set(&mut self, place: &str, index: &str) -> String {
         self.declare("declare ptr @fennec_list_item_unshare(ptr, i64) nounwind");
         let list = self.temp();
         let (ok, shared) = (self.label("alone"), self.label("shared"));
@@ -1910,7 +1915,7 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{block} = load ptr, ptr {place}"));
             return block;
         }
-        if !self.saving.is_empty() {
+        if self.asks_the_log() {
             return self.changeable_along((root, path), place);
         }
         self.alone_along((root, path), place, "fennec_unshare")
@@ -1924,6 +1929,16 @@ impl Emit<'_, '_, '_> {
         if self.alone_fields.contains(&key) {
             return self.load_block(place);
         }
+        let resolved = self.to_change_at(place);
+        self.alone_fields.push(key);
+        resolved
+    }
+
+    /// The block at `place`, ready to change, in a function that asks a lock's log first. One with
+    /// another owner is asked for: the log gives back one it marked where it is, its fields saved
+    /// when it was marked, and a copy of any other. It may still have the mark, so nothing here
+    /// says it's alone.
+    pub(crate) fn to_change_at(&mut self, place: &str) -> String {
         self.declare("declare ptr @fennec_lock_to_change(ptr) nounwind");
         let block = self.temp();
         let (ok, shared) = (self.label("alone"), self.label("shared"));
@@ -1937,7 +1952,6 @@ impl Emit<'_, '_, '_> {
         ));
         self.start_block(&ok);
         self.line(&format!("{resolved} = phi ptr [ {block}, %{came_from} ], [ {copy}, %{shared} ]"));
-        self.alone_fields.push(key);
         resolved
     }
 
@@ -2161,10 +2175,11 @@ impl Emit<'_, '_, '_> {
         let at = if let Some(at) = from_here {
             at
         } else {
-            let list = if path.is_empty() {
+            let handed = path.is_empty() && self.asks_the_log() && self.is_mut_param(object);
+            let list = if path.is_empty() && !handed {
                 self.unshared(object)
-            } else if !self.saving.is_empty() {
-                // Under a lock that saves what it changes, a list its log marked is set in place.
+            } else if self.asks_the_log() {
+                // Where a change asks a lock's log first, a list the log marked is set in place.
                 let place = self.list_place(object, path)?;
                 self.item_to_set(&place, &index)
             } else {

@@ -305,7 +305,67 @@ fn locks_held(function: &Function, saving: &[usize]) -> Vec<Vec<usize>> {
     }
 }
 
+/// The functions that may be given, to change, part of what a `lock ... as ref` block holds: those
+/// called by name while such a lock is held with something handed to a `mut` parameter, and those
+/// they hand a `mut` parameter on to. What one of them changes may be in a block the lock's log
+/// marked, which stays where it is only if each change asks the log. So they make nothing alone for
+/// their callers to count on, and ask at each change (`Emit::asks_the_log`).
+pub(crate) fn changing_under_locks<'p>(
+    functions: &std::collections::HashMap<&'p str, &'p Function>,
+) -> std::collections::HashSet<&'p str> {
+    // What a call hands to a `mut` parameter of a function the program defines.
+    let handed = |inst: &'p InstKind| -> Option<&'p str> {
+        let InstKind::Call { function: callee, args, .. } = inst else { return None };
+        let (name, target) = functions.get_key_value(callee.as_str())?;
+        target
+            .mut_params
+            .iter()
+            .any(|param| matches!(args.get(*param), Some(Operand::Local(_))))
+            .then_some(*name)
+    };
+    let mut found = std::collections::HashSet::new();
+    let mut waiting: Vec<&'p str> = Vec::new();
+    #[expect(clippy::iter_over_hash_type, reason = "what's found goes into a set")]
+    for function in functions.values() {
+        let saving = saving_handles(function);
+        if saving.is_empty() {
+            continue;
+        }
+        let held = locks_held(function, &saving);
+        for (at, block) in function.blocks.iter().enumerate() {
+            let mut now = held.get(at).cloned().unwrap_or_default();
+            for inst in &block.insts {
+                if !now.is_empty()
+                    && let Some(callee) = handed(&inst.kind)
+                    && found.insert(callee)
+                {
+                    waiting.push(callee);
+                }
+                now = held_after(now, std::slice::from_ref(inst), &saving);
+            }
+        }
+    }
+    while let Some(name) = waiting.pop() {
+        let Some(function) = functions.get(name) else { continue };
+        for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+            if let Some(callee) = handed(&inst.kind)
+                && found.insert(callee)
+            {
+                waiting.push(callee);
+            }
+        }
+    }
+    found
+}
+
 impl Emit<'_, '_, '_> {
+    /// Whether this function's changes ask a lock's log before making a block alone: it holds a
+    /// lock that saves what it changes, or it may be handed part of what one holds. A block the log
+    /// marked then stays where it is, the change noted, where plain code would copy all of it.
+    pub(crate) fn asks_the_log(&self) -> bool {
+        !self.saving.is_empty() || self.module.whole.under_locks.contains(self.function.name.as_str())
+    }
+
     /// Whether a crash gives back `handle`'s lock with nothing to put back: it's a read lock.
     pub(crate) fn read_lock_given_back(&self, handle: &Operand) -> bool {
         !self.saves_changes(handle)

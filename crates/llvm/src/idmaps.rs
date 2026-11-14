@@ -123,6 +123,26 @@ impl Emit<'_, '_, '_> {
         (place, list)
     }
 
+    /// The `Table`'s block at `place`, for an item of it to be changed: its own if nothing else has
+    /// it, or a copy. In a function that asks a lock's log first, one the log marked stays where it
+    /// is, its own fields saved when it was marked, where making it alone would copy it.
+    fn table_to_change(&mut self, place: &str) -> String {
+        if self.asks_the_log() { self.to_change_at(place) } else { self.alone_at(place, "fennec_unshare") }
+    }
+
+    /// The list at `offset` into a `Table`'s block, for its item at `slot` to be written: with no
+    /// other owner, or, in a function that asks a lock's log first, one the log marked where it
+    /// is, the item noted as it was for a crash or a failure to put back. Making a marked list
+    /// alone would copy every item of the `Table` for one write.
+    fn list_for_item(&mut self, block: &str, offset: u32, slot: &str) -> String {
+        if !self.asks_the_log() {
+            return self.part(block, offset, true).1;
+        }
+        let fields = self.offset(block, FIELDS_OFFSET);
+        let place = self.offset(&fields, offset);
+        self.item_to_set(&place, slot)
+    }
+
     /// Whether an `Id` still finds its item: from this `Table`, inside its slots, with the slot's
     /// generation.
     fn finds(&mut self, block: &str, parts: &Parts, id: &IdParts) -> String {
@@ -345,11 +365,15 @@ impl Emit<'_, '_, '_> {
                 let (block, alone) = match self.known.slot_home(dest).cloned() {
                     Some((root, path)) => {
                         let place = self.place_of(root, &path)?;
-                        (self.alone_at(&place, "fennec_unshare"), true)
+                        (self.table_to_change(&place), true)
                     }
                     None => (self.operand(&Operand::Local(*map))?.0, false),
                 };
-                let (_, items) = self.part(&block, parts.items, alone);
+                let items = if alone {
+                    self.list_for_item(&block, parts.items, &at)
+                } else {
+                    self.part(&block, parts.items, false).1
+                };
                 let place = self.item_address(&items, &memory, &at);
                 self.read_into(dest, &held, &place, ITEM_ACCESS)
             }
@@ -468,13 +492,18 @@ impl Emit<'_, '_, '_> {
             "Table.remove" => {
                 let id = self.id_parts(args.get(1).ok_or("no argument")?)?;
                 let place = self.slot(*map);
-                let block = self.alone_at(&place, "fennec_unshare");
-                let (_, generations) = self.part(&block, parts.generations, true);
+                let block = self.table_to_change(&place);
+                // Where a lock's log is asked, the slot's generation is asked for once it's found.
+                let early = (!self.asks_the_log()).then(|| self.part(&block, parts.generations, true).1);
                 let found = self.finds(&block, &parts, &id);
                 let (yes, no, done) = (self.label("take"), self.label("none"), self.label("removed"));
                 self.line(&format!("br i1 {found}, label %{yes}, label %{no}"));
                 self.start_block(&yes);
-                let (_, items) = self.part(&block, parts.items, true);
+                let generations = match early {
+                    Some(generations) => generations,
+                    None => self.list_for_item(&block, parts.generations, &id.0),
+                };
+                let items = self.list_for_item(&block, parts.items, &id.0);
                 let at = self.item_address(&items, &memory, &id.0);
                 if let Some(dest) = dest {
                     self.some_from(dest, &held, &at, true)?;
@@ -527,12 +556,12 @@ impl Emit<'_, '_, '_> {
                     );
                 }
                 let place = self.slot(*map);
-                let block = self.alone_at(&place, "fennec_unshare");
+                let block = self.table_to_change(&place);
                 let found = self.finds(&block, &parts, &id);
                 let (yes, done) = (self.label("change"), self.label("changed"));
                 self.line(&format!("br i1 {found}, label %{yes}, label %{done}"));
                 self.start_block(&yes);
-                let (_, items) = self.part(&block, parts.items, true);
+                let items = self.list_for_item(&block, parts.items, &id.0);
                 let at = self.item_address(&items, &memory, &id.0);
                 let given = self.call_closure_with(&closure, &returns, &[format!("ptr {at}")], span);
                 if returns.in_memory() {
@@ -963,7 +992,7 @@ impl Emit<'_, '_, '_> {
         let (block, alone) = match taken {
             Some((root, path)) => {
                 let place = self.place_of(root, &path)?;
-                (self.alone_at(&place, "fennec_unshare"), true)
+                (self.table_to_change(&place), true)
             }
             None => (block, false),
         };
@@ -974,7 +1003,11 @@ impl Emit<'_, '_, '_> {
         self.start_block(&no);
         self.stop_missing(&block, &parts, &id, span);
         self.start_block(&yes);
-        let (_, items) = self.part(&block, parts.items, alone);
+        let items = if alone {
+            self.list_for_item(&block, parts.items, &id.0)
+        } else {
+            self.part(&block, parts.items, false).1
+        };
         let at = self.item_address(&items, &memory, &id.0);
         self.read_into(dest, &held, &at, ITEM_ACCESS)
     }
@@ -997,7 +1030,7 @@ impl Emit<'_, '_, '_> {
         if !matches!(held, Kind::Boxed(_) | Kind::Struct(_)) {
             return Err(format!("it takes a field of a {held:?} item, which this backend doesn't take yet"));
         }
-        let block = self.alone_at(&place, "fennec_unshare");
+        let block = self.table_to_change(&place);
         let id = self.id_parts(id)?;
         let found = self.finds(&block, &parts, &id);
         let (yes, no) = (self.label("taken"), self.label("stale"));
@@ -1005,7 +1038,7 @@ impl Emit<'_, '_, '_> {
         self.start_block(&no);
         self.stop_missing(&block, &parts, &id, span);
         self.start_block(&yes);
-        let (_, items) = self.part(&block, parts.items, true);
+        let items = self.list_for_item(&block, parts.items, &id.0);
         let memory = held.memory(self.module.layouts);
         let at = self.item_address(&items, &memory, &id.0);
         let (offset, inner) = self.field(&held, field)?;
@@ -1040,14 +1073,14 @@ impl Emit<'_, '_, '_> {
         let value_operand = value;
         let (value, fresh) = self.value_for(value, &held)?;
         let id = self.id_parts(id)?;
-        let block = self.alone_at(place, "fennec_unshare");
+        let block = self.table_to_change(place);
         let found = self.finds(&block, &parts, &id);
         let (yes, no) = (self.label("store"), self.label("stale"));
         self.line(&format!("br i1 {found}, label %{yes}, label %{no}, !prof !8"));
         self.start_block(&no);
         self.stop_missing(&block, &parts, &id, span);
         self.start_block(&yes);
-        let (_, items) = self.part(&block, parts.items, true);
+        let items = self.list_for_item(&block, parts.items, &id.0);
         let at = self.item_address(&items, &memory, &id.0);
         if put_back && held.counted() {
             self.proof_goes_back(value_operand, &at);

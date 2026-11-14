@@ -14569,6 +14569,55 @@ fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
     )
 }
 
+/// Every kind of field a `shared` struct holds is put back when a `lock ... as ref` block that
+/// wrote it fails, whichever of two values it held and was given: numbers, a string, an optional
+/// string, lists, dicts, a set, bytes, a tuple, enums with and without blocks, a struct, and an
+/// optional of each. An optional string was saved as one word of its three-word header, so the
+/// other two stayed as the failed write left them: what came back was a mix of the two, text cut
+/// short or a block's address read as text, and the old block was never let go of.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_every_kind_of_field() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_failure_every_kind",
+        include_str!("fixtures/lock_failure_every_kind.fen"),
+        "kept a change: 0\n",
+    )
+}
+
+/// An optional string is kept, copied and compared as itself every other way one goes: a
+/// generator's slot and its items, a closure's capture, a task's capture, a list's item alone and
+/// in a tuple, and `==` against `None` and against strings, for `None`, the empty string, a short
+/// one and one in a block. Written under a lock that fails, as a list's item, appended, in a
+/// tuple and as a field, each goes back. Only the field came back wrong before, and the rest are
+/// pinned here so none is taken for one word again.
+#[test]
+fn an_optional_string_is_itself_every_way_its_kept_copied_and_compared() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "optional_string_every_way",
+        include_str!("fixtures/optional_string_every_way.fen"),
+        OPTIONAL_STRING_EVERY_WAY,
+    )
+}
+
+const OPTIONAL_STRING_EVERY_WAY: &str = r#"[None, None, None, None] True True True
+["", "", "", ""] True True False
+["short", "short", "short", "short"] True True False
+["a text long enough for a block of its own", "a text long enough for a block of its own", "a text long enough for a block of its own", "a text long enough for a block of its own"] True True False
+<(none)> True False
+<> False True
+<short> False False
+<a text long enough for a block of its own> False False
+["<(none)>", "<>", "<short>", "<a text long enough for a block of its own>"]
+[None, "", "short", "a text long enough for a block of its own"] [(0, None), (1, ""), (2, "short"), (3, "a text long enough for a block of its own")] True True True True
+kept a change: 0
+"#;
+
 /// A `str` parameter written under a lock counts as a string where it's kept, on a worker too.
 #[test]
 fn a_str_parameter_written_under_a_lock() -> std::io::Result<()> {

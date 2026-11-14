@@ -174,9 +174,11 @@ fn named_mentions(program: &Program, name: &str, target: &str, seen: &mut HashSe
 }
 
 /// What frees a native block back to where it came from, and what makes one: the system's own
-/// under the address sanitizer, as the runtime's are then, and mimalloc otherwise.
+/// under either sanitizer, as the runtime's are then, built with its `sanitize` feature, which
+/// leaves mimalloc out; and mimalloc otherwise. Under the thread sanitizer it once still asked for
+/// mimalloc, and a program with native blocks didn't link.
 fn allocator() -> (&'static str, &'static str) {
-    if std::env::var("FENNEC_SANITIZE").as_deref() == Ok("address") {
+    if crate::build::sanitizer().is_some() {
         ("declare noalias ptr @malloc(i64) nounwind", "declare void @free(ptr) nounwind")
     } else {
         ("declare noalias ptr @mi_malloc(i64) nounwind", "declare void @mi_free(ptr) nounwind")
@@ -234,6 +236,24 @@ impl crate::emit::Emit<'_, '_, '_> {
         self.line(&format!("br i1 {on}, label %{count}, label %{go}, !prof !0"));
         self.start_block(&count);
         self.line(&format!("call void @fennec_trace_allocated(i64 {bytes})"));
+        self.declare("declare void @fennec_native_live(i64) nounwind");
+        self.line("call void @fennec_native_live(i64 1)");
+        self.line(&format!("br label %{go}"));
+        self.start_block(&go);
+    }
+
+    /// Takes a native block just made back out of the count of those still held, in a run that
+    /// counts: the one block a case with no fields has is never freed, so it's never left over.
+    pub(crate) fn uncount_native(&mut self) {
+        self.declare("@fennec_counting_native = external dso_local global i64");
+        self.declare("declare void @fennec_native_live(i64) nounwind");
+        let (counting, on, count, go) =
+            (self.temp(), self.temp(), self.label("uncount_native"), self.label("uncounted_native"));
+        self.line(&format!("{counting} = load i64, ptr @fennec_counting_native"));
+        self.line(&format!("{on} = icmp ne i64 {counting}, 0"));
+        self.line(&format!("br i1 {on}, label %{count}, label %{go}, !prof !0"));
+        self.start_block(&count);
+        self.line("call void @fennec_native_live(i64 -1)");
         self.line(&format!("br label %{go}"));
         self.start_block(&go);
     }
@@ -284,6 +304,10 @@ impl crate::emit::Emit<'_, '_, '_> {
             self.declare("declare void @fennec_native_freed(ptr) nounwind");
         }
         let freed = if watched { "call void @fennec_native_freed(ptr %block)\n  " } else { "" };
+        // A run that counts what it allocates is told of each native block freed, as of each made,
+        // so a native block left held shows in `live` as the runtime's own would.
+        self.declare("@fennec_counting_native = external dso_local global i64");
+        self.declare("declare void @fennec_native_live(i64) nounwind");
         let layout = self.layout_of(id)?;
         let fields_at = u64::from(FIELDS.unsigned_abs());
         let mut cases = Vec::new();
@@ -343,26 +367,40 @@ impl crate::emit::Emit<'_, '_, '_> {
             //   type, holds its address. Those are the only places one can be. `qualifies` lets
             //   a native value meet nothing but making one, reading its case and fields, copying
             //   it and the program's own calls (`allowed`), so it's never in a list, a dict, a
-            //   closure, a generator, a constant, a channel or a task, and never handed to the
-            //   runtime, and the runtime never walks native blocks or reads their counts.
+            //   closure, a generator, a constant, a channel or a task's copy. The runtime never
+            //   walks native blocks or reads a word of one.
             // - Fennec has no weak references, so nothing holds an address without being one of
             //   its owners.
-            // - No other thread can reach it: a native value never leaves the thread that made
-            //   it, which is also why its counts are changed without atomics.
+            // - No other thread can reach it: a block made for a value never leaves the thread
+            //   that made it, which is also why its counts are changed without atomics. The one
+            //   exception can't wait here: a case with no fields is one block every thread
+            //   shares, made once, marked never freed and never counted by a thread with others
+            //   running (`lists::shared_case`); where no other thread runs, its count starts at
+            //   2^62 and no run takes it to 0.
             // - A build that watches native blocks only keeps their addresses in a set, and drops
             //   this one when it's freed (`fennec_native_freed`), never reading its words.
             // - This drop reads a waiting block's case and fields, from `FIELDS` on, and only
             //   word 0, its count, holds the link.
             for (at, offset) in held.iter().enumerate() {
                 let it = format!("{number}_{at}");
+                // With other threads running, the block every thread shares is nobody's to count.
+                let shared_case = if self.module.threads {
+                    format!(
+                        "  %shape_at{it} = getelementptr inbounds i8, ptr %child{it}, i64 8\n  %shape{it} = load i64, ptr %shape_at{it}\n  %owner{it} = lshr i64 %shape{it}, {}\n  %never{it} = icmp eq i64 %owner{it}, {}\n  br i1 %never{it}, label %kept{it}, label %counted{it}\ncounted{it}:\n",
+                        fennec_rt::embed::heap::OWNER_SHIFT,
+                        fennec_rt::embed::heap::NEVER_FREED_OWNER
+                    )
+                } else {
+                    String::new()
+                };
                 text.push_str(&format!(
-                    "  %at{it} = getelementptr inbounds i8, ptr %block, i64 {offset}\n  %child{it} = load ptr, ptr %at{it}\n  %count{it} = load i64, ptr %child{it}\n  %left{it} = sub i64 %count{it}, 1\n  store i64 %left{it}, ptr %child{it}\n  %gone{it} = icmp eq i64 %left{it}, 0\n  br i1 %gone{it}, label %wait{it}, label %kept{it}\nwait{it}:\n  %ahead{it} = load ptr, ptr %waiting\n  store ptr %ahead{it}, ptr %child{it}\n  store ptr %child{it}, ptr %waiting\n  br label %kept{it}\nkept{it}:\n"
+                    "  %at{it} = getelementptr inbounds i8, ptr %block, i64 {offset}\n  %child{it} = load ptr, ptr %at{it}\n{shared_case}  %count{it} = load i64, ptr %child{it}\n  %left{it} = sub i64 %count{it}, 1\n  store i64 %left{it}, ptr %child{it}\n  %gone{it} = icmp eq i64 %left{it}, 0\n  br i1 %gone{it}, label %wait{it}, label %kept{it}\nwait{it}:\n  %ahead{it} = load ptr, ptr %waiting\n  store ptr %ahead{it}, ptr %child{it}\n  store ptr %child{it}, ptr %waiting\n  br label %kept{it}\nkept{it}:\n"
                 ));
             }
             text.push_str("  br label %free\n");
         }
         text.push_str(&format!(
-            "free:\n  {freed}call void {free_call}(ptr %block)\n  %next = load ptr, ptr %waiting\n  %empty = icmp eq ptr %next, null\n  br i1 %empty, label %done, label %pop\npop:\n  %rest = load ptr, ptr %next\n  store ptr %rest, ptr %waiting\n  br label %top\ndone:\n  ret void\n}}\n\n"
+            "free:\n  {freed}call void {free_call}(ptr %block)\n  %counting = load i64, ptr @fennec_counting_native\n  %counts = icmp ne i64 %counting, 0\n  br i1 %counts, label %count_freed, label %freed, !prof !0\ncount_freed:\n  call void @fennec_native_live(i64 -1)\n  br label %freed\nfreed:\n  %next = load ptr, ptr %waiting\n  %empty = icmp eq ptr %next, null\n  br i1 %empty, label %done, label %pop\npop:\n  %rest = load ptr, ptr %next\n  store ptr %rest, ptr %waiting\n  br label %top\ndone:\n  ret void\n}}\n\n"
         ));
         self.module.add_helper(&format!("fen_drop_{id}"), text);
         Ok(())

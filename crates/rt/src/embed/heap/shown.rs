@@ -59,10 +59,22 @@ fn own_writer(name: &str) -> Option<WriteOwn> {
 /// Text being written. Native code writes a value whose type has its own text, which can't be
 /// done while the runtime's state is in use, so those are noted here, each with the text before
 /// it, and done by `finished`.
+///
+/// A block a value holds is noted the same way, with the text before it, and written after, from
+/// a list (see `whole`): so writing a value never calls itself for what the value holds, and one
+/// as deep as memory allows, like a chain of millions of structs, is written on any stack.
 #[derive(Default)]
 pub(in crate::embed) struct Written {
-    done: Vec<(String, WriteOwn, i64)>,
+    done: Vec<(String, Later)>,
     text: String,
+}
+
+/// What's written after the text before it.
+enum Later {
+    /// A value of a type with its own text, which native code writes, given where its fields are.
+    Own(WriteOwn, i64),
+    /// The value in the block at this address, as it shows inside a collection.
+    Block(u64),
 }
 
 impl Written {
@@ -89,18 +101,56 @@ pub(in crate::embed) fn shown(address: u64) -> String {
         let mut out = Written::default();
         match state.heap.block(address) {
             Some(block) if is_text(state, block) => out.push_str(&block_text(block)),
-            _ => quoted(state, address, &mut out),
+            _ => whole(state, address, &mut out),
         }
         out
     });
     let mut text = String::new();
-    for (before, write, at) in out.done.drain(..) {
+    for (before, later) in out.done.drain(..) {
         text.push_str(&before);
-        write(at);
-        text.push_str(&HANDED_OVER.take());
+        if let Later::Own(write, at) = later {
+            write(at);
+            text.push_str(&HANDED_OVER.take());
+        }
     }
     text.push_str(&out.text);
     text
+}
+
+/// What's left to write of a value, in order from the last: text, or what comes after some.
+enum Left {
+    Text(String),
+    Value(Later),
+}
+
+/// Writes the value in the block at `address`, and every block it holds, onto `out`, leaving only
+/// what native code has to write noted there. Each block is written by itself, with the blocks it
+/// holds noted, and those are then written in their places from a list of what's left.
+fn whole(state: &State, address: u64, out: &mut Written) {
+    let mut left = vec![Left::Value(Later::Block(address))];
+    while let Some(next) = left.pop() {
+        match next {
+            Left::Text(text) => out.push_str(&text),
+            Left::Value(Later::Own(write, at)) => {
+                out.done.push((std::mem::take(&mut out.text), Later::Own(write, at)));
+            }
+            Left::Value(Later::Block(address)) => {
+                let mut one = Written::default();
+                quoted(state, address, &mut one);
+                // Last first, so what's first is taken next: the text after everything it noted,
+                // then each thing noted, under the text before it.
+                if !one.text.is_empty() {
+                    left.push(Left::Text(one.text));
+                }
+                for (before, later) in one.done.into_iter().rev() {
+                    left.push(Left::Value(later));
+                    if !before.is_empty() {
+                        left.push(Left::Text(before));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Notes a value of a type that writes its own text, if this is one, with the words it takes
@@ -110,12 +160,18 @@ fn own_value((name, size): (&str, usize), words: &mut dyn Iterator<Item = &u64>,
     let mut mine = words.take(size);
     let at = mine.next().map_or(0, |first| std::ptr::from_ref(first).addr());
     mine.for_each(drop);
-    out.done.push((std::mem::take(&mut out.text), write, i64::try_from(at).unwrap_or(0)));
+    out.done.push((std::mem::take(&mut out.text), Later::Own(write, i64::try_from(at).unwrap_or(0))));
     true
 }
 
+/// Notes the value in the block at `address`, to be written here once what holds it is.
+fn held(address: u64, out: &mut Written) {
+    out.done.push((std::mem::take(&mut out.text), Later::Block(address)));
+}
+
 /// Writes the value at a block's address as it shows inside a collection: strings are quoted.
-pub(in crate::embed) fn quoted(state: &State, address: u64, out: &mut Written) {
+/// The blocks it holds are noted on `out`, not written (see `whole`).
+fn quoted(state: &State, address: u64, out: &mut Written) {
     let Some(block) = state.heap.block(address) else {
         super::not_native(address, "print");
         out.push_str("None");
@@ -180,7 +236,7 @@ pub(in crate::embed) fn item(
         Element::F32 => out.push_str(&crate::format::float32(f64::from_bits(word(words)))),
         Element::Bool => out.push_str(if word(words) == 0 { "False" } else { "True" }),
         Element::Boxed(_) | Element::Str | Element::Object | Element::List(_) | Element::ListOf(_) => {
-            quoted(state, word(words), out);
+            held(word(words), out);
         }
         Element::Text => header(state, [word(words), word(words), word(words)], out),
         element if element.is_optional_text() => match [word(words), word(words), word(words)] {

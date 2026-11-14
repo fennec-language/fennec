@@ -4237,6 +4237,46 @@ fn a_u64_to_a_power() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A struct held in place compares, orders as a tuple and crosses a lock whatever its fields hold, as
+/// it would boxed: here a `u64` and an `f32` beside a text, which `==` refused in place while the
+/// same struct boxed, with a `dict` beside them, compared fine. A `u64` orders unsigned.
+#[test]
+fn a_struct_in_place_compares_and_crosses_a_lock_whatever_its_fields_hold() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "in_place_any_field",
+        IN_PLACE_ANY_FIELD,
+        "True False True\nTrue False True\nPart(big=6, small=6.0, name=\"a name long enough for a block 6\") True 3\n",
+    )?;
+    assert!(counts_of("in_place_any_field_counts", IN_PLACE_ANY_FIELD)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const IN_PLACE_ANY_FIELD: &str = r#"struct Part:
+    big: u64
+    small: f32
+    name: str
+
+
+def make(n: int) -> Part:
+    return Part(big=u64(n), small=f32(n), name=f"a name long enough for a block {n}")
+
+def main(stdout: Stdout):
+    noise = [make(n + 100) for n in range(3)]
+    stdout.print(make(1) == make(1), make(1) == make(2), make(1) != make(2))
+    stdout.print((u64(1), "a") < (u64(2), "a"), (u64(2) * u64(1 << 62), "b") < (u64(1), "b"), (u64(3), "c") <= (u64(3), "c"))
+    shared store = [make(5)]
+    lock store as ref held:
+        held.append(make(6))
+    mut taken = make(0)
+    lock store as held:
+        taken = held[1]
+    stdout.print(taken, taken == make(6), len(noise))
+    return
+"#;
+
 /// `u64`s sort as unsigned numbers natively, those past `int`'s top after the rest: by themselves,
 /// in place, by a key, and as a tuple's first item. `f32`s sort as the floats they are, and both
 /// can be what a key gives.
@@ -12238,11 +12278,25 @@ fn with_peak_memory(executable: &Path, dir: &Path) -> std::io::Result<(Output, O
 /// What a command printed, given `args` and run with `dir` as its folder and its Fennec home,
 /// and the most memory it held, where `/usr/bin/time` can say.
 fn peak_memory_of(program: &Path, args: &[&str], dir: &Path) -> std::io::Result<(Output, Option<u64>)> {
+    peak_memory_with(program, args, &[], dir)
+}
+
+/// [`peak_memory_of`], with these set in the command's environment.
+fn peak_memory_with(
+    program: &Path,
+    args: &[&str],
+    set: &[(&str, &str)],
+    dir: &Path,
+) -> std::io::Result<(Output, Option<u64>)> {
     let time = Path::new("/usr/bin/time");
     let flag = if cfg!(target_os = "macos") { "-l" } else { "-v" };
     if cfg!(windows) || !time.exists() {
-        let ran =
-            Command::new(program).args(args).current_dir(dir).env("FENNEC_HOME", dir).output_within()?;
+        let ran = Command::new(program)
+            .args(args)
+            .current_dir(dir)
+            .env("FENNEC_HOME", dir)
+            .envs(set.iter().copied())
+            .output_within()?;
         return Ok((ran, None));
     }
     let ran = Command::new(time)
@@ -12251,6 +12305,7 @@ fn peak_memory_of(program: &Path, args: &[&str], dir: &Path) -> std::io::Result<
         .args(args)
         .current_dir(dir)
         .env("FENNEC_HOME", dir)
+        .envs(set.iter().copied())
         .output_within()?;
     let said = String::from_utf8_lossy(&ran.stderr);
     let peak = said.lines().find_map(|line| {
@@ -15285,6 +15340,62 @@ def main(stdout: Stdout):
 "#
         )?,
         "x\n{\"legs\": [[1, {\"name\": \"a\"}]], \"by_name\": {\"k\": [{\"name\": \"b\"}, [[2, {\"name\": \"c\"}]]]}}\nTrue\nTrue\nd 4\n"
+    );
+    Ok(())
+}
+
+/// The `serialize` and `deserialize` written for a program's types hold their names, types and
+/// fields themselves, never their text: fields named by keywords, in a struct and in an enum's
+/// case, a name given with `@serialize` that has quotes in it, a program's own `Delivery`, a
+/// union, and tuples inside dicts all save and load back, through JSON and `std.pack`. Read back
+/// as text, none of it built.
+#[test]
+fn saving_carries_any_name_type_and_field_through_unchanged() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "saving_any_name",
+            r#"from std import json, pack
+
+struct Circle:
+    radius: int
+
+struct Square:
+    side: int
+
+enum Move:
+    Stay
+    Step(if: int, for: str)
+
+# The library has a `Delivery` too: this one is the program's own.
+struct Delivery:
+    if: int
+    @serialize(name="the \"label\"")
+    label: str
+    sizes: dict[str, list[(int, str)]]
+    shape: Circle | Square
+    moves: list[Move]
+    for = "all"
+    note: str? = None
+
+def main(stdout: Stdout):
+    delivery = Delivery(if=3, label="box", sizes={"a": [(1, "one")]}, shape=Square(side=2), moves=[Move.Stay, Move.Step(if=1, for="x")])
+    text = json.dumps(delivery)
+    stdout.print(text)
+    back = json.loads[Delivery](text) except ParseError(): return
+    stdout.print(back == delivery, back.if, back.for, back.label, back.sizes["a"][0][1])
+    packed = pack.loads[Delivery](pack.dumps(delivery)) except ParseError(): return
+    stdout.print(packed == delivery)
+    _ = json.loads[Delivery]("{\"if\": 1}") except why:
+        stdout.print(why)
+        return
+"#
+        )?,
+        "{\"if\": 3, \"the \\\"label\\\"\": \"box\", \"sizes\": {\"a\": [[1, \"one\"]]}, \"shape\": {\"Square\": {\"side\": 2}}, \
+         \"moves\": [\"Stay\", {\"Step\": {\"if\": 1, \"for\": \"x\"}}], \"for\": \"all\", \"note\": null}\n\
+         True 3 all box one\nTrue\nParseError(message=\"`the \\\"label\\\"` is missing\", line=0, column=0)\n"
     );
     Ok(())
 }
@@ -21547,7 +21658,8 @@ fn fennec_literal(text: &str) -> String {
 }
 
 /// `split` gives what Rust's `str::split` and `split_whitespace` give, on rows chosen for where it
-/// could go wrong: empty parts, separators at both ends, separators of two and three bytes, parts
+/// could go wrong: empty parts, separators at both ends, separators of one to nine bytes, ones
+/// that overlap themselves, ones that end at, start at and lie across a word of the text, parts
 /// of exactly 23 bytes, which are held inline, and of 24, which take a block, of ASCII and of
 /// two-byte characters, and whitespace of ASCII and beyond it. The texts and separators come out
 /// of lists, so each split is the runtime's. Every list and part is freed after, with no block
@@ -21579,6 +21691,22 @@ fn a_split_gives_what_rust_gives_at_every_edge() -> std::io::Result<()> {
         ("ab".to_owned(), "abc"),
         ("a\tb\nc".to_owned(), "\n"),
         ("x,y,z,w,v,u,t,s,r,q,p,o,n,m,l,k".to_owned(), ","),
+        // Separators of two to eight bytes are found a word at a time, and of nine as a `str`.
+        ("GET /a HTTP/1.1\r\nHost: fox\r\nAccept: */*\r\n\r\nbody".to_owned(), "\r\n"),
+        ("\r\n\r\n".to_owned(), "\r\n"),
+        ("aaa".to_owned(), "aa"),
+        ("aaaa".to_owned(), "aa"),
+        ("abababab".to_owned(), "abab"),
+        // A separator ending at, starting at and lying across the end of the text's first word.
+        ("123456--rest".to_owned(), "--"),
+        ("12345678--rest".to_owned(), "--"),
+        ("1234567--rest".to_owned(), "--"),
+        ("one12345678two12345678three".to_owned(), "12345678"),
+        ("one123456789two123456789three".to_owned(), "123456789"),
+        ("one1234567".to_owned(), "12345678"),
+        (format!("{a23}::{b24}::{e23}::{e24}::"), "::"),
+        (format!("{e24}→é{a23}→é"), "→é"),
+        ("a\r\nb\rc\nd\r".to_owned(), "\r\n"),
     ];
     let spaced: Vec<String> = vec![
         "  a\tb\nc  ".to_owned(),
@@ -21621,6 +21749,145 @@ def main(stdout: Stdout):
     }
     let dir = folder("split_edges")?;
     let program = dir.join("split_edges.fen");
+    std::fs::write(&program, &source)?;
+    prints_with_nothing_left(&dir, &program, &expected, &["1"])
+}
+
+/// A value a million and three million deep, a chain of structs each in the last one's field, is
+/// compared, written as text and copied for a task, on the main thread and in a launched task,
+/// with every block freed after. The runtime compared and wrote a value by calling itself for
+/// each block it held, so `==` at three million deep and `str` at one million ended the program
+/// with a signal and no message, and in a task, on its smaller stack, far sooner. Fable's review of
+/// the drop worklist found both.
+#[test]
+fn a_value_millions_deep_is_compared_written_and_sent() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("deep_values")?;
+    let program = dir.join("deep_values.fen");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deep_values.fen"), &program)?;
+    let wanted = "1000000 True False 20888916 True True 1000000\n\
+                  in a task: True False 20888916 True True\n\
+                  3000000 True False 64888916 True True 3000000\n\
+                  in a task: True False 64888916 True True\n";
+    prints_with_nothing_left(&dir, &program, wanted, &["4"])
+}
+
+/// A dict's key that holds blocks is hashed by what it holds, which the runtime reads into a tree
+/// with a call for each level. Twenty thousand levels are hashed, on the main thread and in a
+/// task. A million stop the program with exit code 1, saying the value is nested too deep, where
+/// they ended it with a signal and no message.
+#[test]
+fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let fixture =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deep_key.fen"))?;
+    let dir = folder("deep_key")?;
+    for (depth, in_task) in [("20_000", false), ("20_000", true), ("1_000_000", false), ("1_000_000", true)] {
+        let source = fixture
+            .replace("DEPTH = 20_000", &format!("DEPTH = {depth}"))
+            .replace("IN_TASK = False", if in_task { "IN_TASK = True" } else { "IN_TASK = False" });
+        let (program, executable) = (dir.join("deep_key.fen"), dir.join("deep_key"));
+        std::fs::write(&program, source)?;
+        let built = fennec(
+            &["build", "--release", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
+            &dir,
+        )?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        let case = format!("{depth} deep, in a task: {in_task}");
+        if depth == "20_000" {
+            assert!(ran.status.success(), "{case}: {said}");
+            assert_eq!(printed, "7\n", "{case}");
+        } else {
+            assert_eq!(ran.status.code(), Some(1), "{case}: {said}");
+            assert_eq!(printed, "", "{case}");
+            assert!(
+                said.starts_with("error: a value is nested too deep to be a dict's key or a set's item"),
+                "{case}: {said}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// `removesuffix` and `removeprefix` give what Rust's `strip_suffix` and `strip_prefix` do, or the
+/// text as it is: with an empty text or affix, an affix as long as the text or longer, one found
+/// only elsewhere, one twice over, characters of two and three bytes, and results either side of
+/// what a header holds, from texts of 23 to 27 bytes. Each result is compared with the same text
+/// made another way, is a dict's key found by it, and says its length in characters. The texts
+/// come out of lists, so each is cut where it runs, and no block is left after.
+#[test]
+fn an_affix_removed_gives_what_rust_gives_at_every_edge() -> std::io::Result<()> {
+    use std::fmt::Write as _;
+    if !ready() {
+        return Ok(());
+    }
+    let (a23, e12) = ("a".repeat(23), "é".repeat(12));
+    let rows: Vec<(String, &str)> = vec![
+        (String::new(), ""),
+        (String::new(), "ms"),
+        ("ms".to_owned(), ""),
+        ("ms".to_owned(), "ms"),
+        ("s".to_owned(), "ms"),
+        ("42ms".to_owned(), "ms"),
+        ("42msms".to_owned(), "ms"),
+        ("ms42".to_owned(), "ms"),
+        ("café".to_owned(), "é"),
+        ("caf".to_owned(), "é"),
+        ("日本語".to_owned(), "本語"),
+        ("日本語".to_owned(), "日本"),
+        (format!("{a23}ms"), "ms"),
+        (format!("{a23}bms"), "ms"),
+        (format!("{a23}bbms"), "bms"),
+        (format!("{e12}é"), "é"),
+        (format!("ms{a23}b"), "ms"),
+    ];
+    let texts: Vec<String> = rows.iter().map(|(text, _)| fennec_literal(text)).collect();
+    let affixes: Vec<String> = rows.iter().map(|(_, affix)| fennec_literal(affix)).collect();
+    let source = format!(
+        r#"def main(stdout: Stdout):
+    texts = [{}]
+    affixes = [{}]
+    mut seen = dict[str, int]()
+    for at in range(len(texts)):
+        without_suffix = texts[at].removesuffix(affixes[at])
+        without_prefix = texts[at].removeprefix(affixes[at])
+        seen[without_suffix] = at
+        stdout.print(f"{{len(without_suffix)}}:{{without_suffix}}|{{len(without_prefix)}}:{{without_prefix}}")
+    for text in [{}]:
+        stdout.print(seen.get(text) else -1)
+    return
+"#,
+        texts.join(", "),
+        affixes.join(", "),
+        rows.iter()
+            .map(|(text, affix)| fennec_literal(text.strip_suffix(affix).unwrap_or(text)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let mut expected = String::new();
+    let mut last = std::collections::HashMap::new();
+    for (at, (text, affix)) in rows.iter().enumerate() {
+        let (suffixless, prefixless) =
+            (text.strip_suffix(affix).unwrap_or(text), text.strip_prefix(affix).unwrap_or(text));
+        expected.push_str(&parts_shown([suffixless].into_iter()));
+        expected.push('|');
+        expected.push_str(&parts_shown([prefixless].into_iter()));
+        expected.push('\n');
+        last.insert(suffixless.to_owned(), at);
+    }
+    for (text, affix) in &rows {
+        let found = last.get(text.strip_suffix(affix).unwrap_or(text)).copied().unwrap_or(usize::MAX);
+        let _ = writeln!(expected, "{found}");
+    }
+    let dir = folder("affixes_removed")?;
+    let program = dir.join("affixes_removed.fen");
     std::fs::write(&program, &source)?;
     prints_with_nothing_left(&dir, &program, &expected, &["1"])
 }
@@ -22298,6 +22565,64 @@ fn native_blocks_are_counted() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Native blocks come from the allocator the runtime they're linked with uses: mimalloc in a plain
+/// build, and the system's under either sanitizer, whose runtime leaves mimalloc out. Under the
+/// thread sanitizer they once still asked for mimalloc, and such a program didn't link. A build's
+/// LLVM text is kept and read, so this holds wherever the sanitized link itself can't run.
+#[test]
+fn native_blocks_come_from_the_allocator_each_sanitizer_links() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("native_allocator")?;
+    let program = dir.join("tree.fen");
+    std::fs::write(
+        &program,
+        format!("{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n"),
+    )?;
+    for (sanitize, wanted, not) in [
+        (None, "@mi_malloc(", "@malloc("),
+        (Some("address"), "@malloc(", "@mi_malloc("),
+        (Some("thread"), "@malloc(", "@mi_malloc("),
+    ] {
+        let home = dir.join(format!("home-{}", sanitize.unwrap_or("plain")));
+        let mut command = crate::executables::fennec_command();
+        command
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("tree").to_string_lossy()])
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_LLVM_KEEP", "1")
+            .env("FENNEC_NO_CACHE", "1")
+            .env_remove("FENNEC_SANITIZE");
+        if let Some(sanitize) = sanitize {
+            command.env("FENNEC_SANITIZE", sanitize);
+        }
+        // Linking may fail where the sanitizer's runtime isn't there; the text is what's read.
+        command.output_before(FENNEC_DEADLINE)?;
+        let mut declared = String::new();
+        let mut folders = vec![home.join("work")];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "ll") {
+                    let text = std::fs::read_to_string(&path)?;
+                    declared.extend(
+                        text.lines()
+                            .filter(|line| line.starts_with("declare"))
+                            .map(|line| format!("{line}\n")),
+                    );
+                }
+            }
+        }
+        let shown = sanitize.unwrap_or("no sanitizer");
+        assert!(declared.contains(wanted), "{shown}: native blocks don't come from {wanted}\n{declared}");
+        assert!(!declared.contains(not), "{shown}: native blocks come from {not}\n{declared}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A recursive enum holding strings, inline and in blocks of their own, is made and freed by
 /// generated code, which lets go of each string as its block goes: built and dropped over and
 /// over, read along the way, in a dev build and with `--release`.
@@ -22753,6 +23078,144 @@ def main(stdout: Stdout, clock: Clock):
 ",
     )
 }
+
+/// Native blocks made in a launched task and in `parallel`'s workers are freed there: chains
+/// through the first field, a block holding the one below it twice, and one subtree under two
+/// roots, at 1, 4 and 18 threads, each printing the same with nothing left held, native blocks
+/// counted, and holding little memory. A native block's shape word carries no thread's number, so
+/// on any thread but the first each let-go was handed to the runtime, which knows no such block,
+/// and none was ever freed: 80 chains of 100,000 held over a gigabyte.
+#[test]
+fn native_blocks_made_in_tasks_and_workers_are_freed_there() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for (name, source, wanted, how) in [
+        ("native_in_tasks", NATIVE_IN_TASKS, "done 1999980 999\n", &["--llvm", "--release"][..]),
+        ("native_shared", NATIVE_SHARED, "done 3600000 3000\n", &["--llvm"][..]),
+        ("native_shared", NATIVE_SHARED, "done 3600000 3000\n", &["--llvm", "--release"][..]),
+    ] {
+        let dir = folder(name)?;
+        let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+        std::fs::write(&program, source)?;
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "18"] {
+            let set = [("FENNEC_COUNTS", "1"), ("FENNEC_THREADS", threads)];
+            let (ran, peak) = peak_memory_with(&executable, &[], &set, &dir)?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{name} {how:?} at {threads}: {said}");
+            assert!(
+                said.lines().any(|line| line.ends_with(" live 0")),
+                "{name} {how:?} at {threads}: {said}"
+            );
+            // Freed as they go, the chains hold 6 to 74 MB here, by how many threads hold one at
+            // once; never freed, 600 MB to 1.5 GB. A sanitizer's own share is no part of that.
+            if let Some(peak) = measured(peak)
+                && std::env::var_os("FENNEC_SANITIZE").is_none()
+            {
+                assert!(
+                    peak < 300 * 1024 * 1024,
+                    "{name} {how:?} at {threads} held {} MB",
+                    peak / (1024 * 1024)
+                );
+            }
+        }
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
+const NATIVE_IN_TASKS: &str = r#"from std.concurrent import Crashed
+
+enum Plain:
+    End
+    Two(left: Plain, right: Plain, n: int)
+
+def plain_chain(depth: int) -> Plain:
+    mut made = Plain.End
+    for at in range(depth):
+        made = .Two(left=made, right=.End, n=at)
+    return made
+
+def dropped(depth: int) -> int:
+    plain = plain_chain(depth)
+    match plain:
+        case .Two(_, _, n):
+            return n
+        case _:
+            return 0
+
+def in_a_task(depth: int) fails Crashed:
+    with launch(() => dropped(depth)) as task:
+        pass
+
+def main(stdout: Stdout):
+    for round in range(60):
+        in_a_task(100_000) except Crashed():
+            stdout.print("the task crashed")
+    mut sizes = [100_000 for _ in range(20)]
+    for ref size in parallel(sizes):
+        size = dropped(size)
+    stdout.print("done", sum(sizes), dropped(1_000))
+    return
+"#;
+
+const NATIVE_SHARED: &str = r#"from std.concurrent import Crashed
+
+enum Plain:
+    End
+    Two(left: Plain, right: Plain, n: int)
+
+def plain_chain(depth: int) -> Plain:
+    mut made = Plain.End
+    for at in range(depth):
+        made = .Two(left=made, right=.End, n=at)
+    return made
+
+## A chain whose every block holds the one below it twice.
+def doubled(depth: int) -> Plain:
+    mut made = Plain.End
+    for at in range(depth):
+        made = .Two(left=made, right=made, n=at)
+    return made
+
+def top(made: Plain) -> int:
+    match made:
+        case .Two(_, _, n):
+            return n
+        case _:
+            return -1
+
+## One subtree under two roots, each let go of in turn, the subtree last held by the second.
+def two_roots(depth: int) -> int:
+    under = plain_chain(depth)
+    first = Plain.Two(left=under, right=.End, n=1)
+    second = Plain.Two(left=.End, right=under, n=2)
+    return top(first) + top(second) + top(under)
+
+def worked(depth: int) -> int:
+    return top(plain_chain(depth)) + top(doubled(depth)) + two_roots(depth)
+
+def in_a_task(depth: int) fails Crashed:
+    with launch(() => worked(depth)) as task:
+        pass
+
+def main(stdout: Stdout):
+    for round in range(40):
+        in_a_task(50_000) except Crashed():
+            stdout.print("the task crashed")
+    mut sizes = [50_000 for _ in range(24)]
+    for ref size in parallel(sizes):
+        size = worked(size)
+    stdout.print("done", sum(sizes), worked(1_000))
+    return
+"#;
 
 /// Chains 200,000 deep let go of at 1, 4 and 18 threads, in dev and release, nothing left held:
 /// enums of native blocks through their first field, one holding strings and a list where no
@@ -24120,6 +24583,66 @@ def main(stdout: Stdout):
     )
 }
 
+/// An error and a struct holding a `str?`, each held as `X?` in another struct, compared, printed and
+/// handed to a task and back: one layout, so a field and a local hold each the same way, where the
+/// first layout held them in place and the finished one as blocks. The counts are as pinned: the
+/// copies and blocks made converting between the two ways are gone.
+#[test]
+fn an_error_and_a_struct_holding_a_str_optional_are_held_one_way_everywhere() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "optional_texts_one_way",
+        OPTIONAL_TEXTS_ONE_WAY,
+        "Inner(label=\"a label long enough for a block 1\", note=None) True Lost(place=\"a place long enough for a block 2\", hint=None) True\nInner(label=\"a label long enough for a block 3\", note=None) None Lost(place=\"a place long enough for a block 2\", hint=None) True True 3\n",
+    )?;
+    assert_eq!(
+        counts_of("optional_texts_one_way_counts", OPTIONAL_TEXTS_ONE_WAY)?,
+        "copies 29 copied_bytes 1968 largest_copy 88 allocations 94 allocated_bytes 6440 live 0"
+    );
+    Ok(())
+}
+
+const OPTIONAL_TEXTS_ONE_WAY: &str = r#"error Lost:
+    place: str
+    hint: str?
+
+struct Inner:
+    label: str
+    note: str?
+
+struct Holder:
+    maybe: Inner?
+    why: Lost?
+    count: int
+
+def made(n: int) -> Holder:
+    inner = Inner(label=f"a label long enough for a block {n}", note=f"a note long enough for a block {n}" if n % 2 == 0 else None)
+    lost = Lost(place=f"a place long enough for a block {n}", hint=None if n % 2 == 0 else f"a hint long enough for a block {n}")
+    return Holder(maybe=inner, why=lost, count=n)
+
+def put(out: shared list[Holder], holder: Holder):
+    lock out as ref held:
+        held.append(holder)
+    return
+
+def main(stdout: Stdout):
+    noise = [made(n + 10) for n in range(3)]
+    holders = [made(n) for n in range(4)]
+    first = holders[1].maybe else return
+    stdout.print(first, first == made(1).maybe, holders[2].why, holders[2].why == made(2).why)
+    shared out = list[Holder]()
+    for at in [3, 2]:
+        given = holders[at]
+        with launch(() => put(out, given)):
+            pass
+    lock out as held:
+        kept = held[0].maybe else return
+        stdout.print(kept, kept.note, held[1].why, held[0] == holders[3], held[1] == holders[2], len(noise))
+    return
+"#;
+
 /// `==` and `!=` on an optional string, against a string, another optional string or `None`:
 /// short and long strings, and `None`, whose header is all zero, on either side.
 #[test]
@@ -24750,6 +25273,156 @@ fn small_calls_fail_as_pinned() -> std::io::Result<()> {
     stdout.print(some)
 ",
     )
+}
+
+/// Texts for `float.parse`, each with the number it reads as, written as a program writes it:
+/// `inf`, `-inf` and `nan` for those, and nothing for text that isn't a float.
+fn float_rows() -> Vec<(String, Option<String>)> {
+    let padded = format!("{}2.5", " ".repeat(30));
+    let padded_long = format!("{}2.5{}", " ".repeat(50), " ".repeat(5));
+    let (inline_23, block_24) = (format!("1.{}", "0".repeat(21)), format!("1.{}", "0".repeat(22)));
+    let digits_long = format!("0.{}5", "0".repeat(45));
+    let floats = [
+        ("1.5", "1.5"),
+        (".5", "0.5"),
+        ("5.", "5.0"),
+        ("-2e3", "-2000.0"),
+        (" 1.5 ", "1.5"),
+        ("\t42\n", "42.0"),
+        ("+7", "7.0"),
+        ("0", "0.0"),
+        ("-0", "-0.0"),
+        ("1234.56", "1234.56"),
+        ("000001.250", "1.25"),
+        ("1E3", "1000.0"),
+        (padded.as_str(), "2.5"),
+        (padded_long.as_str(), "2.5"),
+        (inline_23.as_str(), "1.0"),
+        (block_24.as_str(), "1.0"),
+        (digits_long.as_str(), digits_long.as_str()),
+        ("1.5\u{a0}", "1.5"),
+        ("\u{3000}8.25", "8.25"),
+        ("inf", "inf"),
+        ("-inf", "-inf"),
+        ("Infinity", "inf"),
+        ("1e400", "inf"),
+        ("-1e400", "-inf"),
+        ("nan", "nan"),
+        ("NaN", "nan"),
+    ];
+    let others = [
+        "",
+        " ",
+        "abc",
+        "1.5x",
+        "x1.5",
+        "1,5",
+        "1 5",
+        "--1",
+        "1e",
+        ".",
+        "\u{663}.\u{665}",
+        "0x10",
+        "a text that isn't a float and is long enough to be past forty bytes",
+    ];
+    let floats = floats.iter().map(|(text, wanted)| ((*text).to_owned(), Some((*wanted).to_owned())));
+    floats.chain(others.iter().map(|text| ((*text).to_owned(), None))).collect()
+}
+
+/// What the program over `float_rows` prints: `same` for each float, and for other text the
+/// message it fails with. Each row is checked against what Rust reads, so the table can't drift
+/// from it.
+fn floats_printed(rows: &[(String, Option<String>)]) -> String {
+    use std::fmt::Write as _;
+    let mut printed = String::new();
+    for (text, wanted) in rows {
+        let read = text.trim().parse::<f64>().ok();
+        let same = match (wanted.as_deref(), read) {
+            (None, None) => true,
+            (Some("nan"), Some(read)) => read.is_nan(),
+            (Some(wanted), Some(read)) => {
+                wanted.parse::<f64>().is_ok_and(|wanted| wanted.total_cmp(&read).is_eq())
+            }
+            _ => false,
+        };
+        assert!(same, "{text:?} reads as {read:?} in Rust, and the table says {wanted:?}");
+        let count = text.chars().count();
+        if wanted.is_some() {
+            printed.push_str("same\n");
+        } else if count <= 40 {
+            let _ = writeln!(printed, "{text:?} isn't a float");
+        } else {
+            let start: String = text.chars().take(20).collect();
+            let _ = writeln!(printed, "\"{}…\" ({count} characters) isn't a float", start.escape_debug());
+        }
+    }
+    printed
+}
+
+/// A program that reads each of `float_rows` with `float.parse` and compares it with the same
+/// number written in the program, which the compiler reads.
+fn floats_program(rows: &[(String, Option<String>)]) -> String {
+    let texts: Vec<String> = rows.iter().map(|(text, _)| fennec_literal(text)).collect();
+    let kinds: Vec<String> = rows
+        .iter()
+        .map(|(_, wanted)| match wanted.as_deref() {
+            Some(special @ ("inf" | "-inf" | "nan")) => format!("\"{special}\""),
+            Some(_) => "\"number\"".to_owned(),
+            None => "\"none\"".to_owned(),
+        })
+        .collect();
+    let numbers: Vec<&str> = rows
+        .iter()
+        .map(|(_, wanted)| match wanted.as_deref() {
+            Some("inf" | "-inf" | "nan") | None => "0.0",
+            Some(number) => number,
+        })
+        .collect();
+    format!(
+        r#"def same(read: float, kind: str, wanted: float) -> bool:
+    if kind == "nan":
+        return read.is_nan()
+    if kind == "inf":
+        return read > 1.0e308
+    if kind == "-inf":
+        return read < -1.0e308
+    return kind == "number" and read == wanted
+
+def main(stdout: Stdout):
+    texts = [{}]
+    kinds = [{}]
+    wanted = [{}]
+    for at in range(len(texts)):
+        read = float.parse(texts[at]) except error:
+            stdout.print(error.message)
+            continue
+        stdout.print("same" if same(read, kind=kinds[at], wanted=wanted[at]) else f"differs: {{read}}")
+    return
+"#,
+        texts.join(", "),
+        kinds.join(", "),
+        numbers.join(", ")
+    )
+}
+
+/// `float.parse` reads what Rust's `str::parse::<f64>` reads from the trimmed text, and fails on
+/// what it fails on, saying what it was given: with and without a sign, a point and an exponent,
+/// space around it of ASCII and beyond, `inf` and `nan` however they're cased, a number too big to
+/// hold, text held inline at 23 bytes and in a block at 24, text past the 40 bytes read in place,
+/// and what isn't a float at all, digits that aren't ASCII among it. Each float read is compared
+/// with the same number written in the program, which the compiler reads. The text is read where
+/// it is, by its header, and only text that isn't a float is made a block, for its message, so
+/// no block is left after.
+#[test]
+fn a_float_read_from_text_is_what_rust_reads_at_every_edge() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let rows = float_rows();
+    let dir = folder("floats_read")?;
+    let program = dir.join("floats_read.fen");
+    std::fs::write(&program, floats_program(&rows))?;
+    prints_with_nothing_left(&dir, &program, &floats_printed(&rows), &["1"])
 }
 
 /// Numbers read from text, with what fails being a value the program holds; and lists and sets of

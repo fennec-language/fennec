@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use super::calls::{ArgVal, Receiver};
 use super::{Binding, Interp, Place, Run, unsupported};
 use crate::text;
-use crate::value::{Instance, Value};
+use crate::value::{Func, Instance, Value};
 
 impl Interp {
     /// What `stdout.print` and `str()` show: a string as it is, and anything else as it shows
@@ -46,6 +46,11 @@ impl Interp {
                 Some(shown) => format!("<{shown}>"),
                 None => return unsupported("printing a generator whose type isn't known"),
             },
+            Value::Table(table) => {
+                let items: Vec<Value> = table.live().map(|(_, item)| item.clone()).collect();
+                format!("Table([{}])", self.joined(&items)?)
+            }
+            Value::Id(id) => format!("Id({})", id.slot),
             Value::Func(_) => return unsupported("printing a function"),
             Value::Cap(_) => return unsupported("printing a capability"),
         })
@@ -167,6 +172,22 @@ impl Interp {
                 }
                 Ok(true)
             }
+            (Value::Table(a), Value::Table(b)) => {
+                if a.slots.len() != b.slots.len() {
+                    return Ok(false);
+                }
+                for (x, y) in a.slots.iter().zip(&b.slots) {
+                    let same = match (&x.item, &y.item) {
+                        (Some(x), Some(y)) => self.equal(x, y)?,
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    if !same || x.generation != y.generation {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
             _ => plain_equal(left, right),
         }
     }
@@ -271,6 +292,27 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
                 }
             }
             true
+        }
+        (Value::Id(a), Value::Id(b)) => a == b,
+        (Value::Table(a), Value::Table(b)) => {
+            if a.slots.len() != b.slots.len() {
+                return Ok(false);
+            }
+            for (x, y) in a.slots.iter().zip(&b.slots) {
+                let same = match (&x.item, &y.item) {
+                    (Some(x), Some(y)) => plain_equal(x, y)?,
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !same || x.generation != y.generation {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        // A function the program declares is equal only to itself.
+        (Value::Func(a), Value::Func(b)) if matches!((&**a, &**b), (Func::Named(_), Func::Named(_))) => {
+            matches!((&**a, &**b), (Func::Named(x), Func::Named(y)) if x == y)
         }
         (Value::Func(_) | Value::Stream(_) | Value::Cap(_), _)
         | (_, Value::Func(_) | Value::Stream(_) | Value::Cap(_)) => {

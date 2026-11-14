@@ -28,6 +28,16 @@ impl Interp {
                 None => args.push(value),
             }
         }
+        let is_table = match &receiver {
+            Receiver::Place(place) => self.peek_place(place, span, |held| matches!(held, Value::Table(_)))?,
+            Receiver::Value(value) => matches!(value, Value::Table(_)),
+        };
+        if is_table {
+            if !named.is_empty() {
+                return unsupported(format!("the Table method `{name}` with a named argument"));
+            }
+            return self.table_method(receiver, name, args, span);
+        }
         if let Receiver::Place(place) = &receiver {
             let place = place.clone();
             if CHANGES.contains(&name) {

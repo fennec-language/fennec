@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use fennec_check::Type;
-use fennec_syntax::{Expr, FnDef, Item, Module, Span, TypeDef};
+use fennec_syntax::{Expr, FnDef, Item, Module, Sources, Span, TypeDef};
 
 /// Why a program can't be run here.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,9 +34,8 @@ pub(crate) struct Declared {
 
 /// A program ready to run: its syntax tree, kept for the whole run, and tables over it.
 pub struct Program {
-    /// Where the program is, as it's shown.
-    pub(crate) path: String,
-    pub(crate) source: String,
+    /// The program's files, as they're shown, for what it says as it stops.
+    pub(crate) sources: Sources,
     pub(crate) functions: HashMap<String, &'static FnDef>,
     pub(crate) types: HashMap<String, Declared>,
     /// The methods `extend` adds, by the type they're for, the built-in types' included.
@@ -73,42 +72,19 @@ impl Program {
     }
 }
 
-/// Reads, parses and checks the program at `path`: a `.fen` file, or a kit's folder whose only
-/// module is `src/main.fen`.
+/// Reads, parses and checks the program at `path`: a `.fen` file, or a kit's folder, with the
+/// modules of its own that it imports.
 pub fn load(path: &Path, shown: &str) -> Result<&'static Program, Refused> {
-    let file = if path.is_dir() { kit_main(path)? } else { path.to_path_buf() };
-    let source = std::fs::read_to_string(&file)
-        .map_err(|err| Refused::Invalid(format!("couldn't read {}: {err}", file.display())))?;
-    let shown = if path.is_dir() {
-        format!("{}/src/main.fen", shown.trim_end_matches('/'))
-    } else {
-        shown.to_owned()
-    };
-    load_source(&source, &shown)
-}
-
-/// The `src/main.fen` of a kit, when it's the kit's only module and the kit depends on nothing.
-fn kit_main(dir: &Path) -> Result<std::path::PathBuf, Refused> {
-    let manifest = std::fs::read_to_string(dir.join("kit.toml"))
-        .map_err(|_| Refused::Invalid(format!("{} has no kit.toml", dir.display())))?;
-    let src = dir.join("src");
-    let entries =
-        std::fs::read_dir(&src).map_err(|_| Refused::Invalid(format!("{} has no src", dir.display())))?;
-    let others = entries.flatten().filter(|entry| entry.file_name() != "main.fen").count();
-    if others > 0 {
-        return Err(Refused::Unsupported("a kit with several modules".to_owned()));
-    }
-    let dependencies = manifest.lines().skip_while(|line| line.trim() != "[dependencies]").skip(1);
-    if dependencies.take_while(|line| !line.starts_with('[')).any(|line| !line.trim().is_empty()) {
-        return Err(Refused::Unsupported("a kit with dependencies".to_owned()));
-    }
-    Ok(src.join("main.fen"))
+    let merged = if path.is_dir() { crate::kit::kit(path, shown)? } else { crate::kit::file(path, shown)? };
+    load_module(merged.module, merged.sources)
 }
 
 /// Parses and checks a program's source, shown as `shown`.
 pub fn load_source(source: &str, shown: &str) -> Result<&'static Program, Refused> {
-    let module =
-        fennec_syntax::parse(source).map_err(|problem| Refused::Invalid(problem.render(shown, source)))?;
+    let mut sources = Sources::new();
+    let base = sources.add(shown, source);
+    let module = fennec_syntax::parse_at(source, base)
+        .map_err(|problem| Refused::Invalid(sources.render(&problem)))?;
     for item in &module.items {
         if let Item::Import(import) = item
             && import.module.first().is_none_or(|first| first != "std")
@@ -116,9 +92,13 @@ pub fn load_source(source: &str, shown: &str) -> Result<&'static Program, Refuse
             return Err(Refused::Unsupported("importing the program's own modules".to_owned()));
         }
     }
+    load_module(module, sources)
+}
+
+/// Checks a program's module, with every file it's from.
+fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Refused> {
     if let Err(problems) = fennec_check::check(&module) {
-        let rendered: Vec<String> = problems.iter().map(|problem| problem.render(shown, source)).collect();
-        return Err(Refused::Invalid(rendered.join("\n")));
+        return Err(Refused::Invalid(sources.render_all(&problems)));
     }
     let checked =
         fennec_check::check_typed(&module).map_err(|_| Refused::Invalid("it doesn't check".to_owned()))?;
@@ -133,15 +113,13 @@ pub fn load_source(source: &str, shown: &str) -> Result<&'static Program, Refuse
     // The tree is kept for the rest of the process, since values and generators running on
     // other threads point into it.
     let module: &'static Module = Box::leak(Box::new(module));
-    let program = tables(module, source, shown, types_at)?;
+    let program = tables(module, sources, types_at)?;
     Ok(Box::leak(Box::new(program)))
 }
 
-#[expect(clippy::too_many_lines, reason = "one arm for each kind of item a program declares")]
 fn tables(
     module: &'static Module,
-    source: &str,
-    shown: &str,
+    sources: Sources,
     types_at: HashMap<(u32, u32), Type>,
 ) -> Result<Program, Refused> {
     let mut functions = HashMap::new();
@@ -178,23 +156,7 @@ fn tables(
                 };
                 aliases.insert(name.clone(), members);
             }
-            Item::Import(import) => {
-                let module_name = import.module.iter().skip(1).cloned().collect::<Vec<_>>().join(".");
-                for (name, bound) in import.bound() {
-                    let from = if module_name.is_empty() {
-                        format!("std.{name}")
-                    } else {
-                        format!("std.{module_name}.{name}")
-                    };
-                    imported.insert(bound.to_owned(), from);
-                }
-                if import.names.is_empty() {
-                    let bound = import.alias.clone().unwrap_or_else(|| import.module.join("."));
-                    let last = import.module.last().cloned().unwrap_or_default();
-                    imported.insert(bound, format!("std.{module_name}"));
-                    imported.insert(last, format!("std.{module_name}"));
-                }
-            }
+            Item::Import(import) => bring_in(import, &mut imported)?,
             Item::Interface(_) | Item::Test(_) => {}
             Item::Stmt(_) => return Err(Refused::Unsupported("a statement at the top level".to_owned())),
         }
@@ -215,8 +177,7 @@ fn tables(
         *functions.get("main").ok_or_else(|| Refused::Invalid("the program has no `main`".to_owned()))?;
     given_to_main(main)?;
     Ok(Program {
-        path: shown.to_owned(),
-        source: source.to_owned(),
+        sources,
         functions,
         types,
         extensions,
@@ -238,6 +199,31 @@ fn given_to_main(main: &FnDef) -> Result<(), Refused> {
         if !matches!(ty, "Stdout" | "Args" | "Stdin") {
             return Err(Refused::Unsupported(format!("the capability {ty}")));
         }
+    }
+    Ok(())
+}
+
+/// Notes the names a standard library import brings in, each with the module it's from. Two
+/// files of a program that bring in one name from different places are unsupported.
+fn bring_in(import: &fennec_syntax::Import, imported: &mut HashMap<String, String>) -> Result<(), Refused> {
+    let module_name = import.module.iter().skip(1).cloned().collect::<Vec<_>>().join(".");
+    let mut brought = Vec::new();
+    for (name, bound) in import.bound() {
+        let from =
+            if module_name.is_empty() { format!("std.{name}") } else { format!("std.{module_name}.{name}") };
+        brought.push((bound.to_owned(), from));
+    }
+    if import.names.is_empty() {
+        let bound = import.alias.clone().unwrap_or_else(|| import.module.join("."));
+        let last = import.module.last().cloned().unwrap_or_default();
+        brought.push((bound, format!("std.{module_name}")));
+        brought.push((last, format!("std.{module_name}")));
+    }
+    for (bound, from) in brought {
+        if imported.get(&bound).is_some_and(|known| *known != from) {
+            return Err(Refused::Unsupported(format!("`{bound}` imported from two places")));
+        }
+        imported.insert(bound, from);
     }
     Ok(())
 }

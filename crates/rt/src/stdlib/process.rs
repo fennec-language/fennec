@@ -173,7 +173,35 @@ pub(crate) fn run_of(method: &str, args: &[Value], span: Span) -> Result<Result<
             }
         }
     }
+    if let Some(why) = unrunnable(&program, &arguments, &options) {
+        return Ok(Err(process_error(&program, &why)));
+    }
     Ok(Ok((program, arguments, options)))
+}
+
+/// Why a program can't be given what `run` was, or `None` when it can: a NUL byte, which ends
+/// the text a program is handed, in its name, an argument or a variable's value, or a variable's
+/// name that's empty or holds `=`. The system reads a name with `=` in it as the name before the
+/// `=`, so `{"PATH=/evil:": "x"}` would set `PATH`, past a program's check of which names it
+/// passes on. A fake `Process` refuses them too, so a test sees what a program would.
+fn unrunnable(program: &str, arguments: &[String], options: &Options) -> Option<String> {
+    if program.contains('\0') {
+        return Some("its name holds a NUL byte, which no program's name can".to_owned());
+    }
+    if let Some(at) = arguments.iter().position(|argument| argument.contains('\0')) {
+        return Some(format!("argument {} holds a NUL byte, which no program can be given", at + 1));
+    }
+    for (name, value) in &options.env {
+        if !crate::env::is_a_name(name) {
+            return Some(format!(
+                "{name:?} can't be a variable's name: one is never empty, and holds no `=` or NUL byte"
+            ));
+        }
+        if value.contains('\0') {
+            return Some(format!("the variable `{name}` holds a NUL byte, which no variable can"));
+        }
+    }
+    None
 }
 
 /// The failure of a template whose value `expression` starts an argument with `-`.
@@ -260,6 +288,10 @@ fn run_limited(
 ) -> std::io::Result<Ending> {
     use std::io::Write as _;
     use std::process::Stdio;
+    #[cfg(unix)]
+    if input.is_some() {
+        catch_broken_pipes();
+    }
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
     command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
@@ -316,6 +348,20 @@ fn run_limited(
         Some(status) if !stopped => Ending::Done(std::process::Output { status, stdout, stderr }),
         _ => Ending::TimedOut,
     })
+}
+
+/// Keeps a program that exits without reading all its `input=` from ending this one. Writing to
+/// a pipe nothing reads any more sends SIGPIPE, which ends the whole program unless it's caught.
+/// A Rust program ignores it from the start, and so does a Fennec program the interpreter runs,
+/// but a native one has no Rust `main` to, so it's caught here, from the first program given
+/// input on: the write fails instead, and the thread writing it stops.
+#[cfg(unix)]
+fn catch_broken_pipes() {
+    static CAUGHT: std::sync::Once = std::sync::Once::new();
+    CAUGHT.call_once(|| {
+        // The flag is never read: catching the signal is the point.
+        let _ = signal_hook::flag::register(signal_hook::consts::SIGPIPE, Arc::new(AtomicBool::new(false)));
+    });
 }
 
 /// One of a program's outputs.
@@ -382,7 +428,7 @@ fn wrong(method: &str, span: Span) -> Diagnostic {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{Options, run_program};
+    use super::{Options, run_program, unrunnable};
     use crate::value::Value;
 
     /// What a run gave: the `Output`'s fields, or the `ProcessError`'s case and its fields.
@@ -448,6 +494,26 @@ mod tests {
         let ran = run_program("yes", &[], &options);
         let shown = said(&ran);
         assert!(shown.contains("ProcessError.TooMuchOutput") && shown.contains("most=1000"), "{shown}");
+    }
+
+    /// A variable's name with `=` in it would set the variable named before the `=`, and a NUL
+    /// byte would cut what a program's given short, so neither runs.
+    #[test]
+    fn a_name_or_text_the_system_would_read_as_other_never_runs() {
+        let with = |name: &str, value: &str| Options {
+            env: vec![(name.to_owned(), value.to_owned())],
+            ..Options::default()
+        };
+        assert!(unrunnable("env", &[], &with("LANG", "C")).is_none());
+        for name in ["PATH=/evil:", "", "A\0B"] {
+            let why = unrunnable("env", &[], &with(name, "x")).unwrap_or_default();
+            assert!(why.contains("can't be a variable's name"), "{name:?}: {why}");
+        }
+        let why = unrunnable("env", &[], &with("LANG", "C\0x")).unwrap_or_default();
+        assert!(why.contains("the variable `LANG` holds a NUL byte"), "{why}");
+        let why = unrunnable("echo", &["a".to_owned(), "b\0c".to_owned()], &Options::default());
+        assert_eq!(why.as_deref(), Some("argument 2 holds a NUL byte, which no program can be given"));
+        assert!(unrunnable("ec\0ho", &[], &Options::default()).is_some());
     }
 
     /// Within its limits, a program runs as ever, its output whole.

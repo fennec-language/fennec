@@ -1,0 +1,89 @@
+# A value held in place in a local, a struct, a tuple or an optional of one, is let go of where
+# it's read for the last time, not when the function returns. What changes the same value next,
+# further down the same function, then finds its lists with one owner and copies nothing.
+
+NO_PARTS = list[str]()
+
+NO_FIELDS = list[(str, str)]()
+
+# What a reader needs only now and then, taken out to be changed and put back.
+struct Rare:
+    path = NO_PARTS
+    fields = NO_FIELDS
+
+struct Reader:
+    numbers: list[int]
+    names: list[str]
+    at = 0
+    _rare: Rare? = None
+
+    def _take(ref self) -> Rare:
+        rare = self._rare else Rare()
+        self._rare = None
+        return rare
+
+    def push(ref self, part: str):
+        mut rare = self._take()
+        rare.path.append(part)
+        self._rare = rare
+
+    def pop(ref self):
+        mut rare = self._take()
+        _ = rare.path.pop()
+        self._rare = rare
+
+    def depth(self) -> int:
+        rare = self._rare else Rare()
+        return len(rare.path) * 100 + len(rare.fields)
+
+    # A struct taken out, changed and put back inside an `if`, then taken out again by `pop`.
+    def struct_in_a_block(ref self, fields: list[(str, str)]):
+        if self.at >= 0:
+            mut rare = self._take()
+            rare.fields = fields
+            self._rare = rare
+        self.at += 1
+        self.pop()
+
+    # The same with nothing around it: the last line of the three is the struct's last read.
+    def struct_then_a_call(ref self, fields: list[(str, str)]):
+        mut rare = self._take()
+        rare.fields = fields
+        self._rare = rare
+        self.push("deeper")
+        self.pop()
+
+    # A tuple made of two lists and looked at, before each list is changed where it's kept.
+    def tuple_then_a_change(ref self) -> int:
+        pair = (self.numbers, self.names)
+        seen = len(pair[0]) + len(pair[1])
+        self.numbers.append(seen)
+        self.names.append("more")
+        return seen
+
+    # An optional of a struct read into a local and looked at, before `push` changes its list.
+    def optional_then_a_change(ref self) -> int:
+        held = self._rare
+        mut seen = 0
+        if held is not None:
+            seen = len(held.path)
+        self.push("after")
+        return seen
+
+def main(stdout: Stdout):
+    fields = [("name", "str"), ("age", "int")]
+    mut total = 0
+    for _ in range(50):
+        mut reader = Reader(numbers=[1, 2, 3], names=["a"])
+        reader.push("first")
+        reader.push("second")
+        reader.struct_in_a_block(fields)
+        total += reader.depth()
+        reader.struct_then_a_call(fields)
+        total += reader.depth()
+        total += reader.tuple_then_a_change()
+        total += reader.tuple_then_a_change()
+        total += reader.optional_then_a_change()
+        total += reader.depth() + len(reader.numbers) + len(reader.names)
+    stdout.print(total)
+    return

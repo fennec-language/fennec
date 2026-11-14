@@ -1,7 +1,8 @@
 //! Which of a function's locals may hold a value where, so a way out lets go of only those.
 //!
 //! A local starts empty. Writing it may fill it, and [`Emit::let_go_of`] empties it, which
-//! stores zero into its slot. Where every way to a point last emptied a local, the local is
+//! stores zero into its slot. That goes for a struct or an enum held in place as for a block: its
+//! slot is every word of it. Where every way to a point last emptied a local, the local is
 //! empty there, and letting go of it would only check that.
 //!
 //! Without this, a return and the failure exit `prop` let go of every local, so every slot was
@@ -99,7 +100,11 @@ pub(crate) fn holding(emit: &Emit<'_, '_, '_>, untracked: &BTreeSet<usize>, spli
     let function = emit.function;
     let locals = function.locals.len();
     let tracked: Vec<bool> = (0..locals)
-        .map(|at| at >= function.params && !untracked.contains(&at) && emit.owns(LocalId(at)))
+        .map(|at| {
+            at >= function.params
+                && !untracked.contains(&at)
+                && (emit.owns(LocalId(at)) || emit.owns_inline(LocalId(at)))
+        })
         .collect();
     let mut holding =
         Holding { coming_in: vec![None; function.blocks.len()], tracked, short: vec![false; locals] };

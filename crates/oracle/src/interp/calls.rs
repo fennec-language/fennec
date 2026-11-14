@@ -308,6 +308,9 @@ impl Interp {
                     _ => unsupported(format!("`{owner}.{name}`")),
                 };
             }
+            if owner == "IoError" && super::files::IO_CASES.contains(&name) && self.is_std_type(owner) {
+                return Ok(Some(Target::Construct { ty: owner.clone(), case: Some(name.to_owned()) }));
+            }
             if BUILT_IN_TYPES.contains(&owner.as_str()) {
                 return Ok(Some(Target::Static { ty: owner.clone(), name: name.to_owned() }));
             }
@@ -397,6 +400,10 @@ impl Interp {
                 let mut names = Vec::new();
                 type_names(ty, &mut names);
                 for name in names {
+                    if name == "IoError" && super::files::IO_CASES.contains(&case) && self.is_std_type(&name)
+                    {
+                        return Ok(name);
+                    }
                     if let Some(declared) = self.program.types.get(name.as_str())
                         && declared.def.cases.iter().any(|known| known.name == case)
                     {
@@ -415,9 +422,7 @@ impl Interp {
             Target::Lambda { params, body, captured } => self.call_lambda(&params, body, captured, given),
             Target::Construct { ty, case } => self.construct(&ty, case.as_deref(), given, expr.span),
             Target::Builtin(name) => self.builtin(&name, given, expr),
-            Target::Method { receiver, name, buffer: false } => {
-                self.method(receiver, &name, given, expr.span)
-            }
+            Target::Method { receiver, name, buffer: false } => self.method(receiver, &name, given, expr),
             Target::Method { receiver, name, buffer: true } => {
                 self.buffer_method(receiver, &name, given, expr.span)
             }
@@ -565,6 +570,9 @@ impl Interp {
         given: Vec<ArgVal>,
         span: Span,
     ) -> Run<Value> {
+        if ty == "IoError" && self.is_std_type(ty) {
+            return self.io_case(case, given);
+        }
         let Some(declared) = self.program.types.get(ty) else {
             return unsupported(format!("making a `{ty}`"));
         };

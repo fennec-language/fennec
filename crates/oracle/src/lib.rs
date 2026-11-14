@@ -15,6 +15,7 @@ mod value;
 
 use std::sync::Arc;
 
+pub use interp::disk::Workdir;
 pub use load::{Program, Refused, load, load_source};
 
 /// The stack the oracle runs on: the checker and the evaluator both recurse for each nested
@@ -55,30 +56,41 @@ impl Outcome {
     }
 }
 
-/// Loads and runs the program at `path`, shown as `shown`, with empty arguments and input. A
-/// program that can't be loaded, or the checker refuses, is unsupported.
+/// Loads and runs the program at `path`, shown as `shown`, with empty arguments and input, in the
+/// folder the oracle runs in, as the gate runs an example. A program that can't be loaded, or the
+/// checker refuses, is unsupported.
 pub fn run_path(path: &std::path::Path, shown: &str) -> Outcome {
+    run_path_in(path, shown, Workdir::current())
+}
+
+/// Loads and runs the program at `path`, in `workdir`.
+pub fn run_path_in(path: &std::path::Path, shown: &str, workdir: Workdir) -> Outcome {
     let path = path.to_path_buf();
     let shown = shown.to_owned();
     on_a_big_stack(move || match load(&path, &shown) {
-        Ok(program) => run_here(program, interp::MOST_STEPS),
+        Ok(program) => run_here(program, interp::MOST_STEPS, &workdir),
         Err(Refused::Unsupported(why)) => Outcome::unsupported(why),
         Err(Refused::Invalid(why)) => Outcome::unsupported(format!("it doesn't load: {why}")),
     })
 }
 
-/// Runs a program's source, for tests.
+/// Runs a program's source, for tests, in the folder the oracle runs in.
 pub fn run_source(source: &str, shown: &str) -> Outcome {
-    run_source_within(source, shown, interp::MOST_STEPS)
+    run_source_in(source, shown, Workdir::current())
 }
 
-/// Runs a program's source, stopping it as unsupported past `most_steps` expressions and
-/// statements, which every run has a limit of.
-pub fn run_source_within(source: &str, shown: &str, most_steps: u64) -> Outcome {
+/// Runs a program's source in `workdir`.
+pub fn run_source_in(source: &str, shown: &str, workdir: Workdir) -> Outcome {
+    run_source_within(source, shown, interp::MOST_STEPS, workdir)
+}
+
+/// Runs a program's source in `workdir`, stopping it as unsupported past `most_steps`
+/// expressions and statements, which every run has a limit of.
+pub fn run_source_within(source: &str, shown: &str, most_steps: u64, workdir: Workdir) -> Outcome {
     let source = source.to_owned();
     let shown = shown.to_owned();
     on_a_big_stack(move || match load_source(&source, &shown) {
-        Ok(program) => run_here(program, most_steps),
+        Ok(program) => run_here(program, most_steps, &workdir),
         Err(Refused::Unsupported(why)) => Outcome::unsupported(why),
         Err(Refused::Invalid(why)) => Outcome::unsupported(format!("it doesn't load: {why}")),
     })
@@ -93,8 +105,8 @@ fn on_a_big_stack(work: impl FnOnce() -> Outcome + Send + 'static) -> Outcome {
 }
 
 /// Runs a loaded program on this thread.
-fn run_here(program: &'static Program, most_steps: u64) -> Outcome {
-    let shared = Arc::new(interp::Shared::new(program, most_steps));
+fn run_here(program: &'static Program, most_steps: u64, workdir: &Workdir) -> Outcome {
+    let shared = Arc::new(interp::Shared::new(program, most_steps, workdir));
     let mut runner = interp::Interp::new(Arc::clone(&shared), None);
     let ended = match runner.run_main() {
         interp::MainEnded::Returned(value) => match value {

@@ -317,6 +317,8 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     SOURCES.set(Some(sources.clone()));
     let here = 0_u8;
     let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
+    // The runtime has as much again below native code's part: a read into a tree may use most.
+    heap::reads_may_reach(limit.saturating_sub(NATIVE_STACK_BYTES / 4 * 3));
     entry(i64::try_from(limit).unwrap_or(0));
     let (output, failure, leftovers) = super::finish_for_exit();
     crate::replay::ended();
@@ -461,6 +463,16 @@ pub(super) fn stop_for_failure() {
 
 /// Prints a run's output and, if there is one, its failure; gives back the exit code.
 fn report(output: &[u8], failure: &str) -> i32 {
+    let code = reported(output, failure);
+    // A heap found wrong ends the run with a code of its own, whatever else it ended with.
+    #[cfg(feature = "audit")]
+    if AUDIT_FAILED.load(std::sync::atomic::Ordering::Relaxed) {
+        return heap::audit::EXIT_CODE;
+    }
+    code
+}
+
+fn reported(output: &[u8], failure: &str) -> i32 {
     let printed = std::io::stdout().write_all(output).and_then(|()| std::io::stdout().flush());
     if failure.is_empty() && printed.is_ok() {
         // What `main` gave back, when it gave an int.
@@ -468,6 +480,26 @@ fn report(output: &[u8], failure: &str) -> i32 {
     }
     let _ = std::io::stderr().write_all(failure.as_bytes());
     1
+}
+
+/// Whether this run's audit found the heap wrong.
+#[cfg(feature = "audit")]
+static AUDIT_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Under `FENNEC_AUDIT`, checks every block left at the end of a run: each one's count against the
+/// holders found for it, and that a root leads to it. What's wrong is said on stderr, and the run
+/// ends with the audit's exit code. Only a runtime built to audit has this, for test builds: one
+/// that ships can't be asked to.
+#[cfg(feature = "audit")]
+pub(super) fn audit_at_the_end(state: &State) {
+    if std::env::var_os("FENNEC_AUDIT").is_none() {
+        return;
+    }
+    let said = heap::audit::audit(state, &[]).said();
+    if !said.is_empty() {
+        let _ = std::io::stderr().write_all(said.as_bytes());
+        AUDIT_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Where the failure flag native code checks is.

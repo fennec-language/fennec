@@ -255,6 +255,71 @@ fn a_generic_type_built_where_one_is_expected_takes_its_types_from_there() {
     assert_eq!(problems(program), ["`value` should be an int | str, but this is a float @ 1.5"]);
 }
 
+/// A generic enum's case is of the enum with its parameters, each worked out as a generic struct's
+/// are: from the case's arguments, as written in brackets, or, for a case with no fields, from where
+/// it goes, a declared type or what a function returns. A case's field is of the type its
+/// parameter is in what a `match` is over, and the `match` still has to handle every case.
+#[test]
+fn a_generic_enums_cases_take_their_types_as_a_generic_structs_fields_do() {
+    let program = "
+        enum Choice[T]:
+            Picked(value: T)
+            Nothing
+
+        def none_yet() -> Choice[str]:
+            return Choice.Nothing
+
+        def shown(choice: Choice[int]) -> int:
+            match choice:
+                case .Picked(value):
+                    return value + 1
+                case .Nothing:
+                    return 0
+
+        def main(stdout: Stdout):
+            inferred = Choice.Picked(value=7)
+            written = Choice[int].Picked(value=7)
+            declared: Choice[int] = Choice.Nothing
+            dotted: Choice[float] = .Picked(value=1.5)
+            stdout.print(shown(inferred), shown(written), shown(declared), shown(Choice[int].Nothing))
+            stdout.print(none_yet(), dotted)
+    ";
+    assert_eq!(problems(program), Vec::<String>::new());
+    let wrong = "
+        enum Choice[T]:
+            Picked(value: T)
+            Nothing
+
+        def first(choice: Choice[int]) -> int:
+            match choice:
+                case .Picked(value):
+                    return value
+
+        def main(stdout: Stdout):
+            kept: Choice[str] = Choice.Picked(value=7)
+            written = Choice[str].Picked(value=7)
+            stdout.print(kept, written, first(Choice.Nothing))
+    ";
+    assert_eq!(
+        problems(wrong),
+        [
+            "this `match` doesn't handle `Choice.Nothing` @ choice",
+            "`kept` should be a Choice[str], but this is a Choice[int] @ Choice.Picked(value=7)",
+            "`value` should be a str, but this is an int @ 7",
+        ]
+    );
+    // With nothing to say what `T` is, a case with no fields can't be made.
+    let alone = "
+        enum Choice[T]:
+            Picked(value: T)
+            Nothing
+
+        def main(stdout: Stdout):
+            stdout.print(Choice.Nothing)
+    ";
+    assert_eq!(problems(alone), ["can't tell what `T` is in this call @ Choice.Nothing"]);
+}
+
 #[test]
 fn generic_types_need_their_types_written() {
     let program = "
@@ -770,7 +835,7 @@ def build[T: Made]() -> T:
     return T.make()
 ";
     let fits =
-        format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(build[Pile[Part]]().items.len())\n");
+        format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(len(build[Pile[Part]]().items))\n");
     assert_eq!(problems(&fits), Vec::<String>::new());
     let misfits =
         format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(build[Pile[Rock]]().items.len())\n");

@@ -27,6 +27,8 @@ export def records(text: str, delimiter = ",") -> list[dict[str, str]]:
 ## CSV text of `rows`, each ending in `\n`. A row with no fields fails with an `InvalidValue`:
 ## CSV can't write one, since a blank line isn't a row, and it would be lost.
 export def dumps(rows: list[list[str]], delimiter = ",") -> str fails InvalidValue:
+    wrong = delimiter_problem(delimiter)
+    if wrong != "": fail InvalidValue(message=wrong)
     mut lines = list[str]()
     for at, row in enumerate(rows):
         if len(row) == 0:
@@ -64,6 +66,15 @@ def quoted_field(field: str, delimiter: str) -> str:
     if not special: return field
     return "\"" + field.replace("\"", "\"\"") + "\""
 
+## What's wrong with `delimiter`, or "". It's one character, since a longer one would never be
+## found and every line would be one field; and not a quote or a line break, which CSV gives
+## meanings of their own, so `dumps` would write rows that read back as others.
+def delimiter_problem(delimiter: str) -> str:
+    if len(delimiter) != 1: return "a delimiter is one character"
+    if delimiter == "\"" or delimiter == "\n" or delimiter == "\r":
+        return "a delimiter can't be a quote or a line break"
+    return ""
+
 def parse_problem(problem: str, line: int, column: int) -> ParseError:
     return ParseError(
         message=f"{problem} at line {line}, column {column}",
@@ -74,8 +85,8 @@ def parse_problem(problem: str, line: int, column: int) -> ParseError:
 ## Each row, with the line it starts on. It goes through the characters once, since
 ## finding a character by its position can mean walking from the start.
 def rows_in(text: str, delimiter: str) -> list[(int, list[str])]:
-    # A longer one would never match, and everything would be one field.
-    if len(delimiter) != 1: fail parse_problem("a delimiter is one character", 1, 1)
+    wrong = delimiter_problem(delimiter)
+    if wrong != "": fail parse_problem(wrong, 1, 1)
     mut rows = []
     mut row = []
     mut field = ""

@@ -801,6 +801,18 @@ impl FnCx<'_> {
         if let Some(type_name) = self.as_type_name(object) {
             return self.type_attr(type_name, name, span);
         }
+        // `Choice[int].Nothing`: a case of a generic enum, with its parameters written.
+        if let ExprKind::Index { object: written, index } = &object.kind
+            && let Some(type_name) = self.as_type_name(written)
+            && self
+                .checker
+                .program
+                .type_info(type_name)
+                .is_some_and(|info| info.def.cases.iter().any(|case| case.name == name))
+        {
+            let type_name = type_name.to_owned();
+            return self.written_case(&type_name, index, name, span);
+        }
         // A field path that's been checked for None, like `player.weapon`.
         if !optional
             && let Some(path) = path(object)

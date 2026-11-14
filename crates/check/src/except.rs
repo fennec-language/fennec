@@ -9,7 +9,7 @@ use crate::types::Type;
 
 /// The name the one-case form, `except InvalidValue(): 8080`, gives the failure, which nobody
 /// can write.
-const ONE_CASE: &str = "except'failure";
+pub(crate) const ONE_CASE: &str = "except'failure";
 
 /// What a block that drops its failure is told to do.
 fn use_it(name: &str) -> String {
@@ -43,11 +43,11 @@ impl FnCx<'_> {
             }
             return;
         }
-        if let Some(span) = nested_match(name, body) {
-            let help = format!("write the `case` arms right under `except {name}:`, with no `match`");
-            self.error(
-                Diagnostic::new(format!("`match {name}:` goes away under `except`"), span).with_help(help),
-            );
+        // A `match name:` under it is the form `fennec fix` writes `else as name:` in first, refused
+        // with the old forms (see `except_fix::nested_matches`), so a fix can type it: its ways
+        // out are looked at once its arms are right under the `except`.
+        if nested_match(name, body).is_some() {
+            return;
         }
         if let Some(span) = unused_way_out(body, name, handler.span) {
             let message = format!("`{name}` isn't used on this way out, so it drops the failure");
@@ -133,7 +133,7 @@ impl FnCx<'_> {
 /// The `match` an `except`'s arms are written in as: one statement that's a `match` over the
 /// failure's name, which is written before the arms, after `except`. A `match` written in the
 /// block has its subject after its own `match`.
-fn arms_under<'h>(name: &str, body: &'h [Stmt]) -> Option<(&'h Expr, &'h [MatchArm])> {
+pub(crate) fn arms_under<'h>(name: &str, body: &'h [Stmt]) -> Option<(&'h Expr, &'h [MatchArm])> {
     let [Stmt { kind: StmtKind::Expr(matched), .. }] = body else { return None };
     let ExprKind::Match { subject, arms } = &matched.kind else { return None };
     let named = matches!(&subject.kind, ExprKind::Name(found) if found == name);
@@ -141,7 +141,7 @@ fn arms_under<'h>(name: &str, body: &'h [Stmt]) -> Option<(&'h Expr, &'h [MatchA
 }
 
 /// A `match` over the failure written in an `except` block, as its own statement.
-fn nested_match(name: &str, body: &[Stmt]) -> Option<Span> {
+pub(crate) fn nested_match(name: &str, body: &[Stmt]) -> Option<Span> {
     body.iter().find_map(|stmt| match &stmt.kind {
         StmtKind::Expr(Expr { kind: ExprKind::Match { subject, .. }, span })
             if matches!(&subject.kind, ExprKind::Name(found) if found == name) =>

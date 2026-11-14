@@ -129,6 +129,7 @@ fennec-parked = { path = "crates/parked" }
 fennec-layout = { path = "crates/layout" }
 fennec-llvm = { path = "crates/llvm" }
 fennec-loader = { path = "crates/loader" }
+fennec-oracle = { path = "crates/oracle" }
 fennec-rt = { path = "crates/rt" }
 fennec-runtime = { path = "crates/runtime" }
 fennec-kit = { path = "crates/kit" }

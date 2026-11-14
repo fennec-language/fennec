@@ -67,7 +67,6 @@ fn rewrites(
         found.extend(def_return(def));
         let mut stmts = Vec::new();
         statements(&def.body, &mut stmts);
-        found.extend(stmts.iter().filter_map(|stmt| lend_except(stmt, sources)));
     }
     found.extend(failure_fixes(modules, sources, typed, library));
     found
@@ -166,23 +165,6 @@ fn tails<'s>(body: &'s [Stmt], found: &mut Vec<&'s Stmt>) {
     }
 }
 
-/// `lend x else:` as `lend x except:`.
-fn lend_except(stmt: &Stmt, sources: &Sources) -> Option<Diagnostic> {
-    let StmtKind::Lend { value, otherwise, .. } = &stmt.kind else { return None };
-    if otherwise.is_empty() {
-        return None;
-    }
-    let text = Text::of(sources, stmt.span)?;
-    let after = text.get(Span { start: value.span.end, end: stmt.span.end })?;
-    let at = after.find("else")?;
-    if !after.get(..at)?.trim().is_empty() {
-        return None;
-    }
-    let start = value.span.end + u32::try_from(at).ok()?;
-    let word = Span { start, end: start + 4 };
-    Some(Diagnostic::new("a `with` source's cleanup is `lend x except:`", word).with_fix(word, "except"))
-}
-
 /// Each `else` on a call that can fail, written as `except`, and `x.len()` as `len(x)`. With
 /// no types, only `else as why:`, which only a failure takes.
 fn failure_fixes(
@@ -213,6 +195,15 @@ fn failure_fixes(
             if let Some(fix) = builtin_call(expr, typed_exprs.as_ref(), sources) {
                 found.push(fix);
             }
+            // `x = f() except why:` over a block that's a `match why:`, as `fennec fix` writes
+            // `else as why:` first: the `match`'s arms written right under `except why:`.
+            if let ExprKind::Else { value, default, except: true } = &expr.kind
+                && let (Some(typed_exprs), Some(checked)) = (&typed_exprs, &checked)
+                && let Some(fix) =
+                    nested_match_fix((value, default), (typed_exprs, &checked.signatures), sources)
+            {
+                found.push(fix);
+            }
             let ExprKind::Else { value, default, except: false } = &expr.kind else { return };
             if !whole.contains(&(expr.span.start, expr.span.end)) {
                 return;
@@ -224,8 +215,6 @@ fn failure_fixes(
                         _ => return,
                     }
                 }
-                // Only a failure is named with `else as`.
-                _ if matches!(default.else_block(), Some((Some(_), _))) => None,
                 _ => return,
             };
             if let Some(fix) = failure_fix((value, default), failing, sources) {
@@ -576,6 +565,32 @@ fn whole_values(module: &Module) -> HashSet<(u32, u32)> {
     whole
 }
 
+/// `x = f() except why:` over a block that starts with `match why:`, refused, its arms written right
+/// under `except why:` instead, moved out a level (see `arms_under`).
+fn nested_match_fix(
+    (value, default): (&Expr, &Expr),
+    (typed_exprs, signatures): (&HashMap<(u32, u32), &Type>, &crate::Signatures),
+    sources: &Sources,
+) -> Option<Diagnostic> {
+    let (Some(name), body) = default.else_block()? else { return None };
+    // `except Case(): value` is written in as a `match` over a name of its own, and arms right
+    // under `except why:` as one over `why`, which are the form of today.
+    if name == crate::except::ONE_CASE || crate::except::arms_under(name, body).is_some() {
+        return None;
+    }
+    let Some(Type::Result(_, error)) = typed_exprs.get(&(value.span.start, value.span.end)) else {
+        return None;
+    };
+    let all = failures(error, signatures).unwrap_or_default();
+    let text = Text::of(sources, value.span)?;
+    let (at, arms) = arms_under(name, body, &text, &all)?;
+    Some(
+        Diagnostic::new(format!("`match {name}:` goes away under `except`"), at)
+            .with_help(format!("write the `case` arms right under `except {name}:`, with no `match`"))
+            .with_fix(at, arms),
+    )
+}
+
 /// `value else ...` on a call that can fail with `error`, written with `except`.
 fn failure_fix(
     (value, default): (&Expr, &Expr),
@@ -591,26 +606,13 @@ fn failure_fix(
     // A block starts at its `:`, and a way out on the line, as `else return`, at its word.
     let block = text.get(default.span)?.starts_with(':');
     let all = failing.and_then(|(error, signatures)| failures(error, signatures)).unwrap_or_default();
-    let mut diagnostic = Diagnostic::new("a failure is handled with `except` now", between);
-    match default.else_block() {
-        // A `match why:` that's all of the block is its arms, which needn't read `why`.
-        Some((Some(name), body)) if arms_under(name, body, &text, &all).is_some() => {
-            let (at, arms) = arms_under(name, body, &text, &all)?;
-            diagnostic = diagnostic.with_fix(between, format!(" except {name}")).with_fix(at, arms);
-        }
-        Some((Some(name), body)) if body.iter().any(|stmt| crate::except::stmt_uses(stmt, name)) => {
-            diagnostic = diagnostic.with_fix(between, format!(" except {name}"));
-        }
-        _ => {
-            if all.is_empty() {
-                return None;
-            }
-            let cases = all.iter().map(|(_, pattern)| pattern.as_str()).collect::<Vec<_>>().join(" | ");
-            let after = if block { "" } else { ": " };
-            diagnostic = diagnostic.with_fix(between, format!(" except {cases}{after}"));
-        }
+    let diagnostic = Diagnostic::new("a failure is handled with `except` now", between);
+    if all.is_empty() {
+        return None;
     }
-    Some(diagnostic)
+    let cases = all.iter().map(|(_, pattern)| pattern.as_str()).collect::<Vec<_>>().join(" | ");
+    let after = if block { "" } else { ": " };
+    Some(diagnostic.with_fix(between, format!(" except {cases}{after}")))
 }
 
 /// A `match name:` that's all of a block, as its arms written right under `except name:`: the
@@ -833,7 +835,9 @@ const RESERVED: [&str; 29] = [
 /// rewrites `fennec fix --migrate` does, which these point at.
 pub(crate) fn old_forms(module: &Module, checked: &crate::Checked) -> Vec<Diagnostic> {
     let mut found = elses_on_failures(module, checked);
-    found.extend(old_lends_and_returns(module));
+    found.extend(old_returns(module));
+    found.extend(methods_for_builtins(module, checked));
+    found.extend(nested_matches(module));
     for (span, name, _) in checked.types.functions.values().flat_map(crate::Body::names) {
         if RESERVED.contains(&name) && by_hand(span) {
             found.push(
@@ -935,6 +939,64 @@ fn elses_on_failures(module: &Module, checked: &crate::Checked) -> Vec<Diagnosti
     found
 }
 
+/// Each `x.len()` or `x.abs()` on a value: `len` and `abs` are builtins, written `len(x)` and
+/// `abs(x)`, as in Python. A type's name before one, as `Grid.len()`, is a call of its own
+/// function, and the standard library's own code is its own.
+fn methods_for_builtins(module: &Module, checked: &crate::Checked) -> Vec<Diagnostic> {
+    let mut calls = Vec::new();
+    fennec_syntax::read::exprs(module, &mut |expr| {
+        if let ExprKind::Call { callee, args } = &expr.kind
+            && args.is_empty()
+            && let ExprKind::Attr { object, name, optional: false } = &callee.kind
+            && matches!(name.as_str(), "len" | "abs")
+            && by_hand(expr.span)
+            // What the checker writes in for `len(x)` keeps the name's own span, before `x`.
+            && callee.span.end > object.span.start
+        {
+            calls.push((expr.span, (object.span.start, object.span.end), name.clone()));
+        }
+    });
+    if calls.is_empty() {
+        return Vec::new();
+    }
+    let values: HashSet<(u32, u32)> = checked
+        .types
+        .functions
+        .values()
+        .flat_map(crate::Body::exprs)
+        .filter(|(_, ty)| !matches!(ty, Type::Unknown))
+        .map(|(span, _)| (span.start, span.end))
+        .collect();
+    calls
+        .into_iter()
+        .filter(|(_, object, _)| values.contains(object))
+        .map(|(span, _, name)| {
+            Diagnostic::new(format!("`{name}` is a builtin, written `{name}(x)`, as in Python"), span)
+                .with_help(format!("write `{name}(x)` for `x.{name}()`; `fennec fix` makes this change"))
+        })
+        .collect()
+}
+
+/// Each `match why:` under `except why:`, whose arms go right under the `except` with no `match`.
+fn nested_matches(module: &Module) -> Vec<Diagnostic> {
+    let mut found = Vec::new();
+    fennec_syntax::read::exprs(module, &mut |expr| {
+        if let ExprKind::Else { default, except: true, .. } = &expr.kind
+            && by_hand(expr.span)
+            && let Some((name, body)) = default.failure_named()
+            && name != crate::except::ONE_CASE
+            && crate::except::arms_under(name, body).is_none()
+            && let Some(span) = crate::except::nested_match(name, body)
+        {
+            found.push(
+                Diagnostic::new(format!("`match {name}:` goes away under `except`"), span)
+                    .with_help(format!("write the `case` arms right under `except {name}:`, with no `match`; `fennec fix` makes this change")),
+            );
+        }
+    });
+    found
+}
+
 /// The body of each function, method and test in a module, those written inside them included.
 fn bodies_of(module: &Module) -> Vec<&[Stmt]> {
     let mut defs = Vec::new();
@@ -956,8 +1018,8 @@ fn bodies_of(module: &Module) -> Vec<&[Stmt]> {
     bodies
 }
 
-/// Each `lend x else:`, and each `def`'s value on its last line without `return`.
-fn old_lends_and_returns(module: &Module) -> Vec<Diagnostic> {
+/// Each `def`'s value on its last line without `return`.
+fn old_returns(module: &Module) -> Vec<Diagnostic> {
     let mut defs = Vec::new();
     for item in &module.items {
         match item {
@@ -971,30 +1033,7 @@ fn old_lends_and_returns(module: &Module) -> Vec<Diagnostic> {
     for def in defs {
         nested(def, &mut all);
     }
-    let mut found: Vec<Diagnostic> =
-        all.iter().filter(|def| by_hand(def.span)).flat_map(|def| def_return(def)).collect();
-    let mut bodies: Vec<&[Stmt]> =
-        all.iter().filter(|def| by_hand(def.span)).map(|def| def.body.as_slice()).collect();
-    bodies.extend(module.items.iter().filter_map(|item| match item {
-        Item::Test(test) if by_hand(test.span) => Some(test.body.as_slice()),
-        _ => None,
-    }));
-    for body in bodies {
-        let mut stmts = Vec::new();
-        statements(body, &mut stmts);
-        for stmt in stmts {
-            if let StmtKind::Lend { otherwise, except: false, .. } = &stmt.kind
-                && !otherwise.is_empty()
-                && by_hand(stmt.span)
-            {
-                found.push(
-                    Diagnostic::new("a `with` source's cleanup is written `lend x except:` now", stmt.span)
-                        .with_help("write `except` for `else`; `fennec fix` makes this change"),
-                );
-            }
-        }
-    }
-    found
+    all.iter().filter(|def| by_hand(def.span)).flat_map(|def| def_return(def)).collect()
 }
 
 #[cfg(test)]
@@ -1061,39 +1100,6 @@ mod tests {
         );
     }
 
-    /// A block that's a `match why:` and then more lines has its cases moved up, each that
-    /// doesn't leave ending with those lines, and a `case _:` that doesn't use `why` names what
-    /// the cases before it leave.
-    #[test]
-    fn a_match_and_what_follows_it_become_the_cases() {
-        let source = "error Bad:\n    Empty\n    Long(size: int)\n    Odd\n\n\
-            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
-            def shown(n: int, stdout: Stdout) -> int:\n    got = load(n) else as why:\n        match why:\n            \
-            case .Long(size):\n                return size\n            case _:\n                stdout.print(\"short\")\n        \
-            0\n    return got\n\n\
-            def main(stdout: Stdout):\n    stdout.print(shown(1, stdout))\n";
-        let expected = "    got = load(n) except why:\n        case .Long(size):\n            return size\n        \
-            case .Empty | .Odd:\n            stdout.print(\"short\")\n            0\n    return got\n";
-        let migrated = migrated(source);
-        assert!(migrated.contains(expected), "{migrated}");
-    }
-
-    /// A case that names the failure again, `case error:`, becomes `case _:` with `error`
-    /// given `why`, and `x += f() else d`, where `except` can't stand, gets a line of its own.
-    #[test]
-    fn a_case_naming_the_failure_again_reads_why() {
-        let source = "error Bad:\n    Empty\n    Long(size: int)\n\n\
-            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
-            def shown(n: int, stdout: Stdout) -> int:\n    mut total = 0\n    total += load(n) else 1\n    \
-            got = load(n) else as why:\n        match why:\n            case .Long(size):\n                return size\n            \
-            case problem:\n                stdout.print(problem)\n                return -1\n    return got + total\n\n\
-            def main(stdout: Stdout):\n    stdout.print(shown(1, stdout))\n";
-        let expected = "    load_value = load(n) except .Empty | .Long(): 1\n    total += load_value\n    got = load(n) except why:\n        case .Long(size):\n            \
-            return size\n        case _:\n            problem = why\n            stdout.print(problem)\n            return -1\n";
-        let migrated = migrated(source);
-        assert!(migrated.contains(expected), "{migrated}");
-    }
-
     /// An `else` on a failing call inside a statement goes on a line of its own before it, into a
     /// name the statement reads, one for each, in order, and a `def`'s last line still gets its
     /// `return`. One inside an arrow function, or after a call that runs first, stays.
@@ -1129,23 +1135,6 @@ mod tests {
         );
     }
 
-    /// A case whose body is on its own line, `case .Long(size): stdout.print(size)`, gets a
-    /// block once the lines after the `match` are added to it.
-    #[test]
-    fn a_case_on_one_line_becomes_a_block_when_lines_follow_it() {
-        let source = "error Bad:\n    Empty\n    Long(size: int)\n\n\
-            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
-            def shown(n: int, stdout: Stdout):\n    got = load(n) else as why:\n        match why:\n            \
-            case .Long(size): stdout.print(size)\n            case .Empty: stdout.print(\"empty\")\n        return\n    \
-            stdout.print(got)\n\n\
-            def main(stdout: Stdout):\n    shown(1, stdout)\n";
-        let migrated = migrated(source);
-        assert!(
-            migrated.contains("    got = load(n) except why:\n        case .Long(size):\n            stdout.print(size)\n            return\n        case .Empty:\n            stdout.print(\"empty\")\n            return\n"),
-            "{migrated}"
-        );
-    }
-
     /// `x.len()` at the end of a chain whose step can fail or be missing stays: the chain's
     /// `else` ends it, and `len(...)` would hold the chain as an argument.
     #[test]
@@ -1167,5 +1156,53 @@ mod tests {
             def shown(stdout: Stdout):\n    stdout.print(two())\n\n\
             def main(stdout: Stdout):\n    shown(stdout)\n";
         assert_eq!(migrated(source), source.replace("    1 + 1", "    return 1 + 1"));
+    }
+
+    /// A block that's a `match why:` and then more lines has its cases moved up, each that
+    /// doesn't leave ending with those lines, and a `case _:` that doesn't use `why` names what
+    /// the cases before it leave.
+    #[test]
+    fn a_match_and_what_follows_it_become_the_cases() {
+        let source = "error Bad:\n    Empty\n    Long(size: int)\n    Odd\n\n\
+            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+            def shown(n: int, stdout: Stdout) -> int:\n    got = load(n) except why:\n        match why:\n            \
+            case .Long(size):\n                return size\n            case _:\n                stdout.print(\"short\")\n        \
+            0\n    return got\n\n\
+            def main(stdout: Stdout):\n    stdout.print(shown(1, stdout))\n";
+        let expected = "    got = load(n) except why:\n        case .Long(size):\n            return size\n        \
+            case .Empty | .Odd:\n            stdout.print(\"short\")\n            0\n    return got\n";
+        let migrated = migrated(source);
+        assert!(migrated.contains(expected), "{migrated}");
+    }
+    /// A case that names the failure again, `case error:`, becomes `case _:` with `error`
+    /// given `why`, and `x += f() else d`, where `except` can't stand, gets a line of its own.
+    #[test]
+    fn a_case_naming_the_failure_again_reads_why() {
+        let source = "error Bad:\n    Empty\n    Long(size: int)\n\n\
+            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+            def shown(n: int, stdout: Stdout) -> int:\n    mut total = 0\n    total += load(n) else 1\n    \
+            got = load(n) except why:\n        match why:\n            case .Long(size):\n                return size\n            \
+            case problem:\n                stdout.print(problem)\n                return -1\n    return got + total\n\n\
+            def main(stdout: Stdout):\n    stdout.print(shown(1, stdout))\n";
+        let expected = "    load_value = load(n) except .Empty | .Long(): 1\n    total += load_value\n    got = load(n) except why:\n        case .Long(size):\n            \
+            return size\n        case _:\n            problem = why\n            stdout.print(problem)\n            return -1\n";
+        let migrated = migrated(source);
+        assert!(migrated.contains(expected), "{migrated}");
+    }
+    /// A case whose body is on its own line, `case .Long(size): stdout.print(size)`, gets a
+    /// block once the lines after the `match` are added to it.
+    #[test]
+    fn a_case_on_one_line_becomes_a_block_when_lines_follow_it() {
+        let source = "error Bad:\n    Empty\n    Long(size: int)\n\n\
+            def load(n: int) -> int fails Bad:\n    if n == 1: fail .Empty\n    return n\n\n\
+            def shown(n: int, stdout: Stdout):\n    got = load(n) except why:\n        match why:\n            \
+            case .Long(size): stdout.print(size)\n            case .Empty: stdout.print(\"empty\")\n        return\n    \
+            stdout.print(got)\n\n\
+            def main(stdout: Stdout):\n    shown(1, stdout)\n";
+        let migrated = migrated(source);
+        assert!(
+            migrated.contains("    got = load(n) except why:\n        case .Long(size):\n            stdout.print(size)\n            return\n        case .Empty:\n            stdout.print(\"empty\")\n            return\n"),
+            "{migrated}"
+        );
     }
 }

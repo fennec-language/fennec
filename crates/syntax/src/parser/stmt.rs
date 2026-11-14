@@ -332,17 +332,19 @@ impl Parser {
     }
 
     /// `lend value`, or `lend value except:` and the block that runs when the caller's fails.
-    /// `lend value else:`, its form before 2026-11-11, is read too, for the checker to refuse
-    /// with what to write.
+    /// `lend value else:`, its form before 2026-11-11, is refused with the fix.
     fn lend_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.advance().span;
         let value = self.or_expr()?;
+        if self.at_kw(Kw::Else) {
+            let word = self.span();
+            return Err(Diagnostic::new("a `with` source's cleanup is written `lend x except:`", word)
+                .with_help("write `except` for `else`")
+                .with_fix(word, "except"));
+        }
         let (otherwise, except) = if self.eat_kw(Kw::Except) {
             self.expect_p(Punct::Colon)?;
             (self.block()?, true)
-        } else if self.eat_kw(Kw::Else) {
-            self.expect_p(Punct::Colon)?;
-            (self.block()?, false)
         } else {
             self.end_line()?;
             (Vec::new(), true)

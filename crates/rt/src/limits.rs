@@ -540,7 +540,15 @@ mod tests {
         let missing = call(&fs, "_sqlite_open", &[Value::str(&format!("{folder}/missing.db"))]);
         assert!(matches!(missing, Value::Err(_)), "{missing:?}");
         assert!(!std::path::Path::new(&format!("{folder}/missing.db")).exists(), "a database was made");
-        let _ = std::fs::remove_dir_all(&folder);
+        // Each database is closed before its folder goes: a `Database` holds only its handle, so
+        // dropping it leaves the connection open, and Windows won't remove a file that's open.
+        for database in [made, opened] {
+            if let Value::Ok(database) = database {
+                let closed = crate::stdlib::sqlite::call(handle(&database), "_close", &[], Span::default());
+                assert!(matches!(closed, Ok(Value::Unit)), "{closed:?}");
+            }
+        }
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     /// A path out of a narrowed `Fs`'s folder, by `..` or by a link inside it, is refused.
@@ -559,6 +567,45 @@ mod tests {
             let linked = Value::str(&format!("{folder}/inside/out.txt"));
             assert!(matches!(call(&fs, "read_text", &[linked]), Value::Err(_)));
         }
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// A link inside a narrowed `Fs`'s folder to something outside it, or to nothing yet outside
+    /// it, is refused for every method, saying so, and nothing is made or changed outside. A path
+    /// holding a NUL is refused for what it is, not as the system's bad input.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_is_refused_for_every_method_and_a_nul_is_named() {
+        let folder = scratch("links");
+        std::fs::create_dir_all(format!("{folder}/inside/sub")).unwrap();
+        std::fs::write(format!("{folder}/secret.txt"), "outside").unwrap();
+        std::os::unix::fs::symlink("../secret.txt", format!("{folder}/inside/file")).unwrap();
+        std::os::unix::fs::symlink("..", format!("{folder}/inside/up")).unwrap();
+        std::os::unix::fs::symlink("../made.txt", format!("{folder}/inside/dangling")).unwrap();
+        let fs = fs_in(&format!("{folder}/inside"));
+        let at = |name: &str| Value::str(&format!("{folder}/inside/{name}"));
+        for (method, args) in [
+            ("read_text", vec![at("file")]),
+            ("write_text", vec![at("file"), Value::str("changed")]),
+            ("write_text", vec![at("dangling"), Value::str("made")]),
+            ("write_text", vec![at("up/made.txt"), Value::str("made")]),
+            ("list_dir", vec![at("up")]),
+            ("make_dir", vec![at("up/new")]),
+            ("remove", vec![at("up/secret.txt")]),
+        ] {
+            let got = call(&fs, method, &args);
+            assert!(
+                matches!(&got, Value::Err(_))
+                    && format!("{got:?}").contains("outside what this Fs can reach"),
+                "{method} {args:?} gave {got:?}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(format!("{folder}/secret.txt")).unwrap(), "outside");
+        for made in ["made.txt", "new"] {
+            assert!(!std::path::Path::new(&format!("{folder}/{made}")).exists(), "{made} was made outside");
+        }
+        let Value::Err(nul) = call(&fs, "read_text", &[at("a\0b")]) else { panic!("a NUL was read") };
+        assert!(format!("{nul:?}").contains("can't be a path: it holds a NUL"), "{nul:?}");
         let _ = std::fs::remove_dir_all(&folder);
     }
 

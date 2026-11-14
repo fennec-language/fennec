@@ -248,5 +248,61 @@ test "an int takes the bytes its zigzag form needs, either side of where one mor
         assert pack.loads[int](data)? == n
         assert len(data) - value_at(data) == size
 
+## One of each kind of value, as the test above has it.
+def everything() -> Everything:
+    return Everything(
+        small=0,
+        big=9223372036854775807,
+        low=-9223372036854775807 - 1,
+        ratio=-0.0,
+        flag=True,
+        word="héllo, 日本",
+        empty_word="",
+        raw=bytes([0, 255, 128]),
+        empty_raw=bytes([]),
+        numbers=[1, -1, 300],
+        nothing=[],
+        grid=[[1.5], [], [2.5, 3.5]],
+        names={"a": 1, "": 2},
+        pair=(4, "four"),
+        maybe=5,
+        absent=None,
+        dot=.Dot,
+        box=.Box(width=3, height=-4),
+        either="text",
+        wait=1500ms,
+        at=Point(x=-1, y=2),
+    )
+
+test "a number written in more bytes than it needs fails, so a value packs one way only"():
+    data = pack.dumps(Point(x=1, y=2))
+    start = value_at(data)
+    # x is 1, which zigzag writes as the one byte 2; 130 then 0 says the same in two.
+    longer = data[0:start] + bytes([130, 0]) + data[start + 1:len(data)]
+    assert why_not(() => pack.loads[Point](longer)?).startswith(
+        "a number is written in more bytes than it needs",
+    )
+    assert pack.loads[Point](data)? == Point(x=1, y=2)
+
+test "a text that isn't UTF-8, an overlong form among them, fails"():
+    data = pack.dumps(Labelled(x="ab", y=1))
+    start = value_at(data)
+    # The text's length, 2, then its two bytes: written instead as `/` in an overlong form.
+    for wrong in [[192, 175], [255, 254], [237, 160]]:
+        bad = data[0:start + 1] + bytes(wrong) + data[start + 3:len(data)]
+        assert why_not(() => pack.loads[Labelled](bad)?).startswith("a text isn't UTF-8")
+
+test "every cut of a value fails, and every byte changed fails or reads, never stopping"():
+    whole = pack.dumps(everything())
+    for end in range(len(whole)):
+        assert why_not(() => pack.loads[Everything](whole[0:end])?) != "loaded"
+    for at in range(len(whole)):
+        for byte in [0, 1, 127, 128, 255]:
+            changed = whole[0:at] + bytes([byte]) + whole[at + 1:len(whole)]
+            # Either it fails, saying why, or it reads as some value: what matters is that it ends.
+            _ = pack.loads[Everything](changed) except ParseError():
+                continue
+    assert pack.loads[Everything](whole)? == everything()
+
 def main(stdout: Stdout):
     stdout.print(len(pack.dumps(Point(x=1, y=2))))

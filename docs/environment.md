@@ -29,6 +29,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_BOXED_RESULTS`: `1` builds every result as a block of its own, as before results were kept in place: the case's number, then the value or the error, in the caller's slot. It's there to tell the two apart if a result kept in place is ever wrong.
 - `FENNEC_STRIP_FACTS`: `1` builds without the facts the compiler hands LLVM beside the code: `!range`, `!tbaa`, `!invariant.load`, `inbounds`, `nsw` and `nuw`, `noalias`, `captures(none)` and `llvm.assume`. The program runs the same, only slower. One that prints otherwise was handed a wrong fact, which is the only way to catch a wrong TBAA tag. The nightly proofs run builds everything both ways and compares.
 - `FENNEC_SANITIZE`: `address` or `thread` builds programs with that sanitizer.
+- `FENNEC_AUDIT`: `1` has a program check its heap as it ends: each live block's owner count against the holders found for it, and that a root leads to it. What's wrong is said on stderr, a line for each block, and the program exits with 87. Only a runtime built with its `audit` feature checks, which no release is. It doesn't check native blocks, or blocks behind a `shared` value's lock.
 - `FENNEC_EXPECT_LLVM`: LLVM's tests fail rather than skip themselves when its tools are missing.
 - `FENNEC_EXPECT_STATIC`: the static-link test fails rather than skips when musl is missing.
 - `FENNEC_PARALLEL_STRESS`: every parallel loop runs on the pool, split one item a range.
@@ -38,6 +39,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_PIN_OUTPUTS`: rewrites `crates/fennec/tests/fixtures/pinned` from this build's results.
 - `FENNEC_UPDATE_UNCHECKED`: `1` rewrites `crates/llvm/unchecked_runtime_calls.txt`, the ratchet of runtime calls emitted code doesn't check yet, from what the lint finds now.
 - `FENNEC_RUN_WAITS`: `fennec run` waits for the program rather than becoming it, so its time can be measured.
+- `FENNEC_NEW_EXECUTABLES`: a file every executable a build makes as a new file is added to, a line each, so the gate can count them: macOS can hold a new file's first launch. One linked out of the store, the same file as one launched before, isn't added.
 - `FENNEC_LINK_KEEP`: a build keeps the objects it links, whole, in the folder this names, for the loader's tests to link them their own way and compare with the system linker's.
 - `FENNEC_LIVE_REPORT`: a program writes the runtime's live counts to this file as it ends.
 - `FENNEC_HASH_SEED`: a fixed seed for dict hashing, so a run's order repeats. `fennec test` sets it.

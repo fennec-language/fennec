@@ -207,6 +207,8 @@ impl Pool {
     ) {
         let here = 0_u8;
         LIMIT.set(std::ptr::from_ref(&here).addr().saturating_sub(WORKER_NATIVE_BYTES));
+        // The runtime has the rest of the worker's stack: a read into a tree may use most of it.
+        crate::embed::heap::reads_may_reach(LIMIT.get().saturating_sub(WORKER_RUNTIME_BYTES / 4 * 3));
         super::super::threads::take_index();
         WORKER.set(true);
         HERE.set(Some((self, at)));

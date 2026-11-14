@@ -174,6 +174,13 @@ impl Table {
         (sizes, never_freed)
     }
 
+    /// Every block it holds, in no order, for the heap's audit to read where it lies.
+    #[cfg(any(test, feature = "audit"))]
+    pub(super) fn all(&self) -> impl Iterator<Item = &[u64]> {
+        let placed = self.regions.iter().flat_map(|(_, pages)| pages.iter().flatten());
+        placed.flat_map(|page| page.iter().flatten()).chain(self.short.values()).map(|block| &**block)
+    }
+
     /// How many blocks it holds that can still be freed: all but those kept for the whole run, like
     /// literals and the cases with no fields made the first time they're asked for.
     pub(super) fn freeable(&self) -> usize {

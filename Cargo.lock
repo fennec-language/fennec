@@ -282,6 +282,7 @@ dependencies = [
  "fennec-fmt",
  "fennec-ir",
  "fennec-lint",
+ "fennec-oracle",
  "fennec-parked",
  "fennec-re",
  "fennec-rt",
@@ -373,6 +374,14 @@ dependencies = [
  "fennec-lint",
  "fennec-syntax",
  "fennec-temp",
+]
+
+[[package]]
+name = "fennec-oracle"
+version = "0.0.1"
+dependencies = [
+ "fennec-check",
+ "fennec-syntax",
 ]
 
 [[package]]

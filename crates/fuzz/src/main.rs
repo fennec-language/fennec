@@ -214,12 +214,25 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
         let run = supervise::Run { fennec_fuzz: &fennec_fuzz, target, seed: options.seed, stuck };
         let outcome = run.until(options.seconds, options.inputs)?;
         println!("{}: {} inputs, {} failures", target.name, outcome.inputs, outcome.failures.len());
-        for (failure, number) in outcome.failures {
+        for failed in outcome.failures {
             found_any = true;
-            keep(&fennec_fuzz, target, &options, failure, number)?;
+            println!("{} {}: {}", target.name, failed.failure, how_many(&failed.inputs, outcome.inputs));
+            if let Some(&first) = failed.inputs.first() {
+                keep(&fennec_fuzz, target, &options, failed.failure, first)?;
+            }
         }
     }
     Ok(if found_any { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+}
+
+/// How many of the inputs run failed one way, and the first few: `37 of 400 inputs (2, 5, 9, …)`.
+fn how_many(failing: &[u64], run: u64) -> String {
+    const SHOWN: usize = 8;
+    let mut first: Vec<String> = failing.iter().take(SHOWN).map(u64::to_string).collect();
+    if failing.len() > SHOWN {
+        first.push("…".to_owned());
+    }
+    format!("{} of {run} inputs ({})", failing.len(), first.join(", "))
 }
 
 /// Cuts a failure's input down and keeps it, named by its contents.
@@ -241,4 +254,17 @@ fn keep(
     std::fs::write(&path, &small).map_err(|err| err.to_string())?;
     println!("{} {failure}: seed {}, input {number}, kept in {}", target.name, options.seed, path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::how_many;
+
+    /// A kind of failure says how many inputs failed that way, of how many run, and the first few.
+    #[test]
+    fn how_many_failed_says_the_count_and_the_first_few() {
+        assert_eq!(how_many(&[2], 40), "1 of 40 inputs (2)");
+        let many: Vec<u64> = (1..=10).collect();
+        assert_eq!(how_many(&many, 400), "10 of 400 inputs (1, 2, 3, 4, 5, 6, 7, 8, …)");
+    }
 }

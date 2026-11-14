@@ -323,7 +323,9 @@ fn put_program(output: &Path, bytes: &[u8]) -> Result<(), String> {
     };
     put().inspect_err(|_| {
         let _ = std::fs::remove_file(&writing);
-    })
+    })?;
+    made_new(output);
+    Ok(())
 }
 
 /// Whether a program at `path` is kept as one file with the store's: on macOS, which holds a new
@@ -801,7 +803,24 @@ fn link_objects(
             format!("couldn't run the linker: {err}")
         }
     })?;
-    if linked.status.success() { Ok(took) } else { Err(link_failure(&linked)) }
+    if !linked.status.success() {
+        return Err(link_failure(&linked));
+    }
+    made_new(output);
+    Ok(took)
+}
+
+/// Adds `path` to the file `FENNEC_NEW_EXECUTABLES` names, a line each, when it's set. It's called
+/// for every executable made as a new file, linked or written from the store's bytes. One linked
+/// out of the store is the same file as one launched before, so it isn't counted. macOS can hold a
+/// new file's first launch while it's assessed, so the gate counts how many it makes.
+fn made_new(path: &Path) {
+    use std::io::Write as _;
+    let Some(log) = std::env::var_os("FENNEC_NEW_EXECUTABLES") else { return };
+    // One short line, appended, so lines from programs built at once never mix.
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+        let _ = writeln!(file, "{}", path.display());
+    }
 }
 
 /// What a Mac without Xcode's command line tools is told, as it links a program through them.

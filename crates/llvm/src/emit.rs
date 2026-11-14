@@ -2844,6 +2844,7 @@ impl Emit<'_, '_, '_> {
             "intrinsics.text_plain_end" | "intrinsics.text_escape_at" => {
                 self.text_scan(dest.ok_or("no result")?, name, args)
             }
+            "intrinsics.text_same_at" => self.text_same_at(dest.ok_or("no result")?, args),
             // A float's bits as an int, and back, which a binary format saves.
             "intrinsics.float_bits" | "intrinsics.float_of_bits" => {
                 let (value, _) = self.operand(first.ok_or("no argument")?)?;
@@ -3194,8 +3195,11 @@ impl Emit<'_, '_, '_> {
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
+            // A pair a walk over a map's items never made: its parts are read from the entry. The
+            // item of a walk over keys or values alone is a value like any other, and one that's
+            // a tuple has parts of its own.
             InstKind::GetTupleItem { dest, value: Operand::Local(pair), at }
-                if self.known.walk_items.contains_key(&pair.0) =>
+                if self.known.walk_items.get(&pair.0).is_some_and(|(_, pairs)| *pairs) =>
             {
                 self.walked_part(*dest, *pair, *at)
             }
@@ -4120,7 +4124,7 @@ def main(stdout: Stdout):
     fn a_put_into_a_dict_nothing_else_holds_checks_nothing() -> Result<(), String> {
         let program = |body: &str| {
             format!(
-                "def keep(d: dict[int, int]) -> int:\n    return d.len()\n\ndef counted(n: int, given: dict[int, int]) -> int:\n{body}\n\ndef main(stdout: Stdout):\n    stdout.print(counted(10, given={{}}))\n    return\n"
+                "def keep(d: dict[int, int]) -> int:\n    return len(d)\n\ndef counted(n: int, given: dict[int, int]) -> int:\n{body}\n\ndef main(stdout: Stdout):\n    stdout.print(counted(10, given={{}}))\n    return\n"
             )
         };
         let checked = |body: &str| -> Result<(usize, usize), String> {

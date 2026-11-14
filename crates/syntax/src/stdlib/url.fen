@@ -3,6 +3,7 @@
 # escapes URLs use for bytes they can't hold as they are, and `encode_query` and `decode_query`
 # write and read a query's `name=value` pairs as HTML forms send them, with `+` for a space.
 
+from std.intrinsics import stop
 from std.string import cut_input, quoted_input
 
 ## A URL taken apart. `path`, `query` and `fragment` hold their text with its escapes read,
@@ -43,28 +44,61 @@ export struct Url:
         host = f"[{self.host}]" if self.host.find(":") is not None else self.host
         return f"{host}:{self.port}" if self.port > 0 else host
 
+    ## Written so it reads back as the same URL, never as another: a host or scheme that would
+    ## change what it says stops the program, as a bug in the program that set it, and the rest
+    ## is escaped or led in so its parts stay where they are.
     def str(self, ref out: StrWriter):
         if self.scheme != "":
+            if not is_scheme(self.scheme):
+                stop(
+                    f"a Url's scheme can't be {quoted_input(self.scheme)}: it's a letter, then letters, digits, `+`, `-` or `.`",
+                )
             out.write(self.scheme + ":")
-        if self.host != "" or self._authority:
+        authority = self.host != "" or self._authority
+        if authority:
             out.write("//")
             if self.user != "":
-                out.write(self.user + "@")
+                # Only what would end it early is escaped: what parse read holds none of these,
+                # so it's written as it was.
+                user = self.user.replace("/", "%2F").replace("?", "%3F").replace("#", "%23")
+                out.write(user.replace("@", "%40") + "@")
+            refused = host_refused(self.host)
+            if refused != "":
+                stop(f"a Url's host can't be {quoted_input(self.host)}: {refused}")
             out.write(self.address())
         # As it was written, unless the path has been changed since.
+        mut path = quoted(self.path, keep="/:@!$&'()*+,;=")
         if self._raw_path != "" and unquote(self._raw_path) == self.path:
-            out.write(self._raw_path)
-        else:
-            out.write(quoted(self.path, keep="/:@!$&'()*+,;="))
-        if len(self.query) > 0:
+            path = self._raw_path
+        path = led_in(path, authority, self.scheme)
+        # An escape that doesn't decode, like a lone `%A9`, leaves the whole path undecoded, so
+        # one escape added could change what the rest reads as. Then it's written escaped from
+        # what it holds, which always reads back.
+        if unquote(path) != self.path:
+            path = led_in(quoted(self.path, keep="/:@!$&'()*+,;="), authority, self.scheme)
+        out.write(path)
+        # As it was written, repeated names and all, unless the query has been changed since.
+        if self._raw_query != "" and decode_query(self._raw_query) == self.query:
+            out.write("?" + self._raw_query)
+        elif len(self.query) > 0:
             out.write("?" + encode_query(self.query))
         if self.fragment != "":
             out.write("#" + quoted(self.fragment, keep="/?:@!$&'()*+,;="))
 
 ## The parts of `text`, an absolute URL like `https://example.com/a?b=1` or a relative one like
-## `/a?b=1`. Text that can't be a URL fails with an `InvalidValue` saying why: a space or a
-## control character in it, a `\` before its query, a port that isn't a number from 1 to 65535,
-## or an IPv6 address with no `]`.
+## `/a?b=1`. Text that can't be a URL fails with an `InvalidValue` saying why. What's refused is
+## what a browser, or whatever reads the URL next, could take for a different URL, so that a check
+## of what `parse` gives is a check of where the URL leads:
+## - a space or a control character anywhere, tab, CR and LF included, which a browser strips;
+## - a `\` before the query, which a browser reads as `/`;
+## - `http:`, `https:`, `ws:`, `wss:` or `ftp:` not followed by `//` and a host, and `//` with
+##   no host after it, since a browser finds a host whatever the slashes;
+## - a host holding `@`, `%`, `\`, `[`, `]`, `/`, `?` or `#`, or a character a browser maps to
+##   ASCII, like `。`, `＠` or a fullwidth letter;
+## - a host a browser reads as an IPv4 address but that isn't written as one plainly, like
+##   `127.1`, `0x7f.1`, `0177.0.0.1` or `2130706433`;
+## - brackets around anything but an IPv6 address, a zone like `%25en0` included;
+## - a port that isn't a number from 1 to 65535, or a host longer than 253 characters.
 export def parse(text: str) -> Url fails InvalidValue:
     for c in text:
         if c == " " or c.code() < 32 or c.code() == 127:
@@ -93,6 +127,13 @@ export def parse(text: str) -> Url fails InvalidValue:
     if colon is not None and colon < slash and colon > 0 and is_scheme(rest[:colon]):
         found = copy(found, scheme=rest[:colon].lower())
         rest = rest[colon + 1:]
+    special = found.scheme in SPECIAL_SCHEMES
+    # A browser reads `http:evil.com`, `http:/evil.com` and `http:///evil.com` all as a link to
+    # evil.com, whatever the slashes, so a host that isn't after `//` would be another host to it.
+    if special and not rest.startswith("//"):
+        fail InvalidValue(
+            message=f"{quoted_input(text)} isn't a URL: `{found.scheme}:` is followed by `//` and a host",
+        )
     if rest.startswith("//"):
         rest = rest[2:]
         end = rest.find("/") else len(rest)
@@ -103,8 +144,31 @@ export def parse(text: str) -> Url fails InvalidValue:
             found = copy(found, user=authority[:at_sign])
             authority = authority[at_sign + 1:]
         host, port = host_and_port(authority, text)?
+        # Against a page's own URL, a browser reads `///evil.com` as a link to evil.com too.
+        if host == "" and (special or found.scheme == ""):
+            fail InvalidValue(message=f"{quoted_input(text)} isn't a URL: its host is empty")
         found = copy(found, host=host, port=port, _authority=True)
     return copy(found, path=unquote(rest), _raw_path=rest)
+
+## The schemes a browser reads with a host whatever the slashes after them, as WHATWG's URL
+## standard has it. `file` is left out: `file:///etc/hosts` has no host.
+SPECIAL_SCHEMES = ["http", "https", "ws", "wss", "ftp"]
+
+## `path` as written, changed where it would otherwise be read as something else: after a host it
+## starts with `/`, or the two would run together; with no host, a leading `//` would be read as
+## a host, and with no scheme either, a first segment like `javascript:alert(1)` as a scheme.
+## What's escaped reads back as the same path.
+def led_in(path: str, authority: bool, scheme: str) -> str:
+    if authority:
+        if path != "" and not path.startswith("/"): return "/" + path
+        return path
+    if path.startswith("//"): return "/%2F" + path[2:]
+    if scheme == "":
+        end = path.find("/") else len(path)
+        colon = path[:end].find(":")
+        if colon is not None and colon > 0 and is_scheme(path[:colon]):
+            return path[:end].replace(":", "%3A") + path[end:]
+    return path
 
 ## Whether text can be a URL's scheme: a letter, then letters, digits, `+`, `-` or `.`.
 def is_scheme(text: str) -> bool:
@@ -125,6 +189,73 @@ def is_ipv6(text: str) -> bool:
         if not (c.isdigit() or c == ":" or c == "." or (c.lower() >= "a" and c.lower() <= "f")):
             return False
     return True
+
+## Why `host`, a name, would be another host to whatever reads it next, or "" if it wouldn't.
+## An IPv6 address, which holds `:`, is one when it's all hex digits, `:` and `.`.
+def host_refused(host: str) -> str:
+    if host.find(":") is not None:
+        if is_ipv6(host): return ""
+        return f"`{cut_input(host)}` isn't an IPv6 address"
+    for refused in ["@", "%", "\\", "[", "]", "/", "?", "#"]:
+        if host.find(refused) is not None: return f"its host can't hold `{refused}`"
+    for c in host:
+        if c == " " or c.code() < 32 or c.code() == 127:
+            return "its host can't hold a space or a control character"
+        if is_mapped_punctuation(c.code()):
+            return f"its host can't hold `{c}`, which a browser reads as ASCII punctuation or a letter"
+    # The most a name may be, as DNS has it.
+    if len(host) > 253: return "its host is longer than 253 characters"
+    if ends_in_a_number(host) and not is_ipv4(host):
+        return f"its host `{cut_input(host)}` is an IPv4 address in a form a browser reads as another: write it as four numbers from 0 to 255, like 127.0.0.1"
+    return ""
+
+## Whether a browser reads `host` as an IPv4 address: its last part, or the one before a last
+## dot, is digits, or `0x` and hex digits. Then `127.1`, `0x7f.1`, `0177.0.0.1` and `2130706433`
+## are all 127.0.0.1 to it, and to C's `inet_aton`, so a check of the host as written isn't one
+## of where it leads.
+def ends_in_a_number(host: str) -> bool:
+    mut parts = host.split(".")
+    if len(parts) > 1 and parts[-1] == "":
+        parts = parts[:-1]
+    last = parts[-1]
+    if last != "" and is_digits(last): return True
+    return last.lower().startswith("0x") and is_hex(last[2:])
+
+## Whether `host` is an IPv4 address written plainly: four numbers from 0 to 255, in decimal, with
+## no leading zero.
+def is_ipv4(host: str) -> bool:
+    parts = host.split(".")
+    if len(parts) != 4: return False
+    for part in parts:
+        if part == "" or not is_digits(part) or len(part) > 3: return False
+        if len(part) > 1 and part.startswith("0"): return False
+        number = int(part) except InvalidValue(): 256
+        if number > 255: return False
+    return True
+
+def is_digits(text: str) -> bool:
+    for c in text:
+        if c < "0" or c > "9": return False
+    return text != ""
+
+def is_hex(text: str) -> bool:
+    for c in text:
+        if not ((c >= "0" and c <= "9") or (c.lower() >= "a" and c.lower() <= "f")): return False
+    return True
+
+## Whether a browser's IDNA mapping turns character `code` into ASCII: an ideographic or small
+## full stop, a one-dot leader, or a fullwidth letter, digit or mark. In a host, `evil。com` is
+## evil.com to a browser and `a＠b` holds an `@`, so a check of the host as written isn't one of
+## where it leads.
+def is_mapped_punctuation(code: int) -> bool:
+    # U+3002, U+2024 and U+FF61; U+FE50 to U+FE6B; and U+FF01 to U+FF5E.
+    return (
+        code == 12_290
+        or code == 8_228
+        or code == 65_377
+        or (code >= 65_104 and code <= 65_131)
+        or (code >= 65_281 and code <= 65_374)
+    )
 
 ## An authority's host, lower case unless it's an IPv6 address, and its port, 0 for none.
 def host_and_port(authority: str, text: str) -> (str, int) fails InvalidValue:
@@ -157,17 +288,8 @@ def host_and_port(authority: str, text: str) -> (str, int) fails InvalidValue:
         if colon is not None:
             host = authority[:colon]
             port_text = authority[colon + 1:]
-        # Anything else here would make it another host to whatever reads it next.
-        for refused in ["@", "%", "\\", "[", "]"]:
-            if host.find(refused) is not None:
-                fail InvalidValue(
-                    message=f"{quoted_input(text)} isn't a URL: its host can't hold `@`, `%`, `\\`, `[` or `]`",
-                )
-        # The most a name may be, as DNS has it.
-        if len(host) > 253:
-            fail InvalidValue(
-                message=f"{quoted_input(text)} isn't a URL: its host is longer than 253 characters",
-            )
+        refused = host_refused(host)
+        if refused != "": fail InvalidValue(message=f"{quoted_input(text)} isn't a URL: {refused}")
         host = host.lower()
     if port_text == "": return (host, 0)
     port = int(port_text) except InvalidValue(): 0

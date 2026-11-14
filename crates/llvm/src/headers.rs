@@ -11,6 +11,89 @@ use fennec_syntax::BinOp;
 use crate::emit::Emit;
 use crate::kinds::Kind;
 
+/// `fen_same_at(text, length, start, word, size)`: whether the `size` bytes at `word` are the
+/// bytes at `text + start`, for a text of `length` bytes. It reads nothing unless
+/// `start + size` is inside the text, and then only those bytes of each: eight at a time while
+/// eight are left, then the last eight, four, two or one, which may overlap what's been compared.
+const SAME_AT: &str =
+    "define internal i1 @fen_same_at(ptr %text, i64 %length, i64 %start, ptr %word, i64 %size) #0 {
+entry:
+  %inside = icmp ule i64 %start, %length
+  %left = sub i64 %length, %start
+  %fits = icmp ule i64 %size, %left
+  %ok = and i1 %inside, %fits
+  br i1 %ok, label %compare, label %no
+compare:
+  %from = getelementptr inbounds i8, ptr %text, i64 %start
+  %wide = icmp uge i64 %size, 8
+  br i1 %wide, label %words, label %short
+words:
+  %at = phi i64 [ 0, %compare ], [ %next, %eight ]
+  %next = add i64 %at, 8
+  %whole = icmp ule i64 %next, %size
+  br i1 %whole, label %eight, label %last
+eight:
+  %a_at = getelementptr inbounds i8, ptr %from, i64 %at
+  %b_at = getelementptr inbounds i8, ptr %word, i64 %at
+  %a = load i64, ptr %a_at, align 1
+  %b = load i64, ptr %b_at, align 1
+  %same = icmp eq i64 %a, %b
+  br i1 %same, label %words, label %no
+last:
+  %end = sub i64 %size, 8
+  %la_at = getelementptr inbounds i8, ptr %from, i64 %end
+  %lb_at = getelementptr inbounds i8, ptr %word, i64 %end
+  %la = load i64, ptr %la_at, align 1
+  %lb = load i64, ptr %lb_at, align 1
+  %last_same = icmp eq i64 %la, %lb
+  ret i1 %last_same
+short:
+  %four = icmp uge i64 %size, 4
+  br i1 %four, label %fours, label %tiny
+fours:
+  %f_end = sub i64 %size, 4
+  %fa_at = getelementptr inbounds i8, ptr %from, i64 %f_end
+  %fb_at = getelementptr inbounds i8, ptr %word, i64 %f_end
+  %fa = load i32, ptr %from, align 1
+  %fb = load i32, ptr %word, align 1
+  %fa_end = load i32, ptr %fa_at, align 1
+  %fb_end = load i32, ptr %fb_at, align 1
+  %f_first = xor i32 %fa, %fb
+  %f_last = xor i32 %fa_end, %fb_end
+  %f_either = or i32 %f_first, %f_last
+  %f_same = icmp eq i32 %f_either, 0
+  ret i1 %f_same
+tiny:
+  %two = icmp uge i64 %size, 2
+  br i1 %two, label %twos, label %one
+twos:
+  %t_end = sub i64 %size, 2
+  %ta_at = getelementptr inbounds i8, ptr %from, i64 %t_end
+  %tb_at = getelementptr inbounds i8, ptr %word, i64 %t_end
+  %ta = load i16, ptr %from, align 1
+  %tb = load i16, ptr %word, align 1
+  %ta_end = load i16, ptr %ta_at, align 1
+  %tb_end = load i16, ptr %tb_at, align 1
+  %t_first = xor i16 %ta, %tb
+  %t_last = xor i16 %ta_end, %tb_end
+  %t_either = or i16 %t_first, %t_last
+  %t_same = icmp eq i16 %t_either, 0
+  ret i1 %t_same
+one:
+  %none = icmp eq i64 %size, 0
+  br i1 %none, label %yes, label %single
+single:
+  %sa = load i8, ptr %from
+  %sb = load i8, ptr %word
+  %s_same = icmp eq i8 %sa, %sb
+  ret i1 %s_same
+yes:
+  ret i1 true
+no:
+  ret i1 false
+}
+";
+
 /// How LLVM holds a header.
 pub(crate) const HEADER: &str = "[3 x i64]";
 
@@ -556,6 +639,32 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{head}"));
         self.start_block(&done);
         self.assign(dest, &at)
+    }
+
+    /// `text_same_at(text, start, word)`: whether `text`'s bytes from byte `start` begin with all
+    /// of `word`'s. `False` when `start` is below 0 or `word` would run past the text's end, which
+    /// is checked once, before any byte is read. Then the bytes are compared where they are,
+    /// eight at a time, with no call: a JSON field's name is a few bytes, and a call to the
+    /// runtime's `fennec_str_same_at` costs more than comparing them.
+    pub(crate) fn text_same_at(
+        &mut self,
+        dest: fennec_ir::LocalId,
+        args: &[fennec_ir::Operand],
+    ) -> Result<(), String> {
+        if !self.headers() {
+            return Err("it calls `intrinsics.text_same_at` where strings aren't headers".to_owned());
+        }
+        let (text, _) = self.operand(args.first().ok_or("no text")?)?;
+        let (start, _) = self.operand(args.get(1).ok_or("no place")?)?;
+        let (word, _) = self.operand(args.get(2).ok_or("no word")?)?;
+        let (length, bytes) = (self.header_byte_length(&text), self.header_bytes(&text));
+        let (size, word_bytes) = (self.header_byte_length(&word), self.header_bytes(&word));
+        self.module.add_helper("fen_same_at", SAME_AT.to_owned());
+        let same = self.temp();
+        self.line(&format!(
+            "{same} = call i1 @fen_same_at(ptr {bytes}, i64 {length}, i64 {start}, ptr {word_bytes}, i64 {size})"
+        ));
+        self.assign(dest, &same)
     }
 
     /// Where a header's text starts: in its block, or in a copy of the header on the stack.

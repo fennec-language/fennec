@@ -195,5 +195,51 @@ if [ "$(uname)" = Darwin ] && cc -o "$work/deps/held-0123456789abcdef" "$work/he
   fi
 fi
 
+# A test program waiting on a build it started isn't stuck while the build works: `driver` starts
+# `llc`, a compiler that keeps a core busy, and waits for it, longer than the wall-clock limit.
+cat > "$work/driver.c" << 'EOF'
+#include <sys/wait.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  pid_t pid = fork();
+  if (pid == 0) { execv(argv[1], argv + 1); return 127; }
+  int status;
+  waitpid(pid, &status, 0);
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+}
+EOF
+mkdir -p "$work/llvm"
+cc -o "$work/bin/driver" "$work/driver.c" || exit 1
+cc -o "$work/llvm/llc" "$work/busy.c" || exit 1
+bash -c "\"$work/bin/driver\" \"$work/llvm/llc\" 15; true" &
+parent=$!
+: > "$work/log"
+"$here/gate-watch.sh" "$parent" "$work/log" 60 4194304 4 &
+watcher=$!
+wait "$parent"
+wait "$watcher"
+if [ -s "$work/log" ]; then
+  echo "FAILED: a program waiting on a compiler at work past its wall-clock limit was stopped: $(cat "$work/log")"
+  failures=$((failures + 1))
+else
+  echo "ok: a program waiting on a compiler at work isn't stopped for its wall-clock limit"
+fi
+
+# But nothing runs past six times that limit, stuck or not, and what it started is stopped too.
+bash -c "\"$work/bin/driver\" \"$work/llvm/llc\" 40; true" &
+parent=$!
+: > "$work/log"
+"$here/gate-watch.sh" "$parent" "$work/log" 60 4194304 2 &
+watcher=$!
+wait "$parent"
+wait "$watcher"
+if grep -q "over its ceiling limit" "$work/log" && ! pgrep -f "$work/llvm/llc" > /dev/null; then
+  echo "ok: a program past its ceiling is stopped, with what it started"
+else
+  echo "FAILED: a program past its ceiling wasn't stopped with what it started: $(cat "$work/log")"
+  pkill -f "$work/llvm/llc"
+  failures=$((failures + 1))
+fi
+
 [ "$failures" = 0 ] && echo "all passed"
 exit "$failures"

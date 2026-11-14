@@ -1529,6 +1529,80 @@ fn a_single_files_kept_image_is_passed_over_when_any_file_it_read_changes() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A build of files that haven't changed is the program the store has from the last build of them,
+/// put where this one goes; an edit, to a kit's own file or to what a single file imports, builds
+/// the new program; and the same program in two folders is two programs, each naming its own.
+#[test]
+fn a_build_of_unchanged_files_is_the_program_the_last_one_made() {
+    if !crate::llvm::ready() {
+        return;
+    }
+    let dir = scratch("build_reuse").unwrap();
+    let says = |word: &str| format!("def main(stdout: Stdout):\n    stdout.print(\"{word}\")\n");
+    let kit = dir.join("kit");
+    write_kit(&kit, "greeter", "", &[("main.fen", &says("first"))]).unwrap();
+    let build = |at: &Path, args: &[&str]| {
+        let output = crate::executables::fennec_command()
+            .arg("build")
+            .args(args)
+            .current_dir(at)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env("FENNEC_NO_DAEMON", "1")
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+    };
+    let ran = |program: &Path| {
+        let output = std::process::Command::new(program).output().unwrap();
+        (text(&output.stdout), text(&output.stderr))
+    };
+    let out = dir.join("out");
+    let out_text = out.to_string_lossy().into_owned();
+    build(&kit, &["-o", &out_text]);
+    assert_eq!(ran(&out).0, "first\n");
+    // Unchanged, from the store, to the same place and to another.
+    build(&kit, &["-o", &out_text]);
+    assert_eq!(ran(&out).0, "first\n");
+    let other = dir.join("other");
+    build(&kit, &["-o", &other.to_string_lossy()]);
+    assert_eq!(ran(&other).0, "first\n");
+    // With no `-o`, named for the kit, as the build that stored it was.
+    build(&kit, &[]);
+    build(&kit, &[]);
+    assert_eq!(ran(&kit.join("greeter")).0, "first\n");
+    // An edit builds the new program.
+    std::fs::write(kit.join("src/main.fen"), says("second")).unwrap();
+    build(&kit, &["-o", &out_text]);
+    assert_eq!(ran(&out).0, "second\n");
+    // A single file, and what it imports.
+    let single = dir.join("single");
+    std::fs::create_dir_all(&single).unwrap();
+    std::fs::write(single.join("word.fen"), "export def word() -> str:\n    return \"one\"\n").unwrap();
+    std::fs::write(
+        single.join("main.fen"),
+        "from word import word\n\ndef main(stdout: Stdout):\n    stdout.print(word())\n",
+    )
+    .unwrap();
+    build(&single, &["main.fen", "-o", &out_text]);
+    build(&single, &["main.fen", "-o", &out_text]);
+    assert_eq!(ran(&out).0, "one\n");
+    std::fs::write(single.join("word.fen"), "export def word() -> str:\n    return \"two\"\n").unwrap();
+    build(&single, &["main.fen", "-o", &out_text]);
+    assert_eq!(ran(&out).0, "two\n");
+    // The same failing program in two folders: each build's program names its own.
+    let failing = "def main(stdout: Stdout):\n    zero = len(\"\")\n    stdout.print(1 // zero)\n";
+    for folder in ["a", "b", "a", "b"] {
+        std::fs::create_dir_all(dir.join(folder)).unwrap();
+        std::fs::write(dir.join(folder).join("main.fen"), failing).unwrap();
+        let program = dir.join(format!("{folder}.program"));
+        build(&dir, &[&format!("{folder}/main.fen"), "-o", &program.to_string_lossy()]);
+        let said = ran(&program).1;
+        assert!(said.contains(&format!("{folder}/main.fen")), "{folder}: {said}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A kit's kept image holds its manifest and the files of what it depends on by path: a manifest
 /// that names another dependency, or an edit to a dependency's file, runs the new program.
 #[test]

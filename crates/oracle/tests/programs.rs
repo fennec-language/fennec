@@ -473,6 +473,44 @@ fn rounding_scales_by_the_power_of_ten_nearest_it() {
     );
 }
 
+/// `std.math` runs from its own Fennec source: its vectors, `dot`, and `lerp` taken under
+/// another name with named arguments. `sin` and a float's `**` are `libm`'s, as the docs say,
+/// an int given to `sqrt` is a float, and `reversed` of a tuple is a list. What it prints is what
+/// the compiled program printed.
+#[test]
+fn std_math_runs_from_its_own_source() {
+    prints(
+        "
+        from std import math
+        from std.math import Vec3, lerp as blend, sin, sqrt
+
+        def main(stdout: Stdout):
+            a = Vec3(x=1.0, y=-2.0, z=3.0)
+            b = Vec3.zero() + Vec3(x=0.5, y=0.5, z=0.5)
+            stdout.print(a + b, abs(a - b), a.dot(b), a.cross(b))
+            stdout.print(a.normalize().length(), math.dot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]))
+            stdout.print(blend(start=0.0, end=10.0, amount=0.25), sqrt(16), sin(1.0), 2.0 ** 0.3)
+            stdout.print(reversed((1, 2, 3)), len([a, b]), abs(-1.5))
+            return
+        ",
+        "Vec3(x=1.5, y=-1.5, z=3.5) Vec3(x=0.5, y=2.5, z=2.5) 1.0 Vec3(x=-2.5, y=1.0, z=1.5)\n\
+         1.0 32.0\n\
+         2.5 4.0 0.8414709848078965 1.2311444133449163\n\
+         [3, 2, 1] 2 1.5\n",
+    );
+    // A program's own type with the name of one of the module's is refused, not mixed up with it.
+    let (_, ended) = ran("
+        from std.math import sqrt
+
+        struct Vec3:
+            x: float
+
+        def main(stdout: Stdout):
+            stdout.print(Vec3(x=sqrt(4.0)))
+        ");
+    assert_eq!(ended, Ended::Unsupported("`Vec3`, declared by the program and by std.math".to_owned()));
+}
+
 #[test]
 fn a_json_load_that_fails_says_what_and_where_as_std_json_does() {
     prints(

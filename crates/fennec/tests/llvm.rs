@@ -18688,6 +18688,104 @@ fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the next test builds: `shared` values compared every way.
+const SHARED_EQUAL: &str = r#"from std.concurrent import Crashed
+
+struct Account:
+    total = 0
+
+struct Bank:
+    accounts: list[shared Account]
+
+struct Money:
+    cents: int
+    note: str
+
+    def ==(self, other: Money) -> bool:
+        return self.cents == other.cents
+
+def compare_many(first: shared Account, second: shared Account) -> int:
+    mut equal = 0
+    for _ in range(2000):
+        if first == second:
+            equal += 1
+    return equal
+
+def found(accounts: list[shared Account], at: int) -> shared Account?:
+    if at < len(accounts): return accounts[at]
+    return None
+
+def main(stdout: Stdout) fails Crashed:
+    shared ana = Account(total=1)
+    shared ben = Account(total=1)
+    shared cora = Account(total=2)
+    stdout.print(ana == ana, ana == ben, ana == cora, Bank(accounts=[ana]) == Bank(accounts=[ben]))
+    stdout.print(ana != ben, ana != cora, [ana, ben] == [ben, ana], [ana, ben] == [ana, cora], [ana] == [ana, ben])
+    stdout.print((1, ana) == (1, ben), (1, ana) == (1, cora), (2, ana) == (1, ana))
+    everyone = [ana, ben, cora]
+    stdout.print(
+        found(everyone, 0) == found(everyone, 1),
+        found(everyone, 0) == found(everyone, 2),
+        found(everyone, 0) == found(everyone, 9),
+        found(everyone, 9) == found(everyone, 8),
+    )
+    lock cora as ref changed:
+        changed.total = 1
+    stdout.print(ana == cora, Bank(accounts=[ana, ben]) == Bank(accounts=[cora, cora]))
+    one = [Money(cents=1, note="first")]
+    stdout.print(
+        one == [Money(cents=1, note="second")],
+        one == [Money(cents=2, note="first")],
+        one != [Money(cents=1, note="other")],
+    )
+    # `ana == ben` on one task and `ben == ana` on another, many times over: never ana deadlock.
+    mut here = 0
+    with launch(() => compare_many(ana, second=ben)) as task:
+        here = compare_many(ben, second=ana)
+    stdout.print(here, "done")
+    return
+"#;
+
+/// `==` on two `shared` values compares what they hold, as printing one shows what it holds, and
+/// not which cell each is: equal when what they hold is, one equal to itself, and a change made
+/// under a lock seen by the next comparison. So are a struct, a list, a tuple and an optional
+/// holding one compared, part by part, and a list of a type with its own `==`, which wasn't
+/// lowered. Both locks are held to read while two are compared, taken in the order of their
+/// cells: one task comparing `ana == ben` 2,000 times while `main` compares `ben == ana` ends,
+/// on one thread and on eight. Native code compared the cells.
+#[test]
+fn shared_values_are_equal_when_what_they_hold_is() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("shared_equal")?;
+    let program = dir.join("shared_equal.fen");
+    std::fs::write(&program, SHARED_EQUAL)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("shared_equal"));
+    let output = executable.to_string_lossy().into_owned();
+    let wanted = "True True False True\nFalse True True False False\nTrue False False\nTrue False False True\nTrue True\nTrue False False\n2000 done\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "8"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_COUNTS", "1")
+                .output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{how:?}, {threads} threads: {said}");
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "{how:?}, {threads} threads: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What the next test builds: failed asserts, each with a `shared` value on a side.
 const SHARED_SHOWN: &str = r#"struct Account:
     total = 0

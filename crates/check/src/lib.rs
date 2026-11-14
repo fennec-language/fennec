@@ -22,6 +22,7 @@ mod builtins;
 mod call;
 mod checker;
 mod constants;
+mod crossing;
 mod effects;
 mod enumerate_lowering;
 mod except;
@@ -29,6 +30,7 @@ mod except_fix;
 mod expect;
 mod expr;
 mod extend;
+pub use crossing::Crossing;
 pub use extend::method_key;
 mod fields;
 mod function;
@@ -1130,6 +1132,7 @@ pub struct Signatures {
     locals: BTreeMap<String, Type>,
     types: Types,
     lock_verdicts: BTreeMap<String, String>,
+    crossing: Crossing,
 }
 
 /// A struct's fields, with their types, in the order they're written.
@@ -1160,6 +1163,13 @@ impl Signatures {
         &self.lock_verdicts
     }
 
+    /// Which types can ever cross to another task, so whose count needs keeping so two threads
+    /// can change it. Signatures made without a check that worked it out say every type does.
+    #[must_use]
+    pub fn crossing(&self) -> &Crossing {
+        &self.crossing
+    }
+
     /// The signatures with each `LiteralStr` written as the `str` it is to the engines: it's a
     /// rule about where a value came from, checked already, not a type of its own when it runs.
     fn without_literal(mut self) -> Signatures {
@@ -1175,6 +1185,7 @@ impl Signatures {
             each.cases.iter_mut().flat_map(|(_, fields)| fields).for_each(|(_, ty)| plain(ty));
         }
         self.locals.values_mut().for_each(plain);
+        self.crossing = std::mem::take(&mut self.crossing).without_literal();
         for body in self.types.functions.values_mut() {
             body.exprs.values_mut().chain(body.names.values_mut()).for_each(plain);
         }

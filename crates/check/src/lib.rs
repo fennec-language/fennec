@@ -36,6 +36,7 @@ pub use fields::{each_field_type, fields_of};
 mod generic;
 mod generic_copies;
 mod gone;
+mod holds;
 mod imports;
 mod index;
 mod infer;
@@ -115,6 +116,22 @@ fn refuse_old_forms(module: &Module, checked: &Checked) -> Result<(), Vec<Diagno
 /// reaches them, or lowering uses them without the program naming them.
 pub fn check_to_emit(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
     checked_typed_in(module, checker::Scope::ReachedWithFields).map(Checked::into_signatures)
+}
+
+/// What each kit a program depends on is handed, worked out from the whole program as written, by
+/// kit and capability, with where each is first handed over: what `fennec update` records in
+/// `kit.lock`'s `holds` lines, which checking a program holds it to.
+///
+/// # Errors
+///
+/// What the checker finds wrong with the program, besides any kit being handed what `kit.lock`
+/// doesn't list for it.
+pub fn holds_worked_out(
+    module: &Module,
+) -> Result<BTreeMap<String, BTreeMap<String, Span>>, Vec<Diagnostic>> {
+    let mut working = module.clone();
+    working.holds.only_worked_out = true;
+    checked_typed_in(&working, checker::Scope::Reached).map(|checked| checked.holds)
 }
 
 /// Checks a parsed module. Returns the signatures and the type of every expression and
@@ -1029,6 +1046,9 @@ pub struct Checked {
     native_json_bodies: BTreeSet<(u32, u32)>,
     /// Every type asked whether it saves or loads.
     saved_types: BTreeSet<Type>,
+    /// What each kit the program depends on is handed, by kit and capability, with where it's
+    /// first handed over: worked out only when the module asks for it, for `fennec update`.
+    holds: BTreeMap<String, BTreeMap<String, Span>>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     not_equals: BTreeSet<(u32, u32)>,
     /// The calls `len(x)` and `abs(x)`, which become `x.len()` and `x.abs()`.

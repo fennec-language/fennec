@@ -377,6 +377,10 @@ impl FnCx<'_> {
             self.note_wait(what, span);
         }
         self.note_lock_call(key, name, span);
+        if self.checker.program.functions.get(key).is_some_and(|entry| !entry.prelude) {
+            let values: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+            self.note_handed(crate::holds::To::Function(key.to_owned()), span, &values);
+        }
         self.calling.push(key.to_owned());
         self.bind_args(name, &signature.params, args, span);
         self.calling.pop();
@@ -413,6 +417,11 @@ impl FnCx<'_> {
             };
             let ty = self.arg_as(arg, &receives, found.map(|(_, param)| &param.ty));
             self.handle_passed(&arg.value, &ty);
+            if arg.is_mut
+                && let Some(callee) = self.calling.last().filter(|callee| !callee.is_empty()).cloned()
+            {
+                self.note_lent(&arg.value, &callee);
+            }
             if let Some((_, param)) = found
                 && matches!(self.checker.settled(&param.ty), Type::Arrow(..))
             {
@@ -506,6 +515,7 @@ impl FnCx<'_> {
     /// An operator defined by a value's type, like `def +` or `def []`, called with one
     /// argument.
     pub(crate) fn call_operator(&mut self, receiver: &Type, key: &str, arg: &Type, span: Span) -> Type {
+        self.note_operator(key, span, [receiver, arg]);
         let Some(signature) = self.method_signature(receiver, key) else { return Type::Unknown };
         if let Some(param) = signature.params.get(1) {
             self.check_arg(param, arg, span);
@@ -641,6 +651,13 @@ impl FnCx<'_> {
             self.ignore_args(args);
             return Type::Unknown;
         }
+        // What a method that changes its value puts there is written into whatever holds it.
+        if matches!(object.kind, ExprKind::Attr { .. } | ExprKind::Index { .. })
+            && self.changes_value(&ty, method)
+        {
+            let values: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+            self.note_into(object, span, &values);
+        }
         let ty = if method == "expect" { ty } else { self.failing_step(ty, object.span, step) };
         let optional = optional || self.chained_step(&ty, step);
         self.method_on(&MethodCall { object, method, types, args, span }, &ty, optional)
@@ -727,6 +744,16 @@ impl FnCx<'_> {
         let report = std::mem::replace(&mut self.report, false);
         let others: Vec<Type> = rest.iter().map(|member| self.method_on(call, member, false)).collect();
         self.report = report;
+        // Each member's own method is what may run, so each is handed what the call gives.
+        for member in rest {
+            let Some(owner) = member.type_name() else { continue };
+            let Some((key, entry)) = self.checker.program.method(owner, call.method) else { continue };
+            if !entry.prelude {
+                let values: Vec<&Expr> =
+                    std::iter::once(call.object).chain(call.args.iter().map(|arg| &arg.value)).collect();
+                self.note_handed(crate::holds::To::Function(key), call.span, &values);
+            }
+        }
         let settled = self.checker.settled(&returns);
         if others.iter().any(|other| self.checker.settled(other) != settled) {
             let message =
@@ -875,6 +902,8 @@ impl FnCx<'_> {
             let what = format!("`{method}` changes its value, so call it on something held in a mut name");
             self.mut_place(object, &what);
         }
+        let values: Vec<&Expr> = std::iter::once(object).chain(args.iter().map(|arg| &arg.value)).collect();
+        self.note_handed(crate::holds::To::Interface(method.to_owned()), span, &values);
         self.bind_args(method, signature.params.get(1..).unwrap_or_default(), args, span);
         signature.returns
     }
@@ -1069,6 +1098,12 @@ impl FnCx<'_> {
                 )
                 .with_help(format!("lock it to write with `as ref {name}`")),
             );
+        }
+        if self.checker.program.functions.get(key).is_some_and(|entry| !entry.prelude) {
+            let given = args.iter().map(|arg| &arg.value);
+            let values: Vec<&Expr> =
+                if takes_self { std::iter::once(object).chain(given).collect() } else { given.collect() };
+            self.note_handed(crate::holds::To::Function(key.to_owned()), span, &values);
         }
         self.calling.push(key.to_owned());
         self.bind_args(method, params, args, span);
@@ -1502,6 +1537,10 @@ impl FnCx<'_> {
     /// is written as a literal, so `where` rules can be checked when the value is made.
     fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) -> bool {
         let Target { name: type_name, case, .. } = *target;
+        if self.checker.program.type_info(type_name).is_some_and(|info| !info.prelude) {
+            let values: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+            self.note_handed(crate::holds::To::Type(type_name.to_owned()), span, &values);
+        }
         let display = case.map_or_else(|| type_name.to_owned(), |case| format!("{type_name}.{case}"));
         let mut given = vec![false; fields.len()];
         let mut unmatched_args = false;

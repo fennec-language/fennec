@@ -199,6 +199,27 @@ fn kit_toml_says_what_is_wrong_with_a_dependency() {
     );
 }
 
+/// What a dependency is handed isn't written in kit.toml: the compiler works it out, and
+/// `fennec update` records it in kit.lock. A `gets` on a dependency's line is refused, saying so,
+/// with no fix.
+#[test]
+fn kit_toml_has_no_gets_as_capabilities_are_worked_out() {
+    for line in [
+        "http = { path = \"../http\", gets = [\"Net\"] }",
+        "http = { gets = [], path = \"../http\" }",
+        "http = { path = \"../http\", gets = \"Net\" }",
+    ] {
+        let text =
+            format!("name = \"arena\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\n{line}\n");
+        let errors = fennec_kit::Manifest::parse(&text).unwrap_err();
+        assert_eq!(errors.len(), 1, "{line}");
+        assert_eq!(errors[0].message, "`http`'s capabilities aren't written in kit.toml", "{line}");
+        assert!(errors[0].fixes.is_empty() && errors[0].hint.is_none(), "{line}");
+        let help = errors[0].help.clone().unwrap_or_default();
+        assert!(help.contains("`fennec update` shows it and records it in kit.lock"), "{help}");
+    }
+}
+
 #[test]
 fn kit_toml_errors_point_at_their_line() {
     let text = "name = \"arena\"\n  colour = \"red\"  # indented\n";

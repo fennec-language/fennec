@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 use fennec_blake3::Hash;
-pub use lock::{Pin, pins, with_pins};
+pub use lock::{Holding, Pin, holds, pins, with_holds, with_pins};
 pub use manifest::{Dependency, Manifest, Source, valid_name};
 pub use plain::{plain, plain_text};
 
@@ -452,6 +452,28 @@ fn walk(root: &Path, local_git_chains: bool, resolve: Resolve<'_>) -> Result<Vec
         found.push((Found { name: name.to_owned(), folder, pin, uses }, place));
     }
     Ok(found.into_iter().map(|(found, _)| found).collect())
+}
+
+/// Where a kit comes from, as `kit.lock`'s `holds` lines record it beside what it holds: its
+/// repository's address, with its folder there, for a kit from git, or its folder from the
+/// program's own kit's for one from a path. A kit from elsewhere under the same name holds nothing
+/// until its grants are accepted again.
+#[must_use]
+pub fn source_of(kit: &Found, root: &Path) -> String {
+    if let Some(pin) = &kit.pin {
+        let folder = pin.folder.as_deref().map(|folder| format!("#{folder}")).unwrap_or_default();
+        return format!("git:{}{folder}", pin.url);
+    }
+    let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let (from, to) = (canonical(root), canonical(&kit.folder));
+    let from: Vec<_> = from.components().collect();
+    let to: Vec<_> = to.components().collect();
+    let shared = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut parts: Vec<String> = std::iter::repeat_n("..".to_owned(), from.len() - shared).collect();
+    parts.extend(to.iter().skip(shared).map(|part| part.as_os_str().to_string_lossy().into_owned()));
+    let relative = if parts.is_empty() { ".".to_owned() } else { parts.join("/") };
+    // A line is words apart, so a space in a folder's name is written escaped.
+    format!("path:{}", relative.replace('%', "%25").replace(' ', "%20"))
 }
 
 /// Puts the dependencies a kit names on the queue.

@@ -1,6 +1,12 @@
 //! The lines of `kit.lock` that pin dependencies: `kit <name> <hash> <url> <commit> [folder]`, one
 //! for each kit from git, beside the `toolchain` line the launcher writes. The hash is of the kit's
 //! files, so a commit can't come back with other content than it had when it was pinned.
+//!
+//! And the lines that say what each kit holds: `holds <name> <capability>...`, one for each kit the
+//! program hands a capability to, its own dependencies' included. The compiler works that out, and
+//! a check stops where a kit would hold more than its line says, until `fennec update` accepts it.
+
+use std::fmt::Write as _;
 
 use fennec_blake3::Hash;
 
@@ -83,4 +89,122 @@ pub fn with_pins(lock: &str, pins: &[Pin]) -> String {
         return format!("# What this kit builds with, by hash. Only `fennec update` changes it.\n{pinned}");
     }
     format!("{kept}{pinned}")
+}
+
+/// What `kit.lock` says one kit holds, and the source that was accepted for: a line belongs to
+/// where the kit comes from, not to its name, so a kit from somewhere else holds nothing until
+/// its grants are accepted again.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Holding {
+    pub kit: String,
+    /// Where the kit comes from, as `source_of` writes it: `path:../shapes`, `git:<address>`.
+    pub source: String,
+    pub holds: Vec<String>,
+}
+
+/// What each kit `kit.lock` says it holds, from its `holds <kit> <source> <capability>...` lines:
+/// a kit with none holds nothing.
+///
+/// # Errors
+///
+/// When a `holds` line names no kit or no source, or something that isn't a capability.
+pub fn holds(lock: &str) -> Result<Vec<Holding>, String> {
+    let mut holds: Vec<Holding> = Vec::new();
+    for line in lock.lines() {
+        let mut words = line.split(' ');
+        if words.next() != Some("holds") {
+            continue;
+        }
+        let bad = || format!("kit.lock's `{line}` isn't `holds <kit> <source> <capability>...`");
+        let kit = words.next().filter(|kit| crate::valid_name(kit)).ok_or_else(bad)?;
+        let source = words
+            .next()
+            .filter(|source| source.starts_with("path:") || source.starts_with("git:"))
+            .ok_or_else(bad)?;
+        let held: Vec<String> = words.map(str::to_owned).collect();
+        if held.is_empty()
+            || !held.iter().all(|capability| fennec_syntax::HOLDABLE.contains(&capability.as_str()))
+        {
+            return Err(bad());
+        }
+        match holds.iter_mut().find(|had| had.kit == kit) {
+            Some(had) if had.source == source => had.holds.extend(held),
+            Some(_) => return Err(format!("kit.lock says `{kit}` comes from two places")),
+            None => holds.push(Holding { kit: kit.to_owned(), source: source.to_owned(), holds: held }),
+        }
+    }
+    Ok(holds)
+}
+
+/// `kit.lock` saying each kit holds exactly what `holds` gives it, in order of kit, with every line
+/// that isn't a `holds` line as it was. A kit holding nothing has no line.
+pub fn with_holds(lock: &str, holds: &[Holding]) -> String {
+    let mut kept: String = lock
+        .split_inclusive('\n')
+        .filter(|line| !line.starts_with("holds "))
+        .map(|line| if line.ends_with('\n') { line.to_owned() } else { format!("{line}\n") })
+        .collect();
+    let mut sorted: Vec<&Holding> = holds.iter().filter(|holding| !holding.holds.is_empty()).collect();
+    sorted.sort();
+    if kept.is_empty() && !sorted.is_empty() {
+        kept.push_str("# What this kit builds with, by hash, and what each kit it depends on holds. Only `fennec update` changes it.\n");
+    }
+    for holding in sorted {
+        let mut held = holding.holds.clone();
+        held.sort();
+        held.dedup();
+        let _ = writeln!(kept, "holds {} {} {}", holding.kit, holding.source, held.join(" "));
+    }
+    kept
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Holding, holds, with_holds};
+
+    fn holding(kit: &str, source: &str, held: &[&str]) -> Holding {
+        Holding {
+            kit: kit.to_owned(),
+            source: source.to_owned(),
+            holds: held.iter().map(|one| (*one).to_owned()).collect(),
+        }
+    }
+
+    /// `holds` lines say what each kit holds and where it comes from, and writing them back keeps
+    /// every other line, puts them in order, and leaves out a kit that holds nothing.
+    #[test]
+    fn holds_lines_read_and_write_back_in_order() {
+        let lock = "toolchain 0.4.2\nholds net_kit git:https://example.com/net Net\nholds saves path:../saves Fs Clock\n";
+        assert_eq!(
+            holds(lock).unwrap(),
+            [
+                holding("net_kit", "git:https://example.com/net", &["Net"]),
+                holding("saves", "path:../saves", &["Fs", "Clock"])
+            ]
+        );
+        let written = with_holds(
+            lock,
+            &[
+                holding("saves", "path:../saves", &["Fs", "Clock"]),
+                holding("empty", "path:../empty", &[]),
+                holding("http", "git:https://example.com/http#kits/http", &["Net"]),
+            ],
+        );
+        assert_eq!(
+            written,
+            "toolchain 0.4.2\nholds http git:https://example.com/http#kits/http Net\nholds saves path:../saves Clock Fs\n"
+        );
+        for bad in [
+            "holds",
+            "holds http",
+            "holds http Net",
+            "holds http path:../http",
+            "holds http path:../http Network",
+            "holds Http path:../http Net",
+            "holds http path:../http Secret",
+            "holds http path:../a Net\nholds http path:../b Fs",
+        ] {
+            assert!(holds(bad).is_err(), "{bad}");
+        }
+    }
 }

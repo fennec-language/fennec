@@ -4237,6 +4237,46 @@ fn a_u64_to_a_power() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A struct held in place compares, orders as a tuple and crosses a lock whatever its fields hold, as
+/// it would boxed: here a `u64` and an `f32` beside a text, which `==` refused in place while the
+/// same struct boxed, with a `dict` beside them, compared fine. A `u64` orders unsigned.
+#[test]
+fn a_struct_in_place_compares_and_crosses_a_lock_whatever_its_fields_hold() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "in_place_any_field",
+        IN_PLACE_ANY_FIELD,
+        "True False True\nTrue False True\nPart(big=6, small=6.0, name=\"a name long enough for a block 6\") True 3\n",
+    )?;
+    assert!(counts_of("in_place_any_field_counts", IN_PLACE_ANY_FIELD)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const IN_PLACE_ANY_FIELD: &str = r#"struct Part:
+    big: u64
+    small: f32
+    name: str
+
+
+def make(n: int) -> Part:
+    return Part(big=u64(n), small=f32(n), name=f"a name long enough for a block {n}")
+
+def main(stdout: Stdout):
+    noise = [make(n + 100) for n in range(3)]
+    stdout.print(make(1) == make(1), make(1) == make(2), make(1) != make(2))
+    stdout.print((u64(1), "a") < (u64(2), "a"), (u64(2) * u64(1 << 62), "b") < (u64(1), "b"), (u64(3), "c") <= (u64(3), "c"))
+    shared store = [make(5)]
+    lock store as ref held:
+        held.append(make(6))
+    mut taken = make(0)
+    lock store as held:
+        taken = held[1]
+    stdout.print(taken, taken == make(6), len(noise))
+    return
+"#;
+
 /// `u64`s sort as unsigned numbers natively, those past `int`'s top after the rest: by themselves,
 /// in place, by a key, and as a tuple's first item. `f32`s sort as the floats they are, and both
 /// can be what a key gives.
@@ -21618,7 +21658,8 @@ fn fennec_literal(text: &str) -> String {
 }
 
 /// `split` gives what Rust's `str::split` and `split_whitespace` give, on rows chosen for where it
-/// could go wrong: empty parts, separators at both ends, separators of two and three bytes, parts
+/// could go wrong: empty parts, separators at both ends, separators of one to nine bytes, ones
+/// that overlap themselves, ones that end at, start at and lie across a word of the text, parts
 /// of exactly 23 bytes, which are held inline, and of 24, which take a block, of ASCII and of
 /// two-byte characters, and whitespace of ASCII and beyond it. The texts and separators come out
 /// of lists, so each split is the runtime's. Every list and part is freed after, with no block
@@ -21650,6 +21691,22 @@ fn a_split_gives_what_rust_gives_at_every_edge() -> std::io::Result<()> {
         ("ab".to_owned(), "abc"),
         ("a\tb\nc".to_owned(), "\n"),
         ("x,y,z,w,v,u,t,s,r,q,p,o,n,m,l,k".to_owned(), ","),
+        // Separators of two to eight bytes are found a word at a time, and of nine as a `str`.
+        ("GET /a HTTP/1.1\r\nHost: fox\r\nAccept: */*\r\n\r\nbody".to_owned(), "\r\n"),
+        ("\r\n\r\n".to_owned(), "\r\n"),
+        ("aaa".to_owned(), "aa"),
+        ("aaaa".to_owned(), "aa"),
+        ("abababab".to_owned(), "abab"),
+        // A separator ending at, starting at and lying across the end of the text's first word.
+        ("123456--rest".to_owned(), "--"),
+        ("12345678--rest".to_owned(), "--"),
+        ("1234567--rest".to_owned(), "--"),
+        ("one12345678two12345678three".to_owned(), "12345678"),
+        ("one123456789two123456789three".to_owned(), "123456789"),
+        ("one1234567".to_owned(), "12345678"),
+        (format!("{a23}::{b24}::{e23}::{e24}::"), "::"),
+        (format!("{e24}→é{a23}→é"), "→é"),
+        ("a\r\nb\rc\nd\r".to_owned(), "\r\n"),
     ];
     let spaced: Vec<String> = vec![
         "  a\tb\nc  ".to_owned(),
@@ -21694,6 +21751,69 @@ def main(stdout: Stdout):
     let program = dir.join("split_edges.fen");
     std::fs::write(&program, &source)?;
     prints_with_nothing_left(&dir, &program, &expected, &["1"])
+}
+
+/// A value a million and three million deep, a chain of structs each in the last one's field, is
+/// compared, written as text and copied for a task, on the main thread and in a launched task,
+/// with every block freed after. The runtime compared and wrote a value by calling itself for
+/// each block it held, so `==` at three million deep and `str` at one million ended the program
+/// with a signal and no message, and in a task, on its smaller stack, far sooner. Fable's review of
+/// the drop worklist found both.
+#[test]
+fn a_value_millions_deep_is_compared_written_and_sent() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("deep_values")?;
+    let program = dir.join("deep_values.fen");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deep_values.fen"), &program)?;
+    let wanted = "1000000 True False 20888916 True True 1000000\n\
+                  in a task: True False 20888916 True True\n\
+                  3000000 True False 64888916 True True 3000000\n\
+                  in a task: True False 64888916 True True\n";
+    prints_with_nothing_left(&dir, &program, wanted, &["4"])
+}
+
+/// A dict's key that holds blocks is hashed by what it holds, which the runtime reads into a tree
+/// with a call for each level. Twenty thousand levels are hashed, on the main thread and in a
+/// task. A million stop the program with exit code 1, saying the value is nested too deep, where
+/// they ended it with a signal and no message.
+#[test]
+fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let fixture =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deep_key.fen"))?;
+    let dir = folder("deep_key")?;
+    for (depth, in_task) in [("20_000", false), ("20_000", true), ("1_000_000", false), ("1_000_000", true)] {
+        let source = fixture
+            .replace("DEPTH = 20_000", &format!("DEPTH = {depth}"))
+            .replace("IN_TASK = False", if in_task { "IN_TASK = True" } else { "IN_TASK = False" });
+        let (program, executable) = (dir.join("deep_key.fen"), dir.join("deep_key"));
+        std::fs::write(&program, source)?;
+        let built = fennec(
+            &["build", "--release", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
+            &dir,
+        )?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        let case = format!("{depth} deep, in a task: {in_task}");
+        if depth == "20_000" {
+            assert!(ran.status.success(), "{case}: {said}");
+            assert_eq!(printed, "7\n", "{case}");
+        } else {
+            assert_eq!(ran.status.code(), Some(1), "{case}: {said}");
+            assert_eq!(printed, "", "{case}");
+            assert!(
+                said.starts_with("error: a value is nested too deep to be a dict's key or a set's item"),
+                "{case}: {said}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 /// `removesuffix` and `removeprefix` give what Rust's `strip_suffix` and `strip_prefix` do, or the

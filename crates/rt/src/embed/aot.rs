@@ -85,6 +85,8 @@ pub fn run(entry: extern "C" fn(i64), length: i64, stop: fn(i32)) -> i32 {
 fn program_handed_over(length: i64, stop: fn(i32)) -> std::sync::Arc<Vec<u8>> {
     let _ = STOP.set(stop);
     super::write_kept_output_on_panic();
+    #[cfg(unix)]
+    crate::signals::ignore_broken_pipes();
     let mut bytes = IMAGE.take();
     bytes.truncate(usize::try_from(length).unwrap_or(0));
     let bytes = std::sync::Arc::new(bytes);

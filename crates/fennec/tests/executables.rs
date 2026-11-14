@@ -79,11 +79,8 @@ impl Within for Command {
 }
 
 /// Programs that end normally holding blocks, by the name of what's run, each with who is finding
-/// out why. A new one isn't added here: it's a leak to fix.
-const MAY_LEAVE_BLOCKS: &[&str] = &[
-    // std's postgres client against a scripted server leaves 1. The standard library lane has it.
-    "postgres_scripted",
-];
+/// out why. There are none. A new one isn't added here: it's a leak to fix.
+const MAY_LEAVE_BLOCKS: &[&str] = &[];
 
 /// Has a built program count what it leaves, as every one a test runs does: its name, and whether
 /// the test asked for the counts itself. `None` for the compiler and for anything that isn't a

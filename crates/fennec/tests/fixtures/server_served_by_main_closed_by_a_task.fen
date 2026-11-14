@@ -1,0 +1,18 @@
+# For the test that a server can be stopped from inside its program: `main` serves, and a task
+# that was answered once closes the server, which ends `main`'s loop.
+from std.concurrent import Crashed
+from std.net import NetError, Server
+
+# The client, in a task: it's answered once, then closes the server `main` is serving.
+def client(net: Net, server: Server, stdout: Stdout) fails NetError:
+    with net.connect("127.0.0.1", server.port)? as conn:
+        stdout.print(conn.read_line()? else "nothing")
+    server.close()
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        with launch(() => client(net, server=server, stdout=stdout)?)?:
+            for conn in parallel(server):
+                conn.write("hello\n")?
+            stdout.print("the loop ended")
+    stdout.print("stopped")

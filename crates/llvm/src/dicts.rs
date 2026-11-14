@@ -675,6 +675,9 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         let (key, held) = (key.to_owned(), held.to_owned());
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
+        if matches!(value_word, Word::InPlace(_)) {
+            return self.dict_store_in_entry(place, (key_word, value_word), (&key, &held), found);
+        }
         self.declare("declare ptr @fennec_dict_set(ptr, i64, i64) nounwind");
         let dict = self.temp();
         let (quick, change, slow, done) =
@@ -828,6 +831,86 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// `dict[key] = value` for a dict that holds its values in the entry, with the key and where
+    /// the value's words are already worked out. In a dict nothing else holds, a key that's there
+    /// has the new value written over the old one where it is: what the new one holds gains an
+    /// owner, what the old one held loses one, and nothing's made. Anything else is the runtime's:
+    /// the value's words go in its buffer, with an owner of each block they hold.
+    fn dict_store_in_entry(
+        &mut self,
+        place: &str,
+        (key_word, value_word): (Word, Word),
+        (key, held): (&str, &str),
+        found: Option<String>,
+    ) -> Result<(), String> {
+        let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
+        let dict = self.temp();
+        let (quick, change, slow, done) =
+            (self.label("quick"), self.label("change"), self.label("slow"), self.label("done"));
+        self.line(&format!("{dict} = load ptr, ptr {place}"));
+        let alone = if self.alone_dicts.contains(place) {
+            if self.checks_proofs() {
+                let (counted, shared) = (self.alone(&dict), self.temp());
+                self.line(&format!("{shared} = xor i1 {counted}, true"));
+                let span = self.here_span();
+                self.proof_held(&shared, "a dict nothing else holds is alone", span);
+            }
+            "true".to_owned()
+        } else {
+            self.alone(&dict)
+        };
+        self.line(&format!("br i1 {alone}, label %{quick}, label %{slow}"));
+        self.start_block(&quick);
+        let entry = match found {
+            Some(entry) => entry,
+            None => self.find(&dict, (key_word, value_word), key),
+        };
+        let missing = self.temp();
+        self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
+        self.line(&format!("br i1 {missing}, label %{slow}, label %{change}"));
+        self.start_block(&change);
+        let value_at = self.temp();
+        self.line(&format!(
+            "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
+            entry_value(key_word)
+        ));
+        self.retain_inline(&value_kind, held);
+        self.release_inline(&value_kind, &value_at);
+        self.store_field(&value_kind, held, &value_at, "");
+        self.line(&format!("br label %{done}"));
+        self.start_block(&slow);
+        let buffer = self.value_buffer();
+        self.store_field(&value_kind, held, &buffer, "");
+        self.retain_inline(&value_kind, &buffer);
+        let changed = self.temp();
+        if key_word == Word::Text {
+            // The key's header goes in as its words, with an owner of its block if it has one.
+            self.retain_text(key);
+            let [a, b, c] = [0, 1, 2].map(|at| self.header_word(key, at));
+            self.declare("declare ptr @fennec_dict_set_words_header(ptr, i64, i64, i64) nounwind");
+            self.line(&format!(
+                "{changed} = call ptr @fennec_dict_set_words_header(ptr {dict}, i64 {a}, i64 {b}, i64 {c})"
+            ));
+        } else {
+            let key_held = self.key_word(key_word, key)?;
+            self.declare("declare ptr @fennec_dict_set_words(ptr, i64) nounwind");
+            self.line(&format!("{changed} = call ptr @fennec_dict_set_words(ptr {dict}, i64 {key_held})"));
+        }
+        self.line(&format!("store ptr {changed}, ptr {place}"));
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        Ok(())
+    }
+
+    /// Where this thread's buffer is for a value held in a dict's entry, on its way into the dict
+    /// or out of it: the runtime reads only its own memory, so the value's words go through here.
+    fn value_buffer(&mut self) -> String {
+        self.declare("declare ptr @fennec_dict_value_words() nounwind");
+        let buffer = self.temp();
+        self.line(&format!("{buffer} = call ptr @fennec_dict_value_words()"));
+        buffer
+    }
+
     /// `dict[key]`, failing if it's not there.
     pub(crate) fn dict_read(
         &mut self,
@@ -881,12 +964,17 @@ impl Emit<'_, '_, '_> {
             entry_value(key_word)
         ));
         // A struct held in a block of its own, taken out: the block is made alone too, since a
-        // copy of the dict shares it, and what it holds is changed through it.
-        let value_at = if taking && value_kind.in_memory() {
+        // copy of the dict shares it, and what it holds is changed through it. One held in the
+        // entry is taken where it is, in a dict that's alone.
+        let in_entry = matches!(value_word, Word::InPlace(_));
+        if taking && in_entry {
+            self.no_log_for_values_in_entries()?;
+        }
+        let value_at = if taking && value_kind.in_memory() && !in_entry {
             let block = self.alone_at(&value_at, "fennec_unshare");
             self.offset(&block, crate::lists::FIELDS_OFFSET)
         } else {
-            self.value_place(&value_kind, &value_at)
+            self.value_place(value_word, &value_kind, &value_at)
         };
         self.read_into(dest, &value_kind, &value_at, "")
     }
@@ -922,7 +1010,7 @@ impl Emit<'_, '_, '_> {
             entry_value(key_word)
         ));
         if value_kind.in_memory() {
-            let at = self.value_place(&value_kind, &value_at);
+            let at = self.value_place(value_word, &value_kind, &value_at);
             self.proof_goes_back(value, &at);
             self.store_field(&value_kind, &held, &at, "");
         } else if value_kind.counted() {
@@ -972,18 +1060,38 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        // Either way the value is a block of its own: a struct's held in place in one.
-        let block = self.alone_at(&value_at, "fennec_unshare");
-        let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
+        // A value held in the entry has its fields right there, in a dict that's alone. Any other
+        // is a block of its own: a struct's held in place in one.
+        let fields = if matches!(value_word, Word::InPlace(_)) {
+            self.no_log_for_values_in_entries()?;
+            value_at
+        } else {
+            let block = self.alone_at(&value_at, "fennec_unshare");
+            self.offset(&block, crate::lists::FIELDS_OFFSET)
+        };
         let (offset, inner) = self.field(&value_kind, field)?;
         let at = self.offset(&fields, offset);
         let value = self.load_field(&inner, &at, "");
         self.assign(dest, &value)
     }
 
-    /// Where a value is, from where a dict keeps it: a plain struct or enum is in a block.
-    fn value_place(&mut self, kind: &Kind, at: &str) -> String {
-        if !kind.in_memory() {
+    /// A value held in a dict's entry can't yet be taken out to change in a function that asks a
+    /// lock's log first: the log has to be told of the value as it was, with an owner of each
+    /// block in it, before it changes, and the runtime has no call for that yet.
+    fn no_log_for_values_in_entries(&self) -> Result<(), String> {
+        // TODO(dict values): `asks_the_log()` once the lock-write change is on main.
+        if !self.saving.is_empty() {
+            return Err("it changes a dict's value held in its entry where a lock saves what changes, \
+                        which this backend doesn't take yet"
+                .to_owned());
+        }
+        Ok(())
+    }
+
+    /// Where a value is, from where a dict keeps it: right there, for one word or a value held in
+    /// the entry, and otherwise in the block a plain struct or enum has to itself.
+    fn value_place(&mut self, word: Word, kind: &Kind, at: &str) -> String {
+        if matches!(word, Word::InPlace(_)) || !kind.in_memory() {
             return at.to_owned();
         }
         let block = self.temp();
@@ -1026,7 +1134,7 @@ impl Emit<'_, '_, '_> {
                 "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
                 entry_value(key_word)
             ));
-            let value_at = self.value_place(&value_kind, &value_at);
+            let value_at = self.value_place(value_word, &value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
             self.line(&format!("br label %{done}"));
             self.start_block(&done);
@@ -1057,7 +1165,7 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        let value = self.dict_part(&value_kind, &value_at);
+        let value = self.dict_part(value_word, &value_kind, &value_at);
         let (value_kind, value, owned) = self.as_header(&value_kind, &value);
         if value_kind.counted() && !owned {
             self.retain_value(&value, &value_kind);
@@ -1490,7 +1598,7 @@ found:
         self.start_block(&found);
         let optional = self.kind_of(dest)?.clone();
         if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
-            let value_at = self.value_place(&value_kind, &value_at);
+            let value_at = self.value_place(value_word, &value_kind, &value_at);
             self.read_into(dest, &value_kind, &value_at, "")?;
         } else {
             let (number, fields) = self.case_of(&optional, "Some")?;
@@ -1654,6 +1762,54 @@ found:
         Ok(())
     }
 
+    /// `dict.pop(key)` for a dict that holds its values in the entry: the runtime leaves the
+    /// value's words in its buffer, with the owners they hold, which go to `dest` or are let go of.
+    /// A key that isn't there fails, with the dict's slot left as it was.
+    fn dict_pop_from_entry(
+        &mut self,
+        dest: Option<LocalId>,
+        dict: LocalId,
+        (key_word, value_kind): (Word, &Kind),
+        key: &str,
+        span: Span,
+    ) -> Result<(), String> {
+        if let Some(dest) = dest
+            && self.kind_of(dest)? != value_kind
+        {
+            return Err("it pops a dict's value held in its entry into something else, \
+                        which this backend doesn't take yet"
+                .to_owned());
+        }
+        let place = self.slot(dict);
+        let (held, changed) = (self.temp(), self.temp());
+        let (from, to) = self.place_in_source(span);
+        self.line(&format!("{held} = load ptr, ptr {place}"));
+        if key_word == Word::Text {
+            // The key's owner stays here.
+            self.declare("declare ptr @fennec_dict_pop_words_header(ptr, i64, i64, i64, i64, i64) nounwind");
+            let [a, b, c] = [0, 1, 2].map(|at| self.header_word(key, at));
+            self.line(&format!(
+                "{changed} = call ptr @fennec_dict_pop_words_header(ptr {held}, i64 {a}, i64 {b}, i64 {c}, i64 {from}, i64 {to})"
+            ));
+        } else {
+            let key_held = self.key_word(key_word, key)?;
+            self.declare("declare ptr @fennec_dict_pop_words(ptr, i64, i64, i64) nounwind");
+            self.line(&format!(
+                "{changed} = call ptr @fennec_dict_pop_words(ptr {held}, i64 {key_held}, i64 {from}, i64 {to})"
+            ));
+        }
+        self.leave_if_failed();
+        self.line(&format!("store ptr {changed}, ptr {place}"));
+        let buffer = self.value_buffer();
+        match dest {
+            Some(dest) => self.assign_memory_owned(dest, &buffer),
+            None => {
+                self.release_inline(value_kind, &buffer);
+                Ok(())
+            }
+        }
+    }
+
     pub(crate) fn dict_pop(
         &mut self,
         dest: Option<LocalId>,
@@ -1667,6 +1823,9 @@ found:
         };
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let key = self.key_value(key, key_word)?;
+        if matches!(value_word, Word::InPlace(_)) {
+            return self.dict_pop_from_entry(dest, *dict, (key_word, &value_kind), &key, span);
+        }
         self.declare("declare i64 @fennec_dict_popped() nounwind");
         let place = self.slot(*dict);
         let (held, changed, word) = (self.temp(), self.temp(), self.temp());
@@ -1781,7 +1940,7 @@ found:
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        let value_at = self.value_place(&value_kind, &value_at);
+        let value_at = self.value_place(value_word, &value_kind, &value_at);
         self.read_into(dest, &value_kind, &value_at, "")?;
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
@@ -1848,7 +2007,7 @@ found:
         let entry_at = self.temp();
         self.line(&format!(
             "{entry_at} = getelementptr inbounds [{} x i64], ptr {entry}, i64 {at}",
-            entry_words(key_word)
+            self.stride(key_word, value_word)
         ));
         self.line(&format!("{hash} = load i64, ptr {entry_at}"));
         self.line(&format!("{removed} = icmp eq i64 {hash}, {REMOVED}"));
@@ -1871,16 +2030,16 @@ found:
         // A set's entries hold no value, so only what's wanted is read.
         match what {
             "keys" => {
-                let key_value = self.dict_part(&key_kind, &key_at);
+                let key_value = self.dict_part(key_word, &key_kind, &key_at);
                 self.put_item(&item_kind, &key_kind, &key_value, &place);
             }
             "values" => {
-                let value_value = self.dict_part(&value_kind, &value_at);
+                let value_value = self.dict_part(value_word, &value_kind, &value_at);
                 self.put_item(&item_kind, &value_kind, &value_value, &place);
             }
             _ => {
-                let key_value = self.dict_part(&key_kind, &key_at);
-                let value_value = self.dict_part(&value_kind, &value_at);
+                let key_value = self.dict_part(key_word, &key_kind, &key_at);
+                let value_value = self.dict_part(value_word, &value_kind, &value_at);
                 self.put_pair(&item_kind, &place, [(&key_kind, &key_value), (&value_kind, &value_value)])?;
             }
         }
@@ -1908,11 +2067,11 @@ found:
     }
 
     /// An entry of a dict, by where it is among the entries.
-    fn entry_at(&mut self, entries: &str, key_word: Word, at: &str) -> String {
+    fn entry_at(&mut self, entries: &str, (key_word, value_word): (Word, Word), at: &str) -> String {
         let entry_at = self.temp();
         self.line(&format!(
             "{entry_at} = getelementptr inbounds [{} x i64], ptr {entries}, i64 {at}",
-            entry_words(key_word)
+            self.stride(key_word, value_word)
         ));
         entry_at
     }
@@ -1929,7 +2088,7 @@ found:
         let kind = self.word_kind(word).ok_or("a dict part this backend doesn't take yet")?;
         let at = self.temp();
         self.line(&format!("{at} = getelementptr inbounds i8, ptr {entry_at}, i64 {offset}"));
-        let at = self.value_place(&kind, &at);
+        let at = self.value_place(word, &kind, &at);
         self.read_into(dest, &kind, &at, "")
     }
 
@@ -1972,7 +2131,7 @@ found:
         self.start_block(&past);
         self.stop("a loop over a dict went past its entries", span);
         self.start_block(&inside);
-        let entry_at = self.entry_at(&entries, key_word, &going);
+        let entry_at = self.entry_at(&entries, (key_word, value_word), &going);
         let (hash, removed) = (self.temp(), self.temp());
         self.line(&format!("{hash} = load i64, ptr {entry_at}"));
         self.line(&format!("{removed} = icmp eq i64 {hash}, {REMOVED}"));
@@ -2013,12 +2172,16 @@ found:
         let (entries, _) = self.entries_of(&block);
         let at = self.temp();
         self.line(&format!("{at} = load i64, ptr {entry_place}"));
-        let entry_at = self.entry_at(&entries, key_word, &at);
+        let entry_at = self.entry_at(&entries, (key_word, value_word), &at);
         self.read_entry_part(dest, &entry_at, (key_word, value_word), part == 0)
     }
 
-    /// A key or value from where a dict keeps it: a plain struct key is in a block of its own.
-    fn dict_part(&mut self, kind: &Kind, at: &str) -> String {
+    /// A key or value from where a dict keeps it: a plain struct key is in a block of its own, and
+    /// a value held in the entry is right there.
+    fn dict_part(&mut self, word: Word, kind: &Kind, at: &str) -> String {
+        if matches!(word, Word::InPlace(_)) {
+            return at.to_owned();
+        }
         if kind.in_memory() {
             let (block, fields) = (self.temp(), self.temp());
             self.line(&format!("{block} = load ptr, ptr {at}"));

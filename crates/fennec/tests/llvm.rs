@@ -8620,12 +8620,16 @@ fn not_native_yet(path: &Path) -> bool {
 }
 
 /// Every example builds through LLVM, prints exactly what it should and finishes without failing.
+///
+/// Each is run with `fennec run`, in the Fennec folder every test that runs the examples shares,
+/// so one built already, by another test or an earlier run, is the program the store keeps,
+/// launched again. Built in a folder of its own and copied out, each would be a new file, which
+/// macOS holds at its first launch while it's assessed.
 #[test]
 fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let dir = folder("examples")?;
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(examples)? {
@@ -8635,41 +8639,32 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
         }
     }
     paths.sort();
-    // What became of each: built and printed this, or refused with this.
-    let outcomes = crate::executables::at_once(&paths, |worker, path| {
-        let home = dir.join(format!("home-{worker}"));
-        let executable = dir.join(format!("example-{worker}"));
-        let made = fennec(
-            &["build", "--llvm", &path.to_string_lossy(), "-o", &executable.to_string_lossy()],
-            &home,
-        )?;
-        if !made.status.success() {
-            return Ok(Err(String::from_utf8_lossy(&made.stderr).trim().to_owned()));
-        }
-        let ran = Command::new(&executable)
-            .output_within()
+    // What became of each: printed this, or failed, to build or to run, saying this.
+    let outcomes = crate::executables::at_once(&paths, |_, path| {
+        let ran = crate::executables::fennec_command()
+            .args(["run", "--no-test", &path.to_string_lossy()])
+            .output_before(FENNEC_DEADLINE)
             .map_err(|error| std::io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
-        // What it printed, or that it failed.
-        let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
-        Ok(Ok(ran.status.success().then_some(printed)))
+        if !ran.status.success() {
+            return Ok(Err(String::from_utf8_lossy(&ran.stderr).trim().to_owned()));
+        }
+        Ok(Ok(String::from_utf8_lossy(&ran.stdout).into_owned()))
     })?;
-    let (mut refused, mut wrong, mut now_native) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut failed, mut wrong, mut now_native) = (Vec::new(), Vec::new(), Vec::new());
     for (path, outcome) in paths.iter().zip(outcomes) {
         match outcome {
             Ok(_) if not_native_yet(path) => now_native.push(path),
             Err(_) if not_native_yet(path) => {}
-            Err(why) => refused.push(format!("{}: {why}", path.display())),
-            Ok(None) => wrong.push(path),
-            Ok(Some(printed)) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
+            Err(why) => failed.push(format!("{}: {why}", path.display())),
+            Ok(printed) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
                 wrong.push(path);
             }
-            Ok(Some(_)) => {}
+            Ok(_) => {}
         }
     }
-    std::fs::remove_dir_all(&dir)?;
     assert!(now_native.is_empty(), "these build natively now: take them off NOT_NATIVE_YET: {now_native:?}");
-    assert!(wrong.is_empty(), "printed the wrong thing or failed: {wrong:?}");
-    assert!(refused.is_empty(), "these don't build through LLVM:\n{}", refused.join("\n"));
+    assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
+    assert!(failed.is_empty(), "these didn't build through LLVM, or failed:\n{}", failed.join("\n"));
     Ok(())
 }
 

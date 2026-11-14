@@ -44,6 +44,32 @@ fn kit_file(module: String, path: &Path, state: Option<&KitState>) -> Option<Kit
     Some(KitFile { module, text, size, changed_at })
 }
 
+/// The files a single file's program read when it was last kept, each as it is now: the file,
+/// what it imports, and what `embed` read. None if one can't be read.
+pub(crate) fn noted_files(state: &KitState) -> Option<Vec<KitFile>> {
+    state
+        .files
+        .keys()
+        .map(|module| {
+            kit_file(module.clone(), Path::new(module.trim_start_matches(fennec_kit::EMBEDDED)), Some(state))
+        })
+        .collect()
+}
+
+/// The files a single file's program was just loaded from, each by its full path, with its size
+/// and changed time now and the hash of the text that was parsed. None if one can't be read, or
+/// isn't the text that was parsed any more, which leaves nothing to keep.
+pub(crate) fn loaded_files(program: &Program) -> Option<Vec<KitFile>> {
+    program
+        .sources
+        .hashed_files()
+        .map(|(path, parsed)| {
+            let file = kit_file(crate::run::absolute(path), Path::new(path), None)?;
+            (file.text == parsed).then_some(file)
+        })
+        .collect()
+}
+
 /// Each of a kit's files as they are now, or None if this isn't a kit.
 pub(crate) fn kit_files(path: &str, state: Option<&KitState>) -> Option<Vec<KitFile>> {
     let dir = Path::new(path);

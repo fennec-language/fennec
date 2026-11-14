@@ -1,41 +1,26 @@
 # A constant is worked out once and kept for the whole run, whatever kind of value it is: a string
 # worked out into a block, an optional that holds a list, an optional string, one of each that's
-# missing, and a tuple holding them. Each is read more than once, and the run ends holding nothing
-# but what it keeps.
+# missing, and a tuple holding them. None of them can fail, so they're kept in a program that uses
+# `parallel` too, where each is worked out before any worker starts. Each is read more than once,
+# here and in a `parallel` loop, and the run ends holding nothing but what it keeps.
 
-def joined(count: int) -> str:
-    mut text = "a text long enough for a block of its own"
-    for at in range(count):
-        text += f" {at}"
-    return text
-
-def numbers(count: int) -> list[int]?:
-    if count > 100:
-        return None
-    return [count, count + 1]
-
-def named(count: int) -> str?:
-    if count > 100:
-        return None
-    return joined(count)
-
-TEXT = joined(3)
-NUMBERS = numbers(2)
-NO_NUMBERS = numbers(200)
-NAMED = named(2)
-NOT_NAMED = named(200)
-SHORT = named(0) else "nothing"
-PAIR = (joined(1), numbers(5), named(1))
+TEXT = "a constant's text, " + "worked out and long enough for a block"
+NUMBERS: list[int]? = [2, 3]
+NO_NUMBERS: list[int]? = None
+NAMED: str? = "a name, " + "worked out and long enough for a block"
+NOT_NAMED: str? = None
+SHORT: str? = "sh" + "ort"
+PAIR = ("a pair's text, " + "worked out and long enough for a block", [5, 6])
 
 def size(round: int) -> int:
     counted = NUMBERS else []
     name = NAMED else ""
-    return len(TEXT) + len(counted) + len(name) + round
+    return len(TEXT) + len(counted) + len(name) + len(PAIR[1]) + round
 
 def main(stdout: Stdout):
     for round in range(2):
         stdout.print(TEXT)
         stdout.print(NUMBERS, NO_NUMBERS, NAMED, NOT_NAMED)
         stdout.print(SHORT, PAIR)
-    stdout.print([size(round) for round in [1, 2, 3]])
+    stdout.print([size(round) for round in parallel([1, 2, 3])])
     return

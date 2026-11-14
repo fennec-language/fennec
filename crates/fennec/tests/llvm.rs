@@ -23830,10 +23830,11 @@ def main(stdout: Stdout, clock: Clock):
 /// over. A string worked out into a block, an optional held as one word and an optional string
 /// were kept with an owner but not marked as living for the run, so each ended a run as a block
 /// left: 3 for this program, which is `examples/constants_kept.fen`. A list, a dict, a boxed
-/// value and anything held in place were marked already.
+/// value and anything held in place were marked already. Its constants can't fail, so a program
+/// that uses `parallel` keeps them too, and it reads them in a `parallel` loop as well.
 #[test]
 fn a_constant_of_any_kind_is_kept_for_the_run_and_never_left_over() -> std::io::Result<()> {
-    if !ready() {
+    if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
     let (source, wanted) = (

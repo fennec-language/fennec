@@ -103,6 +103,23 @@ fn install() {
 #[cfg(not(any(unix, windows)))]
 fn install() {}
 
+/// Keeps a write to a pipe nothing reads any more from ending the program, as Rust's own runtime
+/// does for a Rust program, and so for one the interpreter runs: on Unix such a write sends
+/// SIGPIPE, which ends the whole program unless it's caught, and a native program has no Rust
+/// `main` to catch it. Caught, the write fails instead, as a broken pipe: a child that exits
+/// without reading its `input=` leaves `process.run` going, and standard output closed early, as
+/// `program | head -c1` closes it, ends the run with exit code 1. Called once, as a native program
+/// starts, so it behaves the same whether it ever runs another program or not. A program it runs
+/// starts with SIGPIPE as the system has it, since running one resets what's caught.
+#[cfg(unix)]
+pub(crate) fn ignore_broken_pipes() {
+    static IGNORED: Once = Once::new();
+    IGNORED.call_once(|| {
+        // The flag is never read: catching the signal is the point.
+        let _ = signal_hook::flag::register(signal_hook::consts::SIGPIPE, Arc::new(AtomicBool::new(false)));
+    });
+}
+
 /// Waits until a stop is asked for: by parking, for a task, so its thread runs others meanwhile.
 /// WebAssembly is never asked to stop, so a wait there fails rather than never ending.
 pub(crate) fn wait() -> Result<(), &'static str> {

@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use super::super::super::{Tables, finish, start, with};
 use super::super::IMMORTAL;
-use super::{Audit, Wrong, audit};
+use super::{Audit, Wrong, audit, audit_outside_tasks};
 use crate::packed::Element;
 
 /// Starts a run whose only shape is `Node`, a struct holding another `Node` and a string.
@@ -41,6 +41,16 @@ fn points(at: u64, next: u64) {
 
 fn audited(held: &[u64]) -> Audit {
     with(|state| audit(state, held))
+}
+
+/// Marks the block at `at` as made by a task still running on this thread.
+fn made_by_a_task(at: u64) {
+    with(|state| {
+        let shape = usize::try_from(at).ok().and_then(|at| state.heap.blocks.get_mut(at)?.get_mut(1));
+        if let Some(shape) = shape {
+            *shape |= super::super::task_mark(7);
+        }
+    });
 }
 
 #[test]
@@ -159,5 +169,53 @@ fn only_the_first_blocks_found_wrong_are_said_and_the_rest_counted() {
     let said = found.said();
     assert_eq!(said.lines().count(), super::SAID + 3);
     assert!(said.contains("heap audit: and 3 more\n"), "{said}");
+    finish();
+}
+
+/// A worker that's left its last server with a task still parked on it. The task's blocks are
+/// taken as they are: native code's frames hold owners of them, and they may hold what's lent
+/// to the task alone. What no task made is still judged, and what the task's blocks hold of it
+/// is held.
+#[test]
+fn a_running_tasks_blocks_are_taken_as_they_are_and_what_no_task_made_is_judged() {
+    started();
+    // The task's own: a node only its frame holds, a name counted for the frame too, and a
+    // place holding what's lent to it, which isn't in this table.
+    let lent_to_the_task = 8 * 1_234_567;
+    let tasks_name = text(2);
+    let tasks_node = node(1, lent_to_the_task, tasks_name);
+    // Made outside it, and held by it: counted right.
+    let given = text(1);
+    let tasks_other = node(1, 0, given);
+    // What a round left: nothing holds it.
+    let left = text(1);
+    for block in [tasks_name, tasks_node, tasks_other] {
+        made_by_a_task(block);
+    }
+    let found = with(|state| audit_outside_tasks(state, &[]));
+    assert_eq!(found.live, 2, "{found:?}");
+    let [leaked] = &found.wrong[..] else { panic!("{found:?}") };
+    assert_eq!((leaked.wrong, leaked.address, leaked.kind.as_str()), (Wrong::Leaked, left, "str"));
+    // The whole audit, which is for a thread with no task on it, would say the task's too.
+    let all = audited(&[]);
+    assert_eq!(all.live, 5);
+    assert!(all.wrong.iter().any(|finding| finding.address == tasks_node), "{all:?}");
+    assert!(all.wrong.iter().any(|finding| finding.wrong == Wrong::Gone), "{all:?}");
+    finish();
+}
+
+/// What's left outside tasks is counted once, however often a worker looks: a block that's left
+/// is never freed, so one counted before is there still, and only what's new since is counted.
+#[test]
+fn whats_left_outside_tasks_is_counted_once() {
+    started();
+    let tasks_own = text(1);
+    made_by_a_task(tasks_own);
+    let _first = text(1);
+    let _second = text(1);
+    assert_eq!(with(|state| state.heap.newly_left_outside_tasks()), 2);
+    assert_eq!(with(|state| state.heap.newly_left_outside_tasks()), 0);
+    let _third = text(1);
+    assert_eq!(with(|state| state.heap.newly_left_outside_tasks()), 1);
     finish();
 }

@@ -1,7 +1,7 @@
-//! `std.crypto`: hashes of text or bytes, as lowercase hex digits. Text is hashed as its UTF-8
-//! bytes. A BLAKE3 key is written as hex too, so a derived key can be used as a key directly.
-//! `equal` compares two secrets in time that depends only on their lengths, so it can't tell
-//! an attacker how much of a guess was right.
+//! `std.crypto`: hashes of text or bytes, as lowercase hex digits, or as the digest's own bytes
+//! from the `_digest` forms. Text is hashed as its UTF-8 bytes. A BLAKE3 key is written as hex
+//! too, so a derived key can be used as a key directly. `equal` compares two secrets in time that
+//! depends only on their lengths, so it can't tell an attacker how much of a guess was right.
 
 mod sha256;
 
@@ -19,6 +19,11 @@ fn bytes_of(value: &Value) -> Option<&[u8]> {
         Value::Bytes(data) => Some(data),
         _ => None,
     }
+}
+
+/// A digest as its own bytes, for the `_digest` forms.
+fn digest(bytes: &[u8]) -> Value {
+    Value::Bytes(std::rc::Rc::from(bytes))
 }
 
 fn hex(bytes: &[u8]) -> Value {
@@ -69,11 +74,14 @@ fn hashing(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic
             }
             Ok(Value::Unit)
         }
-        ("crypto._end", [Value::Int(handle)]) => match open.remove(handle) {
-            Some(Hashing::Blake3(hasher)) => Ok(hex(hasher.finalize().as_bytes())),
-            Some(Hashing::Sha256(hasher)) => Ok(hex(&hasher.finish())),
-            None => Err(wrong()),
-        },
+        ("crypto._end" | "crypto._end_digest", [Value::Int(handle)]) => {
+            let written = if name == "crypto._end" { hex } else { digest };
+            match open.remove(handle) {
+                Some(Hashing::Blake3(hasher)) => Ok(written(hasher.finalize().as_bytes())),
+                Some(Hashing::Sha256(hasher)) => Ok(written(&hasher.finish())),
+                None => Err(wrong()),
+            }
+        }
         _ => Err(wrong()),
     }
 }
@@ -85,10 +93,15 @@ pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Dia
     }
     let wrong = || Diagnostic::new(format!("`{name}` takes text or bytes"), span);
     let data = |at: usize| values.get(at).and_then(bytes_of).ok_or_else(wrong);
+    // A `_digest` form gives the same digest as its own bytes, where the plain one gives hex.
+    let (name, written): (&str, fn(&[u8]) -> Value) = match name.strip_suffix("_digest") {
+        Some(plain) => (plain, digest),
+        None => (name, hex),
+    };
     match name {
-        "crypto.blake3" => Ok(hex(fennec_blake3::hash(data(0)?).as_bytes())),
-        "crypto.sha256" => Ok(hex(&sha256::digest(data(0)?))),
-        "crypto.hmac_sha256" => Ok(hex(&sha256::hmac(data(0)?, data(1)?))),
+        "crypto.blake3" => Ok(written(fennec_blake3::hash(data(0)?).as_bytes())),
+        "crypto.sha256" => Ok(written(&sha256::digest(data(0)?))),
+        "crypto.hmac_sha256" => Ok(written(&sha256::hmac(data(0)?, data(1)?))),
         "crypto.equal" => Ok(Value::Bool(equal(data(0)?, data(1)?))),
         "crypto.keyed_blake3" => {
             let Some(Value::Str(key)) = values.first() else { return Err(wrong()) };
@@ -96,7 +109,7 @@ pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Dia
                 Diagnostic::new("a BLAKE3 key is 64 hex digits", span)
                     .with_help("make one with `derive_key(context, secret)`")
             })?;
-            Ok(hex(fennec_blake3::keyed_hash(key.as_bytes(), data(1)?).as_bytes()))
+            Ok(written(fennec_blake3::keyed_hash(key.as_bytes(), data(1)?).as_bytes()))
         }
         "crypto.derive_key" => {
             let Some(Value::Str(context)) = values.first() else { return Err(wrong()) };

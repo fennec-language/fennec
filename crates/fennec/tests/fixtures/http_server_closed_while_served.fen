@@ -1,0 +1,21 @@
+# For the test that a server can be stopped from inside its program: `serve` returns once the
+# server is closed.
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, stdout: Stdout):
+    server.serve(respond)
+    stdout.print("serve returned")
+
+# Serves HTTP in a task while `main` asks twice, then closes the server, which ends `serve`.
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        with launch(() => serving(server, stdout))?:
+            for path in ["den", "burrow"]:
+                got = net.get(f"http://127.0.0.1:{server.port}/{path}")?
+                stdout.print(got.status, got.text())
+            server.close()
+    stdout.print("stopped")

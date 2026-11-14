@@ -579,26 +579,34 @@ fn left_on_workers() -> usize {
     0
 }
 
-/// A worker has left its last server with no task of its own still to run, so it should hold
-/// nothing a run could free: what it does hold was left by a round, or by the runtime serving
-/// one. It's counted for `live`, in a run that counts. Under a heap audit each block is said, as
-/// at the end of a run, and the run ends with the audit's exit code: this worker has no native
-/// code's frames left, so every owner is one its table can show.
+/// A worker has left its last server, so no round is left on it, and it should hold nothing a run
+/// could free but what the tasks still parked on it made: what it does hold was left by a round,
+/// or by the runtime serving one. It's counted for `live`, in a run that counts. Under a heap
+/// audit each block is said, as at the end of a run, and the run ends with the audit's exit code.
+///
+/// A launched task or a range that can wait may still be parked here, as when the server was run
+/// from inside one. Its blocks are told apart by the task that made them and left out: native
+/// code's frames hold owners of those. No round has a frame left, so every owner of a block a
+/// round made is one this worker's table can show.
 #[cfg(any(test, feature = "threads"))]
 pub(super) fn worker_stopped_serving() {
     with(|state| {
         // What the rounds' dropped temporaries held goes first.
         state.let_go();
-        let left = state.heap.leftover();
-        if left == 0 {
+        // A block that's left is never freed, so a worker that serves again still has it: only
+        // what's been left since it last looked is counted, and said.
+        let new = state.heap.newly_left_outside_tasks();
+        if new == 0 {
             return;
         }
         if state.heap.counting() {
-            LEFT_ON_WORKERS.fetch_add(left, std::sync::atomic::Ordering::Relaxed);
+            LEFT_ON_WORKERS.fetch_add(new, std::sync::atomic::Ordering::Relaxed);
         }
         #[cfg(feature = "audit")]
         if std::env::var_os("FENNEC_AUDIT").is_some() {
-            let said = heap::audit::audit(state, &[]).said();
+            let mut found = heap::audit::audit_outside_tasks(state, &[]);
+            found.wrong.retain(|finding| state.heap.said_left.insert(finding.address));
+            let said = found.said();
             if !said.is_empty() {
                 let said =
                     format!("heap audit: a worker that stopped serving was left holding blocks\n{said}");

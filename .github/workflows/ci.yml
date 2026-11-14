@@ -347,11 +347,15 @@ jobs:
   coverage:
     name: Coverage
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
+    # A measurement rather than a check, and the slowest job: its tests take 13 to 25 minutes
+    # instrumented, as fast or slow as the runner is. So it runs in the scheduled run every four
+    # hours, and by hand, rather than holding up every push to main. A limit too short cuts each
+    # run off before its cache is saved, so the next starts cold and is cut off sooner still.
+    if: >-
+      needs.changes.outputs.docs_only != 'true'
+      && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    # Its tests alone take about 13 minutes, instrumented. A limit under that cuts every run off
-    # before its cache is saved, so the next starts cold and is cut off sooner still.
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1035,8 +1039,12 @@ jobs:
           while read -r job result; do
             [ "$result" = success ] && continue
             [ "$result" = skipped ] && [ "$DOCS_ONLY" = true ] && continue
+            # Coverage runs only in the scheduled run and by hand.
+            if [ "$result" = skipped ] && [ "$job" = coverage ] \
+              && [ "$EVENT" != schedule ] && [ "$EVENT" != workflow_dispatch ]; then
+              continue
+            fi
             if [ "$result" = skipped ] && [ "$EVENT" = merge_group ]; then
-              [ "$job" = coverage ] && continue
               [ "$job" = x86-mac ] && continue
               [ "$job" = parked-sanitizers ] && [ "$PARKED_CHANGED" != true ] && continue
             fi

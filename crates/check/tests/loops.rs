@@ -71,6 +71,10 @@ fn a_ref_over_items_changes_only_the_values() {
             "`key` isn't `ref` @ key",
             "`kept` isn't mut @ kept",
             "`for key, ref value in x.items()` goes over a dict or a `Table`, but this is a list[int] @ xs",
+        ]
+    );
+}
+
 /// A dict's keys and a set's items are what find them, so `for ref` can't change them where they
 /// are: it's refused, saying what to write. Over a list, it changes each item.
 #[test]

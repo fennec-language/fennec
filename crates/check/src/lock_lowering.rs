@@ -72,12 +72,25 @@ pub(crate) fn lower(module: &mut Module, declared: &BTreeMap<(u32, u32), Type>) 
             generics: Vec::new(),
             fields: vec![value],
             cases: Vec::new(),
-            methods: Vec::new(),
+            methods: shown().into_iter().collect(),
             shared: true,
             span: Span::default(),
         }));
     }
     changed
+}
+
+/// How a `shared` value is shown, printed, in an f-string, by `str` or in a failed `assert`: as
+/// what it holds, read under its lock, which a method of a `shared` declaration takes. Inside a
+/// lock body nothing can show one, as nothing can pass one to a call there, so showing it never
+/// waits on a lock its own thread holds.
+fn shown() -> Option<FnDef> {
+    let text = "struct Shown:\n    def str(self, ref out: StrWriter):\n        out.value(self.value)\n";
+    let parsed = fennec_syntax::parse_prelude(text).ok()?;
+    match parsed.items.into_iter().next()? {
+        Item::Struct(mut def) => def.methods.pop(),
+        _ => None,
+    }
 }
 
 /// The name of the `shared` declaration that holds a `held`, made from how it's written.

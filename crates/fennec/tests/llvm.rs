@@ -15787,6 +15787,75 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A server can be stopped from inside its program, each way there is. Served from a launched
+/// task, nothing could end it: closing it did nothing, as its listener is with its workers while
+/// it's served and not among the open sockets, and a task told to stop while it served went on
+/// waiting for its server. So a program that served in a task could never end.
+///
+/// - `server.close()` ends a loop over the server, and `serve`, as their docs say: it takes no more
+///   connections, the rounds running finish, and the task goes on past the loop. A task can
+///   close a server `main` serves the same way.
+/// - Failing out of the block that launched the task stops the task, and its server with it.
+/// - So does the block's `stop_after`, when the block ends with the task still serving.
+///
+/// Each program is its own client, and each is built for a heap audit and run under it: it ends
+/// with what it should have printed, nothing live and nothing said. A task prints beside `main`,
+/// so the lines are compared in any order.
+#[test]
+fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("server-stopped-inside")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shapes: [(&str, &[&str]); 5] = [
+        ("server_closed_while_served", &["closed", "hello", "stopped", "the loop ended"]),
+        ("server_served_by_main_closed_by_a_task", &["hello", "stopped", "the loop ended"]),
+        (
+            "http_server_closed_while_served",
+            &["200 hello /burrow", "200 hello /den", "serve returned", "stopped"],
+        ),
+        ("server_stopped_by_a_failed_block", &["200 hello /den", "finished after 1", "stopped"]),
+        ("server_stopped_by_stop_after", &["200 hello /den", "stopped"]),
+    ];
+    for (shape, wanted) in shapes {
+        let program = dir.join(format!("{shape}.fen"));
+        std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+        let executable = dir.join(shape);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_NO_DAEMON", "1")
+            .env_remove("FENNEC_THREADS_RUNTIME")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "16"] {
+            let how = format!("{shape} on {threads} threads");
+            // A server that isn't stopped waits for ever, spending nothing: two minutes by the
+            // clock says so, where these take under a second.
+            let ended = Command::new(&executable)
+                .env("FENNEC_AUDIT", "1")
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .env_remove("FENNEC_AUDIT_SELFTEST")
+                .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+            let (printed, said) =
+                (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+            assert_eq!(ended.status.code(), Some(0), "{how}: {printed}{said}");
+            let mut lines: Vec<&str> = printed.lines().collect();
+            lines.sort_unstable();
+            assert_eq!(lines, wanted, "{how}: {said}");
+            assert!(said.contains(" live 0"), "{how}: {said}");
+            assert!(!said.contains("heap audit"), "{how}: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// Runs the echo server at `executable` under a heap audit on two workers, has it serve five
 /// lines and a stop, six rounds, and gives how it ended and what it said. `selftest` is what
 /// `FENNEC_AUDIT_SELFTEST` is set to, if anything.

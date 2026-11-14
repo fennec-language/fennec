@@ -1120,6 +1120,12 @@ impl Io {
     /// next message are woken, to end, before it drains as `break` does.
     fn drain_stopping(&mut self, id: u64) {
         super::live::stop_taken();
+        self.drain_waking(id);
+    }
+
+    /// Drains the server `id`, first waking its rounds here that wait for a next message, to end:
+    /// what a stop the program was asked for does, and what closing the server does.
+    fn drain_waking(&mut self, id: u64) {
         if let Some(here) = self.servers.get(&id) {
             let mut idle: Vec<usize> = IDLE_READS.with_borrow(|idle| idle.iter().copied().collect());
             // In the order they parked, not the set's.
@@ -1265,13 +1271,22 @@ fn timed_out(waiting: &HashMap<usize, (TaskId, Interest, Option<Instant>)>, now:
 
 /// Waits for each worker to leave a server. A task parks meanwhile, looking again now and then, as
 /// its own worker is one of those it waits for. Anything else blocks.
-fn wait_for_every_worker(left: &Latch) {
+///
+/// A task told to stop while it serves stops its server with `stop`, once: its rounds are cut
+/// short and the workers leave. It waits for them all the same, as its rounds read what it lent,
+/// and nothing else would ever end the wait: a server only stops when it's told to.
+fn wait_for_every_worker(left: &Latch, stop: impl Fn()) {
     if !can_park() {
         left.wait();
         return;
     }
+    let mut stopped = false;
     while !left.is_done() {
         let _ = park_on_token(next_token(), Some(Instant::now() + SERVER_END_LOOKS), false);
+        if !stopped && super::threads::stopped() {
+            stopped = true;
+            stop();
+        }
     }
 }
 
@@ -1544,10 +1559,28 @@ impl Stopper {
         self.server.id
     }
 
+    /// Another stopper of the same server.
+    pub(super) fn again(&self) -> Stopper {
+        Stopper { server: Arc::clone(&self.server), pool: self.pool }
+    }
+
     pub fn stop(&self) {
         let id = self.server.id;
         for at in 0..self.pool.threads() {
             self.pool.run_on(at, Box::new(move |io: &mut Io| io.leave(id)));
+        }
+    }
+
+    /// Closes the server, as `server.close()` asks from inside the program, once: it takes no
+    /// more connections, its rounds waiting for a next message end where the server drains on a
+    /// stop, and those running finish. The loop over it then ends, as after a `break`.
+    pub(super) fn close(&self) {
+        if self.server.draining.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let id = self.server.id;
+        for at in 0..self.pool.threads() {
+            self.pool.run_on(at, Box::new(move |io: &mut Io| io.drain_waking(id)));
         }
     }
 
@@ -1618,7 +1651,8 @@ pub(super) fn serve(
         let stopping = Stopper { server: Arc::clone(&server), pool };
         crate::signals::on_stop(Box::new(move || stopping.drain_for(grace)))
     });
-    wait_for_every_worker(&server.left);
+    let stopping = Stopper { server: Arc::clone(&server), pool };
+    wait_for_every_worker(&server.left, || stopping.stop());
     if let Some(listening) = listening {
         crate::signals::forget(listening);
     }
@@ -1670,6 +1704,7 @@ pub(super) fn serve_replayed(
 
 mod calls;
 
+pub(crate) use calls::close_served;
 pub(super) use calls::served_call;
 pub use calls::{ConnBody, net_serve, net_serve_failure, stop_servers};
 

@@ -1836,17 +1836,26 @@ fn send_to(handle: i64, data: &[u8], address: &str) -> Result<(), Failure> {
     udp.socket.send_to(data, target).map(|_| ()).map_err(|error| Failure::of(&error, None))
 }
 
-/// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends.
+/// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends,
+/// and a server being served stops taking connections, so the loop over it ends.
 fn close(handle: i64) {
-    if let Some(Socket::Stream(stream)) = open(|open| open.remove(&handle)) {
+    let closed = open(|open| open.remove(&handle));
+    if let Some(Socket::Stream(stream)) = &closed {
         if stream.served && task_parks() {
-            let lingering = Arc::clone(&stream);
+            let lingering = Arc::clone(stream);
             off_thread(move || linger(&lingering.socket));
         } else if stream.served {
             linger(&stream.socket);
         }
         // It may be closed already from the other side, which is what closing wanted.
         let _ = stream.socket.shutdown(Shutdown::Both);
+    }
+    // A server that's being served isn't among the open sockets: its workers have its listener.
+    #[cfg(any(test, feature = "threads"))]
+    {
+        if closed.is_none() {
+            let _ = crate::embed::serve::close_served(handle);
+        }
     }
 }
 

@@ -52,6 +52,22 @@ pub(super) fn next_handle() -> i64 {
 /// The servers running, so they can be stopped.
 static STOPPERS: Mutex<Vec<Stopper>> = Mutex::new(Vec::new());
 
+/// The servers being served, by the handle the program holds, so `server.close()` can end one: its
+/// listener is taken out of the open sockets while it's served, where closing would look for it.
+static SERVED: Mutex<Option<HashMap<i64, Stopper>>> = Mutex::new(None);
+
+fn served<T>(use_them: impl FnOnce(&mut HashMap<i64, Stopper>) -> T) -> T {
+    use_them(SERVED.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
+}
+
+/// Closes the server with this handle if it's being served, and says whether it was: it takes no
+/// more connections, the rounds running finish, and the loop over it ends, as its docs say a
+/// closed server's does. Without this, closing a server while a task served it did nothing, and
+/// nothing inside the program could end the loop.
+pub(crate) fn close_served(server: i64) -> bool {
+    served(|served| served.get(&server).map(Stopper::close)).is_some()
+}
+
 /// Stops every server running: each cancels its connections' tasks and returns.
 pub fn stop_servers() {
     for stopper in STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).drain(..) {
@@ -119,6 +135,7 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let id = Cell::new(None);
     let started = |stopper: Stopper| {
         id.set(Some(stopper.id()));
+        served(|served| served.insert(server, stopper.again()));
         STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).push(stopper);
     };
     super::super::write_kept_output();
@@ -127,8 +144,9 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         None => threads::lend(),
     };
     let finished = super::serve(listener, pool, Some(&lent), &handler, (started, call.as_ref(), came_with));
-    // Ended, it's nothing left to stop.
+    // Ended, it's nothing left to stop, or to close.
     STOPPERS.lock().unwrap_or_else(PoisonError::into_inner).retain(|stopper| Some(stopper.id()) != id.get());
+    served(|served| served.remove(&server));
     if let Some((copy, table)) = given {
         // What the copy holds is this task's now, with what its rounds did to its owners.
         drop(lent);
@@ -143,6 +161,25 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         threads::take_back(lent);
         threads::settle(finished.owners);
     }
+    let ended = passed_up(&passed);
+    if !threads::stopped() {
+        return ended;
+    }
+    // A task stopped while it served stopped its server with it, and now fails as any wait cut
+    // short does. A round's failure that got as far as here is let go of: the stop comes first.
+    let failure = PASSED_UP.take().cast_unsigned();
+    if failure != 0 {
+        attempt(|state: &mut State| {
+            super::super::heap::release(state, failure);
+            Ok(())
+        });
+    }
+    i64::from(super::cut_short())
+}
+
+/// What a call serving gives back once its server has ended: 2 with the failure a round passed
+/// up, taken as this thread's own for `fennec_net_serve_failure` to give, and 0 with none.
+fn passed_up(passed: &Passed) -> i64 {
     let failure = passed.lock().unwrap_or_else(PoisonError::into_inner).take();
     let Some((failure, table)) = failure else { return 0 };
     super::super::with(|state| state.heap.adopt_made(table.into_blocks()));
@@ -175,11 +212,7 @@ fn replayed(rounds: u64, body: ConnBody, env: i64, call: Option<&crate::replay::
     threads::settle(finished.owners);
     super::super::write_kept_output();
     let _ = writeln!(std::io::stderr(), "replay: the recording ends here, so the server is stopped");
-    let failure = passed.lock().unwrap_or_else(PoisonError::into_inner).take();
-    let Some((failure, table)) = failure else { return 0 };
-    super::super::with(|state| state.heap.adopt_made(table.into_blocks()));
-    PASSED_UP.set(i64::try_from(failure).unwrap_or(0));
-    super::ROUND_FAILED
+    passed_up(&passed)
 }
 
 /// How many connections this worker is serving now.

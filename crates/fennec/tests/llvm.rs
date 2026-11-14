@@ -12545,6 +12545,71 @@ fn a_trace_counts_what_a_plain_build_counts() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A trace counts what tasks and `parallel`'s workers cost too, where a server's or a worker
+/// pool's cost is, and says which kind of thread each place's cost was on.
+#[test]
+fn a_trace_counts_what_tasks_and_parallel_workers_cost_and_says_where() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "\
+from std.concurrent import Crashed
+
+struct Said:
+    total: int
+
+def built(n: int) -> int:
+    pair = [n, n + 1]
+    return pair[0]
+
+def summed(n: int) -> int:
+    mut total = 0
+    for i in range(3):
+        total += built(n + i)
+    return total
+
+def tasked(said: shared Said):
+    mut total = 0
+    for i in range(20):
+        total += built(i)
+    lock said as ref held:
+        held.total += total
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    shared said = Said(total=0)
+    # A loop in its body sends it to the pool, however few its items.
+    workers = sum([summed(n) for n in parallel(range(30))])
+    with launch(() => tasked(said))?:
+        pass
+    lock said as held:
+        stdout.print(workers, held.total)
+    return
+";
+    let dir = folder("trace_threads")?;
+    let program = dir.join("threads.fen");
+    std::fs::write(&program, source)?;
+    let path = program.to_string_lossy().into_owned();
+    let traced = fennec(&["dev", "trace", &path], &dir)?;
+    let (said, errors) = (String::from_utf8_lossy(&traced.stdout), String::from_utf8_lossy(&traced.stderr));
+    assert!(traced.status.success(), "{errors}");
+    // The list each call makes, counted where each call ran: none of them on the main thread.
+    let at = |on: &str| {
+        said.lines().find(|line| line.contains(".fen:7:") && line.contains(on)).unwrap_or_default()
+    };
+    assert!(at(", in a task:").contains("20 allocations"), "{said}");
+    assert!(at(", on a parallel worker:").contains("90 allocations"), "{said}");
+    assert!(at(", on main:").is_empty(), "{said}");
+    assert!(said.lines().any(|line| line.starts_with("  in a task: ")), "{said}");
+
+    let json = fennec(&["dev", "trace", "--json", &path], &dir)?;
+    let json = String::from_utf8_lossy(&json.stdout);
+    assert!(json.contains("\"ran_on\":\"task\"") && json.contains("\"ran_on\":\"parallel\""), "{json}");
+    assert!(json.contains("\"by_thread\":{"), "{json}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Result<()> {
     if !ready() {

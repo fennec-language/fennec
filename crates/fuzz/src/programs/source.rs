@@ -1399,6 +1399,17 @@ fn ops_written(ops: &[Op], indent: usize) -> String {
 impl Writer {
     /// `call`, a statement that can fail with each of `errors`, none of which has cases, handled
     /// with `except why:` and a `case` for each, every one doing `then`.
+    /// `call` with each of `errors` handled: each printing its own word, `crashed` for `Crashed`,
+    /// with `DISTINCT_STOPS`, and otherwise all printing `shared`.
+    fn stopped(&mut self, indent: usize, call: &str, errors: &[&str], shared: &str) {
+        self.line(indent, &format!("{call} except why:"));
+        for error in errors {
+            let word = if super::generate::DISTINCT_STOPS { error.to_lowercase() } else { shared.to_owned() };
+            self.line(indent + 1, &format!("case {error}():"));
+            self.line(indent + 2, &format!("stdout.print(\"{word}\")"));
+        }
+    }
+
     fn handled(&mut self, indent: usize, call: &str, errors: &[&str], then: &str) {
         self.line(indent, &format!("{call} except why:"));
         for error in errors {
@@ -1739,11 +1750,11 @@ impl Writer {
             }
             Stmt::Tally(name, items) => {
                 let items = self.expr(items, false);
-                self.handled(
+                self.stopped(
                     indent,
                     &format!("tally({name}, items={items})"),
                     &["Crashed", "Closed", "Timeout"],
-                    "stdout.print(\"crashed\")",
+                    "crashed",
                 );
             }
             Stmt::PrintShared(name) => {
@@ -1858,12 +1869,7 @@ impl Writer {
             Stmt::GuardAll(items) => {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();
                 let call = format!("guard_all([{}], stdout)", items.join(", "));
-                self.handled(
-                    indent,
-                    &call,
-                    &["Crashed", "Closed", "Timeout", "Refused"],
-                    "stdout.print(\"stopped\")",
-                );
+                self.stopped(indent, &call, &["Crashed", "Closed", "Timeout", "Refused"], "stopped");
             }
             Stmt::Streamed(streaming) => {
                 let _ = write!(self.helpers, "{}", streamed_written(streaming));
@@ -1886,11 +1892,11 @@ impl Writer {
             }
             Stmt::Yielded(yielding) => {
                 let _ = write!(self.helpers, "{}", yielded_written(yielding));
-                self.handled(
+                self.stopped(
                     indent,
                     &format!("yielded{}(stdout)", yielding.id),
                     &["Crashed", "Closed", "Timeout"],
-                    "stdout.print(\"crashed\")",
+                    "crashed",
                 );
             }
             Stmt::FieldCalls(calls) => {
@@ -1986,11 +1992,11 @@ impl Writer {
                     ops_written(ops, 3)
                 );
                 let items = self.expr(items, false);
-                self.handled(
+                self.stopped(
                     indent,
                     &format!("sent{id}({name}, items={items})"),
                     &["Crashed", "Closed", "Timeout"],
-                    "stdout.print(\"crashed\")",
+                    "crashed",
                 );
             }
             _ => {}

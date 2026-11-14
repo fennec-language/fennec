@@ -832,3 +832,219 @@ fn the_disk_is_looked_at_and_never_written() {
         Ended::Unsupported("reading a file that was there before the program started".to_owned())
     );
 }
+
+/// A `shared` value is one cell that every copy of it reaches, changed only inside a `lock`, and a
+/// failure leaving `lock ... as ref` undoes the block's changes, while `break` keeps them.
+#[test]
+fn a_lock_changes_the_one_cell_every_copy_reaches_and_a_failure_undoes_it() {
+    prints(
+        "
+        error Refused:
+            code: int
+
+        struct Account:
+            items: list[int]
+            total = 0
+
+        def add(account: shared Account, by: int) fails Refused:
+            lock account as ref held:
+                held.total += by
+                held.items.append(by)
+                if by > 5:
+                    fail Refused(code=by)
+
+        def peek(account: shared Account) -> int:
+            lock account as held:
+                if held.total > 100:
+                    return -1
+                return held.total
+
+        def main(stdout: Stdout):
+            shared account = Account(items=[], total=1)
+            other = account
+            add(account, 2) except why:
+                stdout.print('refused', why.code)
+            add(other, 7) except why:
+                stdout.print('refused', why.code)
+            seen = lock account as held:
+                held.total * 10
+            stdout.print(seen, peek(other))
+            for step in range(3):
+                lock other as ref held:
+                    held.total += step
+                    if step == 1:
+                        break
+            lock account as held:
+                stdout.print(held)
+        ",
+        "refused 7\n30 3\nAccount(items=[2], total=4)\n",
+    );
+}
+
+/// `parallel` gives its results in the list's order, a sum of ints adds up exactly, each `for ref`
+/// round changes its own item, the failure passed up is the first round's that fails, by
+/// position, and a stream's item fails only once it's read.
+#[test]
+fn parallel_rounds_give_what_every_order_gives() {
+    prints(
+        "
+        error Odd:
+            number: int
+
+        def halved(number: int) -> int fails Odd:
+            if number % 2 == 1:
+                fail Odd(number)
+            return number // 2
+
+        def evens(numbers: list[int]) -> list[int] fails Odd:
+            return [halved(number)? for number in parallel(numbers)]
+
+        struct Spot:
+            x: int
+
+        def main(stdout: Stdout):
+            stdout.print([number * number for number in parallel(range(6)) if number != 2])
+            stdout.print(sum(number * 3 for number in parallel([4, -2, 9])))
+            mut spots = [Spot(x=n) for n in range(4)]
+            for ref spot in parallel(spots):
+                spot.x = spot.x * 10 + 1
+            stdout.print(spots)
+            shared seen = Spot(x=0)
+            for number in parallel(range(5)):
+                if number == 3:
+                    lock seen as ref held:
+                        held.x = number
+            lock seen as held:
+                stdout.print(held.x)
+            found = evens([2, 4, 7, 8, 9]) except why:
+                stdout.print('odd', why.number)
+                list[int]()
+            stdout.print(found)
+            stream = (100 // (number - 5) for number in parallel(range(12)))
+            mut read = 0
+            for value in stream:
+                stdout.print('streamed', value)
+                read += 1
+                if read == 3:
+                    break
+        ",
+        "[0, 1, 9, 16, 25]\n33\n[Spot(x=1), Spot(x=11), Spot(x=21), Spot(x=31)]\n3\nodd 7\n[]\n\
+         streamed -20\nstreamed -25\nstreamed -34\n",
+    );
+}
+
+/// What `parallel` doesn't promise an order for is refused: printing in a round, a `shared` value
+/// one round changes and another reaches, a round that may not run changing something, and a sum
+/// added in a tree of the runtime's own, of floats or of ints that could overflow.
+#[test]
+fn what_parallel_rounds_could_do_in_another_order_is_refused() {
+    let refused = |body: &str, why: &str| {
+        let (_, ended) = ran(&format!(
+            "error Odd:\n    number: int\n\nstruct Total:\n    count: int\n\n\
+             def odd(number: int) -> int fails Odd:\n    if number % 2 == 1:\n        fail Odd(number)\n    \
+             return number\n\ndef main(stdout: Stdout) fails Odd:\n    shared total = Total(count=0)\n{body}"
+        ));
+        assert_eq!(ended, Ended::Unsupported(why.to_owned()), "{body}");
+    };
+    refused(
+        "    for number in parallel(range(3)):\n        stdout.print(number)\n",
+        "printing inside a `parallel` round, whose order isn't promised",
+    );
+    refused(
+        "    for number in parallel(range(3)):\n        lock total as ref held:\n            held.count += number\n",
+        "a `shared` value one `parallel` round changes and another reaches, in an order that isn't promised",
+    );
+    refused(
+        "    for number in parallel([1, 2, 4]):\n        _ = odd(number)?\n        if number == 4:\n            \
+         lock total as ref held:\n                held.count += number\n",
+        "a `parallel` round that may not run changing a `shared` value",
+    );
+    refused(
+        "    stdout.print(sum(number / 2 for number in parallel(range(3))))\n",
+        "a float `sum` over `parallel`, which adds in a tree of its own",
+    );
+    refused(
+        "    stdout.print(sum(number for number in parallel([9223372036854775807, 1, -1])))\n",
+        "an int `sum` over `parallel` that may overflow, by how it's split",
+    );
+}
+
+/// A `with launch` block runs first, then its task, reading what the block sent in order. The
+/// `with` ends with the task's failure, or `Crashed` for a crash, where a crash in a `lock` undoes
+/// its changes. Printing in both the block and the task is refused.
+#[test]
+fn a_launched_task_reads_what_its_block_sent_and_its_failure_is_the_withs() {
+    prints(
+        "
+        from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+        error Refused:
+            code: int
+
+        struct Point:
+            x: int
+            y: int
+
+        def tallying(inbox: Inbox[int], totals: shared Point):
+            for number in inbox:
+                lock totals as ref held:
+                    held.y += 1
+                    held.x += 100 // number
+
+        def tally(totals: shared Point, items: list[int]) fails Crashed | Closed | Timeout:
+            with launch((inbox) => tallying(inbox, totals))? as sends:
+                for item in items:
+                    sends.send(item)?
+
+        def guarding(inbox: Inbox[int], stdout: Stdout) fails Refused:
+            for number in inbox:
+                stdout.print('task', number)
+                if number == 7:
+                    fail Refused(code=number)
+
+        def guard_all(items: list[int], stdout: Stdout) fails Crashed | Closed | Timeout | Refused:
+            with launch((inbox) => guarding(inbox, stdout)?)? as sends:
+                for item in items:
+                    sends.send(item)?
+
+        def main(stdout: Stdout):
+            shared totals = Point(x=0, y=0)
+            tally(totals, [1, 2, 5]) except why:
+                case Crashed(why=reason):
+                    stdout.print('crashed', reason)
+                case Closed() | Timeout():
+                    stdout.print('other')
+            tally(totals, [4, 2, 0]) except why:
+                case Crashed(why=reason):
+                    stdout.print('crashed', reason)
+                case Closed() | Timeout():
+                    stdout.print('other')
+            lock totals as held:
+                stdout.print(held)
+            guard_all([1, 3, 7], stdout) except why:
+                case Refused(code):
+                    stdout.print('refused', code)
+                case Crashed() | Closed() | Timeout():
+                    stdout.print('other')
+        ",
+        "crashed the task crashed\nPoint(x=245, y=5)\ntask 1\ntask 3\ntask 7\nrefused 7\n",
+    );
+    let (_, ended) = ran("
+        from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+        def echoing(inbox: Inbox[int], stdout: Stdout):
+            for number in inbox:
+                stdout.print('task', number)
+
+        def main(stdout: Stdout) fails Crashed | Closed | Timeout:
+            with launch((inbox) => echoing(inbox, stdout))? as sends:
+                stdout.print('block')
+                sends.send(1)?
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "printing in both a launched task and its `with` block, whose order isn't promised".to_owned()
+        )
+    );
+}

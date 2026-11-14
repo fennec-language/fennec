@@ -53,6 +53,8 @@ impl Interp {
             Value::Id(id) => format!("Id({})", id.slot),
             Value::Func(_) => return unsupported("printing a function"),
             Value::Cap(_) => return unsupported("printing a capability"),
+            Value::Shared(_) => return unsupported("printing a `shared` value"),
+            Value::Channel(_) => return unsupported("printing a channel"),
             Value::Unknown(why) => return unsupported(why.clone()),
         })
     }
@@ -322,6 +324,9 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
             return unsupported("comparing functions, generators or capabilities");
         }
         (Value::Unknown(why), _) | (_, Value::Unknown(why)) => return unsupported(why.clone()),
+        (Value::Shared(_) | Value::Channel(_), _) | (_, Value::Shared(_) | Value::Channel(_)) => {
+            return unsupported("comparing `shared` values or channels");
+        }
         _ => false,
     })
 }

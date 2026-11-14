@@ -223,7 +223,7 @@ fn the_attach_left_for_vacuum_reaches_no_file() -> Result<(), String> {
     for (at, (text, given)) in refused.iter().enumerate() {
         let db = handle_of(&super::open_file(&file(&format!("own{at}.db")), false))?;
         let said = run(db, "_execute", &query(text, &[], given))?;
-        assert!(said.contains("not authorized"), "{text}: {said}");
+        assert!(said.contains("more than ordinary queries"), "{text}: {said}");
         assert_eq!(run(db, "_close", &[])?, "");
     }
     // Its own `ATTACH ''` is a database of no file, which makes none, and tables go only in the
@@ -231,7 +231,7 @@ fn the_attach_left_for_vacuum_reaches_no_file() -> Result<(), String> {
     let db = handle_of(&super::open_file(&file("own.db"), false))?;
     assert_eq!(run(db, "_execute", &query("attach database '' as scratch", &[], &[]))?, "Ok(0)");
     let made = run(db, "_execute", &query("create table scratch.notes (n integer)", &[], &[]))?;
-    assert!(made.contains("not authorized"), "{made}");
+    assert!(made.contains("more than ordinary queries"), "{made}");
     assert_eq!(run(db, "_close", &[])?, "");
     let made: Vec<String> = std::fs::read_dir(&folder)
         .map_err(|err| err.to_string())?
@@ -293,8 +293,11 @@ fn a_database_takes_only_the_actions_ordinary_queries_need() -> Result<(), Strin
     ];
     for text in refused {
         let said = run(db, "_execute", &query(text, &[], &[]))?;
-        // `VACUUM INTO` is refused as it attaches, which SQLite words as "authorization denied".
-        assert!(said.contains("not authorized") || said.contains("authorization denied"), "{text}: {said}");
+        // `VACUUM INTO` is refused as it attaches. SQLite refuses `load_extension` itself, with
+        // the words it has for that.
+        let refusal =
+            if text.contains("load_extension") { "not authorized" } else { "more than ordinary queries" };
+        assert!(said.contains(refusal), "{text}: {said}");
     }
     Ok(())
 }
@@ -343,5 +346,69 @@ fn each_test_s_databases_go_in_a_new_folder_of_its_own() -> Result<(), String> {
     }
     drop((first, second));
     assert!(!one.exists() && !two.exists(), "a test's folder outlived it");
+    Ok(())
+}
+
+/// A path starting `file:` is a file in the current folder, never a URI whose `?mode=memory`
+/// keeps nothing or whose `?vfs=unix-none` turns the locks off. SQLite reads only a name
+/// starting with exactly `file:` as one, so nothing else is changed.
+#[test]
+fn a_path_starting_file_names_a_file_not_a_uri() {
+    use super::real::as_a_path;
+    assert_eq!(as_a_path("file:kept.db?mode=memory"), "./file:kept.db?mode=memory");
+    assert_eq!(as_a_path("file:/etc/data.db?vfs=unix-none"), "./file:/etc/data.db?vfs=unix-none");
+    for path in ["kept.db", "/data/file:kept.db", "./file:kept.db", "FILE:kept.db", "files.db"] {
+        assert_eq!(as_a_path(path), path);
+    }
+}
+
+/// A database file can come from anyone. One that isn't a database, one cut short and one whose
+/// page says it holds more cells than fit in it each fail with an error, rather than reading as
+/// something or taking the program down.
+#[test]
+fn a_hostile_database_file_fails_rather_than_reading_as_something() -> Result<(), String> {
+    let folder = std::env::temp_dir().join(format!("fennec-sqlite-hostile-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder).map_err(|err| err.to_string())?;
+    let file = |name: &str| folder.join(name);
+    // A real database of many pages, made by SQLite itself, for the others to be cut from.
+    let whole = file("whole.db");
+    {
+        let made = rusqlite::Connection::open(&whole).map_err(|err| err.to_string())?;
+        made.execute_batch("create table notes (n integer, text text)").map_err(|err| err.to_string())?;
+        for n in 0..300 {
+            made.execute("insert into notes values (?1, ?2)", rusqlite::params![n, "fennec ".repeat(100)])
+                .map_err(|err| err.to_string())?;
+        }
+    }
+    let data = std::fs::read(&whole).map_err(|err| err.to_string())?;
+    let page = usize::from(u16::from_be_bytes([data[16], data[17]]));
+    assert!(data.len() >= 8 * page, "{} bytes", data.len());
+    let mut lying = data.clone();
+    // The second page's header: a leaf of a table, saying it holds 65,535 cells.
+    lying[page] = 13;
+    lying[page + 3] = 255;
+    lying[page + 4] = 255;
+    let cut = data.get(..data.len() / 2).unwrap_or_default().to_vec();
+    let not_one = b"SQLite format 2 and then some text that isn't a database at all ".repeat(100);
+    for (name, bytes) in [("not_one.db", not_one), ("cut.db", cut), ("lying.db", lying)] {
+        std::fs::write(file(name), bytes).map_err(|err| err.to_string())?;
+        let path = file(name).to_string_lossy().into_owned();
+        let opened = super::open_file(&path, false);
+        let Ok(db) = handle_of(&opened) else {
+            let said = crate::format::repr(&opened);
+            assert!(said.starts_with("Err("), "{name}: {said}");
+            continue;
+        };
+        let read = run(db, "_query", &query("select count(*), sum(length(text)) from notes", &[], &[]))?;
+        assert!(read.contains("SqlError.Failed"), "{name}: {read}");
+        assert_eq!(run(db, "_close", &[])?, "");
+    }
+    // The file they were cut from reads whole.
+    let db = handle_of(&super::open_file(&whole.to_string_lossy(), false))?;
+    let read = run(db, "_query", &query("select count(*) from notes", &[], &[]))?;
+    assert!(read.contains("ints=[300]"), "{read}");
+    assert_eq!(run(db, "_close", &[])?, "");
+    let _ = std::fs::remove_dir_all(&folder);
     Ok(())
 }

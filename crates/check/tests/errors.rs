@@ -737,6 +737,56 @@ fn a_failure_of_several_kinds_is_matched_case_by_case() {
     assert_eq!(problems(&compared), ["this is the result of something that can fail @ load(1) == load(2)"]);
 }
 
+/// `case _: fail why` passes up only what the earlier cases left, so a function needn't say it
+/// fails with what it handled: of three errors, one taken leaves two and two leave one, an error
+/// with cases is taken once each of its cases is, and what a later `?` fails with is still the
+/// function's to say.
+#[test]
+fn fail_why_passes_up_only_what_the_earlier_cases_left() {
+    let declared = "error Finished:\n    at: int\n\nerror Gone:\n    path: str\n\nerror Bad:\n    line: int\n\n\
+        error Net:\n    Closed\n    Timeout(seconds: int)\n\n\
+        def load(n: int) -> int fails Finished | Gone | Bad:\n    if n == 1:\n        fail Finished(at=1)\n    \
+        if n == 2:\n        fail Gone(path='x')\n    if n == 3:\n        fail Bad(line=3)\n    return n\n\n\
+        def read(n: int) -> int fails Net | Bad:\n    if n == 1:\n        fail .Closed\n    \
+        if n == 2:\n        fail .Timeout(seconds=2)\n    if n == 3:\n        fail Bad(line=3)\n    return n\n\n";
+    let fine = "def first(n: int) -> int fails Gone | Bad:\n    x = load(n) except why:\n        case Finished(at):\n            \
+        at\n        case _:\n            fail why\n    return x\n\n\
+        def both(n: int) -> int fails Bad:\n    x = load(n) except why:\n        case Finished(at):\n            at\n        \
+        case Gone(_):\n            0\n        case _:\n            fail why\n    return x\n\n\
+        def either(n: int) -> int fails Bad:\n    x = load(n) except why:\n        case Finished(_) | Gone(_):\n            \
+        0\n        case _:\n            fail why\n    return x\n\n\
+        def cases(n: int) -> int fails Bad:\n    x = read(n) except why:\n        case .Closed:\n            0\n        \
+        case .Timeout(seconds):\n            seconds\n        case _:\n            fail why\n    return x\n\n\
+        def after(n: int) -> int fails Gone | Bad:\n    x = load(n) except why:\n        case Finished(at):\n            \
+        at\n        case _:\n            fail why\n    y = first(x)?\n    return x + y\n";
+    assert_eq!(problems(&format!("{declared}{fine}")), Vec::<String>::new());
+    // What's left is still the function's to say, and so is what a `?` after the handler fails with.
+    for (refused, says) in [
+        (
+            "def short(n: int) -> int fails Gone:\n    x = load(n) except why:\n        case Finished(at):\n            at\n        \
+         case _:\n            fail why\n    return x\n",
+            "`short` says it fails with `Gone`, but it can fail with `Bad` too @ Gone",
+        ),
+        (
+            "def one_case(n: int) -> int fails Bad:\n    x = read(n) except why:\n        case .Closed:\n            0\n        \
+         case _:\n            fail why\n    return x\n",
+            "`one_case` says it fails with `Bad`, but it can fail with `Net` too @ Bad",
+        ),
+        (
+            "def guarded(n: int) -> int fails Gone | Bad:\n    x = load(n) except why:\n        case Finished(at) if at > 0:\n            \
+         at\n        case _:\n            fail why\n    return x\n",
+            "`guarded` says it fails with `Gone | Bad`, but it can fail with `Finished` too @ Gone | Bad",
+        ),
+        (
+            "def after(n: int) -> int fails Bad:\n    x = load(n) except why:\n        case Finished(at):\n            at\n        \
+         case Gone(_):\n            0\n        case _:\n            fail why\n    y = load(x)?\n    return x + y\n",
+            "`after` says it fails with `Bad`, but it can fail with `Finished` or `Gone` too @ Bad",
+        ),
+    ] {
+        assert_eq!(problems(&format!("{declared}{refused}")), [says], "{refused}");
+    }
+}
+
 /// `Ok`, `Err` and `Result` are gone. Where a program writes one, it's refused with what to write
 /// instead, and the fix writes `return Err(e)` as `fail e` and `Ok(x)` as `x`. What lowering
 /// writes of them, for `?` and `else`, still checks.

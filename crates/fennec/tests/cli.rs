@@ -3988,6 +3988,7 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
             "FENNEC_STRIP_FACTS",
             "FENNEC_THREADS_RUNTIME",
             "FENNEC_BOXED_RESULTS",
+            "FENNEC_AUDIT",
             "FENNEC_NO_CACHE",
         ] {
             command.env_remove(name);
@@ -4021,6 +4022,7 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
         ("FENNEC_STRIP_FACTS", "1"),
         ("FENNEC_THREADS_RUNTIME", "0"),
         ("FENNEC_BOXED_RESULTS", "1"),
+        ("FENNEC_AUDIT", "1"),
     ]
     .into_iter()
     .enumerate()

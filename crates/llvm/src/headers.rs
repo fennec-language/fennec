@@ -1325,7 +1325,8 @@ done:
             emit.declare(&format!(
                 "declare void @fennec_str_index_text(ptr sret({HEADER}) align 8, ptr, i64, i64, i64) nounwind"
             ));
-            let (place, from, to) = (emit.place_for_text(), i64::from(span.start), i64::from(span.end));
+            let place = emit.place_for_text();
+            let (from, to) = emit.place_in_source(span);
             emit.line(&format!(
                 "call void @fennec_str_index_text(ptr sret({HEADER}) align 8 {place}, ptr {block}, i64 {at}, i64 {from}, i64 {to})"
             ));
@@ -1404,7 +1405,7 @@ done:
         self.line(&format!("br label %{done}"));
         self.start_block(&slow);
         self.declare("declare ptr @fennec_str_part(ptr, i64, i64, i64, i64) nounwind");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         let made = self.on_blocks([&text], |emit, [block]| {
             let made = emit.temp();
             emit.line(&format!(
@@ -1589,7 +1590,7 @@ done:
         let (wide_piece, wide_end) = self.wide_slice(text, (start, end), (&no_end, &slow, &done));
         self.start_block(&slow);
         self.declare("declare ptr @fennec_str_slice(ptr, i64, i64, i64, i64) nounwind");
-        let (span_from, span_to) = (i64::from(span.start), i64::from(span.end));
+        let (span_from, span_to) = self.place_in_source(span);
         let made = self.on_blocks([text], |emit, [block]| {
             let made = emit.temp();
             emit.line(&format!(
@@ -1780,7 +1781,7 @@ done:
         self.line(&format!("br label %{done}"));
         self.start_block(&slow);
         self.declare("declare i64 @fennec_str_code(ptr, i64, i64) nounwind");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         let counted = self.on_blocks([text], |emit, [block]| {
             let counted = emit.temp();
             emit.line(&format!("{counted} = call i64 @fennec_str_code(ptr {block}, i64 {from}, i64 {to})"));

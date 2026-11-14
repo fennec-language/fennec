@@ -1,0 +1,20 @@
+# `text.split("\r\n")` of a request's head into its 4 lines, done OPS times on inputs that vary.
+# `fennec-bench ops` counts its instructions per operation beside its Rust twin's.
+
+OPS = 20_000
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    texts = [
+        f"POST /orders/{i} HTTP/1.1\r\nHost: fennec.example\r\nContent-Type: application/json\r\nX-Request: {i * 7}" for i in range(
+            shift,
+            shift + 16,
+        )
+    ]
+    mut total = 0
+    for at in range(OPS):
+        lines = texts[(at + shift) % 16].split("\r\n")
+        total += len(lines) + len(lines[2])
+    stdout.print(total)
+    return

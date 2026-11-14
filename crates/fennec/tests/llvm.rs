@@ -16777,6 +16777,70 @@ fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()>
     Ok(())
 }
 
+/// What `main` printed comes out before the end of a `with launch` block waits for its task. A
+/// task writes what it printed before it parks or waits, and this wait on the program's own
+/// thread didn't: a program waiting there for a task that goes on, a server say, showed nothing
+/// of what it had printed, and lost it if it was stopped.
+///
+/// The task ends only when a line comes on standard input, so the program is surely waiting at
+/// its block's end when its first line is read, and the test then gives it the line. Built for a
+/// heap audit and run under it, on 1, 4 and 16 threads: it ends with nothing live and nothing said.
+#[test]
+fn what_main_printed_comes_out_before_a_block_end_waits_for_its_task() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("printed-before-waiting")?;
+    let program = dir.join("printed.fen");
+    std::fs::write(&program, include_str!("fixtures/printed_before_a_block_end_waits.fen"))?;
+    let executable = dir.join("printed");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let mut command = Command::new(&executable);
+        command
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut waiting = Running(command.spawn()?);
+        // Read while the task still waits for its line: nothing has been given it yet.
+        assert_eq!(waiting.first_line()?, "printed before the block's end", "on {threads} threads");
+        let mut told = waiting.0.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        told.write_all(b"go\n")?;
+        drop(told);
+        let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
+        let ended = loop {
+            if let Some(status) = waiting.0.try_wait()? {
+                break status;
+            }
+            assert!(std::time::Instant::now() < deadline, "it went on after its task was given a line");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let mut said = String::new();
+        if let Some(mut errors) = waiting.0.stderr.take() {
+            errors.read_to_string(&mut said)?;
+        }
+        assert_eq!(ended.code(), Some(0), "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A channel to `.Every` gives every listener every message. One that falls behind fails loudly
 /// unless it asked for `.DropOldest`, when it goes on from the oldest message kept.
 #[test]

@@ -189,17 +189,6 @@ pub(crate) fn check_rules(
     if copies.is_empty() { Ok(signatures) } else { Err(copies) }
 }
 
-/// Like `check_rules`, checking all of a module, as a build does, which works constants out when
-/// the program starts.
-pub(crate) fn check_all_rules(
-    module: &mut Module,
-    sources: &Sources,
-) -> Result<fennec_check::Signatures, Vec<Diagnostic>> {
-    let signatures = fennec_check::check_and_resolve(module)?;
-    let copies = implicit_copies(module, &signatures, sources);
-    if copies.is_empty() { Ok(signatures) } else { Err(copies) }
-}
-
 /// The steps a constant may take to be worked out while compiling. One that takes more is
 /// worked out when the program starts, with a hint.
 const CONSTANT_STEPS: u64 = 1_000_000;
@@ -235,10 +224,13 @@ enum Baked {
     Failed(Diagnostic),
 }
 
-/// Whether a constant's value is a literal already: a number, string, bool or `None`.
+/// Whether a constant's value is a literal already: a number, string, bool or `None`, or a list,
+/// tuple, set or dict of them, which working it out would write the same again.
 fn is_literal(value: &fennec_syntax::Expr) -> bool {
     use fennec_syntax::ExprKind;
     match &value.kind {
+        ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => items.iter().all(is_literal),
+        ExprKind::Dict(pairs) => pairs.iter().all(|(key, value)| is_literal(key) && is_literal(value)),
         ExprKind::Int(_)
         | ExprKind::Float(_)
         | ExprKind::Duration(_)

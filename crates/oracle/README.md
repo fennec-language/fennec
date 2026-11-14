@@ -58,8 +58,28 @@ how values are held, copied, compared and printed, is modeled here on its own, f
   refused, as `json.loads failing (...)`. A float JSON can't hold, or an `Id` that can't be saved,
   stops the program. A union, bytes, the standard library's collections, a type with its own
   `serialize` or `deserialize`, and `json.dump` and `json.load` are unsupported.
-- Standard output is real. `Args` and `Stdin` are empty. A program that takes any other capability
-  is skipped.
+- Standard output is real. `Args` and `Stdin` are empty. `Fs` is modeled, as below. A program that
+  takes any other capability is skipped.
+- The file system an `Fs` reaches is modeled in memory, in `interp/disk.rs`. It starts as the
+  folder the program runs in was: for `run` and `coverage`, the folder the oracle runs in, as the
+  gate runs the examples from the checkout's root, and for `compare`, a fresh empty one, as the
+  compiled program gets. What the program writes, makes and removes is held in memory, and the disk
+  is never written. Where the folder isn't a fresh empty one, the oracle looks at the disk, a name
+  at a time and never through a link, only for whether a file or a folder is there: reading a file
+  that was there before, its size, and what's in a folder that was there before are refused. A
+  path outside the folder is refused, but for the folders on the way to it, which are there.
+- Each of `Fs`'s methods fails as the runtime's does, with its case of `IoError` and its words, and
+  a path goes through the folders on its way as the system goes, a `..` back up. An `Fs` narrowed
+  with `only` reaches what's inside its folder, by the path's text with `.` and `..` worked out, and
+  one narrowed with `read_only` changes nothing: either fails with `PermissionDenied`, saying why.
+  A file `fs.create` lends takes its path's place when its `with` block ends, and one that fails
+  leaves the path as it was; one `fs.open` lends reads what the file held when it was opened.
+- A folder's size, which differs from one system to another, is a value the oracle can't know: it
+  can be held and passed on, and anything else done with it is refused. Refused too: a name beside
+  another that differs from it only in case, which macOS and Windows take as the same name, a
+  folder's listing while a file is being made in it, under a hidden name holding the process's
+  number, bytes, and on Windows what it reads its own way.
+- `std.path`'s `Path` is its text, and its methods only look at it, each written here on its own.
 - Anything it doesn't model it refuses, as `unsupported: <feature>`, rather than guess. A run has a
   budget of steps, items and nesting, and one that goes past it is unsupported too, as `ran too
   long`.
@@ -72,7 +92,9 @@ fennec-oracle compare <program.fen> [--fennec PATH]  hold the compiled program, 
 fennec-oracle coverage [examples dir]                run it over the examples, and say what it covers
 ```
 
-`run` exits as the program does: its own code, or 1 when it fails or stops. `compare` exits 0 when
-the compiled program and the oracle agree on standard output and exit code, and 1 when they don't.
+`run` exits as the program does: its own code, or 1 when it fails or stops. `compare` runs each
+compiled build in a fresh empty folder, made at one path in the temporary folder, so what it writes
+goes nowhere else, and the oracle as if in an empty folder at that path. It exits 0 when the
+compiled program and the oracle agree on standard output and exit code, and 1 when they don't.
 Both exit 3 when the program uses something the oracle doesn't model. Run every one of them under
 a time and memory limit, as any Fennec program is run.

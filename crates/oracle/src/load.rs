@@ -252,12 +252,12 @@ fn typed_fields(
     (fields, cases)
 }
 
-/// The capabilities `main` may take here: standard output, which is real, and the arguments and
-/// standard input, which are empty.
+/// The capabilities `main` may take here: standard output, which is real, the arguments and
+/// standard input, which are empty, and the file system, which is modeled.
 fn given_to_main(main: &FnDef) -> Result<(), Refused> {
     for param in &main.params {
         let ty = param.ty.as_ref().map_or("", |ty| ty.name.as_str());
-        if !matches!(ty, "Stdout" | "Args" | "Stdin") {
+        if !matches!(ty, "Stdout" | "Args" | "Stdin" | "Fs") {
             return Err(Refused::Unsupported(format!("the capability {ty}")));
         }
     }

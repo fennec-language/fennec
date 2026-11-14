@@ -259,6 +259,7 @@ impl Interp {
             Value::Str(text) => text.chars().count(),
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.len(),
             Value::Dict(pairs) => pairs.len(),
+            Value::Table(table) => table.len(),
             Value::Cap(Cap::Args) => 0,
             Value::Instance(instance) => match self.program.method(&instance.ty, "len") {
                 Some(def) => {

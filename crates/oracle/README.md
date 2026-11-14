@@ -25,6 +25,20 @@ how values are held, copied, compared and printed, is modeled here on its own, f
 - Values are plain Rust values: `i64` ints checked on every operation, `f64` floats, `String`,
   `Vec` for lists, sets and dicts (kept in the order their items went in), and structs, errors and
   enum cases as their named fields.
+- A function the program declares is equal only to itself.
+- A `Table` is a list of slots, each with the generation of its item and the item while it's
+  there, and a tag of its own, which a copy keeps. An item goes in the lowest slot that's free, at
+  that slot's next generation, and an `Id` is its slot, generation and tag, so one whose item is
+  gone or that's from another `Table` finds nothing. It prints and is gone through in slot order,
+  and two are equal when their slots are. `add`, `remove`, `get`, `update`, `modify`,
+  `remove_where`, `clear`, `values`, `ids`, `items`, `in`, `len`, `[]` and `for ref` are modeled.
+- A kit's modules, and the modules beside a single file that it imports, are found the way the
+  compiler finds them and merged into one module, as the compiler merges them: `module.name`
+  becomes `name`, a name imported with `as` becomes the name it stands for, and a leading-dot case
+  that only one enum the file can see has is given that enum. The compiler's loader is in
+  `fennec-kit`, which also fetches and builds other kits, so this is written here on its own. A kit
+  that depends on another, a file whose own names hide a name an import binds, and `embed_file`
+  are unsupported.
 - Every assignment, argument and return copies, so value semantics hold by construction. A `ref`
   parameter, a `for ref` loop's name and a local `ref` stand for a place, written where it is.
 - A failure passes up as a Rust error, `except` handles only the failure of the call it follows,

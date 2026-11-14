@@ -3414,6 +3414,14 @@ impl Emit<'_, '_, '_> {
     fn let_go_after(&mut self, inst: &InstKind) {
         for local in self.let_go_of(self.at, inst) {
             let kind = self.kinds.get(local.0).cloned().unwrap_or(Kind::Unit);
+            // A struct or an enum held in place lets go of each block it holds, where it is.
+            if self.owns_inline(local) {
+                let slot = self.slot(local);
+                self.release_inline(&kind, &slot);
+                let zero = self.zero_line(&kind, &slot);
+                self.line(&zero);
+                continue;
+            }
             let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
             self.line(&format!("{held} = load {text}, ptr {slot}"));
             self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
@@ -3456,7 +3464,8 @@ impl Emit<'_, '_, '_> {
         }
         let mut let_go = Vec::new();
         for local in done_with {
-            if self.owns(local) && self.known.moves(local) && !writes.contains(&local) {
+            if (self.owns(local) || self.owns_inline(local)) && self.known.moves(local) && !writes.contains(&local)
+            {
                 let_go.push(local);
             }
         }
@@ -3508,7 +3517,7 @@ impl Emit<'_, '_, '_> {
         }
         let eligible = |at: usize| {
             at >= function.params
-                && self.owns(LocalId(at))
+                && (self.owns(LocalId(at)) || self.owns_inline(LocalId(at)))
                 && !untracked.contains(&at)
                 && !leaned_on.contains(&at)
                 && !self.on_crash.contains(&at)

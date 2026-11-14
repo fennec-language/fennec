@@ -20277,6 +20277,31 @@ fn a_ref_loop_over_items_holding_blocks_copies_nothing() -> std::io::Result<()> 
     Ok(())
 }
 
+/// A struct, a tuple or an optional held in place in a local is let go of where it's read for
+/// the last time, as a list or a string in one is, so what changes the same value further down
+/// the function finds its lists with one owner. It was kept to the function's end: a struct
+/// taken out of a field, changed and put back in an `if` was still an owner when the next call
+/// took it out again, which copied its list each time. `json.loads` does exactly that to say why
+/// a read failed. Each of the four shapes here copied a list a call, 350 copies in all.
+#[test]
+fn a_value_held_in_place_is_let_go_of_at_its_last_read() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("let_go_at_the_last_read")?;
+    std::fs::write(
+        dir.join("let_go_at_the_last_read.fen"),
+        include_str!("fixtures/let_go_at_the_last_read.fen"),
+    )?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "let_go_at_the_last_read", how)?;
+        assert_eq!(printed, "21250\n", "{how:?}");
+        assert!(counts.starts_with("copies 0 ") && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 const REF_LOOPS_HOLDING_BLOCKS: &str = r#"from std.collections import Id, Table
 
 struct Unit:

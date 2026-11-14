@@ -2000,7 +2000,8 @@ fn word_ty(word: Word) -> Ty {
         Word::F32 => Ty::F32,
         Word::Bool => Ty::Bool,
         Word::Str | Word::Text => Ty::Str,
-        Word::Nothing => Ty::Unit,
+        // No dict made here holds its values in place yet: the kind is the runtime's so far.
+        Word::Nothing | Word::InPlace(_) => Ty::Unit,
         Word::Plain(id) => Ty::Struct(id),
         Word::Block(number) => Ty::Block(number),
     }

@@ -926,11 +926,9 @@ impl Emit<'_, '_, '_> {
         let taken = self.known.is_taken(dest).then(|| self.known.item_home(dest).cloned()).flatten();
         let taking = taken.is_some();
         let alone;
-        // Where a lock's log is asked first, a dict the log marked stays where it is. One holding
-        // its values in its entries is copied instead: the log has no way yet to save one of them
-        // as it was, so the change is made in a copy, which a crash or a failure lets go of.
+        // Where a lock's log is asked first, a dict the log marked stays where it is.
         let in_entry = matches!(value_word, Word::InPlace(_));
-        let asks = taking && self.asks_the_log() && !in_entry;
+        let asks = taking && self.asks_the_log();
         let dict = match taken {
             Some((root, path)) => {
                 let place = self.place_of(root, &path)?;
@@ -971,7 +969,11 @@ impl Emit<'_, '_, '_> {
         ));
         // A struct held in a block of its own, taken out: the block is made alone too, since a
         // copy of the dict shares it, and what it holds is changed through it. One held in the
-        // entry is taken where it is, in a dict that's alone.
+        // entry is taken where it is, in a dict that's alone, or that the log marked and is told
+        // of this entry as it was.
+        if asks && in_entry {
+            self.save_entry_if_marked(dict, &entry);
+        }
         let value_at = if taking && value_kind.in_memory() && !in_entry {
             let block = if asks {
                 self.value_to_change(dict, &value_at)
@@ -1054,10 +1056,9 @@ impl Emit<'_, '_, '_> {
                 "it takes a field of a {value_kind:?} value, which this backend doesn't take yet"
             ));
         }
-        // Where a lock's log is asked first, a dict the log marked stays where it is, unless its
-        // values are in its entries: see `dict_read`.
+        // Where a lock's log is asked first, a dict the log marked stays where it is.
         let in_entry = matches!(value_word, Word::InPlace(_));
-        let asks = self.asks_the_log() && !in_entry;
+        let asks = self.asks_the_log();
         let dict = if asks { self.changeable_at(&place) } else { self.alone_at(&place, "fennec_unshare") };
         let key = self.key_value(key, key_word)?;
         let entry = self.find(&dict, (key_word, value_word), &key);
@@ -1076,9 +1077,13 @@ impl Emit<'_, '_, '_> {
             "{value_at} = getelementptr inbounds i8, ptr {entry}, i64 {}",
             entry_value(key_word)
         ));
-        // A value held in the entry has its fields right there, in a dict that's alone. Any other
-        // is a block of its own: a struct's held in place in one.
+        // A value held in the entry has its fields right there, in a dict that's alone, or that
+        // the log marked and is told of this entry as it was. Any other is a block of its own: a
+        // struct's held in place in one.
         let fields = if in_entry {
+            if asks {
+                self.save_entry_if_marked(&dict, &entry);
+            }
             value_at
         } else {
             let block = if asks {
@@ -1102,6 +1107,21 @@ impl Emit<'_, '_, '_> {
     fn value_to_change(&mut self, dict: &str, value_at: &str) -> String {
         self.save_value_if_marked(dict, value_at);
         self.changeable_at(value_at)
+    }
+
+    /// Saves the value a dict holds in the entry at `entry`, as it is, if a lock's log marked the
+    /// dict, before it's changed where it is: the log keeps its words, with an owner of each block
+    /// in them, and puts them back after a crash or a failure. The dict itself is never copied for
+    /// the one value. Telling the log of an entry twice in one lock saves it once.
+    fn save_entry_if_marked(&mut self, dict: &str, entry: &str) {
+        self.declare("declare void @fennec_lock_save_entry(ptr, ptr) nounwind");
+        let marked = self.marked_alone(dict);
+        let (save, ready) = (self.label("marked"), self.label("entry"));
+        self.line(&format!("br i1 {marked}, label %{save}, label %{ready}, !prof !0"));
+        self.start_block(&save);
+        self.line(&format!("call void @fennec_lock_save_entry(ptr {dict}, ptr {entry})"));
+        self.line(&format!("br label %{ready}"));
+        self.start_block(&ready);
     }
 
     /// Saves the block a dict holds at `value_at`, as it is, if a lock's log marked the dict: the

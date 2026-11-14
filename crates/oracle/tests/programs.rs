@@ -1071,3 +1071,20 @@ fn a_launched_task_reads_what_its_block_sent_and_its_failure_is_the_withs() {
         )
     );
 }
+
+/// `round` gives the float the runtime gives at every place. Its powers of ten are the exact ones
+/// written out and, past those, the float nearest each: multiplying tens together gives another
+/// float from ten to the 33 on, and rounding to those places then came out one bit off.
+#[test]
+fn rounding_scales_by_the_power_of_ten_nearest_it() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            stdout.print([round(0.12345678901234568, places) for places in [1, 5, 9, 15, 16, 17, 22]])
+            stdout.print([round(1.2345678901234567e40, places) for places in [-22, -23, -33, -34, -37, -39, -40]])
+        ",
+        "[0.1, 0.12346, 0.123456789, 0.123456789012346, 0.1234567890123457, 0.12345678901234568, \
+         0.12345678901234568]\n[1.2345678901234566e+40, 1.2345678901234566e+40, 1.2345679e+40, 1.234568e+40, \
+         1.235e+40, 1.2e+40, 1e+40]\n",
+    );
+}

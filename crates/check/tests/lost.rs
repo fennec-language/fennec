@@ -92,7 +92,7 @@ fn a_test_cant_lose_a_change_either() {
         ["this change to `xs` is lost: nothing reads `xs` after this @ xs.append(2)"]
     );
     assert_eq!(
-        problems("test \"grows\":\n    mut xs = [1]\n    xs.append(2)\n    assert xs.len() == 2\n"),
+        problems("test \"grows\":\n    mut xs = [1]\n    xs.append(2)\n    assert len(xs) == 2\n"),
         NONE
     );
 }
@@ -168,7 +168,7 @@ fn what_a_change_reaches_outside_isnt_lost() {
     // A nested function can read it whenever it's called.
     assert_eq!(
         after_units(
-            "mut seen = [1]\ndef show() -> int:\n    seen.len()\nseen.append(2)\nstdout.print(show())\n"
+            "mut seen = [1]\ndef show() -> int:\n    return len(seen)\nseen.append(2)\nstdout.print(show())\n"
         ),
         NONE
     );

@@ -6,10 +6,13 @@
 
 mod builtins;
 mod calls;
+pub(crate) mod disk;
 mod expr;
+mod files;
 mod json;
 mod library;
 mod methods;
+mod paths;
 mod show;
 mod sources;
 pub(crate) mod stream;
@@ -22,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use fennec_syntax::{BinOp, Expr, ExprKind, Span, Stmt, StmtKind};
 
 use crate::load::Program;
-use crate::value::{Cap, Value};
+use crate::value::{Cap, Reach, Value};
 
 /// How many expressions and statements a run may take, across every thread, before it's stopped
 /// as one the oracle can't finish.
@@ -81,10 +84,12 @@ pub(crate) struct Shared {
     pub(crate) refused: Mutex<Option<String>>,
     /// The tag the next `Table` made gets.
     next_tag: AtomicU64,
+    /// The file system an `Fs` reaches.
+    pub(crate) disk: Arc<Mutex<disk::Disk>>,
 }
 
 impl Shared {
-    pub(crate) fn new(program: &'static Program, most_steps: u64) -> Shared {
+    pub(crate) fn new(program: &'static Program, most_steps: u64, workdir: &disk::Workdir) -> Shared {
         Shared {
             program,
             most_steps,
@@ -93,6 +98,7 @@ impl Shared {
             threads: AtomicUsize::new(0),
             refused: Mutex::new(None),
             next_tag: AtomicU64::new(1),
+            disk: Arc::new(Mutex::new(disk::Disk::new(workdir))),
         }
     }
 
@@ -187,7 +193,7 @@ impl Interp {
         }
     }
 
-    /// Runs `main`, with standard output and empty arguments and input.
+    /// Runs `main`, with standard output, empty arguments and input, and the file system.
     pub(crate) fn run_main(&mut self) -> MainEnded {
         let main = self.program.main;
         let mut given = Vec::new();
@@ -196,6 +202,7 @@ impl Interp {
                 Some("Stdout") => Cap::Stdout,
                 Some("Args") => Cap::Args,
                 Some("Stdin") => Cap::Stdin,
+                Some("Fs") => Cap::Fs(Reach { folders: None, read_only: false }),
                 _ => return MainEnded::Unsupported("a capability main takes".to_owned()),
             };
             given.push(calls::ArgVal::Value(None, Value::Cap(cap)));

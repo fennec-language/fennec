@@ -59,6 +59,18 @@ impl Interp {
             return unsupported("a `with` over something that isn't a call");
         };
         let (target, given) = self.prepare(call, callee, args)?;
+        if let Some(reach) = self.is_file_source(&target, call.span)? {
+            let create = matches!(&target, Target::Method { name, .. } if name == "create");
+            let handle = self.file_source(&reach, create, given, call.span)?;
+            let names = handles.get(level).map_or(&[][..], |(_, names)| *names);
+            return self.with_file(handle, names, call.span, |interp| {
+                if level + 1 < handles.len() {
+                    interp.open(handles, level + 1, body)
+                } else {
+                    interp.block(body)
+                }
+            });
+        }
         match &target {
             Target::Def { def, .. } if lends_in(&def.body) => {}
             Target::Def { def, .. } => {
@@ -137,7 +149,7 @@ impl Interp {
         }
     }
 
-    fn lend_names(&mut self, names: &'static [WithName], lent: Value, span: Span) -> Run<()> {
+    pub(crate) fn lend_names(&mut self, names: &'static [WithName], lent: Value, span: Span) -> Run<()> {
         match names {
             [] => Ok(()),
             [name] => self.set_name(&name.name, lent, span),

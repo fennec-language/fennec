@@ -324,7 +324,7 @@ impl Interp {
     }
 
     /// Sorted, steadily: items that order the same keep their order, the other way round too.
-    fn sorted(
+    pub(crate) fn sorted(
         &mut self,
         items: Vec<Value>,
         key: Option<&Value>,

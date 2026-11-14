@@ -147,6 +147,21 @@ Re-pin only when a kernel's work or a twin changes, by running the **Pin benchma
 - Each operation's cost is pinned per architecture in `bench/ops/<architecture>.txt`, with its twin's and a hash of what both print. CI's bench job fails when an operation takes more than its pin, by more than 5% and 10 instructions. So a slow path fails the day it's added, and an improvement shows as a lower count until it's pinned again.
 - The **Pin benchmark targets** workflow pins them with the suite's targets, checking that each prints what its twin prints. Copy what it prints into `bench/ops/`.
 
+## Build times
+
+`fennec-bench build-times` measures how much work Fennec does for the scoreboard's eight real programs and `selfhost`, in four steps:
+
+- `cold`: a release build in a new Fennec folder;
+- `warm`: a dev build after one line is added;
+- `check`: `fennec check` after another;
+- `run`: `fennec run` on a program the store has.
+
+Each step is the median of five runs. The count is the instructions retired by every process the step starts, the compiler, LLVM's tools and the linker. On a Mac, `time -l` counts only the process it starts, so each tool runs through a script that counts it too. A run's count is `fennec`'s own work, leaving out the program's.
+
+- Each count is pinned in `bench/build-times.txt`, and a step more than 3% over its pin fails.
+- Wall time is shown, with the machine's load. A step that takes half again as long as when pinned only warns, since the load moves it.
+- The morning sweep runs it on the Mac. `fennec-bench build-times --pin` writes what it measured as the new pins, which a change that makes builds cheaper does in the same pull request.
+
 ## Adding a kernel
 
 The suite is locked, so a new kernel needs a stated reason. Add `name.fen` and `name.rs` to `kernels/`, then re-pin.

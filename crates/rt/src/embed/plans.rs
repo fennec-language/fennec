@@ -237,10 +237,31 @@ fn holds_addresses(holds: &Holds, fields: &[u64], found: &mut impl Extend<u64>) 
     addresses_by_case(holds, fields, found);
 }
 
-/// [`holds_addresses`] for a value with an enum inside, which its case decides: out of line.
-#[cold]
+/// [`holds_addresses`] for a value with an enum inside, which its case decides. It's out of line,
+/// so what holds no enum stays as short as it was, but it isn't cold: a struct with one small enum
+/// in it, a result or a state, is an everyday value. The value's own words and strings go as a
+/// value with no enum's do, and so do those of each enum's case, the one its number names. Only a
+/// case that holds an enum of its own is walked the long way.
 #[inline(never)]
 fn addresses_by_case(holds: &Holds, fields: &[u64], found: &mut impl Extend<u64>) {
+    found.extend(holds.blocks_in(fields).filter(|address| *address != 0));
+    found.extend(holds.texts_in(fields).filter(|address| *address != 0));
+    for inner in &holds.enums {
+        let case = fields.get(inner.at).and_then(|case| usize::try_from(*case).ok());
+        let Some(held) = case.and_then(|case| inner.cases.get(case)) else { continue };
+        if held.fixed() {
+            found.extend(held.blocks_in(fields).filter(|address| *address != 0));
+            found.extend(held.texts_in(fields).filter(|address| *address != 0));
+        } else {
+            enums_within(held, fields, found);
+        }
+    }
+}
+
+/// A case that holds an enum of its own, walked case by case however deep it goes.
+#[cold]
+#[inline(never)]
+fn enums_within(holds: &Holds, fields: &[u64], found: &mut impl Extend<u64>) {
     holds.each_block(fields, &mut |address| found.extend(std::iter::once(address)));
 }
 
@@ -400,6 +421,69 @@ mod tests {
         addresses(&order, &[0, 0, 0, 0], &mut found).unwrap();
         assert_eq!(found, Vec::<u64>::new());
         assert!(addresses(&order, &[9, 0, 0, 0], &mut found).is_none());
+    }
+
+    /// A value with enums inside is found case by case: each enum's own case, two enums side by
+    /// side, and a case that holds an enum of its own, which is walked the long way. A case's
+    /// number past the enum's cases finds nothing there.
+    #[test]
+    fn enums_inside_are_each_followed_by_their_case_however_many_and_however_deep() {
+        let order = Element::Enum {
+            name: Rc::from("Order"),
+            cases: vec![
+                (Rc::from("Hold"), Vec::new()),
+                (Rc::from("Say"), vec![(Rc::from("text"), Element::Text)]),
+            ],
+            words: 4,
+        };
+        let both = Element::Struct {
+            name: Rc::from("Both"),
+            fields: vec![
+                (Rc::from("first"), order.clone()),
+                (Rc::from("name"), Element::Str),
+                (Rc::from("second"), order.clone()),
+            ],
+        };
+        let planned = plan(&both);
+        assert!(!matches!(planned, Plan::Walk));
+        let (first, second) = (in_block(72), in_block(88));
+        let ([f0, f1, f2], [s0, s1, s2]) = (first, second);
+        let mut found = Vec::new();
+        addresses(&planned, &[1, f0, f1, f2, 40, 1, s0, s1, s2], &mut found).unwrap();
+        assert_eq!(found, [40, 72, 88]);
+        found.clear();
+        addresses(&planned, &[0, 0, 0, 0, 40, 1, s0, s1, s2], &mut found).unwrap();
+        assert_eq!(found, [40, 88]);
+        found.clear();
+        addresses(&planned, &[1, f0, f1, f2, 0, 0, 0, 0, 0], &mut found).unwrap();
+        assert_eq!(found, [72]);
+        found.clear();
+        addresses(&planned, &[9, f0, f1, f2, 40, 0, 0, 0, 0], &mut found).unwrap();
+        assert_eq!(found, [40]);
+        // A case holding a string and an enum of its own.
+        let state = Element::Enum {
+            name: Rc::from("State"),
+            cases: vec![
+                (Rc::from("Idle"), Vec::new()),
+                (Rc::from("Busy"), vec![(Rc::from("job"), Element::Text), (Rc::from("order"), order)]),
+            ],
+            words: 8,
+        };
+        let worker = Element::Struct {
+            name: Rc::from("Worker"),
+            fields: vec![(Rc::from("name"), Element::Str), (Rc::from("state"), state)],
+        };
+        let planned = plan(&worker);
+        assert!(!matches!(planned, Plan::Walk));
+        found.clear();
+        addresses(&planned, &[40, 1, f0, f1, f2, 1, s0, s1, s2], &mut found).unwrap();
+        assert_eq!(found, [40, 72, 88]);
+        found.clear();
+        addresses(&planned, &[40, 1, f0, f1, f2, 0, 0, 0, 0], &mut found).unwrap();
+        assert_eq!(found, [40, 72]);
+        found.clear();
+        addresses(&planned, &[40, 0, 0, 0, 0, 0, 0, 0, 0], &mut found).unwrap();
+        assert_eq!(found, [40]);
     }
 
     /// An item with no fields takes no words, and is still a step of one to walk a list by.

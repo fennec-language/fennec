@@ -7,6 +7,7 @@
 //! doesn't model, it refuses as unsupported rather than guess.
 
 mod interp;
+mod kit;
 mod load;
 pub mod report;
 mod text;
@@ -122,8 +123,8 @@ fn run_here(program: &'static Program, most_steps: u64) -> Outcome {
 
 /// What the program says on standard error as it stops: the message, pointing at where.
 fn said(program: &Program, message: &str, span: fennec_syntax::Span) -> String {
-    if span.start >= fennec_syntax::Span::PRELUDE || span.end as usize > program.source.len() {
+    if span.start >= fennec_syntax::Span::PRELUDE || program.sources.locate(span).is_none() {
         return format!("error: {message}\n");
     }
-    fennec_syntax::Diagnostic::new(message, span).render(&program.path, &program.source)
+    program.sources.render(&fennec_syntax::Diagnostic::new(message, span))
 }

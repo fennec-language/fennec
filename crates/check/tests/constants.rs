@@ -81,6 +81,7 @@ fn nothing_changes_a_constant() {
             "`LIMIT` is a constant, so it can't change @ LIMIT",
             "`LIMIT` is a constant, so it can't change @ LIMIT",
             "`KEYWORDS` is a constant, so it can't change @ KEYWORDS",
+            "`for ref` can't go over a set: its items are what it holds them by, so they can't change where they are @ KEYWORDS",
         ]
     );
 }

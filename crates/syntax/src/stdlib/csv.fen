@@ -25,7 +25,10 @@ export def records(text: str, delimiter = ",") -> list[dict[str, str]]:
     return found
 
 ## CSV text of `rows`, each ending in `\n`. A row with no fields fails with an `InvalidValue`:
-## CSV can't write one, since a blank line isn't a row, and it would be lost.
+## CSV can't write one, since a blank line isn't a row, and it would be lost. Every field is
+## written as it is, so what's read back is what was given. A spreadsheet opening the file may
+## run a field that starts with `=`, `+`, `-` or `@` as a formula: a program writing text from
+## outside for a spreadsheet puts something in front of such a field itself, like a `'`.
 export def dumps(rows: list[list[str]], delimiter = ",") -> str fails InvalidValue:
     wrong = delimiter_problem(delimiter)
     if wrong != "": fail InvalidValue(message=wrong)

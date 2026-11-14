@@ -126,6 +126,11 @@ export def text_plain_end(text: str, at: int) -> int
 @intrinsic
 export def text_escape_at(text: str, at: int) -> int
 
+## Whether a text's bytes from byte `start` on begin with all of `word`'s. False when `start` is
+## negative or `word` would run past the text's end. Neither is copied.
+@intrinsic
+export def text_same_at(text: str, start: int, word: str) -> bool
+
 ## A byte builder, which a binary format writes into in place: empty, with room to grow. Only std
 ## writes into one, with the intrinsics below, and copies it to its exact size, `data[0:len(data)]`,
 ## before anything else sees it.

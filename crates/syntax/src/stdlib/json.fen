@@ -1,6 +1,6 @@
 from std import base64
 from std.collections import Id
-from std.intrinsics import id_key, new_tag, stop, text_byte, text_escape_at, text_of_code, text_part, text_plain_end, text_size, type_name
+from std.intrinsics import id_key, new_tag, stop, text_byte, text_escape_at, text_of_code, text_part, text_plain_end, text_same_at, text_size, type_name
 from std.io import Reader, Writer, read_all
 from std.string import cut_input, quoted_input
 
@@ -721,14 +721,6 @@ def place_text(path: list[str]) -> str:
         out += part
     return "the value" if out == "" else f"`{out}`"
 
-## Whether the `size` bytes of `text` from `start` are those of `word`.
-def same_bytes(text: str, start: int, word: str, size: int) -> bool:
-    mut at = 0
-    while at < size:
-        if text_byte(text, start + at) != text_byte(word, at): return False
-        at += 1
-    return True
-
 ## No `Id`s or `Table`s seen, shared until a read sees one.
 NO_IDS = IdsSeen()
 
@@ -1306,7 +1298,7 @@ struct JsonReader:
             if (
                 size > 0
                 and text_byte(self._source, start + size) == 34
-                and same_bytes(self._source, start, saved, size)
+                and text_same_at(self._source, start, saved)
             ):
                 mut at = start + size + 1
                 mut c = text_byte(self._source, at)
@@ -1581,7 +1573,7 @@ struct JsonReader:
             size = text_size(case_name)
             if (
                 text_byte(self._source, start + size) == 34
-                and same_bytes(self._source, start, case_name, size)
+                and text_same_at(self._source, start, case_name)
             ):
                 self._at = start + size + 1
                 return at

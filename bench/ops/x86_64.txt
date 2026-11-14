@@ -14,7 +14,7 @@ item_put_back 101 847 b682349c0503b22b
 item_reverse 1210 235 adf72e6a83cfef86
 item_sort 5530 2594 c850c0d83e882bc0
 json_dumps 2378 1842 61c1c49ae8b00250
-json_loads 2858 1825 31892504485fcc05
+json_loads 2545 1825 31892504485fcc05
 parse_float 457 166 fc8d1df0147fbed2
 parse_int 78 64 b6183ab1f49e0410
 removesuffix 101 54 c681687395f67e8b

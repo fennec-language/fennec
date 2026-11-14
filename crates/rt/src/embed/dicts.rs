@@ -1292,26 +1292,6 @@ enum Taken {
 }
 
 /// Takes a key, given as its words, out of a dict or set already owned once.
-/// The dict or set a key is taken out of: `held` itself when it has one owner, and a copy of its
-/// own when it's shared, as [`unshared`] makes. A shared one that doesn't have the key is left as
-/// it is, with no copy made and no owner moved, so a take that then fails has changed nothing: the
-/// caller still holds what it held.
-fn to_take_from(state: &mut State, held: i64, key: &[u64]) -> u64 {
-    let Ok(at) = u64::try_from(held) else { return 0 };
-    if shared_without(state, at, key) { at } else { unshared(state, at).unwrap_or(0) }
-}
-
-/// Whether a dict or set has another owner and doesn't have `key`.
-fn shared_without(state: &State, at: u64, key: &[u64]) -> bool {
-    let Some(block) = state.heap.block(at) else { return false };
-    if state.heap.is_alone(at, block) || super::lists::marked_alone(block) {
-        return false;
-    }
-    let Some(layout) = layout(state, block) else { return false };
-    let hash = hash_key(state, layout.key, key, Hashing::of(block));
-    !matches!(find(state, block, layout, key, hash), Probe::Found(_))
-}
-
 fn take_key(state: &mut State, at: u64, key: &[u64]) -> Taken {
     take(state, at, key).unwrap_or(Taken::NotOne)
 }
@@ -1366,7 +1346,7 @@ pub extern "C" fn set_remove_header(set: i64, a: u64, b: u64, c: u64, must: i8, 
 
 fn remove_words(set: i64, key: &[u64], must: i8, (start, end): (i64, i64)) -> i64 {
     attempt(|state: &mut State| {
-        let at = to_take_from(state, set, key);
+        let at = u64::try_from(set).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
         match take_key(state, at, key) {
             Taken::Missing if must != 0 => {
                 let key_word = state
@@ -1398,7 +1378,7 @@ pub extern "C" fn pop(dict: i64, key: i64, start: i64, end: i64) -> i64 {
 
 fn pop_words(dict: i64, key: &[u64], (start, end): (i64, i64)) -> i64 {
     attempt(|state: &mut State| {
-        let at = to_take_from(state, dict, key);
+        let at = u64::try_from(dict).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
         match take_key(state, at, key) {
             Taken::Removed(value) => {
                 POPPED.set(value);

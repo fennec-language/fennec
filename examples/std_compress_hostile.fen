@@ -1,0 +1,92 @@
+# Compressed data from outside is read as its RFCs say, and fails with an `InvalidValue` saying
+# why: never more than `most=` bytes out, however it's built, never a byte read from past its
+# end, and never a flag, a window or a header check that isn't what the format has. Cut short
+# anywhere, it fails; with any byte changed, it fails or reads as what was packed.
+from std import compress
+
+## Why reading fails, or "read".
+def why_not(run: () -> bytes fails InvalidValue) -> str:
+    _ = run() except why:
+        return why.message
+    return "read"
+
+## `data` with byte `at` as `byte`.
+def changed(data: bytes, at: int, byte: int) -> bytes:
+    return data[0:at] + bytes([byte]) + data[at + 1:len(data)]
+
+## What `data` reads as, as gzip or as zlib, or "fails".
+def read_as(data: bytes, gzipped: bool) -> str:
+    if gzipped:
+        found = compress.gunzip(data) except InvalidValue():
+            return "fails"
+        return found.decode() except InvalidValue(): "not text"
+    found = compress.unzlib(data) except InvalidValue():
+        return "fails"
+    return found.decode() except InvalidValue(): "not text"
+
+TEXT = "the quick brown fox jumps over the lazy dog, again and again and again. " * 20
+
+test "never more than most= bytes out, however the data is built"():
+    zeros = compress.deflate("\x00" * 100_000, level=9)
+    assert len(compress.inflate(zeros, most=100_000)?) == 100_000
+    assert why_not(() => compress.inflate(zeros, most=99_999)?).startswith(
+        "the DEFLATE data holds more than 99,999 bytes",
+    )
+    # Many small members, each well under the most, add up past it.
+    member = compress.gzip("\x00" * 10_000, level=9)
+    mut many = bytes([])
+    for _ in range(11):
+        many = many + member
+    assert len(compress.gunzip(many, most=110_000)?) == 110_000
+    assert why_not(() => compress.gunzip(many, most=100_000)?).startswith(
+        "the gzip data holds more than 100,000 bytes",
+    )
+    assert len(compress.gunzip(compress.gzip(""), most=0)?) == 0
+
+test "nothing may follow the end, and a header is what its RFC has"():
+    packed = compress.zlib(TEXT)
+    assert (
+        why_not(() => compress.unzlib(packed + bytes([0]))?)
+        == "this isn't zlib data: there's more after its end"
+    )
+    assert (
+        why_not(() => compress.inflate(compress.deflate(TEXT) + bytes([0]))?)
+        == "this isn't DEFLATE data: there's more after its end"
+    )
+    assert (
+        why_not(() => compress.gunzip(compress.gzip(TEXT) + bytes([1, 2, 3]))?)
+        == "this isn't gzip data: something after its end isn't gzip"
+    )
+    # A window of 64 KiB, which DEFLATE doesn't have, with the header's check made right.
+    wide = bytes([136, 28]) + packed[2:len(packed)]
+    assert (
+        why_not(() => compress.unzlib(wide)?)
+        == "this isn't zlib data: it says its window is bigger than DEFLATE's"
+    )
+    # A preset dictionary, which it doesn't take.
+    assert why_not(() => compress.unzlib(bytes([120, 187]) + packed[2:len(packed)])?).endswith(
+        "it needs a preset dictionary, which this doesn't take",
+    )
+    for flag in [32, 64, 128]:
+        assert (
+            why_not(() => compress.gunzip(changed(compress.gzip(TEXT), at=3, byte=flag))?)
+            == "this isn't gzip data: its header has a flag gzip doesn't define"
+        )
+
+test "cut short anywhere it fails, and with a byte changed it fails or reads the same"():
+    for packed in [compress.gzip(TEXT), compress.zlib(TEXT), compress.gzip(TEXT, level=0)]:
+        gzipped = packed[0] == 31
+        for end in range(len(packed)):
+            cut = packed[0:end]
+            if gzipped:
+                assert why_not(() => compress.gunzip(cut)?) != "read"
+            else:
+                assert why_not(() => compress.unzlib(cut)?) != "read"
+        for at in range(len(packed)):
+            for byte in [0, 255]:
+                other = changed(packed, at=at, byte=byte)
+                assert read_as(other, gzipped) in ["fails", TEXT]
+
+def main(stdout: Stdout):
+    read = compress.gunzip(compress.gzip(TEXT)) except InvalidValue(): bytes([])
+    stdout.print(len(read))

@@ -896,15 +896,11 @@ impl Io {
         if let Some(listener) = &mut here.listener {
             let _ = self.poll.registry().deregister(listener);
         }
-        // With nothing else to run here, what this worker still holds was left by a round: looked
-        // at while what the server lent can still be read.
-        if self.servers.is_empty()
-            && self.waiting.is_empty()
-            && self.ready.is_empty()
-            && self.accounts.is_empty()
-            && self.temporaries.is_empty()
-            && self.owners.is_empty()
-        {
+        // With no server left here, no round is: what this worker still holds that no task made
+        // was left by one. It's looked at now, while what the server lent can still be read, and
+        // whatever else is parked here: a launched task or a range that can wait keeps its own
+        // blocks apart, so a server run from inside a task is looked at as one run from `main` is.
+        if self.servers.is_empty() {
             super::aot::worker_stopped_serving();
         }
         let (owners, _) = super::threads::serving_ends();

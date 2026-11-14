@@ -898,7 +898,11 @@ pub(crate) fn native_net(name: &str, args: &[Value], span: Span) -> Result<Value
         let (plain, last) = args.split_at(args.len().saturating_sub(named.len()));
         let given: Vec<(&str, &Value)> = named.iter().copied().zip(last).collect();
         let request = request_of(method, plain, &given, span)?;
-        return Ok(done_or_failed(http::send(&request).map(answer_value)));
+        // A task parks while its request waits, on a thread that may block, as `connect` does,
+        // rather than holding its worker: a server in the same program may need that worker to
+        // answer it.
+        let sent = if task_parks() { off_thread(move || http::send(&request)) } else { http::send(&request) };
+        return Ok(done_or_failed(sent.map(answer_value)));
     }
     let (method, args, timeout) = timed(name, args, span)?;
     real_net(&method, &args, timeout, span)

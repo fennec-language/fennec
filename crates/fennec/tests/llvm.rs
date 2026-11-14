@@ -901,8 +901,9 @@ def main(stdout: Stdout):
     copied = holder
     lock copied.audit as ref lines:
         lines.append("written through a copy")
+    same = holder == copied
     lock holder.audit as lines:
-        stdout.print(len(lines), lines[0], holder == copied)
+        stdout.print(len(lines), lines[0], same)
     talker = Talker(out=stdout, word="a word long enough for a block of its own", tags={})
     again = talker
     again.out.print(again.word)
@@ -15885,6 +15886,75 @@ def main(net: Net, stdout: Stdout) fails NetError:
         "{said}"
     );
     assert!(said.contains(" live 6"), "{said}");
+    std::fs::remove_dir_all(&dir)
+}
+
+/// What a served round leaves is found wherever the server runs, and on any number of threads.
+/// A worker that left a server used to look at what it held only when nothing else was parked
+/// on it. A server run from inside a launched task, as one beside a tick task is, has that task
+/// on one of its workers, so that worker's rounds were never looked at: with the server in a
+/// task, 0 of 6 blocks were found on 1 thread, 3 on 2, 4 on 4 and 5 on 16, and `live` said the
+/// same. Now a worker looks whenever it leaves its last server, at the blocks no task still
+/// running on it made.
+///
+/// Each program serves and asks itself: five lines and a stop for each server. With the runtime
+/// leaving a block for every round (`FENNEC_AUDIT_SELFTEST=rounds`), every one is named and
+/// counted, once: two servers one after the other used to count the first one's twice. Without
+/// it, each program ends with nothing live and nothing said.
+#[test]
+fn a_block_a_round_leaves_is_found_wherever_the_server_runs() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("rounds-left-anywhere")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    // Each shape with how many rounds it serves.
+    let shapes = [("in_a_task", 6), ("in_main", 6), ("beside_a_tick", 6), ("twice", 12)];
+    for (shape, rounds) in shapes {
+        let program = dir.join(format!("{shape}.fen"));
+        std::fs::copy(fixtures.join(format!("rounds_left_{shape}.fen")), &program)?;
+        let executable = dir.join(shape);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_NO_DAEMON", "1")
+            .env_remove("FENNEC_THREADS_RUNTIME")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "2", "4", "16"] {
+            let ran = |selftest: Option<&str>| -> std::io::Result<(Option<i32>, String)> {
+                let mut command = Command::new(&executable);
+                command.env("FENNEC_AUDIT", "1").env("FENNEC_COUNTS", "1").env("FENNEC_THREADS", threads);
+                match selftest {
+                    Some(how) => command.env("FENNEC_AUDIT_SELFTEST", how),
+                    None => command.env_remove("FENNEC_AUDIT_SELFTEST"),
+                };
+                let ended = command.output_within()?;
+                Ok((ended.status.code(), String::from_utf8_lossy(&ended.stderr).into_owned()))
+            };
+            let how = format!("{shape} on {threads} threads");
+            let (code, said) = ran(None)?;
+            assert_eq!(code, Some(0), "{how}: {said}");
+            assert!(said.contains(" live 0"), "{how}: {said}");
+            assert!(!said.contains("heap audit"), "{how}: {said}");
+            let (code, said) = ran(Some("rounds"))?;
+            assert_eq!(code, Some(87), "{how}: {said}");
+            assert!(
+                said.contains("heap audit: a worker that stopped serving was left holding blocks"),
+                "{how}: {said}"
+            );
+            assert_eq!(
+                said.lines().filter(|line| line.starts_with("heap audit: leaked: str at ")).count(),
+                rounds,
+                "{how}: {said}"
+            );
+            assert!(said.contains(&format!(" live {rounds}\n")), "{how}: {said}");
+        }
+    }
     std::fs::remove_dir_all(&dir)
 }
 

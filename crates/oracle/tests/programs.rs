@@ -260,3 +260,121 @@ fn a_value_of_a_generic_type_prints_with_no_type_arguments() {
         "Holder(item=3) Holder(item=\"x\") Holder(item=2.5) [Holder(item=1)]\nHolder(item=[1, 2]) Pair(first=4, second=Holder(item=True))\n",
     );
 }
+
+#[test]
+fn a_table_gives_each_item_an_id_that_finds_it_or_nothing() {
+    let (printed, ended) = ran("
+        from std.collections import Table
+
+        struct Unit:
+            health = 1
+
+        def main(stdout: Stdout):
+            mut names = Table[str]()
+            first = names.add('a')
+            _ = names.add('b')
+            third = names.add('c')
+            _ = names.remove(first)
+            _ = names.remove(third)
+            fourth = names.add('d')
+            fifth = names.add('e')
+            stdout.print(names, len(names), fourth, fifth, fourth == first, first in names, names.get(first))
+            mut copied = names
+            _ = copied.add('f')
+            stdout.print(copied == names, names.items())
+            mut units = Table[Unit]()
+            unit_id = units.add(Unit())
+            units[unit_id].health += 5
+            for ref unit in units:
+                unit.health *= 2
+            stdout.print(units, units.update(unit_id, Unit(health=9)), units[unit_id].health)
+            _ = units.remove(unit_id)
+            stdout.print(units[unit_id])
+        ");
+    assert_eq!(
+        printed,
+        "Table([\"d\", \"b\", \"e\"]) 3 Id(0) Id(2) False False None\n\
+         False [(Id(0), \"d\"), (Id(1), \"b\"), (Id(2), \"e\")]\n\
+         Table([Unit(health=12)]) True 9\n"
+    );
+    let Ended::Stopped(said) = ended else { panic!("it ended {ended:?}") };
+    assert!(said.starts_with("error: this Id refers to something that's been removed\n"), "{said}");
+}
+
+/// Writes a kit's files into a folder of its own, and runs it.
+fn kit_ran(name: &str, files: &[(&str, &str)]) -> std::io::Result<(String, Ended)> {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("oracle-kits").join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    for (path, text) in files {
+        let path = dir.join(path);
+        std::fs::create_dir_all(path.parent().unwrap_or(&dir))?;
+        std::fs::write(&path, text.replace('\'', "\""))?;
+    }
+    let outcome = fennec_oracle::run_path(&dir, name);
+    Ok((String::from_utf8_lossy(&outcome.stdout).into_owned(), outcome.ended))
+}
+
+const KIT_TOML: &str = "name = 'shapes'\nversion = '0.1.0'\nfennec = '0.0.1'\n\n[dependencies]\n";
+
+#[test]
+fn a_kit_is_its_modules_merged_as_the_compiler_merges_them() {
+    let main = "\
+from shapes import Shape, area as size_of
+from world import physics
+import world.weather as sky
+
+def main(stdout: Stdout):
+    shapes = [Shape.Circle(2), physics.square(3)]
+    for shape in shapes:
+        stdout.print(size_of(shape), physics.fall(shape))
+    stdout.print(sky.today(), sky.Kind.Rain, physics.GRAVITY)
+";
+    let shapes = "\
+enum Shape:
+    Circle(radius: int)
+    Square(side: int)
+
+def area(shape: Shape) -> int:
+    match shape:
+        case .Circle(radius):
+            return 3 * radius * radius
+        case .Square(side):
+            return side * side
+";
+    let physics = "\
+from shapes import Shape, area
+
+GRAVITY = 10
+
+def square(side: int) -> Shape:
+    return .Square(side)
+
+def fall(shape: Shape) -> int:
+    return area(shape) * GRAVITY
+";
+    // `Shape` has a `Square` too, but this file can't see it, so `.Square` is a `Kind`.
+    let weather = "\
+enum Kind:
+    Sun
+    Rain
+    Square
+
+def today() -> Kind:
+    kind = .Square
+    return kind
+";
+    let files = [
+        ("kit.toml", KIT_TOML),
+        ("src/main.fen", main),
+        ("src/shapes.fen", shapes),
+        ("src/world/physics.fen", physics),
+        ("src/world/weather.fen", weather),
+    ];
+    let (printed, ended) = kit_ran("merged", &files).unwrap();
+    assert_eq!(ended, Ended::Exited(0), "it printed:\n{printed}");
+    assert_eq!(printed, "12 120\n9 90\nKind.Square Kind.Rain 10\n");
+    let depends =
+        KIT_TOML.replace("[dependencies]\n", "[dependencies]\nphysics = { folder = '../physics' }\n");
+    let (_, ended) = kit_ran("depends", &[("kit.toml", &depends), ("src/main.fen", main)]).unwrap();
+    assert_eq!(ended, Ended::Unsupported("a kit with dependencies".to_owned()));
+}

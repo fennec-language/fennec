@@ -460,9 +460,13 @@ fn walk(root: &Path, local_git_chains: bool, resolve: Resolve<'_>) -> Result<Vec
 /// until its grants are accepted again.
 #[must_use]
 pub fn source_of(kit: &Found, root: &Path) -> String {
+    // A line is words apart, so a space in a name is written escaped, and so is the escape.
+    let escaped = |text: &str| text.replace('%', "%25").replace(' ', "%20");
     if let Some(pin) = &kit.pin {
-        let folder = pin.folder.as_deref().map(|folder| format!("#{folder}")).unwrap_or_default();
-        return format!("git:{}{folder}", pin.url);
+        // The folder is a word of its own: an address may hold any mark that could join them.
+        let folder =
+            pin.folder.as_deref().map(|folder| format!(" folder:{}", escaped(folder))).unwrap_or_default();
+        return format!("git:{}{folder}", escaped(&pin.url));
     }
     let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let (from, to) = (canonical(root), canonical(&kit.folder));
@@ -472,8 +476,7 @@ pub fn source_of(kit: &Found, root: &Path) -> String {
     let mut parts: Vec<String> = std::iter::repeat_n("..".to_owned(), from.len() - shared).collect();
     parts.extend(to.iter().skip(shared).map(|part| part.as_os_str().to_string_lossy().into_owned()));
     let relative = if parts.is_empty() { ".".to_owned() } else { parts.join("/") };
-    // A line is words apart, so a space in a folder's name is written escaped.
-    format!("path:{}", relative.replace('%', "%25").replace(' ', "%20"))
+    format!("path:{}", escaped(&relative))
 }
 
 /// Puts the dependencies a kit names on the queue.

@@ -111,16 +111,23 @@ pub struct Holding {
 pub fn holds(lock: &str) -> Result<Vec<Holding>, String> {
     let mut holds: Vec<Holding> = Vec::new();
     for line in lock.lines() {
-        let mut words = line.split(' ');
+        let mut words = line.split(' ').peekable();
         if words.next() != Some("holds") {
             continue;
         }
         let bad = || format!("kit.lock's `{line}` isn't `holds <kit> <source> <capability>...`");
         let kit = words.next().filter(|kit| crate::valid_name(kit)).ok_or_else(bad)?;
-        let source = words
+        let mut source = words
             .next()
             .filter(|source| source.starts_with("path:") || source.starts_with("git:"))
-            .ok_or_else(bad)?;
+            .ok_or_else(bad)?
+            .to_owned();
+        // A kit from a folder of a repository names the folder as a word of its own.
+        if source.starts_with("git:")
+            && let Some(folder) = words.next_if(|word| word.starts_with("folder:"))
+        {
+            source = format!("{source} {folder}");
+        }
         let held: Vec<String> = words.map(str::to_owned).collect();
         if held.is_empty()
             || !held.iter().all(|capability| fennec_syntax::HOLDABLE.contains(&capability.as_str()))
@@ -130,7 +137,7 @@ pub fn holds(lock: &str) -> Result<Vec<Holding>, String> {
         match holds.iter_mut().find(|had| had.kit == kit) {
             Some(had) if had.source == source => had.holds.extend(held),
             Some(_) => return Err(format!("kit.lock says `{kit}` comes from two places")),
-            None => holds.push(Holding { kit: kit.to_owned(), source: source.to_owned(), holds: held }),
+            None => holds.push(Holding { kit: kit.to_owned(), source, holds: held }),
         }
     }
     Ok(holds)
@@ -174,12 +181,15 @@ mod tests {
     /// every other line, puts them in order, and leaves out a kit that holds nothing.
     #[test]
     fn holds_lines_read_and_write_back_in_order() {
-        let lock = "toolchain 0.4.2\nholds net_kit git:https://example.com/net Net\nholds saves path:../saves Fs Clock\n";
+        let lock = "toolchain 0.4.2\nholds net_kit git:https://example.com/net Net\nholds saves path:../saves Fs Clock\nholds http git:https://example.com/http folder:kits/http Net\nholds odd git:https://example.com/http#kits/http Net\n";
         assert_eq!(
             holds(lock).unwrap(),
             [
                 holding("net_kit", "git:https://example.com/net", &["Net"]),
-                holding("saves", "path:../saves", &["Fs", "Clock"])
+                holding("saves", "path:../saves", &["Fs", "Clock"]),
+                holding("http", "git:https://example.com/http folder:kits/http", &["Net"]),
+                // An address that ends in `#kits/http` is another repository, not a folder of one.
+                holding("odd", "git:https://example.com/http#kits/http", &["Net"]),
             ]
         );
         let written = with_holds(
@@ -187,12 +197,12 @@ mod tests {
             &[
                 holding("saves", "path:../saves", &["Fs", "Clock"]),
                 holding("empty", "path:../empty", &[]),
-                holding("http", "git:https://example.com/http#kits/http", &["Net"]),
+                holding("http", "git:https://example.com/http folder:kits/http", &["Net"]),
             ],
         );
         assert_eq!(
             written,
-            "toolchain 0.4.2\nholds http git:https://example.com/http#kits/http Net\nholds saves path:../saves Clock Fs\n"
+            "toolchain 0.4.2\nholds http git:https://example.com/http folder:kits/http Net\nholds saves path:../saves Clock Fs\n"
         );
         for bad in [
             "holds",
@@ -203,6 +213,8 @@ mod tests {
             "holds Http path:../http Net",
             "holds http path:../http Secret",
             "holds http path:../a Net\nholds http path:../b Fs",
+            "holds http path:../http folder:kits Net",
+            "holds http git:https://example.com/http folder:a folder:b Net",
         ] {
             assert!(holds(bad).is_err(), "{bad}");
         }

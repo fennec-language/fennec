@@ -72,12 +72,14 @@ pub(crate) struct Value {
     pub(crate) ty: Option<Type>,
     /// The arguments of the call it's made by, for an iterator a generator gives back right there.
     pub(crate) made_by: Vec<(u32, u32)>,
+    /// What the call it's made by calls, by where that's written.
+    pub(crate) maker: Option<(u32, u32)>,
 }
 
 impl Value {
     /// A value known only by its type, with nothing to say how it was made.
     fn of(ty: Type) -> Value {
-        Value { span: Span::default(), arrow: None, ty: Some(ty), made_by: Vec::new() }
+        Value { span: Span::default(), arrow: None, ty: Some(ty), made_by: Vec::new(), maker: None }
     }
 }
 
@@ -133,6 +135,7 @@ impl FnCx<'_> {
                 arrow: self.arrow_in(value),
                 ty: None,
                 made_by: made_by(value),
+                maker: maker(value),
             })
             .collect();
         self.note_values(to, span, values);
@@ -146,9 +149,17 @@ impl FnCx<'_> {
         }
         let values = operands
             .into_iter()
-            .map(|ty| Value { span, arrow: None, ty: Some(ty.clone()), made_by: Vec::new() })
+            .map(|ty| Value::of(ty.clone()))
+            .map(|value| Value { span, ..value })
             .collect();
         self.note_values(To::Function(key.to_owned()), span, values);
+    }
+
+    /// Notes an operator on a value of a type parameter: it calls the method of whatever type the
+    /// parameter is in each copy, with both sides, as a method call on one does.
+    pub(crate) fn note_interface_operator(&mut self, method: &str, span: Span, operands: [&Type; 2]) {
+        let values = operands.into_iter().map(|ty| Value { span, ..Value::of(ty.clone()) }).collect();
+        self.note_values(To::Interface(method.to_owned()), span, values);
     }
 
     /// Notes a write into a place, or one lent with `ref`: whatever kit's value the place is in
@@ -256,6 +267,14 @@ fn made_by(value: &fennec_syntax::Expr) -> Vec<(u32, u32)> {
     }
 }
 
+/// What the call a value is made by calls, if it's a call.
+fn maker(value: &fennec_syntax::Expr) -> Option<(u32, u32)> {
+    match &value.kind {
+        ExprKind::Call { callee, .. } => Some((callee.span.start, callee.span.end)),
+        _ => None,
+    }
+}
+
 /// Whose code a function is: a kit the program depends on, the program's own, or the standard
 /// library's.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -337,6 +356,8 @@ enum How {
     AsValue { function: String },
     /// Through an arrow function it makes, which is called with what it takes.
     Made,
+    /// Anything, as the walk went past the most copies it follows, here.
+    PastTheBound,
 }
 
 /// One place a kit is first handed what `kit.lock` doesn't list, and everything new it's handed there.
@@ -416,6 +437,12 @@ fn unaccepted((kit, moved): (&str, bool), receipt: &Receipt, capabilities: &[&'s
             ),
             false,
         ),
+        How::PastTheBound => (
+            format!(
+                "`{kit}` would now receive anything the program holds, {listed}, {unlisted}: past {MOST_COPIES} copies of generic functions, here, what's handed where can't be followed"
+            ),
+            false,
+        ),
     };
     let accept = "a dependency receiving a capability is a change a person accepts: `fennec update --accept` shows what each kit would now hold and records it in kit.lock, to be reviewed with this change. Nothing here is fixed for you";
     let help = if unseen {
@@ -436,8 +463,11 @@ fn unaccepted((kit, moved): (&str, bool), receipt: &Receipt, capabilities: &[&'s
     Diagnostic::new(message, receipt.span).with_help(help)
 }
 
-/// The most copies of generic functions followed, as many as lowering makes before it stops.
+/// The most copies of generic functions followed that hand something over or make a function.
 const MOST_COPIES: usize = 2000;
+
+/// The most copies of generic functions looked at in all, those that hand nothing over included.
+const MOST_LOOKED_AT: usize = 50_000;
 
 /// The walk over every copy of every function the program checks.
 struct Walk<'c> {
@@ -499,22 +529,52 @@ impl<'c> Walk<'c> {
         for test in &self.checker.program.tests {
             queue.push((format!("test \"{}\"", test.name), Vec::new()));
         }
-        let mut generic = 0;
+        let (mut counted, mut looked_at) = (0, 0);
         while let Some((key, given)) = queue.pop() {
             if !self.seen.insert((key.clone(), given.clone())) {
                 continue;
             }
-            // A generic function that calls itself with a bigger type makes copies without end.
-            // Lowering refuses the program past as many copies, so it never runs and nothing more
-            // is handed over.
+            // A generic function that calls itself with a bigger type makes copies without end. A
+            // copy that hands nothing over and makes no function can't give a kit anything, so
+            // only the others count towards the bound, but every copy counts towards a bigger one.
             if !given.is_empty() {
-                generic += 1;
-                if generic > MOST_COPIES {
-                    break;
+                looked_at += 1;
+                if self.hands_over(&key) {
+                    counted += 1;
+                }
+                if counted > MOST_COPIES || looked_at > MOST_LOOKED_AT {
+                    self.past_the_bound(&key);
+                    return;
                 }
             }
             queue.extend(self.copy(&key, &given));
         }
+    }
+
+    /// Whether a function hands anything over, or makes a function.
+    fn hands_over(&self, key: &str) -> bool {
+        self.handovers.handed.get(key).is_some_and(|calls| !calls.is_empty())
+            || self.handovers.arrows.get(key).is_some_and(|arrows| !arrows.is_empty())
+    }
+
+    /// Past the bound, what's handed where can't be followed, so every kit may receive anything the
+    /// program holds, from the copy the walk stopped at. Nothing is passed over unsaid.
+    fn past_the_bound(&mut self, key: &str) {
+        let span = self.checker.program.functions.get(key).map(|entry| entry.def.span).unwrap_or_default();
+        let everything = self.everything();
+        for kit in self.kits() {
+            self.receive(&kit, &everything, span, &How::PastTheBound);
+        }
+    }
+
+    /// Every kit the program depends on, by name.
+    fn kits(&self) -> BTreeSet<String> {
+        let kits = self.checker.program.functions.keys().map(|key| self.kit_of(key));
+        kits.filter_map(|kit| match kit {
+            Kit::Named(name) => Some(name),
+            _ => None,
+        })
+        .collect()
     }
 
     /// Notes that `kit` receives each of `capabilities` at `span`, as `how` says, keeping the first
@@ -556,21 +616,22 @@ impl<'c> Walk<'c> {
                 self.written((key, given), &from, handed);
                 continue;
             }
-            let Some((to, callee)) = self.receiver(key, given, handed) else { continue };
-            if let Kit::Named(to) = &to
-                && from != Kit::Named(to.clone())
-            {
-                for value in &handed.values {
-                    self.hand_over((key, given), (&from, to), value);
+            for (to, callee) in self.receivers(key, given, handed) {
+                if let Kit::Named(to) = &to
+                    && from != Kit::Named(to.clone())
+                {
+                    for value in &handed.values {
+                        self.hand_over((key, given), (&from, to), value);
+                    }
                 }
-            }
-            if let Some(callee) = callee {
-                let given = if self.is_generic(&callee) {
-                    self.given_to(key, given, span, &callee, handed)
-                } else {
-                    Vec::new()
-                };
-                copies.push((callee, given));
+                if let Some(callee) = callee {
+                    let given = if self.is_generic(&callee) {
+                        self.given_to(key, given, span, &callee, handed)
+                    } else {
+                        Vec::new()
+                    };
+                    copies.push((callee, given));
+                }
             }
         }
         copies.extend(self.generic_methods(key, given));
@@ -688,19 +749,37 @@ impl<'c> Walk<'c> {
             .collect()
     }
 
-    /// Whose code a call or build hands its values to, and the function called, when it's one.
-    fn receiver(&mut self, key: &str, given: &Given, handed: &Handed) -> Option<(Kit, Option<String>)> {
+    /// Whose code a call or build hands its values to, and the function called, when it's one. A
+    /// method of a type parameter is the method of each member of a union it may be, and when
+    /// what it's called on can't be told, it may be any kit's.
+    fn receivers(&mut self, key: &str, given: &Given, handed: &Handed) -> Vec<(Kit, Option<String>)> {
         match &handed.to {
-            To::Function(callee) => Some((self.kit_of(callee), Some(callee.clone()))),
-            To::Type(name) => Some((self.kit_of_type(name), None)),
-            To::Into(_) | To::Lent(..) => None,
+            To::Function(callee) => vec![(self.kit_of(callee), Some(callee.clone()))],
+            To::Type(name) => vec![(self.kit_of_type(name), None)],
+            To::Into(_) | To::Lent(..) => Vec::new(),
             To::Interface(method) => {
-                let object = handed.values.first()?;
-                let ty = self.value_type(key, given, object)?;
-                let owner = ty.type_name()?.to_owned();
-                let callee = format!("{owner}.{method}");
-                let kit = self.kit_of_type(&owner);
-                Some((kit, self.checker.program.functions.contains_key(&callee).then_some(callee)))
+                let ty = handed.values.first().and_then(|object| self.value_type(key, given, object));
+                let mut found = Vec::new();
+                let mut owners = vec![ty.unwrap_or(Type::Unknown)];
+                while let Some(ty) = owners.pop() {
+                    match ty {
+                        Type::Union(members) => owners.extend(members),
+                        Type::Param(_) | Type::Unknown => {
+                            found.extend(self.kits().into_iter().map(|kit| (Kit::Named(kit), None)));
+                        }
+                        ty => match ty.type_name() {
+                            Some(owner) => {
+                                let callee = format!("{owner}.{method}");
+                                let kit = self.kit_of_type(owner);
+                                let known = self.checker.program.functions.contains_key(&callee);
+                                found.push((kit, known.then_some(callee)));
+                            }
+                            // A method of a type of the language's own is the standard library's.
+                            None => found.push((Kit::Std, None)),
+                        },
+                    }
+                }
+                found
             }
         }
     }
@@ -774,15 +853,13 @@ impl<'c> Walk<'c> {
         }
     }
 
-    /// What a function's parameters take, which whoever calls it hands it. A function it takes is
-    /// counted where it's handed over, as one.
+    /// What a function's parameters take, which whoever calls it hands it. A function or an
+    /// iterator it takes may hold anything the program holds: whoever calls it can't be seen.
     fn taken(&mut self, params: &[Type], given: &Given) -> BTreeSet<&'static str> {
         let mut takes = BTreeSet::new();
         for param in params {
             let param = self.checker.settled(param).substitute(given);
-            if !matches!(param, Type::Arrow(..) | Type::Function(_)) {
-                takes.extend(self.type_held(&param).capabilities);
-            }
+            takes.extend(self.type_held(&param).capabilities);
         }
         takes
     }
@@ -878,7 +955,7 @@ impl<'c> Walk<'c> {
                 held.function = true;
                 held
             }
-            Type::Iterator(_) if !value.made_by.is_empty() && value.ty.is_none() => {
+            Type::Iterator(_) if value.ty.is_none() && self.made_at_top(key, given, value) => {
                 let mut held = Held { function: true, ..Held::default() };
                 for given_to in &value.made_by {
                     let at = Span { start: given_to.0, end: given_to.1 };
@@ -895,6 +972,18 @@ impl<'c> Walk<'c> {
             }
             other => self.type_held(other),
         }
+    }
+
+    /// Whether an iterator is made right there by a call to a function at the top of a file, which
+    /// holds only what the call gives it. A method's or a nested function's may hold anything.
+    fn made_at_top(&self, key: &str, given: &Given, value: &Value) -> bool {
+        let Some(maker) = value.maker else { return false };
+        let Some(Type::Function(function)) = self.type_at(key, given, Span { start: maker.0, end: maker.1 })
+        else {
+            return false;
+        };
+        self.checker.program.functions.get(&function).is_some_and(|entry| entry.owner.is_none())
+            && self.checker.outermost(&function) == function
     }
 
     /// What a named function captures: nothing for one at the top of a file, and for a nested

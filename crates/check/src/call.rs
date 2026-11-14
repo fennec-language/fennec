@@ -562,6 +562,7 @@ impl FnCx<'_> {
     ) -> Option<Type> {
         let Type::Param(name) = left else { return None };
         let (_, def) = self.bound_method(name, method)?;
+        self.note_interface_operator(method, span, [left, right]);
         let signature = self.interface_method(&def, left);
         if let Some(param) = signature.params.get(1) {
             self.check_arg(param, right, span);

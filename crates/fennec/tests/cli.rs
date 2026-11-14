@@ -4169,6 +4169,118 @@ fn functions_handles_and_failures_a_kit_is_handed_count_whatever_holds_them() {
     .unwrap();
 }
 
+/// The near neighbours of the ways through Fable's review found: a generator a method or a nested
+/// function makes, an operator on a type parameter, a function a kit makes that takes a function,
+/// and a union a type parameter stands for.
+#[test]
+fn the_neighbours_of_each_way_through_count_too() {
+    let keep = "export def keep[T](value: T) -> int:\n    return 1\n";
+    let drain = "export def drain(items: Iterator[int]) -> int:\n    mut total = 0\n    for item in items:\n        \
+                 total += item\n    return total\n";
+    let sink =
+        "export struct Sink:\n    name: str\n\n    def +(self, other: Fs) -> Sink:\n        return self\n";
+    let kits = Kits::new(
+        "holds-neighbours",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", "def main():\n    pass\n"),
+        &[("helper", "", keep)],
+    )
+    .unwrap();
+    each_stops(
+        &kits,
+        &[
+            (
+                "import helper\n\nstruct Counter:\n    out: Stdout\n\n    def count(self, start: int) -> Iterator[int]:\n        \
+                 mut at = start\n        while at > 0:\n            self.out.print(at)\n            yield at\n            at -= 1\n\n\
+                 def main(stdout: Stdout):\n    counter = Counter(out=stdout)\n    stdout.print(helper.drain(counter.count(3)))\n",
+                drain,
+                "`helper` would now receive a function here whose making can't be seen",
+            ),
+            (
+                "import helper\n\ndef main(stdout: Stdout):\n    def count(start: int) -> Iterator[int]:\n        mut at = start\n        \
+                 while at > 0:\n            stdout.print(at)\n            yield at\n            at -= 1\n    \
+                 stdout.print(helper.drain(count(3)))\n",
+                drain,
+                "`helper` would now receive a function here whose making can't be seen",
+            ),
+            (
+                "import helper\n\ninterface Adds:\n    def +(self, other: Fs) -> helper.Sink\n\n\
+                 def add[T: Adds](sink: T, fs: Fs) -> str:\n    more = sink + fs\n    return more.name\n\n\
+                 def main(fs: Fs, stdout: Stdout):\n    stdout.print(add(helper.Sink(name=\"x\"), fs))\n",
+                sink,
+                "`helper` would now receive an `Fs` here",
+            ),
+            (
+                "import helper\n\ndef peek(fs: Fs) -> int:\n    return 1\n\ndef main(fs: Fs, stdout: Stdout):\n    \
+                 run = helper.runner()\n    stdout.print(run(() => peek(fs)))\n",
+                "export def runner() -> (() -> int) -> int:\n    return (work) => work()\n",
+                "`helper` makes a function here that takes an `Fs`",
+            ),
+            (
+                "import helper\n\ninterface Handles:\n    def handle(self, fs: Fs) -> int\n\nstruct Right:\n    name: str\n\n    \
+                 def handle(self, fs: Fs) -> int:\n        return 2\n\n\
+                 def pick(first: bool) -> helper.Left | Right:\n    if first:\n        return helper.Left(name=\"l\")\n    \
+                 return Right(name=\"r\")\n\ndef run[H: Handles](handler: H, fs: Fs) -> int:\n    return handler.handle(fs)\n\n\
+                 def main(fs: Fs, stdout: Stdout):\n    stdout.print(run(pick(False), fs))\n",
+                "export struct Left:\n    name: str\n\n    def handle(self, fs: Fs) -> int:\n        return 1\n",
+                "`helper` would now receive an `Fs` here",
+            ),
+        ],
+    )
+    .unwrap();
+}
+
+/// A program's own generic type with `methods` methods, built with `kinds` types in a function
+/// named after `main`, beside one that hands the kit `helper` an `Fs`: thousands of copies of
+/// methods that hand nothing over.
+fn wide_program(methods: usize, kinds: usize) -> String {
+    let mut lines = vec!["import helper\n\nstruct Slot[T]:\n    value: T\n".to_owned()];
+    lines.extend((0..methods).map(|at| format!("    def method{at}(self) -> int:\n        return {at}\n")));
+    lines.push(
+        "def hand(fs: Fs) -> int:\n    return helper.take(fs)\n\ndef zmaker() -> int:\n    mut total = 0"
+            .to_owned(),
+    );
+    let values = ["1", "\"a\"", "True", "1.5"];
+    for (at, value) in values.iter().cycle().take(kinds).enumerate() {
+        let depth = at / values.len();
+        let value = format!("{}{value}{}", "[".repeat(depth), "]".repeat(depth));
+        lines.push(format!("    built{at} = Slot(value={value})\n    total += built{at}.method0()"));
+    }
+    lines.push(
+        "    return total\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(zmaker() + hand(fs))\n"
+            .to_owned(),
+    );
+    lines.join("\n")
+}
+
+/// The walk over copies of generic functions never stops counting: one that hands nothing over
+/// doesn't count towards its bound, and past the bound every kit may receive anything the program
+/// holds, which stops the check rather than passing it.
+#[test]
+fn the_walk_never_passes_over_what_it_cant_follow() {
+    let take = "export def take(fs: Fs) -> int:\n    return 7\n";
+    let kits = Kits::new(
+        "holds-bound",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", "def main():\n    pass\n"),
+        &[("helper", "", take)],
+    )
+    .unwrap();
+    let wide = wide_program(60, 40);
+    each_stops(
+        &kits,
+        &[
+            (wide.as_str(), take, "`helper` would now receive an `Fs` here"),
+            (
+                "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(helper.take(fs))\n",
+                "def grow[T](value: T, left: int) -> int:\n    if left == 0:\n        return 0\n    return grow([value], left - 1)\n\n\
+                 export struct Spin:\n    name: str\n\n    def go(self) -> int:\n        return grow(1, 3)\n\n\
+                 export def take(fs: Fs) -> int:\n    return 7\n",
+                "past 2000 copies of generic functions",
+            ),
+        ],
+    )
+    .unwrap();
+}
+
 /// A generic type's method that only the standard library calls, as printing calls `str`, is
 /// followed in the copy for each type the program has a value of, and a method called on a union of
 /// two kits' types hands each kit's own method what the call gives.

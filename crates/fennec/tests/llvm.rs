@@ -901,8 +901,9 @@ def main(stdout: Stdout):
     copied = holder
     lock copied.audit as ref lines:
         lines.append("written through a copy")
+    same = holder == copied
     lock holder.audit as lines:
-        stdout.print(len(lines), lines[0], holder == copied)
+        stdout.print(len(lines), lines[0], same)
     talker = Talker(out=stdout, word="a word long enough for a block of its own", tags={})
     again = talker
     again.out.print(again.word)

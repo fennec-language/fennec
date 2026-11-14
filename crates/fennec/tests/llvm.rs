@@ -4298,6 +4298,132 @@ True True True True False
 True True False True
 "#;
 
+/// Every other way a missing value goes to another task, pinned beside the lock: a `str?`, a
+/// `list[int]?` and a `dict[str, int]?` that are `None`, in a tuple and in a struct, sent on a
+/// channel by this thread and by a task that captured them, handed to `parallel` as items and given
+/// back by it, and put in a `shared` list alone and in a struct. Each comes out `None`, and an
+/// empty string, list or dict beside it comes out empty.
+#[test]
+fn optionals_that_are_none_reach_another_task_as_none_every_way() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("none_crosses_every_way", NONE_EVERY_WAY, NONE_EVERY_WAY_PRINTS)?;
+    assert!(counts_of("none_crosses_every_way_counts", NONE_EVERY_WAY)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const NONE_EVERY_WAY: &str = r#"# Optionals that are `None` going every way a value goes to another task: a channel, a task's
+# captures, `parallel`'s items and what it gives back, and a lock, for `str?`, `list[int]?` and
+# `dict[str, int]?`, each inside a tuple, and where one can be, alone.
+
+from std.concurrent import Closed, Crashed, Sender, channel
+
+struct Maybes:
+    text: str?
+    items: list[int]?
+    counts: dict[str, int]?
+
+def echo_text(back: Sender[(int, str?)], one: (int, str?)):
+    back.send(one) except Closed():
+        pass
+
+def echo_all(back: Sender[Maybes], one: Maybes):
+    back.send(one) except Closed():
+        pass
+
+def same(one: str?) -> str?:
+    return one
+
+def is_none(one: str?) -> bool:
+    return one == None
+
+def put_list(out: shared list[list[int]?], one: list[int]?):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def put_dict(out: shared list[dict[str, int]?], one: dict[str, int]?):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def put_all(out: shared list[Maybes], one: Maybes):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def main(stdout: Stdout, args: Args) fails Crashed:
+    # No arguments are given, so each of these is `None`, but the compiler can't know it.
+    given = len(args) > 4
+    no_text: str? = "given" if given else None
+    no_list: list[int]? = [1] if given else None
+    no_dict: dict[str, int]? = {"a": 1} if given else None
+    texts: list[str?] = [no_text, "", "short", "a text long enough for a block of its own"]
+    # A channel, sent by this thread and by a task that captured the value.
+    with channel[(int, str?)](size=8) as box:
+        for at in range(len(texts)):
+            pair = (at, texts[at])
+            box.sender().send(pair) except Closed():
+                pass
+            with launch(() => echo_text(box.sender(), pair)):
+                pass
+        got = [box.receive() else (9, "closed") for at in range(8)]
+        stdout.print(got)
+        stdout.print(got[0][1] == None, got[1][1] == None, got[2][1] == None, got[2][1] == "", got[3] == (1, ""))
+    nothing = Maybes(text=no_text, items=no_list, counts=no_dict)
+    empty = Maybes(text="", items=[], counts={})
+    with channel[Maybes](size=4) as box:
+        box.sender().send(nothing) except Closed():
+            pass
+        with launch(() => echo_all(box.sender(), nothing)):
+            pass
+        box.sender().send(empty) except Closed():
+            pass
+        got = [box.receive() else empty for at in range(3)]
+        stdout.print(got)
+        stdout.print(got[0] == nothing, got[1] == nothing, got[2] == empty, got[1].items == None, got[1].counts == None, got[2].items == None)
+    # `parallel`'s items, and what it gives back.
+    back = [same(one) for one in parallel(texts)]
+    nones = [is_none(one) for one in parallel(texts)]
+    stdout.print(back, back == texts, nones)
+    # A lock, for a list and a dict that may be missing, alone and in a struct.
+    shared lists = list[list[int]?]()
+    shared dicts = list[dict[str, int]?]()
+    shared alls = list[Maybes]()
+    with launch(() => put_list(lists, no_list)):
+        pass
+    put_list(lists, no_list)
+    put_list(lists, [])
+    with launch(() => put_dict(dicts, no_dict)):
+        pass
+    put_dict(dicts, no_dict)
+    put_dict(dicts, {})
+    with launch(() => put_all(alls, nothing)):
+        pass
+    put_all(alls, nothing)
+    put_all(alls, empty)
+    lock lists as held:
+        stdout.print(held, held[0] == None, held[1] == None, held[2] == None)
+    lock dicts as held:
+        stdout.print(held, held[0] == None, held[1] == None, held[2] == None)
+    lock alls as held:
+        stdout.print(held)
+        stdout.print(held[0] == nothing, held[1] == nothing, held[2] == empty, held[0].text == None, held[2].text == None)
+    return
+"#;
+
+const NONE_EVERY_WAY_PRINTS: &str = r#"[(0, None), (0, None), (1, ""), (1, ""), (2, "short"), (2, "short"), (3, "a text long enough for a block of its own"), (3, "a text long enough for a block of its own")]
+True True False True True
+[Maybes(text=None, items=None, counts=None), Maybes(text=None, items=None, counts=None), Maybes(text="", items=[], counts={})]
+True True True True True False
+[None, "", "short", "a text long enough for a block of its own"] True [True, False, False, False]
+[None, None, []] True True False
+[None, None, {}] True True False
+[Maybes(text=None, items=None, counts=None), Maybes(text=None, items=None, counts=None), Maybes(text="", items=[], counts={})]
+True True True True False
+"#;
+
 /// A struct held in place compares, orders as a tuple and crosses a lock whatever its fields hold, as
 /// it would boxed: here a `u64` and an `f32` beside a text, which `==` refused in place while the
 /// same struct boxed, with a `dict` beside them, compared fine. A `u64` orders unsigned.

@@ -12,6 +12,7 @@ mod methods;
 mod show;
 mod sources;
 pub(crate) mod stream;
+mod tables;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -77,6 +78,8 @@ pub(crate) struct Shared {
     /// Something a generator's thread found it couldn't model, after nobody was asking it for
     /// anything.
     pub(crate) refused: Mutex<Option<String>>,
+    /// The tag the next `Table` made gets.
+    next_tag: AtomicU64,
 }
 
 impl Shared {
@@ -88,7 +91,13 @@ impl Shared {
             steps: AtomicU64::new(0),
             threads: AtomicUsize::new(0),
             refused: Mutex::new(None),
+            next_tag: AtomicU64::new(1),
         }
+    }
+
+    /// A tag no `Table` of this run has had.
+    pub(crate) fn new_tag(&self) -> u64 {
+        self.next_tag.fetch_add(1, Ordering::Relaxed)
     }
 
     pub(crate) fn refuse(&self, why: String) {
@@ -114,7 +123,7 @@ pub(crate) enum Step {
 }
 
 impl Place {
-    fn then(&self, step: Step) -> Place {
+    pub(crate) fn then(&self, step: Step) -> Place {
         let mut path = self.path.clone();
         path.push(step);
         Place { frame: self.frame, name: self.name.clone(), path }
@@ -233,6 +242,7 @@ impl Interp {
                 Value::Instance(instance) => {
                     waiting.extend(instance.fields.iter().map(|(_, field)| (field, depth + 1)));
                 }
+                Value::Table(table) => waiting.extend(table.live().map(|(_, item)| (item, depth + 1))),
                 _ => {}
             }
         }
@@ -795,13 +805,18 @@ impl Interp {
         let positions: Vec<Value> = match self.read_place(&place, iter.span)? {
             Value::List(items) if !keyed => (0..items.len()).map(|at| Value::Int(as_int(at))).collect(),
             Value::Dict(pairs) if keyed => pairs.into_iter().map(|(key, _)| key).collect(),
+            // A `Table`'s items are reached by their `Id`s, in slot order.
+            Value::Table(table) if !keyed => table.live().map(|(id, _)| Value::Id(id)).collect(),
             other => return unsupported(format!("`for ref` over a {}", other.kind())),
         };
         let item_name = names.last().map_or("_", String::as_str);
         let _ = span;
-        for position in positions {
+        for (count, position) in positions.into_iter().enumerate() {
             let mark = self.mark();
-            if numbered || keyed {
+            if numbered {
+                let first = names.first().map_or("_", String::as_str);
+                self.bind(first, Value::Int(as_int(count)))?;
+            } else if keyed {
                 let first = names.first().map_or("_", String::as_str);
                 self.bind(first, position.clone())?;
             }
@@ -909,6 +924,12 @@ fn step_into<'v>(value: &'v Value, step: &Step, span: Span) -> Run<Reached<'v>> 
             position(*at, 0, span)?;
             unsupported("an argument")
         }
+        (Value::Table(table), Step::At(Value::Id(id))) => {
+            match table.find(*id).and_then(|at| table.slots.get(at)).and_then(|slot| slot.item.as_ref()) {
+                Some(item) => Ok(Reached::Inside(item)),
+                None => crash(table.missing(*id), span),
+            }
+        }
         (other, _) => unsupported(format!("reaching into a {}", other.kind())),
     }
 }
@@ -935,6 +956,13 @@ fn step_into_mut<'v>(value: &'v mut Value, step: &Step, span: Span, adding: bool
                 None => return crash(format!("{} isn't a key here", plain_key(key)), span),
             };
             pairs.get_mut(at).map(|(_, value)| value).map_or_else(|| unsupported("a key"), Ok)
+        }
+        (Value::Table(table), Step::At(Value::Id(id))) => {
+            let missing = table.missing(*id);
+            match table.find(*id).and_then(|at| table.slots.get_mut(at)).and_then(|slot| slot.item.as_mut()) {
+                Some(item) => Ok(item),
+                None => crash(missing, span),
+            }
         }
         (other, _) => unsupported(format!("changing part of a {}", other.kind())),
     }

@@ -10,19 +10,22 @@
 # no longer links something the list has, so the pull request that cuts it takes its line out. It
 # checks itself first: a program that does use SQLite has to be seen linking it.
 #
+# The hello world, built for release, is held to the size the list's `<system> size hello <bytes>`
+# line gives too: a release program carries none of the runtime's debug information, and nothing
+# it doesn't call, so one that grows past it has taken on something new.
+#
 # What it looks for, in the symbols' demangled names: `sqlite3_` or `rusqlite::` (sqlite), `rustls::`
 # (tls), `ring::` (crypto), and ring's assembly, `ring_core_..._` (ring-assembly), which has no
 # Rust names.
 set -u
 fennec=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 known=.github/linkage-known.txt
+# Windows keeps a program's symbols out of it, so there only the hello world's size is checked.
+symbols=yes
 case "$(uname -s)" in
   Darwin) os=macos ;;
   Linux) os=linux ;;
-  *)
-    echo "linkage-check: Windows keeps its symbols out of the program, so only macOS and Linux are checked"
-    exit 0
-    ;;
+  *) os=windows symbols=no ;;
 esac
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -48,10 +51,12 @@ built() {
   fi
 }
 
-built uses_sqlite "$(cat examples/std_sqlite.fen)"
-if ! found uses_sqlite "$work/uses_sqlite" | grep -q sqlite; then
-  echo "::error::a program that uses SQLite wasn't seen linking it, so this check can't see it anywhere"
-  exit 1
+if [ "$symbols" = yes ]; then
+  built uses_sqlite "$(cat examples/std_sqlite.fen)"
+  if ! found uses_sqlite "$work/uses_sqlite" | grep -q sqlite; then
+    echo "::error::a program that uses SQLite wasn't seen linking it, so this check can't see it anywhere"
+    exit 1
+  fi
 fi
 
 built hello 'def main(stdout: Stdout):
@@ -65,11 +70,16 @@ built fs 'def main(stdout: Stdout, fs: Fs):
     stdout.print(len(text))
     return
 '
-{
-  found hello "$work/hello"
-  found fs "$work/fs"
-} | sort > "$work/found"
-sed -n "s/^$os \([^|]*[^ |]\) *|.*/\1/p" "$known" | sort > "$work/known"
+if [ "$symbols" = yes ]; then
+  {
+    found hello "$work/hello"
+    found fs "$work/fs"
+  } | sort > "$work/found"
+else
+  # What a program links can't be told here, so nothing's said about it either way.
+  grep -v "^$os size " "$known" | sed -n "s/^$os \([^|]*[^ |]\) *|.*/\1/p" | sort > "$work/found"
+fi
+grep -v "^$os size " "$known" | sed -n "s/^$os \([^|]*[^ |]\) *|.*/\1/p" | sort > "$work/known"
 
 failed=0
 while read -r program what; do
@@ -80,6 +90,17 @@ while read -r program what; do
   echo "::error::$program no longer links $what: take \`$os $program $what\` out of $known"
   failed=1
 done < <(comm -13 "$work/found" "$work/known")
+budget=$(sed -n "s/^$os size hello \([0-9]*\) *|.*/\1/p" "$known")
+# Built as `hello.exe` on Windows.
+size=$(cat "$work/hello" "$work/hello.exe" 2> /dev/null | wc -c | tr -d ' ')
+if [ -z "$budget" ]; then
+  echo "::error::$known has no \`$os size hello <bytes> | why\` line, to hold a hello world's size to"
+  failed=1
+elif [ "$size" -gt "$budget" ]; then
+  echo "::error::a hello world built for release is $size bytes, past its budget of $budget: see what it took on"
+  failed=1
+fi
+echo "On $os, a hello world built for release is $size bytes, of a budget of ${budget:-none}."
 echo "On $os, what programs link that they don't use:"
 sed 's/^/  /' "$work/found"
 [ -s "$work/found" ] || echo "  nothing"

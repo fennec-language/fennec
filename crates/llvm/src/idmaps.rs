@@ -372,13 +372,18 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             }
             "Table.add" => {
-                let value = args.get(1).ok_or("no argument")?;
-                let (value, fresh) = self.value_for(value, &held)?;
+                let given = args.get(1).ok_or("no argument")?;
+                let (value, fresh) = self.value_for(given, &held)?;
                 if held.counted() && !fresh {
                     self.retain_value(&value, &held);
                 }
-                // An item in place: its blocks get the owner the map's copy is.
-                if !fresh {
+                // An item in place in a local read only here moves its blocks over, as one made
+                // for a list or a struct does (`fill`): the local is left holding nothing, so no
+                // block is shared between it and the map. Any other item's blocks get the owner
+                // the map's copy is.
+                let moved = !fresh
+                    && matches!(given, Operand::Local(local) if self.owns_inline(*local) && self.known.moves(*local));
+                if !fresh && !moved {
                     self.retain_inline(&held, &value);
                 }
                 let place = self.slot(*map);
@@ -449,6 +454,10 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("{live} = load i64, ptr {live_at}"));
                 self.line(&format!("{one_more} = add i64 {live}, 1"));
                 self.line(&format!("store i64 {one_more}, ptr {live_at}"));
+                if moved {
+                    let zero = self.zero_line(&held, &value);
+                    self.line(&zero);
+                }
                 if let Some(dest) = dest {
                     let tag = self.tag_of(&block, &parts);
                     let at = self.slot(dest);

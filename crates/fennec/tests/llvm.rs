@@ -566,26 +566,53 @@ fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
 /// Built with every type that doesn't contain itself in place and with `FENNEC_BOXED_TYPES=1`, in
 /// dev and release, a program prints `wanted` each way and ends with nothing held.
 fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
-    for boxed in [false, true] {
+    same_with_and_without("FENNEC_BOXED_TYPES", name, source, wanted)
+}
+
+/// Built without the switch `switch` and with it set to `1`, in dev and release, a program prints
+/// `wanted` each way and ends with nothing held.
+fn same_with_and_without(switch: &str, name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    for set in [false, true] {
         for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
             let dir = folder(name)?;
             let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
             std::fs::write(&program, source)?;
             let mut command = crate::executables::fennec_command();
             command.arg("build").args(how).arg(&program).arg("-o").arg(&executable).env("FENNEC_HOME", &dir);
-            if boxed {
-                command.env("FENNEC_BOXED_TYPES", "1");
+            command.env_remove(switch);
+            if set {
+                command.env(switch, "1");
             }
             let built = command.output_before(FENNEC_DEADLINE)?;
             assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
             let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
             std::fs::remove_dir_all(&dir)?;
             let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "boxed {boxed} {how:?}: {said}");
-            assert!(said.lines().any(|line| line.ends_with(" live 0")), "boxed {boxed} {how:?}: {said}");
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{switch} {set} {how:?}: {said}");
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "{switch} {set} {how:?}: {said}");
         }
     }
     Ok(())
+}
+
+/// A dict of structs used every way a dict is prints the same with each value held in the dict's
+/// entry (`FENNEC_DICT_VALUES_IN_PLACE=1`) and as a block of its own, and ends with nothing held:
+/// values of two plain words, of one word, owning a text, a list and a dict, and holding another
+/// struct, an optional and narrow numbers, under int, text and float keys. Each is set new and
+/// again, read, got, changed where it is, popped, walked, cleared, copied and compared; changed
+/// through `ref self` in a struct; changed under a lock that fails, which undoes it, and one that
+/// ends; and held in a dict of dicts. A value that's a block and a generic struct's copy too.
+#[test]
+fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_DICT_VALUES_IN_PLACE",
+        "dict_values_in_entries",
+        include_str!("fixtures/dict_values_in_entries.fen"),
+        include_str!("fixtures/dict_values_in_entries.out"),
+    )
 }
 
 /// A struct holding a `u64`, an `f32`, `bytes`, a set, a text, a `str?` and a dict is held in place,

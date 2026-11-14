@@ -1,0 +1,290 @@
+# A dict whose values are structs, used every way a dict is: each kind of value under each kind of
+# key, made, read, changed where it is, replaced, popped, walked, copied, compared and printed.
+# Built with values held in the dict's entries and with each value a block of its own, it prints
+# the same and ends with nothing held.
+
+# Two plain words.
+struct Visit:
+    cost: int
+    came_from: int
+
+# One word, as wide as a value that's a block's address.
+struct Count:
+    seen: int
+
+# Values that own things: a text, a list and a dict.
+struct Player:
+    name: str
+    score: int
+    tags: list[str]
+    best: dict[str, int]
+
+# A struct inside the value, an optional and narrower numbers.
+struct Corner:
+    east: f32
+    north: f32
+
+struct Room:
+    at: Corner
+    label: str?
+    doors: u8
+    owner: Player
+
+# A type that holds itself is a block wherever it is, in a dict too.
+struct Chain:
+    length: int
+    rest: Chain?
+
+struct Pair[A, B]:
+    first: A
+    second: B
+
+struct World:
+    rooms: dict[str, Room]
+    visits: dict[int, Visit]
+
+    def enter(ref self, name: str, door: int):
+        self.rooms[name].doors += u8(1)
+        self.rooms[name].owner.tags.append(f"through door {door}")
+        self.visits[door].cost += 1
+
+error Stop:
+    door: int
+
+## Changes values where they are, replaces one, adds one and pops one under the lock, then fails
+## when `stop` says so, which leaves the world as it was.
+def moved(world: shared World, door: int, stop: bool) fails Stop:
+    lock world as ref current:
+        current.enter("hall", door=1)
+        current.rooms["hall"].label = f"locked through door {door}, long enough for a block"
+        current.visits[1] = Visit(cost=door * 100, came_from=door)
+        current.visits[door] = Visit(cost=door, came_from=1)
+        current.rooms[f"cellar {door}"] = room(door)
+        if "attic" in current.rooms:
+            _ = current.rooms.pop("attic")
+        if stop: fail Stop(door=door)
+
+def player(number: int) -> Player:
+    name = f"player number {number}, with a name long enough for a block"
+    return Player(name=name, score=number, tags=[f"tag {number}"], best={"first": number})
+
+def room(number: int) -> Room:
+    return Room(
+        at=Corner(east=f32(number) / f32(2), north=f32(number * 3)),
+        label=f"a label long enough for a block {number}" if number % 2 == 0 else None,
+        doors=u8(number % 200),
+        owner=player(number),
+    )
+
+def chain(length: int) -> Chain:
+    mut made = Chain(length=0, rest=None)
+    for step in range(1, length + 1):
+        made = Chain(length=step, rest=made)
+    return made
+
+def cheapest(visits: dict[int, Visit]) -> int:
+    mut least = 1_000_000
+    for visit in visits.values():
+        if visit.cost < least:
+            least = visit.cost
+    return least
+
+def doubled(visits: dict[int, Visit]) -> dict[int, Visit]:
+    mut twice = visits
+    for at in visits.keys():
+        twice[at].cost *= 2
+    return twice
+
+## An int key, two plain words: grown past several sizes, set again, read, got, popped, walked.
+def plain_words(stdout: Stdout):
+    mut seen = dict[int, Visit]()
+    for at in range(1, 300):
+        seen[at] = Visit(cost=at * 3, came_from=at - 1)
+    seen[7] = Visit(cost=5, came_from=1)
+    mut total = 0
+    mut at = 299
+    while at != 1 and at != 0:
+        total += seen[at].cost
+        at = seen[at].came_from
+    known = seen.get(50)
+    if known is not None:
+        total += known.cost
+    fallback = seen.get(5000) else Visit(cost=-1, came_from=-1)
+    stdout.print(total, len(seen), 7 in seen, 900 in seen, seen[7].cost, fallback.cost)
+    seen[9].cost += 1000
+    gone = seen.pop(11)
+    stdout.print(seen[9].cost, gone.cost, gone.came_from, len(seen), 11 in seen, 11 not in seen)
+    mut costs = sum(key + visit.cost for key, visit in seen.items())
+    for visit in seen.values():
+        costs += visit.came_from
+    for key in seen:
+        costs += key
+    stdout.print(costs, len(seen.keys()), len(seen.values()), len(seen.items()), cheapest(seen))
+    # Popped down to a few and filled again, so entries are used a second time.
+    for key in range(20, 299):
+        _ = seen.pop(key)
+    for key in range(1000, 1040):
+        seen[key] = Visit(cost=key, came_from=key - 1000)
+    twice = doubled(seen)
+    stdout.print(
+        len(seen),
+        seen[1039].cost,
+        twice[1039].cost,
+        seen[5],
+        twice[5],
+        seen == twice,
+        seen == seen,
+    )
+    seen.clear()
+    stdout.print(len(seen), 5 in seen, twice[5].cost)
+    return
+
+## One word.
+def one_word(stdout: Stdout):
+    mut counts = {"one": Count(seen=1), "two": Count(seen=2)}
+    counts["two"].seen += 40
+    counts["three, a key long enough for a block of its own"] = Count(seen=3)
+    stdout.print(counts, counts["two"] == Count(seen=42), counts.pop("one"), len(counts))
+    return
+
+## A text key, short and long, and a value that owns a text, a list and a dict.
+def owning(stdout: Stdout):
+    mut players = dict[str, Player]()
+    for number in range(40):
+        made = player(number)
+        players[made.name] = made
+    players["short"] = Player(name="short", score=-1, tags=[], best={})
+    players["short"].score += 5
+    players["short"].tags.append("added")
+    players["short"].tags.append("again")
+    players["short"].best["now"] = 8
+    players["short"].name = "a longer name than before, long enough for a block"
+    kept = players["short"]
+    players["short"] = player(100)
+    lost = players.pop("player number 3, with a name long enough for a block")
+    mut scores = 0
+    mut tags = 0
+    for name, held in players.items():
+        scores += held.score + len(name) + len(held.best)
+    for held in players.values():
+        tags += len(held.tags)
+    stdout.print(scores, tags, len(players), lost.name, lost.tags, lost.best)
+    stdout.print(kept, players["short"].score, players.get("nobody") is None)
+    # A copy of the dict keeps what it held when the first changes, and the other way round.
+    mut others = players
+    others["short"].tags.append("only in the copy")
+    others["short"].best["copy"] = 1
+    players["short"].score = 7
+    _ = others.pop("player number 4, with a name long enough for a block")
+    stdout.print(
+        len(players),
+        len(others),
+        players["short"].tags,
+        others["short"].tags,
+        others["short"].score,
+    )
+    stdout.print(
+        players == others,
+        players != others,
+        len(players["short"].best),
+        len(others["short"].best),
+    )
+    return
+
+## A float key, and a value holding a struct, an optional, a narrow number and another value.
+def nested(stdout: Stdout):
+    mut rooms = dict[float, Room]()
+    for number in range(12):
+        rooms[float(number) / 4.0] = room(number)
+    rooms[0.5].at.north += f32(100)
+    rooms[0.5].label = None
+    rooms[0.75].label = "set later, long enough for a block of its own"
+    rooms[0.75].owner.tags.append("moved in")
+    rooms[1.0].owner = player(77)
+    stdout.print(
+        rooms[0.5].at,
+        rooms[0.5].label,
+        rooms[0.75].label,
+        rooms[0.75].owner.tags,
+        rooms[1.0].owner.score,
+    )
+    stdout.print(
+        rooms[2.5],
+        len(rooms),
+        rooms.get(9.0) is None,
+        rooms[0.25] == room(1),
+        rooms[0.5] == room(2),
+    )
+    return
+
+## A dict in a struct, changed through `ref self`.
+def in_a_struct(stdout: Stdout) -> World:
+    mut world = World(
+        rooms={"hall": room(1), "attic": room(2)},
+        visits={1: Visit(cost=0, came_from=0)},
+    )
+    world.enter("hall", door=1)
+    world.enter("hall", door=1)
+    world.enter("attic", door=1)
+    stdout.print(
+        world.rooms["hall"].doors,
+        world.rooms["hall"].owner.tags,
+        world.rooms["attic"].doors,
+        world.visits[1],
+    )
+    return world
+
+## The same under a lock: a change that fails is undone, and one that ends stays.
+def under_a_lock(stdout: Stdout, world: World):
+    shared lobby = world
+    for door, stop in [(5, True), (6, False), (7, True)]:
+        moved(lobby, door=door, stop=stop) except why:
+            stdout.print("stopped at door", why.door)
+        lock lobby as held:
+            stdout.print(
+                len(held.rooms),
+                held.rooms["hall"].doors,
+                held.rooms["hall"].label,
+                held.visits,
+                "attic" in held.rooms,
+            )
+    stdout.print(world.rooms["hall"].doors, len(world.rooms))
+    return
+
+## A dict of dicts and a list of dicts.
+def dicts_in_dicts(stdout: Stdout):
+    mut by_floor = dict[str, dict[int, Visit]]()
+    by_floor["ground"] = {1: Visit(cost=1, came_from=0)}
+    by_floor["first"] = {}
+    by_floor["first"][2] = Visit(cost=2, came_from=1)
+    by_floor["ground"][1].cost += 10
+    floors = [by_floor["ground"], by_floor["first"], {3: Visit(cost=3, came_from=2)}]
+    stdout.print(by_floor, floors[2][3], len(floors))
+    return
+
+## A value that's a block, a generic struct's copy, and a comprehension.
+def blocks_and_copies(stdout: Stdout):
+    mut chains = {length: chain(length) for length in range(4)}
+    chains[2] = chain(5)
+    pairs = {
+        f"pair {number}": Pair(first=number, second=f"second of {number}") for number in range(3)
+    }
+    stdout.print(
+        chains[2].length,
+        chains[3],
+        pairs["pair 1"],
+        pairs.get("pair 9") is None,
+        len(pairs),
+    )
+    return
+
+def main(stdout: Stdout):
+    plain_words(stdout)
+    one_word(stdout)
+    owning(stdout)
+    nested(stdout)
+    world = in_a_struct(stdout)
+    under_a_lock(stdout, world=world)
+    dicts_in_dicts(stdout)
+    blocks_and_copies(stdout)
+    return

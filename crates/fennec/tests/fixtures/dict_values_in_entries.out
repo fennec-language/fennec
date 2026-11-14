@@ -1,0 +1,21 @@
+134621 299 True False 5 -1
+1027 33 10 298 False True
+269715 298 298 298 3
+59 1039 2078 Visit(cost=15, came_from=4) Visit(cost=30, came_from=4) False True
+0 False 30
+{"one": Count(seen=1), "two": Count(seen=42), "three, a key long enough for a block of its own": Count(seen=3)} True Count(seen=1) 2
+2980 40 40 player number 3, with a name long enough for a block ["tag 3"] {"first": 3}
+Player(name="a longer name than before, long enough for a block", score=4, tags=["added", "again"], best={"now": 8}) 100 True
+40 39 ["tag 100"] ["tag 100", "only in the copy"] 100
+False True 1 2
+Corner(east=1.0, north=106.0) None set later, long enough for a block of its own ["tag 3", "moved in"] 77
+Room(at=Corner(east=5.0, north=30.0), label="a label long enough for a block 10", doors=10, owner=Player(name="player number 10, with a name long enough for a block", score=10, tags=["tag 10"], best={"first": 10})) 12 True True False
+3 ["tag 1", "through door 1", "through door 1"] 3 Visit(cost=3, came_from=0)
+stopped at door 5
+2 3 None {1: Visit(cost=3, came_from=0)} True
+2 4 locked through door 6, long enough for a block {1: Visit(cost=600, came_from=6), 6: Visit(cost=6, came_from=1)} False
+stopped at door 7
+2 4 locked through door 6, long enough for a block {1: Visit(cost=600, came_from=6), 6: Visit(cost=6, came_from=1)} False
+3 2
+{"ground": {1: Visit(cost=11, came_from=0)}, "first": {2: Visit(cost=2, came_from=1)}} Visit(cost=3, came_from=2) 3
+5 Chain(length=3, rest=Chain(length=2, rest=Chain(length=1, rest=Chain(length=0, rest=None)))) Pair(first=1, second="second of 1") True 3

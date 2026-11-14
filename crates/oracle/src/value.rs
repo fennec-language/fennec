@@ -40,6 +40,10 @@ pub(crate) enum Value {
     Table(Box<Table>),
     /// An `Id`: where its item is in a `Table`, and which one.
     Id(Id),
+    /// A value the oracle can't know, as a folder's size, which differs from one system to
+    /// another: it can be held and passed on, and anything else done with it is refused, as this
+    /// says why.
+    Unknown(String),
 }
 
 /// A struct, an error, or a case of an enum or an error, with its fields in the order the type
@@ -78,12 +82,23 @@ pub(crate) enum Func {
 }
 
 /// A capability `main` was given. Standard output is real; the arguments and standard input
-/// are empty.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// are empty; the file system is the one `interp/disk.rs` models.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Cap {
     Stdout,
     Args,
     Stdin,
+    Fs(Reach),
+}
+
+/// What an `Fs` reaches: everything, as the one `main` is given does, or less, once `only` or
+/// `read_only` has narrowed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Reach {
+    /// The folders it reaches, each as the parts of its absolute path, or `None` for everywhere.
+    pub(crate) folders: Option<Vec<Vec<String>>>,
+    /// Whether it only reads.
+    pub(crate) read_only: bool,
 }
 
 /// Items made one at a time, shared by every copy of the value: a generator is used once, so a
@@ -116,6 +131,7 @@ impl Value {
             Value::Cap(_) => "capability",
             Value::Table(_) => "Table",
             Value::Id(_) => "Id",
+            Value::Unknown(_) => "value the oracle can't know",
         }
     }
 

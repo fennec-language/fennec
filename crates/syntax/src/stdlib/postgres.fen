@@ -39,14 +39,14 @@ MOST_ROUNDS = 1_000_000
 ## The longest message a reader takes, so a server can't make it hold more than this.
 LONGEST = 1073741824
 
-## The longest any other message may be: only a row, a row's columns, a failure, a notice, a
-## notification, copied data or a function's answer can be longer, as libpq has it, so a server
-## can't make the reader hold a gigabyte for a message that's a few bytes.
+## The longest a message may be unless it's one of `LONG_KINDS`, fixed, as libpq has it, so a
+## server can't make the reader wait for or hold a gigabyte to say what's a few bytes.
 LONGEST_SHORT = 30000
 
-## The types of message that may be longer than `LONGEST_SHORT`: `T`, `D`, `E`, `N`, `A`, `d` and
-## `V`.
-LONG_KINDS = [84, 68, 69, 78, 65, 100, 86]
+## The types of message that may be longer than `LONGEST_SHORT`, exactly libpq's list: `d`
+## copied data, `D` a row, `E` a failure, `V` a function's result, `N` a notice, `A` a
+## notification, `T` a row's columns and `t` a statement's parameters.
+LONG_KINDS = [100, 68, 69, 86, 78, 65, 84, 116]
 
 ## A message a Postgres server sends.
 export enum PgMessage:
@@ -181,7 +181,7 @@ export struct PgReader:
             fail .Failed(reason=f"the server sent a message {size} bytes long")
         if size > LONGEST_SHORT and not (kind in LONG_KINDS):
             fail .Failed(
-                reason=f"the server sent a message of type {kind} {size} bytes long, and only rows, columns, failures and notices may be over {LONGEST_SHORT:,}",
+                reason=f"the server sent a message of type {kind} {size} bytes long, and only rows, column and parameter lists, failures, notices, notifications, copied data and function results may be over {LONGEST_SHORT:,}",
             )
         if len(self._data) - self._at < 1 + size: return None
         body = self._data[self._at + 5:self._at + 1 + size]

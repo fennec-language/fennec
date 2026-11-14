@@ -16301,6 +16301,86 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A generic struct is shown by the name it's written with, never with its type arguments:
+/// `Holder(item=3)`, not `Holder[int](item=3)`. One held in place took its layout's name, which
+/// has the arguments, while one in a block, or inside a list or a dict, was shown without. Here
+/// it holds an int, a string, a float, another generic struct and an array, alone and inside a
+/// list, a dict, a tuple and an optional, through `print`, an f-string and `str()`.
+#[test]
+fn a_generic_struct_is_shown_without_its_type_arguments() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("generic_shown", GENERIC_SHOWN, GENERIC_SHOWN_PRINTS)
+}
+
+const GENERIC_SHOWN: &str = r#"struct Holder[T]:
+    item: T
+
+struct Pair[A, B]:
+    left: A
+    right: B
+
+def main(stdout: Stdout):
+    stdout.print(Holder(item=3))
+    stdout.print(Holder(item="x"))
+    stdout.print(Holder(item=2.5))
+    stdout.print([Holder(item=1)])
+    stdout.print(Holder(item=Holder(item=4)))
+    stdout.print(Pair(left=1, right="one"))
+    stdout.print({"a": Holder(item=1)}, (Holder(item=1), 2))
+    maybe: Holder[int]? = Holder(item=9)
+    stdout.print(maybe)
+    number = Holder(item=3)
+    text = Holder(item="x")
+    stdout.print(f"{number} {text}", str(number), str(Holder(item=2.5)), str(text))
+    grid: array[int, 2] = [1, 2]
+    stdout.print(grid, [grid], Holder(item=grid))
+    return
+"#;
+
+const GENERIC_SHOWN_PRINTS: &str = r#"Holder(item=3)
+Holder(item="x")
+Holder(item=2.5)
+[Holder(item=1)]
+Holder(item=Holder(item=4))
+Pair(left=1, right="one")
+{"a": Holder(item=1)} (Holder(item=1), 2)
+Holder(item=9)
+Holder(item=3) Holder(item="x") Holder(item=3) Holder(item=2.5) Holder(item="x")
+[1, 2] [[1, 2]] Holder(item=[1, 2])
+"#;
+
+/// A failed `assert` says both sides the same way, with no type arguments.
+#[test]
+fn a_failed_assert_shows_a_generic_struct_without_its_type_arguments() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("generic_assert")?;
+    let (program, executable) = (dir.join("generic_assert.fen"), dir.join("generic_assert"));
+    std::fs::write(&program, GENERIC_ASSERT)?;
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!((printed.as_str(), code), ("", Some(1)), "{said}");
+    assert!(said.contains("the left side is Holder(item=3) and the right side is Holder(item=4)"), "{said}");
+    Ok(())
+}
+
+const GENERIC_ASSERT: &str = r#"struct Holder[T]:
+    item: T
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    assert Holder(item=3 + shift) == Holder(item=4)
+    stdout.print("not reached")
+    return
+"#;
+
 /// A list of a union's values, whose members are generic or tuples, prints each value as itself,
 /// from a literal or from fields, in `print` and in an f-string.
 #[test]

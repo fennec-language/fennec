@@ -1,0 +1,169 @@
+# Every kind of field a `shared` struct holds, written whole under `lock ... as ref` by a block
+# that then fails: each is put back as it was, whichever of two values it held and was given.
+
+error Nope:
+    why: str
+
+enum Plain:
+    Low
+    High
+
+enum Shape:
+    Circle(r: float)
+    Tagged(name: str, tags: list[int])
+    Empty
+
+struct Inner:
+    label: str
+    note: str?
+    shape: Shape
+
+struct C:
+    n: int
+    ratio: float
+    on: bool
+    big: u64
+    name: str
+    note: str?
+    items: list[int]
+    maybe_items: list[int]?
+    counts: dict[str, int]
+    maybe_counts: dict[str, int]?
+    seen: set[int]
+    data: bytes
+    pair: (str, int)
+    maybe_pair: (str, int)?
+    plain: Plain
+    shape: Shape
+    maybe_shape: Shape?
+    inner: Inner
+    maybe_inner: Inner?
+
+def inner(which: int) -> Inner:
+    if which == 0: return Inner(label="in", note=None, shape=.Empty)
+    return Inner(
+        label="an inner label long enough for a block",
+        note="an inner note long enough for a block",
+        shape=.Tagged(name="an inner name long enough for a block", tags=[4]),
+    )
+
+def made(which: int) -> C:
+    if which == 0:
+        return C(
+            n=1,
+            ratio=1.5,
+            on=False,
+            big=u64(7),
+            name="nm",
+            note=None,
+            items=[],
+            maybe_items=None,
+            counts={},
+            maybe_counts=None,
+            seen={1},
+            data="ab".encode(),
+            pair=("p", 1),
+            maybe_pair=None,
+            plain=.Low,
+            shape=.Empty,
+            maybe_shape=None,
+            inner=inner(0),
+            maybe_inner=None,
+        )
+    return C(
+        n=2,
+        ratio=2.5,
+        on=True,
+        big=u64(9),
+        name="a name long enough to need a block",
+        note="a note long enough to need a block",
+        items=[1, 2],
+        maybe_items=[3],
+        counts={"a": 1},
+        maybe_counts={"b": 2},
+        seen={2, 3},
+        data="bytes long enough to need a block of their own".encode(),
+        pair=("a pair's text, long enough for a block", 2),
+        maybe_pair=("a maybe pair's text, long enough for a block", 3),
+        plain=.High,
+        shape=.Tagged(name="a shape's name long enough for a block", tags=[5, 6]),
+        maybe_shape=.Circle(r=2.0),
+        inner=inner(1),
+        maybe_inner=inner(1),
+    )
+
+def fails_after(c: shared C, field: int, to: int) fails Nope:
+    other = made(to)
+    lock c as ref c:
+        if field == 0:
+            c.n = other.n + 10
+        elif field == 1:
+            c.ratio = other.ratio + 10.0
+        elif field == 2:
+            c.on = not c.on
+        elif field == 3:
+            c.big = other.big + u64(10)
+        elif field == 4:
+            c.name = other.name + "!"
+        elif field == 5:
+            c.note = other.note
+        elif field == 6:
+            c.items = other.items + [9]
+        elif field == 7:
+            c.maybe_items = other.maybe_items
+        elif field == 8:
+            c.counts = {"new": 9}
+        elif field == 9:
+            c.maybe_counts = other.maybe_counts
+        elif field == 10:
+            c.seen = {9}
+        elif field == 11:
+            c.data = other.data + "!".encode()
+        elif field == 12:
+            c.pair = (other.pair[0] + "!", 9)
+        elif field == 13:
+            c.maybe_pair = other.maybe_pair
+        elif field == 14:
+            c.plain = other.plain
+        elif field == 15:
+            c.shape = other.shape
+        elif field == 16:
+            c.maybe_shape = other.maybe_shape
+        elif field == 17:
+            c.inner = other.inner
+        elif field == 18:
+            c.maybe_inner = other.maybe_inner
+        elif field == 19:
+            c.inner.note = other.inner.note
+        elif field == 20:
+            c.inner.shape = other.inner.shape
+        elif field == 21:
+            c.shape = .Circle(r=9.0)
+        elif field == 22:
+            c.maybe_shape = .Tagged(
+                name="written under the lock, long enough for a block",
+                tags=[8],
+            )
+        elif field == 23:
+            c.note = "tiny"
+        fail Nope(why="undone")
+
+def main(stdout: Stdout):
+    mut bad = list[str]()
+    for time in range(3):
+        for field in range(24):
+            for start in range(2):
+                for to in range(2):
+                    wanted = str(made(start))
+                    shared c = made(start)
+                    fails_after(c, field=field, to=to) except Nope():
+                        pass
+                    mut now = ""
+                    lock c as held:
+                        now = str(held)
+                    if now != wanted and time == 0:
+                        bad.append(f"field {field} from {start} given {to}")
+    for line in bad:
+        stdout.print(line)
+    stdout.print("kept a change:", len(bad))
+    return

@@ -14524,6 +14524,24 @@ fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
     )
 }
 
+/// Every kind of field a `shared` struct holds is put back when a `lock ... as ref` block that
+/// wrote it fails, whichever of two values it held and was given: numbers, a string, an optional
+/// string, lists, dicts, a set, bytes, a tuple, enums with and without blocks, a struct, and an
+/// optional of each. An optional string was saved as one word of its three-word header, so the
+/// other two stayed as the failed write left them: what came back was a mix of the two, text cut
+/// short or a block's address read as text, and the old block was never let go of.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_every_kind_of_field() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_failure_every_kind",
+        include_str!("fixtures/lock_failure_every_kind.fen"),
+        "kept a change: 0\n",
+    )
+}
+
 /// A `str` parameter written under a lock counts as a string where it's kept, on a worker too.
 #[test]
 fn a_str_parameter_written_under_a_lock() -> std::io::Result<()> {

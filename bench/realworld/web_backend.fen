@@ -19,7 +19,7 @@
 from std import html, json, sqlite
 from std.concurrent import Crashed
 from std.crypto import Secret, equal, hmac_sha256
-from std.html import HtmlError
+from std.html import Html, HtmlError
 from std.net import Connection, NetError, Request, Response, Server
 from std.sql import SqlError
 from std.sqlite import Database
@@ -161,18 +161,22 @@ def notes_of(app: App, owner: str) -> Response fails SqlError:
     found = app.db.query[Note](t"select title, body from notes where owner = {owner} order by id")?
     return answer(200, text=json.dumps(found))
 
+# The page of what a search found, with everything a user wrote in it escaped.
+def results_page(owner: str, words: str, found: list[Note]) -> Html fails HtmlError:
+    rows = [html.render(t"<li><b>{note.title}</b> {note.body}</li>")? for note in found]
+    listed = html.join(rows)
+    count = len(found)
+    return html.render(
+        t"<h1>{owner}'s notes with “{words}”</h1><p>{count} found</p><ul>{listed}</ul>",
+    )?
+
 # A page of the owner's notes that have the words asked for, in their title or body.
 def search(app: App, owner: str, request: Request) -> Response fails SqlError | HtmlError:
     words = request.query.get("q") else ""
     found = app.db.query[Note](
         t"select title, body from notes where owner = {owner} and (instr(lower(title), lower({words})) > 0 or instr(lower(body), lower({words})) > 0) order by id",
     )?
-    rows = [html.render(t"<li><b>{note.title}</b> {note.body}</li>")? for note in found]
-    listed = html.join(rows)
-    count = len(found)
-    made = html.render(
-        t"<h1>{owner}'s notes with “{words}”</h1><p>{count} found</p><ul>{listed}</ul>",
-    )?
+    made = results_page(owner, words=words, found=found)?
     return Response(
         status=200,
         headers={"content-type": "text/html; charset=utf-8"},

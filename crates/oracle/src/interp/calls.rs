@@ -181,6 +181,9 @@ impl Interp {
                     Target::Given(Value::Table(Box::new(crate::value::Table::new(self.shared.new_tag()))))
                 }
                 ExprKind::Name(name) => match self.program.imported.get(name.as_str()) {
+                    Some(from) if !self.is_bound(name) && super::library::has_function(from) => {
+                        Target::Builtin(from.clone())
+                    }
                     Some(from) => return unsupported(from.clone()),
                     None => return unsupported(format!("`{name}[...]()`")),
                 },
@@ -654,6 +657,11 @@ impl Interp {
         expr: &'static Expr,
         given: Vec<ArgVal>,
     ) -> Run<Value> {
+        if given.is_empty()
+            && let Some(value) = super::json::option_case_typed(self.program.type_at(expr.span), case)
+        {
+            return Ok(value);
+        }
         let ty = self.enum_named_at(case, &[expr.span])?;
         self.construct(&ty, Some(case), given, expr.span)
     }

@@ -41,6 +41,9 @@ impl Interp {
     #[expect(clippy::too_many_lines, reason = "one arm for each builtin")]
     pub(crate) fn builtin(&mut self, name: &str, given: Vec<ArgVal>, expr: &'static Expr) -> Run<Value> {
         let span = expr.span;
+        if name.starts_with("std.json.") {
+            return self.json_call(name, given, expr);
+        }
         if name.starts_with("std.") {
             let mut args = Vec::with_capacity(given.len());
             for arg in given {

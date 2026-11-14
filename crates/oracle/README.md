@@ -45,6 +45,19 @@ how values are held, copied, compared and printed, is modeled here on its own, f
   and `else` the missing value at the end of a chain.
 - A generator runs on a thread of its own, and it and its reader take turns, so a run is the same
   every time. A `with` source runs the caller's block at its `lend`.
+- `std.json`'s `dumps` and `loads[T]` are written here on their own, by the type the checker gave
+  the value, never by running the standard library's reader and writer. A struct is an object of
+  the fields it saves, under the names `@serialize(name=...)` and `names=` give them, and `@skip`
+  leaves a field out. A case is its name, or an object holding its fields under its name. A tuple
+  is an array, and a dict is an object when its first key is text or an int, and otherwise an
+  array of `[key, value]` pairs. A `Table` is a list of its items and an `Id` is where its item is
+  in it, so a load makes a new `Table`, with a tag of its own. `indent=` and `extra=` are modeled
+  too. Text is checked as JSON first, as `std.json` checks it, and a load that fails says what
+  `std.json` says: what's wrong with text that isn't JSON, by line and column, and otherwise where
+  in the value it doesn't fit, and how. A failure whose message the oracle can't be sure of is
+  refused, as `json.loads failing (...)`. A float JSON can't hold, or an `Id` that can't be saved,
+  stops the program. A union, bytes, the standard library's collections, a type with its own
+  `serialize` or `deserialize`, and `json.dump` and `json.load` are unsupported.
 - Standard output is real. `Args` and `Stdin` are empty. A program that takes any other capability
   is skipped.
 - Anything it doesn't model it refuses, as `unsupported: <feature>`, rather than guess. A run has a

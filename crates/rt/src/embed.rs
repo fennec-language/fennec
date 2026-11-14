@@ -161,7 +161,7 @@ use std::collections::HashMap;
 use crate::format;
 use crate::value::{Capability, Value};
 
-pub use heap::{Counts, count_allocations};
+pub use heap::{Counts, RanOn, count_allocations};
 pub use tests::next_test;
 
 /// What the compiler registers before a program runs: the names, text and layouts its native
@@ -488,6 +488,10 @@ struct State {
     /// The words of a dict's value held in place, on its way in or out (see
     /// `dicts::value_buffer_of`): made the first time one's wanted, and this run's own.
     dict_value: std::cell::OnceCell<Box<[Cell<u64>]>>,
+    /// How many words each kind of item this run has takes held in place, worked out the first
+    /// time a dict of values in place asks: its width is a walk over the kind's type, which every
+    /// call for such a dict would otherwise make.
+    value_widths: std::cell::OnceCell<Box<[usize]>>,
 }
 
 thread_local! {
@@ -601,6 +605,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         keys_by_value,
         trace: Trace::default(),
         dict_value: std::cell::OnceCell::new(),
+        value_widths: std::cell::OnceCell::new(),
     }));
 }
 
@@ -660,7 +665,8 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
                 guarded::forget_ending(&state.heap);
                 threads::forget_ending(&state.heap);
             }
-            aot::report_sites(&state.heap.sites);
+            // Every thread's, as a server's cost is on its workers and a program's in its tasks.
+            aot::report_sites(&heap::every_threads_sites(&state.heap.sites));
             let leftovers = Leftovers {
                 temps: state.temps.len(),
                 boxes: state.heap.leftover(),

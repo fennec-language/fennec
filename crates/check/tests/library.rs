@@ -86,6 +86,36 @@ fn a_field_the_format_cant_hold_is_named() {
     );
 }
 
+/// A type parameter bounded by `Serializable` is written as JSON in the generic body, and one
+/// bounded by `Deserializable` read, as is a list of one: each call's own type is checked against the
+/// format where the call is, a call made with the caller's own type parameter at the caller's calls.
+/// One with no bound, or with the other bound, could be anything.
+#[test]
+fn a_type_parameter_bounded_to_be_saved_is_written_and_read() {
+    let declared = "from std import json\n\nstruct Account:\n    name: str\n\n\
+        def answer[T: Serializable](status: int, value: T) -> str:\n    return f\"{status} {json.dumps(value)}\"\n\n";
+    let fine = "def many[T: Serializable](values: list[T]) -> str:\n    return json.dumps(values)\n\n\
+        def back[T: Deserializable](text: str) -> T fails ParseError:\n    return json.loads[T](text)?\n\n\
+        def main(stdout: Stdout) fails ParseError:\n    stdout.print(answer(201, value=Account(name=\"ash\")), many([1]))\n    \
+        account = back[Account](\"{}\")?\n    stdout.print(account.name)\n    return\n";
+    assert_eq!(problems(&format!("{declared}{fine}")), Vec::<String>::new());
+    let refused = "def anything[T](value: T) -> str:\n    return json.dumps(value)\n\n\
+        def other_way[T: Deserializable](value: T) -> str:\n    return json.dumps(value)\n\n\
+        def read_any[T](text: str) -> T fails ParseError:\n    return json.loads[T](text)?\n\n\
+        def passes[U: Serializable](value: U) -> str:\n    return answer(1, value=value)\n\n\
+        def main(stdout: Stdout):\n    stdout.print(answer(200, value=set[int]()), passes(set[str]()))\n    return\n";
+    assert_eq!(
+        problems(&format!("{declared}{refused}")),
+        [
+            "JSON can't hold a T @ json.dumps(value)",
+            "JSON can't hold a T @ json.dumps(value)",
+            "JSON can't hold a T @ T",
+            "JSON can't hold a set @ answer(200, value=set[int]())",
+            "JSON can't hold a set @ passes(set[str]())",
+        ]
+    );
+}
+
 /// A page is made only by `html.render`, so neither it nor a field holding one is ever loaded,
 /// which would make one from text it never saw.
 #[test]

@@ -790,6 +790,10 @@ jobs:
           echo "$built programs built natively"
           [ "$built" -ge 90 ] || { echo "::error::only $built built"; failed=1; }
           exit "$failed"
+      # A hello world and a program using only `fs`, which should link none of SQLite, TLS or
+      # cryptography: what they link anyway is held to `.github/linkage-known.txt`.
+      - name: Check what programs link that they don't use
+        run: .github/scripts/linkage-check.sh target/release/fennec
       - name: Run what uses parallel on real threads
         env:
           FENNEC_THREADS_RUNTIME: 1

@@ -1,0 +1,12 @@
+# What programs that don't use them link of SQLite, TLS and cryptography, by system, until each is
+# cut. `.github/scripts/linkage-check.sh` builds the programs, reads their symbols and fails when a
+# program links something not listed here, or no longer links something that is: the pull request
+# that cuts one takes its line out.
+#
+# system program what | why, and who's cutting it
+macos fs sqlite | the first capability call links the whole stdlib dispatch, SQLite's 569 KB of C with it: the runtime lane is cutting it
+macos fs ring-assembly | ring's assembly objects can't be split by function, so -dead_strip keeps about 39 KB of ChaCha20, AES-GCM and bignum code that nothing calls
+macos hello ring-assembly | the same 39 KB of ring's assembly, in every program
+linux fs sqlite | the first capability call links the whole stdlib dispatch, SQLite with it: the runtime lane is cutting it
+linux fs tls | the same stdlib dispatch, which holds rustls's client
+linux hello tls | two of rustls's functions a vtable holds: a TLS payload's drop and `StreamOwned`'s `is_write_vectored`

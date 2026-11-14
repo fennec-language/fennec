@@ -306,9 +306,13 @@ def serving(
 ):
     for conn in parallel(server):
         stopping = answered(conn, app, clock, entropy, stop) except why:
-            lock stats as ref current:
-                current.dropped.append(f"{why}")
-            False
+            # A client that hung up has nothing left to be told, so it's dropped by name.
+            case .Closed:
+                False
+            case _:
+                lock stats as ref current:
+                    current.dropped.append(f"{why}")
+                False
         if stopping: break
 
 # What one client saw.

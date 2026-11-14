@@ -95,8 +95,7 @@ test "an enum's object holds its case and nothing after, saying what follows"():
     inside = "{\"shape\": {\"Box\": {\"width\": 1, \"height\": 2}, \"x\": 2}}"
     assert failure(() => json.loads[Drawing](inside)?) == f"`shape` has \"x\" {said}"
     assert (
-        json.loads[Shape]("{\"Box\": {\"width\": 1, \"height\": 2}}")?
-        == .Box(width=1, height=2)
+        json.loads[Shape]("{\"Box\": {\"width\": 1, \"height\": 2}}")? == .Box(width=1, height=2)
     )
     assert json.loads[Box](json.dumps(box()))? == box()
 

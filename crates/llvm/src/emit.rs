@@ -3469,7 +3469,9 @@ impl Emit<'_, '_, '_> {
         }
         let mut let_go = Vec::new();
         for local in done_with {
-            if (self.owns(local) || self.owns_inline(local)) && self.known.moves(local) && !writes.contains(&local)
+            if (self.owns(local) || self.owns_inline(local))
+                && self.known.moves(local)
+                && !writes.contains(&local)
             {
                 let_go.push(local);
             }

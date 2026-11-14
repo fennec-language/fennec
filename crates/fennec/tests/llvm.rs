@@ -20134,6 +20134,215 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// A loop over a dict's keys or values alone, where each is a tuple, reads the tuple's own parts.
+/// The backend took `value[0]` and `value[1]` there for the parts of the pair a walk over
+/// `items()` never makes, and read the entry's key and value: `value[0]` of a `(int, int)` value
+/// gave the dict's key, with no error, and a tuple holding a `str` didn't build. Here keys and
+/// values that are tuples, of ints, of a string and of a list, are walked by `keys()`,
+/// `values()`, `items()` and a `Table`'s `values()`, and every part is its own.
+#[test]
+fn a_tuple_walked_as_a_dicts_key_or_value_has_its_own_parts() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("walked_tuples", WALKED_TUPLES, WALKED_TUPLES_PRINTS)?;
+    assert!(counts_of("walked_tuples_counts", WALKED_TUPLES)?.ends_with(" live 0"));
+    Ok(())
+}
+
+/// The same for every other way a walked item's parts are read: comprehensions and `sum` over a
+/// dict's keys, values and items, a `for` that takes each tuple apart, `enumerate`, `zip`, a
+/// generator that yields them, `parallel`, and a `Table`'s items and values. Before the fix a
+/// comprehension or a `sum` over `values()`, `for left, right in by_int.values()` and
+/// `for number, name in by_pair.keys()` each read the entry's key and value, and a `Table`'s
+/// `values()` read its id's words.
+#[test]
+fn a_walked_tuples_parts_are_its_own_however_the_walk_is_written() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("walked_tuples_every_way", WALKED_EVERY_WAY, WALKED_EVERY_WAY_PRINTS)?;
+    assert!(counts_of("walked_tuples_every_way_counts", WALKED_EVERY_WAY)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const WALKED_EVERY_WAY: &str = r#"# Every other way a walked item's parts are read: comprehensions and `sum` over a dict's keys,
+# values and items, `enumerate`, `zip`, a `for` that takes each tuple apart, a generator that
+# yields them, `parallel`, and a `Table`'s items. Each key and value is a tuple, so a part read
+# from the wrong place shows.
+
+from std.collections import Table
+
+def pair(at: int) -> (int, str):
+    return (at, f"key number {at}, long enough for a block")
+
+def each_value(by_int: dict[int, (int, int)]) -> Iterator[(int, int)]:
+    for value in by_int.values():
+        yield value
+
+def each_key(by_pair: dict[(int, str), (int, int)]) -> Iterator[(int, str)]:
+    for key in by_pair.keys():
+        yield key
+
+def each_item(by_pair: dict[(int, str), (int, int)]) -> Iterator[((int, str), (int, int))]:
+    for item in by_pair.items():
+        yield item
+
+def spread(value: (int, int)) -> int:
+    return value[1] - value[0]
+
+def main(stdout: Stdout):
+    mut by_int: dict[int, (int, int)] = {}
+    by_int[1] = (30, 40)
+    by_int[2] = (50, 65)
+    mut by_pair: dict[(int, str), (int, int)] = {}
+    by_pair[pair(3)] = (5, 6)
+    by_pair[pair(4)] = (7, 9)
+    # Comprehensions and `sum`.
+    stdout.print([value[0] for value in by_int.values()], [value[1] for value in by_int.values()])
+    stdout.print([key[0] for key in by_pair.keys()], [len(key[1]) for key in by_pair.keys()])
+    stdout.print([key[0] * 100 + value[1] for key, value in by_pair.items()])
+    stdout.print([item[0][0] * 100 + item[1][0] for item in by_pair.items()])
+    stdout.print(sum(value[0] for value in by_int.values()), sum(value[1] for value in by_int.values()))
+    stdout.print(sum(key[0] for key in by_pair.keys()), sum(value[1] for key, value in by_pair.items()))
+    # A `for` that takes each tuple apart.
+    mut lefts = 0
+    mut rights = 0
+    for left, right in by_int.values():
+        lefts += left
+        rights += right
+    mut numbers = 0
+    mut sizes = 0
+    for number, name in by_pair.keys():
+        numbers += number
+        sizes += len(name)
+    stdout.print(lefts, rights, numbers, sizes)
+    # `enumerate` and `zip` over lists of tuples.
+    tuples = [(10, 11), (20, 22)]
+    names = [pair(5), pair(6)]
+    mut counted = 0
+    for at, value in enumerate(tuples):
+        counted += at * 1000 + value[0] * 10 + value[1]
+    mut numbered = 0
+    for numbered_pair in enumerate(tuples):
+        numbered += numbered_pair[0] * 1000 + numbered_pair[1][0] * 10 + numbered_pair[1][1]
+    mut zipped = 0
+    for value, name in zip(tuples, names):
+        zipped += value[0] * 10 + value[1] + name[0] * 1000 + len(name[1])
+    mut whole = 0
+    for both in zip(tuples, names):
+        whole += both[0][0] * 10 + both[0][1] + both[1][0] * 1000 + len(both[1][1])
+    stdout.print(counted, numbered, zipped, whole)
+    # A generator that yields them.
+    stdout.print([value[0] for value in each_value(by_int)], [value[1] for value in each_value(by_int)])
+    stdout.print([key[0] for key in each_key(by_pair)], [len(key[1]) for key in each_key(by_pair)])
+    stdout.print([item[0][0] * 100 + item[1][1] for item in each_item(by_pair)])
+    # `parallel`, over a dict's values and over a list of tuples.
+    stdout.print([spread(value) for value in parallel(by_int.values())])
+    stdout.print([value[0] + value[1] for value in parallel(tuples)])
+    # A `Table`'s items and values.
+    mut table = Table[(int, str)]()
+    _ = table.add(pair(1))
+    _ = table.add(pair(2))
+    stdout.print([value[0] for value in table.values()], [len(value[1]) for value in table.values()])
+    stdout.print([value[0] for id, value in table.items()], sum(len(value[1]) for id, value in table.items()))
+    return
+"#;
+
+const WALKED_EVERY_WAY_PRINTS: &str = r"[30, 50] [40, 65]
+[3, 4] [37, 37]
+[306, 409]
+[305, 407]
+80 105
+7 15
+80 105 7 74
+1333 1333 11407 11407
+[30, 50] [40, 65]
+[3, 4] [37, 37]
+[306, 409]
+[10, 15]
+[21, 42]
+[1, 2] [37, 37]
+[1, 2] 74
+";
+
+const WALKED_TUPLES: &str = r#"# A loop over a dict's keys or values alone, where each is a tuple: its parts are the tuple's own,
+# not the entry's key and value. Beside them, a loop over its items, whose pair's parts are.
+
+from std.collections import Table
+
+def pair(at: int) -> (int, str):
+    return (at, f"key number {at}, long enough for a block")
+
+def main(stdout: Stdout):
+    mut by_pair: dict[(int, str), int] = {}
+    by_pair[pair(7)] = 100
+    by_pair[pair(8)] = 200
+    mut firsts = 0
+    mut sizes = 0
+    mut last = ""
+    for key in by_pair.keys():
+        firsts += key[0]
+        sizes += len(key[1])
+        last = key[1]
+    stdout.print(firsts, sizes, last)
+    mut by_int: dict[int, (int, int)] = {}
+    by_int[1] = (30, 40)
+    by_int[2] = (50, 60)
+    mut lefts = 0
+    mut rights = 0
+    for value in by_int.values():
+        lefts += value[0]
+        rights += value[1]
+    stdout.print(lefts, rights)
+    mut by_name: dict[str, (str, list[int])] = {}
+    by_name["one"] = ("a first name long enough for a block", [1, 2])
+    by_name["two"] = ("a second name long enough for a block", [3])
+    mut names = list[str]()
+    mut counts = 0
+    for value in by_name.values():
+        names.append(value[0])
+        counts += len(value[1])
+    stdout.print(names, counts)
+    mut key_sizes = 0
+    for key in by_name.keys():
+        key_sizes += len(key)
+    stdout.print(key_sizes)
+    # A walk over items: the pair's parts are the entry's key and value, each a tuple here.
+    mut both: dict[(int, str), (int, int)] = {}
+    both[pair(3)] = (5, 6)
+    both[pair(4)] = (7, 8)
+    mut seen = list[str]()
+    mut added = 0
+    for key, value in both.items():
+        seen.append(key[1])
+        added += key[0] * 100 + value[0] * 10 + value[1]
+    stdout.print(seen, added)
+    for item in both.items():
+        stdout.print(item[0][0], item[0][1], item[1][0], item[1][1])
+    # A `Table`'s values, each a tuple.
+    mut table = Table[(int, str)]()
+    _ = table.add(pair(1))
+    _ = table.add(pair(2))
+    mut table_firsts = 0
+    mut table_sizes = 0
+    for value in table.values():
+        table_firsts += value[0]
+        table_sizes += len(value[1])
+    stdout.print(table_firsts, table_sizes)
+    return
+"#;
+
+const WALKED_TUPLES_PRINTS: &str = r#"15 74 key number 8, long enough for a block
+80 100
+["a first name long enough for a block", "a second name long enough for a block"] 3
+6
+["key number 3, long enough for a block", "key number 4, long enough for a block"] 834
+3 key number 3, long enough for a block 5 6
+4 key number 4, long enough for a block 7 8
+3 74
+"#;
+
 /// A dict's `values()`, `keys()` and `items()`, gone through by a `for`, a comprehension or a
 /// `sum`, are read where they are, its entries walked in order past those removed, rather than
 /// made as a list each time: two hundred rounds of each make nothing more than one. `sum` over

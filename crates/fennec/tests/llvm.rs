@@ -15224,6 +15224,107 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// Runs the echo server at `executable` under a heap audit on two workers, has it serve five
+/// lines and a stop, six rounds, and gives how it ended and what it said. `selftest` is what
+/// `FENNEC_AUDIT_SELFTEST` is set to, if anything.
+fn served_six_rounds(executable: &Path, selftest: Option<&str>) -> std::io::Result<(Option<i32>, String)> {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    let mut command = Command::new(executable);
+    command.env("FENNEC_AUDIT", "1").env("FENNEC_COUNTS", "1").env("FENNEC_THREADS", "2");
+    match selftest {
+        Some(how) => command.env("FENNEC_AUDIT_SELFTEST", how),
+        None => command.env_remove("FENNEC_AUDIT_SELFTEST"),
+    };
+    let mut server =
+        Running(command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    for line in ["a", "b", "c", "d", "e", "stop"] {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        stream.write_all(format!("{line}\n").as_bytes())?;
+        let mut back = String::new();
+        let _ = std::io::BufReader::new(stream).read_line(&mut back);
+        let wanted = if line == "stop" {
+            String::new()
+        } else {
+            format!("{line}, as a text long enough for a block of its own\n")
+        };
+        assert_eq!(back, wanted);
+    }
+    let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
+    let ended = loop {
+        if let Some(status) = server.0.try_wait()? {
+            break status;
+        }
+        assert!(std::time::Instant::now() < deadline, "the server went on after `break`");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let mut said = String::new();
+    if let Some(mut errors) = server.0.stderr.take() {
+        errors.read_to_string(&mut said)?;
+    }
+    Ok((ended.code(), said))
+}
+
+/// A block a served round leaves behind is counted and audited, on the worker that holds it. A
+/// round's blocks end with it and are handed to no one, so one that's left is in its worker's own
+/// table, which neither the count of what's live at the end of a run nor the heap audit read: a
+/// server that left a block for every request ended with `live 0` and a clean audit, however long
+/// it served. Now a worker that stops serving looks at what it still holds.
+///
+/// A program can't leave a block itself, so the leak is the runtime's, made on purpose under
+/// `FENNEC_AUDIT_SELFTEST=rounds`: one block for each round. The same server run without it
+/// leaves nothing and says nothing.
+#[test]
+fn a_block_a_served_round_leaves_is_counted_and_audited_on_its_worker() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("rounds-leave-blocks")?;
+    let program = dir.join("rounds.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"stop\":
+                break
+            conn.write(f\"{line}, as a text long enough for a block of its own\\n\")?
+    stdout.print(\"served\")
+",
+    )?;
+    let executable = dir.join("rounds");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (code, said) = served_six_rounds(&executable, None)?;
+    assert_eq!(code, Some(0), "{said}");
+    assert!(said.contains(" live 0"), "{said}");
+    assert!(!said.contains("heap audit"), "{said}");
+    let (code, said) = served_six_rounds(&executable, Some("rounds"))?;
+    assert_eq!(code, Some(87), "{said}");
+    assert!(said.contains("heap audit: a worker that stopped serving was left holding blocks"), "{said}");
+    assert_eq!(
+        said.lines().filter(|line| line.starts_with("heap audit: leaked: str at ")).count(),
+        6,
+        "{said}"
+    );
+    assert!(said.contains(" live 6"), "{said}");
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A built server whose rounds crash on purpose, for every tenth request: each crash ends only its
 /// own round, closing its connection, and the server answers the other nine.
 #[test]

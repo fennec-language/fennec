@@ -1,0 +1,143 @@
+# TOML read from outside fails with a `ParseError` saying why, never a crash, and never reads
+# differently from how another TOML reader would: a key or table given twice however it's
+# spelled, a number past an int or written in a form TOML doesn't have, a control character in a
+# string or a comment, a carriage return that isn't before a line feed, a line break where TOML
+# has none, nesting past the limit, and a document cut short anywhere. A good read straight after
+# a bad one starts fresh.
+from std import toml
+
+struct Count:
+    @serialize(name="a")
+    amount: int
+
+struct Word:
+    @serialize(name="a")
+    word: str
+
+struct Server:
+    name: str
+    port: int
+    tags: list[str]
+    limits: dict[str, int]
+
+## Why `text` doesn't read as a `Count`, or "loaded".
+def why_not(text: str) -> str:
+    _ = toml.loads[Count](text) except why:
+        return why.message
+    return "loaded"
+
+## Why `text` doesn't read as a `Word`, or the word it reads as.
+def word_of(text: str) -> str:
+    found = toml.loads[Word](text) except why:
+        return why.message
+    return found.word
+
+def server() -> Server:
+    return Server(name="den", port=8080, tags=["a", "b"], limits={"cpu": 2, "memory": 512})
+
+test "a key or a table given twice fails, however it's spelled"():
+    for text in ["a = 1\n\"a\" = 2", "a = 1\n'a' = 2", "a = 1\n\"\\u0061\" = 2"]:
+        assert why_not(text) == "`a` is defined twice, at line 2, column 1"
+    assert (
+        why_not("[t]\nx = 1\n[t]\ny = 2\na = 1")
+        == "the table `[t]` is defined twice, at line 3, column 1"
+    )
+    assert (
+        why_not("a = 1\n[a]")
+        == "`a` is already defined as something else, so it can't be `[a]`, at line 2, column 1"
+    )
+    assert (
+        why_not("a = {b = 1}\n[a.c]")
+        == "`a` already has a value, so it can't hold a table, at line 2, column 1"
+    )
+    assert (
+        why_not("a = {b = 1}\na.c = 2")
+        == "`a` already has a value, so it can't hold a table, at line 2, column 1"
+    )
+    assert (
+        why_not("[[a]]\n[a]")
+        == "`a` is already defined as something else, so it can't be `[a]`, at line 2, column 1"
+    )
+    assert toml.loads[Server](toml.dumps(server()))? == server()
+
+test "a number past an int, or in a form TOML doesn't have, fails"():
+    assert toml.loads[Count]("a = 0x7FFFFFFFFFFFFFFF")? == Count(amount=9_223_372_036_854_775_807)
+    for number in ["0x8000000000000000", "0o1777777777777777777777"]:
+        assert why_not(f"a = {number}") == f"`{number}` is too big for an int, at line 1, column 5"
+    for number in ["+0x10", "-0x10", "1__0", "1_", "01", "0x_1", "0x1_", "0b2", "0o8", "1e", "--1"]:
+        assert (
+            why_not(f"a = {number}") == f"`{number}` isn't a number TOML knows, at line 1, column 5"
+        )
+    assert why_not("a = _1") == "expected a value, but found `_`, at line 1, column 5"
+    assert toml.loads[Count]("a = -0")? == Count(amount=0)
+    assert toml.loads[Server](toml.dumps(server()))? == server()
+
+test "a control character in a string or a comment fails, named by its code"():
+    said = "a string can't hold a control character; write an escape like `\\u0007`"
+    for text in ["a = \"x\x00y\"", "a = 'x\x7fy'", "a = \"\"\"x\x01y\"\"\"", "a = '''x\x1by'''"]:
+        assert word_of(text).startswith(said)
+    for text in ["a = 1 # c\x00", "a = 1 # c\x7f", "a = 1 # c\x01", "# \x00\na = 1"]:
+        assert why_not(text).startswith("a comment can't hold a control character, at line 1")
+    assert (
+        why_not("a\x00 = 1")
+        == "expected `=` after the key, but found the control character U+0000, at line 1, column 2"
+    )
+    # A tab, and an escaped control character, are text.
+    assert word_of("a = \"x\ty\" # a\tcomment") == "x\ty"
+    assert word_of("a = \"\\u0000\"") == "\x00"
+    assert toml.loads[Server](toml.dumps(server()))? == server()
+
+test "a carriage return is only ever before a line feed"():
+    for text in ["a = 1\r", "a = 1\rb = 2"]:
+        assert why_not(text).startswith(
+            "expected the end of the line, but found the control character U+000D",
+        )
+    assert why_not("a = 1 # c\r").startswith("a comment can't hold a control character")
+    assert word_of("a = \"\"\"x\ry\"\"\"").startswith("a string can't hold a control character")
+    assert word_of("a = \"\"\"x\r\ny\"\"\"") == "x\r\ny"
+    assert toml.loads[Count]("a = 1\r\n\r\n# c\r\n")? == Count(amount=1)
+    # A vertical tab or a form feed isn't a space to TOML.
+    for text in ["\x0ba = 1", "a = 1\n\x0c", "a = [1,\x0b2]"]:
+        assert why_not(text) != "loaded"
+    assert toml.loads[Server](toml.dumps(server()))? == server()
+
+test "a byte order mark is named, not read as a key"():
+    assert (
+        why_not("\ufeffa = 1")
+        == "expected a key, but found a byte order mark, U+FEFF, at line 1, column 1"
+    )
+
+test "a string's quotes and escapes are read as TOML has them"():
+    assert word_of("a = \"\"\"a\"\"\"\"\"") == "a\"\""
+    assert (
+        word_of("a = \"\"\"a\"\"\"\"\"\"")
+        == "too many quotes end this string, at line 1, column 15"
+    )
+    assert word_of("a = '''a'''''") == "a''"
+    assert word_of("a = \"\"\"\\\n   b\"\"\"") == "b"
+    assert word_of("a = \"\"\"\\  \r\n   b\"\"\"") == "b"
+    assert word_of("a = \"\\x41\"") == "`\\x` isn't a TOML escape, at line 1, column 6"
+    assert word_of("a = \"\\uDFFF\"") == "`DFFF` isn't a character, at line 1, column 8"
+    for text in ["a = \"x", "a = 'x", "a = \"x\ny\"", "a = \"\\"]:
+        assert word_of(text).startswith("this string never ends")
+
+test "nesting past the limit fails, in arrays and inline tables"():
+    deep = 501
+    arrays = "a = " + "[" * deep + "]" * deep
+    assert why_not(arrays).startswith("arrays and tables nest more than 500 deep here")
+    tables = "a = " + "{b = " * deep + "1" + "}" * deep
+    assert why_not(tables).startswith("arrays and tables nest more than 500 deep here")
+
+test "a document cut short anywhere fails, and the next read starts fresh"():
+    whole = toml.dumps(server())
+    for end in range(len(whole)):
+        part = whole[0:end]
+        found = toml.loads[Server](part) except ParseError():
+            continue
+        # A cut can be a whole document of its own, with a number cut short, say, but never the
+        # one cut, unless all it lost was its last line break.
+        assert found != server() or part == whole.removesuffix("\n")
+    assert toml.loads[Server](whole)? == server()
+
+def main(stdout: Stdout):
+    stdout.print(toml.dumps(server()))

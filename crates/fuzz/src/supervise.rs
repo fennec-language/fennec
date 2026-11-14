@@ -307,8 +307,26 @@ fn measured(id: u32, watched: Watched) -> (Option<u64>, Option<Duration>) {
 /// What fuzzing one target found.
 pub(crate) struct Outcome {
     pub(crate) inputs: u64,
-    /// Each kind of failure once, with the input that caused it.
-    pub(crate) failures: Vec<(Failure, u64)>,
+    /// Each kind of failure once, with every input that failed that way, in order: the first is
+    /// the one cut down and kept, and the rest say how widespread it is, where a list of firsts
+    /// alone left a second failure of a kind unseen.
+    pub(crate) failures: Vec<Failed>,
+}
+
+/// One kind of failure, and the inputs that failed that way.
+pub(crate) struct Failed {
+    pub(crate) failure: Failure,
+    pub(crate) inputs: Vec<u64>,
+}
+
+impl Outcome {
+    /// Counts `input` as failing as `failure`.
+    pub(crate) fn note(&mut self, failure: Failure, input: u64) {
+        match self.failures.iter_mut().find(|failed| failed.failure == failure) {
+            Some(failed) => failed.inputs.push(input),
+            None => self.failures.push(Failed { failure, inputs: vec![input] }),
+        }
+    }
 }
 
 /// A target being fuzzed.
@@ -345,9 +363,7 @@ impl Run<'_> {
             let reached = noted(&progress).unwrap_or(next);
             outcome.inputs = reached + 1;
             let Some(failure) = failure else { break };
-            if !outcome.failures.iter().any(|(kind, _)| *kind == failure) {
-                outcome.failures.push((failure, reached));
-            }
+            outcome.note(failure, reached);
             next = reached + 1;
         }
         let _ = std::fs::remove_dir_all(&folder);
@@ -367,7 +383,22 @@ impl Run<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Duration, cpu_time_in};
+    use super::{Duration, Failure, Outcome, cpu_time_in};
+
+    /// Every input that fails is counted under its kind, in order, the first kept first: a second
+    /// failure of a kind once went unseen, as only the first of each was kept.
+    #[test]
+    fn every_failing_input_is_counted_under_its_kind() {
+        let mut outcome = Outcome { inputs: 0, failures: Vec::new() };
+        for (failure, input) in
+            [(Failure::Wrong, 2), (Failure::Crashed, 4), (Failure::Wrong, 5), (Failure::Wrong, 9)]
+        {
+            outcome.note(failure, input);
+        }
+        let found: Vec<(Failure, Vec<u64>)> =
+            outcome.failures.iter().map(|failed| (failed.failure, failed.inputs.clone())).collect();
+        assert_eq!(found, [(Failure::Wrong, vec![2, 5, 9]), (Failure::Crashed, vec![4])]);
+    }
 
     #[test]
     fn cpu_time_reads_as_ps_writes_it() {

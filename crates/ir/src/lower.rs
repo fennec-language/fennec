@@ -110,6 +110,7 @@ fn lower_from(
         instances: generics::Instances::default(),
         generator_defs: std::cell::RefCell::default(),
         own_texts: std::cell::RefCell::default(),
+        empties: std::cell::RefCell::default(),
         layouts: std::cell::RefCell::default(),
         layout_problems: std::cell::RefCell::default(),
         // A library's yield methods too, which a loop over one can copy in.
@@ -174,6 +175,8 @@ fn saves_itself(functions: &[(String, &FnDef)]) -> HashSet<String> {
 fn take_what_was_found(program: &mut Program, context: &Context<'_>) {
     program.generators = context.generator_defs.take();
     program.own_texts = context.own_texts.take();
+    program.constants.extend(context.empties.take());
+    program.constants.sort_by(|first, second| first.name.cmp(&second.name));
     program.layouts = context.layouts.take();
     program.layout_problems = context.layout_problems.take();
 }
@@ -316,6 +319,9 @@ struct Context<'a> {
     generator_defs: std::cell::RefCell<Vec<crate::GeneratorDef>>,
     /// The types whose own text is asked for by printing something that holds them.
     own_texts: std::cell::RefCell<Vec<crate::OwnText>>,
+    /// The empty lists, dicts and sets that fields default to, each a constant: the function
+    /// giving it, which a value built with the default reads rather than make one of its own.
+    empties: std::cell::RefCell<Vec<Function>>,
     /// The layout of each type `std.pack` saves, as `layout[T]()` gives them.
     layouts: std::cell::RefCell<Vec<crate::SavedLayout>>,
     /// Why a type can't load a layout its kit's `pack.lock` holds for it.

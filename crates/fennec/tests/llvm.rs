@@ -2598,6 +2598,62 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
     )
 }
 
+/// A struct's field defaulting to an empty list, dict or set reads one made once, so a value
+/// nothing writes to makes no block: a thousand more values built and only read make exactly as
+/// many blocks as ten, on one thread and on four. Each default made a block of its own for every
+/// value, two for every HTTP response.
+///
+/// What's written goes nowhere else. A value written to gets a block of its own at the first
+/// write, with the values built before and after it still empty, as are a second holder of the
+/// same value, a default that's a struct with defaults of its own, each copy of a generic struct,
+/// an enum case's and an error's, a value changed under a lock that fails, and values built and
+/// written on a task while `main` writes its own. Nothing is left at the end.
+#[test]
+fn a_field_defaulting_to_an_empty_collection_makes_nothing_until_written() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("empty_defaults_shared")?;
+    let program = dir.join("empty_defaults_shared.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/empty_defaults_shared.fen"))?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("empty_defaults_shared"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let mut made_by = Vec::new();
+            for made in ["10", "1010"] {
+                let ran = Command::new(&executable)
+                    .arg(made)
+                    .env("FENNEC_COUNTS", "1")
+                    .env("FENNEC_THREADS", threads)
+                    .output_within()?;
+                let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+                let wanted = include_str!("fixtures/workers/empty_defaults_shared.out");
+                assert_eq!(printed, wanted, "{how:?}, {threads} threads, {made} made");
+                let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads, {made} made: {counts}");
+                made_by.push((count(counts, "allocations"), count(counts, "copies")));
+            }
+            assert!(made_by.iter().all(|(blocks, _)| blocks.is_some()), "{how:?}: {made_by:?}");
+            assert_eq!(
+                made_by.first(),
+                made_by.last(),
+                "{how:?}, {threads} threads: the blocks made and the copies, with 10 values only read and with 1010"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// One write to one entry of a `Table`, a dict or a list that a `shared` value holds, under
 /// `lock ... as ref`: an item's field, a list inside it, the item whole, and a `Table`'s remove and
 /// add. Each is written in the lock's own block and through a `ref self` method, and ends

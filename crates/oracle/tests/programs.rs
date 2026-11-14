@@ -511,6 +511,33 @@ fn std_math_runs_from_its_own_source() {
     assert_eq!(ended, Ended::Unsupported("`Vec3`, declared by the program and by std.math".to_owned()));
 }
 
+/// `std.collections` runs from its own Fennec source too: a `Deque`, a `Heap` and a
+/// `SortedMap`, with the `len(x)` its code has written as `x.len()` on a list and a dict. What
+/// it prints is what the compiled program printed.
+#[test]
+fn std_collections_runs_from_its_own_source() {
+    prints(
+        "
+        from std.collections import Deque, Heap, SortedMap
+
+        def main(stdout: Stdout):
+            mut queue = Deque.of([1, 2, 3])
+            queue.append(4)
+            first = queue.popleft() else 0
+            stdout.print(queue, first, queue == Deque.of([2, 3, 4]))
+            mut heap = Heap.of([5, 1, 4])
+            heap.push(2)
+            stdout.print(heap.pop() else 0, heap.pop() else 0, len(heap))
+            mut counts = SortedMap[str, int]()
+            for word in ['fox', 'den', 'kit', 'den']:
+                counts[word] = (counts.get(word) else 0) + 1
+            stdout.print(counts, counts.keys())
+            return
+        ",
+        "Deque([2, 3, 4]) 1 True\n1 2 2\nSortedMap({\"den\": 2, \"fox\": 1, \"kit\": 1}) [\"den\", \"fox\", \"kit\"]\n",
+    );
+}
+
 #[test]
 fn a_json_load_that_fails_says_what_and_where_as_std_json_does() {
     prints(

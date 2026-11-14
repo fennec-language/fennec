@@ -54,7 +54,8 @@ pub struct Program {
     /// What each name of a standard library module run from its own source is called in these
     /// tables, by its whole name: `std.math.Vec3` is `Vec3`, and `std.math.dot` is `math.dot`.
     pub(crate) from_std: HashMap<String, String>,
-    /// The type the checker gave each expression of the program's own code, by its span.
+    /// The type the checker gave each expression of the program, and of the standard library code
+    /// it reaches, by its span.
     pub(crate) types_at: HashMap<(u32, u32), Type>,
     pub(crate) main: &'static FnDef,
     /// The type each method is of, by where its definition is.
@@ -135,13 +136,13 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
     }
     let checked =
         fennec_check::check_typed(&module).map_err(|_| Refused::Invalid("it doesn't check".to_owned()))?;
+    // Every expression the checker typed: the program's own, and those of the standard library
+    // code it reaches, which a module run from its own source needs.
     let mut types_at = HashMap::new();
     let typed = typed_fields(&module, &checked.signatures);
     for (_, body) in checked.types.iter() {
         for (span, ty) in body.exprs() {
-            if span.start < Span::PRELUDE {
-                types_at.insert((span.start, span.end), ty.clone());
-            }
+            types_at.insert((span.start, span.end), ty.clone());
         }
     }
     // The tree is kept for the rest of the process, since values and generators running on
@@ -155,7 +156,12 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
 /// The standard library's modules the oracle runs from their own Fennec source, as the compiler
 /// builds them. Only the functions the runtime writes in Rust beneath them are modeled here, in
 /// `interp/library.rs`, so a bug in one of these modules' own Fennec would show on both sides.
-const RUN_FROM_SOURCE: &[&str] = &["math"];
+const RUN_FROM_SOURCE: &[&str] = &["math", "collections"];
+
+/// The types the oracle models on its own, whose methods a module run from its source adds in an
+/// `extend` are left out: `std.collections` extends `Table` and `Id`, which `interp/tables.rs`
+/// models.
+const MODELED_HERE: &[&str] = &["Table", "Id"];
 
 /// What the tables are made from: the program's own declarations, and those of each standard
 /// library module it imports that's run from its own source.
@@ -190,6 +196,9 @@ impl Gathered {
                 self.unclaimed(&def.name, std)?;
                 self.types.insert(def.name.clone(), Declared { def, kind, ruled: ruled(def) });
                 std.map(|module| (module, def.name.as_str(), &def.name))
+            }
+            Item::Extend(extension) if std.is_some() && MODELED_HERE.contains(&extension.name.as_str()) => {
+                None
             }
             Item::Extend(extension) => {
                 self.extensions.entry(extension.name.clone()).or_default().extend(extension.methods.iter());
@@ -237,8 +246,8 @@ impl Gathered {
     }
 
     /// Takes in each standard library module the program imports that's run from its own
-    /// source, with the types the checker gives its code.
-    fn std_modules(&mut self, types_at: &mut HashMap<(u32, u32), Type>) -> Result<(), Refused> {
+    /// source. The checker typed its code as it checked the program.
+    fn std_modules(&mut self) -> Result<(), Refused> {
         let mut wanted: Vec<&str> = RUN_FROM_SOURCE
             .iter()
             .copied()
@@ -255,13 +264,6 @@ impl Gathered {
             for item in &module.items {
                 self.take(item, Some(name))?;
             }
-            let checked = fennec_check::check_typed(module)
-                .map_err(|_| Refused::Unsupported(format!("std.{name}, which doesn't check alone")))?;
-            for (_, body) in checked.types.iter() {
-                for (span, ty) in body.exprs() {
-                    types_at.entry((span.start, span.end)).or_insert_with(|| ty.clone());
-                }
-            }
         }
         Ok(())
     }
@@ -270,13 +272,13 @@ impl Gathered {
 fn tables(
     module: &'static Module,
     sources: Sources,
-    mut types_at: HashMap<(u32, u32), Type>,
+    types_at: HashMap<(u32, u32), Type>,
 ) -> Result<Program, Refused> {
     let mut gathered = Gathered::default();
     for item in &module.items {
         gathered.take(item, None)?;
     }
-    gathered.std_modules(&mut types_at)?;
+    gathered.std_modules()?;
     let Gathered { functions, types, extensions, constants, aliases, imported, from_std } = gathered;
     let mut owners = HashMap::new();
     for (name, declared) in &types {

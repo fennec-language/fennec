@@ -11,6 +11,7 @@ builtins.fen
 calculator.fen
 case_guards.fen
 collections.fen
+collections_equality.fen
 collections_more.fen
 comprehensions_native.fen
 constants_kept.fen
@@ -104,13 +105,18 @@ shared_accounts.fen
 shared_bank.fen
 sorted_native.fen
 sources.fen
+std_collections.fen
 std_fs.fen
 std_fs_hostile.fen
 std_functions.fen
+std_grid.fen
 std_json.fen
 std_long_input_errors.fen
 std_net_hostile.fen
+std_packed.fen
 std_parse.fen
+std_sorted_map.fen
+std_sorted_set.fen
 std_text.fen
 std_text_formats_hostile.fen
 string_building.fen

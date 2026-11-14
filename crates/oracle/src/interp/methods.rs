@@ -29,6 +29,17 @@ impl Interp {
                 None => args.push(value),
             }
         }
+        // The standard library's own code has `len(x)` and `abs(x)` written as these methods
+        // when it's parsed, which a program can't call on a built-in value.
+        if matches!(name, "len" | "abs") && args.is_empty() && named.is_empty() {
+            let value = match &receiver {
+                Receiver::Place(place) => self.read_place(place, span)?,
+                Receiver::Value(value) => value.clone(),
+            };
+            if !matches!(value, Value::Instance(_)) {
+                return self.builtin(name, vec![ArgVal::Value(None, value)], expr);
+            }
+        }
         let is_table = match &receiver {
             Receiver::Place(place) => self.peek_place(place, span, |held| matches!(held, Value::Table(_)))?,
             Receiver::Value(value) => matches!(value, Value::Table(_)),
@@ -58,15 +69,6 @@ impl Interp {
             Receiver::Place(place) => self.read_place(place, span)?,
             Receiver::Value(value) => value.clone(),
         };
-        // The standard library's own code has `len(x)` and `abs(x)` written as these methods
-        // when it's parsed, which a program can't call on a built-in value.
-        if matches!(name, "len" | "abs")
-            && args.is_empty()
-            && named.is_empty()
-            && !matches!(value, Value::Instance(_))
-        {
-            return self.builtin(name, vec![ArgVal::Value(None, value)], expr);
-        }
         if let Value::Instance(instance) = &value
             && instance.ty == "StrWriter"
         {

@@ -23,9 +23,21 @@ fn point() -> Element {
     )
 }
 
-/// Starts a run whose kinds of item are a `Point`, a tuple of a number and a string, and an
-/// optional `Point`: numbers 0, 1 and 2.
-fn started() {
+/// A result of a `Point` or a string, its `Err` case written first: number 3.
+fn point_or_text() -> Element {
+    Element::Enum {
+        name: Rc::from("Result[Point, str]"),
+        cases: vec![
+            (Rc::from("Err"), vec![(Rc::from("error"), Element::Text)]),
+            (Rc::from("Ok"), vec![(Rc::from("value"), point())]),
+        ],
+        words: 6,
+    }
+}
+
+/// The kinds of item a run here has: a `Point`, a tuple of a number and a string, an optional
+/// `Point`, and a result of a `Point` or a string: numbers 0 to 3.
+fn elements() -> Vec<Rc<Element>> {
     let pair = named("(int, str)", vec![("0", Element::Int), ("1", Element::Text)]);
     let none: Vec<(Rc<str>, Element)> = Vec::new();
     let maybe = Element::Enum {
@@ -33,9 +45,14 @@ fn started() {
         cases: vec![(Rc::from("None"), none), (Rc::from("Some"), vec![(Rc::from("value"), point())])],
         words: 6,
     };
+    vec![Rc::new(point()), Rc::new(pair), Rc::new(maybe), Rc::new(point_or_text())]
+}
+
+/// Starts a run with those kinds of item.
+fn started() {
     let tables = Tables {
         shapes: vec![Rc::new(Element::Str)],
-        elements: vec![Rc::new(point()), Rc::new(pair), Rc::new(maybe)],
+        elements: elements(),
         str_shape: 0,
         text_headers: true,
         ..Tables::default()
@@ -153,8 +170,9 @@ fn an_entry_is_as_wide_as_its_key_and_its_values_kind() {
     assert_eq!(width(Word::Text, 0), Some((9, 4)));
     assert_eq!(width(Word::Int, 1), Some((6, 2)));
     assert_eq!(width(Word::Str, 2), Some((8, 2)));
+    assert_eq!(width(Word::Int, 3), Some((8, 2)));
     // A kind the run doesn't have is no dict's.
-    assert_eq!(width(Word::Int, 3), None);
+    assert_eq!(width(Word::Int, 4), None);
     finish();
 }
 
@@ -481,4 +499,210 @@ fn a_value_popped_is_in_the_buffer_and_a_missing_key_fails_and_changes_nothing()
     assert_eq!(live(), before);
     let (_, failure, _) = finish();
     assert!(failure.is_some_and(|failure| failure.message.contains("the dict has no key 41")));
+}
+
+#[test]
+fn a_result_in_place_is_read_by_its_cases_names_whatever_their_order() {
+    started();
+    let before = live();
+    let pairs = dict_of(vec![
+        (Value::Int(1), Value::Ok(Rc::new(a_point(1, LONG, &[3])))),
+        (Value::Int(2), Value::Err(Rc::new(Value::str(LONG)))),
+        (Value::Int(3), Value::Err(Rc::new(Value::str("short")))),
+    ]);
+    let dict = made(Word::Int, 3, &pairs);
+    assert_eq!(read(dict), pairs);
+    // `Err` is case 0 here, as this element writes it first: the first word of each value says so.
+    let cases: Vec<u64> = with(|state| {
+        let block = state.heap.block(dict)?;
+        let layout = super::layout(state, block)?;
+        let held = super::entries(block, layout.width());
+        Some(
+            held.chunks_exact(layout.width())
+                .filter_map(|entry| entry.get(layout.value_at()).copied())
+                .collect(),
+        )
+    })
+    .unwrap();
+    assert_eq!(cases, [1, 0, 0]);
+    // The dict, a `Point`'s name and list, and an error's text: the short one is in its header.
+    assert_eq!(live(), before + 4);
+    audited(&[dict]);
+    // Equal to another made the same way, and not to one whose error differs.
+    let same = made(Word::Int, 3, &pairs);
+    assert!(with(|state| heap::same(state, dict, same)));
+    let Value::Dict(held) = &pairs else { panic!() };
+    let mut differing: Vec<(Value, Value)> = held.iter().cloned().collect();
+    differing[2].1 = Value::Ok(Rc::new(a_point(1, LONG, &[3])));
+    let other = made(Word::Int, 3, &dict_of(differing));
+    assert!(!with(|state| heap::same(state, dict, other)));
+    for dict in [dict, same, other] {
+        let_go(dict);
+    }
+    assert_eq!(live(), before);
+    finish();
+}
+
+/// The shape number of a struct whose one field is a dict, to hold one under a lock.
+const HOLDER: i64 = 0;
+/// Where a `Holder`'s dict is among its words.
+const DICT_AT: usize = heap::HEADER_WORDS;
+
+/// Starts a run as `started` does, with a `Holder` to put under a lock: struct shapes come before
+/// the string's.
+fn started_with_a_holder() {
+    let dicts = usize::try_from(shape(1, Word::Int, Word::InPlace(0)).unwrap()).unwrap();
+    let holder = named("Holder", vec![("by_key", Element::Boxed(dicts))]);
+    let tables = Tables {
+        shapes: vec![Rc::new(holder), Rc::new(Element::Str)],
+        elements: elements(),
+        str_shape: 1,
+        text_headers: true,
+        ..Tables::default()
+    };
+    start(tables, crate::Inputs::default());
+}
+
+fn word(block: i64, at: usize) -> i64 {
+    let found = with(|state| state.heap.block(unsigned(block)).and_then(|words| words.get(at).copied()));
+    i64::try_from(found.unwrap_or(0)).unwrap()
+}
+
+fn set_word(block: i64, at: usize, value: i64) {
+    with(|state| {
+        if let Some(place) = state.heap.block_mut(unsigned(block)).and_then(|words| words.get_mut(at)) {
+            *place = unsigned(value);
+        }
+    });
+}
+
+/// How many blocks the current table has: the lock's, while it's held.
+fn blocks() -> usize {
+    with(|state| state.heap.blocks.len())
+}
+
+/// A `shared` value holding `points()` in a `Holder`, locked to write with its log begun, and the
+/// dict marked as native code marks a value it's about to change where it is. Gives back the cell
+/// and the dict.
+fn locked() -> (i64, i64) {
+    use super::super::guarded::{rollback, shared_enter, shared_new};
+    let made = signed(made(Word::Int, 0, &points()));
+    let cell = heap::alloc(HOLDER);
+    set_word(cell, DICT_AT, made);
+    shared_new(cell);
+    shared_enter(cell, 1);
+    rollback::begin(cell);
+    // What a `shared` value holds is its own copy, in its lock's table.
+    let dict = word(cell, DICT_AT);
+    rollback::save_ref(cell, i64::try_from(DICT_AT).unwrap(), dict);
+    let marked = i64::try_from(super::super::lists::MARKED).unwrap();
+    assert_eq!(word(dict, 0), marked + 1, "the log marks the dict rather than hold it");
+    (cell, dict)
+}
+
+/// Ends the lock's body as native code does: by a crash, which puts every saved word back, the
+/// log's and then the cell's, or by keeping what changed. Then the lock is left.
+fn ended(cell: i64, crashed: bool) {
+    use super::super::guarded::{rollback, shared_leave};
+    if crashed {
+        rollback::undo();
+        let at = i64::try_from(DICT_AT).unwrap();
+        let back = rollback::undo_word(at, word(cell, DICT_AT), 1);
+        set_word(cell, DICT_AT, back);
+    } else {
+        rollback::kept();
+    }
+    shared_leave(cell, 1);
+}
+
+/// What the dict a `Holder` holds reads as, and its count, with every block behind the lock
+/// checked by the audit: the lock is taken to write, which makes its table the one that's read.
+fn held_by(cell: i64) -> (Value, i64) {
+    use super::super::guarded::{shared_enter, shared_leave};
+    shared_enter(cell, 1);
+    let dict = word(cell, DICT_AT);
+    let read = (read(unsigned(dict)), word(dict, 0));
+    // The cell's own count is its lock's to keep, another way. All it holds is counted as ever.
+    let found = with(|state| heap::audit::audit(state, &[unsigned(cell)]));
+    let wrong: Vec<_> = found.wrong.into_iter().filter(|finding| finding.address != unsigned(cell)).collect();
+    assert_eq!(wrong, Vec::new());
+    shared_leave(cell, 1);
+    read
+}
+
+#[test]
+fn values_set_in_place_under_a_locks_log_go_back_on_a_crash_and_stay_at_an_end() {
+    started_with_a_holder();
+    for crashed in [false, true] {
+        let (cell, dict) = locked();
+        let before = blocks();
+        // One whose short name becomes a block, one whose block becomes a short name, and a new
+        // key: each word noted in the log, where the dict lies.
+        let puts =
+            [(7, a_point(10, LONG, &[5])), (-3, a_point(20, "short", &[])), (99, a_point(30, LONG, &[1, 2]))];
+        for (key, value) in &puts {
+            buffer(value);
+            assert_eq!(super::set_in_place(dict, *key), dict, "set where it lies, crashed: {crashed}");
+        }
+        let changed = dict_of(vec![
+            (Value::Int(7), a_point(10, LONG, &[5])),
+            (Value::Int(-3), a_point(20, "short", &[])),
+            (Value::Int(40), a_point(3, LONG, &[9])),
+            (Value::Int(99), a_point(30, LONG, &[1, 2])),
+        ]);
+        assert_eq!(read(unsigned(dict)), changed);
+        // A name more for key 7, one fewer for -3, and a name and a list for 99: but the log holds
+        // what was taken out until the body ends.
+        assert!(blocks() > before);
+        ended(cell, crashed);
+        let (now, count) = held_by(cell);
+        assert_eq!(now, if crashed { points() } else { changed }, "crashed: {crashed}");
+        assert_eq!(count, 1, "crashed: {crashed}");
+    }
+    finish();
+}
+
+#[test]
+fn a_value_taken_out_under_a_locks_log_goes_back_on_a_crash_and_stays_out_at_an_end() {
+    started_with_a_holder();
+    for crashed in [false, true] {
+        let (cell, dict) = locked();
+        assert_eq!(super::pop_in_place(dict, 40, 0, 0), dict, "taken out where it lies, crashed: {crashed}");
+        let words = with(|state| super::buffered(state, 5)).unwrap();
+        assert_eq!(
+            with(|state| Some(heap::read_in_place(state, &point(), &words))),
+            Some(a_point(3, LONG, &[9]))
+        );
+        assert_eq!(
+            read(unsigned(dict)),
+            dict_of(vec![
+                (Value::Int(7), a_point(1, "short", &[1, 2])),
+                (Value::Int(-3), a_point(2, LONG, &[]))
+            ])
+        );
+        // Whoever took the value out lets go of what it holds, as native code does when its local
+        // goes: the log has owners of its own, to put the value back with.
+        let mut held = Vec::new();
+        heap::held_addresses(&point(), &words, &mut held);
+        assert_eq!(held.len(), 2);
+        for address in held {
+            let_go(address);
+        }
+        if crashed {
+            // A key that isn't there fails, which is what leaves a lock's body by a crash: it gives
+            // the dict back, and takes nothing out of it or of the buffer.
+            assert_eq!(super::pop_in_place(dict, 41, 0, 0), dict);
+            assert!(super::super::failed());
+            assert_eq!(with(|state| super::buffered(state, 5)), Some(words.clone()));
+        }
+        ended(cell, crashed);
+        let (now, count) = held_by(cell);
+        let without = dict_of(vec![
+            (Value::Int(7), a_point(1, "short", &[1, 2])),
+            (Value::Int(-3), a_point(2, LONG, &[])),
+        ]);
+        assert_eq!(now, if crashed { points() } else { without }, "crashed: {crashed}");
+        assert_eq!(count, 1, "crashed: {crashed}");
+    }
+    finish();
 }

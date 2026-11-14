@@ -412,12 +412,13 @@ fn prefixes(path: &[String]) -> impl Iterator<Item = Vec<String>> + '_ {
 
 /// The field paths of its `mut` parameters a function changes through, itself or in what it
 /// calls, before anything there can say otherwise: those its callers see to, so it needn't.
-/// None for a function called any other way than by name, or where a call hands it, beside
-/// the parameter, something leaning on what's in it.
+/// None for a function called any other way than by name, where a call hands it, beside
+/// the parameter, something leaning on what's in it, or that may change what a lock holds.
 pub(crate) fn needed<'p>(
     program: &'p Program,
     functions: &HashMap<&'p str, &'p Function>,
     analyses: &HashMap<&'p str, Analysis>,
+    under_locks: &HashSet<&'p str>,
 ) -> HashMap<&'p str, Vec<FieldPath>> {
     let mut needs: HashMap<&str, HashSet<FieldPath>> = HashMap::new();
     #[expect(clippy::iter_over_hash_type, reason = "each function's needs go into its own set")]
@@ -480,8 +481,11 @@ pub(crate) fn needed<'p>(
             needs.entry(name).or_default().insert(path);
         }
     }
-    // Only a call by name can see to what's needed.
+    // Only a call by name can see to what's needed. And one that may change what a lock's log
+    // marked has nothing seen to for it: making a marked block alone copies all of it, where the
+    // function asking the log at each change leaves it where it is.
     let mut other_ways: HashSet<&str> = HashSet::from(["main"]);
+    other_ways.extend(under_locks.iter().copied());
     for def in &program.generators {
         other_ways.insert(def.name.as_str());
         other_ways.insert(def.resume.as_str());

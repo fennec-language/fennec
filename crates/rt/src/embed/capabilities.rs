@@ -128,79 +128,174 @@ pub extern "C" fn from_value(value: i64, start: i64, end: i64) -> i64 {
     })
 }
 
-/// The methods one export runs: its own module's, whole and narrowed, and no other's. Each export
-/// hands in the functions that run them, and the call's own body names none, so a program links
-/// only the modules whose exports it calls: one that reads a file carries no SQLite and no
-/// sockets. Compiled code picks the export from the method's name, which it has where the call
-/// is written (see `fennec_runtime::MODULE_ENTRIES`).
-struct Module {
+/// The methods one export runs: its own module's, whole and narrowed, and no other's. The call
+/// is compiled once for each module, so each copy names only its own module's functions, and a
+/// program links only the modules whose exports it calls: one that reads a file carries no
+/// SQLite and no sockets. Compiled code picks the export from the method's name, which it has
+/// where the call is written (see `fennec_runtime::MODULE_ENTRIES`).
+///
+/// It's a type and not a set of functions handed in, as that didn't keep them apart: where only
+/// one function is ever handed in for a place, the compiler calls it by name in the body every
+/// caller shares.
+trait Module {
     /// The export's name, for a bug to say.
-    export: &'static str,
+    const EXPORT: &'static str;
     /// Whether a capability's method is this module's.
-    takes: fn(Capability, &str) -> bool,
+    fn takes(capability: Capability, method: &str) -> bool;
     /// A method of the whole capability.
-    whole: Whole,
+    fn whole(capability: Capability, method: &str, args: &[Value], at: Span) -> Result<Value, Diagnostic>;
     /// A method of a narrowed one.
-    narrowed: Narrowed,
+    fn narrowed(
+        limited: &Rc<Limited>,
+        method: &str,
+        args: &[Value],
+        how: (bool, Span),
+        call: &mut CallWhole<'_>,
+    ) -> Result<Value, Diagnostic>;
     /// A test's fakes, asked first. Only the export for every module has them: they're one world
     /// of every capability, and a program that isn't a test never has that world.
-    fakes: Option<fn(&Value, &str, &[Value], Span) -> Option<i64>>,
+    fn fakes(_: &Value, _: &str, _: &[Value], _: Span) -> Option<i64> {
+        None
+    }
 }
 
-type Whole = fn(Capability, &str, &[Value], Span) -> Result<Value, Diagnostic>;
-type Narrowed =
-    fn(&Rc<Limited>, &str, &[Value], (bool, Span), &mut CallWhole<'_>) -> Result<Value, Diagnostic>;
+/// Every capability's methods, with a test's fakes: what a test build calls, and what a name
+/// with no export of its own falls back to.
+struct EveryModule;
 
-/// Every capability's methods, with a test's fakes: what a test build calls, and what a program
-/// built before there was an export for each module calls.
-const EVERY_MODULE: Module = Module {
-    export: "fennec_native_capability",
-    takes: |_, _| true,
-    whole: native_method,
-    narrowed,
-    fakes: Some(asked_of_fakes),
-};
+impl Module for EveryModule {
+    const EXPORT: &'static str = "fennec_native_capability";
+
+    fn takes(_: Capability, _: &str) -> bool {
+        true
+    }
+
+    fn whole(capability: Capability, method: &str, args: &[Value], at: Span) -> Result<Value, Diagnostic> {
+        native_method(capability, method, args, at)
+    }
+
+    fn narrowed(
+        limited: &Rc<Limited>,
+        method: &str,
+        args: &[Value],
+        how: (bool, Span),
+        call: &mut CallWhole<'_>,
+    ) -> Result<Value, Diagnostic> {
+        narrowed(limited, method, args, how, call)
+    }
+
+    fn fakes(receiver: &Value, name: &str, given: &[Value], at: Span) -> Option<i64> {
+        asked_of_fakes(receiver, name, given, at)
+    }
+}
 
 /// The file system's own methods: all an `Fs` has but the two that open a database.
-const FILES: Module = Module {
-    export: "fennec_fs_capability",
-    takes: |capability, method| capability == Capability::Fs && !opens_a_database(method),
-    whole: |_, method, args, at| fs_method(method, args, at, crate::stdlib::fs::real_files),
-    narrowed: crate::limits::narrowed_files,
-    fakes: None,
-};
+struct Files;
+
+impl Module for Files {
+    const EXPORT: &'static str = "fennec_fs_capability";
+
+    fn takes(capability: Capability, method: &str) -> bool {
+        capability == Capability::Fs && !opens_a_database(method)
+    }
+
+    fn whole(_: Capability, method: &str, args: &[Value], at: Span) -> Result<Value, Diagnostic> {
+        fs_method(method, args, at, crate::stdlib::fs::real_files)
+    }
+
+    fn narrowed(
+        limited: &Rc<Limited>,
+        method: &str,
+        args: &[Value],
+        how: (bool, Span),
+        call: &mut CallWhole<'_>,
+    ) -> Result<Value, Diagnostic> {
+        crate::limits::narrowed_files(limited, method, args, how, call)
+    }
+}
 
 /// The two methods of an `Fs` that open a database, which bring SQLite with them.
-const DATABASES: Module = Module {
-    export: "fennec_sqlite_capability",
-    takes: |capability, method| capability == Capability::Fs && opens_a_database(method),
-    whole: |_, method, args, at| fs_method(method, args, at, crate::stdlib::fs::real_fs),
-    narrowed: crate::limits::narrowed_databases,
-    fakes: None,
-};
+struct OpeningDatabases;
+
+impl Module for OpeningDatabases {
+    const EXPORT: &'static str = "fennec_sqlite_capability";
+
+    fn takes(capability: Capability, method: &str) -> bool {
+        capability == Capability::Fs && opens_a_database(method)
+    }
+
+    fn whole(_: Capability, method: &str, args: &[Value], at: Span) -> Result<Value, Diagnostic> {
+        fs_method(method, args, at, crate::stdlib::fs::real_fs)
+    }
+
+    fn narrowed(
+        limited: &Rc<Limited>,
+        method: &str,
+        args: &[Value],
+        how: (bool, Span),
+        call: &mut CallWhole<'_>,
+    ) -> Result<Value, Diagnostic> {
+        crate::limits::narrowed_databases(limited, method, args, how, call)
+    }
+}
 
 /// A `Net`'s methods: requests, connecting and listening.
-const NETWORK: Module = Module {
-    export: "fennec_net_capability",
-    takes: |capability, _| capability == Capability::Net,
-    whole: |_, method, args, at| net_method(method, args, at),
-    narrowed: |limited, method, args, _, call| crate::limits::narrowed_net(limited, method, args, call),
-    fakes: None,
-};
+struct Network;
+
+impl Module for Network {
+    const EXPORT: &'static str = "fennec_net_capability";
+
+    fn takes(capability: Capability, _: &str) -> bool {
+        capability == Capability::Net
+    }
+
+    fn whole(_: Capability, method: &str, args: &[Value], at: Span) -> Result<Value, Diagnostic> {
+        net_method(method, args, at)
+    }
+
+    fn narrowed(
+        limited: &Rc<Limited>,
+        method: &str,
+        args: &[Value],
+        _: (bool, Span),
+        call: &mut CallWhole<'_>,
+    ) -> Result<Value, Diagnostic> {
+        crate::limits::narrowed_net(limited, method, args, call)
+    }
+}
 
 /// A `Process`'s methods.
-const PROCESSES: Module = Module {
-    export: "fennec_process_capability",
-    takes: |capability, _| capability == Capability::Process,
-    whole: |_, method, args, at| process_method(method, args, at),
-    narrowed: |limited, method, args, _, call| crate::limits::narrowed_process(limited, method, args, call),
-    fakes: None,
-};
+struct Processes;
+
+impl Module for Processes {
+    const EXPORT: &'static str = "fennec_process_capability";
+
+    fn takes(capability: Capability, _: &str) -> bool {
+        capability == Capability::Process
+    }
+
+    fn whole(_: Capability, method: &str, args: &[Value], at: Span) -> Result<Value, Diagnostic> {
+        process_method(method, args, at)
+    }
+
+    fn narrowed(
+        limited: &Rc<Limited>,
+        method: &str,
+        args: &[Value],
+        _: (bool, Span),
+        call: &mut CallWhole<'_>,
+    ) -> Result<Value, Diagnostic> {
+        crate::limits::narrowed_process(limited, method, args, call)
+    }
+}
 
 /// The small ones together: standard input and error, the environment, entropy and signals.
-const SMALL_ONES: Module = Module {
-    export: "fennec_io_capability",
-    takes: |capability, _| {
+struct SmallOnes;
+
+impl Module for SmallOnes {
+    const EXPORT: &'static str = "fennec_io_capability";
+
+    fn takes(capability: Capability, _: &str) -> bool {
         matches!(
             capability,
             Capability::Stdin
@@ -209,11 +304,22 @@ const SMALL_ONES: Module = Module {
                 | Capability::Entropy
                 | Capability::Signals
         )
-    },
-    whole: small_method,
-    narrowed: |limited, method, args, _, call| call(limited.capability, method, args),
-    fakes: None,
-};
+    }
+
+    fn whole(capability: Capability, method: &str, args: &[Value], at: Span) -> Result<Value, Diagnostic> {
+        small_method(capability, method, args, at)
+    }
+
+    fn narrowed(
+        limited: &Rc<Limited>,
+        method: &str,
+        args: &[Value],
+        _: (bool, Span),
+        call: &mut CallWhole<'_>,
+    ) -> Result<Value, Diagnostic> {
+        call(limited.capability, method, args)
+    }
+}
 
 /// Whether a method of an `Fs` opens a database.
 fn opens_a_database(method: &str) -> bool {
@@ -234,42 +340,42 @@ fn not_this_exports(export: &str, name: &str) -> i64 {
 /// compiled code, whichever module's it is. A test build calls this one, since a test's
 /// capabilities are fakes the runtime asks first.
 pub extern "C" fn native_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
-    call_in(&EVERY_MODULE, word, method, (count, start, end))
+    call_in::<EveryModule>(word, method, (count, start, end))
 }
 
 /// `fennec_fs_capability(word, method, count, start, end)`: `fennec_native_capability` for an
 /// `Fs`'s own methods, which is all it reaches.
 pub extern "C" fn fs_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
-    call_in(&FILES, word, method, (count, start, end))
+    call_in::<Files>(word, method, (count, start, end))
 }
 
 /// `fennec_sqlite_capability(word, method, count, start, end)`: `fennec_native_capability` for
 /// the two methods of an `Fs` that open a database.
 pub extern "C" fn sqlite_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
-    call_in(&DATABASES, word, method, (count, start, end))
+    call_in::<OpeningDatabases>(word, method, (count, start, end))
 }
 
 /// `fennec_net_capability(word, method, count, start, end)`: `fennec_native_capability` for a
 /// `Net`'s methods.
 pub extern "C" fn net_capability_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
-    call_in(&NETWORK, word, method, (count, start, end))
+    call_in::<Network>(word, method, (count, start, end))
 }
 
 /// `fennec_process_capability(word, method, count, start, end)`: `fennec_native_capability` for
 /// a `Process`'s methods.
 pub extern "C" fn process_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
-    call_in(&PROCESSES, word, method, (count, start, end))
+    call_in::<Processes>(word, method, (count, start, end))
 }
 
 /// `fennec_io_capability(word, method, count, start, end)`: `fennec_native_capability` for the
 /// methods of `Stdin`, `Stderr`, `Env`, `Entropy` and `Signals`.
 pub extern "C" fn io_call(word: i64, method: i64, count: i64, start: i64, end: i64) -> i64 {
-    call_in(&SMALL_ONES, word, method, (count, start, end))
+    call_in::<SmallOnes>(word, method, (count, start, end))
 }
 
-/// A method of a capability, run by `module`: every export for one comes here, and they differ
-/// only in what they hand in.
-fn call_in(module: &Module, word: i64, method: i64, (count, start, end): (i64, i64, i64)) -> i64 {
+/// A method of a capability, run by the module `M`: every export for one is this, compiled for
+/// its own module.
+fn call_in<M: Module>(word: i64, method: i64, (count, start, end): (i64, i64, i64)) -> i64 {
     let at = span(start, end);
     let called = attempt(|state: &mut State| {
         let receiver = value_of(state, word);
@@ -290,22 +396,20 @@ fn call_in(module: &Module, word: i64, method: i64, (count, start, end): (i64, i
         Value::Limited(limited) => Some(limited.capability),
         _ => None,
     };
-    if capability.is_some_and(|capability| !(module.takes)(capability, &name)) {
-        return not_this_exports(module.export, &name);
+    if capability.is_some_and(|capability| !M::takes(capability, &name)) {
+        return not_this_exports(M::EXPORT, &name);
     }
     // A test's capabilities are fakes the runtime holds, which never wait, so they run with the
     // state borrowed. What they leave to the real ones, like `only`, runs below.
-    if let Some(asked) = module.fakes
-        && let Some(pushed) = asked(&receiver, &name, &given, at)
-    {
+    if let Some(pushed) = M::fakes(&receiver, &name, &given, at) {
         return pushed;
     }
     // The method runs with nothing borrowed, so a task waiting in it, on the network, can park.
     let live = || match &receiver {
-        Value::Capability(capability) => (module.whole)(*capability, &name, &given, at),
+        Value::Capability(capability) => M::whole(*capability, &name, &given, at),
         Value::Limited(limited) => {
-            (module.narrowed)(limited, &name, &given, (true, at), &mut |capability, method, args| {
-                (module.whole)(capability, method, args, at)
+            M::narrowed(limited, &name, &given, (true, at), &mut |capability, method, args| {
+                M::whole(capability, method, args, at)
             })
         }
         other => Err(crate::methods::no_method(other, &name, at)),
@@ -912,6 +1016,95 @@ mod tests {
         let Value::Err(error) = with(|state| Some(state.temp(refused))).unwrap() else { panic!("refused") };
         assert!(format!("{error:?}").contains("can run only `echo`"), "{error:?}");
         heap::free(block);
+        finish();
+    }
+
+    /// What stopping the program said, for a call that's a bug in Fennec: in a test the runtime
+    /// panics with it, where a program would say it and stop.
+    fn stops<T>(call: impl FnOnce() -> T) -> String {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)) {
+            Ok(_) => "it went on".to_owned(),
+            Err(why) => why.downcast_ref::<String>().cloned().unwrap_or_default(),
+        }
+    }
+
+    /// An export for one module runs its own module's methods, as the export for every module
+    /// does, and stops the program when it's handed another's: compiled code picks the export
+    /// from the method's name, and a wrong pick is a bug in Fennec that has to be loud.
+    #[test]
+    fn an_export_for_one_module_runs_its_own_methods_and_stops_on_anothers() {
+        use super::{
+            Files, Handle, Module, Network, OpeningDatabases, Processes, SmallOnes, call_in, kind_of,
+        };
+        let tables = Tables { shapes: vec![Rc::new(Element::Str)], ..Tables::default() };
+        start(tables, crate::Inputs::default());
+        let string = |text: &str| with(|state| heap::text_address(state, text));
+        let given = |pushed: i64| with(|state| Some(state.temp(pushed))).unwrap();
+        let (fs, net) = (kind_of(Capability::Fs), kind_of(Capability::Net));
+        let (process, env) = (kind_of(Capability::Process), kind_of(Capability::Env));
+        // Its own: narrowing a file system and a network, a process narrowed to a program, and
+        // the environment read.
+        let only_reads = given(call_in::<Files>(fs, string("read_only"), (0, 0, 0)));
+        let by_every = given(super::native_call(fs, string("read_only"), 0, 0, 0));
+        let (Value::Limited(only_reads), Value::Limited(by_every)) = (only_reads, by_every) else {
+            panic!("narrowed")
+        };
+        assert_eq!(only_reads, by_every);
+        let client = given(call_in::<Network>(net, string("client"), (0, 0, 0)));
+        assert!(matches!(client, Value::Limited(_)), "{client:?}");
+        let temp = with(|state| Some(state.push(Value::str("echo")))).unwrap();
+        super::super::eval::input(temp);
+        let echo = given(call_in::<Processes>(process, string("only"), (1, 0, 0)));
+        assert!(matches!(echo, Value::Limited(_)), "{echo:?}");
+        let variables = given(call_in::<SmallOnes>(env, string("all"), (0, 0, 0)));
+        assert!(matches!(variables, Value::Dict(_)), "{variables:?}");
+        // Another's: each says which export was asked for which method.
+        let asked = |export: &str, method: &str, said: String| {
+            assert!(said.contains(export) && said.contains(method), "{export}: {said}");
+        };
+        for method in ["_sqlite_open", "_sqlite_read"] {
+            asked(Files::EXPORT, method, stops(|| call_in::<Files>(fs, string(method), (0, 0, 0))));
+        }
+        asked(Files::EXPORT, "get", stops(|| call_in::<Files>(net, string("get"), (0, 0, 0))));
+        let opening = OpeningDatabases::EXPORT;
+        asked(
+            opening,
+            "read_text",
+            stops(|| call_in::<OpeningDatabases>(fs, string("read_text"), (0, 0, 0))),
+        );
+        asked(opening, "listen", stops(|| call_in::<OpeningDatabases>(net, string("listen"), (0, 0, 0))));
+        asked(Network::EXPORT, "exists", stops(|| call_in::<Network>(fs, string("exists"), (0, 0, 0))));
+        asked(Processes::EXPORT, "get", stops(|| call_in::<Processes>(env, string("get"), (0, 0, 0))));
+        asked(SmallOnes::EXPORT, "exists", stops(|| call_in::<SmallOnes>(fs, string("exists"), (0, 0, 0))));
+        asked(SmallOnes::EXPORT, "run", stops(|| call_in::<SmallOnes>(process, string("run"), (0, 0, 0))));
+        // A handle's method, and one of the runtime's own functions, the same way.
+        let name = string("Database.query");
+        let said = stops(|| {
+            super::one_kind_of_handle(
+                ("fennec_file_call", Handle::File),
+                super::file_method,
+                (0, name, 0, 0, 0),
+            )
+        });
+        assert!(said.contains("fennec_file_call") && said.contains("Database.query"), "{said}");
+        let name = string("File.read_line");
+        let said = stops(|| {
+            super::one_kind_of_handle(
+                ("fennec_socket_call", Handle::Socket),
+                super::socket_method,
+                (0, name, 0, 0, 0),
+            )
+        });
+        assert!(said.contains("fennec_socket_call") && said.contains("File.read_line"), "{said}");
+        let name = string("crypto.sha256");
+        let said = stops(|| {
+            super::pure_call(
+                ("fennec_compress_call", "compress."),
+                crate::stdlib::compress::run,
+                (name, 0, 0, 0),
+            )
+        });
+        assert!(said.contains("fennec_compress_call") && said.contains("crypto.sha256"), "{said}");
         finish();
     }
 

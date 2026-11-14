@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use fennec_syntax::{Diagnostic, Span};
 
-use crate::stdlib::fs::path_text;
+use crate::stdlib::fs::{Databases, NoDatabases, WithDatabases, path_text};
 use crate::value::{Capability, Value};
 
 #[derive(Debug, PartialEq)]
@@ -299,7 +299,7 @@ pub(crate) fn narrowed(
 ) -> Result<Value, Diagnostic> {
     match limited.capability {
         Capability::Process => narrowed_process(limited, method, args, call),
-        Capability::Fs => narrowed_fs(limited, method, args, (real, at), (call, crate::stdlib::fs::beneath)),
+        Capability::Fs => narrowed_fs::<WithDatabases>(limited, method, args, (real, at), call),
         Capability::Net => narrowed_net(limited, method, args, call),
         capability => call(capability, method, args),
     }
@@ -314,7 +314,7 @@ pub(crate) fn narrowed_files(
     (real, at): (bool, Span),
     call: &mut CallWhole<'_>,
 ) -> Result<Value, Diagnostic> {
-    narrowed_fs(limited, method, args, (real, at), (call, crate::stdlib::fs::beneath_files))
+    narrowed_fs::<NoDatabases>(limited, method, args, (real, at), call)
 }
 
 /// `narrowed` for an `Fs`, every method of it: what the export for the two that open a database
@@ -326,7 +326,7 @@ pub(crate) fn narrowed_databases(
     (real, at): (bool, Span),
     call: &mut CallWhole<'_>,
 ) -> Result<Value, Diagnostic> {
-    narrowed_fs(limited, method, args, (real, at), (call, crate::stdlib::fs::beneath))
+    narrowed_fs::<WithDatabases>(limited, method, args, (real, at), call)
 }
 
 /// A method of a narrowed `Process`: it runs only the programs it was narrowed to.
@@ -367,10 +367,6 @@ pub(crate) fn narrowed_process(
     }
 }
 
-/// What a narrowed `Fs` does for a path beneath a folder it reaches: `fs::beneath`, or the form
-/// of it that opens no database.
-type Beneath = fn(&str, (&str, &std::path::Path), &str, &[Value], Span) -> Result<Value, Diagnostic>;
-
 /// The methods of an `Fs` that change what's on the disk, which one narrowed with `read_only`
 /// refuses. `_sqlite_open` is let through, to open its database for reading only.
 const FS_WRITES: [&str; 5] = ["write_text", "write_bytes", "make_dir", "remove", "_create"];
@@ -382,12 +378,14 @@ fn finishes_a_written_file(method: &str, args: &[Value]) -> bool {
     method == "_finish" && args.first().is_some_and(crate::stdlib::fs::written)
 }
 
-fn narrowed_fs(
+/// A method of a narrowed `Fs`, which opens databases or not as `D` says: compiled once each
+/// way, so the one that opens none names nothing of SQLite's.
+fn narrowed_fs<D: Databases>(
     limited: &Rc<Limited>,
     method: &str,
     args: &[Value],
     (real, at): (bool, Span),
-    (call, beneath_folder): (&mut CallWhole<'_>, Beneath),
+    call: &mut CallWhole<'_>,
 ) -> Result<Value, Diagnostic> {
     if method == "read_only" {
         let mut allowed = limited.allowed.clone();
@@ -447,7 +445,8 @@ fn narrowed_fs(
     if let Some(folder) = reaching {
         if real {
             let paths: Vec<Value> = args.iter().map(path_text).collect();
-            return beneath_folder(folder, (&full, &beneath(&full, folder)), method, &paths, at);
+            let place = (full.as_str(), beneath(&full, folder));
+            return crate::stdlib::fs::beneath_with::<D>(folder, (place.0, &place.1), (method, &paths), at);
         }
         return call(Capability::Fs, method, args);
     }

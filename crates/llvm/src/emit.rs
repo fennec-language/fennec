@@ -1601,6 +1601,15 @@ impl Emit<'_, '_, '_> {
         self.start_block(&label);
         for local in short {
             let kind = self.kinds.get(local).cloned().unwrap_or(Kind::Unit);
+            if self.owns_inline(LocalId(local)) {
+                let slot = self.slot(LocalId(local));
+                self.release_inline(&kind, &slot);
+                if self.checks_proofs() {
+                    let zero = self.zero_line(&kind, &slot);
+                    self.line(&zero);
+                }
+                continue;
+            }
             let (held, slot, text) = (self.temp(), self.slot(LocalId(local)), self.text_of(&kind));
             self.line(&format!("{held} = load {text}, ptr {slot}"));
             self.release_kind(&held, &kind);
@@ -3491,6 +3500,14 @@ impl Emit<'_, '_, '_> {
     fn let_go_after(&mut self, inst: &InstKind) {
         for local in self.let_go_of(self.at, inst) {
             let kind = self.kinds.get(local.0).cloned().unwrap_or(Kind::Unit);
+            // A struct or an enum held in place lets go of each block it holds, where it is.
+            if self.owns_inline(local) {
+                let slot = self.slot(local);
+                self.release_inline(&kind, &slot);
+                let zero = self.zero_line(&kind, &slot);
+                self.line(&zero);
+                continue;
+            }
             let (held, slot, text) = (self.temp(), self.slot(local), self.text_of(&kind));
             self.line(&format!("{held} = load {text}, ptr {slot}"));
             self.line(&format!("store {text} zeroinitializer, ptr {slot}"));
@@ -3533,7 +3550,10 @@ impl Emit<'_, '_, '_> {
         }
         let mut let_go = Vec::new();
         for local in done_with {
-            if self.owns(local) && self.known.moves(local) && !writes.contains(&local) {
+            if (self.owns(local) || self.owns_inline(local))
+                && self.known.moves(local)
+                && !writes.contains(&local)
+            {
                 let_go.push(local);
             }
         }
@@ -3585,7 +3605,7 @@ impl Emit<'_, '_, '_> {
         }
         let eligible = |at: usize| {
             at >= function.params
-                && self.owns(LocalId(at))
+                && (self.owns(LocalId(at)) || self.owns_inline(LocalId(at)))
                 && !untracked.contains(&at)
                 && !leaned_on.contains(&at)
                 && !self.on_crash.contains(&at)
@@ -3628,7 +3648,27 @@ impl Emit<'_, '_, '_> {
     /// In a build that checks proofs, ends the program unless a local thought empty is.
     fn check_empty(&mut self, at: usize, proof: &str) {
         let kind = self.kinds.get(at).cloned().unwrap_or(Kind::Unit);
-        if !self.checks_proofs() || self.text_of(&kind) != "ptr" {
+        if !self.checks_proofs() {
+            return;
+        }
+        // One held in place is empty when every word of it is zero, as letting go of it leaves it.
+        if self.owns_inline(LocalId(at)) {
+            let slot = self.slot(LocalId(at));
+            let mut any = "0".to_owned();
+            for word in 0..kind.size(self.module.layouts) / 8 {
+                let (place, held, either) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{place} = getelementptr inbounds i8, ptr {slot}, i64 {}", word * 8));
+                self.line(&format!("{held} = load i64, ptr {place}"));
+                self.line(&format!("{either} = or i64 {any}, {held}"));
+                any = either;
+            }
+            let full = self.temp();
+            self.line(&format!("{full} = icmp ne i64 {any}, 0"));
+            let span = self.here_span();
+            self.proof_held(&full, proof, span);
+            return;
+        }
+        if self.text_of(&kind) != "ptr" {
             return;
         }
         let (held, full, slot) = (self.temp(), self.temp(), self.slot(LocalId(at)));

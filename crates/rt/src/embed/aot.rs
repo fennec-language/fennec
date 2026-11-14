@@ -514,14 +514,51 @@ pub(super) fn audit_at_the_end(state: &mut State) {
     // A check of the check: under `FENNEC_AUDIT_SELFTEST`, a block is made here that nothing
     // holds, which the audit has to find. What runs every program audited runs this first, so an
     // audit that finds nothing because it does nothing can't pass for a clean one.
-    if std::env::var_os("FENNEC_AUDIT_SELFTEST").is_some() {
-        let left = vec![1, state.tables.str_shape, 0, 0, 0, 0].into_boxed_slice();
-        let _ = state.heap.insert(left);
+    if selftest() == Some(Selftest::AtTheEnd) {
+        leave_a_block(state);
     }
     let said = heap::audit::audit(state, &[]).said();
     if !said.is_empty() {
         let _ = std::io::stderr().write_all(said.as_bytes());
         AUDIT_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Which block the audit's check of itself leaves for it to find, under `FENNEC_AUDIT_SELFTEST`.
+#[cfg(feature = "audit")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Selftest {
+    /// One, on the program's own thread, as the run ends.
+    AtTheEnd,
+    /// One for every round a server serves, on the worker that served it: `=rounds`. A program
+    /// can't leave a block itself, so this is the only server there is that leaks one a request.
+    EachRound,
+}
+
+/// What `FENNEC_AUDIT_SELFTEST` asks for, in a run under `FENNEC_AUDIT`.
+#[cfg(feature = "audit")]
+fn selftest() -> Option<Selftest> {
+    static ASKED: std::sync::OnceLock<Option<Selftest>> = std::sync::OnceLock::new();
+    *ASKED.get_or_init(|| {
+        std::env::var_os("FENNEC_AUDIT")?;
+        let asked = std::env::var_os("FENNEC_AUDIT_SELFTEST")?;
+        Some(if asked == "rounds" { Selftest::EachRound } else { Selftest::AtTheEnd })
+    })
+}
+
+/// Makes a block, a string's, that nothing holds.
+#[cfg(feature = "audit")]
+fn leave_a_block(state: &mut State) {
+    let left = vec![1, state.tables.str_shape, 0, 0, 0, 0].into_boxed_slice();
+    let _ = state.heap.insert(left);
+}
+
+/// A served round has ended on this worker: under `FENNEC_AUDIT_SELFTEST=rounds` it leaves a
+/// block behind, as a round that lost an owner would.
+#[cfg(all(feature = "audit", any(test, feature = "threads")))]
+pub(super) fn round_ended() {
+    if selftest() == Some(Selftest::EachRound) {
+        with(leave_a_block);
     }
 }
 
@@ -561,7 +598,8 @@ pub(super) fn worker_stopped_serving() {
         if std::env::var_os("FENNEC_AUDIT").is_some() {
             let said = heap::audit::audit(state, &[]).said();
             if !said.is_empty() {
-                let said = format!("heap audit: a worker that stopped serving was left holding blocks\n{said}");
+                let said =
+                    format!("heap audit: a worker that stopped serving was left holding blocks\n{said}");
                 let _ = std::io::stderr().write_all(said.as_bytes());
                 AUDIT_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
             }

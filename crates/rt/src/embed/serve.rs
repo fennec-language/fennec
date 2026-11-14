@@ -936,7 +936,10 @@ impl Io {
             {
                 return 0;
             }
-            handler(conn)
+            let ended = handler(conn);
+            #[cfg(feature = "audit")]
+            super::aot::round_ended();
+            ended
         });
         if let Ok(task) = made {
             here.served.connections += 1;

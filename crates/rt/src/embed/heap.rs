@@ -110,10 +110,12 @@ pub(crate) struct Heap {
     /// Whether `counts` is kept: under `FENNEC_COUNTS`, which reports it, after `count_allocations`,
     /// and in tests.
     counting: bool,
-    /// In a program built to trace what it costs, the same for each place in its source, and the
-    /// place native code said it's at last. Empty otherwise.
-    pub(super) sites: HashMap<u32, Counts>,
+    /// In a program built to trace what it costs, the same for each place in its source and the
+    /// kind of thread it ran on, and the place native code said it's at last. Empty otherwise.
+    pub(super) sites: Sites,
     site: Option<u32>,
+    /// On a worker in a program built to trace, where it keeps `sites` for the run's report.
+    shared_sites: Option<std::sync::Arc<std::sync::Mutex<Sites>>>,
     /// Where each shape's blocks hold addresses, by the shape's number.
     plans: Vec<super::plans::Plan>,
     /// Where each kind of list item laid out in place holds addresses, by the kind's number. A
@@ -308,6 +310,71 @@ impl Counts {
         self.copied_bytes += bytes;
         self.largest_copy = self.largest_copy.max(bytes);
     }
+}
+
+/// Which kind of thread a place's cost was counted on, for `fennec dev trace` to say. A server's
+/// cost is in its workers, and a program's in its tasks and ranges, as much as on its own thread.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum RanOn {
+    /// The program's own thread, running `main`.
+    #[default]
+    Main,
+    /// A task `launch` started.
+    Task,
+    /// A worker running a `parallel` range, or a job from the pool.
+    Parallel,
+    /// A worker serving a server's connections.
+    Server,
+}
+
+impl RanOn {
+    /// Every kind, in the order of their numbers.
+    const ALL: [RanOn; 4] = [RanOn::Main, RanOn::Task, RanOn::Parallel, RanOn::Server];
+
+    /// The number a traced run writes for it.
+    pub fn number(self) -> u64 {
+        match self {
+            RanOn::Main => 0,
+            RanOn::Task => 1,
+            RanOn::Parallel => 2,
+            RanOn::Server => 3,
+        }
+    }
+
+    /// The kind a traced run wrote as `number`.
+    pub fn from_number(number: u64) -> Option<RanOn> {
+        RanOn::ALL.into_iter().find(|kind| kind.number() == number)
+    }
+
+    /// Its name in `fennec dev trace --json`.
+    pub fn name(self) -> &'static str {
+        match self {
+            RanOn::Main => "main",
+            RanOn::Task => "task",
+            RanOn::Parallel => "parallel",
+            RanOn::Server => "server",
+        }
+    }
+}
+
+/// What each place in the source cost, on each kind of thread.
+pub(super) type Sites = HashMap<(u32, RanOn), Counts>;
+
+/// Every worker's place by place counts, in a program built to trace what it costs, kept for as
+/// long as the run as `WORKER_COUNTS` are, so the report the main thread writes holds them too.
+static WORKER_SITES: std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<Sites>>>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// What each place cost on every thread: `own`, the main thread's, with every worker's.
+pub(super) fn every_threads_sites(own: &Sites) -> Sites {
+    let mut all = own.clone();
+    let slots = WORKER_SITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for slot in slots.iter() {
+        for (key, counts) in slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter() {
+            all.entry(*key).or_default().add(counts);
+        }
+    }
+    all
 }
 
 /// The shape of a cell: a block holding a `Value` for a boxed value's field.
@@ -790,17 +857,48 @@ impl Heap {
     fn count_allocated(&mut self, bytes: u64) {
         self.counts.allocated(bytes);
         self.publish_counts();
-        if let Some(site) = self.site {
-            self.sites.entry(site).or_default().allocated(bytes);
-        }
+        self.count_at_site(|counts| counts.allocated(bytes));
     }
 
     /// Notes that a shared value of `words` words was copied.
     pub(super) fn copied(&mut self, words: usize) {
         self.counts.copied(words);
         self.publish_counts();
-        if let Some(site) = self.site {
-            self.sites.entry(site).or_default().copied(words);
+        self.count_at_site(|counts| counts.copied(words));
+    }
+
+    /// Counts at the place native code said it's at last, if it said, by the kind of thread this
+    /// is now. A worker's are kept where the run's report reads them, while it runs and after.
+    fn count_at_site(&mut self, count: impl FnOnce(&mut Counts)) {
+        let Some(site) = self.site else { return };
+        let key = (site, self.ran_on());
+        let counts = self.sites.entry(key).or_default();
+        count(counts);
+        let counts = *counts;
+        if self.owner_bits != 0 {
+            let slot = self.shared_sites.get_or_insert_with(|| {
+                let slot = std::sync::Arc::new(std::sync::Mutex::new(Sites::new()));
+                WORKER_SITES
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(std::sync::Arc::clone(&slot));
+                slot
+            });
+            slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, counts);
+        }
+    }
+
+    /// Which kind of thread this heap's is, now: a worker runs ranges, jobs, launched tasks and
+    /// a server's connections in turn, and a launched task is one wherever it runs.
+    fn ran_on(&self) -> RanOn {
+        if super::threads::in_a_task() {
+            RanOn::Task
+        } else if self.owner_bits == 0 {
+            RanOn::Main
+        } else if self.serving {
+            RanOn::Server
+        } else {
+            RanOn::Parallel
         }
     }
 
@@ -2207,5 +2305,57 @@ mod worker_counts_tests {
         go_on.send(()).unwrap();
         worker.join().unwrap();
         assert!(super::worker_counts().allocated_bytes >= before + 13_345);
+    }
+
+    /// What a worker cost at each place reaches the report the main thread writes, while the worker
+    /// still runs and after, by the kind of thread it was: serving a server's connections, or
+    /// running a range.
+    #[test]
+    fn a_workers_places_reach_the_report_by_what_it_was_doing() {
+        use super::{Counts, RanOn, Sites};
+        // Places no other test counts at, as every test's workers share where these are kept.
+        let (serving, ranging) = (4_000_001, 4_000_002);
+        let (counted, wait) = std::sync::mpsc::channel();
+        let (go_on, told) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            super::super::threads::take_index();
+            let mut heap = super::Heap::new(Vec::new());
+            heap.serving = true;
+            heap.trace_at(serving);
+            heap.allocated(40);
+            counted.send(()).unwrap();
+            told.recv().unwrap();
+            heap.serving = false;
+            heap.trace_at(ranging);
+            heap.allocated(16);
+            heap.copied(2);
+        });
+        let at = |site: u32, ran_on: RanOn| {
+            super::every_threads_sites(&Sites::new()).get(&(site, ran_on)).copied()
+        };
+        wait.recv().unwrap();
+        let one = |bytes| Counts { allocations: 1, allocated_bytes: bytes, ..Counts::default() };
+        assert_eq!(at(serving, RanOn::Server), Some(one(40)));
+        go_on.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(at(serving, RanOn::Server), Some(one(40)));
+        let copied = Counts { copies: 1, copied_bytes: 16, largest_copy: 16, ..one(16) };
+        assert_eq!(at(ranging, RanOn::Parallel), Some(copied));
+        assert_eq!(at(serving, RanOn::Parallel), None);
+        assert_eq!(at(ranging, RanOn::Main), None);
+    }
+
+    /// The main thread's places count as its own, and are reported with every worker's.
+    #[test]
+    fn the_main_threads_places_are_its_own() {
+        use super::{RanOn, Sites};
+        let site = 4_000_003;
+        let mut heap = super::Heap::new(Vec::new());
+        heap.trace_at(site);
+        heap.allocated(24);
+        assert_eq!(heap.sites.get(&(site, RanOn::Main)).map(|counts| counts.allocations), Some(1));
+        let all = super::every_threads_sites(&heap.sites);
+        assert_eq!(all.get(&(site, RanOn::Main)).map(|counts| counts.allocated_bytes), Some(24));
+        assert!(!super::every_threads_sites(&Sites::new()).contains_key(&(site, RanOn::Main)));
     }
 }

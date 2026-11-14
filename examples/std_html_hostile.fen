@@ -18,6 +18,9 @@ SHOUTED = "\"><script>alert(1)</script>"
 ENTITY = "&#106;avascript:alert(1)"
 LISTED = "a;javascript:alert(1)"
 RED = "red"
+MAIL = "mailto:fox@den.example"
+NEXT = "https://den.example/next"
+PATH = "/next"
 
 test "between tags and in a quoted attribute, a value stays text"():
     assert (
@@ -149,6 +152,35 @@ test "where escaping isn't enough, the value is refused, naming why"():
     assert (
         made(() => html.render(t"<p title=\"{BAD}")?)
         == "refused: the template ends inside an attribute"
+    )
+
+test "a meta refresh's url is held to http, https or relative, wherever http-equiv is"():
+    said = "a refresh's `url=` has to be `http`, `https` or relative"
+    for page in [
+        made(() => html.render(t"<meta http-equiv=\"refresh\" content=\"0; url={BAD}\">")?),
+        made(() => html.render(t"<meta content=\"0; url={BAD}\" http-equiv=\"Refresh\">")?),
+        made(() => html.render(t"<meta http-equiv=refresh content=\"0;URL='{BAD}'\">")?),
+        made(() => html.render(t"<meta http-equiv=\"REFRESH\" content=\"0, {BAD}\">")?),
+        made(() => html.render(t"<meta http-equiv=\"refresh\" content=\"0; url={MAIL}\">")?),
+    ]:
+        assert page.endswith(said)
+    assert (
+        made(() => html.render(t"<meta http-equiv=\"refresh\" content=\"5; url={NEXT}\">")?)
+        == ("<meta http-equiv=\"refresh\" content=\"5; url=https://den.example/next\">")
+    )
+    assert made(
+        () => html.render(t"<meta http-equiv=\"refresh\" content=\"5; url={PATH}\">")?,
+    ).endswith("/next\">")
+    # Any other meta's content is text, as a description is.
+    assert (
+        made(() => html.render(t"<meta name=\"description\" content=\"{BAD}\">")?)
+        == ("<meta name=\"description\" content=\"javascript:alert(1)\">")
+    )
+    assert (
+        made(() => html.render(t"<meta http-equiv=\"{BAD}\" content=\"0; url=/next\">")?).find(
+            "a `<meta>`'s `http-equiv` says what the page does",
+        )
+        is not None
     )
 
 def main(stdout: Stdout):

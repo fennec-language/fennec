@@ -2598,6 +2598,77 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
     )
 }
 
+/// One write to one entry of a `Table`, a dict or a list that a `shared` value holds, under
+/// `lock ... as ref`: an item's field, a list inside it, the item whole, and a `Table`'s remove and
+/// add. Each is written in the lock's own block and through a `ref self` method, and ends
+/// normally, by failing, and by crashing in a task. What's left is what the writes that ended make
+/// of a plain value, at 40 entries and at 400.
+///
+/// And a write costs the same however much the lock holds: two rounds more of every write copy
+/// exactly as much at 400 entries as at 40. The lock's log can change a `Table`, a list or a dict
+/// it marked where it is, the one item saved, but only when the write asks it for that item. A
+/// `Table`'s writes never did, and nothing called from a lock's block did, so each copied the
+/// whole `Table` or dict: 4.2 MB for these two rounds at 400 entries, where 15 KB is copied now.
+#[test]
+fn a_write_under_a_lock_costs_the_same_however_much_the_lock_holds() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("lock_writes_one_item")?;
+    let program = dir.join("lock_writes_one_item.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/lock_writes_one_item.fen"))?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("lock_writes_one_item"));
+    let output = executable.to_string_lossy().into_owned();
+    // The number after a label in what a run says it copied.
+    let said = |counts: &str, label: &str| -> u64 {
+        counts
+            .split_once(label)
+            .and_then(|(_, after)| after.split(' ').next())
+            .and_then(|number| number.parse().ok())
+            .unwrap_or(u64::MAX)
+    };
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let mut two_rounds_more = Vec::new();
+        for (entries, left) in [("40", "left 8382 228270906"), ("400", "left 84162 617508521")] {
+            let mut copied = Vec::new();
+            for rounds in ["1", "3"] {
+                let ran = Command::new(&executable)
+                    .args([entries, rounds])
+                    .env("FENNEC_COUNTS", "1")
+                    .output_within()?;
+                let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+                if rounds == "3" {
+                    let wanted = format!("wrong 0 kept 60 failed 60 crashed 60\n{left}\n");
+                    assert_eq!(printed, wanted, "{how:?}, {entries} entries");
+                } else {
+                    let ended = printed.starts_with("wrong 0 kept 20 failed 20 crashed 20\n");
+                    assert!(ended, "{how:?}, {entries} entries: {printed}");
+                }
+                let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert!(counts.ends_with(" live 0"), "{how:?}, {entries} entries: {counts}");
+                copied.push((said(counts, "copies "), said(counts, "copied_bytes ")));
+            }
+            let [(first, first_bytes), (third, third_bytes)] = copied[..] else { unreachable!() };
+            two_rounds_more.push((third - first, third_bytes - first_bytes));
+        }
+        assert_eq!(
+            two_rounds_more.first(),
+            two_rounds_more.last(),
+            "{how:?}: what two rounds more copy, and its bytes, at 40 entries and at 400"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A lock on a struct with a list, a dict and a string, changed in place: kept, failed, crashed in
 /// a launched task, and failing on every other parallel worker. Only what a normal end made stays.
 #[test]
@@ -15786,6 +15857,75 @@ def main(net: Net, stdout: Stdout) fails NetError:
     drop(server);
     std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+/// A server can be stopped from inside its program, each way there is. Served from a launched
+/// task, nothing could end it: closing it did nothing, as its listener is with its workers while
+/// it's served and not among the open sockets, and a task told to stop while it served went on
+/// waiting for its server. So a program that served in a task could never end.
+///
+/// - `server.close()` ends a loop over the server, and `serve`, as their docs say: it takes no more
+///   connections, the rounds running finish, and the task goes on past the loop. A task can
+///   close a server `main` serves the same way.
+/// - Failing out of the block that launched the task stops the task, and its server with it.
+/// - So does the block's `stop_after`, when the block ends with the task still serving.
+///
+/// Each program is its own client, and each is built for a heap audit and run under it: it ends
+/// with what it should have printed, nothing live and nothing said. A task prints beside `main`,
+/// so the lines are compared in any order.
+#[test]
+fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("server-stopped-inside")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shapes: [(&str, &[&str]); 5] = [
+        ("server_closed_while_served", &["closed", "hello", "stopped", "the loop ended"]),
+        ("server_served_by_main_closed_by_a_task", &["hello", "stopped", "the loop ended"]),
+        (
+            "http_server_closed_while_served",
+            &["200 hello /burrow", "200 hello /den", "serve returned", "stopped"],
+        ),
+        ("server_stopped_by_a_failed_block", &["200 hello /den", "finished after 1", "stopped"]),
+        ("server_stopped_by_stop_after", &["200 hello /den", "stopped"]),
+    ];
+    for (shape, wanted) in shapes {
+        let program = dir.join(format!("{shape}.fen"));
+        std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+        let executable = dir.join(shape);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_NO_DAEMON", "1")
+            .env_remove("FENNEC_THREADS_RUNTIME")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "16"] {
+            let how = format!("{shape} on {threads} threads");
+            // A server that isn't stopped waits for ever, spending nothing: two minutes by the
+            // clock says so, where these take under a second.
+            let ended = Command::new(&executable)
+                .env("FENNEC_AUDIT", "1")
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .env_remove("FENNEC_AUDIT_SELFTEST")
+                .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+            let (printed, said) =
+                (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+            assert_eq!(ended.status.code(), Some(0), "{how}: {printed}{said}");
+            let mut lines: Vec<&str> = printed.lines().collect();
+            lines.sort_unstable();
+            assert_eq!(lines, wanted, "{how}: {said}");
+            assert!(said.contains(" live 0"), "{how}: {said}");
+            assert!(!said.contains("heap audit"), "{how}: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)
 }
 
 /// Runs the echo server at `executable` under a heap audit on two workers, has it serve five

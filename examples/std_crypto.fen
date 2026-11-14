@@ -1,7 +1,8 @@
 # `std.crypto` hashes text or bytes, signs them with HMAC, and compares secrets in time that
-# doesn't depend on where they differ. Every result is written as lowercase hex. A hash takes its
-# data whole or in chunks, from a list or from an iterator, like a file's chunks as it's read.
-from std.crypto import blake3, derive_key, equal, hmac_sha256, keyed_blake3, sha256
+# doesn't depend on where they differ. Every result is written as lowercase hex, and each hash's
+# `_digest` form gives the digest's own bytes instead. A hash takes its data whole or in chunks,
+# from a list or from an iterator, like a file's chunks as it's read.
+from std.crypto import blake3, blake3_digest, derive_key, equal, hmac_sha256, hmac_sha256_digest, keyed_blake3, keyed_blake3_digest, sha256, sha256_digest
 
 ## A save file with a tag that shows it wasn't edited by hand.
 struct Save:
@@ -46,6 +47,26 @@ test "a hash of chunks is the hash of them joined" for text: str:
     assert blake3(pieces(text, 3)) == blake3(text) and sha256(pieces(text, 5)) == sha256(text)
     assert blake3([text.encode(), text.encode()]) == blake3(text + text)
     assert sha256(list[bytes]()) == sha256("") and blake3(pieces("", 4)) == blake3("")
+
+test "a digest is the hash's own bytes, which the hex form spells" for text: str:
+    assert len(sha256_digest(text)) == 32 and len(blake3_digest(text)) == 32
+    assert sha256_digest(text).hex() == sha256(text) and blake3_digest(text).hex() == blake3(text)
+    assert sha256_digest(text.encode()) == sha256_digest(text)
+    key = derive_key("fennec example 2026-11-14 digests", "a secret")
+    assert keyed_blake3_digest(key, text).hex() == keyed_blake3(key, text)
+    assert hmac_sha256_digest(text, "data").hex() == hmac_sha256(text, "data")
+
+test "a digest takes chunks, as the hex form does" for text: str:
+    assert sha256_digest(pieces(text, 5)) == sha256_digest(text)
+    assert blake3_digest([text.encode(), text.encode()]) == blake3_digest(text + text)
+    assert sha256_digest(list[str]()) == sha256_digest("")
+
+test "HMAC-SHA256's digest matches RFC 4231, and keys another HMAC as bytes":
+    signed = hmac_sha256_digest("Jefe", "what do ya want for nothing?")
+    assert signed.hex() == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+    # Keying with the digest's 32 bytes is not keying with its 64 hex digits.
+    assert hmac_sha256_digest(signed, "next") != hmac_sha256_digest(signed.hex(), "next")
+    assert hmac_sha256_digest(signed, "next").hex() == hmac_sha256(signed, "next")
 
 test "equal compares every byte":
     assert equal("secret", "secret") and not equal("secret", "secreT")

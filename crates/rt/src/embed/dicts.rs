@@ -1282,6 +1282,21 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
     u64::try_from(state.heap.insert(copy)).ok()
 }
 
+/// The dict or set to take a key out of. A shared one is copied only when the key is there: one
+/// without it is left as it is, with every owner where it was, as there's nothing to take and the
+/// call may be about to fail.
+fn to_take_from(state: &mut State, at: u64, key: &[u64]) -> u64 {
+    let Some(block) = state.heap.block(at) else { return at };
+    if state.heap.is_alone(at, block) || super::lists::marked_alone(block) {
+        return at;
+    }
+    let found = layout(state, block).is_some_and(|layout| {
+        let hash = hash_key(state, layout.key, key, Hashing::of(block));
+        matches!(find(state, block, layout, key, hash), Probe::Found(_))
+    });
+    if found { unshared(state, at).unwrap_or(0) } else { at }
+}
+
 /// What taking a key out of a dict or set found.
 enum Taken {
     /// It was there, with this value, whose owner goes to the caller.
@@ -1369,7 +1384,7 @@ fn let_go_of_key(state: &mut State, at: u64, key: &[u64], whose: Key) {
 
 fn remove_words(set: i64, key: &[u64], whose: Key, must: i8, (start, end): (i64, i64)) -> i64 {
     attempt(|state: &mut State| {
-        let at = u64::try_from(set).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
+        let at = u64::try_from(set).map_or(0, |at| to_take_from(state, at, key));
         let removed = match take_key(state, at, key) {
             Taken::Missing if must != 0 => {
                 let key_word = state
@@ -1402,11 +1417,12 @@ pub extern "C" fn pop(dict: i64, key: i64, start: i64, end: i64) -> i64 {
 }
 
 fn pop_words(dict: i64, key: &[u64], whose: Key, (start, end): (i64, i64)) -> i64 {
-    // A key that isn't there fails, and still gives the dict back: native code stores what this
-    // gives back as the dict before it looks at whether it failed, and 0 there would lose the
-    // dict and all it holds.
+    // A key that isn't there fails, and gives back the dict it was given, untouched even when
+    // it's shared. Native code writes what this gives back as the dict only once it knows the call
+    // worked, and after a failure still holds the dict it gave: a copy made here would have
+    // moved the caller's owner to it.
     let (popped, failure) = with(|state| {
-        let at = u64::try_from(dict).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
+        let at = u64::try_from(dict).map_or(0, |at| to_take_from(state, at, key));
         let held = i64::try_from(at).unwrap_or(0);
         let popped = match take_key(state, at, key) {
             Taken::Removed(value) => {

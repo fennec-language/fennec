@@ -66,7 +66,7 @@ impl Interp {
         // A generic type's value prints with no type arguments, as it's written, `Holder(item=3)`,
         // whatever `T` is: decided 2026-11-14, after the compiled program was found printing
         // `Holder[int](item=3)` but `Holder(item="x")`.
-        if self.program.types.get(instance.ty.as_str()).is_none() && !is_core_error(&instance.ty) {
+        if !self.program.types.contains_key(instance.ty.as_str()) && !is_core_error(&instance.ty) {
             return unsupported(format!("printing a {}", instance.ty));
         }
         let name = match &instance.case {

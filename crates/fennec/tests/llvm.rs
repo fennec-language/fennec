@@ -934,6 +934,122 @@ a teller long enough for a block told
 2001 4
 "#;
 
+/// The rest of the rows Fable's matrix was missing, for structs held in place: one holding a
+/// `shared` handle in a list, as a dict's value, in a message and in a capture, each copy writing
+/// the one list, which is freed once; one holding a capability, whole and narrowed with `only`;
+/// one holding an iterator; and a list of them sorted where it is by a key. It prints the same
+/// with every type boxed, and ends with nothing held.
+#[test]
+fn a_struct_in_place_holds_a_handle_a_capability_and_an_iterator_as_it_would_boxed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    same_in_place_and_boxed("rest_in_place", REST_IN_PLACE, REST_IN_PLACE_PRINTS)
+}
+
+const REST_IN_PLACE: &str = r#"# The rest of the rows Fable's matrix was missing, for structs now held in place: one holding a
+# shared handle in a list, a dict, a message and a capture, one holding a capability whole and
+# narrowed, one holding an iterator, and a list of them sorted where it is by a key.
+
+from std.concurrent import Closed, channel
+
+struct Holder:
+    audit: shared list[str]
+    label: str
+    tags: dict[str, int]
+
+struct Files:
+    fs: Fs
+    root: str
+    tags: dict[str, int]
+
+struct Walk:
+    numbers: Iterator[int]
+    name: str
+
+struct Item:
+    id: int
+    name: str
+    counts: dict[str, int]
+
+def item(n: int) -> Item:
+    return Item(id=n, name=f"a name long enough for a block {n}", counts={f"k{n}": n})
+
+def holding(log: shared list[str], n: int) -> Holder:
+    return Holder(audit=log, label=f"a label long enough for a block {n}", tags={f"t{n}": n})
+
+def write(holder: Holder, line: str):
+    lock holder.audit as ref lines:
+        lines.append(line)
+    return
+
+def size(holder: Holder) -> int:
+    lock holder.audit as lines:
+        return len(lines)
+
+def upto(limit: int) -> Iterator[int]:
+    for n in range(limit):
+        yield n * n
+
+def total(walk: Walk) -> int:
+    mut added = 0
+    for n in walk.numbers:
+        added += n
+    return added
+
+def looked(files: Files, path: str) -> str:
+    found = files.fs.exists(path) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(
+    ): return f"{files.root} can't look at {path}"
+    return f"{files.root} sees {path}: {found}"
+
+def main(stdout: Stdout, fs: Fs):
+    noise = [item(n + 50) for n in range(4)]
+    shared log = list[str]()
+    # A shared handle in a struct, in a list and as a dict's value: every copy writes the one list.
+    holders = [holding(log, n) for n in range(3)]
+    by_label = {holder.label: holder for holder in holders}
+    write(holders[1], "through the list")
+    write(by_label["a label long enough for a block 2"], "through the dict")
+    stdout.print(size(holders[0]), holders[2] == by_label["a label long enough for a block 2"], len(by_label))
+    # In a message, and in a capture.
+    with channel[Holder](size=2) as box:
+        box.sender().send(holders[0]) except Closed():
+            stdout.print("closed")
+        got = box.receive() else holding(log, 9)
+        write(got, "through the message")
+        stdout.print(got.label, size(got))
+    held = holders[1]
+    count = () => size(held)
+    write(held, "beside the capture")
+    stdout.print(count(), held.tags)
+    # A capability, whole and narrowed.
+    whole = Files(fs=fs, root="a root long enough for a block: everything", tags={"w": 1})
+    narrow = Files(fs=fs.only("saves"), root="a root long enough for a block: saves", tags={"n": 2})
+    kept = [whole, narrow]
+    stdout.print(looked(kept[0], "no-such-file-here"))
+    stdout.print(looked(kept[1], "no-such-file-here"))
+    # An iterator.
+    walk = Walk(numbers=upto(5), name="a walk long enough for a block of its own")
+    stdout.print(walk.name, total(walk))
+    # Sorted where it is, by a key.
+    mut items = [item(n) for n in [3, 1, 2]]
+    items.sort(key=it => it.name)
+    stdout.print([it.id for it in items], items[0] == item(1), items[0])
+    items.sort(key=it => -it.id)
+    stdout.print([it.id for it in items], len(noise))
+    return
+"#;
+
+const REST_IN_PLACE_PRINTS: &str = r#"2 True 3
+a label long enough for a block 0 3
+3 {"t1": 1}
+a root long enough for a block: everything sees no-such-file-here: False
+a root long enough for a block: saves can't look at no-such-file-here
+a walk long enough for a block of its own 30
+[1, 2, 3] True Item(id=1, name="a name long enough for a block 1", counts={"k1": 1})
+[3, 2, 1] 4
+"#;
+
 /// A result kept in place, its value or its error in the caller's slot, for every kind of value:
 /// nothing, an int, a long text, a list, a dict, an optional, a struct in place and one in a block,
 /// on success and on failure, `fails A | B`, and a failure passed up through three `?`. Called
@@ -24849,7 +24965,7 @@ fn an_error_and_a_struct_holding_a_str_optional_are_held_one_way_everywhere() ->
     )?;
     assert_eq!(
         counts_of("optional_texts_one_way_counts", OPTIONAL_TEXTS_ONE_WAY)?,
-        "copies 29 copied_bytes 1968 largest_copy 88 allocations 94 allocated_bytes 6440 live 0"
+        "copies 21 copied_bytes 1936 largest_copy 320 allocations 72 allocated_bytes 6720 live 0"
     );
     Ok(())
 }

@@ -830,28 +830,34 @@ pub extern "C" fn find_slice(dict: i64, text: i64, from: i64, to: i64) -> i64 {
 /// `value` had, and gives back the dict's, like `set`. A string for the key is only made when
 /// the key is new.
 pub extern "C" fn add_slice(dict: i64, text: i64, from: i64, to: i64, value: i64) -> i64 {
-    with(|state| {
-        let (bytes, chars) = slice_of(state, text, from, to)?;
-        let at = u64::try_from(dict).ok()?;
-        let block = state.heap.block(at)?;
-        let (key_word, value_word) = kind(state, block)?;
-        if !matches!(key_word, Word::Str | Word::Text) || matches!(value_word, Word::InPlace(_)) {
-            return None;
+    with(|state| add_by_slice(state, dict, (text, from, to), value)).unwrap_or(dict)
+}
+
+/// `add_slice`, `None` having changed nothing for anything but a dict of string keys.
+#[inline]
+fn add_by_slice(state: &mut State, dict: i64, (text, from, to): (i64, i64, i64), value: i64) -> Option<i64> {
+    let (bytes, chars) = slice_of(state, text, from, to)?;
+    let at = u64::try_from(dict).ok()?;
+    let block = state.heap.block(at)?;
+    let (key_word, value_word) = kind(state, block)?;
+    if !matches!(key_word, Word::Str | Word::Text) || matches!(value_word, Word::InPlace(_)) {
+        if matches!(value_word, Word::InPlace(_)) {
+            doesnt_fit(SET_AS_A_WORD);
         }
-        let unique = state.heap.is_alone(at, block);
-        if let (true, (Probe::Found(entry), _)) = (unique, find_text(state, block, (&bytes, chars))?) {
-            let word = value_place(block, layout(state, block)?, entry)?;
-            let value = u64::from_ne_bytes(value.to_ne_bytes());
-            let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, value);
-            if value_word.owned() {
-                release(state, old);
-            }
-            return Some(dict);
+        return None;
+    }
+    let unique = state.heap.is_alone(at, block);
+    if let (true, (Probe::Found(entry), _)) = (unique, find_text(state, block, (&bytes, chars))?) {
+        let word = value_place(block, layout(state, block)?, entry)?;
+        let value = u64::from_ne_bytes(value.to_ne_bytes());
+        let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, value);
+        if value_word.owned() {
+            release(state, old);
         }
-        let key = new_key(state, key_word, (&bytes, chars));
-        set_words(state, dict, &key, value.cast_unsigned())
-    })
-    .unwrap_or(dict)
+        return Some(dict);
+    }
+    let key = new_key(state, key_word, (&bytes, chars));
+    set_words(state, dict, &key, value.cast_unsigned())
 }
 
 /// A new string key's words for a dict holding this kind of key, made from its bytes: its
@@ -992,58 +998,66 @@ pub extern "C" fn find_header(dict: i64, a: u64, b: u64, c: u64) -> i64 {
 pub extern "C" fn set_header(dict: i64, a: u64, b: u64, c: u64, value: i64) -> i64 {
     super::made(
         "fennec_dict_set_header",
-        with(|state| {
-            let header = [a, b, c];
-            let at = u64::try_from(dict).ok()?;
-            let block = state.heap.block(at)?;
-            let (key_word, value_word) = kind(state, block)?;
-            if key_word == Word::Text {
-                // Both of these refuse a dict that holds its values in place.
-                let value = value.cast_unsigned();
-                return set_inline(state, dict, header, value)
-                    .or_else(|| set_words(state, dict, &header, value));
-            }
-            let (bytes, chars) = header_text(state, &header)?;
-            // One word can't be written over a value held in place.
-            if key_word != Word::Str || matches!(value_word, Word::InPlace(_)) {
-                return None;
-            }
-            let owned = super::text::block_of(&header);
-            if let (Some(&1), (Probe::Found(entry), _)) =
-                (block.first(), find_text(state, block, (&bytes, chars))?)
-            {
-                let word = value_place(block, layout(state, block)?, entry)?;
-                let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, value.cast_unsigned());
-                if value_word.owned() {
-                    release(state, old);
-                }
-                if let Some(key) = owned {
-                    release(state, key);
-                }
-                return Some(dict);
-            }
-            let key = match owned {
-                Some(key) => key.cast_signed(),
-                None => text_from_bytes(state, &bytes, chars),
-            };
-            set_in(state, dict, key, value)
-        })
-        .unwrap_or(dict),
+        with(|state| set_by_header(state, dict, [a, b, c], value)).unwrap_or(dict),
     )
+}
+
+/// `set_header`, `None` having changed nothing for anything but a dict of string keys.
+#[inline]
+fn set_by_header(state: &mut State, dict: i64, header: [u64; 3], value: i64) -> Option<i64> {
+    let at = u64::try_from(dict).ok()?;
+    let block = state.heap.block(at)?;
+    let (key_word, value_word) = kind(state, block)?;
+    if key_word == Word::Text {
+        // Both of these refuse a dict that holds its values in place.
+        let value = value.cast_unsigned();
+        return set_inline(state, dict, header, value).or_else(|| set_words(state, dict, &header, value));
+    }
+    let (bytes, chars) = header_text(state, &header)?;
+    // One word can't be written over a value held in place.
+    if key_word != Word::Str || matches!(value_word, Word::InPlace(_)) {
+        if matches!(value_word, Word::InPlace(_)) {
+            doesnt_fit(SET_AS_A_WORD);
+        }
+        return None;
+    }
+    let owned = super::text::block_of(&header);
+    if let (Some(&1), (Probe::Found(entry), _)) = (block.first(), find_text(state, block, (&bytes, chars))?) {
+        let word = value_place(block, layout(state, block)?, entry)?;
+        let old = std::mem::replace(state.heap.block_mut(at)?.get_mut(word)?, value.cast_unsigned());
+        if value_word.owned() {
+            release(state, old);
+        }
+        if let Some(key) = owned {
+            release(state, key);
+        }
+        return Some(dict);
+    }
+    let key = match owned {
+        Some(key) => key.cast_signed(),
+        None => text_from_bytes(state, &bytes, chars),
+    };
+    set_in(state, dict, key, value)
 }
 
 /// `dict.pop(key)` for a dict of string keys, the key given as its header's words, as `pop`
 /// does it. The key's owner stays with the caller.
 pub extern "C" fn pop_header(dict: i64, a: u64, b: u64, c: u64, start: i64, end: i64) -> i64 {
+    pop_by_header::<false>(dict, [a, b, c], (start, end))
+}
+
+/// `pop_words` by a string key given as its header's words, for either kind of call.
+#[inline]
+fn pop_by_header<const IN_PLACE: bool>(dict: i64, [a, b, c]: [u64; 3], span: (i64, i64)) -> i64 {
     let held_as_headers = with(|state| {
         let block = state.heap.block(u64::try_from(dict).unwrap_or(0));
         block.and_then(|block| kind(state, block)).is_some_and(|(key, _)| key == Word::Text)
     });
     if held_as_headers {
-        return pop_words(dict, &[a, b, c], Key::Lent, (start, end));
+        return pop_words::<IN_PLACE>(dict, &[a, b, c], Key::Lent, span);
     }
     let key = super::text::block(a, b, c);
-    let popped = pop(dict, key, start, end);
+    let popped = pop_words::<IN_PLACE>(dict, &[key.cast_unsigned()], Key::HandedOver, span);
     with(|state| release(state, key.cast_unsigned()));
     popped
 }
@@ -1163,9 +1177,12 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     let layout = layout(state, block)?;
     // A key of the wrong width changes nothing: it's refused before the dict grows or a slot
     // is taken.
-    // So is a value of one word for a dict that holds its values in place, whose words these
-    // setters don't know the owners in.
+    // A value of one word for a dict that holds its values in place is the wrong call, which
+    // stops the program: these setters don't know the owners in a value's words.
     if key.len() + 2 != layout.width() || layout.in_place() {
+        if layout.in_place() {
+            doesnt_fit(SET_AS_A_WORD);
+        }
         return None;
     }
     if super::lists::marked_alone(block)
@@ -1425,6 +1442,24 @@ fn to_take_from(state: &mut State, at: u64, key: &[u64]) -> u64 {
     if found { unshared(state, at).unwrap_or(0) } else { at }
 }
 
+/// A call for one kind of dict was made on the other. Native code has one set of calls for a
+/// value that's a word and another for a value held in place, and picks by the dict's type. It's a bug in Fennec, in what native code
+/// chose, so the program stops: going on would lose the write and every owner it was handed, or
+/// hand back a value where the caller doesn't look, with nothing said.
+#[cold]
+#[inline(never)]
+fn doesnt_fit(what: &str) {
+    // The fuzzer hands made-up dicts on purpose, and goes on.
+    if !super::made_up_inputs() {
+        super::heap::runtime_bug(what);
+    }
+}
+
+const SET_AS_A_WORD: &str = "a dict that holds its values in place was set a value of one word";
+const SET_IN_PLACE: &str = "a dict of one-word values was set a value held in place";
+const TAKEN_AS_A_WORD: &str = "a value was taken as one word out of a dict that holds its values in place";
+const TAKEN_IN_PLACE: &str = "a value was taken as one held in place out of a dict of one-word values";
+
 /// What taking a key out of a dict or set found.
 enum Taken {
     /// It was there, with this value, whose owner goes to the caller.
@@ -1432,14 +1467,20 @@ enum Taken {
     Missing,
     /// What it was given isn't a dict or set.
     NotOne,
+    /// The call isn't one for a dict that holds its values this way, where that goes on at all.
+    DoesntFit,
 }
 
-/// Takes a key, given as its words, out of a dict or set already owned once.
-fn take_key(state: &mut State, at: u64, key: &[u64]) -> Taken {
-    take(state, at, key).unwrap_or(Taken::NotOne)
+/// Takes a key, given as its words, out of a dict or set already owned once: for a call that
+/// takes out a value held in place when `IN_PLACE`, and one that's a word otherwise. Which it is
+/// is known where each export is written, so it's a constant of the code and no argument: the
+/// calls for a word are then the code they were, with the other kind's as a way out of them
+/// that a dict of words never takes.
+fn take_key<const IN_PLACE: bool>(state: &mut State, at: u64, key: &[u64]) -> Taken {
+    take::<IN_PLACE>(state, at, key).unwrap_or(Taken::NotOne)
 }
 
-fn take(state: &mut State, at: u64, key: &[u64]) -> Option<Taken> {
+fn take<const IN_PLACE: bool>(state: &mut State, at: u64, key: &[u64]) -> Option<Taken> {
     let block = state.heap.block(at)?;
     let layout = layout(state, block)?;
     let hash = hash_key(state, layout.key, key, Hashing::of(block));
@@ -1452,6 +1493,15 @@ fn take(state: &mut State, at: u64, key: &[u64]) -> Option<Taken> {
     // the owners they hold: there's no one word to give back.
     let mut holding = Vec::new();
     let value = match value_element(state, layout.value) {
+        // Before anything changes: the value would come out where this call's caller doesn't look.
+        Some(_) if !IN_PLACE => {
+            doesnt_fit(TAKEN_AS_A_WORD);
+            return Some(Taken::DoesntFit);
+        }
+        None if IN_PLACE => {
+            doesnt_fit(TAKEN_IN_PLACE);
+            return Some(Taken::DoesntFit);
+        }
         Some(element) => {
             let fits = value_buffer_of(state, |buffer| {
                 for (kept, word) in buffer.iter().zip(value_words(layout, removed)) {
@@ -1534,7 +1584,7 @@ fn let_go_of_key(state: &mut State, at: u64, key: &[u64], whose: Key) {
 fn remove_words(set: i64, key: &[u64], whose: Key, must: i8, (start, end): (i64, i64)) -> i64 {
     attempt(|state: &mut State| {
         let at = u64::try_from(set).map_or(0, |at| to_take_from(state, at, key));
-        let removed = match take_key(state, at, key) {
+        let removed = match take_key::<false>(state, at, key) {
             Taken::Missing if must != 0 => {
                 let key_word = state
                     .heap
@@ -1546,7 +1596,7 @@ fn remove_words(set: i64, key: &[u64], whose: Key, must: i8, (start, end): (i64,
                 Err(Diagnostic::new(message, span(start, end)))
             }
             Taken::NotOne => Ok(set),
-            Taken::Removed(_) | Taken::Missing => Ok(i64::try_from(at).unwrap_or(0)),
+            Taken::Removed(_) | Taken::Missing | Taken::DoesntFit => Ok(i64::try_from(at).unwrap_or(0)),
         };
         let_go_of_key(state, at, key, whose);
         removed
@@ -1556,27 +1606,28 @@ fn remove_words(set: i64, key: &[u64], whose: Key, must: i8, (start, end): (i64,
 thread_local! {
     /// The value the last `pop` took out of a dict, for native code to pick up.
     static POPPED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    /// The words of a value held in place on its way into a dict or out of one: native code puts
-    /// them here before `fennec_dict_set_words`, and finds them here after `fennec_dict_pop_words`.
-    /// The runtime reads only its own memory, so a value of several words can't come as a pointer
-    /// into native code's. Each word is a cell, as native code writes them where Rust can't see.
-    static VALUE: std::cell::OnceCell<Box<[std::cell::Cell<u64>]>> = const { std::cell::OnceCell::new() };
 }
 
-/// Does `with` this thread's buffer for a value held in place, made the first time it's wanted: as
-/// long as the widest kind of item this run has, so any value a dict holds in place fits.
+/// Does `with` this run's buffer on this thread for a value held in place on its way into a dict
+/// or out of one: native code puts the value's words here before `fennec_dict_set_words`, and
+/// finds them here after `fennec_dict_pop_words`. The runtime reads only its own memory, so a
+/// value of several words can't come as a pointer into native code's. Each word is a cell, as
+/// native code writes them where Rust can't see.
+///
+/// It's the run's own, kept with the runtime's state, and made the first time it's wanted: as
+/// long as the widest kind of item this run has, so any value one of its dicts holds in place
+/// fits. Native code writes a value's words before the runtime can look at how wide it is, so a
+/// buffer left by another run, of a narrower kind, would be written past its end.
 fn value_buffer_of<T>(state: &State, with: impl FnOnce(&[std::cell::Cell<u64>]) -> T) -> T {
-    VALUE.with(|value| {
-        let buffer = value.get_or_init(|| {
-            let widest = state.tables.elements.iter().map(|element| element.words()).max().unwrap_or(0);
-            (0..widest.max(1)).map(|_| std::cell::Cell::new(0)).collect()
-        });
-        with(buffer)
-    })
+    let buffer = state.dict_value.get_or_init(|| {
+        let widest = state.tables.elements.iter().map(|element| element.words()).max().unwrap_or(0);
+        (0..widest.max(1)).map(|_| std::cell::Cell::new(0)).collect()
+    });
+    with(buffer)
 }
 
-/// A dict's value in place is wider than this thread's buffer, which is as long as the widest kind
-/// of item the run started with. Every dict native code makes names one of those kinds, so this is
+/// A dict's value in place is wider than this run's buffer, which is as long as the widest kind
+/// of item the run had when the buffer was first wanted. Every dict native code makes names one of those kinds, so this is
 /// a bug in Fennec: stopping says so, where going on would lose a write or hand back half a value.
 fn too_wide_for_the_buffer() {
     // The fuzzer hands made-up dicts on purpose, and goes on.
@@ -1592,8 +1643,9 @@ fn buffered(state: &State, count: usize) -> Option<Vec<u64>> {
     })
 }
 
-/// `fennec_dict_value_words()`: where this thread's buffer for a value held in place is. It never
-/// moves, so native code may ask once and keep the answer for as long as the thread runs.
+/// `fennec_dict_value_words()`: where this thread's buffer for a value held in place is, in this
+/// run. It never moves while the run goes on, so native code may ask once on each thread and keep
+/// the answer. A thread's next run has a buffer of its own.
 pub extern "C" fn value_buffer() -> i64 {
     with(|state| value_buffer_of(state, |buffer| i64::try_from(buffer.as_ptr().addr()).unwrap_or(0)))
 }
@@ -1601,7 +1653,7 @@ pub extern "C" fn value_buffer() -> i64 {
 /// `fennec_dict_set_words(dict, key)`: `dict[key] = value` for a dict that holds its values in
 /// place, the value's words being in this thread's buffer. As `set`, it takes over the owners
 /// `dict` and a key held in a block had, and those the value's words hold, and gives back the
-/// dict's. A dict that isn't one of values in place is given back unchanged.
+/// dict's. On a dict of one-word values it's the wrong call, which stops the program.
 pub extern "C" fn set_in_place(dict: i64, key: i64) -> i64 {
     super::made_with("fennec_dict_set_words", |state| {
         set_buffered(state, dict, &[key.cast_unsigned()]).unwrap_or(dict)
@@ -1637,6 +1689,7 @@ fn set_buffered(state: &mut State, dict: i64, key: &[u64]) -> Option<i64> {
     let block = state.heap.block(u64::try_from(dict).ok()?)?;
     let layout = layout(state, block)?;
     if !layout.in_place() {
+        doesnt_fit(SET_IN_PLACE);
         return None;
     }
     let Some(value) = buffered(state, layout.value_words()) else {
@@ -1750,23 +1803,23 @@ fn set_marked_wide(
 /// thread's buffer, with the owners they hold, which are the caller's now; a key that isn't there
 /// leaves the buffer as it was.
 pub extern "C" fn pop_in_place(dict: i64, key: i64, start: i64, end: i64) -> i64 {
-    pop_words(dict, &[key.cast_unsigned()], Key::HandedOver, (start, end))
+    pop_words::<true>(dict, &[key.cast_unsigned()], Key::HandedOver, (start, end))
 }
 
 /// `fennec_dict_pop_words_header(dict, a, b, c, start, end)`: `pop_in_place` for a string key
 /// given as its header's words, which stays the caller's, as `pop_header`'s does.
 pub extern "C" fn pop_in_place_header(dict: i64, a: u64, b: u64, c: u64, start: i64, end: i64) -> i64 {
-    pop_header(dict, a, b, c, start, end)
+    pop_by_header::<true>(dict, [a, b, c], (start, end))
 }
 
 /// `dict.pop(key)`: takes over the dict's owner and gives back the dict's, copying it first if
 /// it's shared. The value taken out is picked up straight after with `popped`, whose owner goes
 /// with it. A key the dict doesn't have fails.
 pub extern "C" fn pop(dict: i64, key: i64, start: i64, end: i64) -> i64 {
-    pop_words(dict, &[key.cast_unsigned()], Key::HandedOver, (start, end))
+    pop_words::<false>(dict, &[key.cast_unsigned()], Key::HandedOver, (start, end))
 }
 
-fn pop_words(dict: i64, key: &[u64], whose: Key, (start, end): (i64, i64)) -> i64 {
+fn pop_words<const IN_PLACE: bool>(dict: i64, key: &[u64], whose: Key, (start, end): (i64, i64)) -> i64 {
     // A key that isn't there fails, and gives back the dict it was given, untouched even when
     // it's shared. Native code writes what this gives back as the dict only once it knows the call
     // worked, and after a failure still holds the dict it gave: a copy made here would have
@@ -1774,11 +1827,13 @@ fn pop_words(dict: i64, key: &[u64], whose: Key, (start, end): (i64, i64)) -> i6
     let (popped, failure) = with(|state| {
         let at = u64::try_from(dict).map_or(0, |at| to_take_from(state, at, key));
         let held = i64::try_from(at).unwrap_or(0);
-        let popped = match take_key(state, at, key) {
+        let popped = match take_key::<IN_PLACE>(state, at, key) {
             Taken::Removed(value) => {
                 POPPED.set(value);
                 (held, None)
             }
+            // Its dict is the one it has now, which may be a copy made to take the key from.
+            Taken::DoesntFit => (held, None),
             Taken::Missing => {
                 let key_word = state
                     .heap

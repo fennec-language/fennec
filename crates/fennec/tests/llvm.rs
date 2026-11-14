@@ -6708,6 +6708,53 @@ def main(stdout: Stdout) fails Closed | Crashed:
     prints_with_nothing_left(&dir, &program, wanted, &["1", "4", "16"])
 }
 
+/// A task that fails ends its `with launch` block with its own failure, however the block is
+/// going: a send to its inbox after it's failed meets a closed channel, but what comes out where
+/// the block ends is the task's failure, not `Closed`. The task fails on the first message, on one
+/// in the middle and on the last, and once not at all, on one thread and on eight.
+#[test]
+fn a_failed_tasks_failure_ends_its_block_not_the_closed_inbox() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("task_failure_not_closed")?;
+    let program = dir.join("guard.fen");
+    std::fs::write(
+        &program,
+        r#"from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+error Refused:
+    code: int
+
+def guarding(inbox: Inbox[int], at: int) fails Refused:
+    for number in inbox:
+        if number == at:
+            fail Refused(code=number)
+
+def guard_all(items: list[int], at: int) fails Crashed | Closed | Timeout | Refused:
+    with launch((inbox) => guarding(inbox, at)?)? as sends:
+        for item in items:
+            sends.send(item)?
+
+def outcome(items: list[int], at: int) -> str:
+    guard_all(items, at) except why:
+        case Refused(code):
+            return f"refused {code}"
+        case Closed():
+            return "closed"
+        case Crashed() | Timeout():
+            return "other"
+    return "done"
+
+def main(stdout: Stdout):
+    items = [n for n in range(41)]
+    for at in [0, 20, 40, 99]:
+        stdout.print(outcome(items, at))
+"#,
+    )?;
+    prints_with_nothing_left(&dir, &program, "refused 0\nrefused 20\nrefused 40\ndone\n", &["1", "8"])
+}
+
 /// Builds `program` in both builds and runs it at each count of `threads` under `FENNEC_COUNTS`:
 /// it prints `wanted`, and has no block left live at the end, so nothing it holds was let go of
 /// too soon or kept too long.

@@ -48,6 +48,13 @@ interface_fails.fen
 interface_mut_self.fen
 interface_params.fen
 interfaces.fen
+json.fen
+json_annotations.fen
+json_hostile.fen
+json_ids.fen
+json_names.fen
+json_reads_start_fresh.fen
+json_rules.fen
 list_building.fen
 list_loops.fen
 list_values.fen
@@ -78,10 +85,12 @@ self_type.fen
 sets_native.fen
 sorted_native.fen
 sources.fen
+std_json.fen
 std_long_input_errors.fen
 std_net_hostile.fen
 std_parse.fen
 std_text.fen
+std_text_formats_hostile.fen
 string_building.fen
 struct_keys_native.fen
 sum.fen

@@ -71,17 +71,19 @@ impl Parser {
             return Ok((Expr { kind, span }, Formed::Conditional));
         }
         if self.eat_kw(Kw::Else) {
+            let word = self.prev_span();
             let default = match self.peek() {
                 Tok::Kw(Kw::Continue | Kw::Break | Kw::Return | Kw::Fail) => self.leaving()?,
                 Tok::P(Punct::Colon) => self.leaving_block(None)?,
+                // `else as why:`, the form before 2026-11-11, is refused with the fix.
                 Tok::Kw(Kw::As) => {
-                    self.advance();
-                    let failure = self.name("a name for the failure after `else as`")?;
-                    if !self.at(&Tok::P(Punct::Colon)) {
-                        return Err(Diagnostic::new("`else as` needs a block", self.span())
-                            .with_help("write `else as failure:` and the block under it, which leaves"));
-                    }
-                    self.leaving_block(Some(failure))?
+                    let both = word.to(self.span());
+                    return Err(Diagnostic::new(
+                        "a failure is handled with `except why:`: `else` is for a value that's missing",
+                        both,
+                    )
+                    .with_help("write `except` for `else as`")
+                    .with_fix(both, "except"));
                 }
                 _ => {
                     let (default, made) = self.expr_made()?;

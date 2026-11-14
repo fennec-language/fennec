@@ -315,7 +315,7 @@ pub(crate) fn emit_with(
     };
     let everything = whole(program);
     shared.can_fail = everything.can_fail.iter().map(|name| (*name).to_owned()).collect();
-    let layouts = crate::layouts_of(program);
+    let layouts = crate::layouts_of(program)?;
     let mut units = Vec::with_capacity(program.functions.len());
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
@@ -3189,8 +3189,11 @@ impl Emit<'_, '_, '_> {
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
+            // A pair a walk over a map's items never made: its parts are read from the entry. The
+            // item of a walk over keys or values alone is a value like any other, and one that's
+            // a tuple has parts of its own.
             InstKind::GetTupleItem { dest, value: Operand::Local(pair), at }
-                if self.known.walk_items.contains_key(&pair.0) =>
+                if self.known.walk_items.get(&pair.0).is_some_and(|(_, pairs)| *pairs) =>
             {
                 self.walked_part(*dest, *pair, *at)
             }
@@ -4115,7 +4118,7 @@ def main(stdout: Stdout):
     fn a_put_into_a_dict_nothing_else_holds_checks_nothing() -> Result<(), String> {
         let program = |body: &str| {
             format!(
-                "def keep(d: dict[int, int]) -> int:\n    return d.len()\n\ndef counted(n: int, given: dict[int, int]) -> int:\n{body}\n\ndef main(stdout: Stdout):\n    stdout.print(counted(10, given={{}}))\n    return\n"
+                "def keep(d: dict[int, int]) -> int:\n    return len(d)\n\ndef counted(n: int, given: dict[int, int]) -> int:\n{body}\n\ndef main(stdout: Stdout):\n    stdout.print(counted(10, given={{}}))\n    return\n"
             )
         };
         let checked = |body: &str| -> Result<(usize, usize), String> {

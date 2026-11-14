@@ -46,6 +46,10 @@ made-up-inputs = []
 # For AddressSanitizer runs only: a freed block is given back at once rather than kept for
 # reuse, so ASan poisons it and holds it in quarantine, and native code that touches it fails.
 sanitize = []
+# For audited test builds only: the heap's audit, which counts every live block's holders again at
+# the end of a run under `FENNEC_AUDIT` and compares them with its count. A runtime that ships is
+# built without it.
+audit = []
 
 [dev-dependencies]
 fennec-temp.workspace = true

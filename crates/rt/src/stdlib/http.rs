@@ -544,8 +544,12 @@ impl Reader<'_> {
         loop {
             let line = self.line()?;
             let digits = line.split_once(';').map_or(line.as_str(), |(digits, _)| digits).trim();
-            let size = usize::from_str_radix(digits, 16)
-                .map_err(|_| Failure::Other(format!("`{digits}` isn't the size of a chunk")))?;
+            // Hex digits and nothing else: Rust's parse would take a `+` too, which a proxy
+            // in front may not, and two readers would end the chunk in different places.
+            let size = Some(digits)
+                .filter(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .and_then(|digits| usize::from_str_radix(digits, 16).ok())
+                .ok_or_else(|| Failure::Other(format!("`{digits}` isn't the size of a chunk")))?;
             if size == 0 {
                 while !self.head_line()?.is_empty() {}
                 return Ok(body);
@@ -588,17 +592,30 @@ fn read_answer(
     };
     let header =
         |wanted: &str| headers.iter().find(|(name, _)| name == wanted).map(|(_, value)| value.as_str());
+    // Two lengths that differ leave where the body ends to a guess, as two readers may guess it.
+    let mut lengths =
+        headers.iter().filter(|(name, _)| name == "content-length").map(|(_, value)| value.trim());
+    if let Some(first) = lengths.next()
+        && lengths.any(|other| other != first)
+    {
+        return Err(Failure::Other("the server sent two content-lengths that differ".to_owned()));
+    }
     let body = if method == "HEAD" || matches!(status, 204 | 304) || (100..200).contains(&status) {
         Vec::new()
-    } else if header("transfer-encoding")
-        .is_some_and(|coding| coding.to_ascii_lowercase().contains("chunked"))
-    {
-        reader.chunked()?
+    } else if let Some(coding) = header("transfer-encoding") {
+        // Chunked when that's the last coding, as HTTP/1.1 has it; any other runs to the end.
+        if coding.rsplit(',').next().is_some_and(|last| last.trim().eq_ignore_ascii_case("chunked")) {
+            reader.chunked()?
+        } else {
+            reader.all()?
+        }
     } else if let Some(length) = header("content-length") {
-        let size = length
-            .trim()
-            .parse()
-            .map_err(|_| Failure::Other(format!("`{length}` isn't the length of a response")))?;
+        let length = length.trim();
+        // Digits and nothing else, as with a chunk's size.
+        let size = Some(length)
+            .filter(|length| !length.is_empty() && length.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|length| length.parse().ok())
+            .ok_or_else(|| Failure::Other(format!("`{length}` isn't the length of a response")))?;
         // Refused before any of it's read, so a length that's too big makes no room for itself.
         if size > reader.most_body {
             return Err(reader.too_big());
@@ -1297,6 +1314,44 @@ mod tests {
             let (port, done) = serving(vec![answer.to_owned()]);
             let got = get(format!("http://127.0.0.1:{port}/a")).ok().unwrap();
             assert_eq!((got.status, got.body.as_slice()), (200, &b"hello"[..]), "{answer}");
+            done.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_length_or_chunk_size_is_digits_alone_and_two_lengths_agree() {
+        for (answer, why) in [
+            ("HTTP/1.1 200 OK\r\nContent-Length: +5\r\n\r\nhello", "`+5` isn't the length of a response"),
+            ("HTTP/1.1 200 OK\r\nContent-Length: 5 5\r\n\r\nhello", "`5 5` isn't the length of a response"),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!",
+                "the server sent two content-lengths that differ",
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n+5\r\nhello\r\n0\r\n\r\n",
+                "`+5` isn't the size of a chunk",
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0x5\r\nhello\r\n0\r\n\r\n",
+                "`0x5` isn't the size of a chunk",
+            ),
+        ] {
+            let (port, done) = serving(vec![answer.to_owned()]);
+            let Err(Failure::Other(reason)) = get(format!("http://127.0.0.1:{port}/a")) else {
+                panic!("{answer} was taken")
+            };
+            assert_eq!(reason, why, "{answer}");
+            done.join().unwrap();
+        }
+        // The same length twice is one length, and a coding that isn't chunked last runs to the end.
+        for answer in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunkedx\r\n\r\nhello",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, CHUNKED\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+        ] {
+            let (port, done) = serving(vec![answer.to_owned()]);
+            let got = get(format!("http://127.0.0.1:{port}/a")).ok().unwrap();
+            assert_eq!(got.body.as_slice(), &b"hello"[..], "{answer}");
             done.join().unwrap();
         }
     }

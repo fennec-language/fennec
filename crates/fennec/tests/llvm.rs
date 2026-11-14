@@ -4237,6 +4237,233 @@ fn a_u64_to_a_power() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An optional string crosses a `shared` value's lock as what it is. `None`'s header is all zero,
+/// which reads as a block at no address, and that was made a text on the way across: a `None` put
+/// in a `shared list[str?]` read back as the empty string, by a task or by the same thread. Here
+/// `None`, the empty string, a short string and one in a block each go in and come out the same,
+/// in a list of them and inside a tuple.
+#[test]
+fn an_optional_string_that_is_none_crosses_a_lock_as_none() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("none_text_crosses", NONE_TEXT_CROSSES, NONE_TEXT_CROSSES_PRINTS)?;
+    assert!(counts_of("none_text_crosses_counts", NONE_TEXT_CROSSES)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const NONE_TEXT_CROSSES: &str = r#"# An optional string crosses a `shared` value's lock as what it is: `None` stays `None`, and the
+# empty string stays the empty string, in a list of them and inside a tuple, written by a task
+# and by the thread that reads them.
+
+def put(out: shared list[(int, str?)], pair: (int, str?)):
+    lock out as ref held:
+        held.append(pair)
+    return
+
+def put_one(out: shared list[str?], one: str?):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so `nothing` is `None`, but the compiler can't know it.
+    nothing: str? = None if len(args) < 5 else "given"
+    texts: list[str?] = [nothing, "", "short", "a text long enough for a block of its own"]
+    shared out = list[(int, str?)]()
+    shared ones = list[str?]()
+    for at in range(len(texts)):
+        one = texts[at]
+        pair = (at, one)
+        with launch(() => put(out, pair)):
+            pass
+        with launch(() => put_one(ones, one)):
+            pass
+        put(out, pair)
+        put_one(ones, one)
+    lock ones as held:
+        stdout.print(held)
+        stdout.print(held[0] == None, held[1] == None, held[2] == "", held[3] == "", held[2] == None)
+        stdout.print([held[at * 2] == texts[at] and held[at * 2 + 1] == texts[at] for at in range(len(texts))])
+    lock out as held:
+        stdout.print(held)
+        stdout.print(held[0][1] == None, held[2][1] == "", held[2][1] == None, held[1] == (0, nothing))
+    return
+"#;
+
+const NONE_TEXT_CROSSES_PRINTS: &str = r#"[None, None, "", "", "short", "short", "a text long enough for a block of its own", "a text long enough for a block of its own"]
+True True True True False
+[True, True, True, True]
+[(0, None), (0, None), (1, ""), (1, ""), (2, "short"), (2, "short"), (3, "a text long enough for a block of its own"), (3, "a text long enough for a block of its own")]
+True True False True
+"#;
+
+/// Every other way a missing value goes to another task, pinned beside the lock: a `str?`, a
+/// `list[int]?` and a `dict[str, int]?` that are `None`, in a tuple and in a struct, sent on a
+/// channel by this thread and by a task that captured them, handed to `parallel` as items and given
+/// back by it, and put in a `shared` list alone and in a struct. Each comes out `None`, and an
+/// empty string, list or dict beside it comes out empty.
+#[test]
+fn optionals_that_are_none_reach_another_task_as_none_every_way() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("none_crosses_every_way", NONE_EVERY_WAY, NONE_EVERY_WAY_PRINTS)?;
+    assert!(counts_of("none_crosses_every_way_counts", NONE_EVERY_WAY)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const NONE_EVERY_WAY: &str = r#"# Optionals that are `None` going every way a value goes to another task: a channel, a task's
+# captures, `parallel`'s items and what it gives back, and a lock, for `str?`, `list[int]?` and
+# `dict[str, int]?`, each inside a tuple, and where one can be, alone.
+
+from std.concurrent import Closed, Crashed, Sender, channel
+
+struct Maybes:
+    text: str?
+    items: list[int]?
+    counts: dict[str, int]?
+
+def echo_text(back: Sender[(int, str?)], one: (int, str?)):
+    back.send(one) except Closed():
+        pass
+
+def echo_all(back: Sender[Maybes], one: Maybes):
+    back.send(one) except Closed():
+        pass
+
+def same(one: str?) -> str?:
+    return one
+
+def is_none(one: str?) -> bool:
+    return one == None
+
+def put_list(out: shared list[list[int]?], one: list[int]?):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def put_dict(out: shared list[dict[str, int]?], one: dict[str, int]?):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def put_all(out: shared list[Maybes], one: Maybes):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def main(stdout: Stdout, args: Args) fails Crashed:
+    # No arguments are given, so each of these is `None`, but the compiler can't know it.
+    given = len(args) > 4
+    no_text: str? = "given" if given else None
+    no_list: list[int]? = [1] if given else None
+    no_dict: dict[str, int]? = {"a": 1} if given else None
+    texts: list[str?] = [no_text, "", "short", "a text long enough for a block of its own"]
+    # A channel, sent by this thread and by a task that captured the value.
+    with channel[(int, str?)](size=8) as box:
+        for at in range(len(texts)):
+            pair = (at, texts[at])
+            box.sender().send(pair) except Closed():
+                pass
+            with launch(() => echo_text(box.sender(), pair)):
+                pass
+        got = [box.receive() else (9, "closed") for at in range(8)]
+        stdout.print(got)
+        stdout.print(got[0][1] == None, got[1][1] == None, got[2][1] == None, got[2][1] == "", got[3] == (1, ""))
+    nothing = Maybes(text=no_text, items=no_list, counts=no_dict)
+    empty = Maybes(text="", items=[], counts={})
+    with channel[Maybes](size=4) as box:
+        box.sender().send(nothing) except Closed():
+            pass
+        with launch(() => echo_all(box.sender(), nothing)):
+            pass
+        box.sender().send(empty) except Closed():
+            pass
+        got = [box.receive() else empty for at in range(3)]
+        stdout.print(got)
+        stdout.print(got[0] == nothing, got[1] == nothing, got[2] == empty, got[1].items == None, got[1].counts == None, got[2].items == None)
+    # `parallel`'s items, and what it gives back.
+    back = [same(one) for one in parallel(texts)]
+    nones = [is_none(one) for one in parallel(texts)]
+    stdout.print(back, back == texts, nones)
+    # A lock, for a list and a dict that may be missing, alone and in a struct.
+    shared lists = list[list[int]?]()
+    shared dicts = list[dict[str, int]?]()
+    shared alls = list[Maybes]()
+    with launch(() => put_list(lists, no_list)):
+        pass
+    put_list(lists, no_list)
+    put_list(lists, [])
+    with launch(() => put_dict(dicts, no_dict)):
+        pass
+    put_dict(dicts, no_dict)
+    put_dict(dicts, {})
+    with launch(() => put_all(alls, nothing)):
+        pass
+    put_all(alls, nothing)
+    put_all(alls, empty)
+    lock lists as held:
+        stdout.print(held, held[0] == None, held[1] == None, held[2] == None)
+    lock dicts as held:
+        stdout.print(held, held[0] == None, held[1] == None, held[2] == None)
+    lock alls as held:
+        stdout.print(held)
+        stdout.print(held[0] == nothing, held[1] == nothing, held[2] == empty, held[0].text == None, held[2].text == None)
+    return
+"#;
+
+const NONE_EVERY_WAY_PRINTS: &str = r#"[(0, None), (0, None), (1, ""), (1, ""), (2, "short"), (2, "short"), (3, "a text long enough for a block of its own"), (3, "a text long enough for a block of its own")]
+True True False True True
+[Maybes(text=None, items=None, counts=None), Maybes(text=None, items=None, counts=None), Maybes(text="", items=[], counts={})]
+True True True True True False
+[None, "", "short", "a text long enough for a block of its own"] True [True, False, False, False]
+[None, None, []] True True False
+[None, None, {}] True True False
+[Maybes(text=None, items=None, counts=None), Maybes(text=None, items=None, counts=None), Maybes(text="", items=[], counts={})]
+True True True True False
+"#;
+
+/// A struct held in place compares, orders as a tuple and crosses a lock whatever its fields hold, as
+/// it would boxed: here a `u64` and an `f32` beside a text, which `==` refused in place while the
+/// same struct boxed, with a `dict` beside them, compared fine. A `u64` orders unsigned.
+#[test]
+fn a_struct_in_place_compares_and_crosses_a_lock_whatever_its_fields_hold() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "in_place_any_field",
+        IN_PLACE_ANY_FIELD,
+        "True False True\nTrue False True\nPart(big=6, small=6.0, name=\"a name long enough for a block 6\") True 3\n",
+    )?;
+    assert!(counts_of("in_place_any_field_counts", IN_PLACE_ANY_FIELD)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const IN_PLACE_ANY_FIELD: &str = r#"struct Part:
+    big: u64
+    small: f32
+    name: str
+
+
+def make(n: int) -> Part:
+    return Part(big=u64(n), small=f32(n), name=f"a name long enough for a block {n}")
+
+def main(stdout: Stdout):
+    noise = [make(n + 100) for n in range(3)]
+    stdout.print(make(1) == make(1), make(1) == make(2), make(1) != make(2))
+    stdout.print((u64(1), "a") < (u64(2), "a"), (u64(2) * u64(1 << 62), "b") < (u64(1), "b"), (u64(3), "c") <= (u64(3), "c"))
+    shared store = [make(5)]
+    lock store as ref held:
+        held.append(make(6))
+    mut taken = make(0)
+    lock store as held:
+        taken = held[1]
+    stdout.print(taken, taken == make(6), len(noise))
+    return
+"#;
+
 /// `u64`s sort as unsigned numbers natively, those past `int`'s top after the rest: by themselves,
 /// in place, by a key, and as a tuple's first item. `f32`s sort as the floats they are, and both
 /// can be what a key gives.
@@ -6574,17 +6801,17 @@ struct Holder:
 def whole() -> int fails Oops:
     mut holder = Holder()
     holder.push(7)
-    return holder.top()? * 10 + NOTHING.len()
+    return holder.top()? * 10 + len(NOTHING)
 
 def reads() -> int:
     mut total = 0
     for _ in range(50):
-        total += NOTHING.len()
+        total += len(NOTHING)
     return total
 
 ## Called only on the main thread, so its code counts the constant there.
 def main_reads() -> int:
-    return NOTHING.len() + NOTHING.len() + NOTHING.len()
+    return len(NOTHING) + len(NOTHING) + len(NOTHING)
 
 def in_task(stdout: Stdout) fails Oops:
     stdout.print("task:", whole()?, reads())
@@ -6595,7 +6822,7 @@ def main(stdout: Stdout) fails Oops | Crashed:
     first = whole()?
     with launch(() => in_task(stdout)?)?:
         pass
-    stdout.print("main:", before, first, "after:", whole()?, NOTHING.len())
+    stdout.print("main:", before, first, "after:", whole()?, len(NOTHING))
 "#,
         "task: 70 0\nmain: 0 70 after: 70 0\n",
     )
@@ -9062,6 +9289,94 @@ def main(stdout: Stdout):
     )
 }
 
+/// A `pop` of a key that isn't there and a `remove` of an item that isn't there fail and change
+/// nothing. Generated code stored the failed `pop`'s result, nothing, over the dict before it
+/// looked at whether the call had failed, and the runtime had already copied a dict or set with
+/// two owners and moved the caller's owner to the copy. So a task that crashed on one left the
+/// dict and what it held behind: 5 blocks here. Now the dict is written only once the call has
+/// worked, and a shared one without the key is left alone. Alone and with two owners, each fails
+/// in a task that crashes and then works on a key that's there, and the counts are pinned: nothing
+/// left, and no copy for a take that fails or a `discard` that finds nothing.
+#[test]
+fn a_pop_or_remove_that_fails_changes_nothing_and_leaves_nothing() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("failed_takes", FAILED_TAKES, FAILED_TAKES_PRINTS)?;
+    assert_eq!(
+        counts_of("failed_takes_counts", FAILED_TAKES)?,
+        "copies 20 copied_bytes 1104 largest_copy 80 allocations 91 allocated_bytes 11128 live 0"
+    );
+    Ok(())
+}
+
+const FAILED_TAKES: &str = r#"# A `pop` of a key that isn't there, and a `remove` of an item that isn't there, fail and change
+# nothing: the dict or set is as it was, alone or with another owner, and a task that crashes on
+# one leaves nothing behind. Each then works on a key that is there.
+
+from std.concurrent import Crashed
+
+def popped(key: int, two_owners: bool) -> int:
+    mut local = {1: "one, long enough for a block of its own", 2: "two"}
+    other = local if two_owners else {9: "nine"}
+    _ = local.pop(key)
+    return len(local) * 10 + len(other)
+
+def removed(key: str, two_owners: bool) -> int:
+    mut local = {"one, long enough for a block of its own", "two"}
+    other = local if two_owners else {"nine"}
+    local.remove(key)
+    return len(local) * 10 + len(other)
+
+def discarded(key: str, two_owners: bool) -> int:
+    mut local = {"one, long enough for a block of its own", "two"}
+    other = local if two_owners else {"nine"}
+    local.discard(key)
+    return len(local) * 10 + len(other)
+
+def note(out: shared list[int], value: int):
+    lock out as ref held:
+        held.append(value)
+    return
+
+def try_pop(out: shared list[int], key: int, two_owners: bool):
+    note(out, popped(key, two_owners))
+
+def try_remove(out: shared list[int], key: str, two_owners: bool):
+    note(out, removed(key, two_owners))
+
+def pops(out: shared list[int], key: int, two_owners: bool) fails Crashed:
+    with launch(() => try_pop(out, key, two_owners)):
+        pass
+
+def removes(out: shared list[int], key: str, two_owners: bool) fails Crashed:
+    with launch(() => try_remove(out, key, two_owners)):
+        pass
+
+def main(stdout: Stdout):
+    shared out = list[int]()
+    for two_owners in [False, True]:
+        for key in [5, 2]:
+            _ = pops(out, key, two_owners) except Crashed():
+                stdout.print(f"pop({key}) crashed, two owners: {two_owners}")
+        for key in ["missing", "two"]:
+            _ = removes(out, key, two_owners) except Crashed():
+                stdout.print(f"remove({key}) crashed, two owners: {two_owners}")
+        stdout.print(discarded("missing", two_owners), discarded("two", two_owners))
+    lock out as held:
+        stdout.print(held)
+    return
+"#;
+
+const FAILED_TAKES_PRINTS: &str = r"pop(5) crashed, two owners: False
+remove(missing) crashed, two owners: False
+21 11
+pop(5) crashed, two owners: True
+remove(missing) crashed, two owners: True
+22 12
+[11, 11, 12, 12]
+";
+
 /// A key a dict of blocks doesn't have fails as pinned.
 #[test]
 fn a_missing_key_in_a_dict_of_lists_fails_as_pinned() -> std::io::Result<()> {
@@ -9522,6 +9837,126 @@ def main(stdout: Stdout):
 ",
     )
 }
+
+/// A generator that fails lets go of what it failed with when it's let go of. The header's slot
+/// for the failure was laid out as a number, so the generator's free left its block behind: an
+/// error, its notes and what it holds, for every failure. A generator holding a `with` is one of
+/// its own, not written into its loop, so these are. Each fails as it closes or inside the
+/// `with`, stopped where one can be: run to its end, with nothing given, left partway, made and
+/// never started, and in a task. Then a thousand fail one after another. The counts are pinned:
+/// nothing left. On main this ends with 10,023 blocks.
+#[test]
+fn a_generator_that_fails_lets_go_of_its_failure_wherever_its_stopped() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("failed_generators", FAILED_GENERATORS, FAILED_GENERATORS_PRINTS)?;
+    assert_eq!(
+        counts_of("failed_generators_counts", FAILED_GENERATORS)?,
+        "copies 2 copied_bytes 80 largest_copy 40 allocations 16063 allocated_bytes 1324784 live 0"
+    );
+    Ok(())
+}
+
+const FAILED_GENERATORS: &str = r#"# A generator that fails lets go of what it failed with when it's let go of. Each of these holds a
+# `with`, so it's a generator of its own and not written into its loop. It fails as it closes, or
+# in the `with`'s body, and is stopped at every point one can be: run to its end, left partway,
+# made and never started, and in a task. Then a thousand of them fail one after another.
+
+from std.concurrent import Crashed
+
+struct Tally:
+    count: int
+
+error Shut:
+    code: int
+    why: str
+
+def shutting(code: int) -> with Tally fails Shut:
+    lend Tally(count=code)
+    fail Shut(code=code, why=f"closing {code}, in words long enough for a block")
+
+def lending(code: int) -> with Tally:
+    lend Tally(count=code)
+
+def closes_badly(limit: int) -> Iterator[int] fails Shut:
+    with shutting(limit)? as tally:
+        for at in range(limit):
+            yield at + tally.count
+
+def fails_inside(limit: int) -> Iterator[int] fails Shut:
+    with lending(limit) as tally:
+        for at in range(limit):
+            yield at + tally.count
+        fail Shut(code=limit + 100, why=f"inside {limit}, in words long enough for a block")
+
+def to_the_end(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in closes_badly(limit)?:
+        running += value
+    return running
+
+def left_partway(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in closes_badly(limit)?:
+        running += value
+        if value > limit:
+            break
+    return running
+
+def never_started(limit: int) -> int fails Shut:
+    made = closes_badly(limit)?
+    return limit
+
+def inside(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in fails_inside(limit)?:
+        running += value
+    return running
+
+def show(stdout: Stdout, name: str, run: () -> int fails Shut):
+    got = run() except why:
+        case Shut():
+            stdout.print(name, "shut", why.code, why.why)
+            return
+    stdout.print(name, got)
+    return
+
+def quietly(limit: int) -> int:
+    ended = to_the_end(limit) except Shut(): -1
+    partway = left_partway(limit) except Shut(): -2
+    within = inside(limit) except Shut(): -3
+    return ended + partway + within
+
+def in_a_task(limit: int):
+    _ = quietly(limit)
+
+def tasked(limit: int) fails Crashed:
+    with launch(() => in_a_task(limit)):
+        pass
+
+def main(stdout: Stdout):
+    show(stdout, "to the end:", () => to_the_end(3)?)
+    show(stdout, "nothing given:", () => to_the_end(0)?)
+    show(stdout, "left partway:", () => left_partway(3)?)
+    show(stdout, "never started:", () => never_started(3)?)
+    show(stdout, "inside:", () => inside(3)?)
+    _ = tasked(3) except Crashed():
+        stdout.print("the task crashed")
+    mut failed = 0
+    for round in range(1_000):
+        failed += quietly(round % 4)
+    stdout.print("a thousand:", failed)
+    return
+"#;
+
+const FAILED_GENERATORS_PRINTS: &str = r"to the end: shut 3 closing 3, in words long enough for a block
+nothing given: shut 0 closing 0, in words long enough for a block
+left partway: shut 3 closing 3, in words long enough for a block
+never started: 3
+inside: shut 103 inside 3, in words long enough for a block
+a thousand: -6000
+";
 
 /// A generator's failure passes up however the generator was reached: from a name, and from inside
 /// `with` blocks, where the loop is over a name too, as well as from the loop that calls it.
@@ -10575,7 +11010,7 @@ fn failing_partway() -> String {
     let lines = (0..50).fold(String::new(), |mut lines, line| {
         let _ = writeln!(
             lines,
-            "    total += checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?.len()"
+            "    total += len(checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?)"
         );
         lines
     });
@@ -10646,7 +11081,7 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
     let mut body = String::new();
     let mut total: i64 = 0;
     for line in 0..lines {
-        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + f\"{{total}}\".len()");
+        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + len(f\"{{total}}\")");
         let written = i64::try_from(total.to_string().len()).unwrap_or(0);
         total += line + written;
     }
@@ -10823,6 +11258,30 @@ fn a_shared_empty_list_or_dict_written_once_copies_nothing() -> std::io::Result<
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+/// A key held in a block, a tuple's or a struct's, is let go of by every dict and set operation
+/// it's given to: `in`, `get`, reading, setting, `+=`, `setdefault`, `update`, `remove`, `pop` and
+/// iteration on a dict, and `add`, `in`, `remove`, `discard`, `update` and the set operations on a
+/// set, for keys that are there and keys that aren't, on the main thread, in a launched task and
+/// in `parallel`. And where a key that isn't there fails, in reading it, `+=`, `pop` and a set's
+/// `remove`, each in a task it stops: the key goes, and so does the dict the task held. No block
+/// is left.
+///
+/// Three things left blocks behind. `pop`, `remove` and `discard` never let go of the key they
+/// were handed, a block a call: `dicts_large` ended with 1 live and `struct_keys_native` with 4.
+/// Reading a key that isn't there left the key its failure was told of. And `pop` of one gave
+/// back no dict with its failure, which native code stored over the dict before looking, losing
+/// it and all it held.
+#[test]
+fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("keys_let_go")?;
+    let program = dir.join("keys_let_go.fen");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keys_let_go.fen"), &program)?;
+    prints_with_nothing_left(&dir, &program, "3065\n3065\n4400\n8\n", &["1", "4"])
 }
 
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what
@@ -11108,7 +11567,7 @@ fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Resul
         return Ok(());
     }
     let source = "from std.collections import Packed\n\ndef main(stdout: Stdout):\n    mut packed = Packed[int]()\n    for n in range(100):\n        packed.append([n, n + 1, n + 2])\n";
-    let building = counts_of("packed_built", &format!("{source}    stdout.print(packed.len())\n"))?;
+    let building = counts_of("packed_built", &format!("{source}    stdout.print(len(packed))\n"))?;
     let looped = counts_of(
         "packed_looped",
         &format!(
@@ -19907,6 +20366,215 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// A loop over a dict's keys or values alone, where each is a tuple, reads the tuple's own parts.
+/// The backend took `value[0]` and `value[1]` there for the parts of the pair a walk over
+/// `items()` never makes, and read the entry's key and value: `value[0]` of a `(int, int)` value
+/// gave the dict's key, with no error, and a tuple holding a `str` didn't build. Here keys and
+/// values that are tuples, of ints, of a string and of a list, are walked by `keys()`,
+/// `values()`, `items()` and a `Table`'s `values()`, and every part is its own.
+#[test]
+fn a_tuple_walked_as_a_dicts_key_or_value_has_its_own_parts() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("walked_tuples", WALKED_TUPLES, WALKED_TUPLES_PRINTS)?;
+    assert!(counts_of("walked_tuples_counts", WALKED_TUPLES)?.ends_with(" live 0"));
+    Ok(())
+}
+
+/// The same for every other way a walked item's parts are read: comprehensions and `sum` over a
+/// dict's keys, values and items, a `for` that takes each tuple apart, `enumerate`, `zip`, a
+/// generator that yields them, `parallel`, and a `Table`'s items and values. Before the fix a
+/// comprehension or a `sum` over `values()`, `for left, right in by_int.values()` and
+/// `for number, name in by_pair.keys()` each read the entry's key and value, and a `Table`'s
+/// `values()` read its id's words.
+#[test]
+fn a_walked_tuples_parts_are_its_own_however_the_walk_is_written() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("walked_tuples_every_way", WALKED_EVERY_WAY, WALKED_EVERY_WAY_PRINTS)?;
+    assert!(counts_of("walked_tuples_every_way_counts", WALKED_EVERY_WAY)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const WALKED_EVERY_WAY: &str = r#"# Every other way a walked item's parts are read: comprehensions and `sum` over a dict's keys,
+# values and items, `enumerate`, `zip`, a `for` that takes each tuple apart, a generator that
+# yields them, `parallel`, and a `Table`'s items. Each key and value is a tuple, so a part read
+# from the wrong place shows.
+
+from std.collections import Table
+
+def pair(at: int) -> (int, str):
+    return (at, f"key number {at}, long enough for a block")
+
+def each_value(by_int: dict[int, (int, int)]) -> Iterator[(int, int)]:
+    for value in by_int.values():
+        yield value
+
+def each_key(by_pair: dict[(int, str), (int, int)]) -> Iterator[(int, str)]:
+    for key in by_pair.keys():
+        yield key
+
+def each_item(by_pair: dict[(int, str), (int, int)]) -> Iterator[((int, str), (int, int))]:
+    for item in by_pair.items():
+        yield item
+
+def spread(value: (int, int)) -> int:
+    return value[1] - value[0]
+
+def main(stdout: Stdout):
+    mut by_int: dict[int, (int, int)] = {}
+    by_int[1] = (30, 40)
+    by_int[2] = (50, 65)
+    mut by_pair: dict[(int, str), (int, int)] = {}
+    by_pair[pair(3)] = (5, 6)
+    by_pair[pair(4)] = (7, 9)
+    # Comprehensions and `sum`.
+    stdout.print([value[0] for value in by_int.values()], [value[1] for value in by_int.values()])
+    stdout.print([key[0] for key in by_pair.keys()], [len(key[1]) for key in by_pair.keys()])
+    stdout.print([key[0] * 100 + value[1] for key, value in by_pair.items()])
+    stdout.print([item[0][0] * 100 + item[1][0] for item in by_pair.items()])
+    stdout.print(sum(value[0] for value in by_int.values()), sum(value[1] for value in by_int.values()))
+    stdout.print(sum(key[0] for key in by_pair.keys()), sum(value[1] for key, value in by_pair.items()))
+    # A `for` that takes each tuple apart.
+    mut lefts = 0
+    mut rights = 0
+    for left, right in by_int.values():
+        lefts += left
+        rights += right
+    mut numbers = 0
+    mut sizes = 0
+    for number, name in by_pair.keys():
+        numbers += number
+        sizes += len(name)
+    stdout.print(lefts, rights, numbers, sizes)
+    # `enumerate` and `zip` over lists of tuples.
+    tuples = [(10, 11), (20, 22)]
+    names = [pair(5), pair(6)]
+    mut counted = 0
+    for at, value in enumerate(tuples):
+        counted += at * 1000 + value[0] * 10 + value[1]
+    mut numbered = 0
+    for numbered_pair in enumerate(tuples):
+        numbered += numbered_pair[0] * 1000 + numbered_pair[1][0] * 10 + numbered_pair[1][1]
+    mut zipped = 0
+    for value, name in zip(tuples, names):
+        zipped += value[0] * 10 + value[1] + name[0] * 1000 + len(name[1])
+    mut whole = 0
+    for both in zip(tuples, names):
+        whole += both[0][0] * 10 + both[0][1] + both[1][0] * 1000 + len(both[1][1])
+    stdout.print(counted, numbered, zipped, whole)
+    # A generator that yields them.
+    stdout.print([value[0] for value in each_value(by_int)], [value[1] for value in each_value(by_int)])
+    stdout.print([key[0] for key in each_key(by_pair)], [len(key[1]) for key in each_key(by_pair)])
+    stdout.print([item[0][0] * 100 + item[1][1] for item in each_item(by_pair)])
+    # `parallel`, over a dict's values and over a list of tuples.
+    stdout.print([spread(value) for value in parallel(by_int.values())])
+    stdout.print([value[0] + value[1] for value in parallel(tuples)])
+    # A `Table`'s items and values.
+    mut table = Table[(int, str)]()
+    _ = table.add(pair(1))
+    _ = table.add(pair(2))
+    stdout.print([value[0] for value in table.values()], [len(value[1]) for value in table.values()])
+    stdout.print([value[0] for id, value in table.items()], sum(len(value[1]) for id, value in table.items()))
+    return
+"#;
+
+const WALKED_EVERY_WAY_PRINTS: &str = r"[30, 50] [40, 65]
+[3, 4] [37, 37]
+[306, 409]
+[305, 407]
+80 105
+7 15
+80 105 7 74
+1333 1333 11407 11407
+[30, 50] [40, 65]
+[3, 4] [37, 37]
+[306, 409]
+[10, 15]
+[21, 42]
+[1, 2] [37, 37]
+[1, 2] 74
+";
+
+const WALKED_TUPLES: &str = r#"# A loop over a dict's keys or values alone, where each is a tuple: its parts are the tuple's own,
+# not the entry's key and value. Beside them, a loop over its items, whose pair's parts are.
+
+from std.collections import Table
+
+def pair(at: int) -> (int, str):
+    return (at, f"key number {at}, long enough for a block")
+
+def main(stdout: Stdout):
+    mut by_pair: dict[(int, str), int] = {}
+    by_pair[pair(7)] = 100
+    by_pair[pair(8)] = 200
+    mut firsts = 0
+    mut sizes = 0
+    mut last = ""
+    for key in by_pair.keys():
+        firsts += key[0]
+        sizes += len(key[1])
+        last = key[1]
+    stdout.print(firsts, sizes, last)
+    mut by_int: dict[int, (int, int)] = {}
+    by_int[1] = (30, 40)
+    by_int[2] = (50, 60)
+    mut lefts = 0
+    mut rights = 0
+    for value in by_int.values():
+        lefts += value[0]
+        rights += value[1]
+    stdout.print(lefts, rights)
+    mut by_name: dict[str, (str, list[int])] = {}
+    by_name["one"] = ("a first name long enough for a block", [1, 2])
+    by_name["two"] = ("a second name long enough for a block", [3])
+    mut names = list[str]()
+    mut counts = 0
+    for value in by_name.values():
+        names.append(value[0])
+        counts += len(value[1])
+    stdout.print(names, counts)
+    mut key_sizes = 0
+    for key in by_name.keys():
+        key_sizes += len(key)
+    stdout.print(key_sizes)
+    # A walk over items: the pair's parts are the entry's key and value, each a tuple here.
+    mut both: dict[(int, str), (int, int)] = {}
+    both[pair(3)] = (5, 6)
+    both[pair(4)] = (7, 8)
+    mut seen = list[str]()
+    mut added = 0
+    for key, value in both.items():
+        seen.append(key[1])
+        added += key[0] * 100 + value[0] * 10 + value[1]
+    stdout.print(seen, added)
+    for item in both.items():
+        stdout.print(item[0][0], item[0][1], item[1][0], item[1][1])
+    # A `Table`'s values, each a tuple.
+    mut table = Table[(int, str)]()
+    _ = table.add(pair(1))
+    _ = table.add(pair(2))
+    mut table_firsts = 0
+    mut table_sizes = 0
+    for value in table.values():
+        table_firsts += value[0]
+        table_sizes += len(value[1])
+    stdout.print(table_firsts, table_sizes)
+    return
+"#;
+
+const WALKED_TUPLES_PRINTS: &str = r#"15 74 key number 8, long enough for a block
+80 100
+["a first name long enough for a block", "a second name long enough for a block"] 3
+6
+["key number 3, long enough for a block", "key number 4, long enough for a block"] 834
+3 key number 3, long enough for a block 5 6
+4 key number 4, long enough for a block 7 8
+3 74
+"#;
+
 /// A dict's `values()`, `keys()` and `items()`, gone through by a `for`, a comprehension or a
 /// `sum`, are read where they are, its entries walked in order past those removed, rather than
 /// made as a list each time: two hundred rounds of each make nothing more than one. `sum` over
@@ -21618,7 +22286,8 @@ fn fennec_literal(text: &str) -> String {
 }
 
 /// `split` gives what Rust's `str::split` and `split_whitespace` give, on rows chosen for where it
-/// could go wrong: empty parts, separators at both ends, separators of two and three bytes, parts
+/// could go wrong: empty parts, separators at both ends, separators of one to nine bytes, ones
+/// that overlap themselves, ones that end at, start at and lie across a word of the text, parts
 /// of exactly 23 bytes, which are held inline, and of 24, which take a block, of ASCII and of
 /// two-byte characters, and whitespace of ASCII and beyond it. The texts and separators come out
 /// of lists, so each split is the runtime's. Every list and part is freed after, with no block
@@ -21650,6 +22319,22 @@ fn a_split_gives_what_rust_gives_at_every_edge() -> std::io::Result<()> {
         ("ab".to_owned(), "abc"),
         ("a\tb\nc".to_owned(), "\n"),
         ("x,y,z,w,v,u,t,s,r,q,p,o,n,m,l,k".to_owned(), ","),
+        // Separators of two to eight bytes are found a word at a time, and of nine as a `str`.
+        ("GET /a HTTP/1.1\r\nHost: fox\r\nAccept: */*\r\n\r\nbody".to_owned(), "\r\n"),
+        ("\r\n\r\n".to_owned(), "\r\n"),
+        ("aaa".to_owned(), "aa"),
+        ("aaaa".to_owned(), "aa"),
+        ("abababab".to_owned(), "abab"),
+        // A separator ending at, starting at and lying across the end of the text's first word.
+        ("123456--rest".to_owned(), "--"),
+        ("12345678--rest".to_owned(), "--"),
+        ("1234567--rest".to_owned(), "--"),
+        ("one12345678two12345678three".to_owned(), "12345678"),
+        ("one123456789two123456789three".to_owned(), "123456789"),
+        ("one1234567".to_owned(), "12345678"),
+        (format!("{a23}::{b24}::{e23}::{e24}::"), "::"),
+        (format!("{e24}→é{a23}→é"), "→é"),
+        ("a\r\nb\rc\nd\r".to_owned(), "\r\n"),
     ];
     let spaced: Vec<String> = vec![
         "  a\tb\nc  ".to_owned(),
@@ -21694,6 +22379,69 @@ def main(stdout: Stdout):
     let program = dir.join("split_edges.fen");
     std::fs::write(&program, &source)?;
     prints_with_nothing_left(&dir, &program, &expected, &["1"])
+}
+
+/// A value a million and three million deep, a chain of structs each in the last one's field, is
+/// compared, written as text and copied for a task, on the main thread and in a launched task,
+/// with every block freed after. The runtime compared and wrote a value by calling itself for
+/// each block it held, so `==` at three million deep and `str` at one million ended the program
+/// with a signal and no message, and in a task, on its smaller stack, far sooner. Fable's review of
+/// the drop worklist found both.
+#[test]
+fn a_value_millions_deep_is_compared_written_and_sent() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("deep_values")?;
+    let program = dir.join("deep_values.fen");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deep_values.fen"), &program)?;
+    let wanted = "1000000 True False 20888916 True True 1000000\n\
+                  in a task: True False 20888916 True True\n\
+                  3000000 True False 64888916 True True 3000000\n\
+                  in a task: True False 64888916 True True\n";
+    prints_with_nothing_left(&dir, &program, wanted, &["4"])
+}
+
+/// A dict's key that holds blocks is hashed by what it holds, which the runtime reads into a tree
+/// with a call for each level. Twenty thousand levels are hashed, on the main thread and in a
+/// task. A million stop the program with exit code 1, saying the value is nested too deep, where
+/// they ended it with a signal and no message.
+#[test]
+fn a_key_nested_too_deep_to_hash_stops_the_program_saying_so() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let fixture =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deep_key.fen"))?;
+    let dir = folder("deep_key")?;
+    for (depth, in_task) in [("20_000", false), ("20_000", true), ("1_000_000", false), ("1_000_000", true)] {
+        let source = fixture
+            .replace("DEPTH = 20_000", &format!("DEPTH = {depth}"))
+            .replace("IN_TASK = False", if in_task { "IN_TASK = True" } else { "IN_TASK = False" });
+        let (program, executable) = (dir.join("deep_key.fen"), dir.join("deep_key"));
+        std::fs::write(&program, source)?;
+        let built = fennec(
+            &["build", "--release", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],
+            &dir,
+        )?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env("FENNEC_THREADS", "4").output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        let case = format!("{depth} deep, in a task: {in_task}");
+        if depth == "20_000" {
+            assert!(ran.status.success(), "{case}: {said}");
+            assert_eq!(printed, "7\n", "{case}");
+        } else {
+            assert_eq!(ran.status.code(), Some(1), "{case}: {said}");
+            assert_eq!(printed, "", "{case}");
+            assert!(
+                said.starts_with("error: a value is nested too deep to be a dict's key or a set's item"),
+                "{case}: {said}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 /// `removesuffix` and `removeprefix` give what Rust's `strip_suffix` and `strip_prefix` do, or the
@@ -22442,6 +23190,64 @@ fn native_blocks_are_counted() -> std::io::Result<()> {
     let counts = counts_of("native_blocks_counted", &source)?;
     assert!(count(&counts, "allocations") >= Some(31), "{counts}");
     assert!(count(&counts, "allocations") < Some(60), "{counts}");
+    Ok(())
+}
+
+/// Native blocks come from the allocator the runtime they're linked with uses: mimalloc in a plain
+/// build, and the system's under either sanitizer, whose runtime leaves mimalloc out. Under the
+/// thread sanitizer they once still asked for mimalloc, and such a program didn't link. A build's
+/// LLVM text is kept and read, so this holds wherever the sanitized link itself can't run.
+#[test]
+fn native_blocks_come_from_the_allocator_each_sanitizer_links() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("native_allocator")?;
+    let program = dir.join("tree.fen");
+    std::fs::write(
+        &program,
+        format!("{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n"),
+    )?;
+    for (sanitize, wanted, not) in [
+        (None, "@mi_malloc(", "@malloc("),
+        (Some("address"), "@malloc(", "@mi_malloc("),
+        (Some("thread"), "@malloc(", "@mi_malloc("),
+    ] {
+        let home = dir.join(format!("home-{}", sanitize.unwrap_or("plain")));
+        let mut command = crate::executables::fennec_command();
+        command
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("tree").to_string_lossy()])
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_LLVM_KEEP", "1")
+            .env("FENNEC_NO_CACHE", "1")
+            .env_remove("FENNEC_SANITIZE");
+        if let Some(sanitize) = sanitize {
+            command.env("FENNEC_SANITIZE", sanitize);
+        }
+        // Linking may fail where the sanitizer's runtime isn't there; the text is what's read.
+        command.output_before(FENNEC_DEADLINE)?;
+        let mut declared = String::new();
+        let mut folders = vec![home.join("work")];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "ll") {
+                    let text = std::fs::read_to_string(&path)?;
+                    declared.extend(
+                        text.lines()
+                            .filter(|line| line.starts_with("declare"))
+                            .map(|line| format!("{line}\n")),
+                    );
+                }
+            }
+        }
+        let shown = sanitize.unwrap_or("no sanitizer");
+        assert!(declared.contains(wanted), "{shown}: native blocks don't come from {wanted}\n{declared}");
+        assert!(!declared.contains(not), "{shown}: native blocks come from {not}\n{declared}");
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 
@@ -23489,7 +24295,7 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
         let source = format!(
             "def site() -> EmbeddedFolder:\n    return embed_folder(\"site\")\n\n\
              def main(stdout: Stdout):\n    mut total = 0\n    for i in range({calls}):\n        \
-             files = site()\n        total += len(files) + (files.get(\"index.html\") else bytes()).len()\n    \
+             files = site()\n        total += len(files) + len(files.get(\"index.html\") else bytes())\n    \
              mut paths = site().keys()\n    paths.append(\"extra\")\n    \
              stdout.print(total, paths, site().keys())\n"
         );
@@ -24405,6 +25211,66 @@ def main(stdout: Stdout):
     )
 }
 
+/// An error and a struct holding a `str?`, each held as `X?` in another struct, compared, printed and
+/// handed to a task and back: one layout, so a field and a local hold each the same way, where the
+/// first layout held them in place and the finished one as blocks. The counts are as pinned: the
+/// copies and blocks made converting between the two ways are gone.
+#[test]
+fn an_error_and_a_struct_holding_a_str_optional_are_held_one_way_everywhere() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "optional_texts_one_way",
+        OPTIONAL_TEXTS_ONE_WAY,
+        "Inner(label=\"a label long enough for a block 1\", note=None) True Lost(place=\"a place long enough for a block 2\", hint=None) True\nInner(label=\"a label long enough for a block 3\", note=None) None Lost(place=\"a place long enough for a block 2\", hint=None) True True 3\n",
+    )?;
+    assert_eq!(
+        counts_of("optional_texts_one_way_counts", OPTIONAL_TEXTS_ONE_WAY)?,
+        "copies 29 copied_bytes 1968 largest_copy 88 allocations 94 allocated_bytes 6440 live 0"
+    );
+    Ok(())
+}
+
+const OPTIONAL_TEXTS_ONE_WAY: &str = r#"error Lost:
+    place: str
+    hint: str?
+
+struct Inner:
+    label: str
+    note: str?
+
+struct Holder:
+    maybe: Inner?
+    why: Lost?
+    count: int
+
+def made(n: int) -> Holder:
+    inner = Inner(label=f"a label long enough for a block {n}", note=f"a note long enough for a block {n}" if n % 2 == 0 else None)
+    lost = Lost(place=f"a place long enough for a block {n}", hint=None if n % 2 == 0 else f"a hint long enough for a block {n}")
+    return Holder(maybe=inner, why=lost, count=n)
+
+def put(out: shared list[Holder], holder: Holder):
+    lock out as ref held:
+        held.append(holder)
+    return
+
+def main(stdout: Stdout):
+    noise = [made(n + 10) for n in range(3)]
+    holders = [made(n) for n in range(4)]
+    first = holders[1].maybe else return
+    stdout.print(first, first == made(1).maybe, holders[2].why, holders[2].why == made(2).why)
+    shared out = list[Holder]()
+    for at in [3, 2]:
+        given = holders[at]
+        with launch(() => put(out, given)):
+            pass
+    lock out as held:
+        kept = held[0].maybe else return
+        stdout.print(kept, kept.note, held[1].why, held[0] == holders[3], held[1] == holders[2], len(noise))
+    return
+"#;
+
 /// `==` and `!=` on an optional string, against a string, another optional string or `None`:
 /// short and long strings, and `None`, whose header is all zero, on either side.
 #[test]
@@ -25037,6 +25903,156 @@ fn small_calls_fail_as_pinned() -> std::io::Result<()> {
     )
 }
 
+/// Texts for `float.parse`, each with the number it reads as, written as a program writes it:
+/// `inf`, `-inf` and `nan` for those, and nothing for text that isn't a float.
+fn float_rows() -> Vec<(String, Option<String>)> {
+    let padded = format!("{}2.5", " ".repeat(30));
+    let padded_long = format!("{}2.5{}", " ".repeat(50), " ".repeat(5));
+    let (inline_23, block_24) = (format!("1.{}", "0".repeat(21)), format!("1.{}", "0".repeat(22)));
+    let digits_long = format!("0.{}5", "0".repeat(45));
+    let floats = [
+        ("1.5", "1.5"),
+        (".5", "0.5"),
+        ("5.", "5.0"),
+        ("-2e3", "-2000.0"),
+        (" 1.5 ", "1.5"),
+        ("\t42\n", "42.0"),
+        ("+7", "7.0"),
+        ("0", "0.0"),
+        ("-0", "-0.0"),
+        ("1234.56", "1234.56"),
+        ("000001.250", "1.25"),
+        ("1E3", "1000.0"),
+        (padded.as_str(), "2.5"),
+        (padded_long.as_str(), "2.5"),
+        (inline_23.as_str(), "1.0"),
+        (block_24.as_str(), "1.0"),
+        (digits_long.as_str(), digits_long.as_str()),
+        ("1.5\u{a0}", "1.5"),
+        ("\u{3000}8.25", "8.25"),
+        ("inf", "inf"),
+        ("-inf", "-inf"),
+        ("Infinity", "inf"),
+        ("1e400", "inf"),
+        ("-1e400", "-inf"),
+        ("nan", "nan"),
+        ("NaN", "nan"),
+    ];
+    let others = [
+        "",
+        " ",
+        "abc",
+        "1.5x",
+        "x1.5",
+        "1,5",
+        "1 5",
+        "--1",
+        "1e",
+        ".",
+        "\u{663}.\u{665}",
+        "0x10",
+        "a text that isn't a float and is long enough to be past forty bytes",
+    ];
+    let floats = floats.iter().map(|(text, wanted)| ((*text).to_owned(), Some((*wanted).to_owned())));
+    floats.chain(others.iter().map(|text| ((*text).to_owned(), None))).collect()
+}
+
+/// What the program over `float_rows` prints: `same` for each float, and for other text the
+/// message it fails with. Each row is checked against what Rust reads, so the table can't drift
+/// from it.
+fn floats_printed(rows: &[(String, Option<String>)]) -> String {
+    use std::fmt::Write as _;
+    let mut printed = String::new();
+    for (text, wanted) in rows {
+        let read = text.trim().parse::<f64>().ok();
+        let same = match (wanted.as_deref(), read) {
+            (None, None) => true,
+            (Some("nan"), Some(read)) => read.is_nan(),
+            (Some(wanted), Some(read)) => {
+                wanted.parse::<f64>().is_ok_and(|wanted| wanted.total_cmp(&read).is_eq())
+            }
+            _ => false,
+        };
+        assert!(same, "{text:?} reads as {read:?} in Rust, and the table says {wanted:?}");
+        let count = text.chars().count();
+        if wanted.is_some() {
+            printed.push_str("same\n");
+        } else if count <= 40 {
+            let _ = writeln!(printed, "{text:?} isn't a float");
+        } else {
+            let start: String = text.chars().take(20).collect();
+            let _ = writeln!(printed, "\"{}…\" ({count} characters) isn't a float", start.escape_debug());
+        }
+    }
+    printed
+}
+
+/// A program that reads each of `float_rows` with `float.parse` and compares it with the same
+/// number written in the program, which the compiler reads.
+fn floats_program(rows: &[(String, Option<String>)]) -> String {
+    let texts: Vec<String> = rows.iter().map(|(text, _)| fennec_literal(text)).collect();
+    let kinds: Vec<String> = rows
+        .iter()
+        .map(|(_, wanted)| match wanted.as_deref() {
+            Some(special @ ("inf" | "-inf" | "nan")) => format!("\"{special}\""),
+            Some(_) => "\"number\"".to_owned(),
+            None => "\"none\"".to_owned(),
+        })
+        .collect();
+    let numbers: Vec<&str> = rows
+        .iter()
+        .map(|(_, wanted)| match wanted.as_deref() {
+            Some("inf" | "-inf" | "nan") | None => "0.0",
+            Some(number) => number,
+        })
+        .collect();
+    format!(
+        r#"def same(read: float, kind: str, wanted: float) -> bool:
+    if kind == "nan":
+        return read.is_nan()
+    if kind == "inf":
+        return read > 1.0e308
+    if kind == "-inf":
+        return read < -1.0e308
+    return kind == "number" and read == wanted
+
+def main(stdout: Stdout):
+    texts = [{}]
+    kinds = [{}]
+    wanted = [{}]
+    for at in range(len(texts)):
+        read = float.parse(texts[at]) except error:
+            stdout.print(error.message)
+            continue
+        stdout.print("same" if same(read, kind=kinds[at], wanted=wanted[at]) else f"differs: {{read}}")
+    return
+"#,
+        texts.join(", "),
+        kinds.join(", "),
+        numbers.join(", ")
+    )
+}
+
+/// `float.parse` reads what Rust's `str::parse::<f64>` reads from the trimmed text, and fails on
+/// what it fails on, saying what it was given: with and without a sign, a point and an exponent,
+/// space around it of ASCII and beyond, `inf` and `nan` however they're cased, a number too big to
+/// hold, text held inline at 23 bytes and in a block at 24, text past the 40 bytes read in place,
+/// and what isn't a float at all, digits that aren't ASCII among it. Each float read is compared
+/// with the same number written in the program, which the compiler reads. The text is read where
+/// it is, by its header, and only text that isn't a float is made a block, for its message, so
+/// no block is left after.
+#[test]
+fn a_float_read_from_text_is_what_rust_reads_at_every_edge() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let rows = float_rows();
+    let dir = folder("floats_read")?;
+    let program = dir.join("floats_read.fen");
+    std::fs::write(&program, floats_program(&rows))?;
+    prints_with_nothing_left(&dir, &program, &floats_printed(&rows), &["1"])
+}
+
 /// Numbers read from text, with what fails being a value the program holds; and lists and sets of
 /// a string's characters and a list's items.
 #[test]
@@ -25150,7 +26166,7 @@ test \"nothing runs\"(process: Process):
     problem = failure_of(() => process.run(\"echo\", [\"hello\"])?)
     assert problem is not None
     assert problem.program() == \"echo\"
-    assert process.ran().len() == 1
+    assert len(process.ran()) == 1
 ",
     )?;
     let path = program.to_string_lossy().into_owned();

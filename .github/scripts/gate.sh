@@ -20,6 +20,12 @@ log="$logs/gate.log"
 : > "$log"
 # LLVM is the main backend, so its tests have to run, not skip.
 export FENNEC_EXPECT_LLVM=1
+# Every executable a build makes as a new file, a line each, which macOS may hold at its first
+# launch: counted for each step at the end.
+export FENNEC_NEW_EXECUTABLES="$logs/new-executables.txt"
+: > "$FENNEC_NEW_EXECUTABLES"
+# How many each step made, as `name|count`.
+made=()
 
 # Each step's outcome, in order, as `name|outcome`: passed, known, failed or didn't run.
 outcomes=()
@@ -32,11 +38,13 @@ known="$logs/known.txt"
 # anything else, has failed.
 names="$logs/names.txt"
 step() {
-  local name=$1 started=$SECONDS status=0
+  local name=$1 started=$SECONDS status=0 before
   shift
   : > "$names"
+  before=$(wc -l < "$FENNEC_NEW_EXECUTABLES")
   "$@" > "$logs/step.log" 2>&1 || status=$?
   local took=$((SECONDS - started))
+  made+=("$name|$(($(wc -l < "$FENNEC_NEW_EXECUTABLES") - before))")
   if [ "$status" -eq 0 ]; then
     echo "${took}s  $name"
     outcomes+=("$name|passed")
@@ -115,23 +123,37 @@ fennec_ok() {
   return 1
 }
 
-# Every example and kit through the command, as the first thing a person would do with them. Each
-# one is tried, and each that fails is named by its path.
+# Whether a program run with `FENNEC_COUNTS=1`, which said what's in `$1`, ended holding no block:
+# its counts line, the last thing it writes, says `live 0`. One left live is a block nothing freed.
+none_live() {
+  if grep -qE ' live [1-9][0-9]*$' "$1"; then
+    echo "it ended with blocks still live: $(grep -E ' live [0-9]+$' "$1" | tail -n 1)" >&2
+    return 1
+  fi
+}
+
+# Every example and kit through the command, as the first thing a person would do with them, each
+# counting what it holds, so one that ends with a block nothing freed fails too. Each one is
+# tried, and each that fails is named by its path.
 examples() {
-  local printed="$logs/printed.txt" program kit failed=0
+  local printed="$logs/printed.txt" said="$logs/said.txt" program kit failed=0
   for program in examples/*.fen; do
-    if ! { fennec_ok run "$program" > "$printed" \
+    if ! { FENNEC_COUNTS=1 fennec_ok run "$program" > "$printed" 2> "$said" \
+      && none_live "$said" \
       && diff --strip-trailing-cr "${program%.fen}.out" "$printed" \
       && fennec_ok test "$program" > /dev/null; }; then
+      cat "$said" >&2
       echo "$program" >> "$names"
       failed=1
     fi
   done
   for kit in examples/projects/*/; do
     [ -f "$kit/kit.toml" ] || continue
-    if ! { fennec_ok run "$kit" > "$printed" \
+    if ! { FENNEC_COUNTS=1 fennec_ok run "$kit" > "$printed" 2> "$said" \
+      && none_live "$said" \
       && diff --strip-trailing-cr "${kit%/}.out" "$printed" \
       && fennec_ok test "$kit" > /dev/null; }; then
+      cat "$said" >&2
       echo "${kit%/}" >> "$names"
       failed=1
     fi
@@ -199,7 +221,7 @@ x86() {
 watched() {
   "$@" &
   local pid=$!
-  .github/scripts/gate-watch.sh "$pid" "$log" &
+  .github/scripts/gate-watch.sh "$pid" "$log" "" "" "" "$logs/holds.txt" &
   local watcher=$!
   wait "$pid"
   local status=$?
@@ -230,6 +252,22 @@ if [ -s "$log" ]; then
   cat "$log"
   .github/scripts/flakes.sh failed "test programs the gate stopped" "$log"
   outcomes+=("test programs the gate stopped|failed")
+fi
+
+# How many new executables each step made.
+echo "new executables made: $(wc -l < "$FENNEC_NEW_EXECUTABLES" | tr -d ' ')"
+for each in "${made[@]}"; do
+  [ "${each##*|}" -gt 0 ] && printf '  %6d  %s\n' "${each##*|}" "${each%|*}"
+done
+# How long macOS held brand-new programs at launch, which counts against no limit, but is time
+# the gate waited.
+if [ -s "$logs/holds.txt" ]; then
+  sort -rn "$logs/holds.txt" | awk '
+    { count++; total += $1; if (NR <= 5) longest[NR] = $0 }
+    END {
+      printf "%d test programs were held at launch, %ds altogether; the longest:\n", count, total
+      for (at = 1; at <= NR && at <= 5; at++) printf "  %ss  %s\n", substr(longest[at], 1, index(longest[at], " ") - 1), substr(longest[at], index(longest[at], " ") + 1, 120)
+    }'
 fi
 
 # A line for every step, and the verdict: every step ran, and failed on nothing main isn't known

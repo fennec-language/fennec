@@ -258,6 +258,12 @@ pub(super) fn is_dict(state: &State, block: &[u64]) -> bool {
     kind(state, block).is_some()
 }
 
+/// Whether a block is a set's: a dict's whose keys have nothing for values.
+#[cfg(any(test, feature = "audit"))]
+pub(super) fn is_set(state: &State, block: &[u64]) -> bool {
+    kind(state, block).is_some_and(|(_, value)| value == Word::Nothing)
+}
+
 /// How many keys a table with `slots` slots holds before it grows.
 pub fn capacity(slots: usize) -> usize {
     slots - slots / 4
@@ -947,7 +953,7 @@ pub extern "C" fn pop_header(dict: i64, a: u64, b: u64, c: u64, start: i64, end:
         block.and_then(|block| kind(state, block)).is_some_and(|(key, _)| key == Word::Text)
     });
     if held_as_headers {
-        return pop_words(dict, &[a, b, c], (start, end));
+        return pop_words(dict, &[a, b, c], Key::Lent, (start, end));
     }
     let key = super::text::block(a, b, c);
     let popped = pop(dict, key, start, end);
@@ -1282,6 +1288,21 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
     u64::try_from(state.heap.insert(copy)).ok()
 }
 
+/// The dict or set to take a key out of. A shared one is copied only when the key is there: one
+/// without it is left as it is, with every owner where it was, as there's nothing to take and the
+/// call may be about to fail.
+fn to_take_from(state: &mut State, at: u64, key: &[u64]) -> u64 {
+    let Some(block) = state.heap.block(at) else { return at };
+    if state.heap.is_alone(at, block) || super::lists::marked_alone(block) {
+        return at;
+    }
+    let found = layout(state, block).is_some_and(|layout| {
+        let hash = hash_key(state, layout.key, key, Hashing::of(block));
+        matches!(find(state, block, layout, key, hash), Probe::Found(_))
+    });
+    if found { unshared(state, at).unwrap_or(0) } else { at }
+}
+
 /// What taking a key out of a dict or set found.
 enum Taken {
     /// It was there, with this value, whose owner goes to the caller.
@@ -1335,19 +1356,42 @@ fn take(state: &mut State, at: u64, key: &[u64]) -> Option<Taken> {
 /// `set.discard(key)`, or `set.remove(key)` when `must`, which fails for a key the set doesn't
 /// have. Takes over the set's owner and gives back the set's.
 pub extern "C" fn set_remove(set: i64, key: i64, must: i8, start: i64, end: i64) -> i64 {
-    remove_words(set, &[key.cast_unsigned()], must, (start, end))
+    remove_words(set, &[key.cast_unsigned()], Key::HandedOver, must, (start, end))
 }
 
 /// `set_remove` for a set of string keys held as headers, the key given as its header's words.
 /// The key's owner stays with the caller.
 pub extern "C" fn set_remove_header(set: i64, a: u64, b: u64, c: u64, must: i8, start: i64, end: i64) -> i64 {
-    remove_words(set, &[a, b, c], must, (start, end))
+    remove_words(set, &[a, b, c], Key::Lent, must, (start, end))
 }
 
-fn remove_words(set: i64, key: &[u64], must: i8, (start, end): (i64, i64)) -> i64 {
+/// Whose the key given to look something up by is, when it's held in a block.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Key {
+    /// Native code handed its owner over with the call, as it does with every key given as one
+    /// word that's a block's address: the runtime lets go of it once it's done.
+    HandedOver,
+    /// The caller keeps it, as it does a string's header.
+    Lent,
+}
+
+/// Lets go of the key a call was given, if its owner was handed over and the dict or set at `at`
+/// holds its keys in blocks: the key looked up by is never the one the entry held, which goes
+/// with the entry.
+fn let_go_of_key(state: &mut State, at: u64, key: &[u64], whose: Key) {
+    if whose == Key::Lent {
+        return;
+    }
+    let kind = state.heap.block(at).and_then(|block| layout(state, block)).map(|layout| layout.key);
+    if let Some(address) = kind.and_then(|kind| key_block(kind, key)) {
+        release(state, address);
+    }
+}
+
+fn remove_words(set: i64, key: &[u64], whose: Key, must: i8, (start, end): (i64, i64)) -> i64 {
     attempt(|state: &mut State| {
-        let at = u64::try_from(set).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
-        match take_key(state, at, key) {
+        let at = u64::try_from(set).map_or(0, |at| to_take_from(state, at, key));
+        let removed = match take_key(state, at, key) {
             Taken::Missing if must != 0 => {
                 let key_word = state
                     .heap
@@ -1360,7 +1404,9 @@ fn remove_words(set: i64, key: &[u64], must: i8, (start, end): (i64, i64)) -> i6
             }
             Taken::NotOne => Ok(set),
             Taken::Removed(_) | Taken::Missing => Ok(i64::try_from(at).unwrap_or(0)),
-        }
+        };
+        let_go_of_key(state, at, key, whose);
+        removed
     })
 }
 
@@ -1373,16 +1419,21 @@ thread_local! {
 /// it's shared. The value taken out is picked up straight after with `popped`, whose owner goes
 /// with it. A key the dict doesn't have fails.
 pub extern "C" fn pop(dict: i64, key: i64, start: i64, end: i64) -> i64 {
-    pop_words(dict, &[key.cast_unsigned()], (start, end))
+    pop_words(dict, &[key.cast_unsigned()], Key::HandedOver, (start, end))
 }
 
-fn pop_words(dict: i64, key: &[u64], (start, end): (i64, i64)) -> i64 {
-    attempt(|state: &mut State| {
-        let at = u64::try_from(dict).ok().and_then(|at| unshared(state, at)).unwrap_or(0);
-        match take_key(state, at, key) {
+fn pop_words(dict: i64, key: &[u64], whose: Key, (start, end): (i64, i64)) -> i64 {
+    // A key that isn't there fails, and gives back the dict it was given, untouched even when
+    // it's shared. Native code writes what this gives back as the dict only once it knows the call
+    // worked, and after a failure still holds the dict it gave: a copy made here would have
+    // moved the caller's owner to it.
+    let (popped, failure) = with(|state| {
+        let at = u64::try_from(dict).map_or(0, |at| to_take_from(state, at, key));
+        let held = i64::try_from(at).unwrap_or(0);
+        let popped = match take_key(state, at, key) {
             Taken::Removed(value) => {
                 POPPED.set(value);
-                Ok(i64::try_from(at).unwrap_or(0))
+                (held, None)
             }
             Taken::Missing => {
                 let key_word = state
@@ -1391,14 +1442,18 @@ fn pop_words(dict: i64, key: &[u64], (start, end): (i64, i64)) -> i64 {
                     .and_then(|block| kind(state, block))
                     .map_or(Word::Int, |kind| kind.0);
                 let value = key_value(state, key_word, key);
-                Err(Diagnostic::new(
-                    format!("the dict has no key {}", crate::format::repr(&value)),
-                    span(start, end),
-                ))
+                let message = format!("the dict has no key {}", crate::format::repr(&value));
+                (held, Some(Diagnostic::new(message, span(start, end))))
             }
-            Taken::NotOne => Ok(dict),
-        }
-    })
+            Taken::NotOne => (dict, None),
+        };
+        let_go_of_key(state, at, key, whose);
+        popped
+    });
+    if let Some(failure) = failure {
+        super::fail_with(failure);
+    }
+    popped
 }
 
 /// The value the last `pop` took out, as a word, with its owner.
@@ -1421,22 +1476,23 @@ pub extern "C" fn set_clear(set: i64) -> i64 {
 /// Fails with the language's message for a key a dict doesn't have: reading it, or, for
 /// `augmented`, changing it with `+=` and the like.
 pub extern "C" fn missing(dict: i64, key: i64, augmented: i8, start: i64, end: i64) {
-    missing_words(dict, &[key.cast_unsigned()], augmented, (start, end));
+    missing_words(dict, &[key.cast_unsigned()], Key::HandedOver, augmented, (start, end));
 }
 
 /// `missing` for a dict of string keys held as headers, the key given as its header's words.
 pub extern "C" fn missing_header(dict: i64, a: u64, b: u64, c: u64, augmented: i8, start: i64, end: i64) {
-    missing_words(dict, &[a, b, c], augmented, (start, end));
+    missing_words(dict, &[a, b, c], Key::Lent, augmented, (start, end));
 }
 
-fn missing_words(dict: i64, key: &[u64], augmented: i8, (start, end): (i64, i64)) {
+fn missing_words(dict: i64, key: &[u64], whose: Key, augmented: i8, (start, end): (i64, i64)) {
     attempt(|state: &mut State| -> Result<(), Diagnostic> {
-        let key_word = state
-            .heap
-            .block(u64::try_from(dict).unwrap_or(0))
-            .and_then(|block| kind(state, block))
-            .map_or(Word::Int, |kind| kind.0);
-        let key = key_value(state, key_word, key);
+        let at = u64::try_from(dict).unwrap_or(0);
+        let key_word =
+            state.heap.block(at).and_then(|block| kind(state, block)).map_or(Word::Int, |kind| kind.0);
+        let said = key_value(state, key_word, key);
+        // The key is read for the message, and then let go of: the failure holds only its text.
+        let_go_of_key(state, at, key, whose);
+        let key = said;
         let message = format!("the dict has no key {}", crate::format::repr(&key));
         let failure = Diagnostic::new(message, span(start, end));
         Err(if augmented == 0 {
@@ -1651,7 +1707,7 @@ fn release_entry(state: &mut State, layout: Layout, entry: &[u64]) {
 }
 
 /// Whether two dicts' blocks hold the same keys with equal values, in any order.
-pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
+pub(super) fn equal(state: &State, left: &[u64], right: &[u64], later: &mut Vec<(u64, u64)>) -> bool {
     let (Some(layout), theirs) = (layout(state, left), layout(state, right)) else { return false };
     // Dicts of the same type always share a layout, so differing ones are never equal.
     if theirs != Some(layout) {
@@ -1668,7 +1724,9 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
                         Word::Float | Word::F32 => {
                             crate::value::floats_same(f64::from_bits(value), f64::from_bits(*other))
                         }
-                        Word::Str | Word::Plain(_) | Word::Block(_) => same(state, value, *other),
+                        Word::Str | Word::Plain(_) | Word::Block(_) => {
+                            super::heap::compare_later(later, value, *other)
+                        }
                         Word::Int | Word::U64 | Word::Bool | Word::Nothing | Word::Text => value == *other,
                     }),
                 Probe::Empty(_) => false,

@@ -1261,6 +1261,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!(
             "{counted} = call ptr @fennec_str_index(ptr {text}, i64 {index}, i64 {from}, i64 {to})"
         ));
+        // An index past the end fails here: a block made for the text goes on the way out.
         self.leave_if_failed();
         let runtime_end = self.current.clone();
         self.line(&format!("br label %{joined}"));

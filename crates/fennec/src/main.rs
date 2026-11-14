@@ -8,6 +8,7 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod aot;
 mod bench;
+mod built;
 mod changes;
 mod copies;
 mod copy_rule;
@@ -139,14 +140,14 @@ fn main() -> ExitCode {
         ["run", "--record", log, rest @ ..] => record(log, rest),
         ["run", path, arguments @ ..] => run(run::Engine::Native, path, arguments),
         ["replay", log] => replay(log),
-        ["build", "--release"] => aot::build(".", None, true),
-        ["build", "--release", "-o", output] => aot::build(".", Some(output), true),
-        ["build", "--release", path] => aot::build(path, None, true),
-        ["build", "--release", path, "-o", output] => aot::build(path, Some(output), true),
-        ["build"] => aot::build(".", None, false),
-        ["build", "-o", output] => aot::build(".", Some(output), false),
-        ["build", path] => aot::build(path, None, false),
-        ["build", path, "-o", output] => aot::build(path, Some(output), false),
+        ["build", "--release"] => built::build(".", None, true),
+        ["build", "--release", "-o", output] => built::build(".", Some(output), true),
+        ["build", "--release", path] => built::build(path, None, true),
+        ["build", "--release", path, "-o", output] => built::build(path, Some(output), true),
+        ["build"] => built::build(".", None, false),
+        ["build", "-o", output] => built::build(".", Some(output), false),
+        ["build", path] => built::build(path, None, false),
+        ["build", path, "-o", output] => built::build(path, Some(output), false),
         ["test", rest @ ..] => test(rest),
         ["bench"] => bench::bench("."),
         ["bench", path] => bench::bench(path),

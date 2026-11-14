@@ -384,6 +384,12 @@ impl Interp {
                             span,
                         )
                     }
+                    None if op == BinOp::Div && instance.ty == "Path" && self.is_std_type("Path") => {
+                        match instance.field("text") {
+                            Some(Value::Str(text)) => super::paths::method(text, "/", &[right], span),
+                            _ => unsupported("a Path without its text"),
+                        }
+                    }
                     None => unsupported(format!("`{symbol}` on a {}", instance.ty)),
                 }
             }
@@ -403,6 +409,9 @@ impl Interp {
     }
 
     pub(crate) fn has_type(&self, value: &Value, name: &str) -> Run<bool> {
+        if let Value::Unknown(why) = value {
+            return unsupported(why.clone());
+        }
         Ok(match (name, value) {
             ("int", Value::Int(_))
             | ("float", Value::Float(_))
@@ -589,6 +598,12 @@ impl Interp {
         iter: &'static Expr,
         cond: Option<&'static Expr>,
     ) -> Run<Value> {
+        if let Some(call) = self.parallel_call(iter)? {
+            if kind != CompKind::List {
+                return unsupported("a set or dict comprehension over `parallel`");
+            }
+            return self.parallel_list(elem, names, call, cond).map(Value::List);
+        }
         let over = self.eval(iter)?;
         let mut items = self.items_of(over, iter.span)?;
         let mark = self.frame()?.vars.len();
@@ -929,8 +944,8 @@ fn float_power(a: f64, b: f64) -> Run<f64> {
     }
 }
 
-/// `object[start:end]` on a list or a string, each end counting from the end when it's negative
-/// and held to the ends, as in Python.
+/// `object[start:end]` on a list, a tuple or a string, each end counting from the end when it's
+/// negative and held to the ends, as in Python.
 fn slice(object: Value, start: Option<Value>, end: Option<Value>) -> Run<Value> {
     let bound = |value: Option<Value>, len: usize, default: usize| -> Run<usize> {
         match value {
@@ -948,6 +963,11 @@ fn slice(object: Value, start: Option<Value>, end: Option<Value>) -> Run<Value> 
             let from = bound(start, items.len(), 0)?;
             let to = bound(end, items.len(), items.len())?;
             Ok(Value::List(items.into_iter().skip(from).take(to.saturating_sub(from)).collect()))
+        }
+        Value::Tuple(items) => {
+            let from = bound(start, items.len(), 0)?;
+            let to = bound(end, items.len(), items.len())?;
+            Ok(Value::Tuple(items.into_iter().skip(from).take(to.saturating_sub(from)).collect()))
         }
         Value::Str(text) => {
             let count = text.chars().count();
@@ -1117,6 +1137,10 @@ fn names_in_stmts(body: &[Stmt], names: &mut BTreeSet<String>) {
             }
             StmtKind::For { iter, body, .. } => {
                 names_in_expr(iter, names);
+                names_in_stmts(body, names);
+            }
+            StmtKind::With { value, body, .. } => {
+                names_in_expr(value, names);
                 names_in_stmts(body, names);
             }
             _ => {}

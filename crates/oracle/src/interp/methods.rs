@@ -1,7 +1,7 @@
 //! The built-in types' methods, each modeled here on its own: the machine operations the
 //! runtime provides, and the ones the standard library writes in Fennec.
 
-use fennec_syntax::Span;
+use fennec_syntax::{Expr, Span};
 
 use super::builtins::{invalid, not_a_number};
 use super::calls::{ArgVal, Receiver};
@@ -16,8 +16,9 @@ impl Interp {
         receiver: Receiver,
         name: &str,
         given: Vec<ArgVal>,
-        span: Span,
+        expr: &'static Expr,
     ) -> Run<Value> {
+        let span = expr.span;
         let mut args = Vec::with_capacity(given.len());
         let mut named = Vec::new();
         for arg in given {
@@ -62,10 +63,18 @@ impl Interp {
         {
             return self.writer_method(receiver, name, &args, span);
         }
+        if let Value::Instance(instance) = &value
+            && let Some(done) = self.std_instance_method(instance, name, &args, &named, span)
+        {
+            return done;
+        }
         match value {
-            Value::Cap(cap) => self.cap_method(cap, name, &args, span),
+            Value::Cap(Cap::Fs(reach)) => self.fs_method(&reach, name, &args, &named, span),
             Value::Str(text) => str_method(&text, name, &args, &named, span),
-            Value::List(items) => self.list_method(receiver, items, name, &args, span),
+            Value::List(items) => self.list_method(receiver, items, name, (&args, named), expr),
+            // The methods below take no named argument.
+            _ if !named.is_empty() => unsupported(format!("the method `{name}` with a named argument")),
+            Value::Cap(cap) => self.cap_method(cap, name, &args, span),
             Value::Dict(pairs) => dict_method(&pairs, name, &args, span),
             Value::Set(items) => self.set_method(items, name, &args),
             Value::Int(_) | Value::Sized(..) => int_method(&value, name, &args, span),
@@ -73,6 +82,7 @@ impl Interp {
                 "is_nan" if args.is_empty() => Ok(Value::Bool(x.is_nan())),
                 _ => unsupported(format!("the float method `{name}`")),
             },
+            Value::Channel(end) => self.channel_method(&end, name, &args),
             other => unsupported(format!("the method `{name}` of a {}", other.kind())),
         }
     }
@@ -158,6 +168,36 @@ impl Interp {
             }
             _ => unsupported(format!("`{ty}.{name}`")),
         }
+    }
+
+    /// A method of a value of one of the standard library's types the oracle models: a `Path`'s,
+    /// a `File`'s, or an `IoError`'s `message()`. `None` for a value of any other type.
+    fn std_instance_method(
+        &mut self,
+        instance: &crate::value::Instance,
+        name: &str,
+        args: &[Value],
+        named: &[(String, Value)],
+        span: Span,
+    ) -> Option<Run<Value>> {
+        let ty = instance.ty.as_str();
+        if !matches!(ty, "Path" | "File" | "IoError") || !self.is_std_type(ty) {
+            return None;
+        }
+        if !named.is_empty() {
+            return Some(unsupported(format!("the {ty} method `{name}` with a named argument")));
+        }
+        Some(match ty {
+            "Path" => match instance.field("text") {
+                Some(Value::Str(text)) => super::paths::method(text, name, args, span),
+                _ => unsupported("a Path without its text"),
+            },
+            "File" => self.file_method(&Value::Instance(Box::new(instance.clone())), name, args, span),
+            _ => match (name, args, instance.field("reason")) {
+                ("message", [], Some(reason)) => Ok(reason.clone()),
+                _ => unsupported(format!("the IoError method `{name}`")),
+            },
+        })
     }
 
     fn cap_method(&mut self, cap: Cap, name: &str, args: &[Value], span: Span) -> Run<Value> {
@@ -420,10 +460,41 @@ impl Interp {
         receiver: Receiver,
         items: Vec<Value>,
         name: &str,
-        args: &[Value],
-        span: Span,
+        (args, mut named): (&[Value], Vec<(String, Value)>),
+        expr: &'static Expr,
     ) -> Run<Value> {
+        let span = expr.span;
+        if name == "sort" && args.is_empty() {
+            let mut take =
+                |label: &str| named.iter().position(|(given, _)| given == label).map(|at| named.remove(at).1);
+            let key = take("key");
+            let reverse = match take("reverse") {
+                None => false,
+                Some(Value::Bool(reverse)) => reverse,
+                Some(_) => return unsupported("`sort` with a `reverse` that isn't a bool"),
+            };
+            if !named.is_empty() {
+                return unsupported("`sort` with a named argument it doesn't take");
+            }
+            let sorted = self.sorted(items, key.as_ref(), reverse, expr)?;
+            return self.put_back(receiver, Value::List(sorted), span);
+        }
+        if !named.is_empty() {
+            return unsupported(format!("the list method `{name}` with a named argument"));
+        }
         match (name, args) {
+            // Each item `gone` says yes to is taken out, each asked once, in order.
+            ("remove_where", [gone]) => {
+                let mut kept = Vec::with_capacity(items.len());
+                for item in items {
+                    match self.call_value(gone, vec![item.clone()], expr)? {
+                        Value::Bool(true) => {}
+                        Value::Bool(false) => kept.push(item),
+                        other => return unsupported(format!("`remove_where` given a {}", other.kind())),
+                    }
+                }
+                self.put_back(receiver, Value::List(kept), span)
+            }
             ("get", [Value::Int(at)]) => {
                 let size = as_int(items.len());
                 if *at >= size || *at < -size {
@@ -461,11 +532,6 @@ impl Interp {
                 let Some(at) = found else { return crash("the item to remove isn't in the list", span) };
                 items.remove(at);
                 self.put_back(receiver, Value::List(items), span)
-            }
-            ("sort", []) => {
-                let keyed = items.into_iter().map(|item| (item.clone(), item)).collect();
-                let sorted = self.merge_sort(keyed, false)?;
-                self.put_back(receiver, Value::List(sorted.into_iter().map(|(_, item)| item).collect()), span)
             }
             _ => unsupported(format!("the list method `{name}`")),
         }

@@ -1,6 +1,8 @@
 //! The values a program works with while the oracle runs it: plain Rust values, each one its own.
 //! Every assignment, argument and return clones one, so a name always holds its own value.
 
+use std::collections::VecDeque;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use fennec_check::Num;
@@ -40,6 +42,14 @@ pub(crate) enum Value {
     Table(Box<Table>),
     /// An `Id`: where its item is in a `Table`, and which one.
     Id(Id),
+    /// A `shared` value: one cell, which every copy of it reaches.
+    Shared(Arc<Cell>),
+    /// An end of the channel a `with launch` makes for its task.
+    Channel(Channel),
+    /// A value the oracle can't know, as a folder's size, which differs from one system to
+    /// another: it can be held and passed on, and anything else done with it is refused, as this
+    /// says why.
+    Unknown(String),
 }
 
 /// A struct, an error, or a case of an enum or an error, with its fields in the order the type
@@ -78,12 +88,23 @@ pub(crate) enum Func {
 }
 
 /// A capability `main` was given. Standard output is real; the arguments and standard input
-/// are empty.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// are empty; the file system is the one `interp/disk.rs` models.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Cap {
     Stdout,
     Args,
     Stdin,
+    Fs(Reach),
+}
+
+/// What an `Fs` reaches: everything, as the one `main` is given does, or less, once `only` or
+/// `read_only` has narrowed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Reach {
+    /// The folders it reaches, each as the parts of its absolute path, or `None` for everywhere.
+    pub(crate) folders: Option<Vec<Vec<String>>>,
+    /// Whether it only reads.
+    pub(crate) read_only: bool,
 }
 
 /// Items made one at a time, shared by every copy of the value: a generator is used once, so a
@@ -116,11 +137,38 @@ impl Value {
             Value::Cap(_) => "capability",
             Value::Table(_) => "Table",
             Value::Id(_) => "Id",
+            Value::Shared(_) => "shared value",
+            Value::Channel(_) => "channel",
+            Value::Unknown(_) => "value the oracle can't know",
         }
     }
 
     pub(crate) fn instance(ty: &str, case: Option<&str>, fields: Vec<(String, Value)>) -> Value {
         Value::Instance(Box::new(Instance { ty: ty.to_owned(), case: case.map(str::to_owned), fields }))
+    }
+}
+
+/// An end of the channel a `with launch` makes for its task: the sending end, which its block
+/// is lent, or the receiving end, the task's inbox. Both reach the messages sent and not yet read.
+#[derive(Clone, Debug)]
+pub(crate) struct Channel {
+    pub(crate) sends: bool,
+    pub(crate) queue: Arc<Mutex<VecDeque<Value>>>,
+}
+
+/// What a `shared` value holds, the one cell every copy of it reaches, and which one it is, so
+/// two can be told apart.
+#[derive(Debug)]
+pub(crate) struct Cell {
+    pub(crate) id: u64,
+    pub(crate) held: Mutex<Value>,
+    /// Whether a `lock` holds it now.
+    pub(crate) locked: AtomicBool,
+}
+
+impl Cell {
+    pub(crate) fn new(id: u64, held: Value) -> Cell {
+        Cell { id, held: Mutex::new(held), locked: AtomicBool::new(false) }
     }
 }
 
@@ -205,5 +253,49 @@ impl Table {
 
     pub(crate) fn len(&self) -> usize {
         self.slots.iter().filter(|slot| slot.item.is_some()).count()
+    }
+}
+
+/// Whether two values are the same, part for part: floats by their bits, a `shared` value by its
+/// cell, and a generator by its source. A function or a capability is the same as nothing, so a
+/// value holding one is never taken as unchanged.
+pub(crate) fn same(left: &Value, right: &Value) -> bool {
+    let all_same = |a: &[Value], b: &[Value]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same(x, y));
+    match (left, right) {
+        (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Int(a), Value::Int(b)) => a == b,
+        (Value::Sized(x, a), Value::Sized(y, b)) => x == y && a == b,
+        (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+        (Value::Str(a), Value::Str(b)) | (Value::Unknown(a), Value::Unknown(b)) => a == b,
+        (Value::List(a), Value::List(b))
+        | (Value::Tuple(a), Value::Tuple(b))
+        | (Value::Set(a), Value::Set(b)) => all_same(a, b),
+        (Value::Dict(a), Value::Dict(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|((k, x), (l, y))| same(k, l) && same(x, y))
+        }
+        (Value::Instance(a), Value::Instance(b)) => {
+            a.ty == b.ty
+                && a.case == b.case
+                && a.fields.len() == b.fields.len()
+                && a.fields.iter().zip(&b.fields).all(|((m, x), (n, y))| m == n && same(x, y))
+        }
+        (Value::Table(a), Value::Table(b)) => {
+            a.tag == b.tag
+                && a.slots.len() == b.slots.len()
+                && a.slots.iter().zip(&b.slots).all(|(x, y)| {
+                    x.generation == y.generation
+                        && match (&x.item, &y.item) {
+                            (Some(x), Some(y)) => same(x, y),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                })
+        }
+        (Value::Id(a), Value::Id(b)) => a == b,
+        (Value::Shared(a), Value::Shared(b)) => a.id == b.id,
+        (Value::Channel(a), Value::Channel(b)) => a.sends == b.sends && Arc::ptr_eq(&a.queue, &b.queue),
+        (Value::Stream(a), Value::Stream(b)) => Arc::ptr_eq(&a.source, &b.source),
+        _ => false,
     }
 }

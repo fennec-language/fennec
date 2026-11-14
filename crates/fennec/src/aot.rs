@@ -64,29 +64,42 @@ enum Runtime {
 }
 
 impl Runtime {
-    /// The library's file name.
+    /// The library's file name. A program built for a heap audit, under `FENNEC_AUDIT=1`, links
+    /// the one built with the audit in it, which no release has: so it's refused there, as any
+    /// library that's missing is, rather than run with nothing checked.
     fn library(self) -> &'static str {
-        match self {
-            Self::Plain => "libfennec_runtime.a",
-            Self::Threads => "libfennec_runtime_threads.a",
+        match (self, fennec_llvm::audited()) {
+            (Self::Plain, false) => "libfennec_runtime.a",
+            (Self::Threads, false) => "libfennec_runtime_threads.a",
+            (Self::Plain, true) => "libfennec_runtime_audit.a",
+            (Self::Threads, true) => "libfennec_runtime_threads_audit.a",
         }
     }
 
     /// The runtime's own bitcode, which a release build puts in the program's unit when it's
     /// there.
     fn bitcode(self) -> &'static str {
-        match self {
-            Self::Plain => "libfennec_runtime.bc",
-            Self::Threads => "libfennec_runtime_threads.bc",
+        match (self, fennec_llvm::audited()) {
+            (Self::Plain, false) => "libfennec_runtime.bc",
+            (Self::Threads, false) => "libfennec_runtime_threads.bc",
+            (Self::Plain, true) => "libfennec_runtime_audit.bc",
+            (Self::Threads, true) => "libfennec_runtime_threads_audit.bc",
         }
     }
 
     /// How to build the library, for saying when it's missing.
     fn how_to_build(self) -> &'static str {
-        match self {
-            Self::Plain => "`cargo build -p fennec-runtime`",
-            Self::Threads => {
+        match (self, fennec_llvm::audited()) {
+            (Self::Plain, false) => "`cargo build -p fennec-runtime`",
+            (Self::Threads, false) => {
                 "`cargo build -p fennec-runtime --features threads --target-dir target/threads`, copying it there"
+            }
+            (Self::Plain, true) => {
+                "`cargo build -p fennec-runtime --features audit --target-dir target/audit`, copying it there"
+            }
+            (Self::Threads, true) => {
+                "`cargo build -p fennec-runtime --features threads,audit --target-dir target/threads-audit`, copying \
+                 it there"
             }
         }
     }
@@ -138,28 +151,42 @@ pub(crate) static BASELINE: std::sync::atomic::AtomicBool = std::sync::atomic::A
 /// `fennec build`: a native program through LLVM, which says what it can't take yet rather than
 /// falling back to anything. `--release` optimizes the whole program as one.
 pub(crate) fn build(path: &str, output: Option<&str>, release: bool) -> ExitCode {
-    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return ExitCode::FAILURE };
+    build_kept(path, output, release).map_or_else(|code| code, |_| ExitCode::SUCCESS)
+}
+
+/// `build`, giving back the program it loaded and what it built from it, for the store to note.
+pub(crate) fn build_kept(
+    path: &str,
+    output: Option<&str>,
+    release: bool,
+) -> Result<(fennec_kit::Program, Built), ExitCode> {
+    let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return Err(ExitCode::FAILURE) };
     if !crate::run::check_to_build(&mut program) {
-        return ExitCode::FAILURE;
+        return Err(ExitCode::FAILURE);
     }
     let output = output.map_or_else(|| default_output(path, &program), PathBuf::from);
     match executable(&program, &output, release) {
         Ok(built) => {
-            println!(
-                "🦊 built {} with LLVM: compiled {} of {} functions in {} ms, linked in {} ms",
-                output.display(),
-                built.fresh,
-                built.total,
-                built.compiled.as_millis(),
-                built.linked.as_millis(),
-            );
-            ExitCode::SUCCESS
+            said_built(&output, &built);
+            Ok((program, built))
         }
         Err(message) => {
             eprintln!("error: {message}");
-            ExitCode::FAILURE
+            Err(ExitCode::FAILURE)
         }
     }
+}
+
+/// What a build says it made.
+pub(crate) fn said_built(output: &Path, built: &Built) {
+    println!(
+        "🦊 built {} with LLVM: compiled {} of {} functions in {} ms, linked in {} ms",
+        output.display(),
+        built.fresh,
+        built.total,
+        built.compiled.as_millis(),
+        built.linked.as_millis(),
+    );
 }
 
 /// Builds an executable that runs the functions `tests` of a module with everything else trimmed
@@ -229,10 +256,10 @@ pub(crate) fn lowered_for_native(module: &fennec_syntax::Module) -> Result<fenne
 /// What building an executable through LLVM did.
 pub(crate) struct Built {
     /// How many functions the program has, and how many weren't in the cache.
-    total: usize,
-    fresh: usize,
-    compiled: std::time::Duration,
-    linked: std::time::Duration,
+    pub(crate) total: usize,
+    pub(crate) fresh: usize,
+    pub(crate) compiled: std::time::Duration,
+    pub(crate) linked: std::time::Duration,
     /// Its place in the store, when there's one: what a run of the same program can start from.
     pub(crate) root: Option<String>,
 }
@@ -336,12 +363,17 @@ fn fennec_owns(path: &Path) -> bool {
 }
 
 /// What a dev build depends on besides the program: which runtime it links, as far as anything
-/// outside the program chooses that, and what `--cpu` asked for.
+/// outside the program chooses that, whether it's linked on its own, what `--cpu` asked for, and
+/// every output switch.
 pub(crate) fn dev_build_settings() -> String {
     let threads = std::env::var_os("FENNEC_THREADS_RUNTIME").map(|on| on.to_string_lossy().into_owned());
     let found = runtime_folder(false).is_ok_and(|folder| folder.join(Runtime::Threads.library()).is_file());
     let baseline = BASELINE.load(std::sync::atomic::Ordering::Relaxed);
-    format!("threads={threads:?} found={found} baseline={baseline} {}", fennec_llvm::output_switches())
+    format!(
+        "threads={threads:?} found={found} baseline={baseline} static={} {}",
+        links_statically(),
+        fennec_llvm::output_switches()
+    )
 }
 
 /// Puts the finished program at `output`: the one in the store under its root hash, or else the
@@ -993,7 +1025,7 @@ fn response_file(objects: &[PathBuf]) -> Option<PathBuf> {
 
 /// Where an executable goes when no `-o` says: named after the kit, or the file, in the
 /// current folder.
-fn default_output(path: &str, program: &fennec_kit::Program) -> PathBuf {
+pub(crate) fn default_output(path: &str, program: &fennec_kit::Program) -> PathBuf {
     let name = program
         .manifest
         .as_ref()

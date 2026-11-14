@@ -6,14 +6,20 @@
 
 mod builtins;
 mod calls;
+pub(crate) mod disk;
 mod expr;
+mod files;
 mod json;
 mod library;
+mod locks;
 mod methods;
+mod parallel;
+mod paths;
 mod show;
 mod sources;
 pub(crate) mod stream;
 mod tables;
+mod tasks;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -22,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use fennec_syntax::{BinOp, Expr, ExprKind, Span, Stmt, StmtKind};
 
 use crate::load::Program;
-use crate::value::{Cap, Value};
+use crate::value::{Cap, Reach, Value};
 
 /// How many expressions and statements a run may take, across every thread, before it's stopped
 /// as one the oracle can't finish.
@@ -81,10 +87,21 @@ pub(crate) struct Shared {
     pub(crate) refused: Mutex<Option<String>>,
     /// The tag the next `Table` made gets.
     next_tag: AtomicU64,
+    /// The file system an `Fs` reaches.
+    pub(crate) disk: Arc<Mutex<disk::Disk>>,
+    /// The number the next `shared` value made gets.
+    next_cell: AtomicU64,
+    /// What runs side by side now, `parallel` calls' rounds and `with launch` blocks and their
+    /// tasks, the innermost last. Only one thread runs at a time, so they're what whatever runs
+    /// now is inside.
+    pub(crate) scopes: Mutex<Vec<parallel::Scope>>,
+    /// How many rounds and tasks have started, so a generator made before the one running now is
+    /// told apart from one made in it.
+    pub(crate) rounds_started: AtomicU64,
 }
 
 impl Shared {
-    pub(crate) fn new(program: &'static Program, most_steps: u64) -> Shared {
+    pub(crate) fn new(program: &'static Program, most_steps: u64, workdir: &disk::Workdir) -> Shared {
         Shared {
             program,
             most_steps,
@@ -93,7 +110,27 @@ impl Shared {
             threads: AtomicUsize::new(0),
             refused: Mutex::new(None),
             next_tag: AtomicU64::new(1),
+            disk: Arc::new(Mutex::new(disk::Disk::new(workdir))),
+            next_cell: AtomicU64::new(1),
+            scopes: Mutex::new(Vec::new()),
+            rounds_started: AtomicU64::new(0),
         }
+    }
+
+    /// The number the next `shared` value made gets: every one made so far has a lower one.
+    pub(crate) fn cells_made(&self) -> u64 {
+        self.next_cell.load(Ordering::Relaxed)
+    }
+
+    /// A number no `shared` value of this run has had.
+    pub(crate) fn new_cell(&self) -> u64 {
+        self.next_cell.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The earliest a generator read now may have been made, inside what runs side by side now,
+    /// or `None` outside all of it.
+    pub(crate) fn reads_since(&self) -> Option<u64> {
+        self.scopes.lock().ok().and_then(|scopes| parallel::reads_since(&scopes))
     }
 
     /// A tag no `Table` of this run has had.
@@ -160,6 +197,8 @@ pub(crate) struct Interp {
     depth: usize,
     constants: HashMap<String, Value>,
     generators: HashMap<usize, bool>,
+    /// How many `lock` blocks this thread is inside.
+    pub(crate) holding: usize,
 }
 
 /// How `main` ended.
@@ -184,10 +223,11 @@ impl Interp {
             depth: 0,
             constants: HashMap::new(),
             generators: HashMap::new(),
+            holding: 0,
         }
     }
 
-    /// Runs `main`, with standard output and empty arguments and input.
+    /// Runs `main`, with standard output, empty arguments and input, and the file system.
     pub(crate) fn run_main(&mut self) -> MainEnded {
         let main = self.program.main;
         let mut given = Vec::new();
@@ -196,6 +236,7 @@ impl Interp {
                 Some("Stdout") => Cap::Stdout,
                 Some("Args") => Cap::Args,
                 Some("Stdin") => Cap::Stdin,
+                Some("Fs") => Cap::Fs(Reach { folders: None, read_only: false }),
                 _ => return MainEnded::Unsupported("a capability main takes".to_owned()),
             };
             given.push(calls::ArgVal::Value(None, Value::Cap(cap)));
@@ -255,6 +296,7 @@ impl Interp {
 
     /// Writes text to standard output.
     pub(crate) fn print(&self, text: &str) -> Run<()> {
+        self.reach_out(parallel::Outside::Printing)?;
         let Ok(mut out) = self.shared.out.lock() else { return unsupported("standard output was lost") };
         if out.len() + text.len() > MOST_OUTPUT {
             return unsupported("ran too long: it printed too much");
@@ -532,7 +574,7 @@ impl Interp {
         ran
     }
 
-    fn stmts(&mut self, body: &'static [Stmt]) -> Run<()> {
+    pub(crate) fn stmts(&mut self, body: &'static [Stmt]) -> Run<()> {
         for stmt in body {
             self.stmt(stmt)?;
         }
@@ -547,11 +589,12 @@ impl Interp {
         value
     }
 
-    fn stmts_value(&mut self, body: &'static [Stmt]) -> Run<Value> {
+    pub(crate) fn stmts_value(&mut self, body: &'static [Stmt]) -> Run<Value> {
         let Some((last, rest)) = body.split_last() else { return Ok(Value::Unit) };
         self.stmts(rest)?;
         match &last.kind {
             StmtKind::Expr(expr) => self.eval(expr),
+            StmtKind::With { value, names, body, lock: true } => self.lock(value, names, body, true),
             StmtKind::If { branches, otherwise } => {
                 for (cond, body) in branches {
                     if self.truth(cond)? {
@@ -588,7 +631,10 @@ impl Interp {
                     };
                     return self.bind_ref(name, place);
                 }
-                self.assign(target, *op, value, stmt.span)
+                match shared_declared(&stmt.kind) {
+                    Some(name) => self.declare_shared(name, value, stmt.span),
+                    None => self.assign(target, *op, value, stmt.span),
+                }
             }
             StmtKind::If { branches, otherwise } => {
                 for (cond, body) in branches {
@@ -639,12 +685,10 @@ impl Interp {
                 }
                 if self.truth(cond)? { Ok(()) } else { crash("this assertion failed", stmt.span) }
             }
-            StmtKind::With { value, names, body, lock } => {
-                if *lock {
-                    return unsupported("`lock`");
-                }
-                self.with(value, names, body)
+            StmtKind::With { value, names, body, lock: true } => {
+                self.lock(value, names, body, false).map(drop)
             }
+            StmtKind::With { value, names, body, lock: false } => self.with(value, names, body),
             StmtKind::Def(def) => {
                 let frame = self.frame_id();
                 let func = crate::value::Func::Nested { def, frame };
@@ -764,6 +808,9 @@ impl Interp {
         body: &'static [Stmt],
         span: Span,
     ) -> Run<()> {
+        if let Some(call) = self.parallel_call(iter)? {
+            return self.for_parallel(names, call, body);
+        }
         let over = self.eval(iter)?;
         let mut items = self.items_of(over, iter.span)?;
         let _ = span;
@@ -789,6 +836,9 @@ impl Interp {
         body: &'static [Stmt],
         span: Span,
     ) -> Run<()> {
+        if let ([name], Some(call)) = (names, self.parallel_call(iter)?) {
+            return self.for_ref_parallel(name, call, body, span);
+        }
         let (place, numbered, keyed) = match (&iter.kind, names.len()) {
             (_, 1) => (self.place_of(iter)?, false, false),
             (ExprKind::Call { callee, args }, 2) => match (&callee.kind, args.as_slice()) {
@@ -857,6 +907,14 @@ impl Interp {
         self.generators.insert(key, yields);
         yields
     }
+}
+
+/// The name `shared name = value` declares, when that's what a statement is: it's written in as
+/// `name: shared = value`, a type of `shared` with nothing in its brackets.
+fn shared_declared(kind: &StmtKind) -> Option<&str> {
+    let StmtKind::Assign { target, op: None, ty: Some(written), .. } = kind else { return None };
+    let ExprKind::Name(name) = &target.kind else { return None };
+    (written.name == "shared" && written.args.is_empty()).then_some(name.as_str())
 }
 
 /// Whether statements yield, outside any function written inside them.

@@ -200,7 +200,8 @@ pub fn output_switches() -> String {
 /// block's owners as it ends. Generated code keeps no native blocks then, since the audit walks
 /// only what the runtime holds and can't see what a native block does. It changes what a build
 /// makes, so a build's cache key says it.
-pub(crate) fn audited() -> bool {
+#[must_use]
+pub fn audited() -> bool {
     std::env::var("FENNEC_AUDIT").as_deref() == Ok("1")
 }
 

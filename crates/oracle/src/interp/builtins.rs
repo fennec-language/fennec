@@ -324,7 +324,7 @@ impl Interp {
     }
 
     /// Sorted, steadily: items that order the same keep their order, the other way round too.
-    fn sorted(
+    pub(crate) fn sorted(
         &mut self,
         items: Vec<Value>,
         key: Option<&Value>,
@@ -424,6 +424,12 @@ impl Interp {
             Some(start) => Some(self.arg_as_value(start)?),
             None => given.take_named("start").map(|start| self.arg_as_value(start)).transpose()?,
         };
+        if let ArgVal::Lazy(_, generator) = &over
+            && let ExprKind::Comprehension { iter, .. } = &generator.kind
+            && let Some(call) = self.parallel_call(iter)?
+        {
+            return self.parallel_sum(generator, call, start.as_ref(), expr.span);
+        }
         let floats = match self.program.type_at(expr.span) {
             Some(Type::Float) => true,
             Some(Type::Sized(num)) if num.is_float() => return unsupported("f32"),

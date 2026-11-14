@@ -60,6 +60,13 @@ const YIELDS: bool = true;
 /// channel for its answer, which has to end the wait rather than hang. On since #1563.
 const CRASH_WAKES: bool = true;
 
+/// Whether a call handling several of `Crashed`, `Closed`, `Timeout` and `Refused` prints each
+/// one's own word, `crashed`, `closed`, `timeout` or `refused`, rather than one word for them all,
+/// so a task's failure that comes out as the wrong one shows. Off until a launched task that fails
+/// while its block still sends ends the block with its own failure rather than `Closed`, which
+/// the checker lane is fixing; with it on, `guard_all` finds that on main.
+pub(crate) const DISTINCT_STOPS: bool = false;
+
 /// Whether a failure passed up by a `?` nested inside another call's argument, as in
 /// `capped(capped(i, limit=-1)?, limit=1000)?`, runs the cleanups of the `with` block it leaves.
 /// It does since #1399; turned off, `Left` nests `?` only with the outer call failing.

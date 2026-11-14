@@ -229,6 +229,9 @@ def main(stdout: Stdout):
 - **Deadlocks can't compile.** Lock order is checked across the whole program, by where each `shared` value is made. Two values the compiler can't tell apart, like two accounts from one dict, are locked together in one statement: `lock accounts[from_id], accounts[to_id] as ref source, ref target:`. Locking the same value twice that way fails, rather than stopping the program.
 - Interfaces and function values are traced across the whole program, which is always compiled together, so nothing needs a `locks` annotation. An error names the implementation that takes the lock.
 - A `shared` value holds plain values and other `shared` values, never something borrowed from a `with`. It never holds one of its own type, and never forms a cycle, so a tree uses a `Table` and `Id`s. It can't store a function that captures a `shared` value.
+- It's shown as what it holds, read under its lock: printed, in an f-string, by `str`, and in a failed `assert`, as `Account(total=1)`. Decided 2026-11-14. Built for printing, f-strings and `str`; a failed `assert` still shows lowering's own declaration until the backend calls its text there.
+- `==` compares what two `shared` values hold, as every other value compares, matching the oracle: a snapshot taken under both locks, which may be stale once they're released. Both are taken in a fixed order, by cell, so `a == b` on one thread and `b == a` on another can't wait for each other, and `a == a` takes one. Decided 2026-11-14. The oracle does it; native code still compares which cell they are until the backend's change.
+- Inside a lock body nothing shows or compares a `shared` value, or a value holding one, the locked one included: it would wait for a lock its own thread holds. Use the name the lock gives, or do it after the block. Built.
 - Its memory is freed when the last holder lets go, with no cleanup code.
 
 ### `with` and `lend`
@@ -721,6 +724,7 @@ def main(net: Net, fs: Fs, clock: Clock, entropy: Entropy, stdout: Stdout):
 
 - Everyday builds stay fast, and release builds can take as long as they need.
 - `sum()` over floats, `dot()`, and `std.math`'s vector and matrix reductions add in one fixed pattern, 8 running totals combined pairwise, so they're fast, the same bits on every platform, and more accurate than adding left to right. Built for `sum`, over a list or one item at a time, and for `math.dot(a, b)` over lists. `std.math`'s sums of four, as in `Vec4.dot` and `Mat4`'s products, keep glam's left-to-right order, which is as fixed, so they match glam bit for bit. `math.fma(a, b, c)` rounds `a * b + c` once, the same everywhere. Not built yet.
+- A float `sum` over `parallel(...)` may round differently from the same sum in a plain loop, and from the same sum written with an `if` or a step that can fail, since each form adds in a pattern of its own. Each form gives the same bits on every run and at any thread count: `sum(x for x in parallel(items))` and `sum(x for x in parallel(items) if True)` can differ in their last digits, but neither ever changes. Built.
 - `@hot` turns a hidden copy into a compile error, and the tracer shows where each copy happens and why. Built: anything that may allocate or copy in a `@hot` function, or in what it calls, is an error that says why, and so is any check native code keeps there, like an index it can't place inside its list. An overflow check the compiler can't prove away stays, as the safety net it is everywhere.
 
 ## Still to decide

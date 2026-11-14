@@ -1052,6 +1052,11 @@ impl Heap {
 
     /// Whether `block`, the block at `address`, has one owner and is this thread's to change: a
     /// lent block never is, however many owners it has.
+    #[expect(
+        clippy::inline_always,
+        reason = "every dict set asks this, and as a call of its own it cost 12 instructions a set"
+    )]
+    #[inline(always)]
     pub(super) fn is_alone(&self, address: u64, block: &[u64]) -> bool {
         block.first() == Some(&1)
             && (self.holds_all() || usize::try_from(address).is_ok_and(|at| self.blocks.get(at).is_some()))

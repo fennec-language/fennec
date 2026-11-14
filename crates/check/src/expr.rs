@@ -120,7 +120,7 @@ impl FnCx<'_> {
                 for part in parts {
                     if let FStrPart::Expr { expr, spec } = part {
                         let ty = self.expr(expr);
-                        self.not_a_secret(&ty, "this f-string", expr.span);
+                        self.shown(&ty, "this f-string", expr.span);
                         if let Some(problem) = spec.as_deref().and_then(|spec| bad_spec(spec, &ty, expr.span))
                         {
                             self.error(problem);
@@ -471,7 +471,10 @@ impl FnCx<'_> {
         }
         let (left, right) = (left.without_literal(), right.without_literal());
         match op {
-            BinOp::Eq | BinOp::NotEq => return self.equality(&left, &right, op, (span, spans.1)),
+            BinOp::Eq | BinOp::NotEq => {
+                self.compared_in_lock((&left, &right), spans);
+                return self.equality(&left, &right, op, (span, spans.1));
+            }
             BinOp::In | BinOp::NotIn => {
                 self.contains(&left, &right, span);
                 return Type::Bool;

@@ -1824,14 +1824,21 @@ impl Machine {
     }
 
     /// `guard_all(items)`: the task's `with guarded(item)` for each item until one crashes, on 5,
-    /// or fails, on 7, either running the cleanup and printing `stopped`.
+    /// or fails, on 7, either running the cleanup and printing `stopped`, or, with
+    /// `DISTINCT_STOPS`, `crashed` or `refused`: the task's own failure, which its block ends with
+    /// whatever it was still sending.
     fn guard_all(&mut self, items: &[i64]) {
         for item in items {
             let _ = writeln!(self.out, "guard {item}\ntask {item}");
             if *item == 5 || *item == 7 {
                 // The task's crash or failure is the block's, whatever the cleanup does.
                 let _ = self.cleanup(*item, false);
-                self.out.push_str("stopped\n");
+                let word = match (super::generate::DISTINCT_STOPS, *item) {
+                    (false, _) => "stopped",
+                    (true, 5) => "crashed",
+                    (true, _) => "refused",
+                };
+                let _ = writeln!(self.out, "{word}");
                 return;
             }
             let _ = writeln!(self.out, "released {item}");

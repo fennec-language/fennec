@@ -657,7 +657,7 @@ impl FnCx<'_> {
         }
         if name == "str" {
             for (given, at) in &plain {
-                self.not_a_secret(given, "`str` of this", *at);
+                self.shown(given, "`str` of this", *at);
             }
         }
         let result = self.builtin_result(name, &plain, span);

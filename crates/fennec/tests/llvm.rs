@@ -10803,6 +10803,41 @@ def main(stdout: Stdout) fails Boom:
     Ok(())
 }
 
+/// A file opened to read through an `Fs` that only reads is read, and closed when its block
+/// ends. Closing it used to fail as a write would, so `main` failed after the file was read: the
+/// reference evaluator, which closes it, printed the same and ended differently.
+#[test]
+fn a_file_read_through_a_read_only_fs_is_closed_when_its_block_ends() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("read_only_close")?;
+    let program = dir.join("reads.fen");
+    std::fs::write(
+        &program,
+        r#"def main(stdout: Stdout, fs: Fs) fails IoError:
+    fs.write_text("note.txt", "kept")?
+    reader = fs.read_only()
+    with reader.open("note.txt")? as file:
+        stdout.print(file.read_text()?)
+    # And a second time, as the first was closed.
+    with reader.open("note.txt")? as file:
+        stdout.print(len(file.read_text()?))
+    return
+"#,
+    )?;
+    let executable = dir.join("reads");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).env("FENNEC_COUNTS", "1").output_within()?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "kept\n4\n", "{said}");
+    assert_eq!(ran.status.code(), Some(0), "{said}");
+    assert!(said.contains(" live 0"), "{said}");
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A generator over a file, let go by `break`, closes the file: one written takes its path's
 /// place right then, and 200 read and let go stay under a limit of 64 open files.
 #[cfg(unix)]

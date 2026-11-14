@@ -427,11 +427,98 @@ impl Emit<'_, '_, '_> {
         }
         self.line("call void @fennec_lock_undo()");
         let (cell, kind) = self.operand(handle)?;
-        let mut words = Vec::new();
-        self.cell_words(&kind, &mut words)?;
-        for (offset, word) in words {
-            self.undo_word(&cell, offset, word);
+        let (Kind::Boxed(id) | Kind::Struct(id)) = &kind else { return Ok(()) };
+        let names: Vec<String> = self.layout_of(*id)?.fields.iter().map(|field| field.name.clone()).collect();
+        let base = if matches!(kind, Kind::Boxed(_)) { FIELDS_OFFSET } else { 0 };
+        for name in names {
+            let (offset, inner) = self.field(&kind, &name)?;
+            self.undo_in_cell(&cell, base + offset, &inner)?;
         }
+        Ok(())
+    }
+
+    /// Puts back a value of `kind` at `offset` in the lock's own cell, a word at a time: a struct
+    /// held in place field by field, and an enum held in place that holds blocks by the case it's
+    /// in now. A word that wasn't saved stays as it is.
+    fn undo_in_cell(&mut self, cell: &str, offset: u32, kind: &Kind) -> Result<(), String> {
+        match kind {
+            Kind::Struct(id) => {
+                let fields: Vec<(u32, Option<Kind>)> = self
+                    .layout_of(*id)?
+                    .fields
+                    .iter()
+                    .map(|field| (field.offset, Kind::from_ty(self.module.layouts, field.ty)))
+                    .collect();
+                for (field_offset, field) in fields {
+                    let field = field.ok_or("a field this backend doesn't take yet")?;
+                    self.undo_in_cell(cell, offset + field_offset, &field)?;
+                }
+                Ok(())
+            }
+            Kind::Enum(id) if self.holds_inline(kind) => self.undo_case_in_cell(cell, offset, *id),
+            _ => {
+                let mut words = Vec::new();
+                self.words_of(kind, offset, &mut words)?;
+                for (at, word) in words {
+                    self.undo_word(cell, at, word);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Puts back an enum held in place in the lock's own cell that holds blocks. Which of its
+    /// words hold a block now, to let go of as the old word goes back, depends on the case it's
+    /// in now, so that's read before any word goes back, and each case's words go back as that
+    /// case holds them. The words a case doesn't use hold no block, and go back as they are, as
+    /// does the word that says the case.
+    fn undo_case_in_cell(&mut self, cell: &str, offset: u32, id: u32) -> Result<(), String> {
+        let cases: Vec<Vec<(u32, Option<Kind>)>> = self
+            .layout_of(id)?
+            .cases
+            .as_ref()
+            .ok_or("an enum with no cases")?
+            .iter()
+            .map(|case| {
+                case.fields
+                    .iter()
+                    .map(|field| (field.offset, Kind::from_ty(self.module.layouts, field.ty)))
+                    .collect()
+            })
+            .collect();
+        let size = Kind::Enum(id).size(self.module.layouts);
+        let (tag_at, tag) = (self.offset(cell, offset), self.temp());
+        self.line(&format!("{tag} = load i64, ptr {tag_at}"));
+        let (done, no_case) = (self.label("undone_case"), self.label("undo_no_case"));
+        let labels: Vec<String> = cases.iter().map(|_| self.label("undo_case")).collect();
+        let arms: Vec<String> = labels
+            .iter()
+            .enumerate()
+            .map(|(number, label)| format!("i64 {number}, label %{label}"))
+            .collect();
+        self.line(&format!("switch i64 {tag}, label %{no_case} [ {} ]", arms.join(" ")));
+        for (fields, label) in cases.iter().zip(&labels) {
+            self.start_block(label);
+            let mut taken = Vec::new();
+            for (field_offset, field) in fields {
+                let field = field.clone().ok_or("a field this backend doesn't take yet")?;
+                self.undo_in_cell(cell, offset + field_offset, &field)?;
+                taken.push((*field_offset, *field_offset + field.size(self.module.layouts)));
+            }
+            for word in (8..size).step_by(8) {
+                if !taken.iter().any(|(from, to)| (*from..*to).contains(&word)) {
+                    self.undo_word(cell, offset + word, Word::Plain);
+                }
+            }
+            self.line(&format!("br label %{done}"));
+        }
+        self.start_block(&no_case);
+        for word in (8..size).step_by(8) {
+            self.undo_word(cell, offset + word, Word::Plain);
+        }
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+        self.undo_word(cell, offset, Word::Plain);
         Ok(())
     }
 
@@ -571,24 +658,10 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// The words of a `lock ... as ref` block's cell that its saves can name, by their place from
-    /// the block's start: the cell's fields, then the fields of a struct held in place. A word of a
-    /// value of a kind not saved isn't named, and stays as it is.
-    fn cell_words(&self, kind: &Kind, words: &mut Vec<(u32, Word)>) -> Result<(), String> {
-        let (Kind::Boxed(id) | Kind::Struct(id)) = kind else { return Ok(()) };
-        let names: Vec<String> = self.layout_of(*id)?.fields.iter().map(|field| field.name.clone()).collect();
-        let base = if matches!(kind, Kind::Boxed(_)) { FIELDS_OFFSET } else { 0 };
-        for name in names {
-            let (offset, inner) = self.field(kind, &name)?;
-            self.words_of(&inner, base + offset, words)?;
-        }
-        Ok(())
-    }
-
     fn words_of(&self, kind: &Kind, at: u32, words: &mut Vec<(u32, Word)>) -> Result<(), String> {
         match kind {
             Kind::Int | Kind::Float | Kind::Bool | Kind::U64 | Kind::F32 => words.push((at, Word::Plain)),
-            Kind::Str if self.headers() => words.push((at, Word::Header)),
+            Kind::Str | Kind::MaybeText if self.headers() => words.push((at, Word::Header)),
             // An enum holding nothing counted is only words.
             Kind::Enum(_) if !self.holds_inline(kind) => {
                 let size = kind.size(self.module.layouts);
@@ -765,7 +838,9 @@ impl Emit<'_, '_, '_> {
     /// Saves the field at `place`, inside `block`, before a store of a `kind` writes it. Gives
     /// back whether the log took over the old value's count, so the store mustn't let go of it.
     pub(crate) fn save_before_store(&mut self, block: &str, place: &str, kind: &Kind) -> bool {
-        if matches!(kind, Kind::Str) && self.headers() {
+        // An optional string is a header too, all zero for `None`: saved as one word, its other
+        // two stayed as the failed write left them, and what came back was a mix of the two.
+        if matches!(kind, Kind::Str | Kind::MaybeText) && self.headers() {
             self.declare("declare void @fennec_lock_save_text(i64, i64, i64, i64, i64) nounwind");
             let (block, word) = self.word_in(block, place);
             let mut words = Vec::with_capacity(3);

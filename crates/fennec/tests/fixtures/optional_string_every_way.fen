@@ -1,0 +1,99 @@
+# An optional string every other way it's kept, copied or compared: a generator's slot and its
+# items, a closure's capture, a task's capture and a list's item, written under a lock that
+# fails, and `==` against each. `None`, the empty string, a short one and one in a block.
+
+from std.concurrent import Crashed
+
+error Nope:
+    why: str
+
+struct Holder:
+    notes: list[str?]
+    pairs: list[(int, str?)]
+    last: str?
+
+def values(given: bool) -> list[str?]:
+    nothing: str? = "given" if given else None
+    return [nothing, "", "short", "a text long enough for a block of its own"]
+
+def kept_across(one: str?, times: int) -> Iterator[str?]:
+    held = one
+    for at in range(times):
+        yield held
+        yield one
+
+def shown(one: str?) -> str:
+    text = one else "(none)"
+    return f"<{text}>"
+
+def in_a_task(out: shared list[str], one: str?):
+    lock out as ref held:
+        held.append(shown(one))
+    return
+
+def tasked(out: shared list[str], one: str?) fails Crashed:
+    with launch(() => in_a_task(out, one)):
+        pass
+
+def fails_after(c: shared Holder, which: int, one: str?) fails Nope:
+    lock c as ref c:
+        if which == 0:
+            c.notes[0] = one
+        elif which == 1:
+            c.notes.append(one)
+        elif which == 2:
+            c.pairs[0] = (9, one)
+        elif which == 3:
+            c.pairs.append((9, one))
+        else:
+            c.last = one
+        fail Nope(why="undone")
+
+def main(stdout: Stdout, args: Args):
+    all = values(len(args) > 4)
+    # A generator's slot and items.
+    for one in all:
+        got = [item for item in kept_across(one, times=2)]
+        stdout.print(got, got[0] == one, got[3] == one, got[1] == None)
+    # A closure's capture.
+    for one in all:
+        show = () => shown(one)
+        is_none = () => one == None
+        is_empty = () => one == ""
+        stdout.print(show(), is_none(), is_empty())
+    # A task's capture.
+    shared out = list[str]()
+    for one in all:
+        _ = tasked(out, one) except Crashed():
+            stdout.print("crashed")
+    lock out as held:
+        stdout.print(held)
+    # A list's item, alone and in a tuple, read back and compared.
+    notes: list[str?] = [one for one in all]
+    pairs: list[(int, str?)] = [(at, all[at]) for at in range(len(all))]
+    stdout.print(
+        notes,
+        pairs,
+        notes[0] == None,
+        pairs[0][1] == None,
+        notes[1] == "",
+        pairs[2][1] == "short",
+    )
+    # Written under a lock that fails: each goes back.
+    mut bad = 0
+    for start in all:
+        for one in all:
+            for which in range(5):
+                wanted = str(Holder(notes=[start, "kept"], pairs=[(1, start)], last=start))
+                shared c = Holder(notes=[start, "kept"], pairs=[(1, start)], last=start)
+                fails_after(c, which, one) except Nope():
+                    pass
+                mut now = ""
+                lock c as held:
+                    now = str(held)
+                if now != wanted:
+                    bad += 1
+                    if bad < 5:
+                        stdout.print(which, shown(start), shown(one), now)
+    stdout.print("kept a change:", bad)
+    return

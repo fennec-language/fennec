@@ -376,8 +376,15 @@ impl Interp {
             let fields = self.saved_fields(name, Some(key), args)?;
             self.read_record(inner, &fields, &format!("{name}.{key}"), reading)?
         };
-        if entries.len() > 1 {
-            return refused("a case's object with more than its case in it");
+        // A key after the case is a failure once the case's own fields have read, naming the first
+        // such key as a field is named (#1686). Anything else after the case is a syntax error,
+        // which the reader has already said.
+        if let Some(after) = entries.get(1) {
+            return Err(says(format!(
+                "{} has \"{}\" after its case, but an enum is written as an object with its case as the only key",
+                reading.here(),
+                cut_input(&after.key)
+            )));
         }
         Ok(Value::instance(name, Some(key), values))
     }

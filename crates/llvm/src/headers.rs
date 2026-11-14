@@ -302,7 +302,9 @@ impl Emit<'_, '_, '_> {
             return body(self, values.map(str::to_owned));
         }
         let made = values.map(|value| self.text_block(value));
+        self.made_for_body.push(made.to_vec());
         let result = body(self, made.clone().map(|(block, _)| block));
+        self.made_for_body.pop();
         for (block, owned) in &made {
             self.let_go_text_block(block, owned);
         }
@@ -1327,6 +1329,7 @@ done:
             emit.line(&format!(
                 "call void @fennec_str_index_text(ptr sret({HEADER}) align 8 {place}, ptr {block}, i64 {at}, i64 {from}, i64 {to})"
             ));
+            // An index past the end fails here, and the block made for the text goes on the way out.
             emit.leave_if_failed();
             let one = emit.temp();
             emit.line(&format!("{one} = load {HEADER}, ptr {place}"));

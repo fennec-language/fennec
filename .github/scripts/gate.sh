@@ -2,10 +2,14 @@
 # The checks a commit passes on this machine before it lands. It tests the working tree, so whatever
 # runs it has to be sure that's the commit in question.
 #
-# Every step runs, whatever an earlier one did, so a failure main already has never hides one this
-# change brings: tests run with `--no-fail-fast`, and the examples and the Rosetta pass go through
-# every program. Only the steps that need the build are left out when it fails, and a step that
-# didn't run fails the gate. A step's failures are named: a test by its exact name, a program by
+# The quick checks come first: formatting, the lints, the ratchets and the pinned counts, which
+# take a minute or two where the rest take an hour. One that fails stops the gate there, since
+# what it found is a fix to make before an hour of tests is worth spending.
+#
+# After them, every step runs, whatever an earlier one did, so a failure main already has never
+# hides one this change brings: tests run with `--no-fail-fast`, and the examples and the Rosetta
+# pass go through every program. Only the steps that need the build are left out when it fails,
+# and a step that didn't run fails the gate. A step's failures are named: a test by its exact name, a program by
 # its path. The gate passes when every step ran and failed on nothing but what
 # `.github/known-failures.txt` names, the failures main has, each with the change that broke it.
 # It ends with a line for every step: whether it ran, and what it found.
@@ -186,6 +190,57 @@ oracle_agrees() {
   diff --strip-trailing-cr "$2" "$printed" >&2 || { echo "the oracle ran $1 and printed something else" >&2; return 1; }
 }
 
+# What takes a minute or two, rather than the hour the rest takes, and has failed gates an hour
+# in: each check runs, and what fails is named.
+# - The Fennec code is formatted: the examples, the standard library and the benchmarks.
+# - The examples pass the linter.
+# - The uses of `unsafe` are what `.github/unsafe-allowed.txt` lists.
+# - The ratchet of unchecked runtime calls, `crates/llvm/unchecked_runtime_calls.txt`, holds.
+# - Each benchmark kernel makes exactly the copies `bench/copies.txt` says.
+# - The ThreadSanitizer suppressions keep to their rules, and the known failures' file to its form.
+# - The workflows pass actionlint and zizmor, where they're installed.
+quick() {
+  local failed=0 program said="$logs/quick.txt"
+  if ! ./target/debug/fennec fmt --check examples crates/syntax/src/stdlib bench; then
+    echo "fennec fmt --check" >> "$names"
+    failed=1
+  fi
+  for program in examples/*.fen examples/projects/*/; do
+    [ -f "$program" ] || [ -f "$program/kit.toml" ] || continue
+    if ! .github/scripts/within.sh 60 ./target/debug/fennec lint "$program" > /dev/null; then
+      echo "lint:$program" >> "$names"
+      failed=1
+    fi
+  done
+  # As CI's lint job counts them: every use outside a comment, by file, in one perl.
+  git ls-files -z '*.rs' | perl -e 'my @files = split /\0/, do { local $/; <STDIN> }; my %c;
+    for my $file (@files) { open(my $f, "<", $file) or die "$file: $!";
+      while (<$f>) { next if m{^\s*//}; $c{$file} += () = /\bunsafe\b/g } }
+    printf "%s: %d\n", $_, $c{$_} for grep { $c{$_} } sort keys %c' > "$logs/unsafe.txt"
+  if ! diff -u <(grep -v '^#' .github/unsafe-allowed.txt) "$logs/unsafe.txt"; then
+    echo "the uses of unsafe changed: update .github/unsafe-allowed.txt, and say why" >&2
+    echo "the uses of unsafe" >> "$names"
+    failed=1
+  fi
+  if ! cargo test --locked -p fennec-llvm --lib -- failure_checks:: > "$said" 2>&1 \
+    || ! cargo test --locked -p fennec --test fennec -- --exact examples::benchmark_kernels_copy_what_was_pinned >> "$said" 2>&1; then
+    cat "$said"
+    .github/scripts/known-failures.sh tests-failed "$said" >> "$names"
+    failed=1
+  fi
+  .github/scripts/tsan-suppressions-check.sh || { echo "tsan-suppressions-check" >> "$names"; failed=1; }
+  .github/scripts/test-known-failures.sh > /dev/null || { echo "test-known-failures" >> "$names"; failed=1; }
+  if command -v actionlint > /dev/null && ! actionlint; then
+    echo "actionlint" >> "$names"
+    failed=1
+  fi
+  if command -v zizmor > /dev/null && ! zizmor --offline --min-severity low -q .github/workflows; then
+    echo "zizmor" >> "$names"
+    failed=1
+  fi
+  return "$failed"
+}
+
 # Every test, with `--no-fail-fast`, so a test binary that fails doesn't stop the rest. Each test
 # that fails is named exactly, as `cargo test` says it; a binary that fails without naming one,
 # by not building or by crashing, is named as that, which nothing known matches.
@@ -255,23 +310,37 @@ watched() {
 }
 
 started=$SECONDS
-step "format" cargo fmt --check
+# A quick check that fails, on anything main isn't known to fail, stops the gate after it.
+stopped=0
+step "format" cargo fmt --check || stopped=1
 built=1
 step "build the command and the runtimes" runtime || built=0
-step "clippy" cargo clippy --all-targets --locked -- -D warnings
-step "the workspace and its tests compile on Linux" .github/scripts/linux-check.sh
-step "the workspace and its tests compile for Windows" .github/scripts/windows-check.sh
-for name in "tests" "examples and kits" "every example under the heap audit" \
-  "every example as x86-64 under Rosetta"; do
-  if [ "$built" -eq 0 ]; then
-    skipped "$name" "since the build failed"
+if [ "$built" -eq 1 ]; then
+  step "the quick checks" quick || stopped=1
+else
+  skipped "the quick checks" "since the build failed"
+fi
+for name in "clippy" "the workspace and its tests compile on Linux" "the workspace and its tests compile for Windows" \
+  "tests" "examples and kits" "every example as x86-64 under Rosetta"; do
+  if [ "$stopped" -eq 1 ]; then
+    skipped "$name" "since a quick check failed: fix it, and run the gate again"
     continue
   fi
   case "$name" in
-    tests) step "$name" watched tests ;;
-    examples*) step "$name" watched examples ;;
-    *audit) step "$name" watched .github/scripts/audit.sh "$names" ;;
-    *) step "$name" watched x86 ;;
+    clippy) step "$name" cargo clippy --all-targets --locked -- -D warnings ;;
+    *Linux) step "$name" .github/scripts/linux-check.sh ;;
+    *Windows) step "$name" .github/scripts/windows-check.sh ;;
+    *)
+      if [ "$built" -eq 0 ]; then
+        skipped "$name" "since the build failed"
+        continue
+      fi
+      case "$name" in
+        tests) step "$name" watched tests ;;
+        examples*) step "$name" watched examples ;;
+        *) step "$name" watched x86 ;;
+      esac
+      ;;
   esac
 done
 if [ -s "$log" ]; then

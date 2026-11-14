@@ -24,6 +24,7 @@ else_through_failures.fen
 enum_methods.fen
 enum_values.fen
 enums.fen
+equality.fen
 error_cases.fen
 errors_and_none.fen
 extend.fen
@@ -42,6 +43,7 @@ generators_fused.fen
 generic_methods.fen
 hello.fen
 http_strict.fen
+id_in_a_map.fen
 interface_fails.fen
 interface_mut_self.fen
 interface_params.fen
@@ -66,6 +68,10 @@ own_std_names.fen
 own_str.fen
 packed_lists.fen
 particles.fen
+projects/cases
+projects/constants
+projects/packages
+projects/shadowing
 robot.fen
 self_in_a_type.fen
 self_type.fen

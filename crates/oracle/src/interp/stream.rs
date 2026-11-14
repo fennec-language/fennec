@@ -134,6 +134,9 @@ impl Interp {
             Value::Str(text) => {
                 text.chars().map(|c| Value::Str(c.to_string())).collect::<Vec<_>>().into_iter()
             }
+            Value::Table(table) => {
+                table.slots.into_iter().filter_map(|slot| slot.item).collect::<Vec<_>>().into_iter()
+            }
             Value::Stream(stream) => return Ok(Items::Stream(stream)),
             Value::Cap(Cap::Args) => Vec::new().into_iter(),
             Value::Instance(instance) => match self.program.method(&instance.ty, "iter") {

@@ -53,6 +53,7 @@ impl Interp {
             Value::Id(id) => format!("Id({})", id.slot),
             Value::Func(_) => return unsupported("printing a function"),
             Value::Cap(_) => return unsupported("printing a capability"),
+            Value::Unknown(why) => return unsupported(why.clone()),
         })
     }
 
@@ -71,7 +72,9 @@ impl Interp {
         // A generic type's value prints with no type arguments, as it's written, `Holder(item=3)`,
         // whatever `T` is: decided 2026-11-14, after the compiled program was found printing
         // `Holder[int](item=3)` but `Holder(item="x")`.
-        if !self.program.types.contains_key(instance.ty.as_str()) && !is_core_error(&instance.ty) {
+        let printed_by_std =
+            is_core_error(&instance.ty) || matches!(instance.ty.as_str(), "Path" | "Metadata");
+        if !self.program.types.contains_key(instance.ty.as_str()) && !printed_by_std {
             return unsupported(format!("printing a {}", instance.ty));
         }
         let name = match &instance.case {
@@ -318,6 +321,7 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
         | (_, Value::Func(_) | Value::Stream(_) | Value::Cap(_)) => {
             return unsupported("comparing functions, generators or capabilities");
         }
+        (Value::Unknown(why), _) | (_, Value::Unknown(why)) => return unsupported(why.clone()),
         _ => false,
     })
 }

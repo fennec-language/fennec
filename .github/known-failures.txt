@@ -7,7 +7,3 @@
 # A test is named as `cargo test` names it; a program, as the examples and Rosetta steps do, by its
 # path. Whoever fixes one takes its line out in the same change. Empty when main is green.
 limits::tests::a_read_only_fs_opens_a_database_to_read_and_makes_none | #1580
-# Both end with blocks still live, which the examples steps fail on since live counts native
-# blocks (#1629): dicts_large leaves 1, struct_keys_native leaves 4. The runtime lane is fixing it.
-examples/dicts_large.fen | #1629
-examples/struct_keys_native.fen | #1629

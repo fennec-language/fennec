@@ -25344,6 +25344,156 @@ fn small_calls_fail_as_pinned() -> std::io::Result<()> {
     )
 }
 
+/// Texts for `float.parse`, each with the number it reads as, written as a program writes it:
+/// `inf`, `-inf` and `nan` for those, and nothing for text that isn't a float.
+fn float_rows() -> Vec<(String, Option<String>)> {
+    let padded = format!("{}2.5", " ".repeat(30));
+    let padded_long = format!("{}2.5{}", " ".repeat(50), " ".repeat(5));
+    let (inline_23, block_24) = (format!("1.{}", "0".repeat(21)), format!("1.{}", "0".repeat(22)));
+    let digits_long = format!("0.{}5", "0".repeat(45));
+    let floats = [
+        ("1.5", "1.5"),
+        (".5", "0.5"),
+        ("5.", "5.0"),
+        ("-2e3", "-2000.0"),
+        (" 1.5 ", "1.5"),
+        ("\t42\n", "42.0"),
+        ("+7", "7.0"),
+        ("0", "0.0"),
+        ("-0", "-0.0"),
+        ("1234.56", "1234.56"),
+        ("000001.250", "1.25"),
+        ("1E3", "1000.0"),
+        (padded.as_str(), "2.5"),
+        (padded_long.as_str(), "2.5"),
+        (inline_23.as_str(), "1.0"),
+        (block_24.as_str(), "1.0"),
+        (digits_long.as_str(), digits_long.as_str()),
+        ("1.5\u{a0}", "1.5"),
+        ("\u{3000}8.25", "8.25"),
+        ("inf", "inf"),
+        ("-inf", "-inf"),
+        ("Infinity", "inf"),
+        ("1e400", "inf"),
+        ("-1e400", "-inf"),
+        ("nan", "nan"),
+        ("NaN", "nan"),
+    ];
+    let others = [
+        "",
+        " ",
+        "abc",
+        "1.5x",
+        "x1.5",
+        "1,5",
+        "1 5",
+        "--1",
+        "1e",
+        ".",
+        "\u{663}.\u{665}",
+        "0x10",
+        "a text that isn't a float and is long enough to be past forty bytes",
+    ];
+    let floats = floats.iter().map(|(text, wanted)| ((*text).to_owned(), Some((*wanted).to_owned())));
+    floats.chain(others.iter().map(|text| ((*text).to_owned(), None))).collect()
+}
+
+/// What the program over `float_rows` prints: `same` for each float, and for other text the
+/// message it fails with. Each row is checked against what Rust reads, so the table can't drift
+/// from it.
+fn floats_printed(rows: &[(String, Option<String>)]) -> String {
+    use std::fmt::Write as _;
+    let mut printed = String::new();
+    for (text, wanted) in rows {
+        let read = text.trim().parse::<f64>().ok();
+        let same = match (wanted.as_deref(), read) {
+            (None, None) => true,
+            (Some("nan"), Some(read)) => read.is_nan(),
+            (Some(wanted), Some(read)) => {
+                wanted.parse::<f64>().is_ok_and(|wanted| wanted.total_cmp(&read).is_eq())
+            }
+            _ => false,
+        };
+        assert!(same, "{text:?} reads as {read:?} in Rust, and the table says {wanted:?}");
+        let count = text.chars().count();
+        if wanted.is_some() {
+            printed.push_str("same\n");
+        } else if count <= 40 {
+            let _ = writeln!(printed, "{text:?} isn't a float");
+        } else {
+            let start: String = text.chars().take(20).collect();
+            let _ = writeln!(printed, "\"{}…\" ({count} characters) isn't a float", start.escape_debug());
+        }
+    }
+    printed
+}
+
+/// A program that reads each of `float_rows` with `float.parse` and compares it with the same
+/// number written in the program, which the compiler reads.
+fn floats_program(rows: &[(String, Option<String>)]) -> String {
+    let texts: Vec<String> = rows.iter().map(|(text, _)| fennec_literal(text)).collect();
+    let kinds: Vec<String> = rows
+        .iter()
+        .map(|(_, wanted)| match wanted.as_deref() {
+            Some(special @ ("inf" | "-inf" | "nan")) => format!("\"{special}\""),
+            Some(_) => "\"number\"".to_owned(),
+            None => "\"none\"".to_owned(),
+        })
+        .collect();
+    let numbers: Vec<&str> = rows
+        .iter()
+        .map(|(_, wanted)| match wanted.as_deref() {
+            Some("inf" | "-inf" | "nan") | None => "0.0",
+            Some(number) => number,
+        })
+        .collect();
+    format!(
+        r#"def same(read: float, kind: str, wanted: float) -> bool:
+    if kind == "nan":
+        return read.is_nan()
+    if kind == "inf":
+        return read > 1.0e308
+    if kind == "-inf":
+        return read < -1.0e308
+    return kind == "number" and read == wanted
+
+def main(stdout: Stdout):
+    texts = [{}]
+    kinds = [{}]
+    wanted = [{}]
+    for at in range(len(texts)):
+        read = float.parse(texts[at]) except error:
+            stdout.print(error.message)
+            continue
+        stdout.print("same" if same(read, kind=kinds[at], wanted=wanted[at]) else f"differs: {{read}}")
+    return
+"#,
+        texts.join(", "),
+        kinds.join(", "),
+        numbers.join(", ")
+    )
+}
+
+/// `float.parse` reads what Rust's `str::parse::<f64>` reads from the trimmed text, and fails on
+/// what it fails on, saying what it was given: with and without a sign, a point and an exponent,
+/// space around it of ASCII and beyond, `inf` and `nan` however they're cased, a number too big to
+/// hold, text held inline at 23 bytes and in a block at 24, text past the 40 bytes read in place,
+/// and what isn't a float at all, digits that aren't ASCII among it. Each float read is compared
+/// with the same number written in the program, which the compiler reads. The text is read where
+/// it is, by its header, and only text that isn't a float is made a block, for its message, so
+/// no block is left after.
+#[test]
+fn a_float_read_from_text_is_what_rust_reads_at_every_edge() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let rows = float_rows();
+    let dir = folder("floats_read")?;
+    let program = dir.join("floats_read.fen");
+    std::fs::write(&program, floats_program(&rows))?;
+    prints_with_nothing_left(&dir, &program, &floats_printed(&rows), &["1"])
+}
+
 /// Numbers read from text, with what fails being a value the program holds; and lists and sets of
 /// a string's characters and a list's items.
 #[test]

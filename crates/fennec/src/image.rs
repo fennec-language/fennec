@@ -25,7 +25,7 @@ fn image_name(path: &str) -> String {
 }
 
 /// A kit's program as it was cut down last time, if none of its files have changed since, and a
-/// hash of it as it was kept, which says it's the same program another run had.
+/// hash of it as it was kept, which says it's the same program another run had: see `kept_hash`.
 pub(crate) fn load(path: &str, cache: &Cache) -> Option<(Program, String)> {
     let state = cache.kit_state(&name_of(path), BUILD)?;
     // A single file's are the files it read last time, which it reads again unless one changed.
@@ -39,7 +39,7 @@ pub(crate) fn load(path: &str, cache: &Cache) -> Option<(Program, String)> {
     }
     let bytes = cache.read("run-image", &image_name(path))?;
     let module = Module::decode(&mut Reader::new(&bytes))?;
-    let kept = fennec_blake3::hash(&bytes).to_hex();
+    let kept = kept_hash(path, &files, &bytes);
     let program = Program {
         module,
         sources: Sources::new(),
@@ -49,6 +49,25 @@ pub(crate) fn load(path: &str, cache: &Cache) -> Option<(Program, String)> {
         dependency_files: std::collections::HashSet::new(),
     };
     Some((program, kept))
+}
+
+/// What says a kept image is the program another run built, so that run's executable can be run
+/// again: the image, and what the executable shows of where it came from, which the image doesn't
+/// hold. That's the path the program was given as and where that is, which name every file in a
+/// failure's message, and each file's text, which a failure quotes. The same program text from
+/// another folder, or a comment changed to one as long, is then another program, built again,
+/// rather than one that names the other folder or quotes the old comment.
+fn kept_hash(path: &str, files: &[KitFile], bytes: &[u8]) -> String {
+    let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec kept image 2026-11-14");
+    hasher.update(format!("{path}\0{}\0", crate::run::absolute(path)).as_bytes());
+    let mut each: Vec<(&str, String)> =
+        files.iter().map(|file| (file.module.as_str(), file.text.to_hex())).collect();
+    each.sort();
+    for (module, text) in each {
+        hasher.update(format!("{module}\0{text}\n").as_bytes());
+    }
+    hasher.update(bytes);
+    hasher.finalize().to_hex()
 }
 
 /// Keeps a kit's program as it was cut down, before anything was checked. `state` is what the kit

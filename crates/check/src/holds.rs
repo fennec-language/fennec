@@ -30,7 +30,7 @@ use crate::checker::Checker;
 use crate::function::FnCx;
 use crate::types::Type;
 
-/// Where the values a call or a build hands over go.
+/// Where the values a call, a build or a write hands over go.
 #[derive(Clone, Debug)]
 pub(crate) enum To {
     /// A function or method, by its key.
@@ -40,6 +40,26 @@ pub(crate) enum To {
     /// A method of a type parameter, by its name: whose it is depends on the copy of the function
     /// the call is in.
     Interface(String),
+    /// A place written to, by the places it's inside, outermost last: each kit whose value one of
+    /// them is gets what's written there, as its code reads it later.
+    Into(Vec<(u32, u32)>),
+    /// A place lent with `ref` to a function, by the places it's inside: each kit whose value one of
+    /// them is, but the function's own, gets what the place's type can hold, which the function
+    /// may write there.
+    Lent(Vec<(u32, u32)>, String),
+}
+
+impl To {
+    /// What tells this apart from another hand-over at the same place, as a union's members' methods.
+    fn key(&self) -> String {
+        match self {
+            To::Function(key) => key.clone(),
+            To::Type(name) => format!("type {name}"),
+            To::Interface(method) => format!("*.{method}"),
+            To::Into(_) => "into".to_owned(),
+            To::Lent(_, callee) => format!("lent to {callee}"),
+        }
+    }
 }
 
 /// One value handed over.
@@ -48,6 +68,17 @@ pub(crate) struct Value {
     pub(crate) span: Span,
     /// The arrow function it is, or that the local name it's read from holds, by its span.
     pub(crate) arrow: Option<(u32, u32)>,
+    /// Its type, when it's handed over where its expression isn't to hand, as an operator's.
+    pub(crate) ty: Option<Type>,
+    /// The arguments of the call it's made by, for an iterator a generator gives back right there.
+    pub(crate) made_by: Vec<(u32, u32)>,
+}
+
+impl Value {
+    /// A value known only by its type, with nothing to say how it was made.
+    fn of(ty: Type) -> Value {
+        Value { span: Span::default(), arrow: None, ty: Some(ty), made_by: Vec::new() }
+    }
 }
 
 /// The values one call or build hands over.
@@ -65,13 +96,29 @@ pub(crate) struct Arrow {
     pub(crate) params: Vec<Type>,
 }
 
+/// The calls, builds and writes in one function, by span and where each hands to.
+pub(crate) type Calls = BTreeMap<((u32, u32), String), Handed>;
+
 /// What the program's code hands from kit to kit, noted as it's checked.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Handovers {
-    /// Each call or build, by the function it's in and its span.
-    pub(crate) handed: BTreeMap<String, BTreeMap<(u32, u32), Handed>>,
+    /// Each call, build or write, by the function it's in, its span, and where it hands to.
+    pub(crate) handed: BTreeMap<String, Calls>,
     /// Each arrow function, by the function it's in and its span.
     pub(crate) arrows: BTreeMap<String, BTreeMap<(u32, u32), Arrow>>,
+}
+
+/// The places a place is inside, itself first: `bag.items[0]`, `bag.items`, then `bag`.
+fn places_of(place: &fennec_syntax::Expr) -> Vec<(u32, u32)> {
+    let mut places = Vec::new();
+    let mut at = place;
+    loop {
+        places.push((at.span.start, at.span.end));
+        match &at.kind {
+            ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => at = object,
+            _ => return places,
+        }
+    }
 }
 
 impl FnCx<'_> {
@@ -79,15 +126,79 @@ impl FnCx<'_> {
     /// the value a method is called on before them. A function checked again notes the same
     /// values, so the last check's are kept.
     pub(crate) fn note_handed(&mut self, to: To, span: Span, values: &[&fennec_syntax::Expr]) {
+        let values: Vec<Value> = values
+            .iter()
+            .map(|value| Value {
+                span: value.span,
+                arrow: self.arrow_in(value),
+                ty: None,
+                made_by: made_by(value),
+            })
+            .collect();
+        self.note_values(to, span, values);
+    }
+
+    /// Notes what an operator hands to the method it calls: the value it's on, and what's on the
+    /// right, by their types.
+    pub(crate) fn note_operator(&mut self, key: &str, span: Span, operands: [&Type; 2]) {
+        if self.checker.program.functions.get(key).is_none_or(|entry| entry.prelude) {
+            return;
+        }
+        let values = operands
+            .into_iter()
+            .map(|ty| Value { span, arrow: None, ty: Some(ty.clone()), made_by: Vec::new() })
+            .collect();
+        self.note_values(To::Function(key.to_owned()), span, values);
+    }
+
+    /// Notes a write into a place, or one lent with `ref`: whatever kit's value the place is in
+    /// gets what's written, or for a place lent, what its type can hold.
+    pub(crate) fn note_written(&mut self, place: &fennec_syntax::Expr, value: &fennec_syntax::Expr) {
+        let places = places_of(place);
+        // A name on its own is the function's own, not a place inside a value.
+        if places.len() > 1 {
+            self.note_handed(To::Into(places), value.span, &[value]);
+        }
+    }
+
+    /// Notes a method that changes its value called on a place inside another: what it's given is
+    /// written into whatever holds the place.
+    pub(crate) fn note_into(
+        &mut self,
+        place: &fennec_syntax::Expr,
+        span: Span,
+        values: &[&fennec_syntax::Expr],
+    ) {
+        self.note_handed(To::Into(places_of(place)), span, values);
+    }
+
+    /// Whether calling `method` on a value of type `ty` changes it: a builtin's that does, or a
+    /// method that takes `ref self`.
+    pub(crate) fn changes_value(&self, ty: &Type, method: &str) -> bool {
+        let ty = self.checker.settled(ty);
+        if crate::builtins::method(&ty, method).is_some_and(|found| found.changes) {
+            return true;
+        }
+        ty.type_name()
+            .and_then(|name| self.checker.program.method(name, method))
+            .is_some_and(|(_, entry)| entry.def.params.first().is_some_and(|param| param.is_mut))
+    }
+
+    /// Notes a place lent with `ref` to `callee`, which may write into it.
+    pub(crate) fn note_lent(&mut self, place: &fennec_syntax::Expr, callee: &str) {
+        self.note_handed(To::Lent(places_of(place), callee.to_owned()), place.span, &[place]);
+    }
+
+    fn note_values(&mut self, to: To, span: Span, values: Vec<Value>) {
         if !self.report {
             return;
         }
-        let values: Vec<Value> =
-            values.iter().map(|value| Value { span: value.span, arrow: self.arrow_in(value) }).collect();
         let calls = self.checker.handovers.handed.entry(self.key.clone()).or_default();
-        let handed = calls.entry((span.start, span.end)).or_insert_with(|| Handed { to, values: Vec::new() });
+        let handed = calls
+            .entry(((span.start, span.end), to.key()))
+            .or_insert_with(|| Handed { to, values: Vec::new() });
         for value in values {
-            match handed.values.iter_mut().find(|had| had.span == value.span) {
+            match handed.values.iter_mut().find(|had| had.span == value.span && had.ty == value.ty) {
                 Some(had) => *had = value,
                 None => handed.values.push(value),
             }
@@ -124,6 +235,24 @@ impl FnCx<'_> {
         });
         let arrows = self.checker.handovers.arrows.entry(self.key.clone()).or_default();
         arrows.insert((span.start, span.end), Arrow { reads, params: takes.to_vec() });
+    }
+}
+
+/// Every part of a type, the type itself first.
+fn visit(ty: &Type, look: &mut dyn FnMut(&Type)) {
+    look(ty);
+    for child in ty.children() {
+        visit(child, look);
+    }
+}
+
+/// The arguments of the call a value is made by, if it's a call.
+fn made_by(value: &fennec_syntax::Expr) -> Vec<(u32, u32)> {
+    match &value.kind {
+        ExprKind::Call { args, .. } => {
+            args.iter().map(|arg| (arg.value.span.start, arg.value.span.end)).collect()
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -310,11 +439,23 @@ struct Walk<'c> {
     gathering: bool,
     /// The copies of functions looked at, by key and what their type parameters are.
     seen: BTreeSet<(String, Given)>,
+    /// Each type's methods, by its name.
+    methods: BTreeMap<String, Vec<String>>,
+    /// The nested functions whose captures are being worked out, so one that calls itself ends.
+    capturing: BTreeSet<String>,
 }
 
 impl<'c> Walk<'c> {
     fn new(checker: &'c mut Checker) -> Self {
         let handovers = std::mem::take(&mut checker.handovers);
+        let mut methods: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (key, entry) in &checker.program.functions {
+            if let Some(owner) = &entry.owner
+                && !entry.prelude
+            {
+                methods.entry(owner.clone()).or_default().push(key.clone());
+            }
+        }
         Walk {
             checker,
             handovers,
@@ -323,6 +464,8 @@ impl<'c> Walk<'c> {
             everything: None,
             gathering: false,
             seen: BTreeSet::new(),
+            methods,
+            capturing: BTreeSet::new(),
         }
     }
 
@@ -381,8 +524,12 @@ impl<'c> Walk<'c> {
         let from = self.kit_of(key);
         let mut copies = Vec::new();
         let calls = self.handovers.handed.get(key).cloned().unwrap_or_default();
-        for (span, handed) in &calls {
+        for ((span, _), handed) in &calls {
             let span = Span { start: span.0, end: span.1 };
+            if matches!(handed.to, To::Into(_) | To::Lent(..)) {
+                self.written((key, given), &from, handed);
+                continue;
+            }
             let Some((to, callee)) = self.receiver(key, given, handed) else { continue };
             if let Kit::Named(to) = &to
                 && from != Kit::Named(to.clone())
@@ -400,12 +547,86 @@ impl<'c> Walk<'c> {
                 copies.push((callee, given));
             }
         }
+        copies.extend(self.generic_methods(key, given));
         if let Kit::Named(kit) = &from {
             self.arrows_made(key, given, &kit.clone());
         }
-        self.functions_as_values(key, given, &from);
+        self.functions_as_values(key, given);
         copies.extend(self.named_functions(key, given));
         copies
+    }
+
+    /// The copies of the methods of each generic type of a kit's that a copy of a function has a
+    /// value of, as the value has its parameters: the standard library's code may call one where
+    /// nothing names it, as printing a value calls its `str`.
+    fn generic_methods(&self, key: &str, given: &Given) -> Vec<(String, Given)> {
+        let Some(body) = self.checker.typed.get(key) else { return Vec::new() };
+        let mut made: BTreeSet<(String, Vec<Type>)> = BTreeSet::new();
+        for (_, ty) in body.exprs() {
+            visit(&self.checker.settled(ty).substitute(given), &mut |part| {
+                if let Type::Generic(name, args) = part
+                    && self.methods.contains_key(name)
+                {
+                    made.insert((name.clone(), args.clone()));
+                }
+            });
+        }
+        let mut copies = Vec::new();
+        for (name, args) in made {
+            let Some(info) = self.checker.program.type_info(&name) else { continue };
+            let given: Given =
+                info.def.generics.iter().map(|generic| generic.name.clone()).zip(args).collect();
+            for method in self.methods.get(&name).into_iter().flatten() {
+                copies.push((method.clone(), given.clone()));
+            }
+        }
+        copies
+    }
+
+    /// What a write into a place, or a place lent with `ref`, gives each kit whose value the place
+    /// is in.
+    fn written(&mut self, (key, given): (&str, &Given), from: &Kit, handed: &Handed) {
+        let (places, lent_to) = match &handed.to {
+            To::Into(places) => (places, None),
+            To::Lent(places, callee) => (places, Some(callee.clone())),
+            _ => return,
+        };
+        let mut kits = BTreeSet::new();
+        for place in places {
+            let at = Span { start: place.0, end: place.1 };
+            if let Some(ty) = self.type_at(key, given, at)
+                && let Some(name) = ty.type_name()
+                && let Kit::Named(kit) = self.kit_of_type(name)
+            {
+                kits.insert(kit);
+            }
+        }
+        for kit in kits {
+            if *from == Kit::Named(kit.clone()) {
+                continue;
+            }
+            match &lent_to {
+                // The kit's own code writing into its own value hands it nothing new.
+                Some(callee) if self.kit_of(callee) == Kit::Named(kit.clone()) => {}
+                Some(_) => {
+                    for value in &handed.values {
+                        let ty = self.type_at(key, given, value.span).unwrap_or(Type::Unknown);
+                        let held = self.type_held(&ty);
+                        let by = match from {
+                            Kit::Named(by) => Some(by.clone()),
+                            _ => None,
+                        };
+                        let capabilities = held.capabilities.clone();
+                        self.receive(&kit, &capabilities, value.span, &How::Handed { by, held });
+                    }
+                }
+                None => {
+                    for value in &handed.values {
+                        self.hand_over((key, given), (from, &kit), value);
+                    }
+                }
+            }
+        }
     }
 
     /// The copies of the functions a function names as values, which whatever's handed them can
@@ -446,9 +667,10 @@ impl<'c> Walk<'c> {
         match &handed.to {
             To::Function(callee) => Some((self.kit_of(callee), Some(callee.clone()))),
             To::Type(name) => Some((self.kit_of_type(name), None)),
+            To::Into(_) | To::Lent(..) => None,
             To::Interface(method) => {
                 let object = handed.values.first()?;
-                let ty = self.type_at(key, given, object.span)?;
+                let ty = self.value_type(key, given, object)?;
                 let owner = ty.type_name()?.to_owned();
                 let callee = format!("{owner}.{method}");
                 let kit = self.kit_of_type(&owner);
@@ -499,12 +721,17 @@ impl<'c> Walk<'c> {
     /// Refuses a value handed from one kit's code to another's that holds what the line for it
     /// Notes what a value handed from one kit's code to another's gives the kit it's handed to.
     fn hand_over(&mut self, (key, given): (&str, &Given), (from, to): (&Kit, &str), value: &Value) {
-        let Some(ty) = self.type_at(key, given, value.span) else { return };
-        // A value of the kit's own type was handed to it when it was built, from wherever that was.
-        if ty.type_name().is_some_and(|name| self.kit_of_type(name) == Kit::Named(to.to_owned())) {
-            return;
-        }
-        let held = self.value_held(key, given, &ty, value.arrow);
+        let held = match self.value_type(key, given, value) {
+            // A value of the kit's own type was handed to it when it was built, from wherever that was.
+            Some(ty)
+                if ty.type_name().is_some_and(|name| self.kit_of_type(name) == Kit::Named(to.to_owned())) =>
+            {
+                return;
+            }
+            Some(ty) => self.value_held((key, given), &ty, value),
+            // A value whose type can't be found may hold anything.
+            None => Held { capabilities: self.everything(), unseen: true, ..Held::default() },
+        };
         let by = match from {
             Kit::Named(by) => Some(by.clone()),
             _ => None,
@@ -513,23 +740,40 @@ impl<'c> Walk<'c> {
         self.receive(to, &capabilities, value.span, &How::Handed { by, held });
     }
 
+    /// A value's type, as this copy of the function it's in has it.
+    fn value_type(&self, key: &str, given: &Given, value: &Value) -> Option<Type> {
+        match &value.ty {
+            Some(ty) => Some(self.checker.settled(ty).substitute(given)),
+            None => self.type_at(key, given, value.span),
+        }
+    }
+
+    /// What a function's parameters take, which whoever calls it hands it. A function it takes is
+    /// counted where it's handed over, as one.
+    fn taken(&mut self, params: &[Type], given: &Given) -> BTreeSet<&'static str> {
+        let mut takes = BTreeSet::new();
+        for param in params {
+            let param = self.checker.settled(param).substitute(given);
+            if !matches!(param, Type::Arrow(..) | Type::Function(_)) {
+                takes.extend(self.type_held(&param).capabilities);
+            }
+        }
+        takes
+    }
+
     /// Notes what each arrow function a kit makes takes, which the kit receives: whatever it's
     /// handed to calls it with that.
     fn arrows_made(&mut self, key: &str, given: &Given, kit: &str) {
         let arrows = self.handovers.arrows.get(key).cloned().unwrap_or_default();
         for (span, arrow) in arrows {
-            let mut takes = BTreeSet::new();
-            for param in &arrow.params {
-                let param = self.checker.settled(param).substitute(given);
-                takes.extend(self.type_held(&param).capabilities);
-            }
+            let takes = self.taken(&arrow.params, given);
             self.receive(kit, &takes, Span { start: span.0, end: span.1 }, &How::Made);
         }
     }
 
-    /// Notes what each function of another kit used as a value, not called, takes, which that kit
-    /// receives: whoever holds it can call it with that.
-    fn functions_as_values(&mut self, key: &str, given: &Given, from: &Kit) {
+    /// Notes what each kit's function used as a value, not called, takes, which that kit receives:
+    /// whoever holds it can call it with that, its own kit's code handing it out included.
+    fn functions_as_values(&mut self, key: &str, given: &Given) {
         let Some(body) = self.checker.typed.get(key) else { return };
         let (called, naming) = self.function_names(key);
         let named: Vec<(Span, String)> = body
@@ -545,15 +789,9 @@ impl<'c> Walk<'c> {
             .collect();
         for (span, function) in named {
             let Kit::Named(to) = self.kit_of(&function) else { continue };
-            if *from == Kit::Named(to.clone()) {
-                continue;
-            }
             let Some(signature) = self.checker.signature(&function) else { continue };
-            let mut takes = BTreeSet::new();
-            for param in &signature.params {
-                let param = self.checker.settled(&param.ty).substitute(given);
-                takes.extend(self.type_held(&param).capabilities);
-            }
+            let params: Vec<Type> = signature.params.into_iter().map(|param| param.ty).collect();
+            let takes = self.taken(&params, given);
             self.receive(&to, &takes, span, &How::AsValue { function });
         }
     }
@@ -563,7 +801,6 @@ impl<'c> Walk<'c> {
     fn function_names(&self, key: &str) -> (Spans, Spans) {
         let mut spans = BTreeSet::new();
         let mut naming = BTreeSet::new();
-        let functions = &self.checker.program.functions;
         let mut look = |expr: &fennec_syntax::Expr| {
             if let ExprKind::Call { callee, .. } = &expr.kind {
                 spans.insert((callee.span.start, callee.span.end));
@@ -571,9 +808,9 @@ impl<'c> Walk<'c> {
                     spans.insert((object.span.start, object.span.end));
                 }
             }
-            if let ExprKind::Name(name) = &expr.kind
-                && functions.contains_key(name)
-            {
+            // A name of a function, or of a nested `def` by its own short name: what's typed a
+            // function where it's read.
+            if let ExprKind::Name(_) = &expr.kind {
                 naming.insert((expr.span.start, expr.span.end));
             }
         };
@@ -587,24 +824,26 @@ impl<'c> Walk<'c> {
         (spans, naming)
     }
 
-    /// What a value of type `ty` holds, the arrow function it is when that's known.
-    fn value_held(&mut self, key: &str, given: &Given, ty: &Type, arrow: Option<(u32, u32)>) -> Held {
+    /// What a value of type `ty` holds: for an arrow function, what it reads from around it; for
+    /// an iterator a generator call made right there, what the call was given. Any other function
+    /// or iterator may hold anything the program holds.
+    fn value_held(&mut self, (key, given): (&str, &Given), ty: &Type, value: &Value) -> Held {
         match ty {
             Type::Arrow(..) => {
-                let mut held =
-                    match arrow.and_then(|arrow| self.handovers.arrows.get(key)?.get(&arrow).cloned()) {
-                        Some(made) => {
-                            let mut held = Held::default();
-                            for read in &made.reads {
-                                if let Some(read) = self.type_at(key, given, *read) {
-                                    held.capabilities
-                                        .extend(self.value_held(key, given, &read, None).capabilities);
-                                }
+                let made = value.arrow.and_then(|arrow| self.handovers.arrows.get(key)?.get(&arrow).cloned());
+                let mut held = match made {
+                    Some(made) => {
+                        let mut held = Held::default();
+                        for read in &made.reads {
+                            if let Some(read) = self.type_at(key, given, *read) {
+                                let captured = self.value_held((key, given), &read, &Value::of(read.clone()));
+                                held.capabilities.extend(captured.capabilities);
                             }
-                            held
                         }
-                        None => Held { capabilities: self.everything(), unseen: true, ..Held::default() },
-                    };
+                        held
+                    }
+                    None => Held { capabilities: self.everything(), unseen: true, ..Held::default() },
+                };
                 held.function = true;
                 held
             }
@@ -613,6 +852,21 @@ impl<'c> Walk<'c> {
                 held.function = true;
                 held
             }
+            Type::Iterator(_) if !value.made_by.is_empty() && value.ty.is_none() => {
+                let mut held = Held { function: true, ..Held::default() };
+                for given_to in &value.made_by {
+                    let at = Span { start: given_to.0, end: given_to.1 };
+                    if let Some(arg) = self.type_at(key, given, at) {
+                        held.capabilities.extend(
+                            self.value_held((key, given), &arg, &Value::of(arg.clone())).capabilities,
+                        );
+                    }
+                }
+                held
+            }
+            Type::Iterator(_) => {
+                Held { capabilities: self.everything(), unseen: true, function: true, ..Held::default() }
+            }
             other => self.type_held(other),
         }
     }
@@ -620,6 +874,19 @@ impl<'c> Walk<'c> {
     /// What a named function captures: nothing for one at the top of a file, and for a nested
     /// `def`, what it reads that isn't its own.
     fn captured_by(&mut self, function: &str) -> BTreeSet<&'static str> {
+        let nested = self.checker.program.functions.get(function).is_some_and(|entry| entry.owner.is_none())
+            && self.checker.outermost(function) != function;
+        // One at the top of a file captures nothing; one already being looked at, as a function
+        // that calls itself, adds nothing more.
+        if !nested || !self.capturing.insert(function.to_owned()) {
+            return BTreeSet::new();
+        }
+        let held = self.captures_of(function);
+        self.capturing.remove(function);
+        held
+    }
+
+    fn captures_of(&mut self, function: &str) -> BTreeSet<&'static str> {
         let Some(body) = self.checker.typed.get(function) else { return BTreeSet::new() };
         let own: BTreeSet<&str> = body.names().map(|(_, name, _)| name).collect();
         let Some(entry) = self.checker.program.functions.get(function) else { return BTreeSet::new() };
@@ -636,7 +903,7 @@ impl<'c> Walk<'c> {
         let mut held = BTreeSet::new();
         for ty in types {
             let ty = self.checker.settled(&ty);
-            held.extend(self.value_held(function, &Vec::new(), &ty, None).capabilities);
+            held.extend(self.value_held((function, &Vec::new()), &ty, &Value::of(ty.clone())).capabilities);
         }
         held
     }
@@ -684,15 +951,20 @@ impl<'c> Walk<'c> {
             Type::Named(name) | Type::Generic(name, _) if held_as(name).is_some() => {
                 held.extend(held_as(name));
             }
-            // A function in a value may hold anything: what it captures can't be seen from here.
-            Type::Arrow(..) => {
-                if open.is_empty() {
-                    return BTreeSet::new();
-                }
-                held.extend(self.everything());
+            // A function or an iterator inside a value may hold anything: what it captures can't be
+            // seen from here. A named one holds what it captures. A type parameter left unknown
+            // may be anything the program holds too.
+            Type::Arrow(..) | Type::Iterator(_) | Type::Param(_) => held.extend(self.everything()),
+            Type::Function(function) => {
+                let function = function.clone();
+                held.extend(self.captured_by(&function));
             }
-            // A type parameter left unknown may be anything the program holds.
-            Type::Param(_) => held.extend(self.everything()),
+            // A failure from one of several holds what each of its errors does.
+            Type::Errors(names) => {
+                for name in names.clone() {
+                    held.extend(self.capabilities_in(&Type::named(&name), open));
+                }
+            }
             _ => {}
         }
         for child in ty.children() {

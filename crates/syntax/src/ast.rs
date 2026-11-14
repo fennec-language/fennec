@@ -16,11 +16,26 @@ pub struct Module {
 }
 
 /// The capabilities a dependency can be handed, by their type in code: the program's ways to reach
-/// outside it, and `File` and `Database`, which reach a file or storage already open. A `Secret`
-/// isn't one: it carries no authority.
-pub const HOLDABLE: [&str; 13] = [
-    "Stdout", "Stderr", "Stdin", "Args", "Env", "Fs", "File", "Net", "Database", "Clock", "Entropy",
-    "Process", "Signals",
+/// outside it, and `File`, `Server`, `Connection`, `UdpSocket` and `Database`, which reach a file,
+/// the network or storage through what they have open. A `Secret` isn't one: it carries no
+/// authority.
+pub const HOLDABLE: [&str; 16] = [
+    "Stdout",
+    "Stderr",
+    "Stdin",
+    "Args",
+    "Env",
+    "Fs",
+    "File",
+    "Net",
+    "Server",
+    "Connection",
+    "UdpSocket",
+    "Database",
+    "Clock",
+    "Entropy",
+    "Process",
+    "Signals",
 ];
 
 /// What each kit a program depends on is accepted as holding: the `holds` lines of `kit.lock`,

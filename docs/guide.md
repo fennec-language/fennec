@@ -66,8 +66,8 @@ holds saves Clock Fs
 - **Handing a kit less never stops anything.** `fennec update` narrows the lock, and says so.
 - **`fennec update --check` is for CI.** It fails when `kit.lock` isn't what the code hands over, either way. It reaches no network and writes nothing.
 - **Every kit counts,** the ones your dependencies depend on too: the compiler sees the whole program.
-- **It counts however a capability is held:** passed to a kit's function, held in a struct or a list you hand it, or captured by a function you hand it. Through a generic function, a value is what it is in the copy your program makes. A function whose making can't be seen, as one you were handed, may hold anything your program holds: write it where you hand it over, and only what it reads counts.
-- **A capability is one of the ten, `Net`, a `File` or a `Database`.** A `Secret` isn't: it carries no authority.
+- **It counts however a capability is held:** passed to a kit's function or operator, held in a struct or a list you hand it, written into a kit's value after it's built, or captured by a function or an iterator you hand it. Through a generic function, a value is what it is in the copy your program makes. A function whose making can't be seen, as one you were handed, may hold anything your program holds: write it where you hand it over, and only what it reads counts.
+- **A capability is one of the ten, `Net`, or an open handle: a `File`, a `Server`, a `Connection`, a `UdpSocket` or a `Database`.** A `Secret` isn't: it carries no authority.
 
 `kit.toml` has no `gets`: what a kit is handed is worked out, and accepted in `kit.lock`.
 

@@ -3873,6 +3873,237 @@ fn a_run_checks_again_once_kit_lock_changes() {
     assert!(text(&ran.stderr).contains("`helper` would now receive an `Fs` here"), "{}", text(&ran.stderr));
 }
 
+/// Each program in turn, with its helper kit's `lib.fen`, stops with `says`, through `check` and
+/// `build`, and `fix` changes nothing.
+fn each_stops(kits: &Kits, cases: &[(&str, &str, &str)]) -> std::io::Result<()> {
+    for (main, lib, says) in cases {
+        kits.write("app", "src/main.fen", main)?;
+        kits.write("helper", "src/lib.fen", lib)?;
+        let said = kits.refused()?;
+        assert!(said.contains(says), "{main}\n{said}");
+    }
+    Ok(())
+}
+
+/// What's written into a kit's value after it's built is handed to the kit, whose code reads it
+/// later: a field set, an item appended or set, a place lent with `ref` to a function that writes
+/// it. So is what an operator of the kit's type is given, the value on its right.
+#[test]
+fn what_goes_into_a_kits_value_after_its_built_is_handed_to_it() {
+    let holder = "export struct Holder:\n    files: Fs?\n    items: list[Fs]\n    slots: dict[str, Fs]\n\n\
+                  export def empty() -> Holder:\n    return Holder(files=None, items=[], slots={})\n\n\
+                  export def count(holder: Holder) -> int:\n    return len(holder.items)\n";
+    let sink = "export struct Sink:\n    name: str\n\n    def +(self, other: Fs) -> Sink:\n        return self\n\n    \
+                def ==[T](self, other: T) -> bool:\n        return False\n";
+    let kits = Kits::new(
+        "holds-writes",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", "def main():\n    pass\n"),
+        &[("helper", "", holder)],
+    )
+    .unwrap();
+    each_stops(
+        &kits,
+        &[
+            (
+                "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    mut holder = helper.empty()\n    holder.files = fs\n    stdout.print(helper.count(holder))\n",
+                holder,
+                "`helper` would now receive an `Fs` here",
+            ),
+            (
+                "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    mut holder = helper.empty()\n    holder.items.append(fs)\n    stdout.print(helper.count(holder))\n",
+                holder,
+                "`helper` would now receive an `Fs` here",
+            ),
+            (
+                "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    mut holder = helper.empty()\n    holder.slots[\"a\"] = fs\n    stdout.print(helper.count(holder))\n",
+                holder,
+                "`helper` would now receive an `Fs` here",
+            ),
+            (
+                "import helper\n\ndef fill(ref slot: Fs?, fs: Fs):\n    slot = fs\n\n\
+                 def main(fs: Fs, stdout: Stdout):\n    mut holder = helper.empty()\n    fill(ref holder.files, fs=fs)\n    stdout.print(helper.count(holder))\n",
+                holder,
+                "`helper` would now receive an `Fs`",
+            ),
+            (
+                "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    sink = helper.Sink(name=\"x\") + fs\n    stdout.print(sink.name)\n",
+                sink,
+                "`helper` would now receive an `Fs` here",
+            ),
+            (
+                "import helper\n\nstruct Mine:\n    files: Fs\n\ndef main(fs: Fs, stdout: Stdout):\n    \
+                 stdout.print(helper.Sink(name=\"x\") == Mine(files=fs))\n",
+                sink,
+                "`helper` would now receive an `Fs`, in a `Mine`, here",
+            ),
+        ],
+    )
+    .unwrap();
+}
+
+/// A function a kit hands out is called with what its parameters take, a named one and a nested
+/// `def` too, and a function inside a list, an open network handle, a failure from one of several,
+/// and a generator the program hands over each hold what's in them.
+#[test]
+fn functions_handles_and_failures_a_kit_is_handed_count_whatever_holds_them() {
+    let keep = "export def keep[T](value: T) -> int:\n    return 1\n";
+    let kits = Kits::new(
+        "holds-inside",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", "def main():\n    pass\n"),
+        &[("helper", "", keep)],
+    )
+    .unwrap();
+    each_stops(
+        &kits,
+        &[
+            (
+                "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    work = helper.make()\n    stdout.print(work(fs))\n",
+                "def take(fs: Fs) -> int:\n    return 1\n\nexport def make() -> (Fs) -> int:\n    return take\n",
+                "`helper.take` takes an `Fs` and is used here as a value",
+            ),
+            (
+                "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    work = helper.make(3)\n    stdout.print(work(fs))\n",
+                "export def make(n: int) -> (Fs) -> int:\n    def inner(fs: Fs) -> int:\n        return n\n    return inner\n",
+                "takes an `Fs` and is used here as a value",
+            ),
+            (
+                "import helper\n\ndef peek(fs: Fs) -> int:\n    return 1\n\ndef main(fs: Fs, stdout: Stdout):\n    \
+                 stdout.print(helper.run_all([() => peek(fs)]))\n",
+                "export def run_all(works: list[() -> int]) -> int:\n    mut total = 0\n    for work in works:\n        total += work()\n    return total\n",
+                "`helper` would now receive",
+            ),
+            (
+                "import helper\n\nerror Lost:\n    files: Fs\n\nerror Late:\n    seconds: int\n\n\
+                 def risky(fs: Fs, late: bool) -> int fails Lost | Late:\n    if late:\n        fail Late(seconds=3)\n    fail Lost(files=fs)\n\n\
+                 def main(fs: Fs, stdout: Stdout):\n    got = risky(fs, late=False) except why:\n        helper.keep(why)\n    stdout.print(got)\n",
+                keep,
+                "`helper` would now receive an `Fs`",
+            ),
+            (
+                "from std.net import NetError\nimport helper\n\ndef main(net: Net, stdout: Stdout) fails NetError:\n    \
+                 with net.listen(9000)? as server:\n        stdout.print(helper.keep(server))\n",
+                keep,
+                "`helper` would now receive a `Server` here",
+            ),
+            (
+                "import helper\n\ndef countdown(out: Stdout, start: int) -> Iterator[int]:\n    mut at = start\n    while at > 0:\n        \
+                 out.print(at)\n        yield at\n        at -= 1\n\ndef main(stdout: Stdout):\n    stdout.print(helper.drain(countdown(stdout, start=3)))\n",
+                "export def drain(items: Iterator[int]) -> int:\n    mut total = 0\n    for item in items:\n        total += item\n    return total\n",
+                "`helper` would now receive a function that holds a `Stdout` here",
+            ),
+        ],
+    )
+    .unwrap();
+}
+
+/// A generic type's method that only the standard library calls, as printing calls `str`, is
+/// followed in the copy for each type the program has a value of, and a method called on a union of
+/// two kits' types hands each kit's own method what the call gives.
+#[test]
+fn a_generic_types_method_std_calls_and_each_member_of_a_union_count() {
+    let boxed = "import inner\n\nexport struct Box[T]:\n    value: T\n\n    def str(self, ref out: StrWriter):\n        \
+                 out.write(str(inner.keep(self.value)))\n";
+    let inner = "export def keep[T](value: T) -> int:\n    return 1\n";
+    let kits = Kits::new(
+        "holds-generic-method",
+        (
+            "[dependencies]\nhelper = { path = \"../helper\" }\n",
+            "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(helper.Box(value=fs))\n",
+        ),
+        &[("helper", "[dependencies]\ninner = { path = \"../inner\" }\n", boxed), ("inner", "", inner)],
+    )
+    .unwrap();
+    let said = kits.refused().unwrap();
+    assert!(said.contains("`inner` would now receive an `Fs` here, from `helper`'s code"), "{said}");
+    let left =
+        "export struct Left:\n    name: str\n\n    def handle(self, fs: Fs) -> int:\n        return 1\n";
+    let right =
+        "export struct Right:\n    name: str\n\n    def handle(self, fs: Fs) -> int:\n        return 2\n";
+    let kits = Kits::new(
+        "holds-union",
+        (
+            "[dependencies]\nhelper = { path = \"../helper\" }\nother = { path = \"../other\" }\n",
+            "import helper\nimport other\n\ndef pick(first: bool) -> helper.Left | other.Right:\n    if first:\n        \
+             return helper.Left(name=\"l\")\n    return other.Right(name=\"r\")\n\n\
+             def main(fs: Fs, stdout: Stdout):\n    thing = pick(False)\n    stdout.print(thing.handle(fs))\n",
+        ),
+        &[("helper", "", left), ("other", "", right)],
+    )
+    .unwrap();
+    let said = kits.refused().unwrap();
+    assert!(
+        said.contains("`helper` would now receive an `Fs` here")
+            && said.contains("`other` would now receive an `Fs` here"),
+        "{said}"
+    );
+}
+
+/// A function that calls itself, handed to a kit, checks: what it captures is worked out once,
+/// whether it's at the top of a file, nested, or one of two that call each other.
+#[test]
+fn a_function_that_calls_itself_handed_to_a_kit_checks() {
+    let apply = "export def apply(work: (int) -> int) -> int:\n    return work(3)\n";
+    let kits = Kits::new(
+        "holds-recursive",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", "def main():\n    pass\n"),
+        &[("helper", "", apply)],
+    )
+    .unwrap();
+    for main in [
+        "import helper\n\ndef count(n: int) -> int:\n    if n == 0:\n        return 0\n    return 1 + count(n - 1)\n\n\
+         def main(stdout: Stdout):\n    stdout.print(helper.apply(count))\n",
+        "import helper\n\ndef main(stdout: Stdout):\n    def count(n: int) -> int:\n        if n == 0:\n            return 0\n        \
+         return 1 + count(n - 1)\n    stdout.print(helper.apply(count))\n",
+        "import helper\n\ndef even(n: int) -> int:\n    if n == 0:\n        return 1\n    return odd(n - 1)\n\n\
+         def odd(n: int) -> int:\n    if n == 0:\n        return 0\n    return even(n - 1)\n\n\
+         def main(stdout: Stdout):\n    stdout.print(helper.apply(even))\n",
+    ] {
+        kits.write("app", "src/main.fen", main).unwrap();
+        kits.checks().unwrap();
+        let current = kits.fennec(&["update", "--check"]).unwrap();
+        assert!(current.status.success(), "{main}\n{}", text(&current.stderr));
+    }
+}
+
+/// After warm runs, an edit to a generic function in another of the program's files that starts
+/// handing its value on to a kit stops the next run, as does one handing on a function whose
+/// making can't be seen: the run's quick check of the changed file doesn't decide it alone.
+#[test]
+fn a_run_after_an_edit_in_another_file_stops_at_what_it_starts_handing_on() {
+    if !crate::llvm::ready() {
+        return;
+    }
+    let helper = "export def keep[T](value: T) -> int:\n    return 1\n\nexport def apply(step: () -> int) -> int:\n    return step()\n";
+    let main = "import helper\nimport util\n\ndef peek(fs: Fs) -> int:\n    return 1\n\n\
+                def main(fs: Fs, stdout: Stdout):\n    stdout.print(util.pass_on(fs))\n    stdout.print(util.run(() => peek(fs)))\n";
+    let kits = Kits::new(
+        "holds-edited-run",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", main),
+        &[("helper", "", helper)],
+    )
+    .unwrap();
+    let util = |pass_on: &str, run: &str| {
+        format!(
+            "import helper\n\nexport def pass_on[T](value: T) -> int:\n    {pass_on}\n\nexport def run(step: () -> int) -> int:\n    {run}\n"
+        )
+    };
+    kits.write("app", "src/util.fen", &util("return 1", "return step()")).unwrap();
+    for _ in 0..2 {
+        let ran = kits.fennec(&["run", "--no-test", "."]).unwrap();
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+    }
+    kits.write("app", "src/util.fen", &util("return helper.keep(value)", "return step()")).unwrap();
+    let ran = kits.fennec(&["run", "--no-test", "."]).unwrap();
+    assert!(text(&ran.stderr).contains("`helper` would now receive an `Fs` here"), "{}", text(&ran.stderr));
+    kits.write("app", "src/util.fen", &util("return 1", "return helper.apply(step)")).unwrap();
+    let ran = kits.fennec(&["run", "--no-test", "."]).unwrap();
+    assert!(
+        text(&ran.stderr).contains("`helper` would now receive a function here whose making can't be seen"),
+        "{}",
+        text(&ran.stderr)
+    );
+}
+
 /// What isn't handed to another kit is never stopped at: passing a capability to the standard
 /// library, a dependency calling back into the program's own code through an interface, and
 /// values of the dependency's own types that hold nothing.

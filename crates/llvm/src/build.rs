@@ -186,12 +186,13 @@ pub fn sanitize_flag() -> Option<String> {
 #[must_use]
 pub fn output_switches() -> String {
     format!(
-        "sanitize={:?} proofs_checked={} facts_stripped={} results_in_place={} types_in_place={} audited={}",
+        "sanitize={:?} proofs_checked={} facts_stripped={} results_in_place={} types_in_place={} dict_values_in_place={} audited={}",
         sanitizer(),
         crate::emit::proofs_checked(),
         crate::emit::facts_stripped(),
         fennec_layout::results_in_place(),
         fennec_layout::types_in_place(),
+        fennec_layout::dict_values_in_place(),
         audited()
     )
 }

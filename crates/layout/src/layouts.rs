@@ -68,6 +68,10 @@ pub struct Layouts {
     /// The types laid out by `add_through_lists`, whose items a list's description names by
     /// their place here.
     through_lists: Vec<u32>,
+    /// The plain types a dict holds in its entries, in the order each was first asked for. One
+    /// goes by its place here, counted on from the types laid out through lists, which is the
+    /// number the runtime's tables give that kind of item (see `Registry::numbered`).
+    dict_values: std::cell::RefCell<Vec<u32>>,
     /// The types decided to be blocks before anything was laid out, when they were (see
     /// [`boxed_types`]): no pass lays one of them out in place, and every other is.
     decided: Option<BTreeSet<String>>,
@@ -788,12 +792,45 @@ impl Layouts {
             return None;
         }
         match value {
+            Ty::Struct(id) if dict_values_in_place() => self.dict_value_number(id).map(Word::InPlace),
             Ty::Struct(id) => Some(Word::Plain(id)),
             // An optional string is three words, where strings are headers.
             Ty::Maybe(Block::Str) if self.text_headers() => None,
             value if value.counted() => self.block_number(value).map(Word::Block),
             _ => None,
         }
+    }
+
+    /// The number a plain type goes by as a dict's value held in the entry: its place among the
+    /// types laid out through lists, if it's one, or after them in the order it was first asked
+    /// for here.
+    fn dict_value_number(&self, id: u32) -> Option<u32> {
+        if let Some(at) = self.through_lists(id) {
+            return u32::try_from(at).ok();
+        }
+        let mut values = self.dict_values.borrow_mut();
+        let at = values.iter().position(|known| *known == id).unwrap_or_else(|| {
+            values.push(id);
+            values.len() - 1
+        });
+        u32::try_from(self.through_lists.len() + at).ok()
+    }
+
+    /// The plain type a dict holds in its entries under this number.
+    #[must_use]
+    pub fn dict_value(&self, number: u32) -> Option<u32> {
+        let at = usize::try_from(number).ok()?;
+        if let Some(id) = self.through_lists.get(at) {
+            return Some(*id);
+        }
+        self.dict_values.borrow().get(at.checked_sub(self.through_lists.len())?).copied()
+    }
+
+    /// The plain types dicts hold in their entries that aren't laid out through lists, in the
+    /// order of their numbers.
+    #[must_use]
+    pub fn dict_values(&self) -> Vec<u32> {
+        self.dict_values.borrow().clone()
     }
 
     /// How many kinds of block have numbers.
@@ -848,6 +885,15 @@ impl Layouts {
 #[must_use]
 pub fn types_in_place() -> bool {
     std::env::var("FENNEC_BOXED_TYPES").as_deref() != Ok("1")
+}
+
+/// Whether a dict holds a plain struct, enum or tuple in its entries, where it holds the address of
+/// a block made for each one. Only with `FENNEC_DICT_VALUES_IN_PLACE=1` while it's being built: the
+/// backend doesn't take every use of such a dict yet. It changes what a build makes, so a build's
+/// cache key says it.
+#[must_use]
+pub fn dict_values_in_place() -> bool {
+    std::env::var("FENNEC_DICT_VALUES_IN_PLACE").as_deref() == Ok("1")
 }
 
 /// Whether a result is kept in place, as it is unless `FENNEC_BOXED_RESULTS=1` keeps each a block of

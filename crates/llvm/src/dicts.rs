@@ -57,6 +57,13 @@ fn find_start(name: &str, key_type: &str, strong: &str) -> String {
     find_start_wide(name, key_type, ENTRY_WORDS, strong)
 }
 
+/// A lookup helper's name for entries `width` words wide: its own for a dict of one-word values,
+/// which are `usual` wide, and one with the width in it for a dict that holds its values in
+/// the entry.
+fn named_for(name: &str, width: usize, usual: usize) -> String {
+    if width == usual { name.to_owned() } else { format!("{name}_e{width}") }
+}
+
 /// [`find_start`] for entries `width` words wide.
 fn find_start_wide(name: &str, key_type: &str, width: usize, strong: &str) -> String {
     let header = header_bytes();
@@ -71,7 +78,24 @@ impl Emit<'_, '_, '_> {
         if word == Word::Str && self.headers() {
             return Some(Kind::TextBlock);
         }
+        // A value held in the entry is the plain type its number names.
+        if let Word::InPlace(number) = word {
+            let id = self.module.layouts.dict_value(number)?;
+            return Kind::from_ty(self.module.layouts, Ty::Struct(id));
+        }
         Kind::from_ty(self.module.layouts, word_ty(word))
+    }
+
+    /// How many words an entry takes in a dict with these keys and values: its hash, its key, and
+    /// its value, which is one word unless it's held in the entry itself.
+    fn stride(&self, key: Word, value: Word) -> usize {
+        let held = match value {
+            Word::InPlace(_) => self
+                .word_kind(value)
+                .map_or(1, |kind| usize::try_from(kind.size(self.module.layouts) / 8).unwrap_or(1)),
+            _ => 1,
+        };
+        entry_words(key) - 1 + held
     }
 
     /// The number of the shape of a dict with these keys and values, which the runtime sets.
@@ -176,11 +200,13 @@ impl Emit<'_, '_, '_> {
         self.declare("declare i64 @llvm.fshl.i64(i64, i64, i64)");
     }
 
-    /// The address of a key's entry, or zero.
-    fn find(&mut self, dict: &str, word: Word, key: &str) -> String {
+    /// The address of a key's entry, or zero, in a dict of these keys and values. A dict that
+    /// holds its values in the entry has wider entries, so its lookups are functions of their own.
+    fn find(&mut self, dict: &str, (word, value): (Word, Word), key: &str) -> String {
         self.strong_hash_helpers();
+        let (width, usual) = (self.stride(word, value), entry_words(word));
         if matches!(word, Word::Float | Word::F32) {
-            return self.find_float_key(dict, key);
+            return self.find_float_key(dict, key, width);
         }
         if let Word::Plain(id) = word
             && self.key_by_value(id)
@@ -192,9 +218,10 @@ impl Emit<'_, '_, '_> {
         if word == Word::Text {
             let (bytes, length) = (self.header_bytes(key), self.header_byte_length(key));
             // An inline key's header is copied whole where `header_bytes` puts it.
-            return self.find_text_key(dict, (&bytes, KeyBytes::Header), &length);
+            return self.find_text_key(dict, (&bytes, KeyBytes::Header), &length, width);
         }
         if word == Word::Str && self.headers() {
+            debug_assert_eq!(width, usual, "a dict of block keys holds one-word values");
             self.string_slice_helpers();
             let (bytes, length) = (self.header_bytes(key), self.header_byte_length(key));
             let (mixed, high, folded, hash, entry) =
@@ -215,16 +242,17 @@ impl Emit<'_, '_, '_> {
                 let strong = format!(
                     "  %length_at = getelementptr inbounds i8, ptr %key, i64 {TEXT_BYTES}\n  %length = load i64, ptr %length_at\n  %text_at = getelementptr inbounds i8, ptr %key, i64 {TEXT}\n  %strong_hash = call i64 @fen_strong_bytes(ptr %text_at, i64 %length)\n"
                 );
-                let mut text = find_start("fen_find_text", "ptr", &strong);
+                let name = named_for("fen_find_text", width, usual);
+                let mut text = find_start_wide(&name, "ptr", width, &strong);
                 text += "  %other = load ptr, ptr %other_at\n  %same = icmp eq ptr %other, %key\n  br i1 %same, label %found, label %text\ntext:\n  %equal = call i8 @fennec_box_equal(ptr %other, ptr %key)\n  %is = icmp ne i8 %equal, 0\n  br i1 %is, label %found, label %next\n}\n\n";
-                self.module.add_helper("fen_find_text", text);
-                ("fen_find_text".to_owned(), "ptr")
+                self.module.add_helper(&name, text);
+                (name, "ptr")
             }
             Word::Plain(id) => {
                 let words = self.module.layouts.get(id).map_or(0, |layout| layout.size / 8);
-                let name = format!("fen_find_words{words}");
+                let name = named_for(&format!("fen_find_words{words}"), width, usual);
                 let strong = format!("  %strong_hash = call i64 @fen_strong_words(ptr %key, i64 {words})\n");
-                let mut text = find_start(&name, "ptr", &strong);
+                let mut text = find_start_wide(&name, "ptr", width, &strong);
                 text += "  %other = load ptr, ptr %other_at\n  br label %w0\n";
                 for at in 0..words {
                     let after = if at + 1 == words { "found".to_owned() } else { format!("w{}", at + 1) };
@@ -239,10 +267,11 @@ impl Emit<'_, '_, '_> {
                 (name, "ptr")
             }
             _ => {
-                let mut text = find_start("fen_find_int", "i64", STRONG_WORD);
+                let name = named_for("fen_find_int", width, usual);
+                let mut text = find_start_wide(&name, "i64", width, STRONG_WORD);
                 text += "  %other = load i64, ptr %other_at\n  %same = icmp eq i64 %other, %key\n  br i1 %same, label %found, label %next\n}\n\n";
-                self.module.add_helper("fen_find_int", text);
-                ("fen_find_int".to_owned(), "i64")
+                self.module.add_helper(&name, text);
+                (name, "i64")
             }
         };
         let entry = self.temp();
@@ -278,7 +307,7 @@ impl Emit<'_, '_, '_> {
     /// The entry of a float key, given as its bits. Floats have one equality, with `-0.0` the same
     /// as `0.0` and every NaN the same, so they're hashed and compared as one form of each, while
     /// the entry keeps the key as it was written.
-    fn find_float_key(&mut self, dict: &str, key: &str) -> String {
+    fn find_float_key(&mut self, dict: &str, key: &str, width: usize) -> String {
         let nan = f64::NAN.to_bits().cast_signed();
         self.module.add_helper(
             "fen_float_key",
@@ -286,21 +315,28 @@ impl Emit<'_, '_, '_> {
                 "define internal i64 @fen_float_key(i64 %bits) #0 {{\nentry:\n  %value = bitcast i64 %bits to double\n  %zero = fcmp oeq double %value, 0x0000000000000000\n  %nan = fcmp uno double %value, %value\n  %plain = select i1 %zero, i64 0, i64 %bits\n  %key = select i1 %nan, i64 {nan}, i64 %plain\n  ret i64 %key\n}}\n\n"
             ),
         );
-        let mut text = find_start("fen_find_float", "i64", STRONG_WORD);
+        let name = named_for("fen_find_float", width, ENTRY_WORDS);
+        let mut text = find_start_wide(&name, "i64", width, STRONG_WORD);
         text += "  %other = load i64, ptr %other_at\n  %other_key = call i64 @fen_float_key(i64 %other)\n  %same = icmp eq i64 %other_key, %key\n  br i1 %same, label %found, label %next\n}\n\n";
-        self.module.add_helper("fen_find_float", text);
+        self.module.add_helper(&name, text);
         let wanted = self.temp();
         self.line(&format!("{wanted} = call i64 @fen_float_key(i64 {key})"));
         let hash = self.hash(Word::Int, &wanted);
         let entry = self.temp();
-        self.line(&format!("{entry} = call ptr @fen_find_float(ptr {dict}, i64 {wanted}, i64 {hash})"));
+        self.line(&format!("{entry} = call ptr @{name}(ptr {dict}, i64 {wanted}, i64 {hash})"));
         entry
     }
 
     /// The entry of the string key with these bytes in a dict whose keys are held as headers,
     /// or null: hashed as a block's text is, and compared by bytes, inline keys where they lie.
-    fn find_text_key(&mut self, dict: &str, (bytes, from): (&str, KeyBytes), length: &str) -> String {
-        let short_find = self.find_short_key_helper(from);
+    fn find_text_key(
+        &mut self,
+        dict: &str,
+        (bytes, from): (&str, KeyBytes),
+        length: &str,
+        width: usize,
+    ) -> String {
+        let short_find = self.find_short_key_helper(from, width);
         let (short, quick, slow, joined) =
             (self.temp(), self.label("short_key"), self.label("long_key"), self.label("key_found"));
         self.line(&format!("{short} = icmp ule i64 {length}, 23"));
@@ -310,7 +346,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{found_short} = call ptr @{short_find}(ptr {dict}, ptr {bytes}, i64 {length})"));
         self.line(&format!("br label %{joined}"));
         self.start_block(&slow);
-        let found_long = self.find_long_text_key(dict, bytes, length);
+        let found_long = self.find_long_text_key(dict, bytes, length, width);
         let long_end = self.current.clone();
         self.line(&format!("br label %{joined}"));
         self.start_block(&joined);
@@ -320,23 +356,22 @@ impl Emit<'_, '_, '_> {
     }
 
     /// [`Self::find_text_key`] for a key of any length, compared by its bytes.
-    fn find_long_text_key(&mut self, dict: &str, bytes: &str, length: &str) -> String {
+    fn find_long_text_key(&mut self, dict: &str, bytes: &str, length: &str, width: usize) -> String {
         self.string_slice_helpers();
-        let mut find = find_start_wide("fen_find_header_key", "ptr", entry_words(Word::Text), STRONG_BYTES)
+        let name = named_for("fen_find_header_key", width, entry_words(Word::Text));
+        let mut find = find_start_wide(&name, "ptr", width, STRONG_BYTES)
             .replace("(ptr %d, ptr %key, i64 %given)", "(ptr %d, ptr %key, i64 %length, i64 %given)");
         find += &format!(
             "  %last_at = getelementptr inbounds i8, ptr %entry_at, i64 24\n  %last = load i64, ptr %last_at\n  %inline = icmp slt i64 %last, 0\n  br i1 %inline, label %short, label %long\nshort:\n  %tag = lshr i64 %last, 56\n  %short_length = and i64 %tag, 127\n  %same_short = icmp eq i64 %short_length, %length\n  br i1 %same_short, label %short_bytes, label %next\nshort_bytes:\n  %short_order = call i32 @memcmp(ptr %other_at, ptr %key, i64 %length)\n  %short_equal = icmp eq i32 %short_order, 0\n  br i1 %short_equal, label %found, label %next\nlong:\n  %other = load ptr, ptr %other_at\n  %long_length_at = getelementptr inbounds i8, ptr %other, i64 {TEXT_BYTES}\n  %long_length = load i64, ptr %long_length_at\n  %same_long = icmp eq i64 %long_length, %length\n  br i1 %same_long, label %long_bytes, label %next\nlong_bytes:\n  %their_text = getelementptr inbounds i8, ptr %other, i64 {TEXT}\n  %long_order = call i32 @memcmp(ptr %their_text, ptr %key, i64 %length)\n  %long_equal = icmp eq i32 %long_order, 0\n  br i1 %long_equal, label %found, label %next\n}}\n\n"
         );
-        self.module.add_helper("fen_find_header_key", find);
+        self.module.add_helper(&name, find);
         let (mixed, high, folded, hash, entry) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{mixed} = call i64 @fen_slice_hash(ptr {bytes}, i64 {length})"));
         self.line(&format!("{high} = lshr i64 {mixed}, 29"));
         self.line(&format!("{folded} = xor i64 {mixed}, {high}"));
         self.line(&format!("{hash} = lshr i64 {folded}, 1"));
-        self.line(&format!(
-            "{entry} = call ptr @fen_find_header_key(ptr {dict}, ptr {bytes}, i64 {length}, i64 {hash})"
-        ));
+        self.line(&format!("{entry} = call ptr @{name}(ptr {dict}, ptr {bytes}, i64 {length}, i64 {hash})"));
         entry
     }
 
@@ -568,10 +603,10 @@ impl Emit<'_, '_, '_> {
         // again, is searched here.
         let reused = found.and_then(|entry| Some((self.searched.get(&entry)?.clone(), entry)));
         let entry = if let Some(reused) = reused {
-            self.entry_if_searched(&dict, reused, (key, key_word))?
+            self.entry_if_searched(&dict, reused, (key, key_word, value_word))?
         } else {
             let key = self.key_value(key, key_word)?;
-            self.find(&dict, key_word, &key)
+            self.find(&dict, (key_word, value_word), &key)
         };
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
@@ -612,7 +647,7 @@ impl Emit<'_, '_, '_> {
         &mut self,
         dict: &str,
         (searched, entry): (String, String),
-        (key, key_word): (&Operand, Word),
+        (key, key_word, value_word): (&Operand, Word, Word),
     ) -> Result<String, String> {
         let (same, look, have) = (self.temp(), self.label("look"), self.label("have"));
         self.line(&format!("{same} = icmp eq ptr {dict}, {searched}"));
@@ -620,7 +655,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br i1 {same}, label %{have}, label %{look}"));
         self.start_block(&look);
         let key = self.key_value(key, key_word)?;
-        let looked = self.find(dict, key_word, &key);
+        let looked = self.find(dict, (key_word, value_word), &key);
         let looked_from = self.current.clone();
         self.line(&format!("br label %{have}"));
         self.start_block(&have);
@@ -662,7 +697,7 @@ impl Emit<'_, '_, '_> {
         // With the dict alone, it's the same block the lookup searched, unchanged since.
         let entry = match found {
             Some(entry) => entry,
-            None => self.find(&dict, key_word, &key),
+            None => self.find(&dict, (key_word, value_word), &key),
         };
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
@@ -817,7 +852,7 @@ impl Emit<'_, '_, '_> {
             None => dict,
         };
         let key = self.key_value(key, key_word)?;
-        let entry = self.find(dict, key_word, &key);
+        let entry = self.find(dict, (key_word, value_word), &key);
         let missing = self.temp();
         let (absent, found) = (self.label("absent"), self.label("found"));
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
@@ -873,7 +908,7 @@ impl Emit<'_, '_, '_> {
         let (held, _) = self.operand(value)?;
         let dict = self.temp();
         self.line(&format!("{dict} = load ptr, ptr {place}"));
-        let entry = self.find(&dict, key_word, &key);
+        let entry = self.find(&dict, (key_word, value_word), &key);
         let missing = self.temp();
         let (gone, found) = (self.label("gone"), self.label("home"));
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
@@ -921,7 +956,7 @@ impl Emit<'_, '_, '_> {
         }
         let dict = self.alone_at(&place, "fennec_unshare");
         let key = self.key_value(key, key_word)?;
-        let entry = self.find(&dict, key_word, &key);
+        let entry = self.find(&dict, (key_word, value_word), &key);
         let missing = self.temp();
         let (gone, found) = (self.label("gone"), self.label("field"));
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
@@ -976,7 +1011,7 @@ impl Emit<'_, '_, '_> {
         let optional = self.kind_of(dest)?.clone();
         if matches!(optional, Kind::Maybe(_) | Kind::MaybeText) {
             let key = self.key_value(key, key_word)?;
-            let entry = self.find(&dict, key_word, &key);
+            let entry = self.find(&dict, (key_word, value_word), &key);
             self.remember_entry(&looked_up, &dict, &entry);
             let missing = self.temp();
             let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
@@ -1003,7 +1038,7 @@ impl Emit<'_, '_, '_> {
         let (number, fields) = self.case_of(&optional, "Some")?;
         let (_, offset, _) = fields.first().cloned().ok_or("an optional with nothing in it")?;
         let key = self.key_value(key, key_word)?;
-        let entry = self.find(&dict, key_word, &key);
+        let entry = self.find(&dict, (key_word, value_word), &key);
         self.remember_entry(&looked_up, &dict, &entry);
         let missing = self.temp();
         let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
@@ -1206,10 +1241,10 @@ no:
     /// fewer in a dict whose keys are held as headers, or null. The key's header words are made
     /// once, with no copy, and each entry the probe meets is compared with them a word at a time,
     /// as two inline headers are equal exactly when their words are.
-    fn find_short_key_helper(&mut self, from: KeyBytes) -> String {
+    fn find_short_key_helper(&mut self, from: KeyBytes, width: usize) -> String {
         self.string_slice_helpers();
         let header = header_bytes();
-        let name = format!("fen_find_short_{}", from.name());
+        let name = named_for(&format!("fen_find_short_{}", from.name()), width, entry_words(Word::Text));
         let key = short_key(from);
         self.module.add_helper(
             &name,
@@ -1241,7 +1276,7 @@ none:
   ret ptr null
 check:
   %number = add i64 %taken, -1
-  %entry_at = getelementptr inbounds [5 x i64], ptr %entries, i64 %number
+  %entry_at = getelementptr inbounds [{width} x i64], ptr %entries, i64 %number
   %theirs = load i64, ptr %entry_at
   %same_hash = icmp eq i64 %theirs, %probe_hash
   br i1 %same_hash, label %compare, label %next
@@ -1350,7 +1385,7 @@ found:
         let first = self.temp();
         self.line(&format!("{first} = getelementptr inbounds i8, ptr {text_start}, i64 {start}"));
         let entry = if key_word == Word::Text {
-            self.find_text_key(dict, (&first, KeyBytes::InBlock), &size)
+            self.find_text_key(dict, (&first, KeyBytes::InBlock), &size, entry_words(Word::Text))
         } else {
             let (mixed, high, folded, hash, entry) =
                 (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
@@ -1731,7 +1766,7 @@ found:
         };
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let key = self.key_value(key, key_word)?;
-        let entry = self.find(&dict, key_word, &key);
+        let entry = self.find(&dict, (key_word, value_word), &key);
         self.remember_entry(&looked_up, &dict, &entry);
         let missing = self.temp();
         let (absent, found, done) = (self.label("absent"), self.label("found"), self.label("done"));
@@ -1768,9 +1803,11 @@ found:
         dict: &Operand,
     ) -> Result<String, String> {
         let (dict, kind) = self.operand(dict)?;
-        let Kind::Dict(key_word, _) = kind else { return Err("`in` on something else".to_owned()) };
+        let Kind::Dict(key_word, value_word) = kind else {
+            return Err("`in` on something else".to_owned());
+        };
         let key = self.key_value(key, key_word)?;
-        let entry = self.find(&dict, key_word, &key);
+        let entry = self.find(&dict, (key_word, value_word), &key);
         let result = self.temp();
         let cc = if op == BinOp::In { "ne" } else { "eq" };
         self.line(&format!("{result} = icmp {cc} ptr {entry}, null"));

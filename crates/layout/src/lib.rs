@@ -17,7 +17,7 @@ mod layouts;
 
 pub use layouts::{
     Case, Field, Layout, Layouts, WORD, Written, WrittenField, boxed_types, closure_definition,
-    generator_definition, results_in_place, types_in_place,
+    dict_values_in_place, generator_definition, results_in_place, types_in_place,
 };
 
 /// How native code holds a value.
@@ -426,6 +426,12 @@ pub fn held_layouts(layouts: &Layouts, ty: Ty, found: &mut Vec<u32>) {
 pub fn held_by_word(layouts: &Layouts, word: Word, found: &mut Vec<u32>) {
     match word {
         Word::Plain(id) => found.push(id),
+        // A value held in the entry, by its number among the kinds of item.
+        Word::InPlace(number) => {
+            if let Some(id) = layouts.dict_value(number) {
+                found.push(id);
+            }
+        }
         Word::Block(number) => {
             if let Some(held) = layouts.block(number) {
                 held_layouts(layouts, held, found);
@@ -487,6 +493,14 @@ impl<'l> Registry<'l> {
             let described = describe_numbered(layouts, Ty::Struct(*id), &numbering).unwrap_or(Element::Int);
             tables.elements.push(Rc::new(described));
             elements.insert(Ty::Struct(*id), i64::try_from(number).unwrap_or(0));
+        }
+        // A plain type a dict holds in its entries goes by the number after those, in the order
+        // the layouts first gave it one, which is what a dict's shape says it holds.
+        for id in layouts.dict_values() {
+            let described = describe_numbered(layouts, Ty::Struct(id), &numbering).unwrap_or(Element::Int);
+            let number = tables.elements.len();
+            tables.elements.push(Rc::new(described));
+            elements.insert(Ty::Struct(id), i64::try_from(number).unwrap_or(0));
         }
         Self { layouts, tables, elements, strings: HashMap::new(), numbering }
     }

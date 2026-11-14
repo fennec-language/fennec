@@ -1441,6 +1441,47 @@ fn a_run_after_an_edit_finds_its_mistakes_however_it_checks() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A single file is kept for its next run as a kit is, with the files it read: itself and what it
+/// imports. An edit to either runs the edit, and a mistake in either is found.
+#[test]
+fn a_single_files_run_after_an_edit_to_it_or_what_it_imports_runs_the_edit() {
+    let dir = scratch("single_file_edits").unwrap();
+    let maths = "export def twice(number: int) -> int:\n    return number * 2\n";
+    let main = "from maths import twice\n\ndef main(stdout: Stdout):\n    stdout.print(twice(21))\n";
+    std::fs::write(dir.join("maths.fen"), maths).unwrap();
+    std::fs::write(dir.join("main.fen"), main).unwrap();
+    let run = || {
+        crate::executables::fennec_command()
+            .args(["run", "--no-test", "main.fen"])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    assert_eq!(text(&first.stdout), "42\n", "{}", text(&first.stderr));
+    // Unchanged, from what the first run kept.
+    assert_eq!(text(&run().stdout), "42\n");
+    // What it imports changes.
+    std::fs::write(dir.join("maths.fen"), maths.replace("number * 2", "number + number + 1")).unwrap();
+    assert_eq!(text(&run().stdout), "43\n");
+    // What it imports has a mistake.
+    std::fs::write(dir.join("maths.fen"), maths.replace("number * 2", "number * \"two\"")).unwrap();
+    let broken = run();
+    assert!(
+        !broken.status.success() && text(&broken.stderr).contains("maths.fen"),
+        "{}",
+        text(&broken.stderr)
+    );
+    // Put right, then the file itself changes.
+    std::fs::write(dir.join("maths.fen"), maths).unwrap();
+    assert_eq!(text(&run().stdout), "42\n");
+    std::fs::write(dir.join("main.fen"), main.replace("twice(21)", "twice(5)")).unwrap();
+    assert_eq!(text(&run().stdout), "10\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Everything Fennec keeps between commands goes in its store, so a kit's folder holds only its own
 /// files after running, testing, checking, linting, formatting and building it, cache and all. A
 /// build writes the program where `-o` says. See `docs/store.md`.

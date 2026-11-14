@@ -4,6 +4,9 @@
 //!
 //! It's kept with the size and changed time of every file, which are all that's looked at. A
 //! program from here has no source text, so a failure loads the source to point at it.
+//!
+//! A single file is kept the same way, with the files it read: itself, what it imports by path,
+//! and what `embed` read.
 
 use fennec_build::{Cache, KitFile, KitState};
 use fennec_kit::Program;
@@ -25,7 +28,12 @@ fn image_name(path: &str) -> String {
 /// hash of it as it was kept, which says it's the same program another run had.
 pub(crate) fn load(path: &str, cache: &Cache) -> Option<(Program, String)> {
     let state = cache.kit_state(&name_of(path), BUILD)?;
-    let files = crate::verdict::kit_files(path, Some(&state))?;
+    // A single file's are the files it read last time, which it reads again unless one changed.
+    let files = if std::path::Path::new(path).is_dir() {
+        crate::verdict::kit_files(path, Some(&state))?
+    } else {
+        crate::verdict::noted_files(&state)?
+    };
     if !crate::verdict::same_files(&state, &files) {
         return None;
     }

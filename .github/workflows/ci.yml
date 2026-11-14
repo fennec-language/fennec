@@ -128,7 +128,9 @@ jobs:
     # job that runs out of time saves no cache, so the limit leaves room for a cold one. On
     # 2026-11-11 Linux and macOS ran out at 35: their tests took 20 to 30 minutes, and the examples
     # 6 more. The limit is half again what a warm job takes, so one slow runner doesn't fail it.
-    timeout-minutes: 50
+    # On 2026-11-14 Windows' tests but the LLVM ones took 37 minutes, which left the examples 10
+    # and cut them off at 50, so Windows has 80.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 80 || 50 }}
     # Everything runs through LLVM, so its tests have to run on every platform: with LLVM's tools
     # from the toolchain's own `llvm-tools`, the LLVM rustc uses, a missing tool or runtime
     # library fails them instead of skipping them.
@@ -274,7 +276,29 @@ jobs:
             diff --strip-trailing-cr "${kit%/}.out" "$printed"
             fennec test "${all[@]}" "$kit" > /dev/null
           done
-          exit "$leaked"
+
+          # The oracle (crates/oracle) runs each example a second way, from its source. One it runs
+          # has to print what the example's `.out` says and end with 0; one it doesn't model, which
+          # it says by ending with 3, is skipped. A difference fails the job unless main is known
+          # to have it, as `oracle:<path>`, which only warns.
+          cargo build --locked --quiet -p fennec-oracle
+          differed=0
+          for program in examples/*.fen; do
+            status=0
+            .github/scripts/within.sh 120 ./target/debug/fennec-oracle run "$program" > "$printed" 2> "$said" || status=$?
+            [ "$status" = 3 ] && continue
+            if [ "$status" = 0 ] && diff --strip-trailing-cr "${program%.fen}.out" "$printed"; then
+              continue
+            fi
+            cat "$said"
+            if grep -qxF "oracle:$program" <<< "$known"; then
+              echo "::warning::the oracle and $program differ, as main is known to"
+            else
+              echo "::error::the oracle ran $program and it ended with $status, or printed something else"
+              differed=1
+            fi
+          done
+          [ "$leaked" = 0 ] && [ "$differed" = 0 ]
       # The cache is one build's, so a change to the compiler can't be hidden by what an older
       # one compiled: see docs/store.md.
       - name: A changed compiler runs nothing an older one compiled

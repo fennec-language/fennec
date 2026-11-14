@@ -21,6 +21,8 @@ use super::{State, Tables, attempt, span, with};
 use crate::packed::{Element, Fields};
 use crate::value::{Instance, Lent, Value};
 
+#[cfg(any(test, feature = "audit"))]
+pub(crate) mod audit;
 mod freeing;
 mod named;
 pub(super) mod shown;
@@ -344,7 +346,7 @@ pub(super) fn task_mark(task: u64) -> u64 {
 pub const NEVER_FREED_OWNER: u64 = 0xFFFD;
 
 /// Whether a block is never freed: by its owner, or by a count no thread's owners can reach.
-#[cfg(any(test, feature = "threads"))]
+#[cfg(any(test, feature = "threads", feature = "audit"))]
 pub(super) fn is_never_freed(block: &[u64]) -> bool {
     block.first().is_some_and(|count| *count >= IMMORTAL)
         || block.get(1).is_some_and(|shape| *shape >> OWNER_SHIFT == NEVER_FREED_OWNER)

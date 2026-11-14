@@ -1,0 +1,86 @@
+# A path can come from outside, so an `Fs` narrowed with `only` never reaches past its folder,
+# however the path is written: climbing out with `..`, starting at `/`, doubling or dotting its
+# slashes, or naming the folder's own parent. A path holding a NUL is refused for what it is,
+# since C code would stop at it and reach another file than the one named. Links that lead out
+# are refused too; a test's file system has none, so the runtime's own tests cover them.
+def why(run: () -> str fails IoError) -> str:
+    _ = run() except failed:
+        return failed.message()
+    return "read"
+
+def case_of(run: () -> str fails IoError) -> str:
+    _ = run() except failed:
+        case .NotFound():
+            return "NotFound"
+        case .PermissionDenied():
+            return "PermissionDenied"
+        case .AlreadyExists():
+            return "AlreadyExists"
+        case .Other():
+            return "Other"
+    return "read"
+
+## Which case writing `path` fails with, or "written".
+def written(fs: Fs, path: str) -> str:
+    fs.write_text(path, "changed") except failed:
+        case .PermissionDenied():
+            return "PermissionDenied"
+        case _:
+            return failed.message()
+    return "written"
+
+test "a narrowed Fs never reaches past its folder, however the path is written"(fs: Fs):
+    fs.make_dir("saves/sub")?
+    fs.write_text("secret.txt", "outside")?
+    fs.write_text("saves/sub/slot.txt", "inside")?
+    saves = fs.only("saves")
+    for path in [
+        "secret.txt",
+        "saves/../secret.txt",
+        "saves/./../secret.txt",
+        "saves//..//secret.txt",
+        "saves/sub/../../secret.txt",
+        "saves/sub/../../../secret.txt",
+        "./secret.txt",
+        "/secret.txt",
+        "/etc/hosts",
+        "",
+        ".",
+        "..",
+    ]:
+        assert case_of(() => saves.read_text(path)?) == "PermissionDenied"
+        assert written(saves, path) == "PermissionDenied"
+    assert fs.read_text("secret.txt")? == "outside"
+    # Inside it, however written, it reads as any Fs does.
+    for path in [
+        "saves/sub/slot.txt",
+        "./saves/sub/slot.txt",
+        "saves//sub/./slot.txt",
+        "saves/sub/../sub/slot.txt",
+    ]:
+        assert saves.read_text(path)? == "inside"
+
+test "a path holding a NUL is refused for what it is"(fs: Fs):
+    fs.write_text("a", "the file a C program would reach")?
+    for path in ["a\x00b", "\x00", "saves/\x00/x"]:
+        assert case_of(() => fs.read_text(path)?) == "Other"
+        assert why(() => fs.read_text(path)?).endswith("can't be a path: it holds a NUL")
+    assert why(() => fs.only("saves").read_text("saves/a\x00b")?).endswith(
+        "can't be a path: it holds a NUL",
+    )
+    # What's written can hold one: only the path can't.
+    fs.write_text("nul.txt", "a\x00b")?
+    assert fs.read_text("nul.txt")? == "a\x00b"
+
+test "a long, deep or odd path is a path like any other"(fs: Fs):
+    folder = "d/" * 199 + "d"
+    fs.make_dir(folder)?
+    deep = folder + "/x.txt"
+    fs.write_text(deep, "deep")?
+    assert fs.read_text(deep)? == "deep"
+    for name in ["café.txt", "名前.txt", "a b.txt", "-rf", "%2e%2e", "..txt", "a\\b"]:
+        fs.write_text(name, name)?
+        assert fs.read_text(name)? == name
+
+def main(stdout: Stdout):
+    stdout.print("run with `fennec test`")

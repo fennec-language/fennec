@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
-use fennec_oracle::{Ended, Outcome, report};
+use fennec_oracle::{Ended, Outcome, Workdir, report};
 
 const USAGE: &str = "usage:
   fennec-oracle run <program.fen>                    run it the oracle's way
@@ -102,32 +102,64 @@ struct Compiled {
     stderr: Vec<u8>,
 }
 
+/// Holds the compiled program, built for debugging and for release, to the oracle. Each compiled
+/// run starts in a fresh empty folder of its own, at one path, so what it writes goes nowhere
+/// else and every run starts the same, and the oracle runs as if in an empty folder at that path.
 fn compare(path: &str, fennec: Option<&str>) -> ExitCode {
-    let outcome = fennec_oracle::run_path(Path::new(path), path);
+    let work = std::env::temp_dir().join(format!("fennec-oracle-{}-work", std::process::id()));
+    let Some(work) = fresh(&work) else {
+        say_err(&format!("couldn't make an empty folder at {} to run the program in", work.display()));
+        return ExitCode::from(2);
+    };
+    let outcome = fennec_oracle::run_path_in(Path::new(path), path, Workdir::empty(&work));
     let Some((code, _)) = report::oracle_side(&outcome) else {
+        let _ = std::fs::remove_dir_all(&work);
         if let Ended::Unsupported(why) = &outcome.ended {
             say_err(&format!("unsupported: {why}"));
         }
         return ExitCode::from(UNSUPPORTED);
     };
     let fennec = fennec.map_or_else(default_fennec, PathBuf::from);
+    // The compiled program runs in another folder, so a path given relative to this one is made
+    // whole first. A bare name stays as it is, for the system to find on the path.
+    let fennec =
+        if fennec.components().count() > 1 { std::path::absolute(&fennec).unwrap_or(fennec) } else { fennec };
+    let program = std::path::absolute(path).unwrap_or_else(|_| PathBuf::from(path));
     let sorted = varies(path);
     let mut agree = true;
-    let debug = limited(Command::new(&fennec).args(["run", "--no-test", path]));
+    let debug = in_fresh(&work, Command::new(&fennec).arg("run").arg("--no-test").arg(&program));
     agree &= judged("debug", &outcome, code, debug, sorted);
     let built = std::env::temp_dir().join(format!("fennec-oracle-{}", std::process::id()));
     let shown_built = built.to_string_lossy().into_owned();
     let release = limited(Command::new(&fennec).args(["build", "--release", path, "-o", &shown_built]))
         .and_then(|build| {
             if build.code == Some(0) {
-                limited(&mut Command::new(&built))
+                in_fresh(&work, &mut Command::new(&built))
             } else {
                 Err(format!("the release build failed:\n{}", String::from_utf8_lossy(&build.stderr)))
             }
         });
     let _ = std::fs::remove_file(&built);
+    let _ = std::fs::remove_dir_all(&work);
     agree &= judged("release", &outcome, code, release, sorted);
     if agree { ExitCode::SUCCESS } else { ExitCode::from(1) }
+}
+
+/// An empty folder at `path`, made afresh, as its path with every link in it followed, which is
+/// the path a program run in it finds itself in.
+fn fresh(path: &Path) -> Option<PathBuf> {
+    let _ = std::fs::remove_dir_all(path);
+    std::fs::create_dir_all(path).ok()?;
+    std::fs::canonicalize(path).ok()
+}
+
+/// Runs a command in a fresh empty folder at `work`.
+fn in_fresh(work: &Path, command: &mut Command) -> Result<Compiled, String> {
+    let made = fresh(work).filter(|made| made == work);
+    if made.is_none() {
+        return Err(format!("couldn't make an empty folder at {} to run it in", work.display()));
+    }
+    limited(command.current_dir(work))
 }
 
 /// Holds one compiled run to the oracle's, saying how they differ if they do.

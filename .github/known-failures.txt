@@ -6,3 +6,4 @@
 #
 # A test is named as `cargo test` names it; a program, as the examples and Rosetta steps do, by its
 # path. Whoever fixes one takes its line out in the same change. Empty when main is green.
+lint:examples/constants_kept.fen | #1679

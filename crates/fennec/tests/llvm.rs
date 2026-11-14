@@ -3922,6 +3922,49 @@ def main(stdout: Stdout):
     stdout.print(kind)
 "#;
 
+/// `for key, ref value in x.items()` changes each value of a dict, or item of a `Table`, where it
+/// is, natively, with its key or its `Id`, and a `continue` leaves the rest of that one as it was.
+#[test]
+fn a_ref_over_items_changes_each_value_where_it_is_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "ref_over_items",
+            r#"from std.collections import Table
+
+struct Unit:
+    health: int
+    target = 0
+
+def main(stdout: Stdout):
+    mut units = Table[Unit]()
+    first = units.add(Unit(health=1))
+    _ = units.add(Unit(health=5))
+    for id, ref unit in units.items():
+        unit.health += 1
+        if id == first:
+            unit.target = 7
+    stdout.print(units)
+    mut by_name = {"a": Unit(health=1), "b": Unit(health=2)}
+    for name, ref unit in by_name.items():
+        if name == "b":
+            continue
+        unit.health += 10
+    stdout.print(by_name)
+    mut scores = {"x": 1}
+    for key, ref score in scores.items():
+        score *= 3
+    stdout.print(scores)
+"#
+        )?,
+        "Table([Unit(health=2, target=7), Unit(health=6, target=0)])\n\
+         {\"a\": Unit(health=11, target=0), \"b\": Unit(health=2, target=0)}\n{\"x\": 3}\n"
+    );
+    Ok(())
+}
+
 /// `for at, ref item in enumerate(items)` changes each item where it is, natively, as the
 /// language says: numbers, structs and lists, a `continue` that still counts what it skips, and a
 /// nested one over the items' own lists.

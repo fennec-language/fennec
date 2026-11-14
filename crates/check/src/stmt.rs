@@ -426,10 +426,49 @@ impl FnCx<'_> {
         self.merge(&[before, after]);
     }
 
+    /// `for key, ref value in x.items():`: each value of a dict, or item of a `Table`, changed where
+    /// it is, with its key or its `Id`. `x` is a place held in a `mut` name. Once checked, it's
+    /// written in as a loop over the keys or ids with `ref value = x[key]` (see
+    /// `enumerate_lowering`).
+    fn items_ref(&mut self, (key, item): (&str, &str), iter: &Expr, body: &[Stmt], span: Span) {
+        let Some(held) = items_of(iter) else { return };
+        self.mut_place(held, "`for ref` changes each value, so loop over something held in a mut name");
+        let ty = self.expr(held);
+        let (key_ty, item_ty, table) = match self.checker.settled(&ty) {
+            Type::Dict(key, value) => (*key, *value, false),
+            Type::Table(item) => (Type::Id(item.clone()), *item, true),
+            Type::Unknown => (Type::Unknown, Type::Unknown, false),
+            other => {
+                let message = format!(
+                    "`for key, ref value in x.items()` goes over a dict or a `Table`, but this is {}",
+                    crate::types::a(&other)
+                );
+                self.error(Diagnostic::new(message, held.span).with_help(
+                    "loop over `enumerate(items)` for a list's positions, as `for at, ref item in enumerate(items):`",
+                ));
+                (Type::Unknown, Type::Unknown, false)
+            }
+        };
+        self.record(iter.span, &Type::Iterator(Box::new(Type::Tuple(vec![key_ty.clone(), item_ty.clone()]))));
+        self.checker.ref_items.insert((span.start, span.end), table);
+        self.forget_changed_in(body);
+        let before = self.snapshot();
+        self.push(false);
+        self.declare_as(key, key_ty, false, Origin::Loop, span);
+        self.declare_as(item, item_ty, true, Origin::Loop, span);
+        self.stmts(body, false);
+        self.pop();
+        let after = self.snapshot();
+        self.merge(&[before, after]);
+    }
+
     /// `for at, ref item in enumerate(items):`: each item changed where it is, with its position.
     /// `items` needs positions, as a `for ref` over it does. Once checked, it's written in as a
     /// `for ref` that counts.
     fn enumerate_ref(&mut self, (at, item): (&str, &str), iter: &Expr, body: &[Stmt], span: Span) {
+        if items_of(iter).is_some() {
+            return self.items_ref((at, item), iter, body, span);
+        }
         let positions = match &iter.kind {
             ExprKind::Call { callee, args }
                 if let [arg] = args.as_slice()
@@ -445,8 +484,8 @@ impl FnCx<'_> {
         };
         let Some(items) = positions else {
             self.error(
-                Diagnostic::new("`ref` with two names is for `enumerate(items)`", iter.span)
-                    .with_help("write `for at, ref item in enumerate(items):`, or `for ref item in items:`"),
+                Diagnostic::new("`ref` with two names is for `enumerate(items)` or a dict's or `Table`'s `.items()`", iter.span)
+                    .with_help("write `for at, ref item in enumerate(items):`, `for key, ref value in d.items():`, or `for ref item in items:`"),
             );
             return self.for_stmt(&[at.to_owned(), item.to_owned()], false, iter, body, span);
         };
@@ -660,4 +699,11 @@ fn unused(ty: &Type, span: Span) -> Diagnostic {
         Span { start: span.start, end: span.start },
         "_ = ",
     )
+}
+
+/// The place `x` in `x.items()`, the iterable of `for key, ref value in x.items():`.
+fn items_of(iter: &Expr) -> Option<&Expr> {
+    let ExprKind::Call { callee, args } = &iter.kind else { return None };
+    let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
+    (name == "items" && args.is_empty()).then_some(object.as_ref())
 }

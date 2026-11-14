@@ -97,6 +97,7 @@ for at, ref score in enumerate(scores): ...
 ```
 
 - `enumerate` takes anything you can loop over and gives `(index, value)`. Built. `for i, ref x in enumerate(xs)` needs `xs` to have positions, `len` and `[]`, as `for ref` does. Built.
+- `for unit_id, ref unit in units.items()` changes each item of a `Table`, or each value of a dict, where it is, with its `Id` or key, which isn't `ref`. The body can't change `units` itself. Built. A `for ref` straight over a dict or a set is a compile error, since its keys and items are what find them.
 - A `for ref` body may read what it loops over, as in `unit.target = nearest(units, unit.at)`, and sees the item as it is now, changes made through the loop's name included. Built for lists, arrays and `Table`s.
 - `ref` over a generator is a compile error, since its items are made one at a time and aren't anywhere to change. Built.
 - `case .Button(ref clicks):` changes a field inside the enum a `match` statement is over, as `for ref` changes an item: `match ui[widget_id].kind:` with `clicks += 1` in the case. The case is put back however its body ends, a failure included. Built.

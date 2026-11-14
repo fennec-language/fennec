@@ -357,8 +357,8 @@ fn for_mut_needs_a_mut_place() {
 }
 
 /// `for at, ref item in enumerate(items)` changes each item where it is, with its position: it
-/// takes a place, as `for ref` does, and `ref` goes only before the second name, only with
-/// `enumerate`.
+/// takes a place, as `for ref` does, and `ref` goes only before the second name. A dict's
+/// `.items()` takes it too, its values changed where they are.
 #[test]
 fn enumerate_with_ref_changes_each_item_where_it_is() {
     let program = "
@@ -377,7 +377,6 @@ fn enumerate_with_ref_changes_each_item_where_it_is() {
         [
             "`fixed` isn't `ref` @ fixed",
             "`for ref` changes each item, so loop over something held in a mut name @ range(3)",
-            "`ref` with two names is for `enumerate(items)` @ more.items()",
         ]
     );
     let grows = "def bump(ref scores: list[int]):\n    for at, ref score in enumerate(scores):\n        scores.append(at)\n";

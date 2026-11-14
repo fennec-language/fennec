@@ -43,6 +43,31 @@ fn any_name_for_a_shared_value_locks_the_same_one() {
     assert_eq!(problems(&text), empty);
 }
 
+/// Showing or comparing a value that holds a `shared` one reads it under that value's lock, so
+/// inside a lock body nothing shows or compares one, as nothing passes one to a call there:
+/// printing, an f-string, `str`, an `assert` that would say what each side was, and `==` are
+/// refused, the locked value's own handle and a value holding another `shared` one alike.
+#[test]
+fn a_shared_value_isnt_shown_inside_a_lock_body() {
+    let text = format!(
+        "{ACCOUNT}struct Bank:\n    accounts: list[shared Account]\n\n\
+         def main(stdout: Stdout):\n    shared account = Account()\n    bank = Bank(accounts=[account])\n    \
+         lock account as ref held:\n        held.add(1)\n        stdout.print(account)\n        stdout.print(f\"{{bank}}\")\n        \
+         text = str(bank)\n        assert [account] != []\n        same = account == account\n        stdout.print(held.total, text, same)\n"
+    );
+    let shown = "would take the lock of the `shared` value in it while `held` is locked";
+    assert_eq!(
+        problems(&text),
+        [
+            format!("printing this {shown} @ account"),
+            format!("this f-string {shown} @ bank"),
+            format!("`str` of this {shown} @ bank"),
+            format!("comparing this {shown} @ [account]"),
+            format!("comparing this {shown} @ account"),
+        ]
+    );
+}
+
 #[test]
 fn a_shared_values_fields_change_only_in_a_lock() {
     let text = format!(

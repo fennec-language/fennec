@@ -317,6 +317,8 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     SOURCES.set(Some(sources.clone()));
     let here = 0_u8;
     let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
+    // The runtime has as much again below native code's part: a read into a tree may use most.
+    heap::reads_may_reach(limit.saturating_sub(NATIVE_STACK_BYTES / 4 * 3));
     entry(i64::try_from(limit).unwrap_or(0));
     let (output, failure, leftovers) = super::finish_for_exit();
     crate::replay::ended();

@@ -24711,6 +24711,30 @@ fn a_typed_empty_collection_keeps_its_type_when_checked_again() -> std::io::Resu
     Ok(())
 }
 
+/// A slice of bytes and a join of two can't fail, in a function that can't either: a slice holds
+/// its bounds to the bytes, as a list's does, and a join only copies. Bounds below zero, past the
+/// end and the wrong way round give what's there, down to nothing. The runtime's three calls for
+/// bytes made from bytes are listed as unable to fail, so a helper that only slices or joins
+/// needs no check after the call, and the count of unchecked calls doesn't trip on it.
+#[test]
+fn a_slice_and_a_join_of_bytes_give_whats_there_and_cant_fail() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "bytes_parts_and_joins",
+        include_str!("fixtures/bytes_parts_and_joins.fen"),
+        BYTES_PARTS_AND_JOINS,
+    )
+}
+
+const BYTES_PARTS_AND_JOINS: &str = r"bytes([116, 101, 115, 32]) bytes([116, 101, 120, 116]) bytes([])
+bytes([]) bytes([98, 121, 116]) bytes([])
+bytes([98, 121, 116]) bytes([98, 121]) bytes([]) bytes([98, 121, 116, 101, 115, 32, 111, 102, 32, 97, 32, 116, 101, 120, 116])
+bytes([120, 116]) bytes([120, 116]) bytes([]) 15
+bytes([]) bytes([98, 121, 120, 116]) 30
+";
+
 /// `list.pop()` gives `None` once the list is empty, and the item as an optional before then:
 /// for numbers, text and structs, from a name, a field, an item of a list, and an item picked
 /// by a call, which is read once.

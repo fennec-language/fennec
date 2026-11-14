@@ -1,0 +1,99 @@
+# `std.sqlite` given what an attacker would write: values that are SQL, values that look like a
+# query's placeholders, a placeholder or a second statement in a query's own text, queries that
+# reach for another file, and text that isn't UTF-8. A value always goes to SQLite apart from the
+# query's text, so none of it is ever run.
+from std import sqlite
+from std.sql import SqlError
+
+struct Note:
+    n: int
+    text: str
+
+## What `run` fails with, as the case's name and its reason, or `fine`.
+def outcome[T](run: () -> T fails SqlError) -> str:
+    _ = run() except why:
+        case .Constraint(reason=reason):
+            return f"Constraint: {reason}"
+        case .Busy(reason=reason):
+            return f"Busy: {reason}"
+        case .Column(name=name, reason=reason):
+            return f"Column {name}: {reason}"
+        case .Failed(reason=reason):
+            return f"Failed: {reason}"
+    return "fine"
+
+test "a value is kept as it is, however much it looks like SQL"(fs: Fs):
+    with sqlite.open(fs, "notes.db")? as db:
+        _ = db.execute(t"create table notes (n integer, text text)")?
+        hostile = [
+            "'); drop table notes; --",
+            "\" or 1=1 --",
+            "?",
+            "?1",
+            ":name",
+            "$1",
+            "@x",
+            "a\u0000b",
+            "x' union select sql from sqlite_master --",
+        ]
+        for at, text in enumerate(hostile):
+            _ = db.execute(t"insert into notes values ({at}, {text})")?
+        found = db.query[Note](t"select n, text from notes order by n")?
+        assert [note.text for note in found] == hostile
+        # Looked up by a value that's SQL, nothing matches but the row that holds it.
+        assert db.query[int](t"select n from notes where text = {hostile[0]}")? == [0]
+        always = "' or ''='"
+        assert db.query[int](t"select count(*) from notes where text = {always}")? == [0]
+
+test "a placeholder in a query's own text is refused, not filled"(fs: Fs):
+    with sqlite.open(fs, "notes.db")? as db:
+        n = 1
+        said = outcome(() => db.query[int](t"select ?, {n}")?)
+        assert (
+            said
+            == "Failed: the query has 1 values but 2 places for them: a `?` or `:name` in its text is one"
+        )
+        assert (
+            outcome(() => db.query[int](t"select :name")?)
+            == "Failed: the query has 0 values but 1 places for them: a `?` or `:name` in its text is one"
+        )
+
+test "a query is one statement, so a second is never run"(fs: Fs):
+    with sqlite.open(fs, "notes.db")? as db:
+        _ = db.execute(t"create table notes (n integer)")?
+        said = outcome(() => db.execute(t"insert into notes values (1); drop table notes")?)
+        assert said == "Failed: a query is one statement: give each its own `execute`"
+        assert db.query[int](t"select count(*) from notes")? == [0]
+
+test "a query can't reach another file or change what keeps it to its own"(fs: Fs):
+    with sqlite.open(fs, "notes.db")? as db:
+        for said in [
+            outcome(() => db.execute(t"attach database 'other.db' as other")?),
+            outcome(() => db.execute(t"vacuum into 'copy.db'")?),
+            outcome(() => db.execute(t"pragma writable_schema = on")?),
+            outcome(() => db.execute(t"pragma trusted_schema = on")?),
+            outcome(() => db.execute(t"pragma temp_store_directory = '/tmp'")?),
+        ]:
+            assert (
+                said
+                == "Failed: this query asks for more than ordinary queries on the database's own file, like `ATTACH`, `VACUUM INTO` or a pragma, which a database here refuses"
+            )
+
+test "text that isn't UTF-8 fails naming its column, and NaN isn't stored as null"(fs: Fs):
+    with sqlite.open(fs, "notes.db")? as db:
+        _ = db.execute(t"create table notes (data blob)")?
+        broken = bytes([102, 255, 111])
+        _ = db.execute(t"insert into notes values ({broken})")?
+        said = outcome(() => db.query[str](t"select cast(data as text) as words from notes")?)
+        assert said == "Column words: it holds text that isn't UTF-8"
+        assert db.query[bytes](t"select data from notes")? == [broken]
+        nan = float("nan") except InvalidValue(): 0.0
+        assert (
+            outcome(() => db.execute(t"insert into notes values ({nan})")?)
+            == "Failed: NaN can't be stored: SQLite would turn it into NULL"
+        )
+
+def main(stdout: Stdout):
+    stdout.print(
+        SqlError.Failed(reason="a query is one statement: give each its own `execute`").message(),
+    )

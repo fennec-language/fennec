@@ -368,10 +368,12 @@ pub(crate) fn check(program: &mut fennec_kit::Program) -> bool {
     }
 }
 
-/// Checks a program to build, refusing what `fennec check` and a run refuse. Returns whether it
+/// Checks a program to build, refusing what `fennec check` and a run refuse, as they check it:
+/// all of the program, and of the standard library what it reaches, since the library's own tests
+/// check the rest. A build works its constants out when the program starts. Returns whether it
 /// passed. Tools that report on a program use `check`, since what they report may be why.
 pub(crate) fn check_to_build(program: &mut fennec_kit::Program) -> bool {
-    match crate::copy_rule::check_all_rules(&mut program.module, &program.sources) {
+    match crate::copy_rule::check_rules(&mut program.module, &program.sources) {
         Ok(_) => true,
         Err(diagnostics) => {
             reject(program, &diagnostics);

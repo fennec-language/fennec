@@ -3921,6 +3921,33 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A build checks all of the program, as `check` does, though it builds only what `main` reaches:
+/// a mistake in a function nothing calls is refused. Of the standard library it checks what the
+/// program reaches, whose own tests check the rest.
+#[test]
+fn a_build_refuses_a_mistake_in_a_function_nothing_calls() -> std::io::Result<()> {
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec_build_unreached_{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("unreached.fen");
+    std::fs::write(
+        &program,
+        "def unused(count: int) -> str:\n    return count + 1\n\ndef main(stdout: Stdout):\n    stdout.print(\"hi\")\n",
+    )?;
+    let program = program.to_string_lossy().into_owned();
+    let executable = dir.join("unreached").to_string_lossy().into_owned();
+    let built = fennec(&["build", &program, "-o", &executable], "")?;
+    assert!(!built.status.success());
+    assert!(
+        text(&built.stderr).contains("`unused` returns a str, but this is an int"),
+        "{}",
+        text(&built.stderr)
+    );
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// One program built for release in two folders, with two Fennec folders, a second apart, is the
 /// same bytes each time, as a signed release has to be to check by building it again, and a dev
 /// build is the same bytes in one folder a second later: a kit built by its whole path, as `.`, and with a dependency it names by a path, and

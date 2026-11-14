@@ -36,6 +36,10 @@ impl Emit<'_, '_, '_> {
             return Ok(pattern);
         }
         let (pattern, owned) = self.text_block(&pattern);
+        // Noted for a failing op too, which lets go of it on its way out of the function.
+        if let Some(noted) = self.made_for_body.last_mut() {
+            noted.push((pattern.clone(), owned.clone()));
+        }
         made.push((pattern.clone(), owned));
         Ok(pattern)
     }
@@ -47,6 +51,10 @@ impl Emit<'_, '_, '_> {
             return Ok(value);
         }
         let (block, owned) = self.text_block(&value);
+        // Noted for a failing op too, which lets go of it on its way out of the function.
+        if let Some(noted) = self.made_for_body.last_mut() {
+            noted.push((block.clone(), owned.clone()));
+        }
         made.push((block.clone(), owned));
         Ok(block)
     }
@@ -59,7 +67,9 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let mut made = Vec::new();
+        self.made_for_body.push(Vec::new());
         let result = self.regex_builtin_on(dest, name, args, span, &mut made);
+        self.made_for_body.pop();
         for (block, owned) in &made {
             self.let_go_text_block(block, owned);
         }

@@ -101,6 +101,9 @@ pub(crate) struct Checker {
     pub(crate) ref_matches: BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
     /// Each `for ref` whose body reads what it loops over, written in to go by position.
     pub(crate) live_refs: BTreeMap<(u32, u32), crate::ref_lowering::Through>,
+    /// Each `for key, ref value in x.items()`, by its span: whether `x` is a `Table`, which
+    /// lowering writes in as a loop over its ids, or a dict, over its keys.
+    pub(crate) ref_items: BTreeMap<(u32, u32), bool>,
     /// The calls to `json` and `toml`'s `dumps` and `loads` whose type has its own `def serialize`
     /// or `def deserialize`, each with the function in std that does the same in Fennec.
     pub(crate) native_formats: BTreeMap<(u32, u32), String>,
@@ -227,6 +230,7 @@ impl Checker {
             launches: BTreeMap::new(),
             ref_matches: BTreeMap::new(),
             live_refs: BTreeMap::new(),
+            ref_items: BTreeMap::new(),
             native_formats: BTreeMap::new(),
             native_json_bodies: BTreeSet::new(),
             saved_types: BTreeSet::new(),
@@ -394,6 +398,7 @@ impl Checker {
             launches,
             ref_matches: self.ref_matches,
             live_refs: self.live_refs,
+            ref_items: self.ref_items,
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
             saved_types,

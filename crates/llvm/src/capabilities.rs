@@ -206,8 +206,9 @@ impl Emit<'_, '_, '_> {
             "{handle} = call i64 @{runtime}({word_type} {word}, ptr {named}, i64 {}, i64 {from}, i64 {to})",
             rest.len()
         ));
+        self.let_go_of_crossed(crossed);
         self.leave_if_failed();
-        self.take_what_crossed(dest, &handle, (&mark, crossed), span)
+        self.take_what_crossed(dest, &handle, &mark, span)
     }
 
     /// One of `std.crypto`'s functions, which the runtime runs.
@@ -227,8 +228,9 @@ impl Emit<'_, '_, '_> {
             "{handle} = call i64 @fennec_crypto_call(ptr {named}, i64 {}, i64 {from}, i64 {to})",
             args.len()
         ));
+        self.let_go_of_crossed(crossed);
         self.leave_if_failed();
-        self.take_what_crossed(dest, &handle, (&mark, crossed), span)
+        self.take_what_crossed(dest, &handle, &mark, span)
     }
 
     /// Hands the runtime arguments as temporaries: where they start, and the blocks that carry
@@ -249,18 +251,25 @@ impl Emit<'_, '_, '_> {
         Ok((mark, crossed))
     }
 
-    /// Makes native what the runtime gave back, and lets go of what crossed.
+    /// Lets go of the blocks made for arguments to cross in, once the runtime's call is back and
+    /// before its failure is looked at: one that fails leaves here, as a task stopped while it
+    /// waited does, and a block let go of only after would be left for good. The runtime holds an
+    /// owner of its own of each until the temporaries go, so what it gave back may still be one.
+    fn let_go_of_crossed(&mut self, crossed: Vec<String>) {
+        for block in crossed {
+            self.release(&block);
+        }
+    }
+
+    /// Makes native what the runtime gave back, and drops the temporaries that crossed.
     fn take_what_crossed(
         &mut self,
         dest: Option<LocalId>,
         handle: &str,
-        (mark, crossed): (&str, Vec<String>),
+        mark: &str,
         span: Span,
     ) -> Result<(), String> {
         let (from, to) = self.place_in_source(span);
-        for block in crossed {
-            self.release(&block);
-        }
         let Some(dest) = dest else {
             self.line(&format!("call void @fennec_truncate(i64 {mark})"));
             return Ok(());

@@ -127,6 +127,28 @@ fn changes_are_reported_by_file_and_definition() {
     assert_eq!(changes(&new, &new), []);
 }
 
+/// What a kit's files were, as a run's kept image is held to, is kept for the build of Fennec that
+/// noted it. Another build, after an update or any change to its source, the standard library's
+/// `.fen` included, reads none, so it loads and checks the kit again.
+#[test]
+fn a_kit_noted_by_one_build_of_fennec_is_unknown_to_another() {
+    let home = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-build-test-state-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    let cache = fennec_build::Cache::new(&home);
+    let files = [fennec_build::KitFile {
+        module: "main".to_owned(),
+        text: fennec_blake3::hash(b"def main(stdout: Stdout):\n    pass\n"),
+        size: 33,
+        changed_at: 1,
+    }];
+    cache.store_kit_state("/kit#run", "one build", &files).unwrap();
+    assert!(cache.kit_state("/kit#run", "one build").is_some());
+    assert!(cache.kit_state("/kit#run", "another build").is_none());
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
 #[test]
 fn snapshots_are_stored_and_read_back() {
     let home =

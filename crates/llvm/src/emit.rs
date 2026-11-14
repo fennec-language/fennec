@@ -567,6 +567,11 @@ impl<'p> Module<'_, 'p> {
                 struct_definitions(self.layouts, *id, &mut lines);
                 self.declares.extend(lines);
             }
+            Kind::Enum(id) => {
+                let mut lines = Vec::new();
+                crate::kinds::case_definitions(self.layouts, *id, &mut lines);
+                self.declares.extend(lines);
+            }
             Kind::List(item) => {
                 if let Some(kind) = Kind::from_ty(self.layouts, item.ty()) {
                     self.define_types(&kind);

@@ -1,0 +1,160 @@
+# What a hostile Postgres server can send a `PgReader`: messages longer than their kind ever is,
+# lengths that aren't one, a row that claims more than it holds, and a long row cut every way. A
+# message's length is checked from its header alone, so a server can't make the reader wait for or
+# hold a gigabyte to say a few bytes.
+from std.postgres import PgReader
+
+## A message's header: its type, then its length, which counts itself.
+def header(kind: int, size: int) -> bytes:
+    return bytes([kind, (size >> 24) & 255, (size >> 16) & 255, (size >> 8) & 255, size & 255])
+
+## A row of one cell holding `cell`.
+def row_of(cell: bytes) -> bytes:
+    size = len(cell)
+    body = (
+        bytes([0, 1, (size >> 24) & 255, (size >> 16) & 255, (size >> 8) & 255, size & 255]) + cell
+    )
+    return header(68, size=len(body) + 4) + body
+
+## The four bytes of `n`, highest first.
+def int32(n: int) -> bytes:
+    return bytes([(n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255])
+
+## A whole message of type `kind` holding `body`.
+def message(kind: int, body: bytes) -> bytes:
+    return header(kind, size=len(body) + 4) + body
+
+## `count` bytes of `x`, as text a message holds would be.
+def filled(count: int) -> bytes:
+    return ("x" * count).encode()
+
+## What a reader fed `data` gives next, by what it is and how long its long part is, or why it
+## failed.
+def next_of(data: bytes) -> str:
+    mut reader = PgReader()
+    reader.feed(data)
+    found = reader.next() except error:
+        return error.message()
+    if found is None: return "waiting for more"
+    match found:
+        case .Row(cells=cells, present=_):
+            return f"a row of cells {[len(cell) for cell in cells]}"
+        case .Columns(names=names, types=_):
+            return f"columns named {[len(name) for name in names]} characters long"
+        case .Failed(fields=fields):
+            said = fields.get("M") else ""
+            return f"a failure saying {len(said)} characters"
+        case .Notice(fields=fields):
+            said = fields.get("M") else ""
+            return f"a notice saying {len(said)} characters"
+        case .Other(kind=kind):
+            return f"a message of type {kind}, passed over"
+        case _:
+            return "another message"
+
+## What a reader says of a message of type `kind` that says it's `size` bytes long.
+def refused(kind: int, size: int) -> str:
+    return f"the server sent a message of type {kind} {size} bytes long, and only rows, column and parameter lists, failures, notices, notifications, copied data and function results may be over 30,000"
+
+test "any message but libpq's long ones can't say it's longer than 30,000 bytes"():
+    # `S` `C` `Z` `R` `K` `1` `2` `n` `I` `G` `H` `W` `c` `s` `v`, from their headers alone.
+    for kind in [83, 67, 90, 82, 75, 49, 50, 110, 73, 71, 72, 87, 99, 115, 118]:
+        assert next_of(header(kind, size=1_000_000)) == refused(kind, size=1_000_000)
+        assert next_of(header(kind, size=30001)) == refused(kind, size=30001)
+        # At the limit, it waits for the rest.
+        assert next_of(header(kind, size=30000)) == "waiting for more"
+
+test "a row, D, longer than 30,000 bytes is read whole"():
+    assert next_of(row_of(filled(40_000))) == "a row of cells [40000]"
+
+test "a row's columns, T, longer than 30,000 bytes are read whole"():
+    # One column: its name, then its table, column number, type, size, modifier and format.
+    body = (
+        bytes([0, 1])
+        + filled(40_000)
+        + bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    )
+    assert next_of(message(84, body=body)) == "columns named [40000] characters long"
+
+test "a failure, E, longer than 30,000 bytes is read whole"():
+    body = "M".encode() + filled(40_000) + bytes([0, 0])
+    assert next_of(message(69, body=body)) == "a failure saying 40000 characters"
+
+test "a notice, N, longer than 30,000 bytes is read whole"():
+    body = "M".encode() + filled(40_000) + bytes([0, 0])
+    assert next_of(message(78, body=body)) == "a notice saying 40000 characters"
+
+test "copied data, d, from COPY OUT longer than 30,000 bytes is taken"():
+    assert next_of(message(100, body=filled(40_000))) == "a message of type 100, passed over"
+
+test "a notification, A, from LISTEN and NOTIFY longer than 30,000 bytes is taken"():
+    # The sending process, then its channel and its payload, each ending in a zero byte.
+    body = int32(4242) + "jobs".encode() + bytes([0]) + filled(40_000) + bytes([0])
+    assert next_of(message(65, body=body)) == "a message of type 65, passed over"
+
+test "a function's result, V, longer than 30,000 bytes is taken"():
+    body = int32(40_000) + filled(40_000)
+    assert next_of(message(86, body=body)) == "a message of type 86, passed over"
+
+test "a statement's parameters, t, longer than 30,000 bytes are taken"():
+    # 7,600 parameters' types, four bytes each.
+    mut body = bytes([29, 176])
+    for _ in range(7600):
+        body = body + int32(25)
+    assert len(body) > 30_000
+    assert next_of(message(116, body=body)) == "a message of type 116, passed over"
+
+test "a length below 4 or past a gigabyte isn't one"():
+    assert next_of(header(68, size=3)) == "the server sent a message 3 bytes long"
+    assert next_of(header(68, size=-1)) == "the server sent a message -1 bytes long"
+    assert next_of(header(68, size=1073741825)) == "the server sent a message 1073741825 bytes long"
+
+test "a row that claims more cells or bytes than it holds fails"():
+    # 32,767 cells, and none of them there.
+    many = bytes([0, 0, 0, 6, 127, 255])
+    assert next_of(bytes([68]) + many) == "the server sent a message that ends too soon"
+    # One cell of 1,000 bytes, and 3 of them there.
+    claimed = bytes([0, 1, 0, 0, 3, 232, 1, 2, 3])
+    assert (
+        next_of(header(68, size=len(claimed) + 4) + claimed)
+        == "the server sent a message that ends too soon"
+    )
+
+test "a long row cut into any pieces reads whole, and so does what follows it"():
+    mut cell = list[int]()
+    for at in range(40_000):
+        cell.append(at % 251)
+    long = row_of(bytes(cell))
+    short = row_of("ok".encode())
+    sent = long + short + long
+    for piece in [1, 7, 4096, 65536]:
+        mut reader = PgReader()
+        mut found = list[str]()
+        mut at = 0
+        while at < len(sent):
+            reader.feed(sent[at:min(at + piece, len(sent))])
+            at += piece
+            while True:
+                message = reader.next()?
+                if message is None: break
+                match message:
+                    case .Row(cells=cells, present=_):
+                        same = cells[0] == bytes(cell) or cells[0] == "ok".encode()
+                        found.append(f"{len(cells[0])} {same}")
+                    case _:
+                        found.append("another message")
+        assert found == ["40000 True", "2 True", "40000 True"]
+
+test "many rows read as they come leave nothing behind"():
+    mut reader = PgReader()
+    mut rows = 0
+    for n in range(5000):
+        reader.feed(row_of(str(n).encode()))
+        message = reader.next()?
+        if message is not None:
+            rows += 1
+    assert rows == 5000
+    assert reader.next()? is None
+
+def main(stdout: Stdout):
+    stdout.print(next_of(header(83, size=1_000_000)))

@@ -273,9 +273,22 @@ fn source_text(inbox: bool) -> String {
         // Above the `lend`, since its `except:` is written in at each place the block can fail.
         Some("    mut cut__made = 0".to_owned()),
         Some(format!("    lend {lent} except:")),
+        // The channel's closed first, so a task reading its inbox ends as it would anyway.
         channel("        intrinsics.channel_close(channel__made)"),
-        Some(format!("        _ = intrinsics.launch_end[{ENDED}](started__made, -1, True, ref cut__made)")),
+        Some(format!("        cut_failed__made = intrinsics.launch_end[{ENDED}](started__made, -1, True, ref cut__made)")),
         channel("        intrinsics.channel_free(channel__made)"),
+        // A task that failed or crashed is why the block failed, as by a send it closed: what
+        // comes out where the block ends is the task's failure, as when it ends on its own. It's
+        // failed with from inside a `match`, which a cleanup's failures being notes on the block's
+        // own doesn't look into (see `lend_lowering::cleanup_fails`), so it fails the block instead.
+        Some("        match cut__made:".to_owned()),
+        Some("            case 1:".to_owned()),
+        Some("                fail Crashed(why=\"the task crashed\")".to_owned()),
+        Some("            case 2:".to_owned()),
+        Some("                cut_failure__made = cut_failed__made else fail Crashed(why=\"the task crashed\")".to_owned()),
+        Some("                fail cut_failure__made".to_owned()),
+        Some("            case _:".to_owned()),
+        Some("                pass".to_owned()),
         channel("    intrinsics.channel_close(channel__made)"),
         Some("    mut nanos__made = -1".to_owned()),
         // A negative one has already run out: -1 would be no limit at all.

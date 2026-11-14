@@ -149,6 +149,8 @@ pub(crate) struct Checker {
     /// What each kit is handed, by kit and capability, where it's first handed over, when the
     /// module asks only for that to be worked out.
     pub(crate) worked_out: BTreeMap<String, BTreeMap<String, Span>>,
+    /// Which types can cross to another task, once every function is checked.
+    pub(crate) crossing: crate::Crossing,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
@@ -256,6 +258,7 @@ impl Checker {
             handovers: crate::holds::Handovers::default(),
             holds: module.holds.clone(),
             worked_out: BTreeMap::new(),
+            crossing: crate::Crossing::default(),
             diagnostics,
         }
     }
@@ -319,6 +322,7 @@ impl Checker {
             self.diagnostics.extend(refused);
         }
         if self.diagnostics.is_empty() {
+            self.crossing = crate::crossing::crossing(&mut self);
             return Ok(self.checked(structs, errors));
         }
         let mut diagnostics = self.diagnostics;
@@ -384,6 +388,7 @@ impl Checker {
             errors,
             locals,
             lock_verdicts: self.lock_verdicts,
+            crossing: std::mem::take(&mut self.crossing),
             ..Signatures::default()
         };
         let types = Types { functions: self.typed };
@@ -527,6 +532,14 @@ impl Checker {
         let entry = self.program.functions.get(key)?;
         let generics = self.generic_names(entry);
         Some(self.program.resolve_in(entry.def.fails.as_ref()?, &generics).unwrap_or(Type::Unknown))
+    }
+
+    /// A function's signature once its check is done, without checking it or noting a caller.
+    pub(crate) fn signature_found(&self, key: &str) -> Option<&Signature> {
+        match self.states.get(key) {
+            Some(State::Done(signature)) => Some(signature),
+            _ => None,
+        }
     }
 
     /// A signature from what's written, for a function still being checked.
@@ -923,6 +936,22 @@ impl Checker {
     }
 
     /// The type of a field of a struct, error or enum case, from its written type or default.
+    /// A field's type as far as it's known without working anything out: once its check is done,
+    /// or as written. `None` for a field typed only by a default nothing has looked at.
+    pub(crate) fn field_type_known(&self, owner: &str, case: Option<&str>, field: &str) -> Option<Type> {
+        let key = format!("{owner}.{}.{field}", case.unwrap_or(""));
+        if let Some(Some(ty)) = self.fields.get(&key) {
+            return Some(ty.clone());
+        }
+        let info = self.program.type_info(owner)?;
+        let fields = match case {
+            Some(case) => info.def.cases.iter().find(|c| c.name == case).map(|c| c.fields.as_slice()),
+            None => Some(info.def.fields.as_slice()),
+        };
+        let found = fields?.iter().find(|f| f.name == field)?;
+        self.program.resolve_in(found.ty.as_ref()?, &self.program.type_params(owner)).ok()
+    }
+
     pub(crate) fn field_type(&mut self, owner: &str, case: Option<&str>, field: &str) -> Type {
         let key = format!("{owner}.{}.{field}", case.unwrap_or(""));
         match self.fields.get(&key) {

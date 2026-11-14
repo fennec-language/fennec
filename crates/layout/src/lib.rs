@@ -16,8 +16,8 @@ use fennec_rt::packed::Element;
 mod layouts;
 
 pub use layouts::{
-    Case, Field, Layout, Layouts, WORD, Written, WrittenField, closure_definition, generator_definition,
-    results_in_place,
+    Case, Field, Layout, Layouts, WORD, Written, WrittenField, boxed_types, closure_definition,
+    generator_definition, results_in_place, types_in_place,
 };
 
 /// How native code holds a value.

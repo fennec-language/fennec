@@ -9289,6 +9289,94 @@ def main(stdout: Stdout):
     )
 }
 
+/// A `pop` of a key that isn't there and a `remove` of an item that isn't there fail and change
+/// nothing. Generated code stored the failed `pop`'s result, nothing, over the dict before it
+/// looked at whether the call had failed, and the runtime had already copied a dict or set with
+/// two owners and moved the caller's owner to the copy. So a task that crashed on one left the
+/// dict and what it held behind: 5 blocks here. Now the dict is written only once the call has
+/// worked, and a shared one without the key is left alone. Alone and with two owners, each fails
+/// in a task that crashes and then works on a key that's there, and the counts are pinned: nothing
+/// left, and no copy for a take that fails or a `discard` that finds nothing.
+#[test]
+fn a_pop_or_remove_that_fails_changes_nothing_and_leaves_nothing() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("failed_takes", FAILED_TAKES, FAILED_TAKES_PRINTS)?;
+    assert_eq!(
+        counts_of("failed_takes_counts", FAILED_TAKES)?,
+        "copies 20 copied_bytes 1104 largest_copy 80 allocations 91 allocated_bytes 11128 live 0"
+    );
+    Ok(())
+}
+
+const FAILED_TAKES: &str = r#"# A `pop` of a key that isn't there, and a `remove` of an item that isn't there, fail and change
+# nothing: the dict or set is as it was, alone or with another owner, and a task that crashes on
+# one leaves nothing behind. Each then works on a key that is there.
+
+from std.concurrent import Crashed
+
+def popped(key: int, two_owners: bool) -> int:
+    mut local = {1: "one, long enough for a block of its own", 2: "two"}
+    other = local if two_owners else {9: "nine"}
+    _ = local.pop(key)
+    return len(local) * 10 + len(other)
+
+def removed(key: str, two_owners: bool) -> int:
+    mut local = {"one, long enough for a block of its own", "two"}
+    other = local if two_owners else {"nine"}
+    local.remove(key)
+    return len(local) * 10 + len(other)
+
+def discarded(key: str, two_owners: bool) -> int:
+    mut local = {"one, long enough for a block of its own", "two"}
+    other = local if two_owners else {"nine"}
+    local.discard(key)
+    return len(local) * 10 + len(other)
+
+def note(out: shared list[int], value: int):
+    lock out as ref held:
+        held.append(value)
+    return
+
+def try_pop(out: shared list[int], key: int, two_owners: bool):
+    note(out, popped(key, two_owners))
+
+def try_remove(out: shared list[int], key: str, two_owners: bool):
+    note(out, removed(key, two_owners))
+
+def pops(out: shared list[int], key: int, two_owners: bool) fails Crashed:
+    with launch(() => try_pop(out, key, two_owners)):
+        pass
+
+def removes(out: shared list[int], key: str, two_owners: bool) fails Crashed:
+    with launch(() => try_remove(out, key, two_owners)):
+        pass
+
+def main(stdout: Stdout):
+    shared out = list[int]()
+    for two_owners in [False, True]:
+        for key in [5, 2]:
+            _ = pops(out, key, two_owners) except Crashed():
+                stdout.print(f"pop({key}) crashed, two owners: {two_owners}")
+        for key in ["missing", "two"]:
+            _ = removes(out, key, two_owners) except Crashed():
+                stdout.print(f"remove({key}) crashed, two owners: {two_owners}")
+        stdout.print(discarded("missing", two_owners), discarded("two", two_owners))
+    lock out as held:
+        stdout.print(held)
+    return
+"#;
+
+const FAILED_TAKES_PRINTS: &str = r"pop(5) crashed, two owners: False
+remove(missing) crashed, two owners: False
+21 11
+pop(5) crashed, two owners: True
+remove(missing) crashed, two owners: True
+22 12
+[11, 11, 12, 12]
+";
+
 /// A key a dict of blocks doesn't have fails as pinned.
 #[test]
 fn a_missing_key_in_a_dict_of_lists_fails_as_pinned() -> std::io::Result<()> {

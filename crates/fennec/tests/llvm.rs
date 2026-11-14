@@ -563,6 +563,88 @@ fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
     )
 }
 
+/// `case _: fail why` passes up only what the earlier cases left, the set of errors made smaller:
+/// two of three left, and one error left once each case of an error with cases is taken.
+const EXCEPT_NARROWS: &str = r#"error Finished:
+    at: int
+
+error Gone:
+    path: str
+
+error Bad:
+    line: int
+
+error Net:
+    Closed
+    Timeout(seconds: int)
+
+def load(n: int) -> int fails Finished | Gone | Bad:
+    if n == 1:
+        fail Finished(at=1)
+    if n == 2:
+        fail Gone(path="x")
+    if n == 3:
+        fail Bad(line=3)
+    return n
+
+def read(n: int) -> int fails Net | Bad:
+    if n == 1:
+        fail .Closed
+    if n == 2:
+        fail .Timeout(seconds=2)
+    if n == 3:
+        fail Bad(line=3)
+    return n
+
+def first(n: int) -> int fails Gone | Bad:
+    x = load(n) except why:
+        case Finished(at):
+            at * 10
+        case _:
+            fail why
+    return x
+
+def cases(n: int) -> int fails Bad:
+    x = read(n) except why:
+        case .Closed:
+            0
+        case .Timeout(seconds):
+            seconds
+        case _:
+            fail why
+    return x
+
+def main(stdout: Stdout):
+    for n in range(5):
+        got = first(n) except why:
+            case Gone(path):
+                stdout.print(f"gone {path}")
+                -1
+            case Bad(line):
+                stdout.print(f"bad {line}")
+                -2
+        stdout.print(got)
+        more = cases(n) except why:
+            stdout.print(f"cases failed: {why.line}")
+            -3
+        stdout.print(more)
+    return
+"#;
+
+/// A failure `except why:`'s earlier cases left is passed up as the smaller set it is, and the
+/// caller's cases each find their own error in it.
+#[test]
+fn what_earlier_except_cases_left_is_failed_with_as_the_smaller_set() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "except_narrows",
+        EXCEPT_NARROWS,
+        "0\n0\n10\n0\ngone x\n-1\n2\nbad 3\n-2\ncases failed: 3\n-3\n4\n4\n",
+    )
+}
+
 /// Built with every type that doesn't contain itself in place and with `FENNEC_BOXED_TYPES=1`, in
 /// dev and release, a program prints `wanted` each way and ends with nothing held.
 fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {

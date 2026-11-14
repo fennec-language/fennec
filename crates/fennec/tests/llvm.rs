@@ -955,6 +955,35 @@ def main(stdout: Stdout):
     stdout.print(found.size)
 "#;
 
+/// A `shared` value is shown as what it holds, read under its lock: printed, in an f-string, by
+/// `str`, and inside another value or a list, never as the declaration lowering holds it in.
+#[test]
+fn a_shared_value_is_shown_as_what_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "shared_shown",
+        "struct Account:
+    total = 0
+
+struct Bank:
+    accounts: list[shared Account]
+
+def main(stdout: Stdout):
+    shared account = Account(total=1)
+    bank = Bank(accounts=[account])
+    stdout.print(bank)
+    stdout.print(f\"{account} in {bank}\")
+    stdout.print(str(bank))
+    lock account as ref held:
+        held.total += 1
+    stdout.print(account, [account])
+",
+        "Bank(accounts=[Account(total=1)])\nAccount(total=1) in Bank(accounts=[Account(total=1)])\nBank(accounts=[Account(total=1)])\nAccount(total=2) [Account(total=2)]\n",
+    )
+}
+
 /// `total = lock scores as current:` gives the block's last line, read or after a change, as
 /// A `shared` value's made declaration holds the checked type itself, never its text: a program's
 /// own `Delivery`, which the checker holds under a name a program can't write, with a field named

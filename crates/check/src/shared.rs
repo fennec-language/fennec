@@ -77,6 +77,39 @@ impl Checker {
         found
     }
 
+    /// Whether a value of this type is or holds a `shared` value, as written, `shared T`, or as
+    /// lowering declares one, in it or anything inside it.
+    pub(crate) fn shows_shared(&mut self, ty: &Type, open: &mut Vec<String>) -> bool {
+        if self.program.is_shared(ty) {
+            return true;
+        }
+        if ty.children().iter().any(|child| self.shows_shared(&(*child).clone(), open)) {
+            return true;
+        }
+        let (Type::Named(name) | Type::Generic(name, _)) = ty else { return false };
+        if open.contains(name) {
+            return false;
+        }
+        let Some(info) = self.program.type_info(name) else { return false };
+        let def = info.def.clone();
+        open.push(name.clone());
+        let fields = def.fields.iter().map(|field| (None, field));
+        let in_cases = def
+            .cases
+            .iter()
+            .flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
+        let mut found = false;
+        for (case, field) in fields.chain(in_cases) {
+            let held = self.field_type(name, case, &field.name);
+            if self.shows_shared(&held, open) {
+                found = true;
+                break;
+            }
+        }
+        open.pop();
+        found
+    }
+
     /// The `shared` type a value of this type holds, in it or anything inside it.
     pub(crate) fn shared_inside(&mut self, ty: &Type, open: &mut Vec<String>) -> Option<String> {
         if self.program.takes_lock(ty) {
@@ -549,6 +582,49 @@ impl FnCx<'_> {
 
     /// Reports taking a `shared` handle's lock inside a lock body, which could wait forever on a
     /// lock another task holds while it waits for this one. `what` takes it: "calling `add`".
+    /// Reports a value holding a `shared` one shown or compared inside a lock body: printed, in an
+    /// f-string, by `str`, by a failed `assert` or with `==`. Either reads what the `shared` value
+    /// holds under its lock, which a lock body can't take, as one its own thread holds would never
+    /// come free.
+    pub(crate) fn shown_in_lock(&mut self, ty: &Type, how: &str, at: Span) -> bool {
+        let Some(held) = self.lock.clone() else { return false };
+        let ty = self.checker.settled(ty);
+        if !self.checker.shows_shared(&ty, &mut Vec::new()) {
+            return false;
+        }
+        self.error(
+            Diagnostic::new(format!("{how} would take the lock of the `shared` value in it {held}"), at)
+                .with_help("a `shared` value is shown and compared under its lock, which a lock body can't take again: do it after the block, or through the name the lock gives"),
+        );
+        true
+    }
+
+    /// `==` on a `shared` value compares what it holds, under its lock, which a lock body can't
+    /// take: said once for the comparison.
+    pub(crate) fn compared_in_lock(&mut self, (left, right): (&Type, &Type), spans: (Span, Span)) {
+        if !self.shown_in_lock(left, "comparing this", spans.0) {
+            let _ = self.shown_in_lock(right, "comparing this", spans.1);
+        }
+    }
+
+    /// A failed `assert` that compares shows each side, which inside a lock body can't hold a
+    /// `shared` value. `==` and `!=` are refused there already, as they compare what one holds.
+    pub(crate) fn assert_shown_in_lock(&mut self, cond: &Expr) {
+        if self.lock.is_none() {
+            return;
+        }
+        let ExprKind::Binary { op, lhs, rhs } = &cond.kind else { return };
+        if matches!(op, fennec_syntax::BinOp::Eq | fennec_syntax::BinOp::NotEq) {
+            return;
+        }
+        for side in [lhs, rhs] {
+            let ty = self.peek_type(side);
+            if self.shown_in_lock(&ty, "this `assert`", side.span) {
+                return;
+            }
+        }
+    }
+
     pub(crate) fn locks_again(&mut self, object: &Expr, ty: &Type, what: &str) {
         let Some(held) = self.lock.clone() else { return };
         if !self.checker.program.takes_lock(ty) || self.holds_lock(object) || self.takes_inner(ty) {

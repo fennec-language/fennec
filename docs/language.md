@@ -229,6 +229,9 @@ def main(stdout: Stdout):
 - **Deadlocks can't compile.** Lock order is checked across the whole program, by where each `shared` value is made. Two values the compiler can't tell apart, like two accounts from one dict, are locked together in one statement: `lock accounts[from_id], accounts[to_id] as ref source, ref target:`. Locking the same value twice that way fails, rather than stopping the program.
 - Interfaces and function values are traced across the whole program, which is always compiled together, so nothing needs a `locks` annotation. An error names the implementation that takes the lock.
 - A `shared` value holds plain values and other `shared` values, never something borrowed from a `with`. It never holds one of its own type, and never forms a cycle, so a tree uses a `Table` and `Id`s. It can't store a function that captures a `shared` value.
+- It's shown as what it holds, read under its lock: printed, in an f-string, by `str`, and in a failed `assert`, as `Account(total=1)`. Decided 2026-11-14. Built for printing, f-strings and `str`; a failed `assert` still shows lowering's own declaration until the backend calls its text there.
+- `==` compares what two `shared` values hold, as every other value compares, matching the oracle: a snapshot taken under both locks, which may be stale once they're released. Both are taken in a fixed order, by cell, so `a == b` on one thread and `b == a` on another can't wait for each other, and `a == a` takes one. Decided 2026-11-14. The oracle does it; native code still compares which cell they are until the backend's change.
+- Inside a lock body nothing shows or compares a `shared` value, or a value holding one, the locked one included: it would wait for a lock its own thread holds. Use the name the lock gives, or do it after the block. Built.
 - Its memory is freed when the last holder lets go, with no cleanup code.
 
 ### `with` and `lend`

@@ -15,6 +15,13 @@ const SECRET: &str = "Secret";
 
 impl FnCx<'_> {
     /// Reports a value about to be shown as text, by `how`, when it's a `Secret` or holds one.
+    /// A value shown as text: printed, in an f-string or by `str`. It can't be a secret, and
+    /// inside a lock body it can't hold a `shared` value.
+    pub(crate) fn shown(&mut self, ty: &Type, how: &str, at: Span) {
+        self.not_a_secret(ty, how, at);
+        let _ = self.shown_in_lock(ty, how, at);
+    }
+
     pub(crate) fn not_a_secret(&mut self, ty: &Type, how: &str, at: Span) {
         let ty = self.checker.settled(ty);
         let Some(place) = self.secret_in(&ty, "", &mut Vec::new()) else { return };
@@ -31,7 +38,11 @@ impl FnCx<'_> {
     pub(crate) fn no_secret_printed(&mut self, ty: &Type, method: &str, given: &[(Type, Span)]) {
         if *ty == Type::named("Stdout") && matches!(method, "print" | "write") {
             for (given, at) in given {
-                self.not_a_secret(given, "printing this", *at);
+                self.shown(given, "printing this", *at);
+            }
+        } else if *ty == Type::named("Stderr") && matches!(method, "print" | "write") {
+            for (given, at) in given {
+                let _ = self.shown_in_lock(given, "printing this", *at);
             }
         }
     }

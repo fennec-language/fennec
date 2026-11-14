@@ -125,6 +125,7 @@ impl FnCx<'_> {
                     self.assert_fails(value, pattern, stmt.span);
                     self.record(cond.span, &Type::Bool);
                 } else {
+                    self.assert_shown_in_lock(cond);
                     // What an `assert` holds holds after it, as after `if not cond: fail`:
                     // `assert problem is not None` lets `problem.message` be read.
                     self.condition(cond, "assert");

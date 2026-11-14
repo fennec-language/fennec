@@ -23367,7 +23367,6 @@ def main(stdout: Stdout):
         stdout.print(part.expression, part.format_spec)
 "#;
 
-/// A generic type built where one of it is expected takes its types from there: a `Box[int |
 /// A generic enum's cases are made natively: worked out from their arguments, with their types
 /// written as `Choice[int].Nothing`, from a function's return type, and in a list, and a `match`
 /// reads each case's field as the type it is there.
@@ -23408,6 +23407,7 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A generic type built where one of it is expected takes its types from there: a `Box[int |
 /// str]` built from an int or a str, in a parameter, a name's type and a list of them.
 #[test]
 fn generic_types_built_where_one_is_expected_match_what_was_pinned() -> std::io::Result<()> {

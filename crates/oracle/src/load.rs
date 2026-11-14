@@ -32,6 +32,12 @@ pub(crate) struct Declared {
     pub(crate) ruled: bool,
 }
 
+/// Fields by name, each with the type the checker gave it, in the order they're written.
+pub(crate) type TypedFields = Vec<(String, Type)>;
+
+/// An enum's cases by name, each with its fields.
+pub(crate) type TypedCases = Vec<(String, TypedFields)>;
+
 /// A program ready to run: its syntax tree, kept for the whole run, and tables over it.
 pub struct Program {
     /// The program's files, as they're shown, for what it says as it stops.
@@ -52,12 +58,30 @@ pub struct Program {
     pub(crate) owners: HashMap<usize, String>,
     /// Whether any type has a `where` rule, which every write then checks.
     pub(crate) has_rules: bool,
+    /// The type of each field of each struct the program declares, as the checker worked it out,
+    /// in the order they're written, for saving and loading by type.
+    pub(crate) field_types: HashMap<String, TypedFields>,
+    /// The same for each case of each enum the program declares.
+    pub(crate) case_types: HashMap<String, TypedCases>,
 }
 
 impl Program {
     /// The type a method is of, which `Self` names in it.
     pub(crate) fn owner_of(&self, def: &FnDef) -> Option<&str> {
         self.owners.get(&(std::ptr::from_ref(def) as usize)).map(String::as_str)
+    }
+
+    /// The types of a struct's fields, or of an enum's case's, as the checker gave them.
+    pub(crate) fn fields_typed(&self, ty: &str, case: Option<&str>) -> Option<&[(String, Type)]> {
+        match case {
+            None => self.field_types.get(ty).map(Vec::as_slice),
+            Some(case) => self
+                .case_types
+                .get(ty)?
+                .iter()
+                .find(|(name, _)| name == case)
+                .map(|(_, fields)| fields.as_slice()),
+        }
     }
 
     pub(crate) fn type_at(&self, span: Span) -> Option<&Type> {
@@ -103,6 +127,7 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
     let checked =
         fennec_check::check_typed(&module).map_err(|_| Refused::Invalid("it doesn't check".to_owned()))?;
     let mut types_at = HashMap::new();
+    let typed = typed_fields(&module, &checked.signatures);
     for (_, body) in checked.types.iter() {
         for (span, ty) in body.exprs() {
             if span.start < Span::PRELUDE {
@@ -113,7 +138,8 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
     // The tree is kept for the rest of the process, since values and generators running on
     // other threads point into it.
     let module: &'static Module = Box::leak(Box::new(module));
-    let program = tables(module, sources, types_at)?;
+    let mut program = tables(module, sources, types_at)?;
+    (program.field_types, program.case_types) = typed;
     Ok(Box::leak(Box::new(program)))
 }
 
@@ -188,7 +214,42 @@ fn tables(
         main,
         owners,
         has_rules,
+        field_types: HashMap::new(),
+        case_types: HashMap::new(),
     })
+}
+
+/// What the checker gave each field of the program's own structs and enums. A type the program
+/// names as the standard library names one of its own is checked under another name, which is
+/// looked for first.
+fn typed_fields(
+    module: &Module,
+    signatures: &fennec_check::Signatures,
+) -> (HashMap<String, TypedFields>, HashMap<String, TypedCases>) {
+    let mut fields = HashMap::new();
+    let mut cases = HashMap::new();
+    for item in &module.items {
+        match item {
+            Item::Struct(def) => {
+                let renamed = format!("{}{}", def.name, fennec_syntax::rename::RENAMED);
+                if let Some(found) =
+                    signatures.structure(&renamed).or_else(|| signatures.structure(&def.name))
+                {
+                    fields.insert(def.name.clone(), found.fields.clone());
+                }
+            }
+            Item::Enum(def) => {
+                let renamed = format!("{}{}", def.name, fennec_syntax::rename::RENAMED);
+                if let Some(found) =
+                    signatures.enumeration(&renamed).or_else(|| signatures.enumeration(&def.name))
+                {
+                    cases.insert(def.name.clone(), found.cases.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    (fields, cases)
 }
 
 /// The capabilities `main` may take here: standard output, which is real, and the arguments and

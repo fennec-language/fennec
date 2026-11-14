@@ -315,6 +315,40 @@ impl Emit<'_, '_, '_> {
         if self.headers() { self.text_from_block(block) } else { block.to_owned() }
     }
 
+    /// `==` on two optional strings held as headers, all zero for `None`: the same words are equal,
+    /// a `None` equals only a `None`, and two strings compare as strings do.
+    pub(crate) fn same_maybe_headers(&mut self, a: &str, b: &str) -> String {
+        let (mut same_words, mut words_of_a, mut words_of_b) =
+            ("true".to_owned(), "0".to_owned(), "0".to_owned());
+        for at in 0..3 {
+            let (x, y) = (self.header_word(a, at), self.header_word(b, at));
+            let (equal, all, any_a, any_b) = (self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{equal} = icmp eq i64 {x}, {y}"));
+            self.line(&format!("{all} = and i1 {same_words}, {equal}"));
+            self.line(&format!("{any_a} = or i64 {words_of_a}, {x}"));
+            self.line(&format!("{any_b} = or i64 {words_of_b}, {y}"));
+            (same_words, words_of_a, words_of_b) = (all, any_a, any_b);
+        }
+        let (none_a, none_b, either, decided) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{none_a} = icmp eq i64 {words_of_a}, 0"));
+        self.line(&format!("{none_b} = icmp eq i64 {words_of_b}, 0"));
+        self.line(&format!("{either} = or i1 {none_a}, {none_b}"));
+        self.line(&format!("{decided} = or i1 {same_words}, {either}"));
+        let (quick, texts, joined) =
+            (self.label("maybe_text_decided"), self.label("maybe_texts"), self.label("maybe_text_compared"));
+        self.line(&format!("br i1 {decided}, label %{quick}, label %{texts}"));
+        self.start_block(&texts);
+        let same = self.same_headers(a, b);
+        let texts_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&quick);
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let result = self.temp();
+        self.line(&format!("{result} = phi i1 [ {same_words}, %{quick} ], [ {same}, %{texts_end} ]"));
+        result
+    }
+
     /// Whether two headers hold the same text. Equal strings always have the same form, so two
     /// inline ones are equal exactly when their words are, and only two blocks need comparing.
     pub(crate) fn same_headers(&mut self, a: &str, b: &str) -> String {

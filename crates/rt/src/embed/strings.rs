@@ -556,6 +556,43 @@ fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> Op
     None
 }
 
+/// Calls `found` with each place `part`, of one to eight bytes, is in `whole`, in bytes, from the
+/// first on, none overlapping the one before: where a `split` on it cuts. One pass over the words
+/// `whole`'s bytes are in, a word at a time to each place `part`'s first byte is, then whether the
+/// rest follows, as [`word_in_place`] looks for the first.
+fn each_place_of((whole, length): (&[u64], usize), part: u64, size: usize, mut found: impl FnMut(usize)) {
+    let mask = if size >= WORD_BYTES { u64::MAX } else { (1 << (size * 8)) - 1 };
+    let (part, first) = (part & mask, part & 0xff);
+    let used = whole.get(..length.div_ceil(8)).unwrap_or(whole);
+    // Where the next one may start: after the last found.
+    let mut from = 0;
+    for (at, word) in used.iter().enumerate() {
+        let word = u64::from_le(*word);
+        let others = word ^ (first * LOW_BITS);
+        // Each byte that's `first` has its top bit set here, along with perhaps some byte above
+        // one that is, which the look below turns down.
+        let mut places = others.wrapping_sub(LOW_BITS) & !others & HIGH_BITS;
+        while places != 0 {
+            let byte = usize::try_from(places.trailing_zeros() / 8).unwrap_or(0);
+            places &= places - 1;
+            let place = at * 8 + byte;
+            if place < from {
+                continue;
+            }
+            if place + size > length {
+                return;
+            }
+            let next = used.get(at + 1).map_or(0, |next| u64::from_le(*next));
+            let shift = byte * 8;
+            let here = if shift == 0 { word } else { (word >> shift) | (next << (64 - shift)) };
+            if here & mask == part {
+                found(place);
+                from = place + size;
+            }
+        }
+    }
+}
+
 /// How many characters the first `bytes` bytes of a string's words hold: the bytes that don't carry
 /// on a character begun before them, whose top two bits are `10`, counted eight at a time.
 pub(super) fn chars_before(words: &[u64], bytes: usize) -> usize {
@@ -1101,6 +1138,9 @@ pub extern "C" fn split_header(
     end: i64,
 ) -> i64 {
     attempt(|state: &mut State| {
+        if let Some(split) = split_in_words(state, &[t0, t1, t2], &[s0, s1, s2]) {
+            return Ok(split);
+        }
         // Both copied out into bytes kept for them, with no `String` made of either.
         let (mut text, mut between) = (READ.take(), READ_PART.take());
         let separated = (s0, s1, s2) != (0, 0, 0);
@@ -1163,6 +1203,71 @@ fn split_bytes(state: &mut State, whole: &[u8], between: Option<&[u8]>, at: Span
     let list = super::lists::list_of_texts(state, &items);
     SPLIT_ITEMS.set(items);
     Ok(list)
+}
+
+/// `text.split(separator)` for a separator of one to eight bytes, where lists hold strings as
+/// headers: the list, or `None`, having done nothing, for any other split, which
+/// [`split_bytes`] makes.
+///
+/// The separator is looked for where the text's bytes are, a word at a time, as `find` looks. Its
+/// bytes are a string's, so they start with a character's first byte and end with one's last, and
+/// wherever they're found in the text is between two of its characters: each part is whole
+/// characters. A part of 23 bytes or fewer is made inline from the text's words, shifted into
+/// place, and a longer one is a string of its own made from them, so no byte is copied on its own
+/// and nothing is read as a `str`.
+fn split_in_words(state: &mut State, text: &[u64; 3], separator: &[u64; 3]) -> Option<i64> {
+    if !state.tables.text_headers {
+        return None;
+    }
+    let (between, size) = super::text::bytes_of(state, separator);
+    if size == 0 || size > WORD_BYTES {
+        return None;
+    }
+    let between = between.first().map_or(0, |word| u64::from_le(*word));
+    // The text's words are copied out once, whole words at a time, so making a long part's block
+    // can't move them.
+    let mut words = std::mem::take(&mut state.heap.scratch);
+    let (held, length) = super::text::bytes_of(state, text);
+    words.clear();
+    words.extend_from_slice(held.get(..length.div_ceil(8)).unwrap_or_default());
+    let mut items = SPLIT_ITEMS.take();
+    items.clear();
+    let mut from = 0;
+    each_place_of((&words, length), between, size, |found| {
+        put_part_of_words(state, &mut items, &words, from, found - from);
+        from = found + size;
+    });
+    put_part_of_words(state, &mut items, &words, from, length.saturating_sub(from));
+    let list = super::lists::list_of_texts(state, &items);
+    SPLIT_ITEMS.set(items);
+    state.heap.scratch = words;
+    Some(list)
+}
+
+/// Adds the part of `length` bytes at byte `start` of `words`, a text's bytes, to a `split`'s
+/// items, as a header: inline when it fits, and otherwise a string of its own.
+fn put_part_of_words(state: &mut State, items: &mut Vec<u64>, words: &[u64], start: usize, length: usize) {
+    if length <= super::text::INLINE_BYTES {
+        items.extend(super::text::inline_from_words(words, start, length));
+        return;
+    }
+    let count = length.div_ceil(8);
+    let mut block = state.heap.fresh_written(TEXT_HEADER_WORDS + count, TEXT_HEADER_WORDS + count);
+    if let Some(body) = block.get_mut(TEXT_HEADER_WORDS..) {
+        for (number, word) in body.iter_mut().enumerate() {
+            let left = length - number * 8;
+            let mask = if left >= 8 { u64::MAX } else { (1_u64 << (left * 8)) - 1 };
+            *word = super::text::eight_bytes_at(words, start + number * 8) & mask;
+        }
+    }
+    let number = |n: usize| u64::try_from(n).unwrap_or(0);
+    let chars = chars_before(block.get(TEXT_HEADER_WORDS..).unwrap_or_default(), length);
+    let header = [1, state.tables.str_shape, number(length), number(chars), number(count * 8), 0];
+    if let Some(start) = block.get_mut(..TEXT_HEADER_WORDS) {
+        start.copy_from_slice(&header);
+    }
+    let address = state.heap.insert(block).cast_unsigned();
+    items.extend([address, number(length), 0]);
 }
 
 /// Adds a part `split` found to its items: inline in its header when it fits and lists hold

@@ -127,7 +127,7 @@ impl Emit<'_, '_, '_> {
     /// it, or a copy. In a function that asks a lock's log first, one the log marked stays where it
     /// is, its own fields saved when it was marked, where making it alone would copy it.
     fn table_to_change(&mut self, place: &str) -> String {
-        if self.asks_the_log() { self.to_change_at(place) } else { self.alone_at(place, "fennec_unshare") }
+        if self.asks_the_log() { self.changeable_at(place) } else { self.alone_at(place, "fennec_unshare") }
     }
 
     /// The list at `offset` into a `Table`'s block, for its item at `slot` to be written: with no

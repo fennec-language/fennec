@@ -814,7 +814,7 @@ impl Emit<'_, '_, '_> {
             Some((root, path)) => {
                 let place = self.place_of(root, &path)?;
                 alone =
-                    if asks { self.to_change_at(&place) } else { self.alone_at(&place, "fennec_unshare") };
+                    if asks { self.changeable_at(&place) } else { self.alone_at(&place, "fennec_unshare") };
                 alone.as_str()
             }
             None => dict,
@@ -934,7 +934,7 @@ impl Emit<'_, '_, '_> {
         }
         // Where a lock's log is asked first, a dict the log marked stays where it is.
         let asks = self.asks_the_log();
-        let dict = if asks { self.to_change_at(&place) } else { self.alone_at(&place, "fennec_unshare") };
+        let dict = if asks { self.changeable_at(&place) } else { self.alone_at(&place, "fennec_unshare") };
         let key = self.key_value(key, key_word)?;
         let entry = self.find(&dict, key_word, &key);
         let missing = self.temp();
@@ -972,7 +972,7 @@ impl Emit<'_, '_, '_> {
     /// itself is never copied for the one value.
     fn value_to_change(&mut self, dict: &str, value_at: &str) -> String {
         self.save_value_if_marked(dict, value_at);
-        self.to_change_at(value_at)
+        self.changeable_at(value_at)
     }
 
     /// Saves the block a dict holds at `value_at`, as it is, if a lock's log marked the dict: the

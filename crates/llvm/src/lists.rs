@@ -1944,7 +1944,7 @@ impl Emit<'_, '_, '_> {
         if self.alone_fields.contains(&key) {
             return self.load_block(place);
         }
-        let resolved = self.to_change_at(place);
+        let resolved = self.changeable_at(place);
         self.alone_fields.push(key);
         resolved
     }
@@ -1953,7 +1953,7 @@ impl Emit<'_, '_, '_> {
     /// another owner is asked for: the log gives back one it marked where it is, its fields saved
     /// when it was marked, and a copy of any other. It may still have the mark, so nothing here
     /// says it's alone.
-    pub(crate) fn to_change_at(&mut self, place: &str) -> String {
+    pub(crate) fn changeable_at(&mut self, place: &str) -> String {
         self.declare("declare ptr @fennec_lock_to_change(ptr) nounwind");
         let block = self.temp();
         let (ok, shared) = (self.label("alone"), self.label("shared"));

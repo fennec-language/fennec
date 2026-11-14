@@ -1871,11 +1871,13 @@ fn missing_words(dict: i64, key: &[u64], whose: Key, augmented: i8, (start, end)
 /// The addresses of the blocks a dict's block owns, read where its entries are, with no copy of them.
 pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
     let Some(layout) = layout(state, block) else { return Vec::new() };
+    if layout.in_place() {
+        return children_in_place(state, block, layout);
+    }
     // Numbers as keys and values hold no blocks, so there's nothing to look through.
-    if !layout.value.owned() && !layout.key.owned() && layout.key != Word::Text && !layout.in_place() {
+    if !layout.value.owned() && !layout.key.owned() && layout.key != Word::Text {
         return Vec::new();
     }
-    let in_place = value_element(state, layout.value);
     let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
     let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
     let start = DICT_HEADER_WORDS + slots;
@@ -1883,10 +1885,25 @@ pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
     let mut found = Vec::new();
     for entry in words.chunks_exact(layout.width()).filter(|entry| entry.first() != Some(&REMOVED)) {
         found.extend(key_block(layout.key, key_of(layout, entry)));
-        match &in_place {
-            Some(element) => super::heap::held_addresses(element, value_words(layout, entry), &mut found),
-            None => found.extend(layout.value.owned().then(|| value_of(entry))),
-        }
+        found.extend(layout.value.owned().then(|| value_of(entry)));
+    }
+    found
+}
+
+/// `children` for a dict that holds its values in place: each entry's key, if it's held in a
+/// block, and each block its value's words hold. Apart from `children`, as each walk of a value in
+/// place is from the walk of a one-word value, so that one is the loop it always was.
+#[inline(never)]
+fn children_in_place(state: &State, block: &[u64], layout: Layout) -> Vec<u64> {
+    let Some(element) = value_element(state, layout.value) else { return Vec::new() };
+    let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
+    let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
+    let start = DICT_HEADER_WORDS + slots;
+    let words = block.get(start..start + used * layout.width()).unwrap_or_default();
+    let mut found = Vec::new();
+    for entry in words.chunks_exact(layout.width()).filter(|entry| entry.first() != Some(&REMOVED)) {
+        found.extend(key_block(layout.key, key_of(layout, entry)));
+        super::heap::held_addresses(&element, value_words(layout, entry), &mut found);
     }
     found
 }
@@ -1894,10 +1911,12 @@ pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
 /// Where among a dict's words its live entries hold the addresses of other blocks.
 pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>) {
     let Some(layout) = layout(state, block) else { return };
+    if layout.in_place() {
+        return child_places_in_place(state, block, layout, found);
+    }
     let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
     let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
     let start = DICT_HEADER_WORDS + slots;
-    let in_place = value_element(state, layout.value);
     for at in 0..used {
         let entry = start + at * layout.width();
         let Some(words) = block.get(entry..entry + layout.width()) else { return };
@@ -1907,12 +1926,30 @@ pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>)
         if key_block(layout.key, key_of(layout, words)).is_some_and(|held| held != 0) {
             found.push(entry + 1);
         }
-        if let Some(element) = &in_place {
-            // Each place among the value's words that holds a block, as in a list's item.
-            super::heap::boxed_words(element, block, &mut (entry + layout.value_at()), found);
-        } else if layout.value.owned() && value_of(words) != 0 {
+        if layout.value.owned() && value_of(words) != 0 {
             found.push(entry + layout.value_at());
         }
+    }
+}
+
+/// `child_places` for a dict that holds its values in place.
+#[inline(never)]
+fn child_places_in_place(state: &State, block: &[u64], layout: Layout, found: &mut Vec<usize>) {
+    let Some(element) = value_element(state, layout.value) else { return };
+    let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
+    let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
+    let start = DICT_HEADER_WORDS + slots;
+    for at in 0..used {
+        let entry = start + at * layout.width();
+        let Some(words) = block.get(entry..entry + layout.width()) else { return };
+        if words.first() == Some(&REMOVED) {
+            continue;
+        }
+        if key_block(layout.key, key_of(layout, words)).is_some_and(|held| held != 0) {
+            found.push(entry + 1);
+        }
+        // Each place among the value's words that holds a block, as in a list's item.
+        super::heap::boxed_words(&element, block, &mut (entry + layout.value_at()), found);
     }
 }
 
@@ -1922,16 +1959,32 @@ pub(super) fn read(state: &State, block: &[u64]) -> Value {
     if layout.value == Word::Nothing {
         return read_set(state, layout, block);
     }
-    // What a value in place is laid out as, looked up once and not for every entry.
-    let in_place = value_element(state, layout.value);
+    if layout.in_place() {
+        return read_in_place(state, layout, block);
+    }
     let pairs: Vec<_> = entries(block, layout.width())
         .chunks_exact(layout.width())
         .map(|entry| {
-            let value = match &in_place {
-                Some(element) => super::heap::read_in_place(state, element, value_words(layout, entry)),
-                None => word_value(state, layout.value, value_of(entry)),
-            };
-            (key_value(state, layout.key, key_of(layout, entry)), value)
+            (
+                key_value(state, layout.key, key_of(layout, entry)),
+                word_value(state, layout.value, value_of(entry)),
+            )
+        })
+        .collect();
+    Value::Dict(std::rc::Rc::new(pairs.into()))
+}
+
+/// `read` for a dict that holds its values in place, each read as a list's item of its kind is.
+#[inline(never)]
+fn read_in_place(state: &State, layout: Layout, block: &[u64]) -> Value {
+    let Some(element) = value_element(state, layout.value) else { return Value::None };
+    let pairs: Vec<_> = entries(block, layout.width())
+        .chunks_exact(layout.width())
+        .map(|entry| {
+            (
+                key_value(state, layout.key, key_of(layout, entry)),
+                super::heap::read_in_place(state, &element, value_words(layout, entry)),
+            )
         })
         .collect();
     Value::Dict(std::rc::Rc::new(pairs.into()))
@@ -1949,8 +2002,9 @@ pub(super) fn shown(state: &State, block: &[u64], out: &mut Written) {
         out.push_str("set()");
         return;
     }
+    // What a value in place is laid out as: nothing, for a value that's a word.
+    let in_place = if layout.in_place() { value_element(state, layout.value) } else { None };
     out.push('{');
-    let in_place = value_element(state, layout.value);
     for (at, entry) in held.chunks_exact(layout.width()).enumerate() {
         if at > 0 {
             out.push_str(", ");
@@ -2132,24 +2186,14 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64], later: &mut Vec<
     if theirs != Some(layout) {
         return false;
     }
+    if layout.in_place() {
+        return equal_in_place(state, layout, (left, right), later);
+    }
     let (ours, theirs) = (entries(left, layout.width()), entries(right, layout.width()));
     ours.len() == theirs.len()
         && ours.chunks_exact(layout.width()).all(|entry| {
             let (hash, value) = (entry.first().copied().unwrap_or(0), value_of(entry));
             match find(state, right, layout, key_of(layout, entry), hash) {
-                // Values in place are the same as two items of their kind in a list are.
-                Probe::Found(at) if layout.in_place() => value_place(right, layout, at)
-                    .and_then(|place| right.get(place..place + layout.value_words()))
-                    .zip(value_element(state, layout.value))
-                    .is_some_and(|(other, element)| {
-                        super::heap::same_words_here(
-                            state,
-                            &element,
-                            value_words(layout, entry),
-                            other,
-                            later,
-                        )
-                    }),
                 Probe::Found(at) => value_place(right, layout, at)
                     .and_then(|place| right.get(place))
                     .is_some_and(|other| match layout.value {
@@ -2165,6 +2209,37 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64], later: &mut Vec<
                         | Word::Nothing
                         | Word::Text
                         | Word::InPlace(_) => value == *other,
+                    }),
+                Probe::Empty(_) => false,
+            }
+        })
+}
+
+/// `equal` for two dicts that hold their values in place: the same keys, each with values that
+/// are the same as two items of their kind in a list are.
+#[inline(never)]
+fn equal_in_place(
+    state: &State,
+    layout: Layout,
+    (left, right): (&[u64], &[u64]),
+    later: &mut Vec<(u64, u64)>,
+) -> bool {
+    let Some(element) = value_element(state, layout.value) else { return false };
+    let (ours, theirs) = (entries(left, layout.width()), entries(right, layout.width()));
+    ours.len() == theirs.len()
+        && ours.chunks_exact(layout.width()).all(|entry| {
+            let hash = entry.first().copied().unwrap_or(0);
+            match find(state, right, layout, key_of(layout, entry), hash) {
+                Probe::Found(at) => value_place(right, layout, at)
+                    .and_then(|place| right.get(place..place + layout.value_words()))
+                    .is_some_and(|other| {
+                        super::heap::same_words_here(
+                            state,
+                            &element,
+                            value_words(layout, entry),
+                            other,
+                            later,
+                        )
                     }),
                 Probe::Empty(_) => false,
             }

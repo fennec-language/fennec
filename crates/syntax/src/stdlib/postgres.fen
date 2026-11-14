@@ -716,7 +716,8 @@ def duration_of(text: str) -> Duration fails SqlError:
 ## wire and makes the server prove it knows it too. Given a password, a server that lets the client
 ## in with no proof, or asks for the password as it is, is refused, since anything on the way could
 ## be pretending to be it. `allow_weak_sign_in=True` lets those through, for a server set up that
-## way. `entropy` makes SCRAM's nonce.
+## way. A server asking for an MD5 hash of the password is never sent one, and each step of
+## signing in has to come in its turn. `entropy` makes SCRAM's nonce.
 ##
 ## The pool has up to `pool_size` connections, 10 unless the URL or an argument says, and
 ## `pool_size=1` for one. One connects now, so a wrong URL or password fails here, and the rest
@@ -848,7 +849,10 @@ export struct PgDatabase:
         return found
 
     ## Says who's signing in, and answers whatever the server asks until it's ready. After SCRAM
-    ## the server has to have proved it knows the password, or it isn't trusted.
+    ## the server has to have proved it knows the password, or it isn't trusted. Each step comes
+    ## in its turn: the server lets the client in before it's ready, and SCRAM's messages come
+    ## once each, in order, after the server asked for it, so a server can't skip the step that
+    ## proves it, or have the client prove a password it was never given.
     def _sign_in(
         self,
         entropy: Entropy,
@@ -861,16 +865,21 @@ export struct PgDatabase:
         mut reader = PgReader()
         mut scram = PgScram.started(Secret.of(""), nonce="", user="")
         mut signing = False
+        mut answered = False
         mut proved = False
+        mut let_in = False
         while True:
             message = next_message(self._conn, ref reader)?
             match message:
                 case .AuthOk:
+                    if let_in: fail out_of_turn("let the client in twice")
                     if not proved and (signing or (secret is not None and not weak)):
                         fail SqlError.Failed(
                             reason="the server let us in without proving it knows the password: `allow_weak_sign_in=True` accepts that",
                         )
+                    let_in = True
                 case .AuthCleartext:
+                    if let_in or signing: fail out_of_turn("asked for the password as it is")
                     if not weak:
                         fail SqlError.Failed(
                             reason="the server asks for the password as it is, so it wasn't sent: `allow_weak_sign_in=True` sends it",
@@ -878,6 +887,7 @@ export struct PgDatabase:
                     held = needed(secret)?
                     send(self._conn, cleartext(held))?
                 case .AuthSasl(mechanisms=mechanisms):
+                    if let_in or signing: fail out_of_turn("asked for SCRAM")
                     if not ("SCRAM-SHA-256" in mechanisms):
                         fail SqlError.Failed(reason="the server doesn't offer SCRAM-SHA-256")
                     nonce = base64.encode(entropy.bytes(18))
@@ -885,17 +895,28 @@ export struct PgDatabase:
                     signing = True
                     send(self._conn, sasl_first("SCRAM-SHA-256", data=scram.first()))?
                 case .AuthSaslContinue(data=data):
+                    if not signing or answered: fail out_of_turn("sent SCRAM's first message")
+                    answered = True
                     send(self._conn, sasl_next(scram.answer(data)?))?
                 case .AuthSaslFinal(data=data):
+                    if proved: fail out_of_turn("sent SCRAM's proof")
                     scram.check(data)?
                     proved = True
                 case .AuthOther(code=code):
+                    # 5 is MD5, which Postgres itself has deprecated: a server in the middle can
+                    # pass the server's salt on and the client's hash back, and be let in as the
+                    # client. It isn't spoken, so it's never sent, weak sign-in or not.
+                    if code == 5:
+                        fail SqlError.Failed(
+                            reason="the server asks for an MD5 hash of the password, which a server in the middle could pass on to sign in as us, so it wasn't sent: set the user's password with SCRAM-SHA-256",
+                        )
                     fail SqlError.Failed(
                         reason=f"the server signs in a way this doesn't speak, number {code}: use SCRAM-SHA-256 or a password",
                     )
                 case .Failed(fields=fields):
                     fail failure_from_fields(fields)
                 case .Ready(status=_):
+                    if not let_in: fail out_of_turn("said it was ready")
                     return
                 case _:
                     pass
@@ -990,6 +1011,12 @@ struct PgResult:
 ## The message asking for TLS: its length, 8, then the number Postgres knows it by.
 def ssl_request() -> bytes:
     return bytes([0, 0, 0, 8, 4, 210, 22, 47])
+
+## A server sign-in step that came out of its turn, which a server that's what it says never sends.
+def out_of_turn(what: str) -> SqlError:
+    return SqlError.Failed(
+        reason=f"the server {what} out of its turn in signing in, so it isn't trusted",
+    )
 
 ## The password a server asked for, which has to have been given.
 def needed(secret: Secret[str]?) -> Secret[str] fails SqlError:

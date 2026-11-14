@@ -481,6 +481,9 @@ struct State {
     /// The calls the failure has left so far on its way out, innermost first: where each called
     /// what it came out of. Started again by each new failure.
     trace: Trace,
+    /// The words of a dict's value held in place, on its way in or out (see
+    /// `dicts::value_buffer_of`): made the first time one's wanted, and this run's own.
+    dict_value: std::cell::OnceCell<Box<[Cell<u64>]>>,
 }
 
 thread_local! {
@@ -593,6 +596,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         failure: None,
         keys_by_value,
         trace: Trace::default(),
+        dict_value: std::cell::OnceCell::new(),
     }));
 }
 

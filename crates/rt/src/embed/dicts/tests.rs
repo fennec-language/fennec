@@ -258,7 +258,7 @@ fn a_value_in_place_taken_out_leaves_as_its_words_with_what_they_hold() {
     let dict = made(Word::Int, 0, &points());
     let key = (-3_i64).cast_unsigned();
     assert!(matches!(
-        with(|state| Some(super::take_key(state, dict, &[key]))),
+        with(|state| Some(super::take_key::<true>(state, dict, &[key]))),
         Some(super::Taken::Removed(0))
     ));
     let words = with(|state| super::buffered(state, 5)).unwrap();
@@ -280,7 +280,10 @@ fn a_value_in_place_taken_out_leaves_as_its_words_with_what_they_hold() {
     all.extend(&held);
     audited(&all);
     // A key that isn't there takes nothing.
-    assert!(matches!(with(|state| Some(super::take_key(state, dict, &[99]))), Some(super::Taken::Missing)));
+    assert!(matches!(
+        with(|state| Some(super::take_key::<true>(state, dict, &[99]))),
+        Some(super::Taken::Missing)
+    ));
     for address in held {
         let_go(address);
     }
@@ -343,17 +346,110 @@ fn a_tuple_in_place_is_a_tuple() {
     finish();
 }
 
+/// What stopping the program said, for a call that's a bug in Fennec: in a test the runtime
+/// panics with it, where a program would say it and stop. The call is of what an export does,
+/// not of the export itself, which native code calls and so can't be left by a panic.
+fn stops<T>(call: impl FnOnce() -> T) -> String {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)) {
+        Ok(_) => "it went on".to_owned(),
+        Err(why) => why.downcast_ref::<String>().cloned().unwrap_or_default(),
+    }
+}
+
 #[test]
-fn a_setter_of_one_word_changes_nothing_in_a_dict_of_values_in_place() {
+fn a_call_for_one_word_values_on_a_dict_of_values_in_place_stops_the_program() {
     started();
+    let before = live();
     let dict = made(Word::Int, 0, &points());
-    let was = read(dict);
-    let signed = i64::try_from(dict).unwrap();
-    assert_eq!(with(|state| super::set_words(state, signed, &[7], 5)), None);
-    assert_eq!(with(|state| super::set_words(state, signed, &[8], 5)), None);
-    assert_eq!(read(dict), was);
-    audited(&[dict]);
+    let by_text = made(Word::Text, 0, &dict_of(vec![(Value::str("k"), a_point(1, "n", &[]))]));
+    let was = (read(dict), read(by_text));
+    let header = super::super::text::inline(b"k");
+    let text = with(|state| heap::text_from_bytes(state, LONG.as_bytes(), LONG.len()));
+    // Every way to set one word: by a key, as `fennec_dict_set` does and `fennec_dict_set_found`
+    // falls back to; by a string's header; and by a key cut from a text. Each used to change
+    // nothing and say nothing.
+    let set = "a dict that holds its values in place was set a value of one word";
+    assert_eq!(stops(|| with(|state| super::set_in(state, signed(dict), 7, 5))), set);
+    assert_eq!(with(|state| super::set_at_entry(state, signed(dict), 1, 7, 5)), None);
+    assert_eq!(stops(|| with(|state| super::set_by_header(state, signed(by_text), header, 5))), set);
+    assert_eq!(stops(|| with(|state| super::add_by_slice(state, signed(by_text), (text, 0, 1), 5))), set);
+    // And to take one out as a word, which used to leave it in the buffer, where a caller of
+    // these doesn't look.
+    let taken = "a value was taken as one word out of a dict that holds its values in place";
+    assert_eq!(
+        stops(|| super::pop_words::<false>(signed(dict), &[7], super::Key::HandedOver, (0, 0))),
+        taken
+    );
+    assert_eq!(stops(|| super::pop_by_header::<false>(signed(by_text), header, (0, 0))), taken);
+    // Each stopped before it changed anything.
+    assert_eq!((read(dict), read(by_text)), was);
+    audited(&[dict, by_text, unsigned(text)]);
+    for held in [dict, by_text, unsigned(text)] {
+        let_go(held);
+    }
+    assert_eq!(live(), before);
+    finish();
+}
+
+#[test]
+fn a_call_for_values_in_place_on_a_dict_of_one_word_values_stops_the_program() {
+    started();
+    let before = live();
+    let pairs = dict_of(vec![(Value::Int(1), Value::Int(2))]);
+    let plain = shape(0, Word::Int, Word::Int).unwrap();
+    let dict = unsigned(with(|state| super::write(state, plain, &pairs)).unwrap());
+    let by_text = unsigned(
+        with(|state| {
+            let shape = shape(0, Word::Text, Word::Int).unwrap();
+            super::write(state, shape, &dict_of(vec![(Value::str("k"), Value::Int(2))]))
+        })
+        .unwrap(),
+    );
+    let header = super::super::text::inline(b"k");
+    let set = "a dict of one-word values was set a value held in place";
+    assert_eq!(stops(|| with(|state| super::set_buffered(state, signed(dict), &[1]))), set);
+    assert_eq!(stops(|| with(|state| super::set_buffered(state, signed(by_text), &header))), set);
+    // Taken out this way, the value would be left where `popped` gives it, and the caller would
+    // read whatever went through the buffer last as the value it took.
+    let taken = "a value was taken as one held in place out of a dict of one-word values";
+    assert_eq!(stops(|| super::pop_words::<true>(signed(dict), &[1], super::Key::HandedOver, (0, 0))), taken);
+    assert_eq!(stops(|| super::pop_by_header::<true>(signed(by_text), header, (0, 0))), taken);
+    assert_eq!(read(dict), pairs);
+    assert_eq!(read(by_text), dict_of(vec![(Value::str("k"), Value::Int(2))]));
+    // The calls for a word still do what they did.
+    assert_eq!(unsigned(super::pop(signed(dict), 1, 0, 0)), dict);
+    assert_eq!(super::popped(), 2);
     let_go(dict);
+    let_go(by_text);
+    assert_eq!(live(), before);
+    finish();
+}
+
+#[test]
+fn the_buffer_is_made_for_each_run_as_long_as_that_runs_widest_kind() {
+    // A first run whose widest kind of item is a tuple of four words.
+    let pair = named("(int, str)", vec![("0", Element::Int), ("1", Element::Text)]);
+    let tables = Tables {
+        shapes: vec![Rc::new(Element::Str)],
+        elements: vec![Rc::new(pair)],
+        str_shape: 0,
+        text_headers: true,
+        ..Tables::default()
+    };
+    start(tables, crate::Inputs::default());
+    assert_eq!(with(|state| super::buffered(state, 4).map(|words| words.len())), Some(4));
+    assert_eq!(with(|state| super::buffered(state, 5)), None);
+    // It stays where it is for the whole run.
+    let first = super::value_buffer();
+    assert_ne!(first, 0);
+    assert_eq!(super::value_buffer(), first);
+    finish();
+    // A second run on the same thread, whose widest is six words: it has a buffer of its own,
+    // where the first run's, four words long, used to be handed out again for native code to
+    // write six words into.
+    started();
+    assert_eq!(with(|state| super::buffered(state, 6).map(|words| words.len())), Some(6));
+    assert_eq!(with(|state| super::buffered(state, 7)), None);
     finish();
 }
 
@@ -462,14 +558,6 @@ fn a_value_set_by_a_strings_header_takes_the_key_as_the_dict_holds_it() {
         ])
     );
     audited(&[dict]);
-    // A dict of one-word values is given back unchanged.
-    let plain = shape(0, Word::Int, Word::Int).unwrap();
-    let other = unsigned(
-        with(|state| super::write(state, plain, &dict_of(vec![(Value::Int(1), Value::Int(2))]))).unwrap(),
-    );
-    assert_eq!(unsigned(super::set_in_place(signed(other), 1)), other);
-    assert_eq!(read(other), dict_of(vec![(Value::Int(1), Value::Int(2))]));
-    let_go(other);
     let_go(dict);
     assert_eq!(live(), before);
     finish();
@@ -706,3 +794,55 @@ fn a_value_taken_out_under_a_locks_log_goes_back_on_a_crash_and_stays_out_at_an_
     }
     finish();
 }
+
+/// Lets go of what a value popped into the buffer holds, as native code would once it's done.
+fn let_go_of_buffered(element: &Element, count: usize) {
+    let words = with(|state| super::buffered(state, count)).unwrap();
+    let mut held = Vec::new();
+    heap::held_addresses(element, &words, &mut held);
+    for address in held {
+        let_go(address);
+    }
+}
+
+#[test]
+fn a_shared_dict_popped_from_is_copied_with_what_each_value_holds_counted() {
+    started();
+    let before = live();
+    let dict = made(Word::Int, 0, &points());
+    with(|state| heap::retain(state, dict));
+    let copy = unsigned(super::pop_in_place(signed(dict), 40, 0, 0));
+    assert_ne!(copy, dict);
+    assert_eq!(read(dict), points(), "the other holder's is as it was");
+    let_go_of_buffered(&point(), 5);
+    audited(&[dict, copy]);
+    let_go(dict);
+    let_go(copy);
+    assert_eq!(live(), before);
+    finish();
+}
+
+#[test]
+fn a_dict_of_values_in_place_is_copied_for_a_task_with_all_it_holds() {
+    started();
+    let before = live();
+    let dict = made(Word::Int, 0, &points());
+    let copy = with(|state| {
+        let (copy, table) = super::super::guarded::copied_for_task(state, dict).ok()?;
+        state.heap.adopt_made(table.into_blocks());
+        Some(copy)
+    })
+    .unwrap();
+    assert_ne!(copy, dict);
+    assert_eq!(read(copy), points());
+    // The dict, two long names and three lists, again.
+    assert_eq!(live(), before + 12);
+    audited(&[dict, copy]);
+    let_go(dict);
+    assert_eq!(read(copy), points(), "the copy holds its own");
+    let_go(copy);
+    assert_eq!(live(), before);
+    finish();
+}
+
+mod under_a_lock;

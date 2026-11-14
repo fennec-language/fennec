@@ -604,7 +604,11 @@ pub fn made_so_far() -> usize {
 /// What this thread's runtime made since `since` that outlives the task it ran, handed over
 /// as blocks for the thread that started the task to adopt when the task ends.
 pub fn hand_over(since: usize) -> Vec<Box<[u64]>> {
-    super::with(|state| state.heap.hand_over(since))
+    super::with(|state| {
+        #[cfg(feature = "audit")]
+        super::heap::audit::at_a_task_end(state);
+        state.heap.hand_over(since)
+    })
 }
 
 /// Takes over blocks a task's thread handed over, as this thread's own.

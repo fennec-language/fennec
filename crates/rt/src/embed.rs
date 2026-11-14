@@ -792,8 +792,20 @@ pub(in crate::embed) fn made_with(what: &str, make: impl FnOnce(&mut State) -> i
     made(what, with(make))
 }
 
+#[cfg(not(feature = "audit"))]
 fn with<T: Default>(f: impl FnOnce(&mut State) -> T) -> T {
     STATE.with_borrow_mut(|state| state.as_mut().map(f)).unwrap_or_default()
+}
+
+/// `with`, in a runtime built to audit: the heap is checked as the call ends, if a check is due.
+#[cfg(feature = "audit")]
+fn with<T: Default>(f: impl FnOnce(&mut State) -> T) -> T {
+    let ran = |state: &mut State| {
+        let gave = f(state);
+        heap::audit::check_if_due(state);
+        gave
+    };
+    STATE.with_borrow_mut(|state| state.as_mut().map(ran)).unwrap_or_default()
 }
 
 /// Runs an operation that can fail, recording the failure for native code to notice.

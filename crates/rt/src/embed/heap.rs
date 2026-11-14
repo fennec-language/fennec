@@ -780,6 +780,8 @@ impl Heap {
 
     pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
         self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
+        #[cfg(feature = "audit")]
+        audit::made_one();
         let address = block.as_ptr().addr();
         if block.first().is_some_and(|count| *count >= IMMORTAL) {
             // It's no thread's to count, and never handed over.

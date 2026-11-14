@@ -10,8 +10,14 @@
 //! It reads the heap where it lies and keeps a few words for each live block. The way to a block
 //! is worked out only for one found wrong, and only for the first few of those.
 //!
+//! During a run it can check less. Native code holds owners in its frames, which the heap doesn't
+//! show, so a block may rightly have fewer holders here than its count, and a block nothing here
+//! holds may be anything's. One thing is still certain: a block with more holders in the heap than
+//! its count is wrong whatever the frames hold, and it's freed while one of them still has it.
+//! That's what `during` checks, as a task ends and after every so many blocks made, when asked.
+//!
 //! What it can't see:
-//! - Owners native code holds in its frames. So it runs where there are none: at the end of a run.
+//! - Owners native code holds in its frames. So only the check at the end of a run is exact.
 //! - Native blocks, which aren't in the table. An audited program is built without them, so the
 //!   code that makes and frees them is never the code audited.
 //! - Blocks in the table behind a `shared` value's lock.
@@ -65,6 +71,9 @@ pub(crate) struct Finding {
     /// a root, or at a block that's leaked when no root leads to it. Empty for a block nothing
     /// holds, and for one found wrong after the first few.
     pub(crate) way: Vec<(u64, String)>,
+    /// For a block found wrong during a run, each block that holds it, with its kind, once for
+    /// each place it holds it at.
+    pub(crate) holders: Vec<(u64, String)>,
 }
 
 /// What an audit found.
@@ -131,7 +140,7 @@ pub(in crate::embed) fn audit(state: &State, held: &[u64]) -> Audit {
     }
     for address in &freeable {
         let found = tallies.get(address).map_or(0, |tally| tally.found);
-        let stored = state.heap.block(*address).and_then(<[u64]>::first).copied().unwrap_or(0);
+        let stored = state.heap.block(*address).map_or(0, counted);
         // A block nothing holds is said already, with its count.
         let which = match stored.cmp(&u64::from(found)) {
             std::cmp::Ordering::Greater if found > 0 => Wrong::CountedHigh,
@@ -153,6 +162,54 @@ pub(in crate::embed) fn audit(state: &State, held: &[u64]) -> Audit {
             way.unwrap_or_default().into_iter().map(|address| (address, kind_at(state, address))).collect();
     }
     Audit { live: freeable.len(), wrong }
+}
+
+/// Checks what can be checked while native code is still running: that no block in this thread's
+/// table has more holders, among the table's blocks, than its count. Each one that has is said
+/// with the blocks that hold it.
+pub(in crate::embed) fn during(state: &State) -> Audit {
+    let mut tallies = Tallies::default();
+    let mut children = Vec::new();
+    let mut live = 0;
+    for block in state.heap.blocks.all() {
+        live += usize::from(!is_never_freed(block));
+        children.clear();
+        children_into(state, block, &mut children);
+        for child in &children {
+            hold(&mut tallies, *child);
+        }
+    }
+    let mut low: Vec<(u64, u32)> = tallies
+        .iter()
+        .filter(|(address, tally)| {
+            // Only a block of this table: another's count is another thread's to say.
+            let block = usize::try_from(**address).ok().and_then(|at| state.heap.blocks.get(at));
+            block.is_some_and(|block| !is_never_freed(block) && counted(block) < u64::from(tally.found))
+        })
+        .map(|(address, tally)| (*address, tally.found))
+        .collect();
+    low.sort_unstable();
+    let mut wrong: Vec<Finding> = low
+        .into_iter()
+        .map(|(address, found)| finding(state, Wrong::CountedLow, address, found, 0))
+        .collect();
+    for finding in wrong.iter_mut().take(WAYS) {
+        for block in state.heap.blocks.all() {
+            children.clear();
+            children_into(state, block, &mut children);
+            let holder = address_of(block);
+            let times = children.iter().filter(|child| **child == finding.address).count();
+            finding.holders.extend(std::iter::repeat_n((holder, kind_at(state, holder)), times));
+        }
+        finding.holders.sort_unstable();
+    }
+    Audit { live, wrong }
+}
+
+/// The owners a block is counted as having. A lock's log marks a block it has in its count, which
+/// is no owner.
+fn counted(block: &[u64]) -> u64 {
+    block.first().map_or(0, |count| count & !super::super::lists::MARKED)
 }
 
 fn address_of(block: &[u64]) -> u64 {
@@ -222,7 +279,7 @@ fn way_to(state: &State, starts: &[u64], target: u64) -> Option<Vec<u64>> {
 }
 
 fn finding(state: &State, wrong: Wrong, address: u64, found: u32, under: usize) -> Finding {
-    let stored = state.heap.block(address).and_then(<[u64]>::first).copied().unwrap_or(0);
+    let stored = state.heap.block(address).map_or(0, counted);
     Finding {
         wrong,
         address,
@@ -231,6 +288,7 @@ fn finding(state: &State, wrong: Wrong, address: u64, found: u32, under: usize) 
         found: u64::from(found),
         under,
         way: Vec::new(),
+        holders: Vec::new(),
     }
 }
 
@@ -319,7 +377,11 @@ impl Finding {
             1 => ", and 1 more block is held only through it".to_owned(),
             under => format!(", and {under} more blocks are held only through it"),
         };
-        let way = if self.way.is_empty() {
+        let way = if !self.holders.is_empty() {
+            let holders: Vec<String> =
+                self.holders.iter().map(|(address, kind)| format!("{kind} at {address:#x}")).collect();
+            format!(", by {}", holders.join(" and "))
+        } else if self.way.is_empty() {
             String::new()
         } else {
             let steps: Vec<String> =
@@ -347,6 +409,102 @@ impl Finding {
             Wrong::Gone => format!("gone: no block is at {address:#x}, which is held {found} times{way}"),
         }
     }
+}
+
+/// When this thread's heap is next checked during a run: how many more blocks it makes first, and
+/// whether that many have been made.
+#[cfg(feature = "audit")]
+mod due {
+    use std::cell::Cell;
+    use std::sync::OnceLock;
+
+    thread_local! {
+        static LEFT: Cell<u64> = const { Cell::new(0) };
+        static DUE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// How many blocks a thread makes between checks, from `FENNEC_AUDIT_EVERY`, in a run under
+    /// `FENNEC_AUDIT`. Nothing when it isn't asked for.
+    fn every() -> Option<u64> {
+        static EVERY: OnceLock<Option<u64>> = OnceLock::new();
+        *EVERY.get_or_init(|| {
+            std::env::var_os("FENNEC_AUDIT")?;
+            std::env::var("FENNEC_AUDIT_EVERY").ok()?.parse().ok().filter(|every| *every > 0)
+        })
+    }
+
+    /// Whether a run checks each thread's heap as a task ends on it: under `FENNEC_AUDIT=tasks`.
+    pub(super) fn at_task_ends() -> bool {
+        static TASKS: OnceLock<bool> = OnceLock::new();
+        *TASKS.get_or_init(|| std::env::var("FENNEC_AUDIT").is_ok_and(|audit| audit == "tasks"))
+    }
+
+    /// This thread's heap made a block.
+    pub(in crate::embed) fn made_one() {
+        let Some(every) = every() else { return };
+        // 0 is a thread that hasn't made a block yet.
+        let left = match LEFT.get() {
+            0 => every,
+            left => left,
+        };
+        if left == 1 {
+            DUE.set(true);
+            LEFT.set(every);
+        } else {
+            LEFT.set(left - 1);
+        }
+    }
+
+    /// Whether a check is due on this thread, which it no longer is once asked.
+    pub(super) fn take() -> bool {
+        DUE.replace(false)
+    }
+}
+
+#[cfg(feature = "audit")]
+pub(in crate::embed) use due::made_one;
+
+/// Checks this thread's heap if it's made as many blocks as `FENNEC_AUDIT_EVERY` says since the
+/// last check. The runtime asks as each of its calls ends, where its own work on the heap is done.
+#[cfg(feature = "audit")]
+pub(in crate::embed) fn check_if_due(state: &State) {
+    if due::take() {
+        stop_if_wrong(state, "after as many blocks made as FENNEC_AUDIT_EVERY says");
+    }
+}
+
+/// Checks this thread's heap as a task ends on it, under `FENNEC_AUDIT=tasks`.
+#[cfg(feature = "audit")]
+pub(in crate::embed) fn at_a_task_end(state: &State) {
+    if due::at_task_ends() {
+        stop_if_wrong(state, "as a task ended");
+    }
+}
+
+/// How many checks every thread has made during the run, for `FENNEC_COUNTS` to say: a test can
+/// tell from it that a run asked to check did.
+#[cfg(feature = "audit")]
+static CHECKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many checks were made during the run so far.
+#[cfg(feature = "audit")]
+pub(in crate::embed) fn checks() -> u64 {
+    CHECKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Says what a check during the run found, and ends the program there with the audit's exit code:
+/// a heap that's wrong is no heap to go on running in.
+#[cfg(feature = "audit")]
+fn stop_if_wrong(state: &State, when: &str) {
+    use std::io::Write as _;
+    CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let said = during(state).said();
+    if said.is_empty() {
+        return;
+    }
+    let said = format!("heap audit: during the run, {when}\n{said}");
+    let _ = std::io::stderr().write_all(said.as_bytes());
+    super::super::aot::stop_now(EXIT_CODE);
 }
 
 #[cfg(test)]

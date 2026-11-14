@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use super::super::super::{Tables, finish, start, with};
 use super::super::IMMORTAL;
-use super::{Audit, Wrong, audit};
+use super::{Audit, Wrong, audit, during};
 use crate::packed::Element;
 
 /// Starts a run whose only shape is `Node`, a struct holding another `Node` and a string.
@@ -159,5 +159,61 @@ fn only_the_first_blocks_found_wrong_are_said_and_the_rest_counted() {
     let said = found.said();
     assert_eq!(said.lines().count(), super::SAID + 3);
     assert!(said.contains("heap audit: and 3 more\n"), "{said}");
+    finish();
+}
+
+#[test]
+fn during_a_run_only_more_holders_than_a_count_is_wrong() {
+    started();
+    // Held by nothing here, and counted twice with one holder: native code's frames may hold both.
+    let in_a_frame = text(1);
+    let partly_in_a_frame = text(2);
+    let first = node(1, 0, partly_in_a_frame);
+    // Marked by a lock's log, which is no owner.
+    let marked = made(vec![crate::embed::lists::MARKED | 1, 0, 0, 0]);
+    let second = node(1, marked, 0);
+    assert_eq!(with(|state| during(state)), Audit { live: 5, wrong: Vec::new() });
+    // Now one more holds a block counted once.
+    let third = node(1, first, in_a_frame);
+    let fourth = node(1, first, in_a_frame);
+    let found = with(|state| during(state));
+    assert_eq!(found.live, 7);
+    let [low_text, low_node] = &found.wrong[..] else { panic!("{found:?}") };
+    let (low_text, low_node) =
+        if low_text.address == in_a_frame { (low_text, low_node) } else { (low_node, low_text) };
+    assert_eq!(
+        (low_text.wrong, low_text.address, low_text.stored, low_text.found),
+        (Wrong::CountedLow, in_a_frame, 1, 2)
+    );
+    assert_eq!(
+        (low_node.wrong, low_node.address, low_node.stored, low_node.found),
+        (Wrong::CountedLow, first, 1, 2)
+    );
+    let mut holders = vec![(third, "Node".to_owned()), (fourth, "Node".to_owned())];
+    holders.sort_unstable();
+    assert_eq!(low_text.holders, holders);
+    assert!(
+        found.said().contains(&format!(
+            "counted too low: str at {in_a_frame:#x} is counted 1 and held 2 times, by Node at {:#x} and Node at \
+             {:#x}\n",
+            holders[0].0, holders[1].0
+        )),
+        "{}",
+        found.said()
+    );
+    let _ = second;
+    finish();
+}
+
+#[test]
+fn a_block_held_twice_by_one_block_is_said_with_it_twice() {
+    started();
+    let held = node(1, 0, 0);
+    // A `Node` holding one block as both its fields: the audit goes by places, not by blocks.
+    let holder = node(1, held, held);
+    let found = with(|state| during(state));
+    let [low] = &found.wrong[..] else { panic!("{found:?}") };
+    assert_eq!((low.address, low.stored, low.found), (held, 1, 2));
+    assert_eq!(low.holders, vec![(holder, "Node".to_owned()), (holder, "Node".to_owned())]);
     finish();
 }

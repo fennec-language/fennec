@@ -193,7 +193,11 @@ fn run(launched: &Launched, body: TaskBody, copy: Option<(u64, Box<crate::embed:
             Ok(())
         });
     }
-    let blocks = with(|state| state.heap.hand_over(0));
+    let blocks = with(|state| {
+        #[cfg(feature = "audit")]
+        heap::audit::at_a_task_end(state);
+        state.heap.hand_over(0)
+    });
     let (lent_owners, printed) = threads::range_ends();
     let outcome = Outcome { how, failure, blocks, lent_owners, printed };
     let mut end = launched.end.lock().unwrap_or_else(PoisonError::into_inner);

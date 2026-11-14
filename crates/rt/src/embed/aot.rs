@@ -416,6 +416,11 @@ fn report_counts(counts: &heap::Counts, live: usize) {
         0 => said,
         strays => format!("{said} stray_frees {strays}"),
     };
+    #[cfg(feature = "audit")]
+    let said = match heap::audit::checks() {
+        0 => said,
+        checks => format!("{said} audit_checks {checks}"),
+    };
     // The runtime's own blocks, and native code's, which its table doesn't hold.
     let _ = writeln!(std::io::stderr(), "{said} live {}", live + native_left());
 }

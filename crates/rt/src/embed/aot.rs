@@ -467,10 +467,26 @@ fn report(output: &[u8], failure: &str) -> i32 {
     // A heap found wrong ends the run with a code of its own, whatever else it ended with.
     #[cfg(feature = "audit")]
     if AUDIT_FAILED.load(std::sync::atomic::Ordering::Relaxed) {
-        return heap::audit::EXIT_CODE;
+        return AUDIT_EXIT_CODE;
+    }
+    // Asked to audit, in a runtime that has no audit: saying nothing would read as a heap found
+    // right, so it says it checked nothing, and ends as a failed audit does.
+    #[cfg(not(feature = "audit"))]
+    if std::env::var_os("FENNEC_AUDIT").is_some() {
+        let _ = std::io::stderr().write_all(NO_AUDIT.as_bytes());
+        return AUDIT_EXIT_CODE;
     }
     code
 }
+
+/// The exit code of a run whose heap audit found something wrong, or that was asked to audit and
+/// couldn't.
+const AUDIT_EXIT_CODE: i32 = 87;
+
+/// What a run under `FENNEC_AUDIT` says when its runtime was built without the audit.
+#[cfg(not(feature = "audit"))]
+const NO_AUDIT: &str = "heap audit: FENNEC_AUDIT is set, but this program's runtime was built without the heap \
+                        audit, so nothing was checked\n";
 
 fn reported(output: &[u8], failure: &str) -> i32 {
     let printed = std::io::stdout().write_all(output).and_then(|()| std::io::stdout().flush());
@@ -491,9 +507,16 @@ static AUDIT_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 /// ends with the audit's exit code. Only a runtime built to audit has this, for test builds: one
 /// that ships can't be asked to.
 #[cfg(feature = "audit")]
-pub(super) fn audit_at_the_end(state: &State) {
+pub(super) fn audit_at_the_end(state: &mut State) {
     if std::env::var_os("FENNEC_AUDIT").is_none() {
         return;
+    }
+    // A check of the check: under `FENNEC_AUDIT_SELFTEST`, a block is made here that nothing
+    // holds, which the audit has to find. What runs every program audited runs this first, so an
+    // audit that finds nothing because it does nothing can't pass for a clean one.
+    if std::env::var_os("FENNEC_AUDIT_SELFTEST").is_some() {
+        let left = vec![1, state.tables.str_shape, 0, 0, 0, 0].into_boxed_slice();
+        let _ = state.heap.insert(left);
     }
     let said = heap::audit::audit(state, &[]).said();
     if !said.is_empty() {

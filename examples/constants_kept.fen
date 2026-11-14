@@ -18,15 +18,15 @@ SHORT: str? = "sh" + "ort"
 
 PAIR = ("a pair's text, " + "worked out and long enough for a block", [5, 6])
 
-def size(round: int) -> int:
+def size(extra: int) -> int:
     counted = NUMBERS else []
     name = NAMED else ""
-    return len(TEXT) + len(counted) + len(name) + len(PAIR[1]) + round
+    return len(TEXT) + len(counted) + len(name) + len(PAIR[1]) + extra
 
 def main(stdout: Stdout):
-    for round in range(2):
+    for time in range(2):
         stdout.print(TEXT)
         stdout.print(NUMBERS, NO_NUMBERS, NAMED, NOT_NAMED)
         stdout.print(SHORT, PAIR)
-    stdout.print([size(round) for round in parallel([1, 2, 3])])
+    stdout.print([size(extra) for extra in parallel([1, 2, 3])])
     return

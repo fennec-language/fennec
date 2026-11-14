@@ -78,6 +78,9 @@ test "a read-only Fs reads and changes nothing"(fs: Fs):
         == "this Fs only reads, so it can't change `notes.txt`"
     )
     assert fs.read_text("notes.txt")? == "kept"
+    # A file opened to read is closed when its block ends, which is no change.
+    with reader.open("notes.txt")? as file:
+        assert file.read_text()? == "kept"
     # With `only`, either way round.
     fs.make_dir("saves")?
     fs.write_text("saves/a.txt", "a")?

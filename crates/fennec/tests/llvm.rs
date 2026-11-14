@@ -6696,6 +6696,51 @@ fn prints_with_nothing_left(
     std::fs::remove_dir_all(dir)
 }
 
+/// A program built for a heap audit, under `FENNEC_AUDIT=1`, links a runtime with the audit in it
+/// and is checked as it ends. One whose heap is right says nothing and exits with 0. With the
+/// runtime told to leave a block that nothing holds, `FENNEC_AUDIT_SELFTEST`, the audit names it
+/// and the program exits with 87: so whatever runs every program audited can tell an audit that
+/// found nothing from one that didn't run. A program with a task links the threads runtime's.
+#[test]
+fn a_program_built_for_a_heap_audit_is_checked_as_it_ends() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let plain = "def main(stdout: Stdout):\n    stdout.print(\"ran\")\n    return\n";
+    let with_a_task = "from std.concurrent import Crashed\n\ndef works() -> int:\n    return 1\n\n\
+                       def main(stdout: Stdout) fails Crashed:\n    with launch(() => works())?:\n        pass\n    \
+                       stdout.print(\"ran\")\n    return\n";
+    let dir = folder("audited_as_it_ends")?;
+    for (name, source) in [("plain", plain), ("with_a_task", with_a_task)] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_NO_DAEMON", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let clean = Command::new(&executable).env("FENNEC_AUDIT", "1").output_within()?;
+        assert_eq!(clean.status.code(), Some(0), "{name}: {}", String::from_utf8_lossy(&clean.stderr));
+        assert_eq!(String::from_utf8_lossy(&clean.stdout), "ran\n", "{name}");
+        assert_eq!(String::from_utf8_lossy(&clean.stderr), "", "{name}");
+        let left = Command::new(&executable)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_AUDIT_SELFTEST", "1")
+            .output_within()?;
+        let said = String::from_utf8_lossy(&left.stderr);
+        assert_eq!(left.status.code(), Some(87), "{name}: {said}");
+        assert!(said.contains("heap audit: leaked: str at "), "{name}: {said}");
+        assert!(said.contains(" is counted 1 and nothing holds it"), "{name}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A message a task reads with `for ... in inbox` stays its own while it makes other values: a
 /// struct's text and an enum case's text and list, checked with `==` after fifty other texts are
 /// made, where a text freed under it read as one of those. Fable's thread-crossing reproducer, and
@@ -10803,6 +10848,41 @@ def main(stdout: Stdout) fails Boom:
     Ok(())
 }
 
+/// A file opened to read through an `Fs` that only reads is read, and closed when its block
+/// ends. Closing it used to fail as a write would, so `main` failed after the file was read: the
+/// reference evaluator, which closes it, printed the same and ended differently.
+#[test]
+fn a_file_read_through_a_read_only_fs_is_closed_when_its_block_ends() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("read_only_close")?;
+    let program = dir.join("reads.fen");
+    std::fs::write(
+        &program,
+        r#"def main(stdout: Stdout, fs: Fs) fails IoError:
+    fs.write_text("note.txt", "kept")?
+    reader = fs.read_only()
+    with reader.open("note.txt")? as file:
+        stdout.print(file.read_text()?)
+    # And a second time, as the first was closed.
+    with reader.open("note.txt")? as file:
+        stdout.print(len(file.read_text()?))
+    return
+"#,
+    )?;
+    let executable = dir.join("reads");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).env("FENNEC_COUNTS", "1").output_within()?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "kept\n4\n", "{said}");
+    assert_eq!(ran.status.code(), Some(0), "{said}");
+    assert!(said.contains(" live 0"), "{said}");
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A generator over a file, let go by `break`, closes the file: one written takes its path's
 /// place right then, and 200 read and let go stay under a limit of 64 open files.
 #[cfg(unix)]
@@ -11396,6 +11476,37 @@ fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
     std::fs::remove_dir_all(&dir)?;
     let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
     Ok(errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned())
+}
+
+/// A run asked to audit its heap, by a runtime built without the audit, says that it checked
+/// nothing and exits as a failed audit does. It used to say nothing and exit with 0, which reads
+/// as a heap found right: a probe of a leak was misled that way. The tests' runtime has no audit,
+/// as a release's hasn't.
+#[test]
+fn a_run_asked_to_audit_by_a_runtime_without_the_audit_says_so_and_fails() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("audit_not_built")?;
+    let program = dir.join("audit_not_built.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"ran\")\n    return\n")?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("audit_not_built"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let asked = Command::new(&executable).env("FENNEC_AUDIT", "1").output_within()?;
+    let plain = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(asked.status.code(), Some(87));
+    assert_eq!(String::from_utf8_lossy(&asked.stdout), "ran\n");
+    assert_eq!(
+        String::from_utf8_lossy(&asked.stderr),
+        "heap audit: FENNEC_AUDIT is set, but this program's runtime was built without the heap audit, so \
+         nothing was checked\n"
+    );
+    // Not asked, it runs as ever.
+    assert_eq!(plain.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&plain.stderr), "");
+    Ok(())
 }
 
 /// A field changed in place, by a builtin, a method on `ref self` or a `ref` argument, with an
@@ -14492,6 +14603,55 @@ fn a_failure_out_of_a_lock_puts_back_an_enum_field() -> std::io::Result<()> {
         "kinds that kept a change: 0\n",
     )
 }
+
+/// Every kind of field a `shared` struct holds is put back when a `lock ... as ref` block that
+/// wrote it fails, whichever of two values it held and was given: numbers, a string, an optional
+/// string, lists, dicts, a set, bytes, a tuple, enums with and without blocks, a struct, and an
+/// optional of each. An optional string was saved as one word of its three-word header, so the
+/// other two stayed as the failed write left them: what came back was a mix of the two, text cut
+/// short or a block's address read as text, and the old block was never let go of.
+#[test]
+fn a_failure_out_of_a_lock_puts_back_every_kind_of_field() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_failure_every_kind",
+        include_str!("fixtures/lock_failure_every_kind.fen"),
+        "kept a change: 0\n",
+    )
+}
+
+/// An optional string is kept, copied and compared as itself every other way one goes: a
+/// generator's slot and its items, a closure's capture, a task's capture, a list's item alone and
+/// in a tuple, and `==` against `None` and against strings, for `None`, the empty string, a short
+/// one and one in a block. Written under a lock that fails, as a list's item, appended, in a
+/// tuple and as a field, each goes back. Only the field came back wrong before, and the rest are
+/// pinned here so none is taken for one word again.
+#[test]
+fn an_optional_string_is_itself_every_way_its_kept_copied_and_compared() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "optional_string_every_way",
+        include_str!("fixtures/optional_string_every_way.fen"),
+        OPTIONAL_STRING_EVERY_WAY,
+    )
+}
+
+const OPTIONAL_STRING_EVERY_WAY: &str = r#"[None, None, None, None] True True True
+["", "", "", ""] True True False
+["short", "short", "short", "short"] True True False
+["a text long enough for a block of its own", "a text long enough for a block of its own", "a text long enough for a block of its own", "a text long enough for a block of its own"] True True False
+<(none)> True False
+<> False True
+<short> False False
+<a text long enough for a block of its own> False False
+["<(none)>", "<>", "<short>", "<a text long enough for a block of its own>"]
+[None, "", "short", "a text long enough for a block of its own"] [(0, None), (1, ""), (2, "short"), (3, "a text long enough for a block of its own")] True True True True
+kept a change: 0
+"#;
 
 /// A `str` parameter written under a lock counts as a string where it's kept, on a worker too.
 #[test]
@@ -17638,7 +17798,8 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
 /// A server can't skip the step of signing in that proves it knows the password: one that says
 /// it's ready without letting the client in is refused, and so is one that sends SCRAM's first
 /// message without asking for SCRAM, which would have had the client prove the empty password and
-/// taken the server's proof of that, which anyone can make.
+/// taken the server's proof of that, which anyone can make. One asking for an MD5 hash of the
+/// password, which a server in the middle could pass on to sign in, is never sent one.
 #[test]
 fn postgres_takes_each_step_of_signing_in_in_its_turn() -> std::io::Result<()> {
     if !ready() {
@@ -17649,18 +17810,24 @@ fn postgres_takes_each_step_of_signing_in_in_its_turn() -> std::io::Result<()> {
     // The proof of the empty password for that server-first: its salt, `salt`, and 4096 rounds.
     let forged = postgres_auth(12, b"v=G8Nql2SO/dY3qwTf8tjkgD2YGenjgZK2saBuv/HcwgU=");
     let signed_in = [forged, postgres_auth(0, b""), postgres_ready()].concat();
-    let scripts = vec![[vec![postgres_ready()], works()].concat(), [vec![unasked, signed_in], works()].concat()];
+    let md5 = postgres_auth(5, b"salt");
+    let scripts = vec![
+        [vec![postgres_ready()], works()].concat(),
+        [vec![unasked, signed_in], works()].concat(),
+        [vec![md5, [postgres_auth(0, b""), postgres_ready()].concat()], works()].concat(),
+    ];
     let mut ports = Vec::new();
     for script in scripts {
         ports.push(postgres_scripted(script)?.0.to_string());
     }
     let source =
-        POSTGRES_SCRIPTED.replace("PORTS", &format!("[{}]", ports.join(", "))).replace("STRICT", "2");
+        POSTGRES_SCRIPTED.replace("PORTS", &format!("[{}]", ports.join(", "))).replace("STRICT", "3");
     let printed = printed_by("postgres_in_turn", &source)?;
     assert_eq!(
         printed,
         "the server said it was ready out of its turn in signing in, so it isn't trusted\n\
-         the server sent SCRAM's first message out of its turn in signing in, so it isn't trusted\n"
+         the server sent SCRAM's first message out of its turn in signing in, so it isn't trusted\n\
+         the server asks for an MD5 hash of the password, which a server in the middle could pass on to sign in as us, so it wasn't sent: set the user's password with SCRAM-SHA-256\n"
     );
     Ok(())
 }
@@ -24226,7 +24393,8 @@ fn a_constant_of_any_kind_is_kept_for_the_run_and_never_left_over() -> std::io::
 /// are the runtime's, and both print the same.
 #[test]
 fn a_program_built_for_a_heap_audit_keeps_no_native_blocks() -> std::io::Result<()> {
-    if !ready() {
+    // An audited build links the runtime with the audit in it.
+    if !ready() || !crate::executables::audited_runtimes_built() {
         return Ok(());
     }
     let mut drops = Vec::new();
@@ -24709,6 +24877,30 @@ fn a_typed_empty_collection_keeps_its_type_when_checked_again() -> std::io::Resu
     assert_eq!(printed, "[] {\"a\": 1} set() True\n");
     Ok(())
 }
+
+/// A slice of bytes and a join of two can't fail, in a function that can't either: a slice holds
+/// its bounds to the bytes, as a list's does, and a join only copies. Bounds below zero, past the
+/// end and the wrong way round give what's there, down to nothing. The runtime's three calls for
+/// bytes made from bytes are listed as unable to fail, so a helper that only slices or joins
+/// needs no check after the call, and the count of unchecked calls doesn't trip on it.
+#[test]
+fn a_slice_and_a_join_of_bytes_give_whats_there_and_cant_fail() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "bytes_parts_and_joins",
+        include_str!("fixtures/bytes_parts_and_joins.fen"),
+        BYTES_PARTS_AND_JOINS,
+    )
+}
+
+const BYTES_PARTS_AND_JOINS: &str = r"bytes([116, 101, 115, 32]) bytes([116, 101, 120, 116]) bytes([])
+bytes([]) bytes([98, 121, 116]) bytes([])
+bytes([98, 121, 116]) bytes([98, 121]) bytes([]) bytes([98, 121, 116, 101, 115, 32, 111, 102, 32, 97, 32, 116, 101, 120, 116])
+bytes([120, 116]) bytes([120, 116]) bytes([]) 15
+bytes([]) bytes([98, 121, 120, 116]) 30
+";
 
 /// `list.pop()` gives `None` once the list is empty, and the item as an optional before then:
 /// for numbers, text and structs, from a name, a field, an item of a list, and an item picked

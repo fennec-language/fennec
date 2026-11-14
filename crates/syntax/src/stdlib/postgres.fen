@@ -737,7 +737,8 @@ def duration_of(text: str) -> Duration fails SqlError:
 ## wire and makes the server prove it knows it too. Given a password, a server that lets the client
 ## in with no proof, or asks for the password as it is, is refused, since anything on the way could
 ## be pretending to be it. `allow_weak_sign_in=True` lets those through, for a server set up that
-## way. `entropy` makes SCRAM's nonce.
+## way. A server asking for an MD5 hash of the password is never sent one, and each step of
+## signing in has to come in its turn. `entropy` makes SCRAM's nonce.
 ##
 ## The pool has up to `pool_size` connections, 10 unless the URL or an argument says, and
 ## `pool_size=1` for one. One connects now, so a wrong URL or password fails here, and the rest
@@ -923,6 +924,13 @@ export struct PgDatabase:
                     scram.check(data)?
                     proved = True
                 case .AuthOther(code=code):
+                    # 5 is MD5, which Postgres itself has deprecated: a server in the middle can
+                    # pass the server's salt on and the client's hash back, and be let in as the
+                    # client. It isn't spoken, so it's never sent, weak sign-in or not.
+                    if code == 5:
+                        fail SqlError.Failed(
+                            reason="the server asks for an MD5 hash of the password, which a server in the middle could pass on to sign in as us, so it wasn't sent: set the user's password with SCRAM-SHA-256",
+                        )
                     fail SqlError.Failed(
                         reason=f"the server signs in a way this doesn't speak, number {code}: use SCRAM-SHA-256 or a password",
                     )

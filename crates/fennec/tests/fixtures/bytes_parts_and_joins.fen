@@ -1,0 +1,39 @@
+# A slice of bytes and a join of two, in helpers that can't fail. Neither can: a slice holds its
+# bounds to the bytes, as a list's does, and a join only copies. Bounds below zero count from the
+# end, and ones outside, or the wrong way round, give what's there, down to nothing.
+
+def part(data: bytes, start: int, end: int) -> bytes:
+    return data[start:end]
+
+def head(data: bytes, count: int) -> bytes:
+    return data[:count]
+
+def tail(data: bytes, start: int) -> bytes:
+    return data[start:]
+
+def joined(a: bytes, b: bytes) -> bytes:
+    return a + b
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    data = "bytes of a text".encode()
+    stdout.print(
+        part(data, start=2 + shift, end=6),
+        part(data, start=-4, end=100),
+        part(data, start=9, end=2),
+    )
+    stdout.print(
+        part(data, start=100, end=200),
+        part(data, start=-100, end=3),
+        part(data, start=5, end=5),
+    )
+    stdout.print(head(data, 3), head(data, -13), head(data, 0), head(data, 99))
+    stdout.print(tail(data, 13), tail(data, -2), tail(data, 99), len(tail(data, 0)))
+    empty = part(data, start=5, end=5)
+    stdout.print(
+        joined(empty, empty),
+        joined(head(data, 2), tail(data, -2)),
+        len(joined(data, data)),
+    )
+    return

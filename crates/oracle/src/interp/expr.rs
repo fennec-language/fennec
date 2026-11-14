@@ -441,6 +441,10 @@ impl Interp {
                 Ok(false)
             }
             Value::Dict(pairs) => Ok(super::find_key(pairs, item)?.is_some()),
+            Value::Table(table) => match item {
+                Value::Id(id) => Ok(table.find(*id).is_some()),
+                other => unsupported(format!("looking for a {} in a Table", other.kind())),
+            },
             Value::Str(text) => match item {
                 Value::Str(part) => Ok(text.contains(part.as_str())),
                 other => unsupported(format!("looking for a {} in a str", other.kind())),
@@ -543,6 +547,13 @@ impl Interp {
             (Value::Cap(crate::value::Cap::Args), Value::Int(at)) => {
                 position(at, 0, span)?;
                 unsupported("an argument")
+            }
+            (Value::Table(mut table), Value::Id(id)) => {
+                match table.find(id).and_then(|at| table.slots.get_mut(at)).and_then(|slot| slot.item.take())
+                {
+                    Some(item) => Ok(item),
+                    None => crash(table.missing(id), span),
+                }
             }
             (object, at) => unsupported(format!("indexing a {} with a {}", object.kind(), at.kind())),
         }
@@ -952,6 +963,7 @@ fn slice(object: Value, start: Option<Value>, end: Option<Value>) -> Run<Value> 
 fn plain_contains(container: &Value, item: &Value) -> Run<Option<bool>> {
     Ok(Some(match (container, item) {
         (Value::Dict(pairs), key) => super::find_key(pairs, key)?.is_some(),
+        (Value::Table(table), Value::Id(id)) => table.find(*id).is_some(),
         (Value::Str(text), Value::Str(part)) => text.contains(part.as_str()),
         (Value::List(items) | Value::Tuple(items) | Value::Set(items), item) => {
             let mut found = false;

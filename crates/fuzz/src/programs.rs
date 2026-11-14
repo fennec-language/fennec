@@ -1,7 +1,9 @@
 //! The `programs` target: random, well-typed programs, each built as a dev build and with
 //! `--release`, which have to print the same and fail the same way, and run by a reference
-//! evaluator written here, which has to agree with them where it's sure. A program prints every
-//! value it makes when its block ends, so what it prints is a digest of everything it did.
+//! evaluator written here, which has to agree with them where it's sure, and by the oracle
+//! (`crates/oracle`), which runs its source and has to agree where it models all of it. A
+//! program prints every value it makes when its block ends, so what it prints is a digest of
+//! everything it did.
 //!
 //! The programs come from a tree (`ast`) that the bytes choose (`generate`), written out as
 //! Fennec (`source`) and run by the evaluator (`eval`) without the compiler. They hunt what the
@@ -65,10 +67,6 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
         ));
     }
     let release = crate::llvm::built_and_run(&source, "programs", true).map_err(with_program)?;
-    let shown = |(printed, said, succeeded): &(Vec<u8>, String, bool)| {
-        let ended = if *succeeded { "ran to the end".to_owned() } else { format!("failed: {said}") };
-        format!("{}({ended})", String::from_utf8_lossy(printed))
-    };
     // Built checking proofs (`FENNEC_CHECK_PROOFS=1`), a stop on one is a false proof, whether or
     // not both builds stop the same way. Built with AddressSanitizer (`FENNEC_SANITIZE=address`),
     // a report is memory touched that the program doesn't own, which both builds can share. A
@@ -108,25 +106,55 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
             shown(&release)
         )));
     }
-    let expected = eval::run_saying(&program);
+    agrees_with_the_evaluators(&program, &source, &dev).map_err(with_program)
+}
+
+/// What a dev build printed and said, and whether it succeeded, as one text to show.
+fn shown((printed, said, succeeded): &(Vec<u8>, String, bool)) -> String {
+    let ended = if *succeeded { "ran to the end".to_owned() } else { format!("failed: {said}") };
+    format!("{}({ended})", String::from_utf8_lossy(printed))
+}
+
+/// The dev build agrees with the generator's evaluator, where it's sure, and with the oracle,
+/// where it models the program.
+fn agrees_with_the_evaluators(
+    program: &ast::Program,
+    source: &str,
+    dev: &(Vec<u8>, String, bool),
+) -> Result<(), String> {
+    let expected = eval::run_saying(program);
     // Where the evaluator knows what a failure says, as a stream's item does, the builds say it.
     if let Some((_, false, Some(said))) = &expected
         && !dev.2
         && !dev.1.contains(said.as_str())
     {
-        return Err(with_program(format!(
+        return Err(format!(
             "the builds stop saying something else than the evaluator:\n--- built\n{}\n--- evaluator\n{said}",
             dev.1
-        )));
+        ));
     }
     if let Some((printed, succeeded, _)) = expected
         && (printed.as_bytes() != dev.0.as_slice() || succeeded != dev.2)
     {
         let ended = if succeeded { "ran to the end" } else { "failed" };
-        return Err(with_program(format!(
+        return Err(format!(
             "the builds disagree with the evaluator:\n--- built\n{}\n--- evaluator\n{printed}({ended})",
-            shown(&dev)
-        )));
+            shown(dev)
+        ));
+    }
+    // The oracle (crates/oracle) runs the program a second way, from its source rather than the
+    // generator's tree. Where it models everything the program does, the builds print what it
+    // prints and end as it ends; where it doesn't, it says so, and there's nothing to compare.
+    let oracle = fennec_oracle::run_source(source, "programs.fen");
+    if let Some(code) = oracle.exit_code()
+        && (oracle.stdout != dev.0 || (code == 0) != dev.2)
+    {
+        let ended = if code == 0 { "ran to the end".to_owned() } else { format!("ended with {code}") };
+        return Err(format!(
+            "the builds disagree with the oracle:\n--- built\n{}\n--- oracle\n{}({ended})",
+            shown(dev),
+            String::from_utf8_lossy(&oracle.stdout)
+        ));
     }
     Ok(())
 }

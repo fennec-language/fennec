@@ -15,6 +15,7 @@ fennec-check.workspace = true
 fennec-fmt.workspace = true
 fennec-rt = { workspace = true, features = ["made-up-inputs"] }
 fennec-ir.workspace = true
+fennec-oracle.workspace = true
 fennec-lint.workspace = true
 fennec-parked.workspace = true
 fennec-re.workspace = true

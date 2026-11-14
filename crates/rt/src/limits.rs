@@ -570,6 +570,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
     }
 
+    /// A link inside a narrowed `Fs`'s folder to something outside it, or to nothing yet outside
+    /// it, is refused for every method, saying so, and nothing is made or changed outside. A path
+    /// holding a NUL is refused for what it is, not as the system's bad input.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_is_refused_for_every_method_and_a_nul_is_named() {
+        let folder = scratch("links");
+        std::fs::create_dir_all(format!("{folder}/inside/sub")).unwrap();
+        std::fs::write(format!("{folder}/secret.txt"), "outside").unwrap();
+        std::os::unix::fs::symlink("../secret.txt", format!("{folder}/inside/file")).unwrap();
+        std::os::unix::fs::symlink("..", format!("{folder}/inside/up")).unwrap();
+        std::os::unix::fs::symlink("../made.txt", format!("{folder}/inside/dangling")).unwrap();
+        let fs = fs_in(&format!("{folder}/inside"));
+        let at = |name: &str| Value::str(&format!("{folder}/inside/{name}"));
+        for (method, args) in [
+            ("read_text", vec![at("file")]),
+            ("write_text", vec![at("file"), Value::str("changed")]),
+            ("write_text", vec![at("dangling"), Value::str("made")]),
+            ("write_text", vec![at("up/made.txt"), Value::str("made")]),
+            ("list_dir", vec![at("up")]),
+            ("make_dir", vec![at("up/new")]),
+            ("remove", vec![at("up/secret.txt")]),
+        ] {
+            let got = call(&fs, method, &args);
+            assert!(
+                matches!(&got, Value::Err(_))
+                    && format!("{got:?}").contains("outside what this Fs can reach"),
+                "{method} {args:?} gave {got:?}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(format!("{folder}/secret.txt")).unwrap(), "outside");
+        for made in ["made.txt", "new"] {
+            assert!(!std::path::Path::new(&format!("{folder}/{made}")).exists(), "{made} was made outside");
+        }
+        let Value::Err(nul) = call(&fs, "read_text", &[at("a\0b")]) else { panic!("a NUL was read") };
+        assert!(format!("{nul:?}").contains("can't be a path: it holds a NUL"), "{nul:?}");
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
     /// Another process swapping a folder inside a narrowed `Fs`'s for a link to one outside, and
     /// back, over and over while the `Fs` reads a file under it, never lets it read the file
     /// outside: each read gives the file inside, or fails.

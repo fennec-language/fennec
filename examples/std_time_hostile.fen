@@ -1,0 +1,95 @@
+# A time from outside, in a request or a file, is RFC 3339 text, and `Time.parse` reads it
+# exactly: anything else fails with a `ParseError` saying what's wrong, never a crash and never a
+# moment other than the one written. A field out of its range, an offset that isn't one, a year a
+# `Time` can't hold, a digit that isn't ASCII, a sign in front, something after the end, and text
+# cut short anywhere all fail. Digits past nanoseconds are left off, as RFC 3339 allows.
+from std import json
+from std.time import Duration, Time
+
+## Why `text` isn't a time, or the time it is, as RFC 3339 writes it.
+def read(text: str) -> str:
+    found = Time.parse(text) except why:
+        return why.message
+    return found.iso()
+
+## The message for text that isn't RFC 3339.
+def not_rfc3339(text: str) -> str:
+    return f"`{text}` isn't an RFC 3339 time, like `2026-11-06T21:55:56Z`"
+
+## Why `text` doesn't load as a `Visit`, or "loaded".
+def visit_why(text: str) -> str:
+    _ = json.loads[Visit](text) except why:
+        return why.message
+    return "loaded"
+
+struct Visit:
+    at: Time
+    stayed: Duration
+
+test "a field out of its range fails, naming what it is"():
+    assert read("2026-11-06T21:55:60Z") == "21:55:60 isn't a time of day"
+    assert read("2026-11-06T24:00:00Z") == "24:00:00 isn't a time of day"
+    assert read("2026-11-06T21:60:00Z") == "21:60:00 isn't a time of day"
+    assert read("2026-02-29T00:00:00Z") == "2026-02 has no day 29"
+    assert read("2026-13-01T00:00:00Z") == "a month is from 1 to 12, not 13"
+    assert read("2026-00-01T00:00:00Z") == "a month is from 1 to 12, not 0"
+    assert read("2026-04-31T00:00:00Z") == "2026-04 has no day 31"
+    assert read("2024-02-29T00:00:00Z") == "2024-02-29T00:00:00Z"
+
+test "an offset is plus or minus 23:59 at most, written with its colon"():
+    for offset in ["+24:00", "+23:60", "-24:00", "+0200", "+02", "+2:00", "Z+01:00"]:
+        text = f"2026-11-06T21:55:56{offset}"
+        assert read(text) == not_rfc3339(text)
+    assert read("2026-11-06T21:55:56+23:59") == "2026-11-05T21:56:56Z"
+    assert read("2026-11-06T21:55:56-00:00") == "2026-11-06T21:55:56Z"
+
+test "a year a Time can't hold fails, saying which years it holds"():
+    for year in ["0000", "1677", "2262", "9999"]:
+        assert read(f"{year}-01-01T00:00:00Z").startswith(
+            "a `Time` holds the years from 1678 to 2261",
+        )
+    assert read("1678-01-01T00:00:00Z") == "1678-01-01T00:00:00Z"
+    assert read("2261-12-31T23:59:59Z") == "2261-12-31T23:59:59Z"
+
+test "a digit that isn't ASCII, a sign in front or something after the end fails"():
+    for text in [
+        "２026-11-06T21:55:56Z",
+        "2026-1１-06T21:55:56Z",
+        "+2026-11-06T21:55:56Z",
+        "-2026-11-06T21:55:56Z",
+        " 2026-11-06T21:55:56Z",
+        "2026-11-06T21:55:56Z ",
+        "2026-11-06T21:55:56ZZ",
+        "2026-11-06T21:55:56.Z",
+        "2026-11-06T21:55:56",
+        "2026-11-06X21:55:56Z",
+        "20261106T215556Z",
+    ]:
+        assert read(text) == not_rfc3339(text)
+    # A NUL is shown escaped, so the message says what was there.
+    assert read("2026-11-06T21:55:56Z\x00") == not_rfc3339("2026-11-06T21:55:56Z\\u{00}")
+    # Digits past nanoseconds are left off.
+    assert read("2026-11-06T21:55:56.123456789123456Z") == "2026-11-06T21:55:56.123456789Z"
+    assert read("2026-11-06t21:55:56.5z") == "2026-11-06T21:55:56.5Z"
+
+test "every cut of a time fails, and only the whole reads"():
+    whole = "2026-11-06T23:55:56.25+02:00"
+    for end in range(len(whole)):
+        part = whole[0:end]
+        # Cut at the end of its seconds, its fraction or its offset's hours, it's still a time,
+        # but none of those is the one written.
+        assert read(part) != "2026-11-06T21:55:56.25Z"
+    assert read(whole) == "2026-11-06T21:55:56.25Z"
+
+test "a time loaded from JSON is held to the same rules"():
+    assert (
+        json.loads[Visit]("{\"at\": \"2026-11-06T21:00:00Z\", \"stayed\": 60000000000}")?.stayed
+        == 1min
+    )
+    for text in ["2026-11-06T24:00:00Z", "yesterday", "2026-11-06T21:00:00+0200", ""]:
+        assert visit_why(f"{{\"at\": \"{text}\", \"stayed\": 0}}").endswith(
+            "which isn't an RFC 3339 time",
+        )
+
+def main(stdout: Stdout):
+    stdout.print(read("2026-11-06T23:55:56.25+02:00"))

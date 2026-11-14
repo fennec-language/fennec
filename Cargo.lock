@@ -282,6 +282,7 @@ dependencies = [
  "fennec-fmt",
  "fennec-ir",
  "fennec-lint",
+ "fennec-oracle",
  "fennec-parked",
  "fennec-re",
  "fennec-rt",

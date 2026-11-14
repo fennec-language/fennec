@@ -115,23 +115,37 @@ fennec_ok() {
   return 1
 }
 
-# Every example and kit through the command, as the first thing a person would do with them. Each
-# one is tried, and each that fails is named by its path.
+# Whether a program run with `FENNEC_COUNTS=1`, which said what's in `$1`, ended holding no block:
+# its counts line, the last thing it writes, says `live 0`. One left live is a block nothing freed.
+none_live() {
+  if grep -qE ' live [1-9][0-9]*$' "$1"; then
+    echo "it ended with blocks still live: $(grep -E ' live [0-9]+$' "$1" | tail -n 1)" >&2
+    return 1
+  fi
+}
+
+# Every example and kit through the command, as the first thing a person would do with them, each
+# counting what it holds, so one that ends with a block nothing freed fails too. Each one is
+# tried, and each that fails is named by its path.
 examples() {
-  local printed="$logs/printed.txt" program kit failed=0
+  local printed="$logs/printed.txt" said="$logs/said.txt" program kit failed=0
   for program in examples/*.fen; do
-    if ! { fennec_ok run "$program" > "$printed" \
+    if ! { FENNEC_COUNTS=1 fennec_ok run "$program" > "$printed" 2> "$said" \
+      && none_live "$said" \
       && diff --strip-trailing-cr "${program%.fen}.out" "$printed" \
       && fennec_ok test "$program" > /dev/null; }; then
+      cat "$said" >&2
       echo "$program" >> "$names"
       failed=1
     fi
   done
   for kit in examples/projects/*/; do
     [ -f "$kit/kit.toml" ] || continue
-    if ! { fennec_ok run "$kit" > "$printed" \
+    if ! { FENNEC_COUNTS=1 fennec_ok run "$kit" > "$printed" 2> "$said" \
+      && none_live "$said" \
       && diff --strip-trailing-cr "${kit%/}.out" "$printed" \
       && fennec_ok test "$kit" > /dev/null; }; then
+      cat "$said" >&2
       echo "${kit%/}" >> "$names"
       failed=1
     fi

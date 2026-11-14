@@ -127,6 +127,8 @@ installed, its column is left out.
 
 `fennec-bench realworld` measures `bench/realworld`: programs that use `std` the way a real program does, beside a Rust twin using the crates a Rust program would. `json_typed` loads JSON into typed structs through `std.json`, uses them and writes them back, against serde and serde_json. The `json` kernel in the suite is a parser written by hand on both sides, so it doesn't measure `std.json`.
 
+`game_server` is an MMO zone server and its load in one program. 48 clients connect over TCP and play 240 ticks in lockstep, speaking JSON a line at a time. Each connection's task keeps its player's session in a `shared` `Table`. A tick task moves 3,000 monsters with `parallel`, and a saver task writes snapshots to SQLite. Its twin uses a thread for each connection, `std::sync::mpsc`, a `Mutex`, rayon, serde_json and rusqlite. Its summary is the same on any number of threads, so the two sides can be compared.
+
 - It's outside the locked suite, whose twins are one file each, and has no targets. Being slow never fails it: only printing something other than the twin does.
 - The twins are a small cargo project of their own in `bench/realworld/twin`, built with the same flags as the suite's, with their crates pinned in its lock file. serde is there only to be measured against, and nothing shipped depends on it.
 - Each machine's table joins the suite's report.

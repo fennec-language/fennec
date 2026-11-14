@@ -137,6 +137,7 @@ jobs:
       issues: write
     env:
       NIGHTLY: nightly-2026-10-15
+      FUZZ_SEED: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,10 +147,10 @@ jobs:
           rustup component add llvm-tools-preview
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build fennec, and the runtime libraries with ThreadSanitizer
+      - name: Build fennec and the fuzzer, and the runtime libraries with ThreadSanitizer
         run: .github/scripts/tsan-runtime.sh
-      - name: Run the programs that use threads
-        run: .github/scripts/tsan-programs.sh target/release/fennec | tee tsan.txt
+      - name: Run the programs that use threads, and random programs for half an hour
+        run: .github/scripts/tsan-programs.sh target/release/fennec 1800 | tee tsan.txt
       - name: Keep what was found
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

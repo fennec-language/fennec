@@ -23574,6 +23574,46 @@ def main(stdout: Stdout):
         stdout.print(part.expression, part.format_spec)
 "#;
 
+/// A generic enum's cases are made natively: worked out from their arguments, with their types
+/// written as `Choice[int].Nothing`, from a function's return type, and in a list, and a `match`
+/// reads each case's field as the type it is there.
+#[test]
+fn a_generic_enums_cases_are_made_and_matched_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by(
+            "generic_enum_cases",
+            r#"enum Choice[T]:
+    Picked(value: T)
+    Nothing
+
+def make(name: str) -> Choice[str]:
+    if name == "": return Choice.Nothing
+    return .Picked(value=name)
+
+def shown(choice: Choice[int]) -> str:
+    match choice:
+        case .Picked(value):
+            return f"picked {value + 1}"
+        case .Nothing:
+            return "nothing"
+
+def main(stdout: Stdout):
+    stdout.print(shown(Choice.Picked(value=7)), shown(Choice[int].Nothing))
+    stdout.print(make("fox"), make(""))
+    numbers = [Choice.Picked(value=1), Choice.Nothing, Choice.Picked(value=3)]
+    stdout.print(numbers)
+    stdout.print(Choice[float].Nothing, Choice[str].Picked(value="x"))
+"#
+        )?,
+        "picked 8 nothing\nChoice.Picked(value=\"fox\") Choice.Nothing\n\
+         [Choice.Picked(value=1), Choice.Nothing, Choice.Picked(value=3)]\nChoice.Nothing Choice.Picked(value=\"x\")\n"
+    );
+    Ok(())
+}
+
 /// A generic type built where one of it is expected takes its types from there: a `Box[int |
 /// str]` built from an int or a str, in a parameter, a name's type and a list of them.
 #[test]

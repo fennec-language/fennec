@@ -30,6 +30,8 @@ pub(crate) enum Source {
     Of(Stream),
     /// The lines of a file a `with` lent, read one at a time as they're asked for.
     Lines(FileLines),
+    /// The messages a launched task's inbox holds, read until there are none.
+    Inbox(Arc<Mutex<std::collections::VecDeque<Value>>>),
 }
 
 /// Where a file's `lines()` reads from: the file system, the file's handle, and where `lines()`
@@ -39,6 +41,8 @@ pub(crate) struct FileLines {
     pub(crate) disk: Arc<Mutex<super::disk::Disk>>,
     pub(crate) handle: i64,
     pub(crate) span: Span,
+    /// How many `parallel` rounds and launched tasks had started when it was made.
+    pub(crate) made: u64,
 }
 
 /// The reader's end of a generator.
@@ -48,6 +52,8 @@ pub(crate) struct GenLink {
     items: Receiver<Msg>,
     done: bool,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// How many `parallel` rounds and launched tasks had started when it was made.
+    made: u64,
 }
 
 /// What a generator sends its reader.
@@ -75,8 +81,20 @@ impl Drop for GenLink {
     }
 }
 
+/// Refuses reading, inside a `parallel` round or a launched task, something made before it started:
+/// what runs beside it could read it too, each reading on from wherever the other left it.
+fn read_in_round(shared: &Shared, made: u64) -> Run<()> {
+    match shared.reads_since() {
+        Some(started) if made < started => {
+            unsupported("a generator made outside a `parallel` round or a launched task, read inside it")
+        }
+        _ => Ok(()),
+    }
+}
+
 impl GenLink {
-    fn next(&mut self) -> Run<Option<Value>> {
+    fn next(&mut self, shared: &Shared) -> Run<Option<Value>> {
+        read_in_round(shared, self.made)?;
         if self.done {
             return Ok(None);
         }
@@ -104,11 +122,11 @@ impl GenLink {
 }
 
 impl Source {
-    fn next(&mut self) -> Run<Option<Value>> {
+    fn next(&mut self, shared: &Shared) -> Run<Option<Value>> {
         match self {
             Source::Items(items) => Ok(items.next()),
-            Source::Gen(link) => link.next(),
-            Source::Numbered(inner, at) => match inner.next()? {
+            Source::Gen(link) => link.next(shared),
+            Source::Numbered(inner, at) => match inner.next(shared)? {
                 Some(item) => {
                     let numbered = Value::Tuple(vec![Value::Int(*at), item]);
                     *at += 1;
@@ -117,20 +135,25 @@ impl Source {
                 None => Ok(None),
             },
             Source::Paired(left, right) => {
-                let Some(first) = left.next()? else { return Ok(None) };
-                let Some(second) = right.next()? else { return Ok(None) };
+                let Some(first) = left.next(shared)? else { return Ok(None) };
+                let Some(second) = right.next(shared)? else { return Ok(None) };
                 Ok(Some(Value::Tuple(vec![first, second])))
             }
             Source::Of(stream) => {
                 let Ok(mut source) = stream.source.lock() else { return unsupported("a generator was lost") };
-                source.next()
+                source.next(shared)
             }
             Source::Lines(lines) => {
+                read_in_round(shared, lines.made)?;
                 let Ok(mut disk) = lines.disk.lock() else { return unsupported("the file system was lost") };
                 let read = disk.read_line(lines.handle);
                 drop(disk);
                 super::files::done(read, lines.span).map(|line| line.map(Value::Str))
             }
+            Source::Inbox(queue) => match queue.lock() {
+                Ok(mut queue) => Ok(queue.pop_front()),
+                Err(_) => unsupported("a channel was lost"),
+            },
         }
     }
 }
@@ -155,6 +178,12 @@ impl Interp {
                 table.slots.into_iter().filter_map(|slot| slot.item).collect::<Vec<_>>().into_iter()
             }
             Value::Stream(stream) => return Ok(Items::Stream(stream)),
+            Value::Channel(end) if !end.sends => {
+                let Value::Stream(stream) = Interp::stream_of(Source::Inbox(end.queue), None) else {
+                    return unsupported("an inbox that isn't one");
+                };
+                return Ok(Items::Stream(stream));
+            }
             Value::Cap(Cap::Args) => Vec::new().into_iter(),
             Value::Instance(instance) => match self.program.method(&instance.ty, "iter") {
                 Some(def) => {
@@ -174,7 +203,7 @@ impl Interp {
             Items::List(items) => Ok(items.next()),
             Items::Stream(stream) => {
                 let Ok(mut source) = stream.source.lock() else { return unsupported("a generator was lost") };
-                source.next()
+                source.next(&self.shared)
             }
         }
     }
@@ -243,10 +272,14 @@ impl Interp {
         }
         let captured = self.captured(&reads, &[])?;
         let shown = self.program.type_at(expr.span).map(super::calls::shown_type);
+        let call = self.parallel_call(iter)?;
         let link = self.spawn(move |interp| {
             let vars = captured.into_iter().map(|(name, value)| (name, Binding::Value(value))).collect();
             let previous = interp.push_frame(vars, None)?;
-            let ran = interp.yield_each(elem, names, iter, cond.as_deref());
+            let ran = match call {
+                Some(call) => interp.yield_parallel(elem, names, call, cond.as_deref()),
+                None => interp.yield_each(elem, names, iter, cond.as_deref()),
+            };
             interp.pop_frame(previous);
             ran
         })?;
@@ -321,11 +354,15 @@ impl Interp {
             self.shared.threads.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             return unsupported("a generator's thread couldn't start");
         };
-        Ok(GenLink { resume: Some(resume), items: read, done: false, thread: Some(thread) })
+        let made = self.shared.rounds_started.load(std::sync::atomic::Ordering::SeqCst);
+        Ok(GenLink { resume: Some(resume), items: read, done: false, thread: Some(thread), made })
     }
 
     /// In a generator: hands its reader an item, then waits to be asked for the next.
     pub(crate) fn yield_value(&mut self, value: Value) -> Run<()> {
+        if self.holding > 0 {
+            return unsupported("a `yield` inside a `lock`");
+        }
         let Some(side) = &self.yields else { return unsupported("`yield` outside a generator") };
         if side.items.send(Msg::Item(value)).is_err() || side.resume.recv().is_err() {
             return Err(Flow::Abandoned);

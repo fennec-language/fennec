@@ -614,6 +614,15 @@ impl FnCx<'_> {
                 self.ignore_args(args);
                 return Type::Unknown;
             }
+            // `Choice[int].Picked(7)`: a case of a generic enum, with its parameters written.
+            let is_case = self
+                .checker
+                .program
+                .type_info(type_name)
+                .is_some_and(|info| info.def.cases.iter().any(|case| case.name == method));
+            if is_case {
+                return self.construct_variant_with(Some(type_name), method, (args, &types), span);
+            }
             return match self.checker.program.method(type_name, method) {
                 Some((key, entry)) if !entry.def.takes_self() => {
                     self.call_through(&key, method, (args, &types), through, span)
@@ -1394,6 +1403,26 @@ impl FnCx<'_> {
         args: &[Arg],
         span: Span,
     ) -> Type {
+        self.construct_variant_with(enum_name, case, (args, &[]), span)
+    }
+
+    /// `Choice[int].Nothing`: a case with no fields of a generic enum, its parameters' types written
+    /// in brackets.
+    pub(crate) fn written_case(&mut self, type_name: &str, index: &Expr, case: &str, span: Span) -> Type {
+        let types = self.types_in(index);
+        self.construct_variant_with(Some(type_name), case, (&[], &types), span)
+    }
+
+    /// The same, with the enum's type parameters' types as written, as `Choice[int].Picked(7)`. A
+    /// generic enum's case is of the enum with its parameters, each worked out from the case's
+    /// arguments or where the case goes when it isn't written, as a generic struct's are.
+    fn construct_variant_with(
+        &mut self,
+        enum_name: Option<&str>,
+        case: &str,
+        (args, types): (&[Arg], &[Type]),
+        span: Span,
+    ) -> Type {
         let owners = match enum_name {
             Some(name) => vec![name.to_owned()],
             None => self.checker.program.enums_with_case(case),
@@ -1415,15 +1444,33 @@ impl FnCx<'_> {
                 return self.unusable(diagnostic, args);
             }
         };
-        let fields = self
+        let (fields, generics) = self
             .checker
             .program
             .type_info(&owner)
-            .and_then(|info| info.def.cases.iter().find(|c| c.name == case))
-            .map(|c| c.fields.clone())
+            .map(|info| {
+                let fields = info.def.cases.iter().find(|c| c.name == case).map(|c| c.fields.clone());
+                (fields.unwrap_or_default(), info.def.generics.clone())
+            })
             .unwrap_or_default();
-        self.build(&Target { name: &owner, case: Some(case), given: Vec::new() }, &fields, args, span);
-        Type::Named(owner)
+        let mut given = Vec::new();
+        let mut chosen = Vec::new();
+        for (at, generic) in generics.iter().enumerate() {
+            let ty = match types.get(at) {
+                Some(ty) => ty.clone(),
+                None => self.checker.fresh(span, Hole::TypeParam(generic.name.clone())),
+            };
+            let bounds = generic.bounds.iter().map(|bound| bound.name.clone()).collect();
+            chosen.push(Chosen { ty: ty.clone(), bounds });
+            given.push((generic.name.clone(), ty));
+        }
+        let built = match given.as_slice() {
+            [] => Type::Named(owner.clone()),
+            given => Type::Generic(owner.clone(), given.iter().map(|(_, ty)| ty.clone()).collect()),
+        };
+        self.build(&Target { name: &owner, case: Some(case), given }, &fields, args, span);
+        self.check_bounds(chosen, span);
+        built
     }
 
     /// Building a type from outside it when one of its `_` fields has no default, which only its

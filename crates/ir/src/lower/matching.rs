@@ -72,6 +72,17 @@ impl Lowering<'_> {
                         _ => (owner.clone(), name),
                     }
                 }
+                // `Choice[int].Nothing`: a generic enum's case with its parameters written, of
+                // the copy the typed tree says it is.
+                ExprKind::Index { object: written, .. }
+                    if matches!(&written.kind, ExprKind::Name(owner)
+                        if self.lookup(owner).is_none() && self.context.generic_types.contains_key(owner.as_str())) =>
+                {
+                    match self.type_at(expr.span) {
+                        Some(Type::Named(copy)) => (copy, name),
+                        _ => return None,
+                    }
+                }
                 _ => return None,
             },
             _ => return None,

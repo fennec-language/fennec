@@ -182,15 +182,15 @@ impl Lowering<'_> {
         let closure = lifted.declare("\0fitted", from.clone());
         let mut args = Vec::with_capacity(wanted.len());
         for (at, (wanted, held)) in wanted.iter().zip(held).enumerate() {
-            let given = lifted.declare(&format!("\0given {at}"), wanted.clone());
-            args.push(lifted.coerce(Operand::Local(given), held, span)?);
+            let handed = lifted.declare(&format!("\0handed {at}"), wanted.clone());
+            args.push(lifted.coerce(Operand::Local(handed), held, span)?);
         }
         lifted.scopes.push(std::collections::HashMap::new());
         let dest = (**gives != Type::Unit).then(|| lifted.temporary(*gives.clone()));
         lifted.emit(InstKind::CallClosure { dest, closure: Operand::Local(closure), args }, span);
         match dest {
-            Some(given) => {
-                let fitted = lifted.coerce(Operand::Local(given), returns, span)?;
+            Some(back) => {
+                let fitted = lifted.coerce(Operand::Local(back), returns, span)?;
                 lifted.leave(Some(fitted), span)?;
             }
             None => lifted.end_function(span)?,

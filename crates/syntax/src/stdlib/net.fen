@@ -14,7 +14,7 @@
 
 from std import json
 from std.crypto import Secret
-from std.intrinsics import bytes_builder, bytes_push_bytes, text_byte, text_size
+from std.intrinsics import bytes_builder, bytes_push_bytes, stop, text_byte, text_part, text_same_at, text_size
 from std.url import decode_query, unquote
 
 ## A failure of the network, with a case for each way it fails. `message()` says it in words.
@@ -63,6 +63,10 @@ export struct Response:
     body = bytes([])
     ## Each `Set-Cookie` header's value, in order: the one header whose values can't be joined.
     set_cookies = list[str]()
+
+    ## A 404, for a path nothing's at, or a route's parameter its handler doesn't take.
+    def not_found() -> Response:
+        return Response(status=404, body="there's nothing here".encode())
 
     ## Whether the status is one of the 200s.
     def ok(self) -> bool:
@@ -287,17 +291,163 @@ export shared Server:
             _ = answer_all(connection, respond, timeout)
 
 ## An HTTP request a server was sent: its method, like `"GET"`, its path without the query, the
-## query's parameters, its headers by their names in lower case, and its body.
+## query's parameters, its headers by their names in lower case, and its body. `raw_path` is the
+## path as it was sent, its percent-escapes still in it, which a `Router` matches against, so an
+## escaped `/` in a parameter stays in that parameter. It's empty in a request made by hand, and
+## then the router matches `path`.
 export struct Request:
     method: str
     path: str
     query = dict[str, str]()
     headers = dict[str, str]()
     body = bytes([])
+    raw_path = ""
 
     ## The body as text, or empty text when it isn't UTF-8.
     def text(self) -> str:
         return self.body.decode() except InvalidValue(): ""
+
+## The most parameters a route can have, as `{id}` in `/notes/{id}`.
+MOST_ROUTE_PARAMETERS = 8
+
+## Where a route's parameters are in a request's path, for its handler to read. A `Router` makes
+## one for each request it routes, holding only places in the path, so nothing is decoded or
+## parsed until a handler asks for it.
+export struct Captured:
+    _path: str
+    _starts: array[int, 8]
+    _ends: array[int, 8]
+
+    ## The parameters at `starts` up to `ends` in `path`, in the order the route names them.
+    def of(path: str, starts: array[int, 8], ends: array[int, 8]) -> Captured:
+        return Captured(_path=path, _starts=starts, _ends=ends)
+
+    ## Parameter `at`, its percent-escapes decoded as a request's path's are.
+    def text_at(self, at: int) -> str:
+        return unquote(text_part(self._path, self._starts[at], self._ends[at]))
+
+## A route's handler as a `Router` keeps it, given the route's parameters as `Captured`. One that
+## doesn't take what a parameter holds, like `abc` for an `int`, gives `Response.not_found()`.
+export type Routed = (Request, Captured) -> Response
+
+## One place in a router's tree: the segments that can follow it, by their text, the parameter that
+## can, and what answers each method there.
+struct RouteNode:
+    statics = list[str]()
+    children = list[int]()
+    parameter = -1
+    methods = list[str]()
+    handlers = list[Routed]()
+
+## Sends each request to the handler of the route its method and path match:
+##
+## ```fennec
+## mut router = Router()
+## router.handle("GET /notes/{id}", (request, found) => shown(notes, request, found))
+## server.serve(request => router.respond(request))
+## ```
+##
+## A route's `{name}` matches one segment of the path, which its handler reads from `Captured` by
+## its place among the route's parameters. A handler gives `Response.not_found()` for a segment
+## that isn't what it takes, like `abc` for an `int`, the 404 a path no route has gets too. `router.get(path,
+## handler)`, with the compiler checking each route's names against its handler's parameters,
+## comes next. A path a route has with a method it doesn't take is a 405,
+## saying the ones it takes in `Allow`, and a `HEAD` is answered by a route's `GET` when it has no
+## `HEAD`. A segment written out matches before a parameter does, and a `/` at a path's end is
+## passed over. Routes go into a tree as they're added, so finding one walks the path once.
+export struct Router:
+    _nodes = [RouteNode()]
+
+    ## Answers a route with `handler`, which takes the route's parameters as `Captured`. The route
+    ## is its method and its path, as in `"GET /notes/{id}"`: the path is `/` and its segments,
+    ## each written out or a `{name}` that matches any one.
+    def handle(ref self, route: str, handler: Routed):
+        space = route.find(" ") else -1
+        if space < 0:
+            stop(f"the route `{route}` needs its method first, as in `GET /`")
+            return
+        method = route[:space]
+        path = route[space + 1:]
+        mut node = 0
+        mut parameters = 0
+        for segment in path.split("/"):
+            if segment == "": continue
+            if segment.startswith("{") and segment.endswith("}"):
+                parameters += 1
+                if parameters > MOST_ROUTE_PARAMETERS:
+                    stop(f"the route `{path}` has more than {MOST_ROUTE_PARAMETERS} parameters")
+                if self._nodes[node].parameter < 0:
+                    self._nodes.append(RouteNode())
+                    self._nodes[node].parameter = len(self._nodes) - 1
+                node = self._nodes[node].parameter
+                continue
+            mut child = -1
+            for at, written in enumerate(self._nodes[node].statics):
+                if written == segment:
+                    child = self._nodes[node].children[at]
+            if child < 0:
+                self._nodes.append(RouteNode())
+                child = len(self._nodes) - 1
+                self._nodes[node].statics.append(segment)
+                self._nodes[node].children.append(child)
+            node = child
+        if method in self._nodes[node].methods:
+            stop(f"`{route}` is routed twice")
+        self._nodes[node].methods.append(method)
+        self._nodes[node].handlers.append(handler)
+
+    ## The node a static segment from `start` up to `end` of `path` leads to from `node`, or -1.
+    def _static(self, node: int, path: str, start: int, end: int) -> int:
+        for at, written in enumerate(self._nodes[node].statics):
+            if text_size(written) == end - start and text_same_at(path, start, written):
+                return self._nodes[node].children[at]
+        return -1
+
+    ## The response to `request`: its route's handler's, a 404 for a path no route has or a
+    ## parameter its handler doesn't take, or a 405 for a method its path doesn't take.
+    def respond(self, request: Request) -> Response:
+        path = request.raw_path if request.raw_path != "" else request.path
+        size = text_size(path)
+        mut node = 0
+        mut starts: array[int, 8] = [0, 0, 0, 0, 0, 0, 0, 0]
+        mut ends: array[int, 8] = [0, 0, 0, 0, 0, 0, 0, 0]
+        mut found = 0
+        mut at = 0
+        while at < size:
+            if text_byte(path, at) != 47: return Response.not_found()
+            start = at + 1
+            mut end = start
+            while end < size and text_byte(path, end) != 47:
+                end += 1
+            if end == start and end == size:
+                # The path's last `/`, after a segment or alone, as in `/`.
+                break
+            next = self._static(node, path=path, start=start, end=end)
+            if next >= 0:
+                node = next
+            elif self._nodes[node].parameter >= 0 and end > start and found < MOST_ROUTE_PARAMETERS:
+                starts[found] = start
+                ends[found] = end
+                found += 1
+                node = self._nodes[node].parameter
+            else:
+                return Response.not_found()
+            at = end
+        here = self._nodes[node]
+        if len(here.methods) == 0: return Response.not_found()
+        mut asked = request.method
+        if asked == "HEAD" and "HEAD" not in here.methods:
+            asked = "GET"
+        for place, method in enumerate(here.methods):
+            if method == asked:
+                handler = here.handlers[place]
+                return handler(request, Captured.of(path, starts=starts, ends=ends))
+        allowed = ", ".join(sorted(here.methods))
+        return Response(
+            status=405,
+            headers={"allow": allowed},
+            body=f"this takes {allowed}".encode(),
+        )
 
 ## The most a request's headers may hold, in lines and in bytes, and the most its body may be.
 MOST_HEADERS = 100
@@ -460,7 +610,14 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
         if name.find("\x00") is not None or value.find("\x00") is not None:
             return .Bad(status=400, reason="the query holds a NUL byte")
     return .Got(
-        request=Request(method=parts[0], path=decoded, query=query, headers=headers, body=body),
+        request=Request(
+            method=parts[0],
+            path=decoded,
+            query=query,
+            headers=headers,
+            body=body,
+            raw_path=path,
+        ),
         keep=keep,
     )
 

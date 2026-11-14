@@ -1,0 +1,103 @@
+# A `Router` sends each request to the handler of the route its method and path match. A route's
+# `{name}` matches one segment of the path, which its handler reads from `Captured`. A path no
+# route has is a 404, and a path a route has with a method it doesn't take is a 405 that says which
+# it takes. Routes go into a tree as they're added, so finding one walks the path once.
+from std.net import Captured, Request, Response, Router
+
+def said(text: str) -> Response:
+    return Response(status=200, body=text.encode())
+
+def notes(request: Request) -> Response:
+    words = request.query.get("q") else "everything"
+    return said(f"the notes, with {words}")
+
+# A handler gives a 404 for a segment that isn't what it takes, as for a path no route has.
+def note(found: Captured) -> Response:
+    id = int.parse(found.text_at(0)) except InvalidValue(): return Response.not_found()
+    return said(f"note {id}")
+
+def comment(found: Captured) -> Response:
+    id = int.parse(found.text_at(0)) except InvalidValue(): return Response.not_found()
+    return said(f"comment {found.text_at(1)} on note {id}")
+
+def made() -> Router:
+    mut router = Router()
+    router.handle("GET /", (request, found) => said("home"))
+    router.handle("GET /notes", (request, found) => notes(request))
+    router.handle("POST /notes", (request, found) => Response(status=201, body=request.body))
+    router.handle("GET /notes/new", (request, found) => said("a form for a new note"))
+    router.handle("GET /notes/{id}", (request, found) => note(found))
+    router.handle("DELETE /notes/{id}", (request, found) => Response(status=204))
+    router.handle("GET /notes/{id}/comments/{name}", (request, found) => comment(found))
+    router.handle("GET /files/{name}", (request, found) => said(found.text_at(0)))
+    return router
+
+# What `router` answers a request, given as its method and path, like `"GET /notes/42"`: its
+# status and its body, and `allow` when it has one.
+def answered(router: Router, asked: str, raw_path = "") -> str:
+    space = asked.find(" ") else 0
+    request = Request(method=asked[:space], path=asked[space + 1:], raw_path=raw_path)
+    response = router.respond(request)
+    allowed = response.headers.get("allow") else ""
+    shown = f"{response.status} {response.text()}"
+    return f"{shown} (allow: {allowed})" if allowed != "" else shown
+
+test "a route written out and one with a parameter each find their handler":
+    router = made()
+    assert answered(router, "GET /") == "200 home"
+    assert answered(router, "GET /notes") == "200 the notes, with everything"
+    assert answered(router, "GET /notes/42") == "200 note 42"
+    assert answered(router, "GET /notes/7/comments/first") == "200 comment first on note 7"
+    assert answered(router, "POST /notes") == "201 "
+
+test "a segment written out matches before a parameter does":
+    router = made()
+    assert answered(router, "GET /notes/new") == "200 a form for a new note"
+    assert answered(router, "GET /notes/newer") == "404 there's nothing here"
+
+test "a path no route has, or a parameter its handler doesn't take, is a 404":
+    router = made()
+    for path in ["/nope", "/notes/42/more", "/notes/abc", "/notes//", "/notes/1/comments", "//"]:
+        assert answered(router, f"GET {path}") == "404 there's nothing here"
+    assert answered(router, "GET notes") == "404 there's nothing here"
+
+test "a method the path doesn't take is a 405, saying the ones it does":
+    router = made()
+    assert answered(router, "PUT /notes") == "405 this takes GET, POST (allow: GET, POST)"
+    assert (answered(router, "POST /notes/42") == "405 this takes DELETE, GET (allow: DELETE, GET)")
+
+test "a HEAD is answered by the route's GET":
+    assert answered(made(), "HEAD /notes/42") == "200 note 42"
+
+test "a `/` at the end is passed over":
+    router = made()
+    assert answered(router, "GET /notes/") == "200 the notes, with everything"
+    assert answered(router, "GET /notes/42/") == "200 note 42"
+
+test "a parameter is matched as it was sent, then decoded":
+    router = made()
+    # An escaped `/` stays in its segment, and comes out decoded.
+    assert answered(router, "GET /files/a/b", raw_path="/files/a%2Fb") == "200 a/b"
+    assert answered(router, "GET /files/a b", raw_path="/files/a%20b") == "200 a b"
+    # Without the path as sent, a request made by hand is matched by its path.
+    assert answered(router, "GET /files/a/b") == "404 there's nothing here"
+
+# A test's `Net` works in memory: the request waits at the server, which answers it through the
+# router and stops once nothing more is waiting.
+test "a server answers through its router"(net: Net):
+    router = made()
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.write("GET /notes/42 HTTP/1.1\r\nconnection: close\r\n\r\n")?
+            server.serve(request => router.respond(request))
+            assert list(client.lines()?)[-1] == "note 42"
+
+def main(stdout: Stdout):
+    router = made()
+    for method, path in [
+        ("GET", "/notes/42"),
+        ("GET", "/notes/new"),
+        ("GET", "/notes/abc"),
+        ("PATCH", "/notes/42"),
+    ]:
+        stdout.print(f"{method} {path}:", answered(router, f"{method} {path}"))

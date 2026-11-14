@@ -184,6 +184,11 @@ impl Table {
     /// How many blocks it holds that can still be freed: all but those kept for the whole run, like
     /// literals and the cases with no fields made the first time they're asked for.
     pub(super) fn freeable(&self) -> usize {
+        self.freeable_where(|_| true)
+    }
+
+    /// How many of the blocks that can still be freed `which` picks.
+    pub(super) fn freeable_where(&self, which: impl Fn(&[u64]) -> bool) -> usize {
         let placed = self.regions.iter().flat_map(|(_, pages)| pages.iter().flatten());
         let never_freed = |block: &[u64]| {
             block
@@ -193,7 +198,7 @@ impl Table {
         placed
             .flat_map(|page| page.iter().flatten())
             .chain(self.short.values())
-            .filter(|block| !never_freed(block))
+            .filter(|block| !never_freed(block) && which(block))
             .count()
     }
 

@@ -965,7 +965,7 @@ impl Emit<'_, '_, '_> {
         local.0 < self.function.params
     }
 
-    fn is_mut_param(&self, local: LocalId) -> bool {
+    pub(crate) fn is_mut_param(&self, local: LocalId) -> bool {
         self.is_param(local) && self.function.mut_params.contains(&local.0)
     }
 

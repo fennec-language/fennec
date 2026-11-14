@@ -88,6 +88,15 @@ fn hashing(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic
     }
 }
 
+/// Writes over `bytes` with zeros, through `black_box`, so a copy of a password is gone once it's
+/// used rather than left for the allocator to hand out again.
+pub(super) fn wipe(bytes: &mut [u8]) {
+    for byte in bytes.iter_mut() {
+        *byte = 0;
+    }
+    std::hint::black_box(bytes);
+}
+
 /// `work` on a thread that may block while this task parks, as a password's hash takes tens of
 /// milliseconds and 19 MiB, or here outside a task.
 fn off_worker<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
@@ -104,16 +113,24 @@ fn passwords(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnost
     let wrong = || Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span);
     match (name, values) {
         ("crypto._hash_password", [Value::Str(password), Value::Bytes(salt)]) => {
-            let (password, salt) = (password.as_bytes().to_vec(), salt.to_vec());
-            Ok(Value::str(&off_worker(move || argon2::hash_password(&password, &salt))))
+            let (mut password, salt) = (password.as_bytes().to_vec(), salt.to_vec());
+            Ok(Value::str(&off_worker(move || {
+                let stored = argon2::hash_password(&password, &salt);
+                wipe(&mut password);
+                stored
+            })))
         }
         ("crypto._password_problem", [Value::Str(stored)]) => {
             Ok(Value::str(&argon2::read(stored).err().unwrap_or_default()))
         }
         ("crypto._check_password", [Value::Str(password), Value::Str(stored)]) => {
             let stored = argon2::read(stored).map_err(|_| wrong())?;
-            let password = password.as_bytes().to_vec();
-            Ok(Value::Bool(off_worker(move || argon2::matches(&password, &stored))))
+            let mut password = password.as_bytes().to_vec();
+            Ok(Value::Bool(off_worker(move || {
+                let right = argon2::matches(&password, &stored);
+                wipe(&mut password);
+                right
+            })))
         }
         _ => Err(wrong()),
     }

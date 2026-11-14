@@ -129,6 +129,8 @@ impl Hasher {
         compress(&mut self.state, &self.held, self.taken, true);
         let mut out: Vec<u8> = self.state.iter().flat_map(|word| word.to_le_bytes()).collect();
         out.truncate(self.size);
+        // What was held may be a password's bytes, as `H0`'s are, so it goes now.
+        super::wipe(&mut self.held);
         out
     }
 }

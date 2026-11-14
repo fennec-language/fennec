@@ -148,9 +148,12 @@ export def hash_password(password: Secret[str], entropy: Entropy) -> str:
     return crypto._hash_password(password.expose_secret(), entropy.bytes(16))
 
 ## Whether `password` is the one `stored` was made from by `hash_password`, compared in time that
-## doesn't depend on where they differ. A stored hash that isn't one, or whose settings are below
-## OWASP's floor or past what's worth the memory, fails with `PasswordError` before anything's
-## hashed, so a stored hash can't be used to take all the memory there is.
+## doesn't depend on where they differ. A stored hash that isn't one fails with `PasswordError`
+## before anything's hashed, and so does one whose settings are below OWASP's floor, 19 MiB with
+## two passes or 46 MiB with one, or past what's worth checking, 256 MiB, 8 passes or 4 lanes: a
+## hash made with settings that high elsewhere is refused, so a stored hash can't be used to take
+## all the memory or time there is. For a name nobody has, check against a hash made up for it,
+## so a missing name takes as long to refuse as a wrong password.
 export def check_password(password: Secret[str], stored: str) -> bool fails PasswordError:
     problem = crypto._password_problem(stored)
     if problem != "": fail PasswordError(reason=problem)

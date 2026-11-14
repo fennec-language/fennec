@@ -47,14 +47,19 @@ pub(super) struct Settings {
 /// lane, with a 32-byte tag.
 pub(super) const DEFAULT: Settings = Settings { memory: 19_456, passes: 2, lanes: 1, tag: 32 };
 
-/// The least a stored hash may have been made with to be checked: OWASP's floor. A weaker hash
-/// is refused rather than quietly accepted.
+/// The least a stored hash may have been made with to be checked: OWASP's floor, 19 MiB with two
+/// passes or more, or 46 MiB with one, as its table has them. A weaker hash is refused rather than
+/// quietly accepted.
 const LEAST_MEMORY: u32 = 19_456;
 const LEAST_PASSES: u32 = 2;
-/// The most, so a stored hash can't make checking it take all the memory or time there is.
-const MOST_MEMORY: u32 = 1 << 20;
-const MOST_PASSES: u32 = 16;
-const MOST_LANES: u32 = 16;
+const LEAST_MEMORY_ONE_PASS: u32 = 47_104;
+/// The most, so a stored hash can't make checking it take all the memory or time there is: at
+/// these, one check is about 2 seconds and 256 MiB, and a server may check eight at once.
+const MOST_MEMORY: u32 = 262_144;
+const MOST_PASSES: u32 = 8;
+const MOST_LANES: u32 = 4;
+/// How much of a stored hash's own text a refusal quotes back.
+const QUOTED: usize = 40;
 /// A salt's and a tag's lengths in bytes, as a check takes them.
 const SALT_LENGTHS: std::ops::RangeInclusive<usize> = 8..=64;
 const TAG_LENGTHS: std::ops::RangeInclusive<usize> = 16..=64;
@@ -224,6 +229,14 @@ fn first_hash(
     first.finish()
 }
 
+/// A stored hash's own text as a refusal quotes it: its start, so a long one isn't said whole.
+fn quoted(text: &str) -> String {
+    match text.char_indices().nth(QUOTED) {
+        Some((end, _)) => format!("{}...", text.get(..end).unwrap_or_default()),
+        None => text.to_owned(),
+    }
+}
+
 /// Argon2's memory: its blocks, lanes one after another, and their shape.
 struct Memory {
     blocks: Vec<Block>,
@@ -307,7 +320,7 @@ pub(super) fn tag(
     (password, salt): (&[u8], &[u8]),
     (key, data): (&[u8], &[u8]),
 ) -> Vec<u8> {
-    let first = first_hash(kind, settings, (password, salt), (key, data));
+    let mut first = first_hash(kind, settings, (password, salt), (key, data));
     let lanes = usize::try_from(settings.lanes).unwrap_or(1).max(1);
     let wanted = usize::try_from(settings.memory).unwrap_or(0).max(2 * SLICES * lanes);
     let segment = wanted / (lanes * SLICES);
@@ -321,6 +334,8 @@ pub(super) fn tag(
             }
         }
     }
+    // `H0` is made from the password, so it goes once the first blocks are made from it.
+    super::wipe(&mut first);
     for pass in 0..settings.passes {
         for slice in 0..SLICES {
             for lane in 0..lanes {
@@ -398,16 +413,16 @@ pub(super) struct Stored {
 /// One of a stored hash's settings, `name` followed by digits with no leading zero, so a setting
 /// has one way to be written.
 fn setting(part: Option<&str>, name: &str, settings: &str) -> Result<u32, String> {
-    let text = part
-        .and_then(|part| part.strip_prefix(name))
-        .ok_or_else(|| format!("a stored password's settings are `m=...,t=...,p=...`, not `{settings}`"))?;
+    let text = part.and_then(|part| part.strip_prefix(name)).ok_or_else(|| {
+        format!("a stored password's settings are `m=...,t=...,p=...`, not `{}`", quoted(settings))
+    })?;
     if text.is_empty()
         || !text.bytes().all(|byte| byte.is_ascii_digit())
         || (text.len() > 1 && text.starts_with('0'))
     {
-        return Err(format!("`{name}{text}` isn't a setting a stored password can have"));
+        return Err(format!("`{name}{}` isn't a setting a stored password can have", quoted(text)));
     }
-    text.parse().map_err(|_| format!("`{name}{text}` is too big to be a stored password's setting"))
+    text.parse().map_err(|_| format!("`{name}{}` is too big to be a stored password's setting", quoted(text)))
 }
 
 /// A stored hash read from its PHC string, or why it can't be checked: it's not one, its settings
@@ -418,30 +433,50 @@ pub(super) fn read(text: &str) -> Result<Stored, String> {
         return Err("a stored password is written `$argon2id$v=19$m=...,t=...,p=...$salt$hash`".to_owned());
     };
     if kind != "argon2id" {
-        return Err(format!("a stored password is an `argon2id` hash, not `{kind}`"));
+        return Err(format!("a stored password is an `argon2id` hash, not `{}`", quoted(kind)));
     }
     if version != "v=19" {
-        return Err(format!("a stored password is Argon2's version 19, not `{version}`"));
+        return Err(format!("a stored password is Argon2's version 19, not `{}`", quoted(version)));
     }
     let mut named = settings.split(',');
     let memory = setting(named.next(), "m=", settings)?;
     let passes = setting(named.next(), "t=", settings)?;
     let lanes = setting(named.next(), "p=", settings)?;
     if named.next().is_some() {
-        return Err(format!("a stored password's settings are `m=...,t=...,p=...`, not `{settings}`"));
+        return Err(format!(
+            "a stored password's settings are `m=...,t=...,p=...`, not `{}`",
+            quoted(settings)
+        ));
     }
-    if memory < LEAST_MEMORY || passes < LEAST_PASSES {
+    if passes == 1 && memory < LEAST_MEMORY_ONE_PASS {
+        return Err(format!(
+            "a stored password made with one pass is checked only with m={LEAST_MEMORY_ONE_PASS} or more, \
+             not m={memory}: hash it again"
+        ));
+    }
+    if passes == 0 || memory < LEAST_MEMORY {
         return Err(format!(
             "a stored password made with m={memory},t={passes} is below the least that's checked, \
-             m={LEAST_MEMORY},t={LEAST_PASSES}: hash it again"
+             m={LEAST_MEMORY} with t={LEAST_PASSES} or more, or m={LEAST_MEMORY_ONE_PASS} with t=1: hash it again"
         ));
     }
-    if memory > MOST_MEMORY || passes > MOST_PASSES || lanes == 0 || lanes > MOST_LANES || memory < 8 * lanes
-    {
+    let past = if memory > MOST_MEMORY {
+        Some(format!("m={memory}, past m={MOST_MEMORY}"))
+    } else if passes > MOST_PASSES {
+        Some(format!("t={passes}, past t={MOST_PASSES}"))
+    } else if lanes > MOST_LANES {
+        Some(format!("p={lanes}, past p={MOST_LANES}"))
+    } else {
+        None
+    };
+    if let Some(past) = past {
         return Err(format!(
-            "a stored password made with m={memory},t={passes},p={lanes} is past what's checked: m up to \
-             {MOST_MEMORY}, t up to {MOST_PASSES}, p from 1 to {MOST_LANES}"
+            "a stored password made with {past} isn't checked, so a stored hash can't make checking it take \
+             all the memory or time there is: hash it again here"
         ));
+    }
+    if lanes == 0 || memory < 8 * lanes {
+        return Err(format!("p={lanes} with m={memory} isn't a setting Argon2 has"));
     }
     let salt = unbase64(salt).ok_or("a stored password's salt isn't base64")?;
     let hash = unbase64(hash).ok_or("a stored password's hash isn't base64")?;
@@ -465,6 +500,9 @@ pub(super) fn matches(password: &[u8], stored: &Stored) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{DEFAULT, Kind, Settings, base64, hash_password, matches, read, tag, unbase64};
+
+    /// `RustCrypto`'s tag for `password` under `somesaltsomesalt` at the shipped settings.
+    const KNOWN_AT_THE_DEFAULT: &str = "2b5dc4054886ec957ef59c73b661c54dd6fb274590b278f657c6d96aac8fa6d1";
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write as _;
@@ -516,6 +554,60 @@ mod tests {
         }
     }
 
+    /// The settings `hash_password` ships with, held to `RustCrypto` and to a known answer: the hash
+    /// a real sign-in spends its time in, with 38 address blocks to a segment, where the other tests
+    /// use small memory.
+    #[test]
+    fn the_shipped_settings_match_rustcrypto_and_a_known_answer() {
+        let (password, salt) = (b"password".as_slice(), b"somesaltsomesalt".as_slice());
+        let ours = tag(Kind::Id, DEFAULT, (password, salt), (&[], &[]));
+        let params = argon2::Params::new(DEFAULT.memory, DEFAULT.passes, DEFAULT.lanes, Some(DEFAULT.tag))
+            .expect("settings");
+        let theirs = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+        let mut expected = vec![0u8; DEFAULT.tag];
+        theirs.hash_password_into(password, salt, &mut expected).expect("hashed");
+        assert_eq!(ours, expected);
+        assert_eq!(hex(&ours), KNOWN_AT_THE_DEFAULT);
+        let stored = hash_password(password, salt);
+        assert_eq!(read(&stored).expect("it reads").hash, ours);
+    }
+
+    /// Shapes the random cases never reach, each against `RustCrypto`: a segment of 129 and 130
+    /// blocks, so a second address block is made, 4 and 16 lanes, 8 and 16 passes, tags at and past
+    /// a `BLAKE2b` digest's edges, an empty password and a long one.
+    #[test]
+    fn edge_shapes_match_rustcrypto() {
+        let cases: [(u32, u32, u32, usize, usize); 12] = [
+            (516, 1, 1, 32, 8),
+            (520, 2, 1, 32, 8),
+            (1032, 1, 2, 32, 8),
+            (512, 1, 4, 32, 8),
+            (1024, 1, 16, 16, 8),
+            (64, 8, 1, 32, 8),
+            (64, 16, 1, 32, 8),
+            (64, 1, 1, 64, 8),
+            (64, 1, 1, 65, 8),
+            (64, 1, 1, 96, 0),
+            (64, 1, 1, 97, 300),
+            (528, 3, 1, 128, 16),
+        ];
+        for (memory, passes, lanes, tag_length, password_length) in cases {
+            let password: Vec<u8> =
+                (0..password_length).map(|at| u8::try_from(at % 251).unwrap_or(0)).collect();
+            let salt = [9u8; 16];
+            let params = argon2::Params::new(memory, passes, lanes, Some(tag_length)).expect("settings");
+            let theirs = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+            let mut expected = vec![0u8; tag_length];
+            theirs.hash_password_into(&password, &salt, &mut expected).expect("hashed");
+            let settings = Settings { memory, passes, lanes, tag: tag_length };
+            assert_eq!(
+                tag(Kind::Id, settings, (&password, &salt), (&[], &[])),
+                expected,
+                "m={memory} t={passes} p={lanes} tag={tag_length} password={password_length}"
+            );
+        }
+    }
+
     #[test]
     fn a_hash_checks_its_own_password_and_no_other() {
         let stored = hash_password(b"correct horse battery staple", &[7; 16]);
@@ -559,11 +651,22 @@ mod tests {
         assert!(refused(&with("$argon2id$v=19$m=99999999999,t=2,p=1")).contains("too big"));
         // Below OWASP's floor, and past what's worth the memory or the time.
         assert!(refused(&with("$argon2id$v=19$m=4096,t=3,p=1")).contains("below the least"));
-        assert!(refused(&with("$argon2id$v=19$m=19456,t=1,p=1")).contains("below the least"));
-        assert!(refused(&with("$argon2id$v=19$m=2097152,t=2,p=1")).contains("past what's checked"));
-        assert!(refused(&with("$argon2id$v=19$m=19456,t=64,p=1")).contains("past what's checked"));
-        assert!(refused(&with("$argon2id$v=19$m=19456,t=2,p=0")).contains("past what's checked"));
-        assert!(refused(&with("$argon2id$v=19$m=19456,t=2,p=99")).contains("past what's checked"));
+        assert!(refused(&with("$argon2id$v=19$m=19456,t=0,p=1")).contains("below the least"));
+        assert!(
+            refused(&with("$argon2id$v=19$m=19456,t=1,p=1"))
+                .contains("one pass is checked only with m=47104")
+        );
+        assert!(refused(&with("$argon2id$v=19$m=47103,t=1,p=1")).contains("one pass"));
+        assert!(read(&with("$argon2id$v=19$m=47104,t=1,p=1")).is_ok(), "OWASP's one-pass row is checked");
+        assert!(read(&with("$argon2id$v=19$m=262144,t=8,p=4")).is_ok(), "the caps themselves are checked");
+        assert!(refused(&with("$argon2id$v=19$m=262145,t=2,p=1")).contains("m=262145, past m=262144"));
+        assert!(refused(&with("$argon2id$v=19$m=1048576,t=2,p=1")).contains("past m=262144"));
+        assert!(refused(&with("$argon2id$v=19$m=19456,t=9,p=1")).contains("t=9, past t=8"));
+        assert!(refused(&with("$argon2id$v=19$m=19456,t=2,p=5")).contains("p=5, past p=4"));
+        assert!(refused(&with("$argon2id$v=19$m=19456,t=2,p=0")).contains("isn't a setting Argon2 has"));
+        // What's quoted back is cut short, however long the stored text is.
+        let long = format!("$argon2id$v=19$m=19456,t=2,p=1,{}", "x".repeat(100_000));
+        assert!(refused(&format!("{long}$AAAAAAAAAAA$AAAA")).len() < 200);
         // A salt or hash that isn't base64, or is too short or too long.
         assert!(refused("$argon2id$v=19$m=19456,t=2,p=1$!!$AAAA").contains("salt isn't base64"));
         let short_salt = "$argon2id$v=19$m=19456,t=2,p=1$AAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

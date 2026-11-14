@@ -2597,6 +2597,77 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
     )
 }
 
+/// One write to one entry of a `Table`, a dict or a list that a `shared` value holds, under
+/// `lock ... as ref`: an item's field, a list inside it, the item whole, and a `Table`'s remove and
+/// add. Each is written in the lock's own block and through a `ref self` method, and ends
+/// normally, by failing, and by crashing in a task. What's left is what the writes that ended make
+/// of a plain value, at 40 entries and at 400.
+///
+/// And a write costs the same however much the lock holds: two rounds more of every write copy
+/// exactly as much at 400 entries as at 40. The lock's log can change a `Table`, a list or a dict
+/// it marked where it is, the one item saved, but only when the write asks it for that item. A
+/// `Table`'s writes never did, and nothing called from a lock's block did, so each copied the
+/// whole `Table` or dict: 4.2 MB for these two rounds at 400 entries, where 15 KB is copied now.
+#[test]
+fn a_write_under_a_lock_costs_the_same_however_much_the_lock_holds() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("lock_writes_one_item")?;
+    let program = dir.join("lock_writes_one_item.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/lock_writes_one_item.fen"))?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("lock_writes_one_item"));
+    let output = executable.to_string_lossy().into_owned();
+    // The number after a label in what a run says it copied.
+    let said = |counts: &str, label: &str| -> u64 {
+        counts
+            .split_once(label)
+            .and_then(|(_, after)| after.split(' ').next())
+            .and_then(|number| number.parse().ok())
+            .unwrap_or(u64::MAX)
+    };
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let mut two_rounds_more = Vec::new();
+        for (entries, left) in [("40", "left 8382 228270906"), ("400", "left 84162 617508521")] {
+            let mut copied = Vec::new();
+            for rounds in ["1", "3"] {
+                let ran = Command::new(&executable)
+                    .args([entries, rounds])
+                    .env("FENNEC_COUNTS", "1")
+                    .output_within()?;
+                let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+                if rounds == "3" {
+                    let wanted = format!("wrong 0 kept 60 failed 60 crashed 60\n{left}\n");
+                    assert_eq!(printed, wanted, "{how:?}, {entries} entries");
+                } else {
+                    let ended = printed.starts_with("wrong 0 kept 20 failed 20 crashed 20\n");
+                    assert!(ended, "{how:?}, {entries} entries: {printed}");
+                }
+                let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert!(counts.ends_with(" live 0"), "{how:?}, {entries} entries: {counts}");
+                copied.push((said(counts, "copies "), said(counts, "copied_bytes ")));
+            }
+            let [(first, first_bytes), (third, third_bytes)] = copied[..] else { unreachable!() };
+            two_rounds_more.push((third - first, third_bytes - first_bytes));
+        }
+        assert_eq!(
+            two_rounds_more.first(),
+            two_rounds_more.last(),
+            "{how:?}: what two rounds more copy, and its bytes, at 40 entries and at 400"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A lock on a struct with a list, a dict and a string, changed in place: kept, failed, crashed in
 /// a launched task, and failing on every other parallel worker. Only what a normal end made stays.
 #[test]

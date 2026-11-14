@@ -1,6 +1,6 @@
 # The twins of the kernels in `bench/realworld`. Not part of the workspace: serde, serde_json,
-# bincode, glam and petgraph are here only to be measured or checked against, pinned so a change in the
-# numbers is a change in Fennec.
+# bincode, glam, petgraph, rayon and rusqlite are here only to be measured or checked against,
+# pinned so a change in the numbers is a change in Fennec.
 [package]
 name = "fennec-realworld-twins"
 version = "0.0.0"
@@ -29,6 +29,10 @@ path = "game_math.rs"
 name = "game_math_check"
 path = "game_math_check.rs"
 
+[[bin]]
+name = "game_server"
+path = "game_server.rs"
+
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
@@ -37,6 +41,10 @@ petgraph = "=0.8.3"
 # With `libm`, glam's float functions are the `libm` crate's, as Fennec's are on every platform,
 # so the two give the same bits on any machine.
 glam = { version = "=0.33.12", features = ["libm"] }
+# The game server's: rayon for its tick's work over the monsters, and rusqlite for its snapshots,
+# SQLite compiled in as std.sqlite has it.
+rayon = "=1.12.0"
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
 
 # As the suite's Rust twins are built, overflow checks on, with the whole program in one unit.
 [profile.release]

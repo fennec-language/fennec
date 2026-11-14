@@ -297,8 +297,17 @@ fn shape_layout(state: &State, shape: u64) -> Option<Layout> {
 /// can find again. Out of line, so reading the other kinds' layouts stays a few tests.
 #[inline(never)]
 fn words_in_place(state: &State, number: u32) -> Option<usize> {
-    let element = state.tables.elements.get(usize::try_from(number).ok()?)?;
-    Some(element.words()).filter(|words| *words > 0)
+    let number = usize::try_from(number).ok()?;
+    // Worked out once a run for every kind it has, and looked up after: a kind's width is a walk
+    // over its type, 84 instructions for a struct of two ints, on every call for such a dict.
+    let widths = state
+        .value_widths
+        .get_or_init(|| state.tables.elements.iter().map(|element| element.words()).collect());
+    let words = match widths.get(number) {
+        Some(words) => *words,
+        None => state.tables.elements.get(number)?.words(),
+    };
+    Some(words).filter(|words| *words > 0)
 }
 
 /// What the keys and values of a dict of this shape are, when the shape is a dict's.
@@ -1740,48 +1749,51 @@ pub extern "C" fn set_in_place_header(dict: i64, a: u64, b: u64, c: u64) -> i64 
     })
 }
 
-/// The value's words are copied out of the buffer before anything else, and are in the entry
-/// before anything is let go of: letting go of the value replaced may run a program's own code,
-/// which may use the buffer again.
+/// `dict[key] = value` for a dict that holds its values in place, the value's words being in this
+/// run's buffer: takes over the owners `dict`, a key held in a block and the value's words had,
+/// and gives back the dict's. `None`, having changed nothing, for a key of the wrong width.
+///
+/// A new key in a dict that's this thread's alone is what native code calls this for, so that's
+/// the path kept short: the layout and the mark are read once, nothing is made, and the value
+/// goes from the buffer straight into the entry. What a value's kind is laid out as is looked up
+/// only where a value is replaced or the dict is marked. There the words are copied out of the
+/// buffer first and are in the entry before anything is let go of: letting go of the value
+/// replaced may run a program's own code, which may use the buffer again.
 fn set_buffered(state: &mut State, dict: i64, key: &[u64]) -> Option<i64> {
-    let block = state.heap.block(u64::try_from(dict).ok()?)?;
+    let at = u64::try_from(dict).ok()?;
+    let block = state.heap.block(at)?;
     let layout = layout(state, block)?;
     if !layout.in_place() {
         doesnt_fit(SET_IN_PLACE);
         return None;
     }
-    let Some(value) = buffered(state, layout.value_words()) else {
+    let marked = super::lists::marked_alone(block);
+    let count = layout.value_words();
+    // The buffer holds a whole value of this kind, or nothing is read from it.
+    if value_buffer_of(state, <[std::cell::Cell<u64>]>::len) < count {
         too_wide_for_the_buffer();
         return None;
-    };
-    set_wide(state, dict, key, &value)
-}
-
-/// `dict[key] = value` for a dict that holds its values in place, the value given as its words:
-/// takes over the owners `dict`, a key held in a block and the value's words had, and gives back
-/// the dict's. `None`, having changed nothing, for a key or a value of the wrong width.
-fn set_wide(state: &mut State, dict: i64, key: &[u64], value: &[u64]) -> Option<i64> {
-    let at = u64::try_from(dict).ok()?;
-    let block = state.heap.block(at)?;
-    let layout = layout(state, block)?;
-    let element = value_element(state, layout.value)?;
-    if value.len() != layout.value_words() || 1 + key.len() + value.len() != layout.width() {
+    }
+    if 1 + key.len() + count != layout.width() {
         return None;
     }
-    if super::lists::marked_alone(block)
-        && let Some(changed) = set_marked_wide(state, at, (layout, &element), key, value)
-    {
-        return Some(changed);
+    if marked {
+        let element = value_element(state, layout.value)?;
+        let value = buffered(state, count)?;
+        if let Some(changed) = set_marked_wide(state, at, (layout, &element), key, &value) {
+            return Some(changed);
+        }
     }
     let (at, hash, probe, mask) = ready_for(state, at, layout, key)?;
     let start = DICT_HEADER_WORDS + mask + 1;
-    let block = state.heap.block_mut(at)?;
     match probe {
         Probe::Found(entry) => {
+            let element = value_element(state, layout.value)?;
+            let new = buffered(state, count)?;
             let place = start + entry * layout.width() + layout.value_at();
-            let held = block.get_mut(place..place + value.len())?;
+            let held = state.heap.block_mut(at)?.get_mut(place..place + count)?;
             let old = held.to_vec();
-            held.copy_from_slice(value);
+            held.copy_from_slice(&new);
             // What the value it replaces held goes, and the key given, as the entry keeps its own.
             let mut let_go = Vec::new();
             super::heap::held_addresses(&element, &old, &mut let_go);
@@ -1791,13 +1803,21 @@ fn set_wide(state: &mut State, dict: i64, key: &[u64], value: &[u64]) -> Option<
             }
         }
         Probe::Empty(slot) => {
+            // The block to write is the heap's and the buffer to read is the run's, side by side.
+            let buffer = state.dict_value.get()?;
+            let block = state.heap.block_mut(at)?;
             let used = usize::try_from(*block.get(3)?).ok()?;
             *block.get_mut(DICT_HEADER_WORDS + slot)? = u64::try_from(used + 1).ok()?;
             let entry = start + used * layout.width();
-            let words = block.get_mut(entry..entry + layout.width())?;
-            *words.first_mut()? = hash;
-            words.get_mut(1..layout.value_at())?.copy_from_slice(key);
-            words.get_mut(layout.value_at()..)?.copy_from_slice(value);
+            let (hash_word, rest) = block.get_mut(entry..entry + layout.width())?.split_first_mut()?;
+            *hash_word = hash;
+            let (key_words, value_words) = rest.split_at_mut_checked(key.len())?;
+            for (to, from) in key_words.iter_mut().zip(key) {
+                *to = *from;
+            }
+            for (to, from) in value_words.iter_mut().zip(buffer.iter()) {
+                *to = from.get();
+            }
             *block.get_mut(2)? += 1;
             *block.get_mut(3)? += 1;
         }
@@ -1805,7 +1825,7 @@ fn set_wide(state: &mut State, dict: i64, key: &[u64], value: &[u64]) -> Option<
     i64::try_from(at).ok()
 }
 
-/// `set_wide` on a dict a lock's log marked, with no other owner, as `set_marked` is to
+/// `set_buffered` on a dict a lock's log marked, with no other owner, as `set_marked` is to
 /// `set_words`: each word that changes is saved in the log first. `None`, having changed nothing,
 /// when it would have to grow or change how it hashes.
 fn set_marked_wide(

@@ -29,6 +29,39 @@ struct Compiler {
     limit: usize,
 }
 
+/// How many instructions `node` compiles to, counted from the tree without compiling it, so a
+/// pattern too big to compile can say how big it is. It saturates rather than overflow, as
+/// `x{1000}{1000}{1000}` would.
+pub(crate) fn size(node: &Node) -> u64 {
+    match node {
+        Node::Empty => 0,
+        Node::Char(_) | Node::Any | Node::Class(_) | Node::Look(_) => 1,
+        Node::Group(Some(_), inner) => size(inner).saturating_add(2),
+        Node::Group(None, inner) => size(inner),
+        Node::Concat(parts) => parts.iter().fold(0_u64, |sum, part| sum.saturating_add(size(part))),
+        // A split before each option but the last, and a jump after each of those.
+        Node::Alt(options) => {
+            let splits = u64::try_from(options.len()).unwrap_or(u64::MAX).saturating_sub(1);
+            options
+                .iter()
+                .fold(0_u64, |sum, option| sum.saturating_add(size(option)))
+                .saturating_add(splits * 2)
+        }
+        Node::Repeat { node, min, max, .. } => {
+            let one = size(node);
+            let required = one.saturating_mul(u64::from(*min));
+            match max {
+                // A split, the part, and a jump back.
+                None => required.saturating_add(one).saturating_add(2),
+                // A split and the part for each optional copy.
+                Some(max) => {
+                    required.saturating_add(one.saturating_add(1).saturating_mul(u64::from(max - min)))
+                }
+            }
+        }
+    }
+}
+
 /// Compiles `node`, or gives back `None` if the program would pass `limit` instructions.
 pub(crate) fn compile(node: &Node, groups: usize, limit: usize) -> Option<Program> {
     let mut compiler = Compiler { insts: Vec::new(), limit };

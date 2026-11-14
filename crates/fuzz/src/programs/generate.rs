@@ -1538,7 +1538,7 @@ impl Writer<'_> {
         match self.choice(7) {
             0 => {
                 let Some(nodes) = self.name_of(Ty::Nodes, true) else { return self.print(body) };
-                let node = self.of(Ty::Node, 1);
+                let node = self.into_nodes();
                 body.push(Stmt::NodesAppend(nodes.clone(), node));
                 self.read_back(body, &nodes);
             }
@@ -1550,7 +1550,7 @@ impl Writer<'_> {
             2 => {
                 let Some(nodes) = self.name_of(Ty::Nodes, true) else { return self.print(body) };
                 let at = self.int(1);
-                let node = self.of(Ty::Node, 1);
+                let node = self.into_nodes();
                 body.push(Stmt::NodesSet(nodes.clone(), at, node));
                 self.read_back(body, &nodes);
             }
@@ -1760,6 +1760,17 @@ impl Writer<'_> {
                 self.read_back(body, &kept);
             }
         }
+    }
+
+    /// A node to append to a list of them or to put in one's place. Inside a loop it holds no
+    /// tree's name: one holding the list itself, as in `nodes.append(.Branch(label="a",
+    /// children=nodes))`, doubles the list every round, and loops inside loops make it too big
+    /// for any machine.
+    fn into_nodes(&mut self) -> Expr {
+        if self.loops > 0 {
+            self.tree_names = 0;
+        }
+        self.of(Ty::Node, 1)
     }
 
     /// `match named:` changing it through `ref`, with a new left side that holds no tree's name.

@@ -150,7 +150,32 @@ examples() {
       failed=1
     fi
   done
+  # The oracle (crates/oracle) runs each example a second way, from its source. One it runs has
+  # to print what the example's `.out` says and end with 0; one it doesn't model, which it says
+  # by ending with 3, is skipped. A difference is named `oracle:<path>`.
+  cargo build --locked --quiet -p fennec-oracle || return 1
+  for program in examples/*.fen; do
+    if ! oracle_agrees "$program" "${program%.fen}.out"; then
+      echo "oracle:$program" >> "$names"
+      failed=1
+    fi
+  done
   return "$failed"
+}
+
+# Whether the oracle, run on the program `$1`, agrees with the output `$2` it should print: it
+# prints that and ends with 0, or it doesn't model the program and ends with 3.
+oracle_agrees() {
+  local status=0 printed="$logs/oracle.txt"
+  .github/scripts/within.sh 120 ./target/debug/fennec-oracle run "$1" > "$printed" 2> "$logs/oracle-said.txt" \
+    || status=$?
+  [ "$status" -eq 3 ] && return 0
+  if [ "$status" -ne 0 ]; then
+    echo "the oracle ran $1 and it ended with $status:" >&2
+    cat "$logs/oracle-said.txt" >&2
+    return 1
+  fi
+  diff --strip-trailing-cr "$2" "$printed" >&2 || { echo "the oracle ran $1 and printed something else" >&2; return 1; }
 }
 
 # Every test, with `--no-fail-fast`, so a test binary that fails doesn't stop the rest. Each test

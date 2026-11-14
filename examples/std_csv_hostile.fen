@@ -61,5 +61,60 @@ test "line endings of every kind, a byte order mark and odd characters read as t
         == "a field can't go on after its closing quote at line 2, column 4"
     )
 
+## Why writing `rows` fails, or the text it writes.
+def written(rows: list[list[str]], delimiter: str) -> str:
+    text = csv.dumps(rows, delimiter=delimiter) except why:
+        return why.message
+    return text
+
+test "a delimiter is one character, and not a quote or a line break, for reading and writing alike"(
+):
+    # Written with a line break between its fields, a row read back as two.
+    for delimiter in ["\"", "\n", "\r"]:
+        assert (
+            written([["a", "b"]], delimiter=delimiter)
+            == "a delimiter can't be a quote or a line break"
+        )
+        assert (
+            why_not_with("a,b", delimiter=delimiter)
+            == "a delimiter can't be a quote or a line break at line 1, column 1"
+        )
+    for delimiter in ["", "ab"]:
+        assert written([["a", "b"]], delimiter=delimiter) == "a delimiter is one character"
+        assert (
+            why_not_with("a,b", delimiter=delimiter)
+            == "a delimiter is one character at line 1, column 1"
+        )
+    # Any other character will do, and what's written reads back as it was.
+    for delimiter in [";", "\t", "|", "é", "\x00"]:
+        rows = [["a", f"b{delimiter}c", "d\ne"], ["", "\""]]
+        assert csv.loads(written(rows, delimiter=delimiter), delimiter=delimiter)? == rows
+
+test "a records file names each column once"():
+    assert records_why("a,a\n1,2") == "the first row has the same name twice at line 1, column 1"
+    assert (
+        records_why("a,b\n1")
+        == "the first row sets 2 as the number of fields, but this row has 1 at line 2, column 1"
+    )
+    assert (
+        records_why("a,b\n1,2,3")
+        == "the first row sets 2 as the number of fields, but this row has 3 at line 2, column 1"
+    )
+
+test "every cut of a file reads or fails, and never stops the program"():
+    whole = "name,note\n\"fox, red\",\"said \"\"hi\"\"\"\r\nbare,\"two\nlines\"\n"
+    for end in range(len(whole) + 1):
+        _ = csv.loads(whole[0:end]) except ParseError():
+            continue
+    assert (
+        csv.loads(whole)? == [["name", "note"], ["fox, red", "said \"hi\""], ["bare", "two\nlines"]]
+    )
+
+## Why reading `text` with `delimiter` fails, or "read".
+def why_not_with(text: str, delimiter: str) -> str:
+    _ = csv.loads(text, delimiter=delimiter) except why:
+        return why.message
+    return "read"
+
 def main(stdout: Stdout):
     stdout.print(why_not("a,b\n\"never ends"))

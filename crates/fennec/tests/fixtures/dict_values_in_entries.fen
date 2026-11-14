@@ -278,8 +278,26 @@ def blocks_and_copies(stdout: Stdout):
     )
     return
 
+## A key that's a slice of a text, looked up and set with no string made for it where the dict
+## keeps one word a value.
+def sliced(stdout: Stdout):
+    text = "alpha beta alpha gamma beta alpha"
+    mut seen = dict[str, Visit]()
+    mut start = 0
+    for at in range(len(text) + 1):
+        if at == len(text) or text[at] == " ":
+            known = seen.get(text[start:at])
+            if known is None:
+                seen[text[start:at]] = Visit(cost=1, came_from=start)
+            else:
+                seen[text[start:at]] = Visit(cost=known.cost + 1, came_from=known.came_from)
+            start = at + 1
+    stdout.print(seen, len(seen))
+    return
+
 def main(stdout: Stdout):
     plain_words(stdout)
+    sliced(stdout)
     one_word(stdout)
     owning(stdout)
     nested(stdout)

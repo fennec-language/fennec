@@ -3,6 +3,7 @@
 269715 298 298 298 3
 59 1039 2078 Visit(cost=15, came_from=4) Visit(cost=30, came_from=4) False True
 0 False 30
+{"alpha": Visit(cost=3, came_from=0), "beta": Visit(cost=2, came_from=6), "gamma": Visit(cost=1, came_from=17)} 3
 {"one": Count(seen=1), "two": Count(seen=42), "three, a key long enough for a block of its own": Count(seen=3)} True Count(seen=1) 2
 2980 40 40 player number 3, with a name long enough for a block ["tag 3"] {"first": 3}
 Player(name="a longer name than before, long enough for a block", score=4, tags=["added", "again"], best={"now": 8}) 100 True

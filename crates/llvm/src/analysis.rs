@@ -1371,10 +1371,14 @@ fn find_slice_keys(function: &Function, known: &mut Analysis) {
         Operand::Int(_) => true,
         _ => false,
     };
+    // A dict that may hold its values in its entries is left out: finding a slice's bytes where
+    // they are, and adding them, are written for an entry of a key and one word.
+    let in_entries = fennec_layout::dict_values_in_place();
     let str_keyed = |dict: &Operand| match dict {
         Operand::Local(local) => matches!(
             function.locals.get(local.0).map(|local| &local.ty),
-            Some(Type::Dict(key, _)) if **key == Type::Str
+            Some(Type::Dict(key, value))
+                if **key == Type::Str && !(in_entries && matches!(**value, Type::Named(_) | Type::Generic(..)))
         ),
         _ => false,
     };

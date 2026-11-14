@@ -4237,6 +4237,193 @@ fn a_u64_to_a_power() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An optional string crosses a `shared` value's lock as what it is. `None`'s header is all zero,
+/// which reads as a block at no address, and that was made a text on the way across: a `None` put
+/// in a `shared list[str?]` read back as the empty string, by a task or by the same thread. Here
+/// `None`, the empty string, a short string and one in a block each go in and come out the same,
+/// in a list of them and inside a tuple.
+#[test]
+fn an_optional_string_that_is_none_crosses_a_lock_as_none() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("none_text_crosses", NONE_TEXT_CROSSES, NONE_TEXT_CROSSES_PRINTS)?;
+    assert!(counts_of("none_text_crosses_counts", NONE_TEXT_CROSSES)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const NONE_TEXT_CROSSES: &str = r#"# An optional string crosses a `shared` value's lock as what it is: `None` stays `None`, and the
+# empty string stays the empty string, in a list of them and inside a tuple, written by a task
+# and by the thread that reads them.
+
+def put(out: shared list[(int, str?)], pair: (int, str?)):
+    lock out as ref held:
+        held.append(pair)
+    return
+
+def put_one(out: shared list[str?], one: str?):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so `nothing` is `None`, but the compiler can't know it.
+    nothing: str? = None if len(args) < 5 else "given"
+    texts: list[str?] = [nothing, "", "short", "a text long enough for a block of its own"]
+    shared out = list[(int, str?)]()
+    shared ones = list[str?]()
+    for at in range(len(texts)):
+        one = texts[at]
+        pair = (at, one)
+        with launch(() => put(out, pair)):
+            pass
+        with launch(() => put_one(ones, one)):
+            pass
+        put(out, pair)
+        put_one(ones, one)
+    lock ones as held:
+        stdout.print(held)
+        stdout.print(held[0] == None, held[1] == None, held[2] == "", held[3] == "", held[2] == None)
+        stdout.print([held[at * 2] == texts[at] and held[at * 2 + 1] == texts[at] for at in range(len(texts))])
+    lock out as held:
+        stdout.print(held)
+        stdout.print(held[0][1] == None, held[2][1] == "", held[2][1] == None, held[1] == (0, nothing))
+    return
+"#;
+
+const NONE_TEXT_CROSSES_PRINTS: &str = r#"[None, None, "", "", "short", "short", "a text long enough for a block of its own", "a text long enough for a block of its own"]
+True True True True False
+[True, True, True, True]
+[(0, None), (0, None), (1, ""), (1, ""), (2, "short"), (2, "short"), (3, "a text long enough for a block of its own"), (3, "a text long enough for a block of its own")]
+True True False True
+"#;
+
+/// Every other way a missing value goes to another task, pinned beside the lock: a `str?`, a
+/// `list[int]?` and a `dict[str, int]?` that are `None`, in a tuple and in a struct, sent on a
+/// channel by this thread and by a task that captured them, handed to `parallel` as items and given
+/// back by it, and put in a `shared` list alone and in a struct. Each comes out `None`, and an
+/// empty string, list or dict beside it comes out empty.
+#[test]
+fn optionals_that_are_none_reach_another_task_as_none_every_way() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("none_crosses_every_way", NONE_EVERY_WAY, NONE_EVERY_WAY_PRINTS)?;
+    assert!(counts_of("none_crosses_every_way_counts", NONE_EVERY_WAY)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const NONE_EVERY_WAY: &str = r#"# Optionals that are `None` going every way a value goes to another task: a channel, a task's
+# captures, `parallel`'s items and what it gives back, and a lock, for `str?`, `list[int]?` and
+# `dict[str, int]?`, each inside a tuple, and where one can be, alone.
+
+from std.concurrent import Closed, Crashed, Sender, channel
+
+struct Maybes:
+    text: str?
+    items: list[int]?
+    counts: dict[str, int]?
+
+def echo_text(back: Sender[(int, str?)], one: (int, str?)):
+    back.send(one) except Closed():
+        pass
+
+def echo_all(back: Sender[Maybes], one: Maybes):
+    back.send(one) except Closed():
+        pass
+
+def same(one: str?) -> str?:
+    return one
+
+def is_none(one: str?) -> bool:
+    return one == None
+
+def put_list(out: shared list[list[int]?], one: list[int]?):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def put_dict(out: shared list[dict[str, int]?], one: dict[str, int]?):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def put_all(out: shared list[Maybes], one: Maybes):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def main(stdout: Stdout, args: Args) fails Crashed:
+    # No arguments are given, so each of these is `None`, but the compiler can't know it.
+    given = len(args) > 4
+    no_text: str? = "given" if given else None
+    no_list: list[int]? = [1] if given else None
+    no_dict: dict[str, int]? = {"a": 1} if given else None
+    texts: list[str?] = [no_text, "", "short", "a text long enough for a block of its own"]
+    # A channel, sent by this thread and by a task that captured the value.
+    with channel[(int, str?)](size=8) as box:
+        for at in range(len(texts)):
+            pair = (at, texts[at])
+            box.sender().send(pair) except Closed():
+                pass
+            with launch(() => echo_text(box.sender(), pair)):
+                pass
+        got = [box.receive() else (9, "closed") for at in range(8)]
+        stdout.print(got)
+        stdout.print(got[0][1] == None, got[1][1] == None, got[2][1] == None, got[2][1] == "", got[3] == (1, ""))
+    nothing = Maybes(text=no_text, items=no_list, counts=no_dict)
+    empty = Maybes(text="", items=[], counts={})
+    with channel[Maybes](size=4) as box:
+        box.sender().send(nothing) except Closed():
+            pass
+        with launch(() => echo_all(box.sender(), nothing)):
+            pass
+        box.sender().send(empty) except Closed():
+            pass
+        got = [box.receive() else empty for at in range(3)]
+        stdout.print(got)
+        stdout.print(got[0] == nothing, got[1] == nothing, got[2] == empty, got[1].items == None, got[1].counts == None, got[2].items == None)
+    # `parallel`'s items, and what it gives back.
+    back = [same(one) for one in parallel(texts)]
+    nones = [is_none(one) for one in parallel(texts)]
+    stdout.print(back, back == texts, nones)
+    # A lock, for a list and a dict that may be missing, alone and in a struct.
+    shared lists = list[list[int]?]()
+    shared dicts = list[dict[str, int]?]()
+    shared alls = list[Maybes]()
+    with launch(() => put_list(lists, no_list)):
+        pass
+    put_list(lists, no_list)
+    put_list(lists, [])
+    with launch(() => put_dict(dicts, no_dict)):
+        pass
+    put_dict(dicts, no_dict)
+    put_dict(dicts, {})
+    with launch(() => put_all(alls, nothing)):
+        pass
+    put_all(alls, nothing)
+    put_all(alls, empty)
+    lock lists as held:
+        stdout.print(held, held[0] == None, held[1] == None, held[2] == None)
+    lock dicts as held:
+        stdout.print(held, held[0] == None, held[1] == None, held[2] == None)
+    lock alls as held:
+        stdout.print(held)
+        stdout.print(held[0] == nothing, held[1] == nothing, held[2] == empty, held[0].text == None, held[2].text == None)
+    return
+"#;
+
+const NONE_EVERY_WAY_PRINTS: &str = r#"[(0, None), (0, None), (1, ""), (1, ""), (2, "short"), (2, "short"), (3, "a text long enough for a block of its own"), (3, "a text long enough for a block of its own")]
+True True False True True
+[Maybes(text=None, items=None, counts=None), Maybes(text=None, items=None, counts=None), Maybes(text="", items=[], counts={})]
+True True True True True False
+[None, "", "short", "a text long enough for a block of its own"] True [True, False, False, False]
+[None, None, []] True True False
+[None, None, {}] True True False
+[Maybes(text=None, items=None, counts=None), Maybes(text=None, items=None, counts=None), Maybes(text="", items=[], counts={})]
+True True True True False
+"#;
+
 /// A struct held in place compares, orders as a tuple and crosses a lock whatever its fields hold, as
 /// it would boxed: here a `u64` and an `f32` beside a text, which `==` refused in place while the
 /// same struct boxed, with a `dict` beside them, compared fine. A `u64` orders unsigned.
@@ -6614,17 +6801,17 @@ struct Holder:
 def whole() -> int fails Oops:
     mut holder = Holder()
     holder.push(7)
-    return holder.top()? * 10 + NOTHING.len()
+    return holder.top()? * 10 + len(NOTHING)
 
 def reads() -> int:
     mut total = 0
     for _ in range(50):
-        total += NOTHING.len()
+        total += len(NOTHING)
     return total
 
 ## Called only on the main thread, so its code counts the constant there.
 def main_reads() -> int:
-    return NOTHING.len() + NOTHING.len() + NOTHING.len()
+    return len(NOTHING) + len(NOTHING) + len(NOTHING)
 
 def in_task(stdout: Stdout) fails Oops:
     stdout.print("task:", whole()?, reads())
@@ -6635,7 +6822,7 @@ def main(stdout: Stdout) fails Oops | Crashed:
     first = whole()?
     with launch(() => in_task(stdout)?)?:
         pass
-    stdout.print("main:", before, first, "after:", whole()?, NOTHING.len())
+    stdout.print("main:", before, first, "after:", whole()?, len(NOTHING))
 "#,
         "task: 70 0\nmain: 0 70 after: 70 0\n",
     )
@@ -10615,7 +10802,7 @@ fn failing_partway() -> String {
     let lines = (0..50).fold(String::new(), |mut lines, line| {
         let _ = writeln!(
             lines,
-            "    total += checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?.len()"
+            "    total += len(checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?)"
         );
         lines
     });
@@ -10686,7 +10873,7 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
     let mut body = String::new();
     let mut total: i64 = 0;
     for line in 0..lines {
-        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + f\"{{total}}\".len()");
+        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + len(f\"{{total}}\")");
         let written = i64::try_from(total.to_string().len()).unwrap_or(0);
         total += line + written;
     }
@@ -11148,7 +11335,7 @@ fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Resul
         return Ok(());
     }
     let source = "from std.collections import Packed\n\ndef main(stdout: Stdout):\n    mut packed = Packed[int]()\n    for n in range(100):\n        packed.append([n, n + 1, n + 2])\n";
-    let building = counts_of("packed_built", &format!("{source}    stdout.print(packed.len())\n"))?;
+    let building = counts_of("packed_built", &format!("{source}    stdout.print(len(packed))\n"))?;
     let looped = counts_of(
         "packed_looped",
         &format!(
@@ -22565,6 +22752,64 @@ fn native_blocks_are_counted() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Native blocks come from the allocator the runtime they're linked with uses: mimalloc in a plain
+/// build, and the system's under either sanitizer, whose runtime leaves mimalloc out. Under the
+/// thread sanitizer they once still asked for mimalloc, and such a program didn't link. A build's
+/// LLVM text is kept and read, so this holds wherever the sanitized link itself can't run.
+#[test]
+fn native_blocks_come_from_the_allocator_each_sanitizer_links() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("native_allocator")?;
+    let program = dir.join("tree.fen");
+    std::fs::write(
+        &program,
+        format!("{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n"),
+    )?;
+    for (sanitize, wanted, not) in [
+        (None, "@mi_malloc(", "@malloc("),
+        (Some("address"), "@malloc(", "@mi_malloc("),
+        (Some("thread"), "@malloc(", "@mi_malloc("),
+    ] {
+        let home = dir.join(format!("home-{}", sanitize.unwrap_or("plain")));
+        let mut command = crate::executables::fennec_command();
+        command
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("tree").to_string_lossy()])
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_LLVM_KEEP", "1")
+            .env("FENNEC_NO_CACHE", "1")
+            .env_remove("FENNEC_SANITIZE");
+        if let Some(sanitize) = sanitize {
+            command.env("FENNEC_SANITIZE", sanitize);
+        }
+        // Linking may fail where the sanitizer's runtime isn't there; the text is what's read.
+        command.output_before(FENNEC_DEADLINE)?;
+        let mut declared = String::new();
+        let mut folders = vec![home.join("work")];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "ll") {
+                    let text = std::fs::read_to_string(&path)?;
+                    declared.extend(
+                        text.lines()
+                            .filter(|line| line.starts_with("declare"))
+                            .map(|line| format!("{line}\n")),
+                    );
+                }
+            }
+        }
+        let shown = sanitize.unwrap_or("no sanitizer");
+        assert!(declared.contains(wanted), "{shown}: native blocks don't come from {wanted}\n{declared}");
+        assert!(!declared.contains(not), "{shown}: native blocks come from {not}\n{declared}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A recursive enum holding strings, inline and in blocks of their own, is made and freed by
 /// generated code, which lets go of each string as its block goes: built and dropped over and
 /// over, read along the way, in a dev build and with `--release`.
@@ -23609,7 +23854,7 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
         let source = format!(
             "def site() -> EmbeddedFolder:\n    return embed_folder(\"site\")\n\n\
              def main(stdout: Stdout):\n    mut total = 0\n    for i in range({calls}):\n        \
-             files = site()\n        total += len(files) + (files.get(\"index.html\") else bytes()).len()\n    \
+             files = site()\n        total += len(files) + len(files.get(\"index.html\") else bytes())\n    \
              mut paths = site().keys()\n    paths.append(\"extra\")\n    \
              stdout.print(total, paths, site().keys())\n"
         );
@@ -24525,6 +24770,66 @@ def main(stdout: Stdout):
     )
 }
 
+/// An error and a struct holding a `str?`, each held as `X?` in another struct, compared, printed and
+/// handed to a task and back: one layout, so a field and a local hold each the same way, where the
+/// first layout held them in place and the finished one as blocks. The counts are as pinned: the
+/// copies and blocks made converting between the two ways are gone.
+#[test]
+fn an_error_and_a_struct_holding_a_str_optional_are_held_one_way_everywhere() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "optional_texts_one_way",
+        OPTIONAL_TEXTS_ONE_WAY,
+        "Inner(label=\"a label long enough for a block 1\", note=None) True Lost(place=\"a place long enough for a block 2\", hint=None) True\nInner(label=\"a label long enough for a block 3\", note=None) None Lost(place=\"a place long enough for a block 2\", hint=None) True True 3\n",
+    )?;
+    assert_eq!(
+        counts_of("optional_texts_one_way_counts", OPTIONAL_TEXTS_ONE_WAY)?,
+        "copies 29 copied_bytes 1968 largest_copy 88 allocations 94 allocated_bytes 6440 live 0"
+    );
+    Ok(())
+}
+
+const OPTIONAL_TEXTS_ONE_WAY: &str = r#"error Lost:
+    place: str
+    hint: str?
+
+struct Inner:
+    label: str
+    note: str?
+
+struct Holder:
+    maybe: Inner?
+    why: Lost?
+    count: int
+
+def made(n: int) -> Holder:
+    inner = Inner(label=f"a label long enough for a block {n}", note=f"a note long enough for a block {n}" if n % 2 == 0 else None)
+    lost = Lost(place=f"a place long enough for a block {n}", hint=None if n % 2 == 0 else f"a hint long enough for a block {n}")
+    return Holder(maybe=inner, why=lost, count=n)
+
+def put(out: shared list[Holder], holder: Holder):
+    lock out as ref held:
+        held.append(holder)
+    return
+
+def main(stdout: Stdout):
+    noise = [made(n + 10) for n in range(3)]
+    holders = [made(n) for n in range(4)]
+    first = holders[1].maybe else return
+    stdout.print(first, first == made(1).maybe, holders[2].why, holders[2].why == made(2).why)
+    shared out = list[Holder]()
+    for at in [3, 2]:
+        given = holders[at]
+        with launch(() => put(out, given)):
+            pass
+    lock out as held:
+        kept = held[0].maybe else return
+        stdout.print(kept, kept.note, held[1].why, held[0] == holders[3], held[1] == holders[2], len(noise))
+    return
+"#;
+
 /// `==` and `!=` on an optional string, against a string, another optional string or `None`:
 /// short and long strings, and `None`, whose header is all zero, on either side.
 #[test]
@@ -25157,6 +25462,156 @@ fn small_calls_fail_as_pinned() -> std::io::Result<()> {
     )
 }
 
+/// Texts for `float.parse`, each with the number it reads as, written as a program writes it:
+/// `inf`, `-inf` and `nan` for those, and nothing for text that isn't a float.
+fn float_rows() -> Vec<(String, Option<String>)> {
+    let padded = format!("{}2.5", " ".repeat(30));
+    let padded_long = format!("{}2.5{}", " ".repeat(50), " ".repeat(5));
+    let (inline_23, block_24) = (format!("1.{}", "0".repeat(21)), format!("1.{}", "0".repeat(22)));
+    let digits_long = format!("0.{}5", "0".repeat(45));
+    let floats = [
+        ("1.5", "1.5"),
+        (".5", "0.5"),
+        ("5.", "5.0"),
+        ("-2e3", "-2000.0"),
+        (" 1.5 ", "1.5"),
+        ("\t42\n", "42.0"),
+        ("+7", "7.0"),
+        ("0", "0.0"),
+        ("-0", "-0.0"),
+        ("1234.56", "1234.56"),
+        ("000001.250", "1.25"),
+        ("1E3", "1000.0"),
+        (padded.as_str(), "2.5"),
+        (padded_long.as_str(), "2.5"),
+        (inline_23.as_str(), "1.0"),
+        (block_24.as_str(), "1.0"),
+        (digits_long.as_str(), digits_long.as_str()),
+        ("1.5\u{a0}", "1.5"),
+        ("\u{3000}8.25", "8.25"),
+        ("inf", "inf"),
+        ("-inf", "-inf"),
+        ("Infinity", "inf"),
+        ("1e400", "inf"),
+        ("-1e400", "-inf"),
+        ("nan", "nan"),
+        ("NaN", "nan"),
+    ];
+    let others = [
+        "",
+        " ",
+        "abc",
+        "1.5x",
+        "x1.5",
+        "1,5",
+        "1 5",
+        "--1",
+        "1e",
+        ".",
+        "\u{663}.\u{665}",
+        "0x10",
+        "a text that isn't a float and is long enough to be past forty bytes",
+    ];
+    let floats = floats.iter().map(|(text, wanted)| ((*text).to_owned(), Some((*wanted).to_owned())));
+    floats.chain(others.iter().map(|text| ((*text).to_owned(), None))).collect()
+}
+
+/// What the program over `float_rows` prints: `same` for each float, and for other text the
+/// message it fails with. Each row is checked against what Rust reads, so the table can't drift
+/// from it.
+fn floats_printed(rows: &[(String, Option<String>)]) -> String {
+    use std::fmt::Write as _;
+    let mut printed = String::new();
+    for (text, wanted) in rows {
+        let read = text.trim().parse::<f64>().ok();
+        let same = match (wanted.as_deref(), read) {
+            (None, None) => true,
+            (Some("nan"), Some(read)) => read.is_nan(),
+            (Some(wanted), Some(read)) => {
+                wanted.parse::<f64>().is_ok_and(|wanted| wanted.total_cmp(&read).is_eq())
+            }
+            _ => false,
+        };
+        assert!(same, "{text:?} reads as {read:?} in Rust, and the table says {wanted:?}");
+        let count = text.chars().count();
+        if wanted.is_some() {
+            printed.push_str("same\n");
+        } else if count <= 40 {
+            let _ = writeln!(printed, "{text:?} isn't a float");
+        } else {
+            let start: String = text.chars().take(20).collect();
+            let _ = writeln!(printed, "\"{}…\" ({count} characters) isn't a float", start.escape_debug());
+        }
+    }
+    printed
+}
+
+/// A program that reads each of `float_rows` with `float.parse` and compares it with the same
+/// number written in the program, which the compiler reads.
+fn floats_program(rows: &[(String, Option<String>)]) -> String {
+    let texts: Vec<String> = rows.iter().map(|(text, _)| fennec_literal(text)).collect();
+    let kinds: Vec<String> = rows
+        .iter()
+        .map(|(_, wanted)| match wanted.as_deref() {
+            Some(special @ ("inf" | "-inf" | "nan")) => format!("\"{special}\""),
+            Some(_) => "\"number\"".to_owned(),
+            None => "\"none\"".to_owned(),
+        })
+        .collect();
+    let numbers: Vec<&str> = rows
+        .iter()
+        .map(|(_, wanted)| match wanted.as_deref() {
+            Some("inf" | "-inf" | "nan") | None => "0.0",
+            Some(number) => number,
+        })
+        .collect();
+    format!(
+        r#"def same(read: float, kind: str, wanted: float) -> bool:
+    if kind == "nan":
+        return read.is_nan()
+    if kind == "inf":
+        return read > 1.0e308
+    if kind == "-inf":
+        return read < -1.0e308
+    return kind == "number" and read == wanted
+
+def main(stdout: Stdout):
+    texts = [{}]
+    kinds = [{}]
+    wanted = [{}]
+    for at in range(len(texts)):
+        read = float.parse(texts[at]) except error:
+            stdout.print(error.message)
+            continue
+        stdout.print("same" if same(read, kind=kinds[at], wanted=wanted[at]) else f"differs: {{read}}")
+    return
+"#,
+        texts.join(", "),
+        kinds.join(", "),
+        numbers.join(", ")
+    )
+}
+
+/// `float.parse` reads what Rust's `str::parse::<f64>` reads from the trimmed text, and fails on
+/// what it fails on, saying what it was given: with and without a sign, a point and an exponent,
+/// space around it of ASCII and beyond, `inf` and `nan` however they're cased, a number too big to
+/// hold, text held inline at 23 bytes and in a block at 24, text past the 40 bytes read in place,
+/// and what isn't a float at all, digits that aren't ASCII among it. Each float read is compared
+/// with the same number written in the program, which the compiler reads. The text is read where
+/// it is, by its header, and only text that isn't a float is made a block, for its message, so
+/// no block is left after.
+#[test]
+fn a_float_read_from_text_is_what_rust_reads_at_every_edge() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let rows = float_rows();
+    let dir = folder("floats_read")?;
+    let program = dir.join("floats_read.fen");
+    std::fs::write(&program, floats_program(&rows))?;
+    prints_with_nothing_left(&dir, &program, &floats_printed(&rows), &["1"])
+}
+
 /// Numbers read from text, with what fails being a value the program holds; and lists and sets of
 /// a string's characters and a list's items.
 #[test]
@@ -25270,7 +25725,7 @@ test \"nothing runs\"(process: Process):
     problem = failure_of(() => process.run(\"echo\", [\"hello\"])?)
     assert problem is not None
     assert problem.program() == \"echo\"
-    assert process.ran().len() == 1
+    assert len(process.ran()) == 1
 ",
     )?;
     let path = program.to_string_lossy().into_owned();

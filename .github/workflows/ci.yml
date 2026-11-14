@@ -830,11 +830,6 @@ jobs:
             report: AddressSanitizer
             symbol: __asan_report_load
             options: ASAN_OPTIONS=detect_leaks=0:exitcode=86:detect_stack_use_after_return=0
-          - name: ThreadSanitizer
-            sanitize: thread
-            report: ThreadSanitizer
-            symbol: __tsan_read
-            options: TSAN_OPTIONS=halt_on_error=0:exitcode=86:report_signal_unsafe=0
     env:
       NIGHTLY: nightly-2026-10-15
       FENNEC_THREADS_RUNTIME: 1
@@ -898,6 +893,32 @@ jobs:
           echo "$runs runs under $REPORT"
           [ "$runs" -ge 40 ] || { echo "::error::only $runs runs"; failed=1; }
           exit "$failed"
+
+  # Every program that uses threads, launches tasks, or shares state, and the real programs, built
+  # and run under ThreadSanitizer at 4 and 16 threads and with every
+  # call forced onto the pool: see `tsan-programs.sh`. A report fails it, and only a runtime
+  # function named in `.github/tsan-suppressions.txt`, with why, is ever passed over.
+  tsan-programs:
+    name: Programs under ThreadSanitizer
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      NIGHTLY: nightly-2026-10-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LLVM's tools, and the nightly compiler ThreadSanitizer needs
+        run: |
+          rustup component add llvm-tools-preview
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build fennec, and the runtime libraries with ThreadSanitizer
+        run: .github/scripts/tsan-runtime.sh
+      - name: Run the programs that use threads
+        run: .github/scripts/tsan-programs.sh target/release/fennec
 
   # Parked tasks switch stacks, the one place our own code follows a pointer `unsafe`ly, so
   # their stress tests run under AddressSanitizer, told of each switch, with leaks checked,
@@ -1007,7 +1028,7 @@ jobs:
   ok:
     name: CI passed
     if: always()
-    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, server-sanitizers, lean-runtime, static, install, asan, llvm-asan, parked-sanitizers]
+    needs: [changes, lint, test, x86-mac, coverage, deny, site, workflows, budgets, bench, worker-sanitizers, tsan-programs, server-sanitizers, lean-runtime, static, install, asan, llvm-asan, parked-sanitizers]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

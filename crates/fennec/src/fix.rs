@@ -15,7 +15,9 @@ static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new
 /// `fennec fix --migrate` on one file, saying nothing.
 pub(crate) fn migrate_quietly(path: &str) {
     QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
-    let _ = migrate_forms(path);
+    if parse_fixes(path).is_ok() {
+        let _ = migrate_forms(path);
+    }
 }
 
 fn quiet() -> bool {
@@ -25,6 +27,10 @@ fn quiet() -> bool {
 /// With `migrate`, it makes only the rewrites to the forms of 2026-11-11, which the migration
 /// runs over every file at once.
 pub(crate) fn fix(path: &str, migrate: bool) -> ExitCode {
+    // The forms before 2026-11-11 that no longer parse, as `else as why:`, are put right first.
+    if let Err(code) = parse_fixes(path) {
+        return code;
+    }
     if migrate {
         return migrate_forms(path);
     }

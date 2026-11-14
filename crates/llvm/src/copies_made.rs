@@ -48,7 +48,8 @@ pub enum Why {
 #[must_use]
 pub fn copies_made(program: &Program) -> Vec<CopyMade> {
     let everything = whole(program);
-    let layouts = crate::layouts_of(program);
+    // A program whose layouts disagree doesn't build, which says why.
+    let Ok(layouts) = crate::layouts_of(program) else { return Vec::new() };
     let mut found = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
         let Some(known) = everything.analyses.get(function.name.as_str()) else { continue };

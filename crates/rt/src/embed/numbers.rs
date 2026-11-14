@@ -19,9 +19,14 @@ const SHORT: usize = 40;
 fn parsed<T: std::str::FromStr>(state: &State, text: i64) -> Option<T> {
     let block = state.heap.block(text.cast_unsigned())?;
     let length = block.get(2).and_then(|length| usize::try_from(*length).ok()).unwrap_or(0);
+    parsed_words(block.get(super::heap::TEXT_HEADER_WORDS..).unwrap_or_default(), length)
+}
+
+/// [`parsed`] for a text given as the words its bytes are in, packed eight to a word, and how
+/// many bytes there are: a block's, or an inline header's own.
+fn parsed_words<T: std::str::FromStr>(words: &[u64], length: usize) -> Option<T> {
     if length <= SHORT {
         let mut bytes = [0_u8; SHORT + 8];
-        let words = block.get(super::heap::TEXT_HEADER_WORDS..).unwrap_or_default();
         for (to, word) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words.iter().take(length.div_ceil(8))) {
             *to = word.to_le_bytes();
         }
@@ -34,7 +39,8 @@ fn parsed<T: std::str::FromStr>(state: &State, text: i64) -> Option<T> {
             return number.parse().ok();
         }
     }
-    text_of(state, text).trim().parse().ok()
+    let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).take(length).collect();
+    String::from_utf8(bytes).ok()?.trim().parse().ok()
 }
 
 /// `int(text)`, with the whitespace around the number ignored: whether it was one, with the
@@ -69,6 +75,23 @@ pub extern "C" fn parse_float(text: i64, bits: &mut i64) -> i64 {
             1
         }
         None => 0,
+    })
+}
+
+/// `fennec_parse_float_header(text, bits)`: `float(text)` for a text given as its header, inline
+/// or holding a block, so a short one is read where it is and none is made a block first. Whether
+/// it was a float, with its bits written to `bits`, as [`parse_float`] says.
+pub extern "C" fn parse_float_header(t0: u64, t1: u64, t2: u64, bits: &mut i64) -> i64 {
+    with(|state| {
+        let header = [t0, t1, t2];
+        let (words, length) = super::text::bytes_of(state, &header);
+        match parsed_words::<f64>(words, length) {
+            Some(number) => {
+                *bits = number.to_bits().cast_signed();
+                1
+            }
+            None => 0,
+        }
     })
 }
 

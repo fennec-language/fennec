@@ -82,6 +82,7 @@ impl Interp {
                 "is_nan" if args.is_empty() => Ok(Value::Bool(x.is_nan())),
                 _ => unsupported(format!("the float method `{name}`")),
             },
+            Value::Channel(end) => self.channel_method(&end, name, &args),
             other => unsupported(format!("the method `{name}` of a {}", other.kind())),
         }
     }

@@ -45,6 +45,34 @@ how values are held, copied, compared and printed, is modeled here on its own, f
   and `else` the missing value at the end of a chain.
 - A generator runs on a thread of its own, and it and its reader take turns, so a run is the same
   every time. A `with` source runs the caller's block at its `lend`.
+- A `shared` value is one cell, which every copy of it reaches. A `lock` copies what each cell
+  holds into the name it gives it, runs its block, and as the block ends writes back what each
+  `ref` name holds, unless a failure or a crash left it, which undoes the block's changes, while
+  `return`, `break` and `continue` keep them. Nothing else reaches a cell a `lock` holds, as a
+  `lock` inside another is a compile error, so that's exact; one that's reached anyway is refused,
+  as are a `yield` inside a `lock`, one `lock` taking a value twice, and printing or comparing a
+  `shared` value, which the language says nothing of.
+- The model is one thread, and what the compiled program runs side by side is run one after
+  another here only where every order it could take gives the same. `parallel(xs)` over a list or
+  a `Table` runs its rounds in the list's order: a comprehension's results are in that order, as
+  promised, and the failure passed up is the first round's that fails, by position, as the
+  runtime keeps the lowest range's. Rounds after one that fails or breaks out may run or not, so
+  they run here too, and are refused if they'd change a `shared` value or their item, or fail
+  after a `break`. A stream, `(f(x) for x in parallel(xs))`, works out each item as its reader
+  asks, and an item's failure is the reader's when it gets there. Refused, as their order isn't
+  promised: printing or the file system inside a round, a `shared` value one round changes and
+  another reaches, any `lock` in a stream's item, and a generator made outside a round, read in
+  it. A float `sum` over `parallel` adds in a tree of the runtime's own, and is refused; an int
+  `sum` is modeled where no way of splitting it can overflow. `parallel` anywhere else, over
+  anything else, and set and dict comprehensions over it are refused.
+- `with launch(task)? as sends:` runs its block first, keeping what it sends in order, and then
+  its task, which reads it and then finds its inbox closed. That's exact only where neither sees
+  the other run, so printing, the file system and a `shared` value one of them changes are refused
+  where both reach them, and so is a generator made before the task, read in it. Messages go only
+  from the block to the task: `channel[T]` is unsupported. The `with` ends as the task does, with
+  its failure, or `Crashed(why="the task crashed")` for a crash. Refused: a block that fails, which
+  cuts its task short at once, a task that ends with messages left unread, which closes its inbox
+  so that a send after that fails with `Closed` and one before it doesn't, and `stop_after=`.
 - `std.json`'s `dumps` and `loads[T]` are written here on their own, by the type the checker gave
   the value, never by running the standard library's reader and writer. A struct is an object of
   the fields it saves, under the names `@serialize(name=...)` and `names=` give them, and `@skip`

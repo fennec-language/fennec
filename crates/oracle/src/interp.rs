@@ -7,6 +7,7 @@
 mod builtins;
 mod calls;
 mod expr;
+mod json;
 mod library;
 mod methods;
 mod show;

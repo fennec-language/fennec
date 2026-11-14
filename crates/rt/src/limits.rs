@@ -333,7 +333,14 @@ pub(crate) fn narrowed(
 
 /// The methods of an `Fs` that change what's on the disk, which one narrowed with `read_only`
 /// refuses. `_sqlite_open` is let through, to open its database for reading only.
-const FS_WRITES: [&str; 6] = ["write_text", "write_bytes", "make_dir", "remove", "_create", "_finish"];
+const FS_WRITES: [&str; 5] = ["write_text", "write_bytes", "make_dir", "remove", "_create"];
+
+/// Whether `fs._finish(file)` would change what's on the disk: it puts a file that was written
+/// in its target's place, and only closes one that was read. So an `Fs` that only reads closes
+/// what it opened, as `with fs.read_only().open(path)? as file:` has to when its block ends.
+fn finishes_a_written_file(method: &str, args: &[Value]) -> bool {
+    method == "_finish" && args.first().is_some_and(crate::stdlib::fs::written)
+}
 
 fn narrowed_fs(
     limited: &Rc<Limited>,
@@ -354,6 +361,12 @@ fn narrowed_fs(
         if read_only && FS_WRITES.contains(&method) {
             let reason = format!("this Fs only reads, so it can't `{method}`");
             return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(reason)));
+        }
+        if read_only && finishes_a_written_file(method, args) {
+            let reason = "this Fs only reads, so it can't put a file that was written in its place";
+            return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(
+                reason.to_owned(),
+            )));
         }
         return call(Capability::Fs, method, args);
     };
@@ -548,6 +561,43 @@ mod tests {
                 assert!(matches!(closed, Ok(Value::Unit)), "{closed:?}");
             }
         }
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// An `Fs` that only reads closes a file it opened to read: `fs.read_only().open(path)` ends
+    /// its block by finishing the file, which was refused with every other write, so reading a
+    /// file through one failed as the block ended. Finishing a file that was written is still
+    /// refused, and leaves its target as it was.
+    #[test]
+    fn a_read_only_fs_closes_what_it_read_and_finishes_nothing_written() {
+        use super::READ_ONLY;
+        let folder = scratch("read-only-close");
+        std::fs::write(format!("{folder}/note.txt"), "kept").unwrap();
+        let whole = fs_in(&folder);
+        let reading = Rc::new(Limited {
+            capability: Capability::Fs,
+            allowed: vec![Rc::from(absolute(&folder)), Rc::from(READ_ONLY)],
+        });
+        let opened = ok(call(&reading, "_open", &[Value::str(&format!("{folder}/note.txt"))]));
+        let read = crate::stdlib::fs::real_file(handle(&opened), "read", &[], Span::default()).unwrap();
+        assert_eq!(ok(read), Value::Bytes(Rc::from(b"kept".to_vec())));
+        assert_eq!(ok(call(&reading, "_finish", std::slice::from_ref(&opened))), Value::Unit);
+        // Closed: its handle names no file any more.
+        let after = crate::stdlib::fs::real_file(handle(&opened), "read", &[], Span::default()).unwrap();
+        assert!(matches!(after, Value::Err(_)), "{after:?}");
+        // A file being written, made through the whole `Fs`, isn't put in place by the reading one.
+        let made =
+            ok(call(&whole, "_create", &[Value::str(&format!("{folder}/note.txt")), Value::Bool(false)]));
+        ok(crate::stdlib::fs::real_file(handle(&made), "write", &[Value::str("changed")], Span::default())
+            .unwrap());
+        let refused = call(&reading, "_finish", std::slice::from_ref(&made));
+        assert!(
+            crate::format::repr(&refused)
+                .contains("this Fs only reads, so it can't put a file that was written"),
+            "{refused:?}"
+        );
+        assert_eq!(std::fs::read_to_string(format!("{folder}/note.txt")).unwrap(), "kept");
+        call(&whole, "_discard", &[made]);
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

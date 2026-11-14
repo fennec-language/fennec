@@ -273,6 +273,16 @@ fn finish(file: &Value, fake: &mut FakeWrite<'_>) -> Result<(), String> {
     })
 }
 
+/// Whether a lent file is one being written, which finishing puts in its target's place. One
+/// being read is only closed, which an `Fs` that only reads may do.
+pub(crate) fn written(file: &Value) -> bool {
+    let Some(file) = handle_of(file).and_then(shared) else { return false };
+    matches!(
+        &*file.lock().unwrap_or_else(PoisonError::into_inner),
+        OpenFile::Writing { .. } | OpenFile::FakeWriting { .. }
+    )
+}
+
 /// `fs._discard(file)`: a file written is thrown away, leaving its target as it was.
 fn discard(file: &Value) {
     let Some(file) = taken(file) else { return };

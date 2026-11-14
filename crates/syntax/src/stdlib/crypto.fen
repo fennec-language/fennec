@@ -131,3 +131,27 @@ export struct Secret[T]:
     ## However it's printed, as through a generic function's `T`, it shows only that it's there.
     def str(self, ref out: StrWriter):
         out.write("Secret(hidden)")
+
+## Why a stored password can't be checked: it isn't an Argon2id hash as `hash_password` writes
+## one, or its settings are below the least that's checked or past the most worth the memory.
+export error PasswordError:
+    reason: str
+
+    def message(self) -> str:
+        return self.reason
+
+## `password` stretched with Argon2id under a fresh 16-byte salt from `entropy`, as text to keep,
+## like `$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>`. The settings are OWASP's floor, 19 MiB and
+## two passes, and they travel with the hash, so they can be raised later. In a task it's worked
+## out off the task's worker, so a burst of sign-ups doesn't stall a server.
+export def hash_password(password: Secret[str], entropy: Entropy) -> str:
+    return crypto._hash_password(password.expose_secret(), entropy.bytes(16))
+
+## Whether `password` is the one `stored` was made from by `hash_password`, compared in time that
+## doesn't depend on where they differ. A stored hash that isn't one, or whose settings are below
+## OWASP's floor or past what's worth the memory, fails with `PasswordError` before anything's
+## hashed, so a stored hash can't be used to take all the memory there is.
+export def check_password(password: Secret[str], stored: str) -> bool fails PasswordError:
+    problem = crypto._password_problem(stored)
+    if problem != "": fail PasswordError(reason=problem)
+    return crypto._check_password(password.expose_secret(), stored)

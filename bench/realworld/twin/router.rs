@@ -84,8 +84,16 @@ fn routed() -> Router<Methods> {
         add("GET", format!("/{resource}/{{id}}"), Box::new(move |params| one(resource, params, 200)));
         add("PUT", format!("/{resource}/{{id}}"), Box::new(move |params| one(resource, params, 200)));
         add("DELETE", format!("/{resource}/{{id}}"), Box::new(move |params| one(resource, params, 204)));
-        add("GET", format!("/{resource}/{{id}}/comments"), Box::new(move |params| one(resource, params, 200)));
-        add("GET", format!("/{resource}/{{id}}/comments/{{name}}"), Box::new(move |params| comment(resource, params)));
+        add(
+            "GET",
+            format!("/{resource}/{{id}}/comments"),
+            Box::new(move |params| one(resource, params, 200)),
+        );
+        add(
+            "GET",
+            format!("/{resource}/{{id}}/comments/{{name}}"),
+            Box::new(move |params| comment(resource, params)),
+        );
     }
     let mut router = Router::new();
     for (path, methods) in paths {

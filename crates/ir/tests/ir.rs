@@ -44,6 +44,32 @@ fn embedded_bytes_are_a_constant_operand_named_by_their_hash() {
     assert!(function.to_string().contains(&format!("bytes(3, {})", data.hash())), "{function}");
 }
 
+/// `array[T, N]()` still as written, as it is in the standard library's own code, which is
+/// lowered as it was checked, is the array filled with zeros that the checker writes it as in a
+/// program's own code: for an int, a float, a bool, a string, an optional, an array and a struct
+/// of defaults. It wasn't lowered at all: "it calls `array`".
+#[test]
+fn an_array_made_as_written_is_filled_with_its_zero() {
+    let source = "struct Point:\n    x = 0\n    y = 0.0\n\ndef made() -> int:\n    mut ints = array[int, 8]()\n    ints[3] = 7\n    floats = array[float, 2]()\n    flags = array[bool, 2]()\n    names = array[str, 2]()\n    maybe = array[int?, 2]()\n    grid = array[array[int, 2], 3]()\n    points = array[Point, 2]()\n    if flags[0] or names[1] != \"\" or maybe[0] is not None:\n        return -1\n    return ints[3] + grid[2][1] + points[1].x + int(floats[1])\n";
+    // As the checker left it, with nothing written in.
+    let module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check(&module).unwrap();
+    let as_checked = lower(&module, &checked);
+    assert!(as_checked.not_lowered.is_empty(), "{:?}", as_checked.not_lowered);
+    validate(&as_checked).unwrap();
+    // And the same function as a program's own code is lowered, with each zero written in.
+    let resolved = lowered(source).unwrap();
+    let made = |program: &Program| {
+        program.functions.iter().find(|function| function.name == "made").map(ToString::to_string)
+    };
+    assert!(
+        made(&resolved).is_some_and(|text| text.matches("array.new").count() >= 8),
+        "{:?}",
+        made(&resolved)
+    );
+    assert_eq!(made(&as_checked), made(&resolved));
+}
+
 #[test]
 fn operators_and_tail_values() {
     let source = "def lerp(a: float, b: float, t: float) -> float:\n    return a + (b - a) * t\n";

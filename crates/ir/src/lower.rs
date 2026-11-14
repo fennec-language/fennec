@@ -1029,6 +1029,10 @@ impl<'a> Lowering<'a> {
         if let Some(empty) = typed_empty(expr) {
             return self.expr(&empty).map(Some);
         }
+        // `array[int, 8]()` still as written, where the checker hasn't written its zero in.
+        if let Some(filled) = self.filled_array(expr, callee, args) {
+            return self.expr(&filled).map(Some);
+        }
         // `copy(value, field=new)` copies with fields changed. `replace` was its old name.
         if let ExprKind::Name(name) = &callee.kind
             && (name == "replace" || name == "copy" && args.len() > 1)

@@ -1537,6 +1537,15 @@ impl Emit<'_, '_, '_> {
         self.start_block(&label);
         for local in short {
             let kind = self.kinds.get(local).cloned().unwrap_or(Kind::Unit);
+            if self.owns_inline(LocalId(local)) {
+                let slot = self.slot(LocalId(local));
+                self.release_inline(&kind, &slot);
+                if self.checks_proofs() {
+                    let zero = self.zero_line(&kind, &slot);
+                    self.line(&zero);
+                }
+                continue;
+            }
             let (held, slot, text) = (self.temp(), self.slot(LocalId(local)), self.text_of(&kind));
             self.line(&format!("{held} = load {text}, ptr {slot}"));
             self.release_kind(&held, &kind);
@@ -3562,7 +3571,27 @@ impl Emit<'_, '_, '_> {
     /// In a build that checks proofs, ends the program unless a local thought empty is.
     fn check_empty(&mut self, at: usize, proof: &str) {
         let kind = self.kinds.get(at).cloned().unwrap_or(Kind::Unit);
-        if !self.checks_proofs() || self.text_of(&kind) != "ptr" {
+        if !self.checks_proofs() {
+            return;
+        }
+        // One held in place is empty when every word of it is zero, as letting go of it leaves it.
+        if self.owns_inline(LocalId(at)) {
+            let slot = self.slot(LocalId(at));
+            let mut any = "0".to_owned();
+            for word in 0..kind.size(self.module.layouts) / 8 {
+                let (place, held, either) = (self.temp(), self.temp(), self.temp());
+                self.line(&format!("{place} = getelementptr inbounds i8, ptr {slot}, i64 {}", word * 8));
+                self.line(&format!("{held} = load i64, ptr {place}"));
+                self.line(&format!("{either} = or i64 {any}, {held}"));
+                any = either;
+            }
+            let full = self.temp();
+            self.line(&format!("{full} = icmp ne i64 {any}, 0"));
+            let span = self.here_span();
+            self.proof_held(&full, proof, span);
+            return;
+        }
+        if self.text_of(&kind) != "ptr" {
             return;
         }
         let (held, full, slot) = (self.temp(), self.temp(), self.slot(LocalId(at)));

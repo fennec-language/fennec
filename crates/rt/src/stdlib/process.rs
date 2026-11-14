@@ -288,10 +288,6 @@ fn run_limited(
 ) -> std::io::Result<Ending> {
     use std::io::Write as _;
     use std::process::Stdio;
-    #[cfg(unix)]
-    if input.is_some() {
-        catch_broken_pipes();
-    }
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
     command.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
@@ -348,20 +344,6 @@ fn run_limited(
         Some(status) if !stopped => Ending::Done(std::process::Output { status, stdout, stderr }),
         _ => Ending::TimedOut,
     })
-}
-
-/// Keeps a program that exits without reading all its `input=` from ending this one. Writing to
-/// a pipe nothing reads any more sends SIGPIPE, which ends the whole program unless it's caught.
-/// A Rust program ignores it from the start, and so does a Fennec program the interpreter runs,
-/// but a native one has no Rust `main` to, so it's caught here, from the first program given
-/// input on: the write fails instead, and the thread writing it stops.
-#[cfg(unix)]
-fn catch_broken_pipes() {
-    static CAUGHT: std::sync::Once = std::sync::Once::new();
-    CAUGHT.call_once(|| {
-        // The flag is never read: catching the signal is the point.
-        let _ = signal_hook::flag::register(signal_hook::consts::SIGPIPE, Arc::new(AtomicBool::new(false)));
-    });
 }
 
 /// One of a program's outputs.

@@ -4133,6 +4133,50 @@ fn a_print_that_fails_stops_the_program() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A program whose standard output is closed early, as `program | head -c1` closes it, stops at
+/// the print that fails and says why, with exit code 1, rather than being ended by SIGPIPE with
+/// nothing said. A native program ignores SIGPIPE from its start, as a Rust one does, so it's the
+/// same whether or not it ever runs another program.
+#[cfg(unix)]
+#[test]
+fn a_program_piped_into_head_stops_at_the_print_that_fails() -> std::io::Result<()> {
+    use std::io::Read as _;
+    if !ready() {
+        return Ok(());
+    }
+    let source = "def main(stdout: Stdout, stderr: Stderr):\n    for i in range(10000000):\n        stdout.print(i)\n    stderr.write_line(\"went on\")?\n    return\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("piped_into_head")?;
+        let (program, executable) = (dir.join("prints.fen"), dir.join("prints"));
+        std::fs::write(&program, source)?;
+        let built = crate::executables::fennec_command()
+            .arg("build")
+            .args(how)
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let mut child = Command::new(&executable)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        // What `head -c1` does: read one byte, then close the pipe.
+        let mut first = [0_u8; 1];
+        child.stdout.take().map_or(Ok(()), |mut out| out.read_exact(&mut first))?;
+        let mut err = String::new();
+        child.stderr.take().map_or(Ok(0), |mut said| said.read_to_string(&mut err))?;
+        let status = child.wait()?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(&first, b"0", "{how:?}");
+        assert!(err.starts_with("error: couldn't write output"), "{how:?}: {err}");
+        assert!(!err.contains("went on"), "{how:?}: {err}");
+        assert_eq!(status.code(), Some(1), "{how:?}: {status:?} {err}");
+    }
+    Ok(())
+}
+
 /// A product past the check is known not to have overflowed, which lets LLVM drop later checks:
 /// one that does overflow still fails, from either sign, and one that doesn't goes on to its sums.
 /// Two ints known not negative multiply unsigned: past `i64::MAX` and past `u64::MAX` both fail.

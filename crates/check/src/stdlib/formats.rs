@@ -31,7 +31,7 @@ impl FnCx<'_> {
                 ),
                 at,
             ));
-        } else if let Err(problem) = self.holds(&format, first, (call, None), &mut Vec::new()) {
+        } else if let Err(problem) = self.holds(&format, first, (call, None, false), &mut Vec::new()) {
             self.error(problem);
         } else if format == "TOML" && mentions_none(first, &self.checker.program) {
             self.error(Diagnostic::new("TOML has no None, so leave the key out instead", call));
@@ -46,7 +46,7 @@ impl FnCx<'_> {
     /// `net.post(url, json=value)`: the value is sent as JSON, so it has to be something JSON
     /// holds. Native code writes it through its own `def serialize`, as `json.dumps` does.
     pub(crate) fn json_body(&mut self, ty: &Type, at: Span) {
-        if let Err(problem) = self.holds("JSON", ty, (at, None), &mut Vec::new()) {
+        if let Err(problem) = self.holds("JSON", ty, (at, None, false), &mut Vec::new()) {
             self.error(problem);
         } else if self.fits_interface(ty, "Serializable").is_ok() {
             self.checker.native_json_bodies.insert((at.start, at.end));
@@ -89,7 +89,7 @@ impl FnCx<'_> {
             let message =
                 format!("a TOML document is a table, so it's read as a dict or a struct, not {}", a(&ty));
             self.error(Diagnostic::new(message, index.span));
-        } else if let Err(problem) = self.holds(&format, &ty, (index.span, None), &mut Vec::new()) {
+        } else if let Err(problem) = self.holds(&format, &ty, (index.span, None, true), &mut Vec::new()) {
             self.error(problem);
         } else if self.fits_interface(&ty, "Deserializable").is_ok() {
             self.checker
@@ -106,7 +106,7 @@ impl FnCx<'_> {
         format: &str,
         map: &Type,
         (key, value): (&Type, &Type),
-        (span, field): (Span, Option<&str>),
+        (span, field, loading): (Span, Option<&str>, bool),
         seen: &mut Vec<String>,
     ) -> Result<(), Diagnostic> {
         let as_object = matches!(key, Type::Str | Type::Int | Type::Unknown);
@@ -115,9 +115,9 @@ impl FnCx<'_> {
                 .with_help(format!("{format} tables have text keys: use `str` or `int` keys")));
         }
         if !as_object {
-            self.holds(format, key, (span, field), seen)?;
+            self.holds(format, key, (span, field, loading), seen)?;
         }
-        self.holds(format, value, (span, field), seen)
+        self.holds(format, value, (span, field, loading), seen)
     }
 
     /// Whether `name` is a standard library collection written in its natural shape.
@@ -149,13 +149,14 @@ impl FnCx<'_> {
     }
 
     /// Whether a format can hold values of a type. `field` is the struct field the value is
-    /// in, if any, as `Type.field`, which a message names. `seen` are the structs being looked
-    /// at, so a struct that holds itself is looked at once.
+    /// in, if any, as `Type.field`, which a message names. `loading` says it's being read, where
+    /// a `Secret` may go though it's never written. `seen` are the structs being looked at, so a
+    /// struct that holds itself is looked at once.
     fn holds(
         &mut self,
         format: &str,
         ty: &Type,
-        (span, field): (Span, Option<&str>),
+        (span, field, loading): (Span, Option<&str>, bool),
         seen: &mut Vec<String>,
     ) -> Result<(), Diagnostic> {
         let cannot = |what: &Type| Diagnostic::new(cant_hold(format, field, &article(&what.kind())), span);
@@ -180,18 +181,27 @@ impl FnCx<'_> {
             Type::Union(members) if !members.iter().all(crate::saving::tested_by_name) => Err(cannot(ty)),
             Type::Dict(key, _) if crate::saving::holds_union(key) => Err(cannot(ty)),
             Type::List(item) | Type::Optional(item) | Type::Table(item) => {
-                self.holds(format, item, (span, field), seen)
+                self.holds(format, item, (span, field, loading), seen)
             }
-            Type::Dict(key, value) => self.holds_map(format, ty, (key, value), (span, field), seen),
+            Type::Dict(key, value) => self.holds_map(format, ty, (key, value), (span, field, loading), seen),
             Type::Tuple(items) | Type::Union(items) => {
-                items.iter().try_for_each(|item| self.holds(format, item, (span, field), seen))
+                items.iter().try_for_each(|item| self.holds(format, item, (span, field, loading), seen))
             }
             Type::Result(..) => Err(unhandled_result(span)),
             // The standard library's collections are written in their natural shape.
             Type::Generic(name, args) if self.has_shape(name) => match (name.as_str(), args.as_slice()) {
-                ("SortedMap", [key, value]) => self.holds_map(format, ty, (key, value), (span, field), seen),
-                (_, args) => args.iter().try_for_each(|item| self.holds(format, item, (span, field), seen)),
+                ("SortedMap", [key, value]) => {
+                    self.holds_map(format, ty, (key, value), (span, field, loading), seen)
+                }
+                (_, args) => {
+                    args.iter().try_for_each(|item| self.holds(format, item, (span, field, loading), seen))
+                }
             },
+            // A `Secret` loads as what it holds, though it's never saved.
+            Type::Named(name) | Type::Generic(name, _) if loading && crate::saving::loaded_only(name) => ty
+                .type_args()
+                .iter()
+                .try_for_each(|arg| self.holds(format, arg, (span, field, loading), seen)),
             Type::Named(name) | Type::Generic(name, _)
                 if let Some((what, instead)) = crate::saving::never_saved(name) =>
             {
@@ -221,7 +231,7 @@ impl FnCx<'_> {
                         Some(case) => format!("{name}.{case}.{own}"),
                         None => format!("{name}.{own}"),
                     };
-                    self.holds(format, &field_type, (span, Some(&named)), seen)?;
+                    self.holds(format, &field_type, (span, Some(&named), loading), seen)?;
                 }
                 Ok(())
             }

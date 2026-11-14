@@ -92,6 +92,34 @@ pub extern "C" fn fail(code: i64, start: i64, end: i64) {
 /// The most places a float can have digits at.
 const MOST_PLACES: i64 = 1100;
 
+/// The powers of ten a float holds exactly, ten to 0 up to ten to 22, written out. They aren't
+/// worked out with `powi`: Rust leaves its precision to the platform, and with a scale one bit
+/// off, `round(1.2345, 1)` is 1.2000000000000002.
+const EXACT_TENS: [f64; 23] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18,
+    1e19, 1e20, 1e21, 1e22,
+];
+
+/// The most a power of ten can be and still be a float.
+const MOST_TENS: usize = 308;
+
+/// Ten to `power` as the float nearest it, the same bits wherever the program runs, or nothing
+/// past the last one a float can be. Up to 22 it's exact, from the table. Past that it's read
+/// from its digits, once: reading digits gives the nearest float on every platform, which
+/// multiplying tens together doesn't.
+fn ten_to(power: usize) -> Option<f64> {
+    static PAST_EXACT: std::sync::OnceLock<Vec<f64>> = std::sync::OnceLock::new();
+    if let Some(ten) = EXACT_TENS.get(power) {
+        return Some(*ten);
+    }
+    let past = PAST_EXACT.get_or_init(|| {
+        (EXACT_TENS.len()..=MOST_TENS)
+            .map(|power| format!("1e{power}").parse().unwrap_or(f64::INFINITY))
+            .collect()
+    });
+    past.get(power - EXACT_TENS.len()).copied()
+}
+
 /// `round(x, places)`, by the number `x` really is: 1.115 is a little under it, so it rounds down.
 /// Past every digit `x` has, it's `x`.
 pub extern "C" fn round_places(x: f64, places: i64) -> f64 {
@@ -106,8 +134,7 @@ pub extern "C" fn round_places(x: f64, places: i64) -> f64 {
     }
     // Nowhere near a tie, multiplying can't change which way it rounds, and both the power of ten
     // and the rounded number are exact, so dividing gives the nearest float to the answer.
-    if places <= 22 {
-        let scale = 10_f64.powi(i32::try_from(places).unwrap_or(0));
+    if let Some(scale) = usize::try_from(places).ok().and_then(|places| EXACT_TENS.get(places)).copied() {
         let scaled = x * scale;
         if scaled.abs() < 4_503_599_627_370_496.0 && (scaled.fract().abs() - 0.5).abs() > 1e-6 {
             return scaled.round_ties_even() / scale;
@@ -119,12 +146,9 @@ pub extern "C" fn round_places(x: f64, places: i64) -> f64 {
 
 /// `round(x, places)` for a negative `places`: to tens, hundreds and so on.
 fn round_to_tens(x: f64, places: i64) -> f64 {
-    let power = places.checked_neg().and_then(|power| i32::try_from(power).ok());
-    match power.filter(|power| *power <= 308) {
-        Some(power) => {
-            let scale = 10_f64.powi(power);
-            (x / scale).round_ties_even() * scale
-        }
+    let power = places.checked_neg().and_then(|power| usize::try_from(power).ok());
+    match power.and_then(ten_to) {
+        Some(scale) => (x / scale).round_ties_even() * scale,
         None => 0.0_f64.copysign(x),
     }
 }
@@ -159,7 +183,76 @@ pub extern "C" fn log(x: f64) -> f64 {
 
 #[cfg(test)]
 mod round_tests {
-    use super::round_places;
+    use super::{EXACT_TENS, MOST_TENS, round_places, ten_to};
+
+    /// Ten to `power` read from its digits, which gives the nearest float on every platform.
+    fn read(power: usize) -> f64 {
+        format!("1e{power}").parse().unwrap_or(f64::NAN)
+    }
+
+    #[test]
+    fn the_table_holds_each_power_of_ten_exactly() {
+        assert_eq!(EXACT_TENS.len(), 23);
+        for (power, ten) in EXACT_TENS.iter().enumerate() {
+            // Written out in full it's a one and `power` zeros: nothing was rounded away.
+            assert_eq!(format!("{ten:.0}"), format!("1{}", "0".repeat(power)), "ten to {power}");
+            assert_eq!(ten.to_bits(), read(power).to_bits(), "ten to {power}");
+        }
+        // The next one isn't a float: the table ends where exactness does.
+        assert_ne!(format!("{:.0}", read(23)), format!("1{}", "0".repeat(23)));
+    }
+
+    #[test]
+    fn every_power_of_ten_is_the_float_nearest_it() {
+        for power in 0..=MOST_TENS {
+            let ten = ten_to(power).unwrap_or(f64::NAN);
+            assert_eq!(ten.to_bits(), read(power).to_bits(), "ten to {power}");
+            assert!(ten.is_finite(), "ten to {power}");
+        }
+        assert_eq!(ten_to(MOST_TENS + 1), None);
+        assert_eq!(ten_to(usize::MAX), None);
+    }
+
+    #[test]
+    fn rounding_at_every_place_is_the_number_written_to_that_many_places() {
+        let numbers = [
+            1.2345,
+            1.115,
+            0.125,
+            2.5,
+            123_456.789_012_345,
+            9.999_999_999,
+            0.000_012_345_678_9,
+            1.0 / 3.0,
+            0.1 + 0.2,
+            987_654_321.123_456_7,
+            5e-324,
+            4_503_599_627_370_497.5,
+        ];
+        for number in numbers {
+            for sign in [1.0, -1.0] {
+                let x = sign * number;
+                for places in 0..=22_usize {
+                    let written: f64 = format!("{x:.places$}").parse().unwrap_or(f64::NAN);
+                    let rounded = round_places(x, i64::try_from(places).unwrap_or(0));
+                    assert_eq!(rounded.to_bits(), written.to_bits(), "round({x}, {places})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rounding_to_every_power_of_ten() {
+        for power in 1..=MOST_TENS {
+            let ten = read(power);
+            let places = -i64::try_from(power).unwrap_or(0);
+            assert_eq!(round_places(ten, places).to_bits(), ten.to_bits(), "round(1e{power}, {places})");
+            assert_eq!(round_places(0.6 * ten, places).to_bits(), ten.to_bits(), "0.6e{power}");
+            assert_eq!(round_places(-0.6 * ten, places).to_bits(), (-ten).to_bits(), "-0.6e{power}");
+            assert_eq!(round_places(0.4 * ten, places).to_bits(), 0.0_f64.to_bits(), "0.4e{power}");
+            assert_eq!(round_places(-0.4 * ten, places).to_bits(), (-0.0_f64).to_bits(), "-0.4e{power}");
+        }
+    }
 
     #[test]
     fn rounding_goes_by_the_number_a_float_really_is() {

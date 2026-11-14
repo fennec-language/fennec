@@ -1,0 +1,7 @@
+error: JSON can't hold `Page.body`, which is an `Html`
+ --> examples/errors/html_loaded.fen:9:23
+  |
+9 |     page = json.loads[Page]("{\"title\": \"t\", \"body\": \"<p>x</p>\"}") except why:
+  |                       ^^^^
+  |
+  = help: a page loaded from saved text wasn't made by `html.render`: save what it's made from, and render it again

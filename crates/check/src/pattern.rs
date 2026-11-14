@@ -42,8 +42,10 @@ impl FnCx<'_> {
         let before = self.snapshot();
         let mut paths = Vec::new();
         let mut values = Vec::new();
-        // The errors earlier cases took all of, which a later `case Err(name)` can't hold.
+        // The errors earlier cases took all of, which a later `case Err(name)` or `case _:` can't
+        // hold, and the cases taken of each error with cases, which is taken once all of its are.
         let mut taken: Vec<String> = Vec::new();
+        let mut cases_taken: Vec<(String, String)> = Vec::new();
         // The members of a union earlier cases took all of, which a later `case _:` doesn't hold.
         let mut members_taken: Vec<Type> = Vec::new();
         // One `case Ok` or `case Err` a program wrote is enough to say they're gone.
@@ -61,14 +63,20 @@ impl FnCx<'_> {
             self.narrow_to_case(subject, &arm.pattern);
             self.note_undotted_case(&arm.pattern, &ty, arm.span);
             let left = self.without_taken(&ty, &taken);
-            self.bind_pattern(&arm.pattern, &left, arm.span);
+            // A case naming what an earlier one took is matched against the whole type, as before.
+            let names_taken = alternatives(&arm.pattern).iter().any(|pattern| {
+                matches!(pattern, Pattern::Variant { name, dotted: false, .. } if taken.contains(name))
+            });
+            self.bind_pattern(&arm.pattern, if names_taken { &ty } else { &left }, arm.span);
             self.narrow_to_left(subject, arm, (&ty, &left));
             self.narrow_to_members_left(subject, arm, &ty, &members_taken);
             if arm.guard.is_none() {
-                taken.extend(self.error_taken(&arm.pattern, &ty));
                 for pattern in alternatives(&arm.pattern) {
+                    taken.extend(self.error_taken(pattern, &ty));
+                    cases_taken.extend(self.case_taken(pattern, &ty));
                     members_taken.extend(self.member_taken(pattern, &ty));
                 }
+                taken.extend(self.every_case_taken(&ty, &cases_taken, &taken));
             }
             if let Some(guard) = &arm.guard {
                 self.guard(guard);
@@ -146,14 +154,16 @@ impl FnCx<'_> {
         }
     }
 
-    /// `case _:` after cases that took all of every error of a union but one: the subject holds
-    /// that one inside it, as a `case name:` there would, so `except why:`'s `case _:` reads
-    /// `why` as the error left.
+    /// `case _:` after cases that took all of some errors of a union: the subject holds what's left
+    /// inside it, as a `case name:` there would, so `except why:`'s `case _: fail why` passes up only
+    /// what the earlier cases left.
     fn narrow_to_left(&mut self, subject: &Expr, arm: &MatchArm, (ty, left): (&Type, &Type)) {
         if !matches!(arm.pattern, Pattern::Wildcard) || arm.guard.is_some() {
             return;
         }
-        let (Type::Named(_), Type::Errors(_)) = (left, self.checker.settled(ty)) else { return };
+        let (Type::Named(_) | Type::Errors(_), Type::Errors(_)) = (left, self.checker.settled(ty)) else {
+            return;
+        };
         // The arm's end puts back what the subject held before it.
         if let Some(path) = crate::stmt::path(subject)
             && let Some(binding) = self.binding_mut(&path)
@@ -240,8 +250,12 @@ impl FnCx<'_> {
         let left = |members: &[String]| -> Option<Type> {
             let left: Vec<String> =
                 members.iter().filter(|member| !taken.contains(member)).cloned().collect();
-            let [one] = left.as_slice() else { return None };
-            Some(Type::Named(one.clone()))
+            match left.as_slice() {
+                [] => None,
+                [one] => Some(Type::Named(one.clone())),
+                _ if left.len() < members.len() => Some(Type::Errors(left)),
+                _ => None,
+            }
         };
         match &settled {
             Type::Result(value, error) => match error.as_ref() {
@@ -282,6 +296,46 @@ impl FnCx<'_> {
             }
             _ => None,
         }
+    }
+
+    /// The case of an error with cases that a `case .Closed():` takes all of, on what failed one of
+    /// several ways: the error whose case it is, and the case, with nothing but names and `_` inside.
+    fn case_taken(&self, pattern: &Pattern, subject: &Type) -> Option<(String, String)> {
+        let Type::Errors(members) = self.checker.settled(subject) else { return None };
+        let Pattern::Variant { name: case, dotted: true, args, .. } = pattern else { return None };
+        if !args.iter().all(always_matches) {
+            return None;
+        }
+        let mut owners = members.iter().filter(|member| {
+            self.checker
+                .program
+                .type_info(member)
+                .is_some_and(|info| info.def.cases.iter().any(|found| found.name == *case))
+        });
+        let (Some(owner), None) = (owners.next(), owners.next()) else { return None };
+        Some((owner.clone(), case.clone()))
+    }
+
+    /// The errors with cases every one of whose cases has been taken, and that aren't taken yet.
+    fn every_case_taken(
+        &self,
+        subject: &Type,
+        cases_taken: &[(String, String)],
+        taken: &[String],
+    ) -> Vec<String> {
+        let Type::Errors(members) = self.checker.settled(subject) else { return Vec::new() };
+        members
+            .into_iter()
+            .filter(|member| !taken.contains(member))
+            .filter(|member| {
+                self.checker.program.type_info(member).is_some_and(|info| {
+                    !info.def.cases.is_empty()
+                        && info.def.cases.iter().all(|case| {
+                            cases_taken.iter().any(|(owner, name)| owner == member && *name == case.name)
+                        })
+                })
+            })
+            .collect()
     }
 
     /// Notes a `case` that names a case of the enum or error being matched without its dot. On a

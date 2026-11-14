@@ -898,7 +898,11 @@ pub(crate) fn native_net(name: &str, args: &[Value], span: Span) -> Result<Value
         let (plain, last) = args.split_at(args.len().saturating_sub(named.len()));
         let given: Vec<(&str, &Value)> = named.iter().copied().zip(last).collect();
         let request = request_of(method, plain, &given, span)?;
-        return Ok(done_or_failed(http::send(&request).map(answer_value)));
+        // A task parks while its request waits, on a thread that may block, as `connect` does,
+        // rather than holding its worker: a server in the same program may need that worker to
+        // answer it.
+        let sent = if task_parks() { off_thread(move || http::send(&request)) } else { http::send(&request) };
+        return Ok(done_or_failed(sent.map(answer_value)));
     }
     let (method, args, timeout) = timed(name, args, span)?;
     real_net(&method, &args, timeout, span)
@@ -1836,17 +1840,26 @@ fn send_to(handle: i64, data: &[u8], address: &str) -> Result<(), Failure> {
     udp.socket.send_to(data, target).map(|_| ()).map_err(|error| Failure::of(&error, None))
 }
 
-/// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends.
+/// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends,
+/// and a server being served stops taking connections, so the loop over it ends.
 fn close(handle: i64) {
-    if let Some(Socket::Stream(stream)) = open(|open| open.remove(&handle)) {
+    let closed = open(|open| open.remove(&handle));
+    if let Some(Socket::Stream(stream)) = &closed {
         if stream.served && task_parks() {
-            let lingering = Arc::clone(&stream);
+            let lingering = Arc::clone(stream);
             off_thread(move || linger(&lingering.socket));
         } else if stream.served {
             linger(&stream.socket);
         }
         // It may be closed already from the other side, which is what closing wanted.
         let _ = stream.socket.shutdown(Shutdown::Both);
+    }
+    // A server that's being served isn't among the open sockets: its workers have its listener.
+    #[cfg(any(test, feature = "threads"))]
+    {
+        if closed.is_none() {
+            let _ = crate::embed::serve::close_served(handle);
+        }
     }
 }
 

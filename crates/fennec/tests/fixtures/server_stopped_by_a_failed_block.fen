@@ -1,0 +1,29 @@
+# For the test that a server can be stopped from inside its program: failing out of the block
+# that launched the task serving stops the task, and its server with it.
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+error Finished:
+    served: int
+
+def respond(request: Request) -> Response:
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server):
+    server.serve(respond)
+
+# Serves while the client asks, then fails out of the server's block to end it.
+def run(net: Net, server: Server, stdout: Stdout) fails NetError | Crashed | Finished:
+    with launch(() => serving(server))?:
+        got = net.get(f"http://127.0.0.1:{server.port}/den")?
+        stdout.print(got.status, got.text())
+        fail Finished(served=1)
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed | Finished:
+    with net.listen(0)? as server:
+        run(net, server=server, stdout=stdout) except why:
+            case Finished(served):
+                stdout.print("finished after", served)
+            case _:
+                fail why
+    stdout.print("stopped")

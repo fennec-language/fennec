@@ -247,6 +247,7 @@ export! {
     fennec_lock_save(a0: i64, a1: i64, a2: i64, a3: i64) => rollback::save(a0, a1, a2, a3);
     fennec_lock_save_text(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) => rollback::save_text(a0, a1, a2, a3, a4);
     fennec_lock_save_ref(a0: i64, a1: i64, a2: i64) => rollback::save_ref(a0, a1, a2);
+    fennec_lock_save_entry(a0: i64, a1: i64) => dicts::save_entry(a0, a1);
     fennec_lock_to_change(a0: i64) -> i64 => rollback::to_change(a0);
     fennec_lock_kept() => rollback::kept();
     fennec_lock_undo() => rollback::undo();

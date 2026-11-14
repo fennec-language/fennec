@@ -11486,6 +11486,34 @@ fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io
     prints_with_nothing_left(&dir, &program, "3065\n3065\n4400\n8\n", &["1", "4"])
 }
 
+/// A task stopped while it waits in a call to the runtime leaves nothing behind. The call here is a
+/// read with `timeout=`, whose `Duration` is a block made for the call: native code holds one
+/// owner of it and the runtime's temporaries another. The task is stopped by its launcher leaving
+/// through a failure, from `main` and from inside a task.
+///
+/// Both owners used to be left. Native code let go of what it made for a call's arguments only
+/// after it had looked at whether the call failed, and a stopped task leaves there. And a task's
+/// leftover temporaries were dropped after its blocks were handed over, when letting go of what
+/// they held reached nothing. A pool's reset of a Postgres connection, cut short as its pool
+/// ended, left the `Duration` this way.
+///
+/// `list.remove` had the same order: an item that isn't there stops its task, which left the block
+/// made to pass the item. It's taken out in a task here, whose crash its launcher handles.
+#[test]
+fn a_task_stopped_in_a_call_to_the_runtime_lets_go_of_what_the_call_was_given() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stopped_in_a_wait")?;
+    let program = dir.join("stopped_in_a_wait.fen");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stopped_in_a_wait.fen"),
+        &program,
+    )?;
+    let stopped = "Refused(why=\"leaving this way stops the task\")\n";
+    prints_with_nothing_left(&dir, &program, &format!("{}1\n", stopped.repeat(2)), &["1", "4"])
+}
+
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what
 /// changes it next finds the list with one owner: a `ref` function changing the items, then a
 /// plain loop reading them, round after round, copies nothing.
@@ -16432,6 +16460,84 @@ Pair(left=1, right="one")
 Holder(item=9)
 Holder(item=3) Holder(item="x") Holder(item=3) Holder(item=2.5) Holder(item="x")
 [1, 2] [[1, 2]] Holder(item=[1, 2])
+"#;
+
+/// A generic enum is shown the same way, by the name it's written with: `Choice.Picked(value=7)`,
+/// never `Choice[int].Picked(value=7)`. Its cases hold an int, a string, a float and another
+/// generic enum, one has two type parameters, and one case holds nothing; alone, inside a generic
+/// struct, a list, a dict, a tuple and an optional; through `print`, an f-string, `str()` and a
+/// failed `assert`.
+#[test]
+fn a_generic_enum_is_shown_without_its_type_arguments() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("generic_enum_shown", GENERIC_ENUM_SHOWN, GENERIC_ENUM_SHOWN_PRINTS)?;
+    let dir = folder("generic_enum_assert")?;
+    let (program, executable) = (dir.join("generic_enum_assert.fen"), dir.join("generic_enum_assert"));
+    std::fs::write(&program, GENERIC_ENUM_ASSERT)?;
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!((printed.as_str(), code), ("", Some(1)), "{said}");
+    assert!(
+        said.contains("the left side is Choice.Picked(value=3) and the right side is Choice.Picked(value=4)"),
+        "{said}"
+    );
+    Ok(())
+}
+
+const GENERIC_ENUM_SHOWN: &str = r#"enum Choice[T]:
+    Picked(value: T)
+    Nothing
+
+enum Either[A, B]:
+    Left(value: A)
+    Right(value: B)
+
+struct Holder[T]:
+    item: T
+
+def none_of_ints() -> Choice[int]:
+    return .Nothing
+
+def main(stdout: Stdout):
+    number = Choice.Picked(value=7)
+    text = Choice.Picked(value="fox")
+    ratio = Choice.Picked(value=2.5)
+    nothing = none_of_ints()
+    stdout.print(number, text, ratio, nothing)
+    stdout.print(Choice.Picked(value=Choice.Picked(value=4)), Holder(item=Choice.Picked(value=1)))
+    left: Either[int, str] = Either[int, str].Left(value=3)
+    right: Either[int, str] = Either[int, str].Right(value="a text long enough for a block of its own")
+    stdout.print(left, right)
+    stdout.print([number, nothing], {"a": number}, (number, 2))
+    maybe: Choice[int]? = number
+    stdout.print(maybe)
+    stdout.print(f"{number} {text} {nothing}", str(number), str(text), str(nothing))
+    return
+"#;
+
+const GENERIC_ENUM_SHOWN_PRINTS: &str = r#"Choice.Picked(value=7) Choice.Picked(value="fox") Choice.Picked(value=2.5) Choice.Nothing
+Choice.Picked(value=Choice.Picked(value=4)) Holder(item=Choice.Picked(value=1))
+Either.Left(value=3) Either.Right(value="a text long enough for a block of its own")
+[Choice.Picked(value=7), Choice.Nothing] {"a": Choice.Picked(value=7)} (Choice.Picked(value=7), 2)
+Choice.Picked(value=7)
+Choice.Picked(value=7) Choice.Picked(value="fox") Choice.Nothing Choice.Picked(value=7) Choice.Picked(value="fox") Choice.Nothing
+"#;
+
+const GENERIC_ENUM_ASSERT: &str = r#"enum Choice[T]:
+    Picked(value: T)
+    Nothing
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    assert Choice.Picked(value=3 + shift) == Choice.Picked(value=4)
+    stdout.print("not reached")
+    return
 "#;
 
 /// A failed `assert` says both sides the same way, with no type arguments.

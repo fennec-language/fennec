@@ -977,8 +977,10 @@ impl Emit<'_, '_, '_> {
         self.declare("declare void @fennec_list_remove(ptr, i64, i64, i64) nounwind");
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         self.line(&format!("call void @fennec_list_remove(ptr {owned}, i64 {word}, i64 {from}, i64 {to})"));
-        self.leave_if_failed();
+        // What was made to pass the item goes before the failure is looked at: an item that isn't
+        // there leaves here, and the runtime only compared with it.
         self.let_go_of_passed(passed);
+        self.leave_if_failed();
         Ok(())
     }
 

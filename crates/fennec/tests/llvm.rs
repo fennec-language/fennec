@@ -11408,6 +11408,9 @@ fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io
 /// leftover temporaries were dropped after its blocks were handed over, when letting go of what
 /// they held reached nothing. A pool's reset of a Postgres connection, cut short as its pool
 /// ended, left the `Duration` this way.
+///
+/// `list.remove` had the same order: an item that isn't there stops its task, which left the block
+/// made to pass the item. It's taken out in a task here, whose crash its launcher handles.
 #[test]
 fn a_task_stopped_in_a_call_to_the_runtime_lets_go_of_what_the_call_was_given() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -11420,7 +11423,7 @@ fn a_task_stopped_in_a_call_to_the_runtime_lets_go_of_what_the_call_was_given() 
         &program,
     )?;
     let stopped = "Refused(why=\"leaving this way stops the task\")\n";
-    prints_with_nothing_left(&dir, &program, &stopped.repeat(2), &["1", "4"])
+    prints_with_nothing_left(&dir, &program, &format!("{}1\n", stopped.repeat(2)), &["1", "4"])
 }
 
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what

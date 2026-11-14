@@ -2,6 +2,9 @@
 # a read with `timeout=`, whose `Duration` is a block made for the call. The task is stopped by
 # its launcher leaving the block that launched it through a failure. It's done from `main` and
 # from inside a task, where the stopped task's launcher is a task too.
+#
+# And a call that fails by itself does the same: `remove` of an item a list doesn't have stops
+# its task, and the block made to pass the item goes all the same.
 from std.concurrent import Channel, Closed, Crashed, channel
 from std.net import NetError
 
@@ -38,9 +41,33 @@ def inside(net: Net, out: Channel[str]):
         return
     return
 
+struct Spot:
+    at: int
+    name: str
+
+def takes_out() -> int:
+    mut spots = [Spot(at=1, name="a name long enough for a block of its own")]
+    spots.remove(Spot(at=2, name="another name long enough for a block"))
+    return len(spots)
+
+def taking(out: Channel[int]):
+    out.send(takes_out()) except Closed():
+        return
+    return
+
+def one_taking() fails Crashed:
+    with channel[int](size=1) as out:
+        with launch(() => taking(out=out))?:
+            pass
+    return
+
 def main(stdout: Stdout, net: Net) fails Closed | Crashed:
     stdout.print(once(net))
     with channel[str](size=1) as out:
         with launch(() => inside(net, out=out))?:
             stdout.print(out.receive() else "nothing")
+    mut crashed = 0
+    one_taking() except Crashed():
+        crashed += 1
+    stdout.print(crashed)
     return

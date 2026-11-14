@@ -194,7 +194,7 @@ mod real {
             Place::Checked { path, .. } => (path, flags | OpenFlags::SQLITE_OPEN_NOFOLLOW),
             Place::ReadOnly(_) => return Err(rusqlite::Error::InvalidPath(path_of(place).into())),
         };
-        let mut conn = Connection::open_with_flags(path, flags)?;
+        let mut conn = Connection::open_with_flags(&*as_a_path(path), flags)?;
         kept_to_its_file(&mut conn)?;
         #[cfg(any(unix, windows))]
         if let Place::Checked { path, file } = place
@@ -222,6 +222,14 @@ mod real {
         }
         conn.busy_timeout(Duration::ZERO)?;
         Ok(conn)
+    }
+
+    /// `path` as SQLite takes it for the file it names. SQLite here is built to read a name
+    /// starting `file:` as a URI, whose `?mode=memory` would keep nothing on the disk and whose
+    /// `?vfs=unix-none` would turn its locks off, so such a path, which is a file in the current
+    /// folder, is given as `./file:...`. Only a name starting with exactly `file:` is read so.
+    pub(in crate::stdlib::sqlite) fn as_a_path(path: &str) -> std::borrow::Cow<'_, str> {
+        if path.starts_with("file:") { format!("./{path}").into() } else { path.into() }
     }
 
     /// The pragmas `std.sqlite` itself runs, the only ones a connection takes.
@@ -579,6 +587,8 @@ mod real {
             rusqlite::Error::MultipleStatement => {
                 failed("Failed", "a query is one statement: give each its own `execute`")
             }
+            // Its message is this module's own, without the name rusqlite gives the error.
+            rusqlite::Error::InvalidParameterName(message) => failed("Failed", message),
             _ if busy(err) => failed(
                 "Busy",
                 &format!(
@@ -588,6 +598,11 @@ mod real {
             ),
             _ => match err.sqlite_error_code() {
                 Some(ErrorCode::ConstraintViolation) => failed("Constraint", &err.to_string()),
+                // What `allowed` refuses, which SQLite says only as "authorization denied".
+                Some(ErrorCode::AuthorizationForStatementDenied) => failed(
+                    "Failed",
+                    "this query asks for more than ordinary queries on the database's own file, like `ATTACH`, `VACUUM INTO` or a pragma, which a database here refuses",
+                ),
                 _ => failed("Failed", &err.to_string()),
             },
         }

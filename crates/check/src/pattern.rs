@@ -44,6 +44,8 @@ impl FnCx<'_> {
         let mut values = Vec::new();
         // The errors earlier cases took all of, which a later `case Err(name)` can't hold.
         let mut taken: Vec<String> = Vec::new();
+        // The members of a union earlier cases took all of, which a later `case _:` doesn't hold.
+        let mut members_taken: Vec<Type> = Vec::new();
         // One `case Ok` or `case Err` a program wrote is enough to say they're gone.
         let gone = arms.iter().find(|arm| {
             crate::gone::written_by_hand(arm.span)
@@ -61,8 +63,12 @@ impl FnCx<'_> {
             let left = self.without_taken(&ty, &taken);
             self.bind_pattern(&arm.pattern, &left, arm.span);
             self.narrow_to_left(subject, arm, (&ty, &left));
+            self.narrow_to_members_left(subject, arm, &ty, &members_taken);
             if arm.guard.is_none() {
                 taken.extend(self.error_taken(&arm.pattern, &ty));
+                for pattern in alternatives(&arm.pattern) {
+                    members_taken.extend(self.member_taken(pattern, &ty));
+                }
             }
             if let Some(guard) = &arm.guard {
                 self.guard(guard);
@@ -96,6 +102,39 @@ impl FnCx<'_> {
             );
         }
         value
+    }
+
+    /// The member of a union a `case Table(rows):` takes all of: one named by its type, with
+    /// nothing but names and `_` inside.
+    fn member_taken(&self, pattern: &Pattern, subject: &Type) -> Option<Type> {
+        let Type::Union(members) = self.checker.settled(subject) else { return None };
+        let Pattern::Variant { name, dotted: false, args, .. } = pattern else { return None };
+        if !args.iter().all(always_matches) {
+            return None;
+        }
+        members.into_iter().find(|member| member.type_name() == Some(name.as_str()))
+    }
+
+    /// `case _:` after cases that took all of some members of a union: the subject holds what's
+    /// left inside it, as `is` narrows it, so `case _:` after `case Table(rows):` on a
+    /// `Table | (int) -> str` can call it.
+    fn narrow_to_members_left(&mut self, subject: &Expr, arm: &MatchArm, ty: &Type, taken: &[Type]) {
+        if !matches!(arm.pattern, Pattern::Wildcard) || arm.guard.is_some() || taken.is_empty() {
+            return;
+        }
+        let Type::Union(members) = self.checker.settled(ty) else { return };
+        let left: Vec<Type> = members.into_iter().filter(|member| !taken.contains(member)).collect();
+        let narrowed = match left.as_slice() {
+            [] => return,
+            [one] => one.clone(),
+            _ => Type::Union(left),
+        };
+        // The arm's end puts back what the subject held before it.
+        if let Some(path) = crate::stmt::path(subject)
+            && let Some(binding) = self.binding_mut(&path)
+        {
+            binding.ty = narrowed;
+        }
     }
 
     /// A case naming a member of the union its subject holds, as `case Circle(radius=_):`,

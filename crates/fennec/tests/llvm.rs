@@ -17645,6 +17645,48 @@ def main(stdout: Stdout) fails Nope:
     )
 }
 
+/// A union with a function member, as a server's `Router | (Request) -> Response`: a struct, an
+/// arrow, a named function and an arrow given to a name of the union's type each go in, and the
+/// function is called once `case _:` or `is` leaves only it.
+#[test]
+fn a_union_with_a_function_member_calls_it_once_narrowed_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_function",
+        r#"struct Table:
+    rows: int
+
+type Answerer = Table | (int) -> str
+
+def twice(number: int) -> str:
+    return str(number * 2)
+
+def use(answer: Answerer) -> str:
+    match answer:
+        case Table(rows):
+            return str(rows)
+        case _:
+            return answer(3)
+
+def also(answer: Answerer) -> str:
+    if answer is Table:
+        return f"table {answer.rows}"
+    return answer(5)
+
+def main(stdout: Stdout):
+    stdout.print(use(Table(rows=2)))
+    stdout.print(use((number) => str(number * 2)))
+    stdout.print(use(twice))
+    held: Answerer = (number) => f"held {number}"
+    stdout.print(also(held), also(Table(rows=7)))
+    return
+"#,
+        "2\n6\n6\nheld 5 table 7\n",
+    )
+}
+
 /// What's left of a three-member union after `if store is Lite: return` is the other two, read
 /// natively as the union it was: its members told apart with `is` and `match`, each one's
 /// fields read once it's narrowed to it, a method all of them have called on it, and it given

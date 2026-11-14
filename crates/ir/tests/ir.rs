@@ -2333,7 +2333,7 @@ fn a_shared_value_is_locked_for_each_lock_block() {
   local _12: int
   local _13: Account
   bb0:
-    _1 = []
+    _1 = constant empty list[int]
     _2 = make Account(0, _1)
     _3 = make Shared__Account(_2)
     _4 = _3
@@ -3076,7 +3076,7 @@ fn a_type_with_its_own_str_prints_through_it() {
   local _3: str
   local _4: str
   bb0:
-    _1 = []
+    _1 = constant empty list[str]
     _2 = make StrWriter(_1)
     call Point.str(_0, _2)
     _3 = call StrWriter.text(_2)

@@ -761,6 +761,10 @@ pub(crate) fn unzlib(data: &[u8], most: usize) -> Result<Vec<u8>, String> {
     if method & 0x0F != 8 || (u16::from(method) << 8 | u16::from(flags)) % 31 != 0 {
         return Err("it doesn't start as zlib data does".to_owned());
     }
+    // A window past 32 KiB isn't one DEFLATE has, as RFC 1950 says.
+    if method >> 4 > 7 {
+        return Err("it says its window is bigger than DEFLATE's".to_owned());
+    }
     if flags & 0x20 != 0 {
         return Err("it needs a preset dictionary, which this doesn't take".to_owned());
     }
@@ -768,6 +772,10 @@ pub(crate) fn unzlib(data: &[u8], most: usize) -> Result<Vec<u8>, String> {
     let check = word_at(data, 2 + used).ok_or("it ends before its check")?;
     if u32::from_be_bytes(check) != adler32(&out) {
         return Err("its check doesn't match what it holds".to_owned());
+    }
+    // As `inflate` refuses: what follows would be read by nothing, or by another reader as more.
+    if data.len() > 2 + used + 4 {
+        return Err("there's more after its end".to_owned());
     }
     Ok(out)
 }
@@ -792,9 +800,13 @@ pub(crate) fn gzip(data: &[u8], level: u8) -> Vec<u8> {
     out
 }
 
-/// Where a gzip member's DEFLATE data starts, past its header.
+/// Where a gzip member's DEFLATE data starts, past its header, which is checked as RFC 1952
+/// says: no flag it doesn't define, and its own check, when it has one, right.
 fn gzip_start(member: &[u8]) -> Result<usize, String> {
     let flags = item(member, 3);
+    if flags & 0xE0 != 0 {
+        return Err("its header has a flag gzip doesn't define".to_owned());
+    }
     let mut place = 10;
     if flags & 4 != 0 {
         let low = *member.get(place).ok_or("it ends in its header")?;
@@ -810,6 +822,11 @@ fn gzip_start(member: &[u8]) -> Result<usize, String> {
         }
     }
     if flags & 2 != 0 {
+        let header = member.get(..place).ok_or("it ends in its header")?;
+        let check = member.get(place..place + 2).ok_or("it ends in its header")?;
+        if u32::from(u16::from_le_bytes([item(check, 0), item(check, 1)])) != crc32(header) & 0xFFFF {
+            return Err("its header's check doesn't match the header".to_owned());
+        }
         place += 2;
     }
     Ok(place)
@@ -962,5 +979,64 @@ mod tests {
         let last = broken.len() - 6;
         broken[last] ^= 1;
         assert_eq!(gunzip(&broken, MOST_READ), Err("its check doesn't match what it holds".to_owned()));
+    }
+
+    /// zlib and gzip are read as their RFCs say: nothing after zlib's end, no window past
+    /// DEFLATE's, no gzip flag that isn't defined, and a gzip header's own check right.
+    #[test]
+    fn framing_is_read_as_the_rfcs_say() {
+        let fine = zlib(b"fennec", 6);
+        let mut longer = fine.clone();
+        longer.push(0);
+        assert_eq!(unzlib(&longer, MOST_READ), Err("there's more after its end".to_owned()));
+        // A window of 64 KiB, with the header's check made right for it.
+        let mut wide = fine.clone();
+        wide[0] = 0x88;
+        wide[1] = 0x1C;
+        assert_eq!(unzlib(&wide, MOST_READ), Err("it says its window is bigger than DEFLATE's".to_owned()));
+        let packed = gzip(b"fennec", 6);
+        for flag in [0x20, 0x40, 0x80] {
+            let mut odd = packed.clone();
+            odd[3] = flag;
+            assert_eq!(gunzip(&odd, MOST_READ), Err("its header has a flag gzip doesn't define".to_owned()));
+        }
+        // A header check: right reads, wrong fails.
+        let mut checked = packed[..10].to_vec();
+        checked[3] = 2;
+        let sum = u16::try_from(crc32(&checked) & 0xFFFF).unwrap_or(0).to_le_bytes();
+        checked.extend_from_slice(&sum);
+        checked.extend_from_slice(&packed[10..]);
+        assert_eq!(gunzip(&checked, MOST_READ).as_deref(), Ok(&b"fennec"[..]));
+        checked[10] ^= 1;
+        assert_eq!(
+            gunzip(&checked, MOST_READ),
+            Err("its header's check doesn't match the header".to_owned())
+        );
+    }
+
+    /// Every cut of zlib or gzip data fails, and every byte of it changed fails or reads as what
+    /// was packed: the checks catch the rest, and nothing panics or runs away.
+    #[test]
+    fn a_cut_or_changed_byte_fails_or_reads_the_same() {
+        let data = b"the quick brown fox jumps over the lazy dog, again and again and again".repeat(20);
+        for (packed, read) in [
+            (zlib(&data, 6), unzlib as fn(&[u8], usize) -> Result<Vec<u8>, String>),
+            (gzip(&data, 6), gunzip),
+            (zlib(&data, 0), unzlib),
+            (gzip(&data, 9), gunzip),
+        ] {
+            for end in 0..packed.len() {
+                assert!(read(&packed[..end], MOST_READ).is_err(), "a cut at {end} read");
+            }
+            for at in 0..packed.len() {
+                for byte in [0, 1, 0x7F, 0x80, 0xFF] {
+                    let mut changed = packed.clone();
+                    changed[at] = byte;
+                    if let Ok(out) = read(&changed, MOST_READ) {
+                        assert_eq!(out, data, "byte {at} as {byte} read as something else");
+                    }
+                }
+            }
+        }
     }
 }

@@ -1,0 +1,40 @@
+# What `fennec-bench build-times` holds each step to, pinned by `fennec-bench build-times --pin`:
+# a program, a step, the instructions it took, which a run may go over by 3% at most, and
+# the milliseconds it took, which only warns when a run takes half again as long.
+# Pinned on Apple M5 Pro with 18 cores.
+game_tick cold 7833289826 1134
+game_tick warm 3046628426 1201
+game_tick check 3037263401 527
+game_tick run 3443925340 595
+chat_server cold 17814934799 1732
+chat_server warm 3739873730 399
+chat_server check 2887865031 316
+chat_server run 4073033754 464
+api_handler cold 35532974071 3950
+api_handler warm 6174065915 535
+api_handler check 288658358 54
+api_handler run 4309327556 533
+log_crunch cold 11791550548 1776
+log_crunch warm 3244239841 371
+log_crunch check 155519531 26
+log_crunch run 1055216699 153
+pathfind cold 3839110073 462
+pathfind warm 2522445003 299
+pathfind check 108936804 24
+pathfind run 351548837 288
+physics cold 3790959010 686
+physics warm 2528861931 287
+physics check 115226005 23
+physics run 361962563 289
+grep_tool cold 8309241465 822
+grep_tool warm 3261137672 299
+grep_tool check 2593882033 245
+grep_tool run 3483146181 386
+data_pipeline cold 71353852608 7816
+data_pipeline warm 7705807549 1085
+data_pipeline check 401947478 45
+data_pipeline run 5780301403 487
+selfhost cold 77255815733 10918
+selfhost warm 77848756004 4860
+selfhost check 923718956 91
+selfhost run 716854467 545

@@ -3621,11 +3621,28 @@ impl Emit<'_, '_, '_> {
         } else if returns.counted() {
             self.retain_value(held, &returns);
         }
-        // A constant held in a block lives for the whole run, so a task anywhere can read it.
-        if matches!(returns, Kind::List(_) | Kind::Dict(..) | Kind::Boxed(_) | Kind::Bytes) {
-            self.declare("declare void @fennec_constant_kept(ptr) nounwind");
-            self.line(&format!("call void @fennec_constant_kept(ptr {held})"));
-        }
+        // A constant held in a block lives for the whole run, so a task anywhere can read it, and
+        // it's never counted as left over. That goes for a string whose text is in a block and
+        // for an optional held as one word too, which a missing one has no block for.
+        let block = match &returns {
+            Kind::Str | Kind::MaybeText if self.headers() => self.header_block(held),
+            Kind::List(_)
+            | Kind::Dict(..)
+            | Kind::Boxed(_)
+            | Kind::Bytes
+            | Kind::Maybe(_)
+            | Kind::Str
+            | Kind::TextBlock => held.to_owned(),
+            _ => return,
+        };
+        let (none, mark, marked) = (self.temp(), self.label("kept_block"), self.label("kept_marked"));
+        self.line(&format!("{none} = icmp eq ptr {block}, null"));
+        self.line(&format!("br i1 {none}, label %{marked}, label %{mark}"));
+        self.start_block(&mark);
+        self.declare("declare void @fennec_constant_kept(ptr) nounwind");
+        self.line(&format!("call void @fennec_constant_kept(ptr {block})"));
+        self.line(&format!("br label %{marked}"));
+        self.start_block(&marked);
     }
 
     fn give_back(&mut self, value: Option<&Operand>) -> Result<(), String> {

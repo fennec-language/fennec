@@ -97,6 +97,7 @@ for at, ref score in enumerate(scores): ...
 ```
 
 - `enumerate` takes anything you can loop over and gives `(index, value)`. Built. `for i, ref x in enumerate(xs)` needs `xs` to have positions, `len` and `[]`, as `for ref` does. Built.
+- `for unit_id, ref unit in units.items()` changes each item of a `Table`, or each value of a dict, where it is, with its `Id` or key, which isn't `ref`. The body can't change `units` itself. Built. A `for ref` straight over a dict or a set is a compile error, since its keys and items are what find them.
 - A `for ref` body may read what it loops over, as in `unit.target = nearest(units, unit.at)`, and sees the item as it is now, changes made through the loop's name included. Built for lists, arrays and `Table`s.
 - `ref` over a generator is a compile error, since its items are made one at a time and aren't anywhere to change. Built.
 - `case .Button(ref clicks):` changes a field inside the enum a `match` statement is over, as `for ref` changes an item: `match ui[widget_id].kind:` with `clicks += 1` in the case. The case is put back however its body ends, a failure included. Built.
@@ -519,7 +520,7 @@ def load_settings(fs: Fs, log: Log, clock: Clock) -> Settings:
 
   Write the block's value as its last line, `Settings()`. `fennec fix` never adds a `return` inside such a block.
 - `len` is a builtin, like `sum` and `sorted`: `len(items)`, as in Python. `len(x)` calls a type's `def len(self) -> int`, as `str(x)` calls `def str` and `x in xs` calls `def in`. `x.len()` and `x.abs()` on a value are compile errors whose fix writes `len(x)` and `abs(x)`. Built.
-- A value is shown by the name its type is written with, never with type arguments: a generic struct prints as `Holder(item=3)`, not `Holder[int](item=3)`, in `print`, an f-string, `str()` and a failed `assert`. Built.
+- A value is shown by the name its type is written with, never with type arguments: a generic struct prints as `Holder(item=3)`, not `Holder[int](item=3)`, and a generic enum's case as `Choice.Picked(value=7)`, in `print`, an f-string, `str()` and a failed `assert`. Built.
 - `abs` is a builtin the same way: `abs(x)` for the numeric types, and for any type with `def abs(self) -> Self`, which `abs(x)` calls. `x.abs()` gets a `fennec fix` suggestion that writes `abs(x)`. Chris decided this on 2026-11-11. `abs(x)` is built for `int`, `float` and types with `def abs`; the sized numbers and the suggestion aren't yet.
 - These names are reserved, and naming a local, a function, a type or a constant after one is a compile error that suggests another name: the builtins `len`, `abs`, `sum`, `sorted`, `min`, `max`, `range`, `enumerate` and `zip`, and the built-in types `int`, `float`, `bool`, `str`, `bytes`, `list`, `dict`, `set`, `array` and the ten sized numbers. That's the whole list: a builtin added later comes with a `fennec fix` rename. Fields, methods and named arguments may still use them, as they may use keywords. Built.
 - `case` is reserved too, since it starts an arm under `except why:`. Built. std's serializer method that was `case` is `enum_case` already.

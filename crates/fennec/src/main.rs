@@ -72,8 +72,9 @@ const USAGE: &str = "usage:
   fennec bench [path]       run its `bench` blocks: instructions and times, against the last run
   fennec new <name>         start a kit in a new folder
   fennec update             pin the kit's dependencies from git to the commits kit.toml names,
-                            fetching the ones not fetched yet, record in kit.lock what each
+                            fetching the ones not fetched yet, narrow in kit.lock what each
                             dependency is handed, which a build stops at more of, and say what changed
+  fennec update --accept    the same, and accept what each dependency would now hold, which update alone refuses
   fennec update --check     whether kit.lock's holds are what the program hands each dependency, for CI
   fennec fetch              fetch the kits kit.lock pins that this machine hasn't got, or that
                             changed since; no other command reaches the network

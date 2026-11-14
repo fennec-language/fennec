@@ -347,9 +347,20 @@ fn dependencies(root: &Path, manifest: &Manifest) -> Result<Dependencies, Proble
     let found = store.ensure(root).map_err(|message| Problems::unplaced(format!("error: {message}\n")))?;
     // What each kit was accepted as holding, which a kit handed more is stopped at.
     let lock = std::fs::read_to_string(root.join("kit.lock")).unwrap_or_default();
-    let accepted =
+    let lines =
         fennec_deps::holds(&lock).map_err(|message| Problems::unplaced(format!("error: {message}\n")))?;
-    let holds = fennec_syntax::Holds { accepted, only_worked_out: false };
+    // A line belongs to the source it was accepted for: a kit from elsewhere under the same name
+    // holds nothing until its grants are accepted again.
+    let mut holds = fennec_syntax::Holds::default();
+    for line in lines {
+        match found.iter().find(|kit| kit.name == line.kit) {
+            Some(kit) if fennec_deps::source_of(kit, root) == line.source => {
+                holds.accepted.push((line.kit, line.holds));
+            }
+            Some(_) => holds.moved.push(line.kit),
+            None => {}
+        }
+    }
     let kits = found
         .into_iter()
         .map(|kit| {

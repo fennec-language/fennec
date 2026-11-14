@@ -318,7 +318,7 @@ pub(crate) fn refused(checker: &mut Checker) -> Vec<Diagnostic> {
             .collect();
         return Vec::new();
     }
-    newly_received(&walk.checker.holds.accepted, received)
+    newly_received(&walk.checker.holds, received)
 }
 
 /// One capability a kit receives where it's first handed over, and how.
@@ -345,9 +345,10 @@ type Place = (Receipt, Vec<&'static str>);
 /// An error for each place a kit is first handed what `kit.lock` doesn't list for it, with every
 /// such capability first handed there.
 fn newly_received(
-    accepted: &[(String, Vec<String>)],
+    lock: &fennec_syntax::Holds,
     received: BTreeMap<String, BTreeMap<&'static str, Receipt>>,
 ) -> Vec<Diagnostic> {
+    let accepted = &lock.accepted;
     // Each place a kit is first handed something new, with everything new first handed there.
     let mut places: BTreeMap<((u32, u32), String), Place> = BTreeMap::new();
     for (kit, held) in received {
@@ -368,7 +369,10 @@ fn newly_received(
     }
     let mut found: Vec<Diagnostic> = places
         .into_iter()
-        .map(|((_, kit), (receipt, capabilities))| unaccepted(&kit, &receipt, &capabilities))
+        .map(|((_, kit), (receipt, capabilities))| {
+            let moved = lock.moved.contains(&kit);
+            unaccepted((&kit, moved), &receipt, &capabilities)
+        })
         .collect();
     found.sort_by(|first, second| {
         (first.span.start, &first.message).cmp(&(second.span.start, &second.message))
@@ -376,9 +380,10 @@ fn newly_received(
     found
 }
 
-/// The error for a kit that would now receive `capabilities`, first handed over as `receipt` says.
-/// It never has a fix: what a kit holds is accepted by a person, with `fennec update`.
-fn unaccepted(kit: &str, receipt: &Receipt, capabilities: &[&'static str]) -> Diagnostic {
+/// The error for a kit that would now receive `capabilities`, first handed over as `receipt` says,
+/// and whether `kit.lock`'s line for it was accepted for another source. It never has a fix: what a
+/// kit holds is accepted by a person, with `fennec update --accept`.
+fn unaccepted((kit, moved): (&str, bool), receipt: &Receipt, capabilities: &[&'static str]) -> Diagnostic {
     let listed = listed(capabilities);
     let unlisted = "which kit.lock doesn't list for it";
     let (message, unseen) = match &receipt.how {
@@ -412,7 +417,7 @@ fn unaccepted(kit: &str, receipt: &Receipt, capabilities: &[&'static str]) -> Di
             false,
         ),
     };
-    let accept = "a dependency receiving a capability is a change a person accepts: `fennec update` shows what each kit would now hold and records it in kit.lock, to be reviewed with this change. Nothing here is fixed for you";
+    let accept = "a dependency receiving a capability is a change a person accepts: `fennec update --accept` shows what each kit would now hold and records it in kit.lock, to be reviewed with this change. Nothing here is fixed for you";
     let help = if unseen {
         format!(
             "write the function where it's handed over, as an arrow function or a nested `def`, and only what it reads counts. Otherwise, {accept}"
@@ -420,8 +425,19 @@ fn unaccepted(kit: &str, receipt: &Receipt, capabilities: &[&'static str]) -> Di
     } else {
         accept.to_owned()
     };
+    // What a kit holds belongs to where it comes from, not to its name.
+    let help = if moved {
+        format!(
+            "kit.lock's line for `{kit}` was accepted for another source of it, so it holds nothing until it's accepted again. {help}"
+        )
+    } else {
+        help
+    };
     Diagnostic::new(message, receipt.span).with_help(help)
 }
+
+/// The most copies of generic functions followed, as many as lowering makes before it stops.
+const MOST_COPIES: usize = 2000;
 
 /// The walk over every copy of every function the program checks.
 struct Walk<'c> {
@@ -483,9 +499,19 @@ impl<'c> Walk<'c> {
         for test in &self.checker.program.tests {
             queue.push((format!("test \"{}\"", test.name), Vec::new()));
         }
+        let mut generic = 0;
         while let Some((key, given)) = queue.pop() {
             if !self.seen.insert((key.clone(), given.clone())) {
                 continue;
+            }
+            // A generic function that calls itself with a bigger type makes copies without end.
+            // Lowering refuses the program past as many copies, so it never runs and nothing more
+            // is handed over.
+            if !given.is_empty() {
+                generic += 1;
+                if generic > MOST_COPIES {
+                    break;
+                }
             }
             queue.extend(self.copy(&key, &given));
         }

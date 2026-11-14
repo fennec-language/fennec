@@ -57,12 +57,13 @@ tools = { path = "../tools" }
 A dependency holds only what your code hands it, and the compiler works that out: you never write it. `kit.lock` records what each kit holds, one line for each that holds anything:
 
 ```
-holds http Net
-holds saves Clock Fs
+holds http git:https://example.com/http.git#http Net
+holds saves path:../saves Clock Fs
 ```
 
 - **A kit handed something new stops the build.** Every check, run, build and test stops where a kit would now receive a capability `kit.lock` doesn't list for it: "`http` would now receive an `Fs` here, which kit.lock doesn't list for it".
-- **`fennec update` accepts it.** It shows each change, as "`http` now holds `Fs`, first handed over at src/main.fen:12:25", and writes it into `kit.lock`, where it's reviewed with the code that made it. No tool accepts one during a build, and no fix does.
+- **Only `fennec update --accept` accepts it.** It lists each change, as "`http` now holds `Fs`, first handed over at src/main.fen:12:25", and writes it into `kit.lock`, where it's reviewed with the code that made it. Plain `fennec update` lists the same, as "would now hold", and fails, so a version bump never brings in a new grant unseen. No tool accepts one during a build, and no fix does.
+- **What a kit holds belongs to where it comes from.** Each line names the kit's source, its path or its git URL. Point a dependency somewhere else, another path, URL or fork, and it holds nothing until `fennec update --accept` lists and accepts its grants again, even when the name and the grants are the same.
 - **Handing a kit less never stops anything.** `fennec update` narrows the lock, and says so.
 - **`fennec update --check` is for CI.** It fails when `kit.lock` isn't what the code hands over, either way. It reaches no network and writes nothing.
 - **Every kit counts,** the ones your dependencies depend on too: the compiler sees the whole program.

@@ -3663,12 +3663,12 @@ impl Kits {
         Ok(said)
     }
 
-    /// What `fennec update` says, accepting what each kit holds, once it's said by
+    /// What `fennec update --accept` says, accepting what each kit holds, once it's said by
     /// `fennec update --check`, which fails until then; after it, the program checks.
     fn accepted(&self) -> std::io::Result<String> {
         let pending = self.fennec(&["update", "--check"])?;
         assert!(!pending.status.success(), "{}", text(&pending.stdout));
-        let updated = self.fennec(&["update"])?;
+        let updated = self.fennec(&["update", "--accept"])?;
         assert!(updated.status.success(), "{}", text(&updated.stderr));
         self.checks()?;
         let current = self.fennec(&["update", "--check"])?;
@@ -3718,7 +3718,7 @@ fn a_dependency_handed_a_capability_stops_until_update_accepts_it() {
         "{said}"
     );
     assert!(
-        said.contains("`fennec update` shows what each kit would now hold and records it in kit.lock, to be reviewed with this change. Nothing here is fixed for you"),
+        said.contains("`fennec update --accept` shows what each kit would now hold and records it in kit.lock, to be reviewed with this change. Nothing here is fixed for you"),
         "{said}"
     );
     for (handed, says) in [
@@ -3755,7 +3755,7 @@ fn a_dependency_handed_a_capability_stops_until_update_accepts_it() {
         said.contains("kit.lock: `helper` now holds `File`, first handed over at src/main.fen:5:34"),
         "{said}"
     );
-    assert!(kits.lock().unwrap().contains("holds helper File\n"));
+    assert!(kits.lock().unwrap().contains("holds helper path:../helper File\n"));
     // An `Fs` too is a new thing to hold, though the kit holds a `File` already.
     kits.write("app", "src/main.fen", main).unwrap();
     let said = kits.refused().unwrap();
@@ -3766,7 +3766,7 @@ fn a_dependency_handed_a_capability_stops_until_update_accepts_it() {
             && said.contains("kit.lock: `helper` no longer holds `File`"),
         "{said}"
     );
-    assert!(kits.lock().unwrap().contains("holds helper Fs\n"));
+    assert!(kits.lock().unwrap().contains("holds helper path:../helper Fs\n"));
     // Handed nothing, it's narrowed without a stop, and `fennec update` says so.
     kits.write(
         "app",
@@ -3811,7 +3811,106 @@ fn a_capability_smuggled_through_a_generic_is_found_in_every_kit_it_reaches() {
     let said = kits.accepted().unwrap();
     assert!(said.contains("`helper` now holds `Fs`") && said.contains("`inner` now holds `Fs`"), "{said}");
     let lock = kits.lock().unwrap();
-    assert!(lock.contains("holds helper Fs\n") && lock.contains("holds inner Fs\n"), "{lock}");
+    assert!(
+        lock.contains("holds helper path:../helper Fs\n") && lock.contains("holds inner path:../inner Fs\n"),
+        "{lock}"
+    );
+}
+
+/// `fennec update` never widens what a kit holds: a new version of a dependency that starts
+/// handing on a capability fails it, naming each kit and what it would get, and leaves kit.lock as
+/// it was. Only `fennec update --accept` widens, saying the same.
+#[test]
+fn update_narrows_and_only_update_accept_widens() {
+    let inner = "export def keep[T](value: T) -> int:\n    return 1\n";
+    let helper = |body: &str| format!("import inner\n\nexport def save(fs: Fs) -> int:\n    {body}\n");
+    let main = "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(helper.save(fs))\n";
+    let kits = Kits::new(
+        "holds-accept",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", main),
+        &[
+            ("helper", "[dependencies]\ninner = { path = \"../inner\" }\n", &helper("return 1")),
+            ("inner", "", inner),
+        ],
+    )
+    .unwrap();
+    // What the program itself hands over waits for `--accept` too.
+    let plain = kits.fennec(&["update"]).unwrap();
+    assert!(!plain.status.success());
+    assert!(text(&plain.stderr).contains("`helper` would now hold `Fs`"), "{}", text(&plain.stderr));
+    assert!(!kits.lock().unwrap_or_default().contains("holds helper"));
+    kits.accepted().unwrap();
+    // A new version of `helper` hands the `Fs` on to `inner`.
+    kits.write("helper", "src/lib.fen", &helper("return inner.keep(fs)")).unwrap();
+    let said = kits.refused().unwrap();
+    assert!(said.contains("`inner` would now receive an `Fs` here, from `helper`'s code"), "{said}");
+    let lock = kits.lock().unwrap();
+    let plain = kits.fennec(&["update"]).unwrap();
+    assert!(!plain.status.success());
+    let told = text(&plain.stderr);
+    assert!(
+        told.contains(
+            "a kit would now hold more than kit.lock says, which only `fennec update --accept` accepts"
+        ) && told.contains("`inner` would now hold `Fs`, first handed over at"),
+        "{told}"
+    );
+    assert_eq!(kits.lock().unwrap(), lock);
+    let said = kits.accepted().unwrap();
+    assert!(said.contains("kit.lock: `inner` now holds `Fs`, first handed over at"), "{said}");
+    assert!(kits.lock().unwrap().contains("holds inner path:../inner Fs\n"));
+    // Handed less, a plain update narrows, and says so.
+    kits.write("helper", "src/lib.fen", &helper("return 1")).unwrap();
+    kits.checks().unwrap();
+    let narrowed = kits.fennec(&["update"]).unwrap();
+    assert!(narrowed.status.success(), "{}", text(&narrowed.stderr));
+    assert!(
+        text(&narrowed.stdout).contains("kit.lock: `inner` no longer holds `Fs`"),
+        "{}",
+        text(&narrowed.stdout)
+    );
+    assert!(!kits.lock().unwrap().contains("holds inner"));
+}
+
+/// What a kit holds belongs to where it comes from, not to its name: pointed at another kit of the
+/// same name, with the same code and the same grants, the program stops until `fennec update
+/// --accept` accepts them again, listing them in full.
+#[test]
+fn a_kits_grants_belong_to_its_source_not_its_name() {
+    let helper = "export def size(fs: Fs) -> int:\n    return 7\n";
+    let main = "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(helper.size(fs))\n";
+    let kits = Kits::new(
+        "holds-source",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", main),
+        &[("helper", "", helper)],
+    )
+    .unwrap();
+    kits.accepted().unwrap();
+    assert!(kits.lock().unwrap().contains("holds helper path:../helper Fs\n"));
+    write_kit(&kits.dir.join("other"), "helper", "", &[("lib.fen", helper)]).unwrap();
+    kits.write(
+        "app",
+        "kit.toml",
+        "name = \"app\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\nhelper = { path = \"../other\" }\n",
+    )
+    .unwrap();
+    let said = kits.refused().unwrap();
+    assert!(
+        said.contains("`helper` would now receive an `Fs` here, which kit.lock doesn't list for it"),
+        "{said}"
+    );
+    assert!(said.contains("kit.lock's line for `helper` was accepted for another source of it"), "{said}");
+    let plain = kits.fennec(&["update"]).unwrap();
+    assert!(!plain.status.success());
+    assert!(
+        text(&plain.stdout).contains("kit.lock: `helper` comes from path:../other now, not path:../helper"),
+        "{}",
+        text(&plain.stdout)
+    );
+    assert!(text(&plain.stderr).contains("`helper` would now hold `Fs`"), "{}", text(&plain.stderr));
+    let said = kits.accepted().unwrap();
+    assert!(said.contains("kit.lock: `helper` now holds `Fs`"), "{said}");
+    let lock = kits.lock().unwrap();
+    assert!(lock.contains("holds helper path:../other Fs\n") && !lock.contains("path:../helper"), "{lock}");
 }
 
 /// A function handed to a dependency holds what it captures. An arrow function or a nested `def`
@@ -3941,7 +4040,7 @@ fn a_run_checks_again_once_kit_lock_changes() {
         assert_eq!(text(&ran.stdout), "7\n");
     }
     let lock = kits.lock().unwrap();
-    kits.write("app", "kit.lock", &lock.replace("holds helper Fs\n", "")).unwrap();
+    kits.write("app", "kit.lock", &lock.replace("holds helper path:../helper Fs\n", "")).unwrap();
     let ran = kits.fennec(&["run", "--no-test", "."]).unwrap();
     assert!(!ran.status.success(), "{}", text(&ran.stdout));
     assert!(text(&ran.stderr).contains("`helper` would now receive an `Fs` here"), "{}", text(&ran.stderr));

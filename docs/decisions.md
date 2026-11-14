@@ -1654,12 +1654,14 @@ These are default lints, and the Den requires them.
 
 **What each dependency holds is worked out by the compiler, and accepted in `kit.lock`; there's no `gets`.** Chris decided it on 2026-11-14, replacing `gets`.
 - The compiler follows every capability the program hands each kit: to its functions and methods, the value a method's called on included; to the building of its types; through each copy of a generic function; and captured by a function handed over. A function whose making can't be seen may hold anything the program holds. `File` and `Database` count, as they reach a file or storage already open; `Secret` doesn't.
-- `kit.lock` records each kit's `holds`, the kits a dependency depends on included.
-- A build stops where a kit would now hold what `kit.lock` doesn't list, a new dependency's first capability included, saying "`http` would now receive an `Fs`" where it's first handed over. `fennec update` shows the change and writes the lock. No tool accepts one during a build, and no fix does.
+- `kit.lock` records each kit's `holds`, the kits a dependency depends on included, beside the source the kit comes from, as `holds http git:https://example.com/http.git#http Net`.
+- A build stops where a kit would now hold what `kit.lock` doesn't list, a new dependency's first capability included, saying "`http` would now receive an `Fs`" where it's first handed over. No tool accepts one during a build, and no fix does.
+- Only `fennec update --accept` widens what a kit holds, and it lists each kit and what it now gets as it writes the lock. Plain `fennec update` narrows freely, and with a widening waiting it lists the same and fails, so a version bump that brings a new grant never goes in unseen. Chris decided it on 2026-11-14, from Fable 5.2's review of the first build.
+- A kit's `holds` belong to its source, not its name. A dependency whose path, URL, fork or registry changes holds nothing until `fennec update --accept` accepts its grants again, listed in full, as another kit of the same name may be another author's. Chris decided it on 2026-11-14, from the same review.
 - Handing a kit less narrows the lock at the next `fennec update`, with no stop. `fennec update --check` fails CI when the lock isn't what the code hands over, either way.
 - `kit.toml` refuses a `gets`, saying capabilities are worked out.
 
-*Why:* An agent can edit kit.toml as easily as it can pass a value, so a line it writes protects nothing by being written. The protection is the visible diff a person accepts, and working out what each kit holds gives that diff with nothing to configure and nothing to drift from the code.
+*Why:* An agent can edit kit.toml as easily as it can pass a value, so a line it writes protects nothing by being written. The protection is the visible diff a person accepts, and working out what each kit holds gives that diff with nothing to configure and nothing to drift from the code. The diff protects only if widening is a step of its own: an update run to fix something else mustn't take a new grant with it, and a grant mustn't pass to whatever kit next wears the name.
 
 **A program's own `main` is its grant, and a kit's other programs are files in `entries/`.** Chris settled it on 2026-11-12, from Fable 5.2's environments design and its follow-up.
 - `main`'s signature is the one copy of what a program may do. There's no grant written for `main` and no `[entries]` table. What a dependency holds, where the hand-over is into someone else's code, is worked out and accepted in `kit.lock` (2026-11-14, above).

@@ -49,6 +49,9 @@ pub struct Holds {
     /// Set when what each kit holds is only worked out, not held to anything: how `fennec update`
     /// checks a program to find what to write.
     pub only_worked_out: bool,
+    /// The kits whose `holds` line in `kit.lock` was accepted for another source than the one they
+    /// come from now, so they hold nothing until it's accepted again.
+    pub moved: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

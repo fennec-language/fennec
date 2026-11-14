@@ -27,7 +27,7 @@ macro_rules! fields {
 }
 
 fields!(Module { items, std_rewritten, holds });
-fields!(Holds { accepted, only_worked_out });
+fields!(Holds { accepted, only_worked_out, moved });
 fields!(FnDef { name, generics, params, ret, arrow, fails, body, annotations, span });
 fields!(Generic { name, bounds, span });
 fields!(Param { name, ty, is_mut, is_self, default, span });

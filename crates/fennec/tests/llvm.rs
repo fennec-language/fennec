@@ -17666,6 +17666,43 @@ fn postgres_does_not_believe_a_server_that_has_not_proved_itself() -> std::io::R
     Ok(())
 }
 
+/// A server can't skip the step of signing in that proves it knows the password: one that says
+/// it's ready without letting the client in is refused, and so is one that sends SCRAM's first
+/// message without asking for SCRAM, which would have had the client prove the empty password and
+/// taken the server's proof of that, which anyone can make. One asking for an MD5 hash of the
+/// password, which a server in the middle could pass on to sign in, is never sent one.
+#[test]
+fn postgres_takes_each_step_of_signing_in_in_its_turn() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let works = || vec![postgres_answer("BEGIN"), postgres_answer("SELECT 1"), postgres_answer("COMMIT")];
+    let unasked = postgres_auth(11, b"r=xyz,s=c2FsdA==,i=4096");
+    // The proof of the empty password for that server-first: its salt, `salt`, and 4096 rounds.
+    let forged = postgres_auth(12, b"v=G8Nql2SO/dY3qwTf8tjkgD2YGenjgZK2saBuv/HcwgU=");
+    let signed_in = [forged, postgres_auth(0, b""), postgres_ready()].concat();
+    let md5 = postgres_auth(5, b"salt");
+    let scripts = vec![
+        [vec![postgres_ready()], works()].concat(),
+        [vec![unasked, signed_in], works()].concat(),
+        [vec![md5, [postgres_auth(0, b""), postgres_ready()].concat()], works()].concat(),
+    ];
+    let mut ports = Vec::new();
+    for script in scripts {
+        ports.push(postgres_scripted(script)?.0.to_string());
+    }
+    let source =
+        POSTGRES_SCRIPTED.replace("PORTS", &format!("[{}]", ports.join(", "))).replace("STRICT", "3");
+    let printed = printed_by("postgres_in_turn", &source)?;
+    assert_eq!(
+        printed,
+        "the server said it was ready out of its turn in signing in, so it isn't trusted\n\
+         the server sent SCRAM's first message out of its turn in signing in, so it isn't trusted\n\
+         the server asks for an MD5 hash of the password, which a server in the middle could pass on to sign in as us, so it wasn't sent: set the user's password with SCRAM-SHA-256\n"
+    );
+    Ok(())
+}
+
 /// A Postgres server's messages are read as the protocol writes them, and anything else fails
 /// rather than reading as something: a count below zero, a cell's size below -1, an error with
 /// no zero byte ending its fields, a `ReadyForQuery` that isn't one byte, and bytes left over in

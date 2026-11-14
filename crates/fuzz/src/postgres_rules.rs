@@ -104,7 +104,7 @@ const LONGEST: i64 = 1 << 30;
 const LONGEST_SHORT: i64 = 30_000;
 
 /// The types of message that may be longer than `LONGEST_SHORT`: libpq's `VALID_LONG_MESSAGE_TYPE`.
-const LONG_KINDS: [u8; 8] = [b'd', b'D', b'E', b'V', b'N', b'A', b'T', b't'];
+const LONG_KINDS: &[u8] = b"dDEVNATt";
 
 /// A message's body, read from its start.
 struct Body<'a> {

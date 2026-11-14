@@ -2,8 +2,11 @@
 //! in brackets: `json.loads[Settings](text)`. Every type made of numbers, text, bytes, bools,
 //! lists, dicts with text keys, tuples, optionals and structs of those can be read and written.
 
+use std::collections::BTreeSet;
+
 use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 
+use crate::checker::Checker;
 use crate::function::FnCx;
 use crate::messages::{mismatch, unhandled_result};
 use crate::program::TypeKind;
@@ -31,11 +34,11 @@ impl FnCx<'_> {
                 ),
                 at,
             ));
-        } else if let Err(problem) = self.holds(&format, first, (call, None), &mut Vec::new()) {
+        } else if let Err(problem) = self.holds((&format, WRITES), first, (call, None), &mut Vec::new()) {
             self.error(problem);
         } else if format == "TOML" && mentions_none(first, &self.checker.program) {
             self.error(Diagnostic::new("TOML has no None, so leave the key out instead", call));
-        } else if self.fits_interface(first, "Serializable").is_ok() {
+        } else if self.fits_bound(first, WRITES).is_ok() {
             self.checker
                 .native_formats
                 .insert((call.start, call.end), format!("{}.native_dumps", format.to_lowercase()));
@@ -46,9 +49,9 @@ impl FnCx<'_> {
     /// `net.post(url, json=value)`: the value is sent as JSON, so it has to be something JSON
     /// holds. Native code writes it through its own `def serialize`, as `json.dumps` does.
     pub(crate) fn json_body(&mut self, ty: &Type, at: Span) {
-        if let Err(problem) = self.holds("JSON", ty, (at, None), &mut Vec::new()) {
+        if let Err(problem) = self.holds(("JSON", WRITES), ty, (at, None), &mut Vec::new()) {
             self.error(problem);
-        } else if self.fits_interface(ty, "Serializable").is_ok() {
+        } else if self.fits_bound(ty, WRITES).is_ok() {
             self.checker.native_json_bodies.insert((at.start, at.end));
         }
     }
@@ -89,9 +92,9 @@ impl FnCx<'_> {
             let message =
                 format!("a TOML document is a table, so it's read as a dict or a struct, not {}", a(&ty));
             self.error(Diagnostic::new(message, index.span));
-        } else if let Err(problem) = self.holds(&format, &ty, (index.span, None), &mut Vec::new()) {
+        } else if let Err(problem) = self.holds((&format, READS), &ty, (index.span, None), &mut Vec::new()) {
             self.error(problem);
-        } else if self.fits_interface(&ty, "Deserializable").is_ok() {
+        } else if self.fits_bound(&ty, READS).is_ok() {
             self.checker
                 .native_formats
                 .insert((span.start, span.end), format!("{}.native_loads", format.to_lowercase()));
@@ -103,7 +106,7 @@ impl FnCx<'_> {
     /// In JSON, any other key makes an array of `[key, value]` pairs; TOML only has tables.
     fn holds_map(
         &mut self,
-        format: &str,
+        (format, interface): (&str, &str),
         map: &Type,
         (key, value): (&Type, &Type),
         (span, field): (Span, Option<&str>),
@@ -115,9 +118,9 @@ impl FnCx<'_> {
                 .with_help(format!("{format} tables have text keys: use `str` or `int` keys")));
         }
         if !as_object {
-            self.holds(format, key, (span, field), seen)?;
+            self.holds((format, interface), key, (span, field), seen)?;
         }
-        self.holds(format, value, (span, field), seen)
+        self.holds((format, interface), value, (span, field), seen)
     }
 
     /// Whether `name` is a standard library collection written in its natural shape.
@@ -148,12 +151,12 @@ impl FnCx<'_> {
             || self.checker.program.kind_of(ty) == Some(TypeKind::Struct)
     }
 
-    /// Whether a format can hold values of a type. `field` is the struct field the value is
-    /// in, if any, as `Type.field`, which a message names. `seen` are the structs being looked
-    /// at, so a struct that holds itself is looked at once.
+    /// Whether a format can hold values of a type, written or read through `interface`. `field`
+    /// is the struct field the value is in, if any, as `Type.field`, which a message names. `seen`
+    /// are the structs being looked at, so a struct that holds itself is looked at once.
     fn holds(
         &mut self,
-        format: &str,
+        (format, interface): (&str, &str),
         ty: &Type,
         (span, field): (Span, Option<&str>),
         seen: &mut Vec<String>,
@@ -177,20 +180,35 @@ impl FnCx<'_> {
             | Type::Bytes
             | Type::Id(_) => Ok(()),
             // A union is saved tagged with its member, which a type's name alone has to say.
+            // A type parameter bounded by the interface a value is written or read through: each
+            // call's own type is checked where the call is, once every function is checked.
+            Type::Param(name) if self.bounds_of(name).iter().any(|bound| bound == interface) => {
+                if self.report {
+                    let noted = (self.key.clone(), ty.clone(), format.to_owned(), interface.to_owned());
+                    self.checker.format_params.insert(noted);
+                }
+                Ok(())
+            }
             Type::Union(members) if !members.iter().all(crate::saving::tested_by_name) => Err(cannot(ty)),
             Type::Dict(key, _) if crate::saving::holds_union(key) => Err(cannot(ty)),
             Type::List(item) | Type::Optional(item) | Type::Table(item) => {
-                self.holds(format, item, (span, field), seen)
+                self.holds((format, interface), item, (span, field), seen)
             }
-            Type::Dict(key, value) => self.holds_map(format, ty, (key, value), (span, field), seen),
+            Type::Dict(key, value) => {
+                self.holds_map((format, interface), ty, (key, value), (span, field), seen)
+            }
             Type::Tuple(items) | Type::Union(items) => {
-                items.iter().try_for_each(|item| self.holds(format, item, (span, field), seen))
+                items.iter().try_for_each(|item| self.holds((format, interface), item, (span, field), seen))
             }
             Type::Result(..) => Err(unhandled_result(span)),
             // The standard library's collections are written in their natural shape.
             Type::Generic(name, args) if self.has_shape(name) => match (name.as_str(), args.as_slice()) {
-                ("SortedMap", [key, value]) => self.holds_map(format, ty, (key, value), (span, field), seen),
-                (_, args) => args.iter().try_for_each(|item| self.holds(format, item, (span, field), seen)),
+                ("SortedMap", [key, value]) => {
+                    self.holds_map((format, interface), ty, (key, value), (span, field), seen)
+                }
+                (_, args) => args
+                    .iter()
+                    .try_for_each(|item| self.holds((format, interface), item, (span, field), seen)),
             },
             Type::Named(name) | Type::Generic(name, _)
                 if let Some((what, instead)) = crate::saving::never_saved(name) =>
@@ -221,7 +239,7 @@ impl FnCx<'_> {
                         Some(case) => format!("{name}.{case}.{own}"),
                         None => format!("{name}.{own}"),
                     };
-                    self.holds(format, &field_type, (span, Some(&named)), seen)?;
+                    self.holds((format, interface), &field_type, (span, Some(&named)), seen)?;
                 }
                 Ok(())
             }
@@ -229,6 +247,53 @@ impl FnCx<'_> {
         }
     }
 }
+
+/// Checks, at each call of a generic function, what it writes or reads with a format as its type
+/// parameter: the format has to hold the type the call gives it, as a value written out there
+/// would. A call made with the caller's own type parameter passes the check on to the caller's
+/// calls.
+pub(crate) fn formats_at_calls(checker: &mut Checker) {
+    let mut work: Vec<(String, Type, String, String)> = checker.format_params.iter().cloned().collect();
+    let (mut seen, mut refused) = (BTreeSet::new(), BTreeSet::new());
+    while let Some(noted) = work.pop() {
+        if !seen.insert(noted.clone()) {
+            continue;
+        }
+        let (function, ty, format, interface) = noted;
+        let Some(entry) = checker.program.functions.get(&function) else { continue };
+        let names: Vec<String> =
+            checker.program.generics_of(entry).into_iter().map(|generic| generic.name).collect();
+        let calls: Vec<((u32, u32), crate::generic_copies::Call)> = checker
+            .generic_calls
+            .iter()
+            .filter(|(_, call)| call.callee == function)
+            .map(|(at, call)| (*at, call.clone()))
+            .collect();
+        for (at, call) in calls {
+            let types = call.types.iter().map(|ty| checker.settled(ty));
+            let given: Vec<(String, Type)> = names.iter().cloned().zip(types).collect();
+            let wanted = ty.substitute(&given);
+            if wanted.has_params() {
+                work.push((call.caller.clone(), wanted, format.clone(), interface.clone()));
+                continue;
+            }
+            let span = Span { start: at.0, end: at.1 };
+            let mut cx = FnCx::new(checker, &call.caller, "", true);
+            if let Err(problem) = cx.holds((&format, &interface), &wanted, (span, None), &mut Vec::new())
+                && refused.insert(at)
+            {
+                let shown = fennec_syntax::without_kits(&function);
+                let says = format!("`{shown}` writes or reads what it's given as {format}");
+                let help = problem.help.clone().map_or(says.clone(), |help| format!("{says}. {help}"));
+                cx.error(problem.with_help(help));
+            }
+        }
+    }
+}
+
+/// The interface a value is written through, and the one it's read through.
+const WRITES: &str = "Serializable";
+const READS: &str = "Deserializable";
 
 /// That a format can't hold `what`, naming the field it's in, if there is one.
 fn cant_hold(format: &str, field: Option<&str>, what: &str) -> String {

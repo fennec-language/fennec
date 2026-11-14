@@ -89,6 +89,10 @@ pub(crate) struct Checker {
     pub(crate) generic_sources: BTreeSet<String>,
     /// Each call to a generic function, by its span, with the types its type parameters are there.
     pub(crate) generic_calls: BTreeMap<(u32, u32), crate::generic_copies::Call>,
+    /// What each generic function writes or reads with a format, by its type parameters: the
+    /// function, the type, the format and the interface it's written or read through. Each call's
+    /// own type is checked once every function is.
+    pub(crate) format_params: BTreeSet<(String, Type, String, String)>,
     /// Each `with` source called on a union, by the call's span, written in for each member.
     pub(crate) union_sources: BTreeMap<(u32, u32), crate::union_sources::Dispatch>,
     /// The `with`s that open several handles, by their values' span, which lowering nests one
@@ -227,6 +231,7 @@ impl Checker {
             widened_values: BTreeMap::new(),
             generic_sources: BTreeSet::new(),
             generic_calls: BTreeMap::new(),
+            format_params: BTreeSet::new(),
             union_sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
             launches: BTreeMap::new(),
@@ -298,6 +303,7 @@ impl Checker {
         self.check_function_annotations();
         self.check_shared_types();
         self.check_dels();
+        crate::stdlib::formats::formats_at_calls(&mut self);
         self.settle_typed();
         if self.diagnostics.is_empty() {
             self.unknowns_left();

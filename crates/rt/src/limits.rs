@@ -150,7 +150,7 @@ fn with_links_followed(path: &str) -> String {
 /// A method of a narrowed `Net`: refused if it's one this `Net` can't make, saying why, and
 /// otherwise run, with the hosts it may reach handed on to a request so its redirects are held
 /// to them too.
-fn narrowed_net(
+pub(crate) fn narrowed_net(
     limited: &Rc<Limited>,
     method: &str,
     args: &[Value],
@@ -285,7 +285,7 @@ fn beneath(path: &str, folder: &str) -> std::path::PathBuf {
 }
 
 /// Runs a method of a whole capability.
-type CallWhole<'c> = dyn FnMut(Capability, &str, &[Value]) -> Result<Value, Diagnostic> + 'c;
+pub(crate) type CallWhole<'c> = dyn FnMut(Capability, &str, &[Value]) -> Result<Value, Diagnostic> + 'c;
 
 /// A method of a narrowed capability: what it may do goes to `call`, and what it may not fails.
 /// `real` says the whole capability is the real one rather than a test's fake, so a narrowed `Fs`
@@ -297,8 +297,47 @@ pub(crate) fn narrowed(
     (real, at): (bool, Span),
     call: &mut CallWhole<'_>,
 ) -> Result<Value, Diagnostic> {
-    match (limited.capability, method) {
-        (Capability::Process, "only") => {
+    match limited.capability {
+        Capability::Process => narrowed_process(limited, method, args, call),
+        Capability::Fs => narrowed_fs(limited, method, args, (real, at), (call, crate::stdlib::fs::beneath)),
+        Capability::Net => narrowed_net(limited, method, args, call),
+        capability => call(capability, method, args),
+    }
+}
+
+/// `narrowed` for an `Fs`'s own methods, all but the two that open a database: what the export
+/// for the file system calls, which reaches nothing of SQLite's.
+pub(crate) fn narrowed_files(
+    limited: &Rc<Limited>,
+    method: &str,
+    args: &[Value],
+    (real, at): (bool, Span),
+    call: &mut CallWhole<'_>,
+) -> Result<Value, Diagnostic> {
+    narrowed_fs(limited, method, args, (real, at), (call, crate::stdlib::fs::beneath_files))
+}
+
+/// `narrowed` for an `Fs`, every method of it: what the export for the two that open a database
+/// calls, which reaches the file system and SQLite and no other module.
+pub(crate) fn narrowed_databases(
+    limited: &Rc<Limited>,
+    method: &str,
+    args: &[Value],
+    (real, at): (bool, Span),
+    call: &mut CallWhole<'_>,
+) -> Result<Value, Diagnostic> {
+    narrowed_fs(limited, method, args, (real, at), (call, crate::stdlib::fs::beneath))
+}
+
+/// A method of a narrowed `Process`: it runs only the programs it was narrowed to.
+pub(crate) fn narrowed_process(
+    limited: &Rc<Limited>,
+    method: &str,
+    args: &[Value],
+    call: &mut CallWhole<'_>,
+) -> Result<Value, Diagnostic> {
+    match method {
+        "only" => {
             let Some(Value::Str(program)) = args.first() else {
                 return call(Capability::Process, method, args);
             };
@@ -306,7 +345,7 @@ pub(crate) fn narrowed(
             Ok(Limited::to(Capability::Process, allowed))
         }
         // `run.cwd` and the like are `run` with options, and run only what it may.
-        (Capability::Process, run) if run == "run" || run.starts_with("run.") => {
+        run if run == "run" || run.starts_with("run.") => {
             // Given a template, the program is its first word. One that's neither is refused
             // by the call, since a narrowed `Process` is never let past on a guess.
             let program: Rc<str> = match args.first() {
@@ -324,12 +363,13 @@ pub(crate) fn narrowed(
                 format!("this Process can run only {}, so it can't run `{program}`", limited.listed());
             Ok(crate::stdlib::process::process_error(&program, &message))
         }
-        (Capability::Process, _) => call(Capability::Process, method, args),
-        (Capability::Fs, _) => narrowed_fs(limited, method, args, (real, at), call),
-        (Capability::Net, _) => narrowed_net(limited, method, args, call),
-        (capability, _) => call(capability, method, args),
+        _ => call(Capability::Process, method, args),
     }
 }
+
+/// What a narrowed `Fs` does for a path beneath a folder it reaches: `fs::beneath`, or the form
+/// of it that opens no database.
+type Beneath = fn(&str, (&str, &std::path::Path), &str, &[Value], Span) -> Result<Value, Diagnostic>;
 
 /// The methods of an `Fs` that change what's on the disk, which one narrowed with `read_only`
 /// refuses. `_sqlite_open` is let through, to open its database for reading only.
@@ -347,7 +387,7 @@ fn narrowed_fs(
     method: &str,
     args: &[Value],
     (real, at): (bool, Span),
-    call: &mut CallWhole<'_>,
+    (call, beneath_folder): (&mut CallWhole<'_>, Beneath),
 ) -> Result<Value, Diagnostic> {
     if method == "read_only" {
         let mut allowed = limited.allowed.clone();
@@ -407,7 +447,7 @@ fn narrowed_fs(
     if let Some(folder) = reaching {
         if real {
             let paths: Vec<Value> = args.iter().map(path_text).collect();
-            return crate::stdlib::fs::beneath(folder, (&full, &beneath(&full, folder)), method, &paths, at);
+            return beneath_folder(folder, (&full, &beneath(&full, folder)), method, &paths, at);
         }
         return call(Capability::Fs, method, args);
     }

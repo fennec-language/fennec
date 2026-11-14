@@ -142,6 +142,51 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_bytes_join",
 ];
 
+/// Which export runs a method or a function by its name, for compiled code to pick where the
+/// call is written: a capability's method as `Fs.read_text`, a handle's as `File.read_line`, one
+/// of the runtime's own functions as `compress.gzip`. Each of these exports reaches only its own
+/// module, so a program links only the modules it calls into: one that reads a file carries no
+/// SQLite and no sockets. Handed a name another row is for, an export stops the program as a bug.
+///
+/// A row is a name, or the start of names when it ends in a dot, and the first row that fits is
+/// the one, so a name comes before the start that would fit it too. A name no row fits goes to
+/// the export that runs them all, which [`module_entry`] says with `None`:
+/// `fennec_native_capability`, `fennec_net_call` or `fennec_crypto_call`. So does every method
+/// of a capability in a test build, whose fakes only that one asks.
+pub const MODULE_ENTRIES: &[(&str, &str)] = &[
+    // The two methods of an `Fs` that open a database, which bring SQLite with them.
+    ("Fs._sqlite_open", "fennec_sqlite_capability"),
+    ("Fs._sqlite_read", "fennec_sqlite_capability"),
+    ("Fs.", "fennec_fs_capability"),
+    ("Net.", "fennec_net_capability"),
+    ("Process.", "fennec_process_capability"),
+    // The small ones, together.
+    ("Stdin.", "fennec_io_capability"),
+    ("Stderr.", "fennec_io_capability"),
+    ("Env.", "fennec_io_capability"),
+    ("Entropy.", "fennec_io_capability"),
+    ("Signals.", "fennec_io_capability"),
+    // Handles.
+    ("Database.", "fennec_database_call"),
+    ("Transaction.", "fennec_database_call"),
+    ("File.", "fennec_file_call"),
+    ("Connection.", "fennec_socket_call"),
+    ("Server.", "fennec_socket_call"),
+    ("UdpSocket.", "fennec_socket_call"),
+    // The runtime's own functions.
+    ("compress.", "fennec_compress_call"),
+    ("unicode.", "fennec_unicode_call"),
+    ("crypto.", "fennec_crypto_alone_call"),
+];
+
+/// The export for the method or function called `name`, by [`MODULE_ENTRIES`], or `None` for one
+/// only the export that runs every module's takes.
+#[must_use]
+pub fn module_entry(name: &str) -> Option<&'static str> {
+    let fits = |row: &str| if row.ends_with('.') { name.starts_with(row) } else { name == row };
+    MODULE_ENTRIES.iter().find(|(row, _)| fits(row)).map(|(_, export)| *export)
+}
+
 /// Whether `symbol` is in [`NEVER_FAIL`], worked out as each export is compiled.
 const fn never_fails(symbol: &str) -> bool {
     listed(NEVER_FAIL, symbol.as_bytes())
@@ -452,6 +497,17 @@ export! {
     fennec_net_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::net_call(a0, a1, a2, a3, a4);
     fennec_native_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::native_call(a0, a1, a2, a3, a4);
     fennec_crypto_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::crypto_call(a0, a1, a2, a3);
+    fennec_fs_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::fs_call(a0, a1, a2, a3, a4);
+    fennec_sqlite_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::sqlite_call(a0, a1, a2, a3, a4);
+    fennec_net_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::net_capability_call(a0, a1, a2, a3, a4);
+    fennec_process_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::process_call(a0, a1, a2, a3, a4);
+    fennec_io_capability(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::io_call(a0, a1, a2, a3, a4);
+    fennec_database_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::database_call(a0, a1, a2, a3, a4);
+    fennec_file_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::file_call(a0, a1, a2, a3, a4);
+    fennec_socket_call(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64 => capabilities::socket_call(a0, a1, a2, a3, a4);
+    fennec_compress_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::compress_call(a0, a1, a2, a3);
+    fennec_unicode_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::unicode_call(a0, a1, a2, a3);
+    fennec_crypto_alone_call(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => capabilities::crypto_alone_call(a0, a1, a2, a3);
     fennec_use_tls() => capabilities::use_tls();
     fennec_constant_kept(a0: i64) => heap::constant_kept(a0);
     fennec_on_task_resume(a0: extern "C" fn(i64)) => parallel::on_task_resume(a0);
@@ -523,6 +579,42 @@ mod tests {
         for symbol in super::NEVER_FAIL {
             assert!(super::SYMBOLS.contains(symbol), "{symbol} isn't exported");
         }
+    }
+
+    /// Each export a name is sent to is one the library has, and no row hides behind an
+    /// earlier one that fits the same names.
+    #[test]
+    fn every_modules_entry_is_exported_and_can_be_reached() {
+        for (row, export) in super::MODULE_ENTRIES {
+            assert!(super::SYMBOLS.contains(export), "{export} isn't exported");
+            assert_eq!(super::module_entry(row), Some(*export), "the row for `{row}` is never reached");
+        }
+    }
+
+    /// A name goes to its own module's export, and one no row is for goes to none.
+    #[test]
+    fn a_name_is_sent_to_its_own_modules_export() {
+        let sent = super::module_entry;
+        assert_eq!(sent("Fs.read_text"), Some("fennec_fs_capability"));
+        assert_eq!(sent("Fs.only"), Some("fennec_fs_capability"));
+        assert_eq!(sent("Fs._sqlite_open"), Some("fennec_sqlite_capability"));
+        assert_eq!(sent("Fs._sqlite_read"), Some("fennec_sqlite_capability"));
+        // Only those two names open a database: anything else of an `Fs` is the file system's.
+        assert_eq!(sent("Fs._sqlite_opened"), Some("fennec_fs_capability"));
+        assert_eq!(sent("Net.get.timeout"), Some("fennec_net_capability"));
+        assert_eq!(sent("Process.run.cwd"), Some("fennec_process_capability"));
+        assert_eq!(sent("Stdin.read_line"), Some("fennec_io_capability"));
+        assert_eq!(sent("Database.query"), Some("fennec_database_call"));
+        assert_eq!(sent("Transaction.execute"), Some("fennec_database_call"));
+        assert_eq!(sent("File.read_line"), Some("fennec_file_call"));
+        assert_eq!(sent("Connection.read_line.timeout"), Some("fennec_socket_call"));
+        assert_eq!(sent("compress.gzip"), Some("fennec_compress_call"));
+        assert_eq!(sent("crypto.sha256"), Some("fennec_crypto_alone_call"));
+        // The runtime does these another way, or not at all.
+        assert_eq!(sent("Clock.now"), None);
+        assert_eq!(sent("Stdout.print"), None);
+        assert_eq!(sent("Fs"), None);
+        assert_eq!(sent("fs.read_text"), None);
     }
 
     /// Whether a symbol is listed is worked out by name, exactly.

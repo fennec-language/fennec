@@ -131,6 +131,15 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_dict_value_words",
     // One atomic add to the count of native blocks made and not freed.
     "fennec_native_live",
+    // Bytes made from bytes. Each runs under `with`, which sets no flag, and none has a wrong
+    // argument to refuse:
+    // a slice holds both bounds to what's there, as a list's slice does, down to nothing;
+    "fennec_bytes_slice",
+    // a part read as text holds its places to what's there too, and bytes that aren't UTF-8 give
+    // the empty text, which what calls it tests for as an answer;
+    "fennec_bytes_text_part",
+    // and a join only copies the two it's given.
+    "fennec_bytes_join",
 ];
 
 /// Whether `symbol` is in [`NEVER_FAIL`], worked out as each export is compiled.

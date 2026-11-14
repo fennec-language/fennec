@@ -650,7 +650,7 @@ mod tests {
         let mut body = String::new();
         for line in 0..lines {
             body.push_str(&format!(
-                "    total += at_or_zero([{line}, {line} + 1], {line} % 2) + f\"{{total}}\".len()\n"
+                "    total += at_or_zero([{line}, {line} + 1], {line} % 2) + len(f\"{{total}}\")\n"
             ));
         }
         format!(

@@ -89,3 +89,29 @@ fn hidden_text_direction_characters_are_refused_even_in_comments() {
         assert!(fennec_syntax::parse(&format!("x = \"user\\u{code:04x}\"\n")).is_ok(), "{code:04x}");
     }
 }
+
+/// The forms before 2026-11-11 that read as something else are refused where they're read, each
+/// with the fix that writes the form of today: `else as why:` is `except why:`, and a `with`
+/// source's `lend x else:` is `lend x except:`.
+#[test]
+fn the_old_failure_forms_are_refused_with_their_fixes() {
+    let cases = [
+        (
+            "def f() -> int:\n    x = g() else as why:\n        fail why\n    return x\n",
+            "a failure is handled with `except why:`: `else` is for a value that's missing",
+            "def f() -> int:\n    x = g() except why:\n        fail why\n    return x\n",
+        ),
+        (
+            "def f() -> with int:\n    lend 1 else:\n        pass\n",
+            "a `with` source's cleanup is written `lend x except:`",
+            "def f() -> with int:\n    lend 1 except:\n        pass\n",
+        ),
+    ];
+    for (source, message, fixed) in cases {
+        let Err(diagnostic) = fennec_syntax::parse(source) else { panic!("{source} parses") };
+        assert_eq!(diagnostic.message, message, "{source}");
+        let written = fennec_syntax::apply_fixes(source, 0, std::slice::from_ref(&diagnostic));
+        assert_eq!(written.as_deref(), Some(fixed), "{source}");
+        assert!(fennec_syntax::parse(fixed).is_ok(), "{fixed}");
+    }
+}

@@ -614,7 +614,7 @@ fn an_else_chain_stops_at_a_failing_step_too() {
     let kept = |body: &str| crate::in_main_after(types, &format!("{body}\nstdout.print(1)\n"));
     for body in [
         "name: str = find(1).name else \"?\"\nstdout.print(name)",
-        "size: int = find(1).name.len() else 0\nstdout.print(size)",
+        "size: int = len(find(1).name else \"\")\nstdout.print(size)",
         "kept: str = find(1).expect(\"there\").name\nstdout.print(kept)",
     ] {
         assert_eq!(kept(body), empty, "{body}");

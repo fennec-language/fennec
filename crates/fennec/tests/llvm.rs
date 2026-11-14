@@ -6574,17 +6574,17 @@ struct Holder:
 def whole() -> int fails Oops:
     mut holder = Holder()
     holder.push(7)
-    return holder.top()? * 10 + NOTHING.len()
+    return holder.top()? * 10 + len(NOTHING)
 
 def reads() -> int:
     mut total = 0
     for _ in range(50):
-        total += NOTHING.len()
+        total += len(NOTHING)
     return total
 
 ## Called only on the main thread, so its code counts the constant there.
 def main_reads() -> int:
-    return NOTHING.len() + NOTHING.len() + NOTHING.len()
+    return len(NOTHING) + len(NOTHING) + len(NOTHING)
 
 def in_task(stdout: Stdout) fails Oops:
     stdout.print("task:", whole()?, reads())
@@ -6595,7 +6595,7 @@ def main(stdout: Stdout) fails Oops | Crashed:
     first = whole()?
     with launch(() => in_task(stdout)?)?:
         pass
-    stdout.print("main:", before, first, "after:", whole()?, NOTHING.len())
+    stdout.print("main:", before, first, "after:", whole()?, len(NOTHING))
 "#,
         "task: 70 0\nmain: 0 70 after: 70 0\n",
     )
@@ -10575,7 +10575,7 @@ fn failing_partway() -> String {
     let lines = (0..50).fold(String::new(), |mut lines, line| {
         let _ = writeln!(
             lines,
-            "    total += checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?.len()"
+            "    total += len(checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?)"
         );
         lines
     });
@@ -10646,7 +10646,7 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
     let mut body = String::new();
     let mut total: i64 = 0;
     for line in 0..lines {
-        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + f\"{{total}}\".len()");
+        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + len(f\"{{total}}\")");
         let written = i64::try_from(total.to_string().len()).unwrap_or(0);
         total += line + written;
     }
@@ -11108,7 +11108,7 @@ fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Resul
         return Ok(());
     }
     let source = "from std.collections import Packed\n\ndef main(stdout: Stdout):\n    mut packed = Packed[int]()\n    for n in range(100):\n        packed.append([n, n + 1, n + 2])\n";
-    let building = counts_of("packed_built", &format!("{source}    stdout.print(packed.len())\n"))?;
+    let building = counts_of("packed_built", &format!("{source}    stdout.print(len(packed))\n"))?;
     let looped = counts_of(
         "packed_looped",
         &format!(
@@ -23489,7 +23489,7 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
         let source = format!(
             "def site() -> EmbeddedFolder:\n    return embed_folder(\"site\")\n\n\
              def main(stdout: Stdout):\n    mut total = 0\n    for i in range({calls}):\n        \
-             files = site()\n        total += len(files) + (files.get(\"index.html\") else bytes()).len()\n    \
+             files = site()\n        total += len(files) + len(files.get(\"index.html\") else bytes())\n    \
              mut paths = site().keys()\n    paths.append(\"extra\")\n    \
              stdout.print(total, paths, site().keys())\n"
         );
@@ -25150,7 +25150,7 @@ test \"nothing runs\"(process: Process):
     problem = failure_of(() => process.run(\"echo\", [\"hello\"])?)
     assert problem is not None
     assert problem.program() == \"echo\"
-    assert process.ran().len() == 1
+    assert len(process.ran()) == 1
 ",
     )?;
     let path = program.to_string_lossy().into_owned();

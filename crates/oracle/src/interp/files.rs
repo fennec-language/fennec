@@ -50,6 +50,7 @@ pub(crate) fn done<T>(done: Done<T>, span: Span) -> Run<T> {
 impl Interp {
     /// Works on the file system this run shares.
     fn disk<R>(&self, span: Span, work: impl FnOnce(&mut Disk) -> Done<R>) -> Run<R> {
+        self.reach_out(super::parallel::Outside::Disk)?;
         let Ok(mut disk) = self.shared.disk.lock() else { return unsupported("the file system was lost") };
         done(work(&mut disk), span)
     }
@@ -345,7 +346,8 @@ impl Interp {
             }
             ("read_text", []) => self.disk(span, |disk| disk.read_rest(handle)).map(Value::Str),
             ("lines", []) => {
-                let lines = FileLines { disk: std::sync::Arc::clone(&self.shared.disk), handle, span };
+                let made = self.shared.rounds_started.load(std::sync::atomic::Ordering::SeqCst);
+                let lines = FileLines { disk: std::sync::Arc::clone(&self.shared.disk), handle, span, made };
                 let shown = self.program.type_at(span).map(super::calls::shown_type);
                 Ok(Interp::stream_of(Source::Lines(lines), shown))
             }

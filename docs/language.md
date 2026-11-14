@@ -727,6 +727,7 @@ def main(net: Net, fs: Fs, clock: Clock, entropy: Entropy, stdout: Stdout):
 
 - Everyday builds stay fast, and release builds can take as long as they need.
 - `sum()` over floats, `dot()`, and `std.math`'s vector and matrix reductions add in one fixed pattern, 8 running totals combined pairwise, so they're fast, the same bits on every platform, and more accurate than adding left to right. Built for `sum`, over a list or one item at a time, and for `math.dot(a, b)` over lists. `std.math`'s sums of four, as in `Vec4.dot` and `Mat4`'s products, keep glam's left-to-right order, which is as fixed, so they match glam bit for bit. `math.fma(a, b, c)` rounds `a * b + c` once, the same everywhere. Not built yet.
+- A float `sum` over `parallel(...)` may round differently from the same sum in a plain loop, and from the same sum written with an `if` or a step that can fail, since each form adds in a pattern of its own. Each form gives the same bits on every run and at any thread count: `sum(x for x in parallel(items))` and `sum(x for x in parallel(items) if True)` can differ in their last digits, but neither ever changes. Built.
 - `@hot` turns a hidden copy into a compile error, and the tracer shows where each copy happens and why. Built: anything that may allocate or copy in a `@hot` function, or in what it calls, is an error that says why, and so is any check native code keeps there, like an index it can't place inside its list. An overflow check the compiler can't prove away stays, as the safety net it is everywhere.
 
 ## Still to decide

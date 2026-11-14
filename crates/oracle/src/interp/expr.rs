@@ -598,6 +598,12 @@ impl Interp {
         iter: &'static Expr,
         cond: Option<&'static Expr>,
     ) -> Run<Value> {
+        if let Some(call) = self.parallel_call(iter)? {
+            if kind != CompKind::List {
+                return unsupported("a set or dict comprehension over `parallel`");
+            }
+            return self.parallel_list(elem, names, call, cond).map(Value::List);
+        }
         let over = self.eval(iter)?;
         let mut items = self.items_of(over, iter.span)?;
         let mark = self.frame()?.vars.len();
@@ -1131,6 +1137,10 @@ fn names_in_stmts(body: &[Stmt], names: &mut BTreeSet<String>) {
             }
             StmtKind::For { iter, body, .. } => {
                 names_in_expr(iter, names);
+                names_in_stmts(body, names);
+            }
+            StmtKind::With { value, body, .. } => {
+                names_in_expr(value, names);
                 names_in_stmts(body, names);
             }
             _ => {}

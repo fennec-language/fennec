@@ -424,6 +424,17 @@ pub(crate) fn threads_runtime_built() -> bool {
     *BUILT.get_or_init(|| runtime_variant_built("threads", "threads", "fennec_runtime_threads"))
 }
 
+/// Builds both runtime libraries with the heap audit in them, next to `fennec`, as
+/// `libfennec_runtime_audit.a` and `libfennec_runtime_threads_audit.a`: what a program built under
+/// `FENNEC_AUDIT=1` links. Each is built in the folder the gate builds it in.
+pub(crate) fn audited_runtimes_built() -> bool {
+    static BUILT: OnceLock<bool> = OnceLock::new();
+    *BUILT.get_or_init(|| {
+        runtime_variant_built("audit", "audit", "fennec_runtime_audit")
+            && runtime_variant_built("threads,audit", "threads-audit", "fennec_runtime_threads_audit")
+    })
+}
+
 /// Builds the runtime library with `features`, in a folder of its own named `folder`, beside the
 /// plain build's `target/debug`, and puts it next to `fennec` as `name`.
 fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {

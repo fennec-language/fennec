@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use super::calls::{ArgVal, Receiver};
 use super::{Binding, Interp, Place, Run, unsupported};
 use crate::text;
-use crate::value::{Func, Instance, Value};
+use crate::value::{Cell, Func, Instance, Value};
 
 impl Interp {
     /// What `stdout.print` and `str()` show: a string as it is, and anything else as it shows
@@ -53,6 +53,8 @@ impl Interp {
             Value::Id(id) => format!("Id({})", id.slot),
             Value::Func(_) => return unsupported("printing a function"),
             Value::Cap(_) => return unsupported("printing a capability"),
+            Value::Shared(_) => return unsupported("printing a `shared` value"),
+            Value::Channel(_) => return unsupported("printing a channel"),
             Value::Unknown(why) => return unsupported(why.clone()),
         })
     }
@@ -191,8 +193,26 @@ impl Interp {
                 }
                 Ok(true)
             }
+            (Value::Shared(a), Value::Shared(b)) => self.shared_equal(a, b),
             _ => plain_equal(left, right),
         }
+    }
+
+    /// Two `shared` values compare by what they hold, as `==` takes both their locks in a fixed
+    /// order and compares the values (decided 2026-11-14), so a cell is equal to itself. A cell a
+    /// `lock` holds now is refused, since `==` would wait there for that lock.
+    fn shared_equal(&mut self, a: &Cell, b: &Cell) -> Run<bool> {
+        if a.id == b.id {
+            return Ok(true);
+        }
+        let locked = std::sync::atomic::Ordering::SeqCst;
+        if a.locked.load(locked) || b.locked.load(locked) {
+            return unsupported("comparing a `shared` value a `lock` holds");
+        }
+        let (Some(x), Some(y)) = (held_now(a), held_now(b)) else {
+            return unsupported("comparing a `shared` value whose cell couldn't be read");
+        };
+        self.equal(&x, &y)
     }
 
     /// The order of two values, with a type's own `def <` where it has one.
@@ -250,6 +270,11 @@ pub(crate) fn float_order(left: f64, right: f64) -> Ordering {
         (false, true) => Ordering::Less,
         (false, false) => left.partial_cmp(&right).unwrap_or(Ordering::Equal),
     }
+}
+
+/// A copy of what a `shared` cell holds, taken with its lock held only for the copy.
+fn held_now(cell: &Cell) -> Option<Value> {
+    cell.held.lock().ok().map(|value| value.clone())
 }
 
 /// Equality with no type's own `def ==`: what a dict's keys and a set's items are told apart by.
@@ -322,6 +347,9 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
             return unsupported("comparing functions, generators or capabilities");
         }
         (Value::Unknown(why), _) | (_, Value::Unknown(why)) => return unsupported(why.clone()),
+        (Value::Shared(_) | Value::Channel(_), _) | (_, Value::Shared(_) | Value::Channel(_)) => {
+            return unsupported("comparing `shared` values or channels");
+        }
         _ => false,
     })
 }

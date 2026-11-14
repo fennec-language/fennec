@@ -134,7 +134,7 @@ impl Emit<'_, '_, '_> {
         at: &str,
         span: Span,
     ) -> Result<(), String> {
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         let value = self.temp();
         match kind {
             Kind::Int => {

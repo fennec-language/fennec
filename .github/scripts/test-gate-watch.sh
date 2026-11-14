@@ -16,8 +16,26 @@ for name in cargo rustc ld program; do
 done
 cc -o "$work/deps/fennec-0123456789abcdef" "$work/sleeper.c" || exit 1
 cc -o "$work/bin/busy" "$work/busy.c" || exit 1
-# And one that holds 200 MB, touched so it's really held, then waits.
-printf '#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\nint main(void) { char *held = malloc(200 << 20); memset(held, 1, 200 << 20); sleep(30); return held[7]; }\n' > "$work/swelling.c"
+# And one that holds 200 MB and keeps using it for 30 seconds, as a program running away does. One
+# that only waited would be paged out while a gate runs, short of memory, until it held almost
+# nothing; filled with bytes that repeat, it would be compressed to almost nothing as well.
+cat > "$work/swelling.c" << 'EOF'
+#include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+int main(void) {
+  long size = 200L << 20;
+  unsigned char *held = malloc(size);
+  unsigned x = 1;
+  for (long at = 0; at < size; at++) { x = x * 1103515245 + 12345; held[at] = x >> 24; }
+  time_t end = time(0) + 30;
+  while (time(0) < end) {
+    for (long at = 0; at < size; at += 4096) held[at]++;
+    usleep(100000);
+  }
+  return held[7];
+}
+EOF
 cc -o "$work/bin/swelling" "$work/swelling.c" || exit 1
 
 # Runs a program for six seconds under a CPU limit of two seconds, and a wall-clock limit of
@@ -115,6 +133,67 @@ for named in swelling cargo; do
     failures=$((failures + 1))
   fi
 done
+
+# Time held at launch, as macOS holds a brand-new executable at `_dyld_start`, counts against no
+# limit. A launcher starts a program suspended at its first instruction, which is where such a
+# hold leaves it, and lets it go after as many seconds as it's given. It sits under a path like a
+# test binary's, as the gate's launchers do, so gate-watch leaves it be.
+cat > "$work/held.c" << 'EOF'
+#include <signal.h>
+#include <spawn.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char **environ;
+int main(int argc, char **argv) {
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_START_SUSPENDED);
+  pid_t pid;
+  if (argc < 3 || posix_spawn(&pid, argv[2], NULL, &attr, argv + 2, environ) != 0) return 2;
+  sleep(atoi(argv[1]));
+  kill(pid, SIGCONT);
+  int status;
+  waitpid(pid, &status, 0);
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+}
+EOF
+if [ "$(uname)" = Darwin ] && cc -o "$work/deps/held-0123456789abcdef" "$work/held.c"; then
+  launcher="$work/deps/held-0123456789abcdef"
+  # Held for 15 seconds against a wall-clock limit of 6, then runs for a moment and ends.
+  bash -c "\"$launcher\" 15 \"$work/bin/program\" 0" &
+  parent=$!
+  : > "$work/log"
+  : > "$work/holds"
+  "$here/gate-watch.sh" "$parent" "$work/log" 2 4194304 6 "$work/holds" &
+  watcher=$!
+  wait "$parent"
+  wait "$watcher"
+  held=$(awk 'NR == 1 { print $1 }' "$work/holds")
+  if [ -s "$work/log" ]; then
+    echo "FAILED: a program held at launch past its wall-clock limit was stopped: $(cat "$work/log")"
+    failures=$((failures + 1))
+  elif [ -z "$held" ] || [ "$held" -lt 10 ]; then
+    echo "FAILED: a 15-second hold at launch was written as \`$(cat "$work/holds")\`"
+    failures=$((failures + 1))
+  else
+    echo "ok: a program held at launch isn't stopped, and its hold of ${held}s is written"
+  fi
+  # Held for 10 seconds, then stuck: stopped 6 seconds after it starts.
+  bash -c "\"$launcher\" 10 \"$work/bin/program\" 30; true" &
+  parent=$!
+  : > "$work/log"
+  "$here/gate-watch.sh" "$parent" "$work/log" 2 4194304 6 "$work/holds" &
+  watcher=$!
+  wait "$parent"
+  wait "$watcher"
+  if grep -q "over its time limit.*s-held-at-launch" "$work/log"; then
+    echo "ok: a program stuck after a hold at launch is stopped"
+  else
+    echo "FAILED: a program stuck after a hold at launch wasn't stopped: $(cat "$work/log")"
+    failures=$((failures + 1))
+  fi
+fi
 
 [ "$failures" = 0 ] && echo "all passed"
 exit "$failures"

@@ -1651,8 +1651,11 @@ found:
                 "{changed} = call ptr @fennec_dict_pop(ptr {held}, i64 {key_held}, i64 {from}, i64 {to})"
             ));
         }
-        self.line(&format!("store ptr {changed}, ptr {place}"));
+        // A pop of a key that isn't there fails and gives back nothing, so the dict's slot is
+        // written only once the call is known to have worked: it still holds the dict on the
+        // way out.
         self.leave_if_failed();
+        self.line(&format!("store ptr {changed}, ptr {place}"));
         self.line(&format!("{word} = call i64 @fennec_dict_popped()"));
         if value_kind.in_memory() {
             let block = self.temp();

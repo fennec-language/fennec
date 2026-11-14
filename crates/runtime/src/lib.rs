@@ -138,8 +138,11 @@ pub const NEVER_FAIL: &[&str] = &[
     // a part read as text holds its places to what's there too, and bytes that aren't UTF-8 give
     // the empty text, which what calls it tests for as an answer;
     "fennec_bytes_text_part",
-    // and a join only copies the two it's given.
+    // a join only copies the two it's given;
     "fennec_bytes_join",
+    // and bytes read as text whatever they hold give a text always, with what isn't UTF-8
+    // replaced: `fennec_bytes_decode` above without its one refusal.
+    "fennec_bytes_text",
 ];
 
 /// Whether `symbol` is in [`NEVER_FAIL`], worked out as each export is compiled.

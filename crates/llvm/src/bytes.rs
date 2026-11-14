@@ -192,7 +192,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn bytes_of_list(&mut self, dest: LocalId, list: &Operand, span: Span) -> Result<(), String> {
         let (list, _) = self.operand(list)?;
         self.declare("declare ptr @fennec_bytes_of_list(ptr, i64, i64) nounwind");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         let block = self.temp();
         self.line(&format!("{block} = call ptr @fennec_bytes_of_list(ptr {list}, i64 {from}, i64 {to})"));
         self.leave_if_failed();

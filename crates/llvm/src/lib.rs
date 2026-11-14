@@ -131,6 +131,11 @@ pub enum NativeBlocks {
 pub struct Shared {
     /// Each function's symbol for where it starts in its file, and that place.
     pub starts: BTreeMap<String, u32>,
+    /// Each function's symbol for its table of places in the source, and the places: where each
+    /// thing it may say failed starts. A function's text names a place by its number here, so
+    /// text added above the function, or anywhere in a file one of its places is in, leaves the
+    /// function's text as it was.
+    pub places: BTreeMap<String, Vec<u32>>,
     /// Each string's symbol for its number, and its text.
     pub strings: BTreeMap<String, String>,
     /// Each literal's symbol for its block's address, and its text.

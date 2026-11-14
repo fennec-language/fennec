@@ -2240,7 +2240,7 @@ impl Emit<'_, '_, '_> {
             }
             Kind::Str => {
                 self.declare("declare ptr @fennec_str_slice(ptr, i64, i64, i64, i64) nounwind");
-                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let (from, to) = self.place_in_source(span);
                 self.on_blocks([&object], |emit, [block]| {
                     emit.line(&format!("{part} = call ptr @fennec_str_slice(ptr {block}, i64 {start}, i64 {end}, i64 {from}, i64 {to})"));
                 });
@@ -2583,7 +2583,7 @@ impl Emit<'_, '_, '_> {
         let [Operand::Local(list), at, value] = args else {
             return Err("`insert` with the wrong arguments".to_owned());
         };
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         let item = list_item(&self.kind_of(*list)?.clone())?;
         let held = self.item_kind(item)?;
         let (place, _) = self.operand(at)?;
@@ -2606,7 +2606,7 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         match (name, args) {
             ("Buffer.new" | "Buffer.new.capacity", _) => {
                 let dest = dest.ok_or("no result")?;

@@ -15711,6 +15711,107 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// Runs the echo server at `executable` under a heap audit on two workers, has it serve five
+/// lines and a stop, six rounds, and gives how it ended and what it said. `selftest` is what
+/// `FENNEC_AUDIT_SELFTEST` is set to, if anything.
+fn served_six_rounds(executable: &Path, selftest: Option<&str>) -> std::io::Result<(Option<i32>, String)> {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    let mut command = Command::new(executable);
+    command.env("FENNEC_AUDIT", "1").env("FENNEC_COUNTS", "1").env("FENNEC_THREADS", "2");
+    match selftest {
+        Some(how) => command.env("FENNEC_AUDIT_SELFTEST", how),
+        None => command.env_remove("FENNEC_AUDIT_SELFTEST"),
+    };
+    let mut server =
+        Running(command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?);
+    let port: u16 = server.first_line()?.trim().parse().map_err(|_| std::io::ErrorKind::InvalidData)?;
+    for line in ["a", "b", "c", "d", "e", "stop"] {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        stream.write_all(format!("{line}\n").as_bytes())?;
+        let mut back = String::new();
+        let _ = std::io::BufReader::new(stream).read_line(&mut back);
+        let wanted = if line == "stop" {
+            String::new()
+        } else {
+            format!("{line}, as a text long enough for a block of its own\n")
+        };
+        assert_eq!(back, wanted);
+    }
+    let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
+    let ended = loop {
+        if let Some(status) = server.0.try_wait()? {
+            break status;
+        }
+        assert!(std::time::Instant::now() < deadline, "the server went on after `break`");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let mut said = String::new();
+    if let Some(mut errors) = server.0.stderr.take() {
+        errors.read_to_string(&mut said)?;
+    }
+    Ok((ended.code(), said))
+}
+
+/// A block a served round leaves behind is counted and audited, on the worker that holds it. A
+/// round's blocks end with it and are handed to no one, so one that's left is in its worker's own
+/// table, which neither the count of what's live at the end of a run nor the heap audit read: a
+/// server that left a block for every request ended with `live 0` and a clean audit, however long
+/// it served. Now a worker that stops serving looks at what it still holds.
+///
+/// A program can't leave a block itself, so the leak is the runtime's, made on purpose under
+/// `FENNEC_AUDIT_SELFTEST=rounds`: one block for each round. The same server run without it
+/// leaves nothing and says nothing.
+#[test]
+fn a_block_a_served_round_leaves_is_counted_and_audited_on_its_worker() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("rounds-leave-blocks")?;
+    let program = dir.join("rounds.fen");
+    std::fs::write(
+        &program,
+        "from std.net import NetError
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        for conn in parallel(server):
+            line = conn.read_line()? else \"\"
+            if line == \"stop\":
+                break
+            conn.write(f\"{line}, as a text long enough for a block of its own\\n\")?
+    stdout.print(\"served\")
+",
+    )?;
+    let executable = dir.join("rounds");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (code, said) = served_six_rounds(&executable, None)?;
+    assert_eq!(code, Some(0), "{said}");
+    assert!(said.contains(" live 0"), "{said}");
+    assert!(!said.contains("heap audit"), "{said}");
+    let (code, said) = served_six_rounds(&executable, Some("rounds"))?;
+    assert_eq!(code, Some(87), "{said}");
+    assert!(said.contains("heap audit: a worker that stopped serving was left holding blocks"), "{said}");
+    assert_eq!(
+        said.lines().filter(|line| line.starts_with("heap audit: leaked: str at ")).count(),
+        6,
+        "{said}"
+    );
+    assert!(said.contains(" live 6"), "{said}");
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A built server whose rounds crash on purpose, for every tenth request: each crash ends only its
 /// own round, closing its connection, and the server answers the other nine.
 #[test]
@@ -20764,6 +20865,31 @@ fn a_ref_loop_over_items_holding_blocks_copies_nothing() -> std::io::Result<()> 
     Ok(())
 }
 
+/// A struct, a tuple or an optional held in place in a local is let go of where it's read for
+/// the last time, as a list or a string in one is, so what changes the same value further down
+/// the function finds its lists with one owner. It was kept to the function's end: a struct
+/// taken out of a field, changed and put back in an `if` was still an owner when the next call
+/// took it out again, which copied its list each time. `json.loads` does exactly that to say why
+/// a read failed. Each of the four shapes here copied a list a call, 350 copies in all.
+#[test]
+fn a_value_held_in_place_is_let_go_of_at_its_last_read() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("let_go_at_the_last_read")?;
+    std::fs::write(
+        dir.join("let_go_at_the_last_read.fen"),
+        include_str!("fixtures/let_go_at_the_last_read.fen"),
+    )?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "let_go_at_the_last_read", how)?;
+        assert_eq!(printed, "21250\n", "{how:?}");
+        assert!(counts.starts_with("copies 0 ") && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 const REF_LOOPS_HOLDING_BLOCKS: &str = r#"from std.collections import Id, Table
 
 struct Unit:
@@ -23332,6 +23458,87 @@ fn an_edit_recompiles_only_the_function_it_touches() -> std::io::Result<()> {
     assert!(build(source("").replace("n * 33", "n * 34"))?.contains("compiled 1 of 3"));
     std::fs::remove_dir_all(&dir)
 }
+
+/// Text added above a function leaves the function's own text as it was, so it isn't compiled
+/// again, whatever the function can fail with. Its text named each place in the source it might
+/// say failed by how far into all the sources it was, and a closure by where it started, so one
+/// line added at the top of a file moved those numbers in every function below it. Here the
+/// functions index a list, pop a dict, sort by a closure and read JSON into a struct, whose
+/// reader mixes places in this file with the standard library's. A comment added at the top
+/// compiles none of them again, and a change to one function compiles it and its one caller
+/// that holds a copy of it. The program prints the same each time.
+#[test]
+fn text_added_above_a_function_that_can_fail_doesnt_compile_it_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("edit_above")?;
+    let program = dir.join("edit_above.fen");
+    let (path, out) =
+        (program.to_string_lossy().into_owned(), dir.join("edit_above").to_string_lossy().into_owned());
+    let build = |text: String| -> std::io::Result<usize> {
+        std::fs::write(&program, text)?;
+        let built = fennec(&["build", "--llvm", &path, "-o", &out], &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let said = String::from_utf8_lossy(&built.stdout).into_owned();
+        let ran = Command::new(&out).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "2 1 [3, 2, 1]
+7
+",
+            "{said}"
+        );
+        let compiled = said.split("compiled ").nth(1).and_then(|rest| rest.split(' ').next());
+        Ok(compiled.and_then(|count| count.parse().ok()).unwrap_or(usize::MAX))
+    };
+    assert!(build(EDIT_ABOVE.to_owned())? > 5, "the first build compiles everything");
+    assert_eq!(
+        build(format!(
+            "## nothing here
+
+{EDIT_ABOVE}"
+        ))?,
+        0,
+        "a comment added at the top"
+    );
+    let changed = EDIT_ABOVE.replace(
+        "    return items[at]
+",
+        "    return items[at] + 0
+",
+    );
+    assert!(build(changed)? <= 2, "one function changed: it, and the caller that holds a copy of it");
+    assert_eq!(build(EDIT_ABOVE.to_owned())?, 0, "as it first was");
+    std::fs::remove_dir_all(&dir)
+}
+
+const EDIT_ABOVE: &str = r#"from std import json
+
+struct Order:
+    user: int
+    item: str
+
+def first(items: list[int], at: int) -> int:
+    return items[at]
+
+def popped(counts: dict[str, int], key: str) -> int:
+    mut mine = counts
+    return mine.pop(key)
+
+def by_size(items: list[int]) -> list[int]:
+    return sorted(items, key=n => -n)
+
+def read(text: str) -> int fails ParseError:
+    order = json.loads[Order](text)?
+    return order.user
+
+def main(stdout: Stdout):
+    stdout.print(first([1, 2, 3], 1), popped({"a": 1}, "a"), by_size([1, 3, 2]))
+    got = read("{\"user\": 7, \"item\": \"x\"}") except ParseError(): -1
+    stdout.print(got)
+    return
+"#;
 
 /// ASCII is stripped here, sharing a string with nothing to take off; other text goes to the
 /// runtime.

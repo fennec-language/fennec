@@ -632,6 +632,13 @@ impl<'p> Module<'_, 'p> {
             .map(|inst| inst.span.start)
             .min()
             .unwrap_or(0);
+        // Whether any of its code is written in the program's own files, whose places move when
+        // text is added above them. The standard library's never do.
+        let moves = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.insts)
+            .any(|inst| inst.span != Span::default() && !inst.span.in_prelude());
         self.shared.starts.insert(start_symbol.clone(), start);
         self.declare(&format!("@\"{start_symbol}\" = external dso_local global i64"));
         let failed = if self.flagged(&function.name) {
@@ -673,8 +680,9 @@ impl<'p> Module<'_, 'p> {
             failed,
             leaves: std::cell::Cell::new(false),
             needs_prop: false,
-            start,
+            named: if moves { Places::Numbered } else { Places::FromStart(start) },
             start_symbol,
+            sites: Vec::new(),
             made_for_body: Vec::new(),
             self_target,
             taken_at: BTreeMap::new(),
@@ -768,6 +776,19 @@ pub(crate) enum Runs {
     Anywhere,
 }
 
+/// How a function's text names the places in the source it may say failed.
+#[derive(Clone, Copy)]
+enum Places {
+    /// By how far each is from where the function starts, for a function written wholly in the
+    /// standard library. None of its places moves when the program's text does, so its text is
+    /// what it always was.
+    FromStart(u32),
+    /// By its number in the function's table of places, for a function with any code in the
+    /// program's own files. The table is written fresh each build, so text added above a place
+    /// moves the table's entry and leaves the function's text alone.
+    Numbered,
+}
+
 /// One function being written.
 pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) module: &'e mut Module<'w, 'p>,
@@ -794,8 +815,11 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Whether a way out for a failure was written.
     leaves: std::cell::Cell<bool>,
     needs_prop: bool,
-    start: u32,
+    /// How this function's text names the places in the source it may say failed.
+    named: Places,
     start_symbol: String,
+    /// The places in the source this function's text names by number: where each starts.
+    sites: Vec<u32>,
     /// Blocks made for the code being written now that no local holds, innermost last: each a
     /// block and whether it was made here. `on_blocks` notes the ones it makes for its body, and
     /// `max` and `min` their keys. A failure that leaves the function meanwhile lets go of them
@@ -1492,12 +1516,52 @@ impl Emit<'_, '_, '_> {
         self.fail_if(&low, TOO_DEEP, span);
     }
 
-    /// Where a span is, from the symbol for where this function starts, for failing with.
+    /// This function's number for a place in the source, and the symbol of its table of places.
+    /// The table is written fresh each build, in the module every build makes anyway, so the
+    /// function's own text holds only the number and how long the span is: text added anywhere
+    /// before the place moves the table's entry, and the function isn't compiled again.
+    fn site(&mut self, at: u32) -> (usize, String) {
+        let symbol = format!("{}.sites", self.start_symbol);
+        let number = self.sites.iter().position(|known| *known == at).unwrap_or_else(|| {
+            self.sites.push(at);
+            self.sites.len() - 1
+        });
+        self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
+        self.module.shared.places.insert(symbol.clone(), self.sites.clone());
+        (number, symbol)
+    }
+
+    /// Where a span is in the source, for a runtime call that says where it failed: its two ends,
+    /// the first read from this function's table of places and the second that far on.
+    pub(crate) fn place_in_source(&mut self, span: Span) -> (String, String) {
+        // A place in the standard library never moves with the program's text, so it's written
+        // as it is: std's own code, where most of these calls are, is what it was.
+        if span.in_prelude() || matches!(self.named, Places::FromStart(_)) {
+            return (span.start.to_string(), span.end.to_string());
+        }
+        let (number, symbol) = self.site(span.start);
+        let length = span.end.saturating_sub(span.start);
+        let (place, first, last) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{place} = getelementptr inbounds i64, ptr @\"{symbol}\", i64 {number}"));
+        self.line(&format!("{first} = load i64, ptr {place}, !invariant.load !1"));
+        self.line(&format!("{last} = add i64 {first}, {length}"));
+        (first, last)
+    }
+
+    /// Where a span is, from this function's table of places, for failing with.
     pub(crate) fn span_values(&mut self, fail: &str, span: Span) -> (String, String) {
-        let symbol = self.start_symbol.clone();
-        let (from, to) = (span.start.saturating_sub(self.start), span.end.saturating_sub(self.start));
+        if let Places::FromStart(start) = self.named {
+            let symbol = self.start_symbol.clone();
+            let (from, to) = (span.start.saturating_sub(start), span.end.saturating_sub(start));
+            let text = format!(
+                "  %s{fail} = load i64, ptr @\"{symbol}\"\n  %a{fail} = add i64 %s{fail}, {from}\n  %b{fail} = add i64 %s{fail}, {to}\n"
+            );
+            return (text, format!("i64 %a{fail}, i64 %b{fail}"));
+        }
+        let (number, symbol) = self.site(span.start);
+        let length = span.end.saturating_sub(span.start);
         let text = format!(
-            "  %s{fail} = load i64, ptr @\"{symbol}\"\n  %a{fail} = add i64 %s{fail}, {from}\n  %b{fail} = add i64 %s{fail}, {to}\n"
+            "  %s{fail} = getelementptr inbounds i64, ptr @\"{symbol}\", i64 {number}\n  %a{fail} = load i64, ptr %s{fail}\n  %b{fail} = add i64 %a{fail}, {length}\n"
         );
         (text, format!("i64 %a{fail}, i64 %b{fail}"))
     }
@@ -1613,7 +1677,11 @@ impl Emit<'_, '_, '_> {
         self.needs_prop = true;
         let (out, last) = self.ways_out("left_traced");
         let from = last.unwrap_or_else(|| self.current.clone());
-        self.traced_calls.push((from, span.start.saturating_sub(self.start)));
+        let place = match self.named {
+            Places::FromStart(start) => span.start.saturating_sub(start),
+            Places::Numbered => u32::try_from(self.site(span.start).0).unwrap_or(0),
+        };
+        self.traced_calls.push((from, place));
         self.line(&format!("br i1 {failed}, label %{out}, label %{ok}, !prof !0"));
         self.start_block(&ok);
     }
@@ -1627,10 +1695,19 @@ impl Emit<'_, '_, '_> {
         self.declare("declare void @fennec_trace_frame(i64, i64) nounwind cold");
         let arms: Vec<String> =
             self.traced_calls.iter().map(|(block, from)| format!("[ {from}, %{block} ]")).collect();
-        let symbol = self.start_symbol.clone();
+        if matches!(self.named, Places::FromStart(_)) {
+            let symbol = self.start_symbol.clone();
+            let _ = writeln!(
+                self.cold,
+                "left_traced:\n  %left_from = phi i64 {}\n  %left_start = load i64, ptr @\"{symbol}\"\n  %left_at = add i64 %left_start, %left_from\n  call void @fennec_trace_frame(i64 %left_at, i64 %left_at)\n  br label %prop",
+                arms.join(", ")
+            );
+            return;
+        }
+        let symbol = format!("{}.sites", self.start_symbol);
         let _ = writeln!(
             self.cold,
-            "left_traced:\n  %left_from = phi i64 {}\n  %left_start = load i64, ptr @\"{symbol}\"\n  %left_at = add i64 %left_start, %left_from\n  call void @fennec_trace_frame(i64 %left_at, i64 %left_at)\n  br label %prop",
+            "left_traced:\n  %left_from = phi i64 {}\n  %left_place = getelementptr inbounds i64, ptr @\"{symbol}\", i64 %left_from\n  %left_at = load i64, ptr %left_place\n  call void @fennec_trace_frame(i64 %left_at, i64 %left_at)\n  br label %prop",
             arms.join(", ")
         );
     }
@@ -2390,7 +2467,7 @@ impl Emit<'_, '_, '_> {
             }
             BinOp::Pow => {
                 self.declare("declare i64 @fennec_int_power(i64, i64, i64, i64) nounwind");
-                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let (from, to) = self.place_in_source(span);
                 let temp = self.temp();
                 self.line(&format!(
                     "{temp} = call i64 @fennec_int_power(i64 {a}, i64 {b}, i64 {from}, i64 {to})"

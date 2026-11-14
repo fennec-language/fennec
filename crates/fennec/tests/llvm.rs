@@ -9446,6 +9446,86 @@ def main(stdout: Stdout):
     )
 }
 
+/// A call that fails lets go of what was made for it. A block made for one call, which no local
+/// holds, was let go of only once the call's result was read, so a call that failed and left the
+/// function left the block for good. The runtime lane's sweep found these two with an audited
+/// build: `text[i]` past the end of a short string, which left the block made for the text, and
+/// `max` with `key=` of an empty list, which left the list of keys. Each stops a task whose
+/// launcher carries on, and the program ends with nothing left.
+#[test]
+fn a_call_that_fails_lets_go_of_what_was_made_for_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for (name, source) in [("failed_index", FAILED_INDEX), ("failed_max_key", FAILED_MAX_KEY)] {
+        prints_in_both_builds(
+            name, source, "1
+",
+        )?;
+        assert!(counts_of(&format!("{name}_counts"), source)?.ends_with(" live 0"), "{name}");
+    }
+    Ok(())
+}
+
+const FAILED_INDEX: &str = r#"# `text[i]` past the end of a short string stops its task.
+def does(which: int) -> int:
+    text = f"ab{which}"
+    return len(text[which + 7])
+
+from std.concurrent import Channel, Closed, Crashed, channel
+
+def taking(out: Channel[int], which: int):
+    out.send(does(which)) except Closed():
+        return
+    return
+
+def one(which: int) fails Crashed:
+    with channel[int](size=1) as out:
+        with launch(() => taking(out=out, which=which))?:
+            pass
+    return
+
+def main(stdout: Stdout):
+    mut crashed = 0
+    for which in range(1):
+        one(which) except Crashed():
+            crashed += 1
+    stdout.print(crashed)
+    return
+"#;
+
+const FAILED_MAX_KEY: &str = r#"# `max` with `key=` of an empty list stops its task.
+def size(text: str) -> int:
+    return len(text)
+
+def does(which: int) -> int:
+    mut names: list[str] = []
+    if which > 5:
+        names.append("never")
+    return len(max(names, key=size))
+
+from std.concurrent import Channel, Closed, Crashed, channel
+
+def taking(out: Channel[int], which: int):
+    out.send(does(which)) except Closed():
+        return
+    return
+
+def one(which: int) fails Crashed:
+    with channel[int](size=1) as out:
+        with launch(() => taking(out=out, which=which))?:
+            pass
+    return
+
+def main(stdout: Stdout):
+    mut crashed = 0
+    for which in range(1):
+        one(which) except Crashed():
+            crashed += 1
+    stdout.print(crashed)
+    return
+"#;
+
 /// A `pop` of a key that isn't there and a `remove` of an item that isn't there fail and change
 /// nothing. Generated code stored the failed `pop`'s result, nothing, over the dict before it
 /// looked at whether the call had failed, and the runtime had already copied a dict or set with

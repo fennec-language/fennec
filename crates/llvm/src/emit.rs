@@ -670,6 +670,7 @@ impl<'p> Module<'_, 'p> {
             needs_prop: false,
             start,
             start_symbol,
+            made_for_body: Vec::new(),
             self_target,
             taken_at: BTreeMap::new(),
             found_entries: Vec::new(),
@@ -790,6 +791,11 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     needs_prop: bool,
     start: u32,
     start_symbol: String,
+    /// Blocks made for the code being written now that no local holds, innermost last: each a
+    /// block and whether it was made here. `on_blocks` notes the ones it makes for its body, and
+    /// `max` and `min` their keys. A failure that leaves the function meanwhile lets go of them
+    /// on its way out (`leave_if`); the code that noted them lets go of them otherwise.
+    pub(crate) made_for_body: Vec<Vec<(String, String)>>,
     self_target: Option<&'e str>,
     /// Where each item taken out of a list to change was, to put it back without looking again.
     pub(crate) taken_at: BTreeMap<usize, String>,
@@ -1554,10 +1560,33 @@ impl Emit<'_, '_, '_> {
 
     /// Leaves the function, the failure already recorded, when `failed` holds.
     pub(crate) fn leave_if(&mut self, failed: &str) {
+        // Blocks made for the call that may have failed, which no local holds, go on the way out:
+        // let go of only once the call's result is read, they'd be left for good.
+        let made: Vec<(String, String)> = self.made_for_body.iter().flatten().cloned().collect();
+        if !made.is_empty() {
+            return self.leave_if_after(failed, |emit| {
+                for (block, owned) in &made {
+                    emit.let_go_text_block(block, owned);
+                }
+            });
+        }
         let ok = self.label("ok");
         self.needs_prop = true;
         let out = self.way_out("prop");
         self.line(&format!("br i1 {failed}, label %{out}, label %{ok}, !prof !0"));
+        self.start_block(&ok);
+    }
+
+    /// As [`Self::leave_if`], with `first` done on the way out and nowhere else: what a failed
+    /// call leaves the function still holding is let go of there.
+    pub(crate) fn leave_if_after(&mut self, failed: &str, first: impl FnOnce(&mut Self)) {
+        let (leaving, ok) = (self.label("leaving"), self.label("ok"));
+        self.needs_prop = true;
+        let out = self.way_out("prop");
+        self.line(&format!("br i1 {failed}, label %{leaving}, label %{ok}, !prof !0"));
+        self.start_block(&leaving);
+        first(self);
+        self.line(&format!("br label %{out}"));
         self.start_block(&ok);
     }
 
@@ -4246,6 +4275,24 @@ def main(stdout: Stdout):
         assert!(!shared.native.is_empty(), "Doc's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
         assert!(text.contains("call void @fennec_free(ptr %list"), "{text}");
+        Ok(())
+    }
+
+    /// A regex op that fails leaves the function, and the blocks made for its pattern and text
+    /// go on its way out, not only after the op. No op on a pattern that built can be made to
+    /// fail today, so this reads the text: the failing way out of each op lets go of a block
+    /// before it leaves.
+    #[test]
+    fn a_regex_op_that_fails_lets_go_of_its_blocks_on_the_way_out() -> Result<(), String> {
+        let source = "from std.re import Regex\n\ndef swapped(text: str) -> str:\n    return Regex(r\"\\w+\").replace(text, \"x\")\n\ndef main(stdout: Stdout):\n    stdout.print(swapped(\"one two\"))\n";
+        let text = text_of(source, "swapped")?;
+        let leaving: Vec<&str> = text.split("\nleaving").skip(1).collect();
+        assert!(!leaving.is_empty(), "{text}");
+        for way_out in leaving {
+            // The way out's first lines: whether the block was made here, and letting go of it.
+            let first: Vec<&str> = way_out.lines().take(3).collect();
+            assert!(first.iter().any(|line| line.contains("text_made_gone")), "{first:?}");
+        }
         Ok(())
     }
 

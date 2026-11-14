@@ -101,7 +101,7 @@ runtime() {
   cargo build --locked -p fennec -p fennec-runtime || return 1
   whole_runtime target/debug/libfennec_runtime.a target -p fennec -p fennec-runtime || return 1
   # Every variant `fennec build` may take, fresh, so none is left over from another commit.
-  for features in threads; do
+  for features in threads audit threads,audit; do
     dir="target/$(echo "$features" | tr , -)"
     cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir" || return 1
     whole_runtime "$dir/debug/libfennec_runtime.a" "$dir" -p fennec-runtime --features "$features" || return 1
@@ -261,7 +261,8 @@ step "build the command and the runtimes" runtime || built=0
 step "clippy" cargo clippy --all-targets --locked -- -D warnings
 step "the workspace and its tests compile on Linux" .github/scripts/linux-check.sh
 step "the workspace and its tests compile for Windows" .github/scripts/windows-check.sh
-for name in "tests" "examples and kits" "every example as x86-64 under Rosetta"; do
+for name in "tests" "examples and kits" "every example under the heap audit" \
+  "every example as x86-64 under Rosetta"; do
   if [ "$built" -eq 0 ]; then
     skipped "$name" "since the build failed"
     continue
@@ -269,6 +270,7 @@ for name in "tests" "examples and kits" "every example as x86-64 under Rosetta";
   case "$name" in
     tests) step "$name" watched tests ;;
     examples*) step "$name" watched examples ;;
+    *audit) step "$name" watched .github/scripts/audit.sh "$names" ;;
     *) step "$name" watched x86 ;;
   esac
 done

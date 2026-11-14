@@ -4167,7 +4167,8 @@ fn a_program_built_again_where_one_ran_runs() -> std::io::Result<()> {
 #[test]
 fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io::Result<()> {
     use crate::executables::Within as _;
-    if !crate::llvm::ready() {
+    // A build under `FENNEC_AUDIT` links the runtime with the audit in it.
+    if !crate::llvm::ready() || !crate::executables::audited_runtimes_built() {
         return Ok(());
     }
     let dir = scratch("switches")?;

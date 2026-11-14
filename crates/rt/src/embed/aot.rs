@@ -491,9 +491,16 @@ static AUDIT_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 /// ends with the audit's exit code. Only a runtime built to audit has this, for test builds: one
 /// that ships can't be asked to.
 #[cfg(feature = "audit")]
-pub(super) fn audit_at_the_end(state: &State) {
+pub(super) fn audit_at_the_end(state: &mut State) {
     if std::env::var_os("FENNEC_AUDIT").is_none() {
         return;
+    }
+    // A check of the check: under `FENNEC_AUDIT_SELFTEST`, a block is made here that nothing
+    // holds, which the audit has to find. What runs every program audited runs this first, so an
+    // audit that finds nothing because it does nothing can't pass for a clean one.
+    if std::env::var_os("FENNEC_AUDIT_SELFTEST").is_some() {
+        let left = vec![1, state.tables.str_shape, 0, 0, 0, 0].into_boxed_slice();
+        let _ = state.heap.insert(left);
     }
     let said = heap::audit::audit(state, &[]).said();
     if !said.is_empty() {

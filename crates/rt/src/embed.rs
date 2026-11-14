@@ -646,7 +646,7 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
             // Where native code has no frames left, so every owner is one the heap can show.
             #[cfg(feature = "audit")]
             if leave {
-                aot::audit_at_the_end(&state);
+                aot::audit_at_the_end(&mut state);
             }
             if !leave {
                 guarded::forget_ending(&state.heap);

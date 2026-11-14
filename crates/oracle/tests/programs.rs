@@ -472,23 +472,55 @@ fn a_json_load_that_fails_says_what_and_where_as_std_json_does() {
 }
 
 #[test]
+fn a_json_enum_with_a_key_after_its_case_fails_once_its_fields_have_read() {
+    prints(
+        "
+        from std import json
+
+        enum Shape:
+            Box(width: int, height: int)
+            Dot
+
+        struct Holder:
+            shape: Shape
+
+        def why[T](run: () -> T fails ParseError) -> str:
+            _ = run() except problem:
+                return problem.message
+            return 'read'
+
+        def main(stdout: Stdout):
+            stdout.print(why(() => json.loads[Shape]('{\\'Box\\': {\\'width\\': 1, \\'height\\': 2}, \\'extra\\': 1}')?))
+            stdout.print(why(() => json.loads[Shape]('{\\'Box\\': {\\'width\\': \\'no\\', \\'height\\': 2}, \\'extra\\': 1}')?))
+            stdout.print(why(() => json.loads[Shape]('{\\'Dot\\': {}, \\'Box\\': 1}')?))
+            stdout.print(why(() => json.loads[Holder]('{\\'shape\\': {\\'Dot\\': {}, \\'a\\\\nb\\': [1]}}')?))
+        ",
+        "the text has \"extra\" after its case, but an enum is written as an object with its case as the only key\n\
+         `width` should be an int, but it's a str\n\
+         the text has \"Box\" after its case, but an enum is written as an object with its case as the only key\n\
+         `shape` has \"a\\nb\" after its case, but an enum is written as an object with its case as the only key\n",
+    );
+}
+
+#[test]
 fn json_refuses_a_failing_load_it_cant_be_sure_of_and_stops_on_nan() {
     let (printed, ended) = ran("
         from std import json
 
-        enum Order:
-            Hold
-            Move(to: int)
+        struct Note:
+            text: str
+            @skip
+            seen = 0
 
         def main(stdout: Stdout):
             stdout.print('before')
-            _ = json.loads[Order]('{\\'Move\\': {\\'to\\': 1}, \\'Hold\\': {}}') except ParseError():
-                .Hold
+            _ = json.loads[Note]('{\\'text\\': \\'a\\', \\'\\': 1}') except ParseError():
+                Note(text='')
         ");
     assert_eq!(printed, "");
     assert_eq!(
         ended,
-        Ended::Unsupported("json.loads failing (a case's object with more than its case in it)".to_owned())
+        Ended::Unsupported("json.loads failing (a key that names a field `@skip` leaves out)".to_owned())
     );
     let (printed, ended) = ran("
         from std import json, math

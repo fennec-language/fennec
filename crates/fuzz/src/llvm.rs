@@ -176,7 +176,12 @@ pub(crate) fn built_and_run(
 /// The line of what a program said that says why it stopped: the first that says what a
 /// watching build caught, which a sanitizer's report doesn't start with, or else the last
 /// `error:`, since a task that crashed and was handled says its own first, or else the first.
+/// A heap audit's lines are all kept, as each names a block.
 fn cut(said: &str) -> String {
+    let audit: Vec<&str> = said.lines().filter(|line| line.starts_with(AUDIT)).collect();
+    if !audit.is_empty() {
+        return audit.join("\n");
+    }
     let caught = said.lines().find(|line| CAUGHT.iter().any(|what| line.contains(what)));
     let stopped = || said.lines().rev().find(|line| line.starts_with("error: "));
     caught.or_else(stopped).or_else(|| said.lines().next()).unwrap_or_default().to_owned()
@@ -185,6 +190,20 @@ fn cut(said: &str) -> String {
 /// What a build that watches itself says when it catches something: a false proof, memory the
 /// program doesn't own, a native block handed to the runtime.
 pub(crate) const CAUGHT: [&str; 3] = ["proof broken", "AddressSanitizer", "handed a native block"];
+
+/// What every line a heap audit says starts with. A program built for one says nothing unless its
+/// audit found a block left with no holder, or one counted otherwise than its holders.
+pub(crate) const AUDIT: &str = "heap audit: ";
+
+/// What a program exits with when its heap audit found something.
+const AUDIT_FOUND: i32 = 87;
+
+/// Whether the programs are built for a heap audit, as `FENNEC_AUDIT=1` asks of `fennec build`,
+/// which reads it the same way (`fennec_llvm::audited`). A program built for one keeps no native
+/// blocks, and audits its heap as it ends when it's run with the same set.
+pub(crate) fn audited() -> bool {
+    std::env::var("FENNEC_AUDIT").as_deref() == Ok("1")
+}
 
 /// Runs what `built_and_run` last made under `name` again, on `threads` threads, with what it
 /// said cut as `built_and_run` cuts it.
@@ -253,6 +272,11 @@ fn ran_on(
         }
         (None, Ok(status)) => Ok((printed, said, status.success())),
         (_, Ok(status)) if status.code() == Some(1) => Ok((printed, said, false)),
+        // A heap audit that found something ends the program with a code of its own, having said
+        // what it found: a failure for whoever built it that way to read, and no crash.
+        (_, Ok(status)) if status.code() == Some(AUDIT_FOUND) && said.contains(AUDIT) => {
+            Ok((printed, said, false))
+        }
         (failure, status) => Err(format!("what LLVM built {failure:?} ({status:?}):\n{said}")),
     }
 }
@@ -595,6 +619,26 @@ mod counted_tests {
             (String::new(), 0)
         );
         assert_eq!(counted("just this\n"), ("just this\n".to_owned(), 0));
+    }
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::cut;
+
+    /// A heap audit's report is kept whole, whatever else the program said, and a program the
+    /// audit said nothing about is cut as it always was.
+    #[test]
+    fn every_line_of_a_heap_audit_is_kept() {
+        let said = "error: boom\nheap audit: 1 wrong among 3 live blocks\n\
+                    heap audit: leaked: str at 0x10 is counted 1 and nothing holds it\nlast\n";
+        assert_eq!(
+            cut(said),
+            "heap audit: 1 wrong among 3 live blocks\n\
+             heap audit: leaked: str at 0x10 is counted 1 and nothing holds it"
+        );
+        assert_eq!(cut("first\nerror: one\nerror: two\n"), "error: two");
+        assert_eq!(cut("first\nproof broken here\nerror: two\n"), "proof broken here");
     }
 }
 

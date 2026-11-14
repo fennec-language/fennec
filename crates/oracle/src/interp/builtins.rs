@@ -162,14 +162,11 @@ impl Interp {
                 let items = self.collect(over, span)?;
                 self.sorted(items, key.as_ref(), reverse, expr).map(Value::List)
             }
+            // A tuple's items come back as a list, as the checker types `reversed` of one.
             "reversed" => match self.one(&mut given, name)? {
-                Value::List(mut items) => {
+                Value::List(mut items) | Value::Tuple(mut items) => {
                     items.reverse();
                     Ok(Value::List(items))
-                }
-                Value::Tuple(mut items) => {
-                    items.reverse();
-                    Ok(Value::Tuple(items))
                 }
                 Value::Str(text) => Ok(Value::Str(text.chars().rev().collect())),
                 other => unsupported(format!("`reversed` of a {}", other.kind())),

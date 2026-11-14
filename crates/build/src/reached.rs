@@ -32,7 +32,11 @@ pub fn what_main_reaches(module: &Module) -> Module {
     let kept = reached(module, &|name| name == "main");
     let items =
         module.items.iter().enumerate().filter(|(at, _)| kept.contains(at)).map(|(_, item)| item.clone());
-    Module { items: items.collect(), std_rewritten: module.std_rewritten.clone() }
+    Module {
+        items: items.collect(),
+        std_rewritten: module.std_rewritten.clone(),
+        holds: module.holds.clone(),
+    }
 }
 
 /// Removes everything that the functions `is_start` names can't reach from `module`, tests

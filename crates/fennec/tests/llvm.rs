@@ -13016,6 +13016,49 @@ fn json_dumps_grows_its_text_in_place() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A generic function writes a `T: Serializable` as JSON, and reads a `T: Deserializable`, each
+/// copy natively as its own type: a struct, a struct holding a list, a list of ints, a list of
+/// structs, and a struct read back.
+const GENERIC_JSON: &str = r#"from std import json
+
+struct Account:
+    name: str
+
+struct Note:
+    title: str
+    tags: list[str]
+
+def answer[T: Serializable](status: int, value: T) -> str:
+    return f"{status} {json.dumps(value)}"
+
+def many[T: Serializable](values: list[T]) -> str:
+    return json.dumps(values)
+
+def back[T: Deserializable](text: str) -> T fails ParseError:
+    return json.loads[T](text)?
+
+def main(stdout: Stdout) fails ParseError:
+    stdout.print(answer(201, value=Account(name="ash")))
+    stdout.print(answer(200, value=Note(title="hi", tags=["a", "b"])))
+    stdout.print(answer(200, value=[1, 2, 3]))
+    stdout.print(many([Account(name="a"), Account(name="b")]))
+    note = back[Note]("{\"title\": \"x\", \"tags\": [\"t\"]}")?
+    stdout.print(note.title, len(note.tags))
+    return
+"#;
+
+#[test]
+fn a_type_parameter_bounded_to_be_saved_is_written_and_read_as_json_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generic_json",
+        GENERIC_JSON,
+        "201 {\"name\": \"ash\"}\n200 {\"title\": \"hi\", \"tags\": [\"a\", \"b\"]}\n200 [1, 2, 3]\n[{\"name\": \"a\"}, {\"name\": \"b\"}]\nx 1\n",
+    )
+}
+
 #[test]
 fn json_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {
@@ -18685,6 +18728,60 @@ fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
     let main_said = String::from_utf8_lossy(&ran.stderr).into_owned();
     assert!(main_said.contains("Refused.Denied(token=Secret(hidden))"), "{main_said}");
     assert!(!main_said.contains("hunter2"), "{main_said}");
+    Ok(())
+}
+
+/// What the next test builds: failed asserts, each with a `shared` value on a side.
+const SHARED_SHOWN: &str = r#"struct Account:
+    total = 0
+
+struct Bank:
+    name: str
+    first: shared Account
+
+test "the shared value itself"():
+    shared account = Account(total=1)
+    shared other = Account(total=2)
+    assert account == other
+
+test "in a list"():
+    shared account = Account(total=1)
+    assert [account] == []
+
+test "in a tuple"():
+    shared account = Account(total=1)
+    assert (1, account) == (2, account)
+
+test "in a struct"():
+    shared account = Account(total=1)
+    assert Bank(name="a", first=account) == Bank(name="b", first=account)
+"#;
+
+/// A failed `assert` shows a `shared` value on either side as what it holds, as printing it does:
+/// by itself, in a list, in a tuple and in a struct. It showed the cell lowering keeps it in,
+/// `Shared__Account(value=Account(total=1))`.
+#[test]
+fn a_failed_assert_shows_what_a_shared_value_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shared_shown")?;
+    let program = dir.join("shared_shown.fen");
+    std::fs::write(&program, SHARED_SHOWN)?;
+    let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    let said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    assert!(said.contains("0 passed, 4 failed"), "{said}");
+    assert!(!said.contains("Shared__"), "{said}");
+    for sides in [
+        "the left side is Account(total=1) and the right side is Account(total=2)",
+        "the left side is [Account(total=1)] and the right side is []",
+        "the left side is (1, Account(total=1)) and the right side is (2, Account(total=1))",
+        "the left side is Bank(name=\"a\", first=Account(total=1)) and the right side is Bank(name=\"b\", first=Account(total=1))",
+    ] {
+        assert!(said.contains(sides), "{sides}: {said}");
+    }
     Ok(())
 }
 

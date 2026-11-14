@@ -145,6 +145,15 @@ fn start_of(
     for (symbol, start) in &shared.starts {
         let _ = writeln!(out, "@\"{symbol}\" = dso_local constant i64 {start}");
     }
+    for (symbol, places) in &shared.places {
+        let listed: Vec<String> = places.iter().map(|place| format!("i64 {place}")).collect();
+        let _ = writeln!(
+            out,
+            "@\"{symbol}\" = dso_local constant [{} x i64] [{}]",
+            places.len(),
+            listed.join(", ")
+        );
+    }
     for (symbol, number) in image.strings.iter().chain(&image.elements) {
         let _ = writeln!(out, "@\"{symbol}\" = dso_local constant i64 {number}");
     }

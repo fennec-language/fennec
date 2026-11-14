@@ -22947,6 +22947,87 @@ fn an_edit_recompiles_only_the_function_it_touches() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)
 }
 
+/// Text added above a function leaves the function's own text as it was, so it isn't compiled
+/// again, whatever the function can fail with. Its text named each place in the source it might
+/// say failed by how far into all the sources it was, and a closure by where it started, so one
+/// line added at the top of a file moved those numbers in every function below it. Here the
+/// functions index a list, pop a dict, sort by a closure and read JSON into a struct, whose
+/// reader mixes places in this file with the standard library's. A comment added at the top
+/// compiles none of them again, and a change to one function compiles it and its one caller
+/// that holds a copy of it. The program prints the same each time.
+#[test]
+fn text_added_above_a_function_that_can_fail_doesnt_compile_it_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("edit_above")?;
+    let program = dir.join("edit_above.fen");
+    let (path, out) =
+        (program.to_string_lossy().into_owned(), dir.join("edit_above").to_string_lossy().into_owned());
+    let build = |text: String| -> std::io::Result<usize> {
+        std::fs::write(&program, text)?;
+        let built = fennec(&["build", "--llvm", &path, "-o", &out], &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let said = String::from_utf8_lossy(&built.stdout).into_owned();
+        let ran = Command::new(&out).output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "2 1 [3, 2, 1]
+7
+",
+            "{said}"
+        );
+        let compiled = said.split("compiled ").nth(1).and_then(|rest| rest.split(' ').next());
+        Ok(compiled.and_then(|count| count.parse().ok()).unwrap_or(usize::MAX))
+    };
+    assert!(build(EDIT_ABOVE.to_owned())? > 5, "the first build compiles everything");
+    assert_eq!(
+        build(format!(
+            "## nothing here
+
+{EDIT_ABOVE}"
+        ))?,
+        0,
+        "a comment added at the top"
+    );
+    let changed = EDIT_ABOVE.replace(
+        "    return items[at]
+",
+        "    return items[at] + 0
+",
+    );
+    assert!(build(changed)? <= 2, "one function changed: it, and the caller that holds a copy of it");
+    assert_eq!(build(EDIT_ABOVE.to_owned())?, 0, "as it first was");
+    std::fs::remove_dir_all(&dir)
+}
+
+const EDIT_ABOVE: &str = r#"from std import json
+
+struct Order:
+    user: int
+    item: str
+
+def first(items: list[int], at: int) -> int:
+    return items[at]
+
+def popped(counts: dict[str, int], key: str) -> int:
+    mut mine = counts
+    return mine.pop(key)
+
+def by_size(items: list[int]) -> list[int]:
+    return sorted(items, key=n => -n)
+
+def read(text: str) -> int fails ParseError:
+    order = json.loads[Order](text)?
+    return order.user
+
+def main(stdout: Stdout):
+    stdout.print(first([1, 2, 3], 1), popped({"a": 1}, "a"), by_size([1, 3, 2]))
+    got = read("{\"user\": 7, \"item\": \"x\"}") except ParseError(): -1
+    stdout.print(got)
+    return
+"#;
+
 /// ASCII is stripped here, sharing a string with nothing to take off; other text goes to the
 /// runtime.
 #[test]

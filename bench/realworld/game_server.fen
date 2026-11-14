@@ -1,0 +1,694 @@
+# A game server shaped like an MMO's zone server, with its own scripted load in the same program.
+#
+# Players connect over TCP and speak JSON, a message to a line. Each connection has its own task,
+# which keeps its player's session in a `shared` table: what the player asked to do this tick,
+# and its score as the world last showed it. A tick task owns the world, the players' avatars and
+# a few thousand monsters. Once every player has sent its input for a tick, it moves the players,
+# lets every monster think with `parallel`, settles the fighting, and hands each player what it
+# sees and hears. Every few ticks it sends a snapshot to a saver task, which writes it to SQLite.
+# The ticks wait for every player, in lockstep, so the same inputs give the same world whatever
+# the timing.
+#
+# The load is a crowd of scripted clients: each connects, joins, moves and chats for its share of
+# the ticks, sometimes asks who's online, and leaves, a few by just hanging up. The summary comes
+# from what the clients saw and what the database kept, and is the same on any number of threads.
+
+from std import json, sqlite
+from std.collections import Id, Table
+from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, channel
+from std.net import Connection, NetError, Server
+from std.sql import SqlError
+from std.sqlite import Database
+
+PLAYERS = 48
+TICKS = 240
+MONSTERS = 3_000
+SIZE = 1_024
+CELL = 128
+SIDE = SIZE // CELL
+SPEED = 6
+REACH = 24
+SIGHT = 120
+HEARING = 200
+SAVE_EVERY = 30
+WORDS = [
+    "hello", "anyone", "near", "the", "old", "tower", "need", "help", "gg", "loot", "here", "run",
+]
+
+# Keeps a coordinate inside the world.
+def clamped(at: int) -> int:
+    return max(0, min(SIZE - 1, at))
+
+# A place in the world.
+struct Spot:
+    x: int
+    y: int
+
+    def squared_distance(self, other: Spot) -> int:
+        across = self.x - other.x
+        down = self.y - other.y
+        return across * across + down * down
+
+    def near(self, other: Spot, reach: int) -> bool:
+        return self.squared_distance(other) <= reach * reach
+
+    # The square of the world's grid it's in.
+    def cell(self) -> int:
+        return self.y // CELL * SIDE + self.x // CELL
+
+    def moved(self, east: int, south: int) -> Spot:
+        return Spot(x=clamped(self.x + east), y=clamped(self.y + south))
+
+    # A step toward `other` of at most `most` along each axis.
+    def toward(self, other: Spot, most: int) -> Spot:
+        east = max(-most, min(most, other.x - self.x))
+        south = max(-most, min(most, other.y - self.y))
+        return Spot(x=self.x + east, y=self.y + south)
+
+# What a client sends.
+enum Ask:
+    Join(name: str)
+    Act(east: int, south: int, say: str)
+    Who
+    Leave
+
+# What a player sees after a tick.
+struct View:
+    tick: int
+    spot: Spot
+    health: int
+    score: int
+    monsters: int
+    heard: list[str]
+
+# What the server sends a client.
+enum Tell:
+    Welcome(spot: Spot)
+    Saw(view: View)
+    Online(names: list[str])
+    Bye(score: int, last: bool)
+
+# What a player asked to do in one tick.
+struct Input:
+    east = 0
+    south = 0
+    say = ""
+    leaving = False
+
+# A player's session, as its connection's task and the tick task share it.
+struct Session:
+    name: str
+    pending: Input? = None
+    score = 0
+
+# Every player's session, by name.
+struct Lobby:
+    sessions = Table[Session]()
+    by_name = dict[str, Id[Session]]()
+    open = True
+    dropped = list[str]()
+
+    def join(ref self, name: str) -> bool:
+        if not self.open or name in self.by_name: return False
+        self.by_name[name] = self.sessions.add(Session(name=name))
+        return True
+
+    def ask(ref self, name: str, input: Input):
+        self.sessions[self.by_name[name]].pending = input
+
+    # Each player's input for the tick, in order of name, taken out of their sessions.
+    def take_inputs(ref self) -> list[(str, Input)]:
+        mut taken = list[(str, Input)]()
+        for name in sorted(self.by_name.keys()):
+            ref session = self.sessions[self.by_name[name]]
+            taken.append((name, session.pending else Input()))
+            session.pending = None
+        return taken
+
+    def show(ref self, name: str, score: int):
+        self.sessions[self.by_name[name]].score = score
+
+    def leave(ref self, name: str):
+        _ = self.sessions.remove(self.by_name.pop(name))
+
+    # Who's online, with their scores, in order of name.
+    def online(self) -> list[str]:
+        return [
+            f"{name} {self.sessions[self.by_name[name]].score}" for name in sorted(
+                self.by_name.keys(),
+            )
+        ]
+
+# What a connection's task tells the tick task.
+enum Note:
+    Joined(name: str, replies: Sender[Tell])
+    Ready
+
+# A player in the world.
+struct Avatar:
+    name: str
+    spot: Spot
+    home: Spot
+    health = 100
+    score = 0
+    kills = 0
+    deaths = 0
+
+struct Monster:
+    number: int
+    spot: Spot
+    health = 60
+    # Ticks until it's back, while it's down.
+    down = 0
+
+# What a monster does in a tick, worked out on its own from the world as the tick began.
+struct Thought:
+    monster: Monster
+    # The avatar it hits, or -1, and how hard.
+    target = -1
+    damage = 0
+    # What the avatars within reach do to it, and the first of them.
+    hurt = 0
+    first_hitter = -1
+
+struct World:
+    avatars: list[Avatar]
+    monsters: list[Monster]
+    turn = 0
+
+# A player as a snapshot keeps it.
+struct Saved:
+    name: str
+    spot: Spot
+    health: int
+    score: int
+    kills: int
+    deaths: int
+
+# What the saver writes.
+struct Save:
+    turn: int
+    avatars: list[Saved]
+    up: int
+
+# The next state of a small linear congruential generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+# A number from 0 up to `top` taken from a generator's state.
+def below(seed: int, top: int) -> int:
+    return seed // 65_536 % top
+
+# The world as the party starts it: the players in order of name, and monsters everywhere.
+def started(names: list[str]) -> World:
+    mut avatars = list[Avatar]()
+    for at, name in enumerate(names):
+        home = Spot(x=(at * 7_919 + 101) % SIZE, y=(at * 104_729 + 37) % SIZE)
+        avatars.append(Avatar(name=name, spot=home, home=home))
+    mut monsters = list[Monster]()
+    mut state = 2026
+    for number in range(MONSTERS):
+        state = next(state)
+        x = below(state, top=SIZE)
+        state = next(state)
+        monsters.append(Monster(number=number, spot=Spot(x=x, y=below(state, top=SIZE))))
+    return World(avatars=avatars, monsters=monsters)
+
+# For each square of the grid, the avatars in it and the squares around it, in order.
+def nearby_avatars(avatars: list[Avatar]) -> list[list[int]]:
+    mut nearby = [list[int]() for _ in range(SIDE * SIDE)]
+    for at, avatar in enumerate(avatars):
+        column = avatar.spot.x // CELL
+        row = avatar.spot.y // CELL
+        for around in range(max(row - 1, 0), min(row + 2, SIDE)):
+            for beside in range(max(column - 1, 0), min(column + 2, SIDE)):
+                nearby[around * SIDE + beside].append(at)
+    return nearby
+
+# What one monster does: chases the nearest avatar it can see and hits it once it's in reach, or
+# wanders. It reads only the world as the tick began, so every monster thinks at once.
+def think(monster: Monster, avatars: list[Avatar], nearby: list[list[int]], turn: int) -> Thought:
+    if monster.down > 1: return Thought(monster=copy(monster, down=monster.down - 1))
+    if monster.down == 1:
+        seed = next(monster.number * 31 + turn)
+        spot = Spot(x=below(seed, top=SIZE), y=below(next(seed), top=SIZE))
+        return Thought(monster=Monster(number=monster.number, spot=spot))
+    mut target = -1
+    mut best = SIGHT * SIGHT + 1
+    mut hurt = 0
+    mut first_hitter = -1
+    for at in nearby[monster.spot.cell()]:
+        distance = monster.spot.squared_distance(avatars[at].spot)
+        if distance < best:
+            best = distance
+            target = at
+        if distance <= REACH * REACH:
+            hurt += 8 + at % 5
+            if first_hitter < 0:
+                first_hitter = at
+    if target < 0:
+        seed = next(monster.number * 131 + turn // 16)
+        spot = monster.spot.moved(below(seed, top=3) - 1, south=below(next(seed), top=3) - 1)
+        return Thought(monster=copy(monster, spot=spot), hurt=hurt, first_hitter=first_hitter)
+    spot = monster.spot.toward(avatars[target].spot, most=3)
+    moved = copy(monster, spot=spot)
+    if not spot.near(avatars[target].spot, reach=REACH):
+        return Thought(monster=moved, hurt=hurt, first_hitter=first_hitter)
+    return Thought(
+        monster=moved,
+        target=target,
+        damage=2 + monster.number % 3,
+        hurt=hurt,
+        first_hitter=first_hitter,
+    )
+
+# An avatar hit by a monster: one that falls loses some score and goes home.
+def struck(ref avatar: Avatar, damage: int):
+    avatar.health -= damage
+    if avatar.health > 0: return
+    avatar.deaths += 1
+    avatar.score = max(0, avatar.score - 5)
+    avatar.health = 100
+    avatar.spot = avatar.home
+
+# Settles what monster `at` thought: the avatars' blows land first, and a monster they fell
+# credits the first of them.
+def settle(ref world: World, at: int, thought: Thought):
+    if world.monsters[at].down > 0:
+        world.monsters[at] = thought.monster
+        return
+    mut monster = thought.monster
+    if thought.hurt > 0:
+        monster.health -= thought.hurt
+        if monster.health <= 0:
+            monster.down = 25
+            world.avatars[thought.first_hitter].kills += 1
+            world.avatars[thought.first_hitter].score += 10
+    world.monsters[at] = monster
+    if thought.target >= 0:
+        struck(ref world.avatars[thought.target], damage=thought.damage)
+
+# How many monsters that are up an avatar can see.
+def seen(avatar: Avatar, monsters: list[Monster]) -> int:
+    return sum(
+        1 for monster in monsters if monster.down == 0 and avatar.spot.near(
+            monster.spot,
+            reach=SIGHT,
+        )
+    )
+
+# What the avatar at `at` hears of what was said this tick: everything said near it by others.
+def heard_by(avatars: list[Avatar], at: int, said: list[(int, str)]) -> list[str]:
+    mut heard = list[str]()
+    for speaker, text in said:
+        if speaker != at and avatars[at].spot.near(avatars[speaker].spot, reach=HEARING):
+            heard.append(f"{avatars[speaker].name}: {text}")
+    return heard
+
+# One tick of the world, given each player's input in order of name. Gives what each avatar
+# sees, in the same order.
+def tick(ref world: World, inputs: list[Input]) -> list[View]:
+    world.turn += 1
+    mut said = list[(int, str)]()
+    for at, input in enumerate(inputs):
+        ref avatar = world.avatars[at]
+        avatar.spot = avatar.spot.moved(input.east * SPEED, south=input.south * SPEED)
+        if input.say != "":
+            said.append((at, input.say))
+    avatars = world.avatars
+    nearby = nearby_avatars(avatars)
+    turn = world.turn
+    thoughts = [
+        think(monster, avatars=avatars, nearby=nearby, turn=turn) for monster in parallel(
+            world.monsters,
+        )
+    ]
+    for at, thought in enumerate(thoughts):
+        settle(ref world, at=at, thought=thought)
+    for ref avatar in world.avatars:
+        avatar.health = min(100, avatar.health + 1)
+    monsters = world.monsters
+    counts = [seen(avatar, monsters) for avatar in parallel(world.avatars)]
+    return [
+        View(
+            tick=world.turn,
+            spot=avatar.spot,
+            health=avatar.health,
+            score=avatar.score,
+            monsters=counts[at],
+            heard=heard_by(world.avatars, at=at, said=said),
+        ) for at,
+        avatar in enumerate(world.avatars)
+    ]
+
+def saved(world: World) -> Save:
+    avatars = [
+        Saved(
+            name=avatar.name,
+            spot=avatar.spot,
+            health=avatar.health,
+            score=avatar.score,
+            kills=avatar.kills,
+            deaths=avatar.deaths,
+        ) for avatar in world.avatars
+    ]
+    up = sum(1 for monster in world.monsters if monster.down == 0)
+    return Save(turn=world.turn, avatars=avatars, up=up)
+
+# Sends a player's connection what it's told, unless its task has gone.
+def tell(replies: Sender[Tell], what: Tell):
+    replies.send(what) except Closed():
+        return
+
+# The tick task: waits for the party to fill, then runs a tick each time every player has sent
+# its input, until the last has left.
+def ticker(inbox: Inbox[Note], lobby: shared Lobby, saves: Sender[Save], party: int) fails Closed:
+    mut replies = dict[str, Sender[Tell]]()
+    mut world = World(avatars=[], monsters=[])
+    mut ready = 0
+    for note in inbox:
+        match note:
+            case .Joined(name, to_player):
+                replies[name] = to_player
+                if len(replies) == party:
+                    lock lobby as ref current:
+                        current.open = False
+                    world = started(sorted(replies.keys()))
+                    for avatar in world.avatars:
+                        tell(replies[avatar.name], what=.Welcome(spot=avatar.spot))
+            case .Ready:
+                ready += 1
+        if len(world.avatars) == 0 or ready < len(world.avatars): continue
+        ready = 0
+        taken = lock lobby as ref current:
+            current.take_inputs()
+        views = tick(ref world, [input for _, input in taken])
+        lock lobby as ref current:
+            for avatar in world.avatars:
+                current.show(avatar.name, score=avatar.score)
+            for name, input in taken:
+                if input.leaving:
+                    current.leave(name)
+        mut staying = list[Avatar]()
+        mut leaving = list[Avatar]()
+        for at, avatar in enumerate(world.avatars):
+            if taken[at][1].leaving:
+                leaving.append(avatar)
+            else:
+                staying.append(avatar)
+                tell(replies[avatar.name], what=.Saw(view=views[at]))
+        if world.turn % SAVE_EVERY == 0 or len(staying) == 0:
+            saves.send(saved(world))?
+        world.avatars = staying
+        for avatar in leaving:
+            tell(replies.pop(avatar.name), what=.Bye(score=avatar.score, last=len(replies) == 0))
+        if len(replies) == 0: return
+    return
+
+# Writes each snapshot it's sent, each in a transaction of its own.
+def saver(inbox: Inbox[Save], db: Database) fails SqlError:
+    for save in inbox:
+        body = json.dumps(save.avatars)
+        with db.transaction()? as tx:
+            _ = tx.execute(
+                t"insert into snapshots (tick, players, up, body) values ({save.turn}, {len(save.avatars)}, {save.up}, {body})",
+            )?
+            for avatar in save.avatars:
+                _ = tx.execute(
+                    t"insert into players (name, x, y, health, score, kills, deaths, tick) values ({avatar.name}, {avatar.spot.x}, {avatar.spot.y}, {avatar.health}, {avatar.score}, {avatar.kills}, {avatar.deaths}, {save.turn}) on conflict (name) do update set x = excluded.x, y = excluded.y, health = excluded.health, score = excluded.score, kills = excluded.kills, deaths = excluded.deaths, tick = excluded.tick",
+                )?
+    return
+
+def told(conn: Connection, what: Tell) fails NetError:
+    conn.write(json.dumps(what) + "\n")?
+
+# Hands the tick task a player's input for the next tick.
+def passed_on(lobby: shared Lobby, to_ticker: Sender[Note], name: str, input: Input) fails Closed:
+    lock lobby as ref current:
+        current.ask(name, input=input)
+    to_ticker.send(.Ready)?
+
+# Passes each tick's input on and its view back, and answers who's online. Gives the player's
+# goodbye once it leaves, or `None` if it hangs up first.
+def playing(
+    conn: Connection,
+    lobby: shared Lobby,
+    to_ticker: Sender[Note],
+    replies: Channel[Tell],
+    name: str,
+) -> Tell? fails NetError | ParseError | Closed:
+    for line in conn.lines()?:
+        match json.loads[Ask](line)?:
+            case .Act(east, south, say):
+                passed_on(lobby, to_ticker, name, input=Input(east=east, south=south, say=say))?
+                told(conn, replies.receive() else return None)?
+            case .Who:
+                names = lock lobby as current:
+                    current.online()
+                told(conn, .Online(names=names))?
+            case .Leave:
+                passed_on(lobby, to_ticker, name, input=Input(leaving=True))?
+                bye = replies.receive() else return None
+                told(conn, bye)?
+                return bye
+            case .Join(_):
+                continue
+    return None
+
+# One connection's session, from joining to leaving. Gives whether it was the last to leave.
+def attend(
+    conn: Connection,
+    lobby: shared Lobby,
+    to_ticker: Sender[Note],
+) -> bool fails NetError | ParseError | Closed:
+    first = conn.read_line()? else return False
+    name = match json.loads[Ask](first)?:
+        case .Join(joining):
+            joining
+        case _:
+            return False
+    joined = lock lobby as ref current:
+        current.join(name)
+    if not joined: return False
+    with channel[Tell](size=4) as replies:
+        to_ticker.send(.Joined(name=name, replies=replies.sender()))?
+        welcome = replies.receive() else return False
+        told(conn, welcome)?
+        mut bye = playing(conn, lobby, to_ticker, replies, name) except why:
+            lock lobby as ref current:
+                current.dropped.append(f"{name}: {why}")
+            None
+        if bye is None:
+            # A client that hung up or went wrong leaves at the next tick, and the rest play on.
+            passed_on(lobby, to_ticker, name, input=Input(leaving=True))?
+            bye = replies.receive()
+        ended = bye else return False
+        match ended:
+            case .Bye(_, last):
+                return last
+            case _:
+                return False
+    return False
+
+# Takes each connection as it comes, until the last player has left.
+def admit(server: Server, lobby: shared Lobby, to_ticker: Sender[Note]):
+    for conn in parallel(server):
+        last = attend(conn, lobby, to_ticker) except why:
+            lock lobby as ref current:
+                current.dropped.append(f"a connection: {why}")
+            False
+        if last: break
+
+# What one client saw over its session.
+struct Played:
+    name: str
+    ticks = 0
+    heard = 0
+    monsters = 0
+    online = 0
+    score = 0
+    health = 0
+    trail = 0
+    failed = ""
+
+def ask(conn: Connection, what: Ask) fails NetError:
+    conn.write(json.dumps(what) + "\n")?
+
+def answer(conn: Connection) -> Tell fails NetError | ParseError:
+    line = conn.read_line()? else fail NetError.Closed
+    return json.loads[Tell](line)?
+
+def mixed(hash: int, value: int) -> int:
+    return (hash * 31 + value) % 1_000_000_007
+
+def text_mixed(hash: int, text: str) -> int:
+    mut mixed_in = hash
+    for byte in text.encode():
+        mixed_in = mixed(mixed_in, value=byte)
+    return mixed_in
+
+# Where a client heads: a direction that changes every 8 ticks.
+def steer(number: int, turn: int) -> (int, int):
+    seed = next(number * 7_919 + turn // 8)
+    return (below(seed, top=3) - 1, below(next(seed), top=3) - 1)
+
+# What a client says this tick, now and then.
+def chatter(number: int, turn: int) -> str:
+    if (number * 7 + turn) % 23 != 0: return ""
+    first = below(next(number * 31 + turn), top=len(WORDS))
+    return f"{WORDS[first]} {WORDS[(first + 5) % len(WORDS)]} at {turn}"
+
+# How many ticks a client plays: a quarter stay to the end, and the rest leave early.
+def stay(number: int) -> int:
+    return TICKS - number % 4 * 40
+
+# What a client makes of a tick's view.
+def watched(played: Played, view: View) -> Played:
+    mut trail = mixed(mixed(played.trail, value=view.spot.x), value=view.spot.y)
+    for line in view.heard:
+        trail = text_mixed(trail, text=line)
+    return copy(
+        played,
+        ticks=played.ticks + 1,
+        heard=played.heard + len(view.heard),
+        monsters=played.monsters + view.monsters,
+        health=view.health,
+        score=view.score,
+        trail=trail,
+    )
+
+# One scripted client's session.
+def play(net: Net, port: int, number: int) -> Played fails NetError | ParseError:
+    mut played = Played(name=f"player{number}")
+    with net.connect("127.0.0.1", port)? as conn:
+        ask(conn, .Join(name=played.name))?
+        match answer(conn)?:
+            case .Welcome(spot):
+                played.trail = mixed(spot.x, value=spot.y)
+            case _:
+                return played
+        for turn in range(1, stay(number) + 1):
+            if (number + turn) % 50 == 0:
+                ask(conn, .Who)?
+                match answer(conn)?:
+                    case .Online(names):
+                        played.online += len(names)
+                    case _:
+                        return played
+            east, south = steer(number, turn=turn)
+            ask(conn, .Act(east=east, south=south, say=chatter(number, turn=turn)))?
+            match answer(conn)?:
+                case .Saw(view):
+                    played = watched(played, view=view)
+                case _:
+                    return played
+        if number % 16 == 5:
+            # Hangs up without a word.
+            return played
+        ask(conn, .Leave)?
+        match answer(conn)?:
+            case .Bye(score, _):
+                played.score = score
+            case _:
+                return played
+    return played
+
+def client(net: Net, port: int, number: int) -> Played:
+    return play(net, port=port, number=number) except why:
+        Played(name=f"player{number}", failed=f"{why}")
+
+# Runs the instance, the saver, the tick task and the server, while the clients play. Gives
+# what each client saw.
+def run_instance(net: Net, server: Server, lobby: shared Lobby, db: Database) -> list[
+    Played
+] fails Closed | SqlError | Crashed:
+    with launch((inbox) => saver(inbox, db)?, inbox_size=8)? as saves:
+        with launch(
+            (inbox) => ticker(inbox, lobby, saves, party=PLAYERS)?,
+            inbox_size=PLAYERS * 2,
+        )? as to_ticker:
+            with launch(() => admit(server, lobby, to_ticker))?:
+                return [
+                    client(net, port=server.port, number=number) for number in parallel(
+                        range(PLAYERS),
+                    )
+                ]
+
+# How many snapshots the database kept, the last tick, and the fewest monsters up in any.
+struct Kept:
+    snapshots: int
+    last: int
+    up: int
+
+# A player as the database kept it.
+struct Best:
+    name: str
+    score: int
+    kills: int
+    deaths: int
+
+def made(db: Database) fails SqlError:
+    _ = db.execute(
+        t"create table if not exists snapshots (tick integer primary key, players integer, up integer, body text)",
+    )?
+    _ = db.execute(
+        t"create table if not exists players (name text primary key, x integer, y integer, health integer, score integer, kills integer, deaths integer, tick integer)",
+    )?
+    _ = db.execute(t"delete from snapshots")?
+    _ = db.execute(t"delete from players")?
+
+# The summary: what the clients saw, then what the database kept.
+def report(played: list[Played], db: Database, dropped: list[str]) -> list[str] fails SqlError:
+    failed = [one for one in played if one.failed != ""]
+    mut lines = [f"{len(played)} players, {len(failed)} failed, {len(dropped)} dropped"]
+    for one in failed:
+        lines.append(f"  {one.name}: {one.failed}")
+    lines.append(f"ticks played: {sum(one.ticks for one in played)}")
+    lines.append(f"lines heard: {sum(one.heard for one in played)}")
+    lines.append(f"monsters seen: {sum(one.monsters for one in played)}")
+    lines.append(f"online seen: {sum(one.online for one in played)}")
+    lines.append(
+        f"scores: {sum(one.score for one in played)}, health {sum(one.health for one in played)}",
+    )
+    mut trail = 0
+    for one in played:
+        trail = mixed(trail, value=one.trail)
+    lines.append(f"trail: {trail}")
+    for kept in db.query[Kept](
+        t"select count(*) as snapshots, max(tick) as last, min(up) as up from snapshots",
+    )?:
+        lines.append(
+            f"snapshots: {kept.snapshots}, last at tick {kept.last}, fewest monsters up {kept.up}",
+        )
+    best = db.query[Best](
+        t"select name, score, kills, deaths from players order by score desc, name limit 3",
+    )?
+    everyone = db.query[Best](
+        t"select 'everyone' as name, sum(score) as score, sum(kills) as kills, sum(deaths) as deaths from players",
+    )?
+    for one in best + everyone:
+        lines.append(f"{one.name}: score {one.score}, kills {one.kills}, deaths {one.deaths}")
+    return lines
+
+def main(
+    net: Net,
+    fs: Fs,
+    env: Env,
+    stdout: Stdout,
+) fails NetError | SqlError | IoError | Closed | Crashed:
+    shared lobby = Lobby()
+    folder = env.get("TMPDIR") else "/tmp"
+    mut lines = list[str]()
+    with net.listen(0)? as server:
+        path = f"{folder}/fennec-game-server-{server.port}.db"
+        with sqlite.open(fs, path)? as db:
+            made(db)?
+            played = run_instance(net, server=server, lobby=lobby, db=db)?
+            dropped = lock lobby as current:
+                current.dropped
+            lines = report(played, db=db, dropped=dropped)?
+        for leftover in [path, f"{path}-wal", f"{path}-shm"]:
+            if fs.exists(leftover)?:
+                fs.remove(leftover)?
+    for line in lines:
+        stdout.print(line)

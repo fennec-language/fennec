@@ -12,7 +12,7 @@ use std::path::Path;
 
 use crate::parallel::{Side, built, shown, twins};
 
-const KERNELS: [&str; 4] = ["game_math", "graph", "json_typed", "pack_typed"];
+const KERNELS: [&str; 5] = ["game_math", "game_server", "graph", "json_typed", "pack_typed"];
 const OUT_DIR: &str = "target/bench/realworld";
 
 /// The section for the report: each kernel's name, with Fennec's side and its twin's.

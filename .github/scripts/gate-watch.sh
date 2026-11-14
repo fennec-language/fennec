@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Watches everything a process started, and stops a test program that runs too long or holds too
 # much memory, so that one hanging or swelling program fails the gate instead of taking the Mac
-# with it. The compiler, cargo, the linker and the test binaries themselves can take as long as
-# they need, though nothing can hold more than the memory limit.
+# with it. The compiler, cargo, LLVM's tools, the linker and the test binaries themselves can take
+# as long as they need, though nothing can hold more than the memory limit.
 #
 # A test program's limit is CPU time, so a machine busy with other builds, where a program waits
 # for a core, can't make one that isn't stuck look stuck. One stuck without using the CPU, like a
-# deadlock, is stopped once it has been running ten times that long.
+# deadlock, is stopped once it and everything it started have used no CPU for ten times that long.
+# A program waiting on a build it started, which is compiling, isn't stuck, however busy the machine
+# makes that build: on 2026-11-14 a fuzz test was stopped after 10 minutes while its `llc` worked
+# through a release build at a load of 75. Nothing, stuck or not, runs past six times that, an hour
+# by default. A program stopped is stopped with everything it started.
 #
 # Time a program spends held at launch doesn't count against that. macOS can hold a brand-new
 # executable at its first instruction, `_dyld_start`, while it's assessed, for seconds or for
@@ -32,7 +36,8 @@ sampling=0
 command -v sample > /dev/null && sampling=1
 # What's known of each program from one look to the next, a line each: its pid and name, so a pid
 # used again starts afresh; `unknown`, `held` or `ran`; the seconds it was held; how long it had
-# been running when last sampled; whether its hold has been written; and the program. Samples
+# been running when last sampled; whether its hold has been written; the CPU seconds it and what
+# it started had used; how long it had been running when that last changed; and the program. Samples
 # taken since the last look go in `$state.samples`: the pid, the name, `held` or `ran`, and when.
 state=$(mktemp)
 sampled=$(mktemp)
@@ -54,7 +59,8 @@ while kill -0 "$root" 2> /dev/null; do
         split(kept, field, " ")
         was[field[1]] = field[2]; verdict[field[1]] = field[3]; held[field[1]] = field[4]
         probed[field[1]] = field[5]; written[field[1]] = field[6]
-        program[field[1]] = kept; sub(/^([^ ]+ ){6}/, "", program[field[1]])
+        used[field[1]] = field[7]; moved[field[1]] = field[8]
+        program[field[1]] = kept; sub(/^([^ ]+ ){8}/, "", program[field[1]])
       }
       close(state)
       while ((getline kept < (state ".samples")) > 0) {
@@ -76,6 +82,18 @@ while kill -0 "$root" 2> /dev/null; do
     END {
       next_state = state ".next"
       printf "" > next_state
+      # The CPU seconds each process and everything it started have used, those still running.
+      for (pid in parent) {
+        at = pid
+        while (at != root && at in parent && at > 1) at = parent[at]
+        if (at != root) continue
+        at = pid
+        while (1) {
+          tree[at] += age(cpu[pid])
+          if (at == root || !(at in parent) || at <= 1) break
+          at = parent[at]
+        }
+      }
       for (pid in parent) {
         at = pid
         while (at != root && at in parent && at > 1) at = parent[at]
@@ -85,7 +103,7 @@ while kill -0 "$root" 2> /dev/null; do
         # collects it. It holds no time and no memory any more, and so needs no stopping.
         if (text ~ /^\(.*\)$/ || text ~ /<defunct>/) continue
         present[pid] = 1
-        tool = name[pid] ~ /^(cargo|cargo-clippy|clippy-driver|rustc|rustup|rustdoc|cc|c\+\+|clang|ld|ld64|ld64\.lld|lld|rust-lld|ar|as|xcrun|bash|sh|zsh|awk|ps|sleep|tee|nice|git|sample)$/ \
+        tool = name[pid] ~ /^(cargo|cargo-clippy|clippy-driver|rustc|rustup|rustdoc|cc|c\+\+|clang|ld|ld64|ld64\.lld|lld|rust-lld|ar|as|xcrun|opt|llc|llvm-link|llvm-ar|bash|sh|zsh|awk|ps|sleep|tee|nice|git|sample)$/ \
           || text ~ /\/deps\/[^ ]+-[0-9a-f]+( |$)/ || text ~ /build-script-build/ || text ~ / daemon( |$)/
         if (rss[pid] > kb) { print "stop", pid, "memory", rss[pid], text; continue }
         if (tool) continue
@@ -111,10 +129,16 @@ while kill -0 "$root" 2> /dev/null; do
           print for_seconds, substr(text, 1, 200) >> holds
           told = 1
         }
-        print pid, name[pid], so, for_seconds, sampled_at, told, substr(text, 1, 200) >> next_state
+        # When it, or anything it started, last used the CPU: any change in what they had used, since
+        # one that ended takes its share away.
+        moved_at = known ? moved[pid] : 0
+        if (!known || tree[pid] != used[pid]) moved_at = running
+        quiet = running - (moved_at > for_seconds ? moved_at : for_seconds)
+        print pid, name[pid], so, for_seconds, sampled_at, told, tree[pid], moved_at, substr(text, 1, 200) >> next_state
         if (sample) print "sample", pid, name[pid], running
         else if (age(cpu[pid]) > seconds) print "stop", pid, "cpu", cpu[pid], text
-        else if (running - for_seconds > wall) print "stop", pid, "time", elapsed[pid] "-with-" for_seconds "s-held-at-launch", text
+        else if (quiet > wall) print "stop", pid, "time", elapsed[pid] "-with-" for_seconds "s-held-at-launch-and-" quiet "s-with-no-CPU", text
+        else if (running - for_seconds > wall * 6) print "stop", pid, "ceiling", elapsed[pid] "-with-" for_seconds "s-held-at-launch", text
       }
       # One that was held and has gone since the last look started and ended in between.
       for (pid in was) {
@@ -158,7 +182,18 @@ while kill -0 "$root" 2> /dev/null; do
         echo "  what it waits on: $(cat "/proc/$pid/wchan" 2> /dev/null), $(cut -d' ' -f3 "/proc/$pid/stat" 2> /dev/null)"
       fi
     } >> "$log" 2>&1
-    kill -9 "$pid" 2> /dev/null
+    # It and everything it started, which would otherwise go on with no one to wait for them.
+    for each in $(ps -axo pid=,ppid= | awk -v top="$pid" '
+      { parent[$1] = $2 }
+      END {
+        for (at in parent) {
+          up = at
+          while (up != top && up in parent && up > 1) up = parent[up]
+          if (up == top) print at
+        }
+      }'); do
+      kill -9 "$each" 2> /dev/null
+    done
   done
   mv -f "$state.next" "$state" 2> /dev/null
   rm -f "$state.samples"
@@ -166,4 +201,4 @@ while kill -0 "$root" 2> /dev/null; do
   sleep 2
 done
 # Holds of programs that ended with everything else, since the last look.
-awk -v holds="$holds" '$3 == "held" && $4 >= 2 && !$6 { line = $0; sub(/^([^ ]+ ){6}/, "", line); print $4, line >> holds }' "$state"
+awk -v holds="$holds" '$3 == "held" && $4 >= 2 && !$6 { line = $0; sub(/^([^ ]+ ){8}/, "", line); print $4, line >> holds }' "$state"

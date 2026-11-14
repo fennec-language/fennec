@@ -24,6 +24,21 @@ impl Interp {
                 Some(Type::Sized(_)) => unsupported("f32"),
                 _ => Ok(Value::Float(*x)),
             },
+            // A duration written out, as `30s`, is `std.time`'s `Duration`, when that module runs here.
+            ExprKind::Duration(nanos)
+                if self
+                    .program
+                    .from_std
+                    .get("std.time.Duration")
+                    .is_some_and(|found| found == "Duration") =>
+            {
+                let duration = crate::value::Instance {
+                    ty: "Duration".to_owned(),
+                    case: None,
+                    fields: vec![("nanos".to_owned(), Value::Int(*nanos))],
+                };
+                Ok(Value::Instance(Box::new(duration)))
+            }
             ExprKind::Duration(_) => unsupported("durations"),
             ExprKind::Bytes(_) | ExprKind::Folder(_) => unsupported("embedded files"),
             ExprKind::Str(text) => Ok(Value::Str(text.clone())),

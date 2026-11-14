@@ -192,6 +192,9 @@ export struct Unpacker:
         while place < len(self._data):
             b = self._data[place]
             if shift > 63 or (shift == 63 and b > 1): fail self._fail(at, "a number is too long")
+            # A last byte of 0 after others adds nothing: see `PackReader._varint`.
+            if b == 0 and shift > 0:
+                fail self._fail(at, "a number is written in more bytes than it needs")
             n = n | ((b & 127) << shift)
             place += 1
             if b < 128: return (n, place)
@@ -612,6 +615,10 @@ export struct PackReader:
         while True:
             b = self._byte()?
             if shift == 63 and b > 1: fail self._fail("a number is too long")
+            # A last byte of 0 after others adds nothing, so the number has a shorter form. Each
+            # number has one form, so the same value always packs to the same bytes, and a hash or
+            # a signature over them can't be kept while the bytes change.
+            if b == 0: fail self._fail("a number is written in more bytes than it needs")
             n = n | ((b & 127) << shift)
             if b < 128: return n
             shift += 7

@@ -250,7 +250,7 @@ impl FnCx<'_> {
     /// a dot wouldn't mean the same there, and nothing's noted.
     fn note_undotted_case(&mut self, pattern: &Pattern, subject: &Type, span: Span) {
         let Pattern::Variant { name, dotted: false, .. } = pattern else { return };
-        let Type::Named(owner) = self.checker.settled(subject) else { return };
+        let (Type::Named(owner) | Type::Generic(owner, _)) = self.checker.settled(subject) else { return };
         // `case Kind.One:` where the type is known is written `case .One:`.
         if let Some((written, case)) = name.rsplit_once('.') {
             let shown = fennec_syntax::rename::shown_type_name(&owner);
@@ -385,7 +385,15 @@ impl FnCx<'_> {
         let dotted = *dotted;
         let owner = self.variant_owner(name, dotted, target, span);
         let fields = owner.as_ref().map(|(owner, case)| self.field_names(owner, case.as_deref()));
-        let types = owner.as_ref().map(|(owner, case)| self.case_fields(owner, case.as_deref()));
+        // A generic type's fields are of the types its parameters are in what's matched, as
+        // `value` in `.Picked(value)` is an `int` over a `Choice[int]`.
+        let params = self.checker.program.type_args(&self.checker.settled(target));
+        let types = owner.as_ref().map(|(owner, case)| {
+            self.case_fields(owner, case.as_deref())
+                .iter()
+                .map(|ty| ty.substitute(&params))
+                .collect::<Vec<_>>()
+        });
         if let Some((owner, _)) = &owner
             && given.is_empty()
             && !args.is_empty()
@@ -576,7 +584,8 @@ impl FnCx<'_> {
                 return None;
             }
         }
-        if let Type::Named(owner) = subject
+        // A generic enum's case, as `.Picked(value)` over a `Choice[int]`, is its enum's.
+        if let Type::Named(owner) | Type::Generic(owner, _) = subject
             && self.checker.program.type_info(owner).is_some_and(|info| !info.def.cases.is_empty())
         {
             let has_case = self
@@ -692,7 +701,8 @@ impl FnCx<'_> {
             }
             return;
         }
-        let Type::Named(owner) = subject else { return };
+        // A generic enum, as `Choice[int]`, has its enum's cases.
+        let (Type::Named(owner) | Type::Generic(owner, _)) = subject else { return };
         let Some(info) = self.checker.program.type_info(owner).filter(|info| !info.def.cases.is_empty())
         else {
             return;
@@ -833,7 +843,7 @@ impl FnCx<'_> {
             Type::Union(members) => members
                 .iter()
                 .all(|member| whole.contains(&member.to_string().as_str()) || self.covers(member, patterns)),
-            Type::Named(owner) => match self.checker.program.type_info(owner) {
+            Type::Named(owner) | Type::Generic(owner, _) => match self.checker.program.type_info(owner) {
                 // A case is named on its own, `.Stuck`, or with its type, `Shut.Stuck`.
                 Some(info) if !info.def.cases.is_empty() => info.def.cases.iter().all(|case| {
                     whole.iter().any(|written| {

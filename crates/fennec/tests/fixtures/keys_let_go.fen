@@ -1,0 +1,163 @@
+# A key held in a block, a tuple's or a struct's, is given to every dict and set operation that
+# takes one, to look something up by, and is let go of after: for a key that's there and one that
+# isn't, on the main thread, in a launched task and in `parallel`. `pop`, `remove` and `discard`
+# each used to leave the key they were given.
+from std.concurrent import Channel, Closed, Crashed, Timeout, channel
+
+struct Cell:
+    x: int
+    name: str
+
+# A key whose text is long enough to be a block of its own, inside the key's block.
+def pair(at: int) -> (int, str):
+    return (at, f"key number {at}, long enough for a block")
+
+def cell(at: int) -> Cell:
+    return Cell(x=at, name=f"cell number {at}, long enough for a block")
+
+# Every operation of a dict with tuple keys, on keys it has and keys it hasn't.
+def pairs(count: int) -> int:
+    mut by_pair: dict[(int, str), int] = {}
+    mut total = 0
+    for at in range(count):
+        by_pair[pair(at)] = at
+        by_pair[pair(at)] = at + 1
+        by_pair[pair(at)] += 1
+        total += by_pair[pair(at)]
+        total += by_pair.get(pair(at)) else -1
+        total += by_pair.get(pair(at + count)) else -1
+        total += 1 if pair(at) in by_pair else 0
+        total += 1 if pair(at + count) not in by_pair else 0
+        total += by_pair.setdefault(pair(at), default=7)
+        total += by_pair.setdefault(pair(at + count), default=7)
+    for at in range(0, count, 2):
+        total += by_pair.pop(pair(at))
+        total += by_pair.remove(pair(at + 1)) else -1
+        total += by_pair.remove(pair(at)) else -1
+    mut more: dict[(int, str), int] = {}
+    more[pair(0)] = 100
+    more.update(by_pair)
+    kept = by_pair
+    by_pair[pair(-1)] = 5
+    total += len(kept) + len(by_pair) + len(more)
+    total += 1 if kept == by_pair else 0
+    for key, value in by_pair.items():
+        total += key[0] + value
+    for key in more.keys():
+        total += key[0]
+    by_pair.clear()
+    return total + len(by_pair)
+
+# The same with struct keys and lists for values.
+def cells(count: int) -> int:
+    mut by_cell: dict[Cell, list[int]] = {}
+    mut total = 0
+    for at in range(count):
+        by_cell[cell(at)] = [at]
+        by_cell[cell(at)] = [at, at]
+        by_cell[cell(at)].append(at)
+        total += len(by_cell[cell(at)])
+        total += len(by_cell.get(cell(at)) else list[int]())
+        total += len(by_cell.get(cell(at + count)) else list[int]())
+        total += 1 if cell(at) in by_cell else 0
+        total += 1 if cell(at + count) not in by_cell else 0
+        total += len(by_cell.setdefault(cell(at), default=[9]))
+    for at in range(0, count, 2):
+        total += len(by_cell.pop(cell(at)))
+        total += len(by_cell.remove(cell(at + 1)) else list[int]())
+        total += len(by_cell.remove(cell(at)) else list[int]())
+    kept = by_cell
+    by_cell[cell(-1)] = [5]
+    total += len(kept) + len(by_cell)
+    for key, value in by_cell.items():
+        total += key.x + len(value)
+    return total
+
+# Every operation of a set, of tuples and of structs.
+def sets(count: int) -> int:
+    mut seen = set[(int, str)]()
+    mut cells_seen = set[Cell]()
+    mut total = 0
+    for at in range(count):
+        seen.add(pair(at))
+        seen.add(pair(at))
+        cells_seen.add(cell(at))
+        cells_seen.add(cell(at))
+        total += 1 if pair(at) in seen else 0
+        total += 1 if pair(at + count) not in seen else 0
+        total += 1 if cell(at) in cells_seen else 0
+        total += 1 if cell(at + count) not in cells_seen else 0
+    for at in range(0, count, 2):
+        seen.remove(pair(at))
+        seen.discard(pair(at))
+        seen.discard(pair(at + count))
+        cells_seen.remove(cell(at))
+        cells_seen.discard(cell(at))
+        cells_seen.discard(cell(at + count))
+    mut others = set[(int, str)]()
+    others.add(pair(1))
+    others.add(pair(count + 5))
+    others.update(seen)
+    total += len(seen.union(others)) + len(seen.intersection(others)) + len(others.difference(seen))
+    total += 1 if seen.is_subset(others) else 0
+    total += 1 if seen.is_disjoint(others) else 0
+    for key in seen:
+        total += key[0]
+    for key in cells_seen:
+        total += key.x
+    return total + len(seen) + len(cells_seen)
+
+def all_of(count: int) -> int:
+    return pairs(count) + cells(count) + sets(count)
+
+# Each of these asks for a key that isn't there, which stops the task it's in.
+def fails(which: int) -> int:
+    mut by_pair: dict[(int, str), int] = {}
+    by_pair[pair(1)] = 1
+    mut by_cell: dict[Cell, list[int]] = {}
+    by_cell[cell(1)] = [1]
+    mut seen = set[(int, str)]()
+    seen.add(pair(1))
+    if which == 0: return by_pair[pair(2)]
+    if which == 1:
+        by_pair[pair(2)] += 1
+    if which == 2: return by_pair.pop(pair(2))
+    if which == 3:
+        seen.remove(pair(2))
+    if which == 4: return len(by_cell[cell(2)])
+    if which == 5: return len(by_cell.pop(cell(2)))
+    return len(by_pair) + len(seen)
+
+def failing(which: int, out: Channel[int]):
+    out.send(fails(which)) except Closed():
+        return
+    return
+
+# Runs one of them in a task, whose crash comes out where the task's block ends.
+def one_failing(which: int) fails Crashed:
+    with channel[int](size=1) as out:
+        with launch(() => failing(which, out=out))?:
+            pass
+    return
+
+# How many of the tasks asking for a missing key were stopped by it.
+def stopped() -> int:
+    mut crashed = 0
+    for which in range(6):
+        one_failing(which) except Crashed():
+            crashed += 1
+    return crashed
+
+def in_task(count: int, out: Channel[int]):
+    out.send(all_of(count)) except Closed():
+        return
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed | Timeout:
+    stdout.print(all_of(20))
+    with channel[int](size=1) as out:
+        with launch(() => in_task(20, out=out))?:
+            stdout.print(out.receive() else -1)
+    stdout.print(sum([all_of(count) for count in parallel([4, 8, 12, 16])]))
+    stdout.print(stopped())
+    return

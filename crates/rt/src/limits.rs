@@ -540,7 +540,15 @@ mod tests {
         let missing = call(&fs, "_sqlite_open", &[Value::str(&format!("{folder}/missing.db"))]);
         assert!(matches!(missing, Value::Err(_)), "{missing:?}");
         assert!(!std::path::Path::new(&format!("{folder}/missing.db")).exists(), "a database was made");
-        let _ = std::fs::remove_dir_all(&folder);
+        // Each database is closed before its folder goes: a `Database` holds only its handle, so
+        // dropping it leaves the connection open, and Windows won't remove a file that's open.
+        for database in [made, opened] {
+            if let Value::Ok(database) = database {
+                let closed = crate::stdlib::sqlite::call(handle(&database), "_close", &[], Span::default());
+                assert!(matches!(closed, Ok(Value::Unit)), "{closed:?}");
+            }
+        }
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     /// A path out of a narrowed `Fs`'s folder, by `..` or by a link inside it, is refused.

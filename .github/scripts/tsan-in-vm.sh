@@ -2,13 +2,14 @@
 # Runs tsan-programs.sh on this checkout in Fennec's own Linux VM, the Docker context
 # `colima-fennec` (docs/landing.md says how to make it), as CI and the nightly run it on Linux:
 #
-#   .github/scripts/tsan-in-vm.sh
+#   .github/scripts/tsan-in-vm.sh [seconds of fuzzing]
 #
 # The checkout is copied into the container, leaving `target` out, and built there. The nightly
 # compiler, fetched crates and the build are kept in volumes of their own, so a second run builds
 # only what changed. It never uses Docker's default context.
 set -euo pipefail
 root=$(git rev-parse --show-toplevel)
+seconds=${1:-300}
 context=${FENNEC_DOCKER_CONTEXT:-colima-fennec}
 docker --context "$context" info > /dev/null 2>&1 || {
   colima start fennec --activate=false > /dev/null 2>&1 || {
@@ -38,16 +39,20 @@ git init -q .
 .github/scripts/tsan-runtime.sh
 # With addresses not randomized, for this and every program it starts: on Arm, TSan finds no room
 # for its shadow memory where the kernel scatters mappings this widely, and stops every program.
-setarch "$(uname -m)" -R .github/scripts/tsan-programs.sh target/release/fennec
+setarch "$(uname -m)" -R .github/scripts/tsan-programs.sh target/release/fennec "$SECONDS_OF_FUZZING"
 '
 # `setarch -R` asks the kernel for a process with addresses not randomized, which Docker's default
 # seccomp profile refuses, so this container, in Fennec's own VM, runs without it.
+# What the fuzzer finds is kept on the Mac, in the checkout's `target/tsan-found`.
+mkdir -p "$root/target/tsan-found"
 docker --context "$context" run --rm --memory "$memory" --security-opt seccomp=unconfined \
   --volume "$root:/repo:ro" \
+  --volume "$root/target/tsan-found:/src/found" \
   --volume fennec-tsan-target:/src/target \
   --volume fennec-tsan-rustup:/usr/local/rustup \
   --volume fennec-linux-check-registry:/usr/local/cargo/registry \
   --env NIGHTLY="$nightly" \
   --env RUSTUP_TOOLCHAIN="$toolchain" \
+  --env SECONDS_OF_FUZZING="$seconds" \
   "rust:${toolchain%.*}-slim-trixie" \
   bash -c "$inside"

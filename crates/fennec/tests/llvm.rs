@@ -9750,6 +9750,126 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generator that fails lets go of what it failed with when it's let go of. The header's slot
+/// for the failure was laid out as a number, so the generator's free left its block behind: an
+/// error, its notes and what it holds, for every failure. A generator holding a `with` is one of
+/// its own, not written into its loop, so these are. Each fails as it closes or inside the
+/// `with`, stopped where one can be: run to its end, with nothing given, left partway, made and
+/// never started, and in a task. Then a thousand fail one after another. The counts are pinned:
+/// nothing left. On main this ends with 10,023 blocks.
+#[test]
+fn a_generator_that_fails_lets_go_of_its_failure_wherever_its_stopped() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("failed_generators", FAILED_GENERATORS, FAILED_GENERATORS_PRINTS)?;
+    assert_eq!(
+        counts_of("failed_generators_counts", FAILED_GENERATORS)?,
+        "copies 2 copied_bytes 80 largest_copy 40 allocations 16063 allocated_bytes 1324784 live 0"
+    );
+    Ok(())
+}
+
+const FAILED_GENERATORS: &str = r#"# A generator that fails lets go of what it failed with when it's let go of. Each of these holds a
+# `with`, so it's a generator of its own and not written into its loop. It fails as it closes, or
+# in the `with`'s body, and is stopped at every point one can be: run to its end, left partway,
+# made and never started, and in a task. Then a thousand of them fail one after another.
+
+from std.concurrent import Crashed
+
+struct Tally:
+    count: int
+
+error Shut:
+    code: int
+    why: str
+
+def shutting(code: int) -> with Tally fails Shut:
+    lend Tally(count=code)
+    fail Shut(code=code, why=f"closing {code}, in words long enough for a block")
+
+def lending(code: int) -> with Tally:
+    lend Tally(count=code)
+
+def closes_badly(limit: int) -> Iterator[int] fails Shut:
+    with shutting(limit)? as tally:
+        for at in range(limit):
+            yield at + tally.count
+
+def fails_inside(limit: int) -> Iterator[int] fails Shut:
+    with lending(limit) as tally:
+        for at in range(limit):
+            yield at + tally.count
+        fail Shut(code=limit + 100, why=f"inside {limit}, in words long enough for a block")
+
+def to_the_end(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in closes_badly(limit)?:
+        running += value
+    return running
+
+def left_partway(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in closes_badly(limit)?:
+        running += value
+        if value > limit:
+            break
+    return running
+
+def never_started(limit: int) -> int fails Shut:
+    made = closes_badly(limit)?
+    return limit
+
+def inside(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in fails_inside(limit)?:
+        running += value
+    return running
+
+def show(stdout: Stdout, name: str, run: () -> int fails Shut):
+    got = run() except why:
+        case Shut():
+            stdout.print(name, "shut", why.code, why.why)
+            return
+    stdout.print(name, got)
+    return
+
+def quietly(limit: int) -> int:
+    ended = to_the_end(limit) except Shut(): -1
+    partway = left_partway(limit) except Shut(): -2
+    within = inside(limit) except Shut(): -3
+    return ended + partway + within
+
+def in_a_task(limit: int):
+    _ = quietly(limit)
+
+def tasked(limit: int) fails Crashed:
+    with launch(() => in_a_task(limit)):
+        pass
+
+def main(stdout: Stdout):
+    show(stdout, "to the end:", () => to_the_end(3)?)
+    show(stdout, "nothing given:", () => to_the_end(0)?)
+    show(stdout, "left partway:", () => left_partway(3)?)
+    show(stdout, "never started:", () => never_started(3)?)
+    show(stdout, "inside:", () => inside(3)?)
+    _ = tasked(3) except Crashed():
+        stdout.print("the task crashed")
+    mut failed = 0
+    for round in range(1_000):
+        failed += quietly(round % 4)
+    stdout.print("a thousand:", failed)
+    return
+"#;
+
+const FAILED_GENERATORS_PRINTS: &str = r"to the end: shut 3 closing 3, in words long enough for a block
+nothing given: shut 0 closing 0, in words long enough for a block
+left partway: shut 3 closing 3, in words long enough for a block
+never started: 3
+inside: shut 103 inside 3, in words long enough for a block
+a thousand: -6000
+";
+
 /// A generator's failure passes up however the generator was reached: from a name, and from inside
 /// `with` blocks, where the loop is over a name too, as well as from the loop that calls it.
 #[test]
@@ -11050,6 +11170,30 @@ fn a_shared_empty_list_or_dict_written_once_copies_nothing() -> std::io::Result<
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+/// A key held in a block, a tuple's or a struct's, is let go of by every dict and set operation
+/// it's given to: `in`, `get`, reading, setting, `+=`, `setdefault`, `update`, `remove`, `pop` and
+/// iteration on a dict, and `add`, `in`, `remove`, `discard`, `update` and the set operations on a
+/// set, for keys that are there and keys that aren't, on the main thread, in a launched task and
+/// in `parallel`. And where a key that isn't there fails, in reading it, `+=`, `pop` and a set's
+/// `remove`, each in a task it stops: the key goes, and so does the dict the task held. No block
+/// is left.
+///
+/// Three things left blocks behind. `pop`, `remove` and `discard` never let go of the key they
+/// were handed, a block a call: `dicts_large` ended with 1 live and `struct_keys_native` with 4.
+/// Reading a key that isn't there left the key its failure was told of. And `pop` of one gave
+/// back no dict with its failure, which native code stored over the dict before looking, losing
+/// it and all it held.
+#[test]
+fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("keys_let_go")?;
+    let program = dir.join("keys_let_go.fen");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keys_let_go.fen"), &program)?;
+    prints_with_nothing_left(&dir, &program, "3060\n3060\n4380\n6\n", &["1", "4"])
 }
 
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what
@@ -20132,6 +20276,215 @@ def main(stdout: Stdout):
         kept_total += unit.hp + unit.bag["gold"] + len(unit.tags)
     stdout.print(total, kept_total)
     return
+"#;
+
+/// A loop over a dict's keys or values alone, where each is a tuple, reads the tuple's own parts.
+/// The backend took `value[0]` and `value[1]` there for the parts of the pair a walk over
+/// `items()` never makes, and read the entry's key and value: `value[0]` of a `(int, int)` value
+/// gave the dict's key, with no error, and a tuple holding a `str` didn't build. Here keys and
+/// values that are tuples, of ints, of a string and of a list, are walked by `keys()`,
+/// `values()`, `items()` and a `Table`'s `values()`, and every part is its own.
+#[test]
+fn a_tuple_walked_as_a_dicts_key_or_value_has_its_own_parts() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("walked_tuples", WALKED_TUPLES, WALKED_TUPLES_PRINTS)?;
+    assert!(counts_of("walked_tuples_counts", WALKED_TUPLES)?.ends_with(" live 0"));
+    Ok(())
+}
+
+/// The same for every other way a walked item's parts are read: comprehensions and `sum` over a
+/// dict's keys, values and items, a `for` that takes each tuple apart, `enumerate`, `zip`, a
+/// generator that yields them, `parallel`, and a `Table`'s items and values. Before the fix a
+/// comprehension or a `sum` over `values()`, `for left, right in by_int.values()` and
+/// `for number, name in by_pair.keys()` each read the entry's key and value, and a `Table`'s
+/// `values()` read its id's words.
+#[test]
+fn a_walked_tuples_parts_are_its_own_however_the_walk_is_written() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("walked_tuples_every_way", WALKED_EVERY_WAY, WALKED_EVERY_WAY_PRINTS)?;
+    assert!(counts_of("walked_tuples_every_way_counts", WALKED_EVERY_WAY)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const WALKED_EVERY_WAY: &str = r#"# Every other way a walked item's parts are read: comprehensions and `sum` over a dict's keys,
+# values and items, `enumerate`, `zip`, a `for` that takes each tuple apart, a generator that
+# yields them, `parallel`, and a `Table`'s items. Each key and value is a tuple, so a part read
+# from the wrong place shows.
+
+from std.collections import Table
+
+def pair(at: int) -> (int, str):
+    return (at, f"key number {at}, long enough for a block")
+
+def each_value(by_int: dict[int, (int, int)]) -> Iterator[(int, int)]:
+    for value in by_int.values():
+        yield value
+
+def each_key(by_pair: dict[(int, str), (int, int)]) -> Iterator[(int, str)]:
+    for key in by_pair.keys():
+        yield key
+
+def each_item(by_pair: dict[(int, str), (int, int)]) -> Iterator[((int, str), (int, int))]:
+    for item in by_pair.items():
+        yield item
+
+def spread(value: (int, int)) -> int:
+    return value[1] - value[0]
+
+def main(stdout: Stdout):
+    mut by_int: dict[int, (int, int)] = {}
+    by_int[1] = (30, 40)
+    by_int[2] = (50, 65)
+    mut by_pair: dict[(int, str), (int, int)] = {}
+    by_pair[pair(3)] = (5, 6)
+    by_pair[pair(4)] = (7, 9)
+    # Comprehensions and `sum`.
+    stdout.print([value[0] for value in by_int.values()], [value[1] for value in by_int.values()])
+    stdout.print([key[0] for key in by_pair.keys()], [len(key[1]) for key in by_pair.keys()])
+    stdout.print([key[0] * 100 + value[1] for key, value in by_pair.items()])
+    stdout.print([item[0][0] * 100 + item[1][0] for item in by_pair.items()])
+    stdout.print(sum(value[0] for value in by_int.values()), sum(value[1] for value in by_int.values()))
+    stdout.print(sum(key[0] for key in by_pair.keys()), sum(value[1] for key, value in by_pair.items()))
+    # A `for` that takes each tuple apart.
+    mut lefts = 0
+    mut rights = 0
+    for left, right in by_int.values():
+        lefts += left
+        rights += right
+    mut numbers = 0
+    mut sizes = 0
+    for number, name in by_pair.keys():
+        numbers += number
+        sizes += len(name)
+    stdout.print(lefts, rights, numbers, sizes)
+    # `enumerate` and `zip` over lists of tuples.
+    tuples = [(10, 11), (20, 22)]
+    names = [pair(5), pair(6)]
+    mut counted = 0
+    for at, value in enumerate(tuples):
+        counted += at * 1000 + value[0] * 10 + value[1]
+    mut numbered = 0
+    for numbered_pair in enumerate(tuples):
+        numbered += numbered_pair[0] * 1000 + numbered_pair[1][0] * 10 + numbered_pair[1][1]
+    mut zipped = 0
+    for value, name in zip(tuples, names):
+        zipped += value[0] * 10 + value[1] + name[0] * 1000 + len(name[1])
+    mut whole = 0
+    for both in zip(tuples, names):
+        whole += both[0][0] * 10 + both[0][1] + both[1][0] * 1000 + len(both[1][1])
+    stdout.print(counted, numbered, zipped, whole)
+    # A generator that yields them.
+    stdout.print([value[0] for value in each_value(by_int)], [value[1] for value in each_value(by_int)])
+    stdout.print([key[0] for key in each_key(by_pair)], [len(key[1]) for key in each_key(by_pair)])
+    stdout.print([item[0][0] * 100 + item[1][1] for item in each_item(by_pair)])
+    # `parallel`, over a dict's values and over a list of tuples.
+    stdout.print([spread(value) for value in parallel(by_int.values())])
+    stdout.print([value[0] + value[1] for value in parallel(tuples)])
+    # A `Table`'s items and values.
+    mut table = Table[(int, str)]()
+    _ = table.add(pair(1))
+    _ = table.add(pair(2))
+    stdout.print([value[0] for value in table.values()], [len(value[1]) for value in table.values()])
+    stdout.print([value[0] for id, value in table.items()], sum(len(value[1]) for id, value in table.items()))
+    return
+"#;
+
+const WALKED_EVERY_WAY_PRINTS: &str = r"[30, 50] [40, 65]
+[3, 4] [37, 37]
+[306, 409]
+[305, 407]
+80 105
+7 15
+80 105 7 74
+1333 1333 11407 11407
+[30, 50] [40, 65]
+[3, 4] [37, 37]
+[306, 409]
+[10, 15]
+[21, 42]
+[1, 2] [37, 37]
+[1, 2] 74
+";
+
+const WALKED_TUPLES: &str = r#"# A loop over a dict's keys or values alone, where each is a tuple: its parts are the tuple's own,
+# not the entry's key and value. Beside them, a loop over its items, whose pair's parts are.
+
+from std.collections import Table
+
+def pair(at: int) -> (int, str):
+    return (at, f"key number {at}, long enough for a block")
+
+def main(stdout: Stdout):
+    mut by_pair: dict[(int, str), int] = {}
+    by_pair[pair(7)] = 100
+    by_pair[pair(8)] = 200
+    mut firsts = 0
+    mut sizes = 0
+    mut last = ""
+    for key in by_pair.keys():
+        firsts += key[0]
+        sizes += len(key[1])
+        last = key[1]
+    stdout.print(firsts, sizes, last)
+    mut by_int: dict[int, (int, int)] = {}
+    by_int[1] = (30, 40)
+    by_int[2] = (50, 60)
+    mut lefts = 0
+    mut rights = 0
+    for value in by_int.values():
+        lefts += value[0]
+        rights += value[1]
+    stdout.print(lefts, rights)
+    mut by_name: dict[str, (str, list[int])] = {}
+    by_name["one"] = ("a first name long enough for a block", [1, 2])
+    by_name["two"] = ("a second name long enough for a block", [3])
+    mut names = list[str]()
+    mut counts = 0
+    for value in by_name.values():
+        names.append(value[0])
+        counts += len(value[1])
+    stdout.print(names, counts)
+    mut key_sizes = 0
+    for key in by_name.keys():
+        key_sizes += len(key)
+    stdout.print(key_sizes)
+    # A walk over items: the pair's parts are the entry's key and value, each a tuple here.
+    mut both: dict[(int, str), (int, int)] = {}
+    both[pair(3)] = (5, 6)
+    both[pair(4)] = (7, 8)
+    mut seen = list[str]()
+    mut added = 0
+    for key, value in both.items():
+        seen.append(key[1])
+        added += key[0] * 100 + value[0] * 10 + value[1]
+    stdout.print(seen, added)
+    for item in both.items():
+        stdout.print(item[0][0], item[0][1], item[1][0], item[1][1])
+    # A `Table`'s values, each a tuple.
+    mut table = Table[(int, str)]()
+    _ = table.add(pair(1))
+    _ = table.add(pair(2))
+    mut table_firsts = 0
+    mut table_sizes = 0
+    for value in table.values():
+        table_firsts += value[0]
+        table_sizes += len(value[1])
+    stdout.print(table_firsts, table_sizes)
+    return
+"#;
+
+const WALKED_TUPLES_PRINTS: &str = r#"15 74 key number 8, long enough for a block
+80 100
+["a first name long enough for a block", "a second name long enough for a block"] 3
+6
+["key number 3, long enough for a block", "key number 4, long enough for a block"] 834
+3 key number 3, long enough for a block 5 6
+4 key number 4, long enough for a block 7 8
+3 74
 "#;
 
 /// A dict's `values()`, `keys()` and `items()`, gone through by a `for`, a comprehension or a

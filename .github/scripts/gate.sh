@@ -246,6 +246,15 @@ for outcome in "${outcomes[@]}"; do
 done
 echo "$((SECONDS - started))s  altogether"
 if [ "$passed" -eq 0 ]; then
+  # What gate-watch stopped, and what each was doing, printed above, kept beyond the gate's own
+  # folder, which goes when it ends.
+  if [ -s "$log" ]; then
+    kept="${FENNEC_HOME:-$HOME/.fennec}/gate-logs"
+    mkdir -p "$kept"
+    kept="$kept/$(date '+%Y-%m-%d-%H%M%S')-$(git rev-parse --short HEAD).log"
+    cp "$log" "$kept"
+    echo "what gate-watch stopped, and what each was doing, is kept in $kept"
+  fi
   echo "the gate failed"
   exit 1
 fi

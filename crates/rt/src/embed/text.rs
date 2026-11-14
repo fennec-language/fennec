@@ -81,6 +81,24 @@ pub(super) fn inline(bytes: &[u8]) -> [u64; 3] {
     [first, second, last]
 }
 
+/// An inline header holding the `length` bytes, 23 or fewer, that start at byte `start` of
+/// `words`, a text's bytes packed eight to a word: each of its words is shifted out of theirs,
+/// with no byte copied on its own.
+pub(super) fn inline_from_words(words: &[u64], start: usize, length: usize) -> [u64; 3] {
+    let length = length.min(INLINE_BYTES);
+    // The bytes of the part that word `number` of the header holds, with zeros after them.
+    let word = |number: usize| {
+        let left = length.saturating_sub(number * 8);
+        if left == 0 {
+            return 0;
+        }
+        let mask = if left >= 8 { u64::MAX } else { (1_u64 << (left * 8)) - 1 };
+        eight_bytes_at(words, start + number * 8) & mask
+    };
+    // The tag goes in the last byte, which 23 bytes leave free.
+    [word(0), word(1), word(2) | (u64::from(INLINE | u8::try_from(length).unwrap_or(0)) << 56)]
+}
+
 /// The header of `packed`, whose first `length` bytes, 23 or fewer, are a text's, with its tag
 /// put in the last.
 fn packed_header(mut packed: [u8; 24], length: usize) -> [u64; 3] {
@@ -314,7 +332,7 @@ fn words_same_at(
 /// The eight bytes of `words` from byte `at` on, as a word, zero past the words' end. Bytes are
 /// packed into words in order from each word's lowest byte, as a block and an inline header hold
 /// them.
-fn eight_bytes_at(words: &[u64], at: usize) -> u64 {
+pub(super) fn eight_bytes_at(words: &[u64], at: usize) -> u64 {
     let (number, shift) = (at / 8, (at % 8) * 8);
     let low = words.get(number).copied().unwrap_or(0) >> shift;
     if shift == 0 {
@@ -355,6 +373,25 @@ pub extern "C" fn of(address: i64) -> Text {
         let words = inline(&bytes);
         release(state, at);
         Text { words }
+    })
+}
+
+/// `fennec_str_append_int(text, n)`: `text += str(n)`, taking over the owner `text` had and giving
+/// back the joined string's. The int's digits are written where they're worked out, on the stack,
+/// and go straight onto the end of `text`: in place when it has no other owner and its block has
+/// room, and otherwise into a new block with room to double, as any `+=` does. No text is made of
+/// the digits on the way.
+pub extern "C" fn append_int(text: i64, n: i64) -> i64 {
+    super::made_with("fennec_str_append_int", |state| {
+        let Text { words } = int_header(n);
+        let length = usize::from(tag(&words) & !INLINE).min(INLINE_BYTES);
+        // The header's words without its tag are the digits, packed as a block packs them.
+        let [first, second, last] = words;
+        let digits = [first, second, last & (u64::MAX >> 8)];
+        let added = digits.get(..length.div_ceil(8)).unwrap_or_default();
+        // An int's digits and sign are ASCII, a character each.
+        let chars = u64::try_from(length).unwrap_or(0);
+        super::strings::grow_by(state, text, added, length, chars).unwrap_or(text)
     })
 }
 
@@ -638,6 +675,77 @@ mod tests {
                 }
             }
         }
+        finish();
+    }
+
+    /// An int added onto a text gives the text with the int's digits after it: for 0, negative
+    /// numbers and both ends of what an int holds, onto an empty text, one with room, one at
+    /// exactly its room, and one past it. A text with one owner and room grows where it is, and one
+    /// that's shared is left as it was, with the sum a text of its own.
+    #[test]
+    fn an_int_added_onto_a_text_is_its_digits_after_it() {
+        begin();
+        let text_at = |address: i64| {
+            with(|state| Some(heap::block_text(state.heap.block(address.cast_unsigned())?))).unwrap()
+        };
+        let room_of =
+            |address: i64| with(|state| state.heap.block(address.cast_unsigned())?.get(4).copied()).unwrap();
+        let numbers = [0, 7, -7, 10, -1_000_000, 123_456_789, i64::MAX, i64::MIN];
+        // Texts of 0, 5, 8, 16, 30 and 64 bytes, the last two of characters past ASCII too.
+        let starts = [
+            "",
+            "user=",
+            "eightlen",
+            "sixteen bytes it",
+            "caf\u{e9} \u{65e5}\u{672c} of thirty bytes!!",
+            &"x".repeat(64),
+        ];
+        for start in starts {
+            for n in numbers {
+                let made = with(|state| heap::text_address(state, start));
+                let joined = super::append_int(made, n);
+                assert_eq!(text_at(joined), format!("{start}{n}"), "{start:?} and {n}");
+                let chars = with(|state| state.heap.block(joined.cast_unsigned())?.get(3).copied()).unwrap();
+                assert_eq!(chars, u64::try_from(format!("{start}{n}").chars().count()).unwrap());
+                // Again and again onto what it gave: past its room, then within the doubled room.
+                let mut grown = joined;
+                let mut wanted = format!("{start}{n}");
+                for _ in 0..6 {
+                    let before = (grown, room_of(grown), wanted.len());
+                    grown = super::append_int(grown, n);
+                    wanted.push_str(&n.to_string());
+                    assert_eq!(text_at(grown), wanted);
+                    // With room for the digits it grows where it is, and without, it moves.
+                    let fitted = u64::try_from(wanted.len()).unwrap() <= before.1;
+                    assert_eq!(
+                        grown == before.0,
+                        fitted,
+                        "{wanted:?} from {} bytes in {}",
+                        before.2,
+                        before.1
+                    );
+                }
+                heap::free_text(grown);
+            }
+        }
+        // A text filled to exactly its room, then one digit more.
+        let exact = with(|state| heap::text_address(state, "12345678"));
+        assert_eq!(room_of(exact), 8);
+        let more = super::append_int(exact, 9);
+        assert_eq!(text_at(more), "123456789");
+        assert_ne!(more, exact);
+        heap::free_text(more);
+        // A shared text is left as it was: the sum is a text of its own, and the other owner's
+        // still reads as before.
+        let shared = with(|state| heap::text_address(state, "shared text with room to spare? "));
+        with(|state| heap::retain(state, shared.cast_unsigned()));
+        let sum = super::append_int(shared, -42);
+        assert_ne!(sum, shared);
+        assert_eq!(text_at(shared), "shared text with room to spare? ");
+        assert_eq!(text_at(sum), "shared text with room to spare? -42");
+        heap::free_text(sum);
+        heap::free_text(shared);
+        assert_eq!(live(), 0);
         finish();
     }
 

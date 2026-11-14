@@ -1,0 +1,36 @@
+# A dict's key that holds blocks is hashed by what it holds, which the runtime reads into a tree,
+# a call for each level. DEPTH levels deep, on the main thread or in a launched task: 20,000 is
+# hashed, and a million stops the program, saying why, where it used to end with a signal.
+from std.concurrent import Channel, Closed, Crashed, Timeout, channel
+
+DEPTH = 20_000
+IN_TASK = False
+
+struct Node:
+    n: int
+    kids: list[Node]
+
+def chain(depth: int) -> Node:
+    mut made = Node(n=0, kids=list[Node]())
+    for at in range(depth):
+        made = Node(n=at + 1, kids=[made])
+    return made
+
+def keyed(depth: int) -> int:
+    mut seen = dict[Node, int]()
+    seen[chain(depth)] = 7
+    return seen.get(chain(depth)) else -1
+
+def in_task(out: Channel[int]):
+    out.send(keyed(DEPTH)) except Closed():
+        return
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed | Timeout:
+    if IN_TASK:
+        with channel[int](size=1) as out:
+            with launch(() => in_task(out))?:
+                stdout.print(out.receive() else -9)
+        return
+    stdout.print(keyed(DEPTH))
+    return

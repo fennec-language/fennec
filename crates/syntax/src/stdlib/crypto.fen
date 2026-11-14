@@ -131,3 +131,10 @@ export struct Secret[T]:
     ## However it's printed, as through a generic function's `T`, it shows only that it's there.
     def str(self, ref out: StrWriter):
         out.write("Secret(hidden)")
+
+## A secret loads as what it holds, so a password in a request's body comes in as a `Secret` and
+## never sits in a plain `str` first. Loading brings a secret in; saving one is refused where it's
+## written, since that would let it out.
+extend Secret[T: Deserializable]:
+    def deserialize(ref src: Deserializer) -> Secret[T] fails ParseError:
+        return Secret.of(src.value[T]()?)

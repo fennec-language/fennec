@@ -115,6 +115,18 @@ with kernel time, and shows each language's startup, a hello-world's best run fr
 that prints something else is noted, and doesn't fail the run. Where a toolchain isn't
 installed, its column is left out.
 
+Three of the real programs have Go twins too: `api_handler.go`, `game_tick.go` and
+`chat_server.go`. They're written the way a Go programmer would write them, with the standard
+library only, built with plain `go build`, and run with Go's default garbage collector settings
+(no `GOGC` or `GOMEMLIMIT`). Where the Rust twin uses threads, they use goroutines and channels:
+the players and the grid's parts in `game_tick`, the hub and its four shards in `chat_server`.
+`game_tick` splits its grid into one part for each of `GOMAXPROCS`, as the Rust twin does for
+each of `FENNEC_THREADS`, so a run on one thread sets `GOMAXPROCS=1` beside `FENNEC_THREADS=1`.
+`api_handler` reads request bodies with `encoding/json`, refusing unknown fields. It writes its
+responses by hand, since `encoding/json` puts no space after a colon or a comma and they'd print
+other bytes. Unlike the Fennec and Rust readers, `encoding/json` matches a field's name in any
+case and keeps the last of a repeated field; the corpus sends neither.
+
 ## `parallel` against rayon
 
 `fennec-bench parallel` measures the kernels in `bench/parallel`, which run on threads, by wall clock at 1, 2, 4, 8 and 16 threads, as many of those as the machine has cores for, and at all its cores, each beside a twin using rayon. They cover each form `parallel` takes: `ecs` is a `for ref` loop of light work run 200 times, `mandel` one of heavy, uneven work, `collatz` a comprehension of uneven work, and `checksum` a reduction of even work. Each kernel's version without `parallel`, like `ecs_plain.fen`, runs beside plain Rust with no rayon, so each table says what `parallel` costs on one thread as well as what it gives on many.

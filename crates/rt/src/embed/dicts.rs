@@ -225,35 +225,27 @@ fn kind(state: &State, block: &[u64]) -> Option<(Word, Word)> {
 struct Layout {
     key: Word,
     value: Word,
-    /// How many words an entry takes, and where its value is from the entry's start: after its
-    /// hash and its key. The value is the one word left, but for one held in place, which is as
-    /// many as its kind takes. Both are small, and kept in the room one word had, so a layout
-    /// costs what it did when every value was a word.
-    wide: u32,
-    value_from: u32,
+    /// How many words an entry takes. This is all a layout holds beside its kinds, as it was
+    /// when every value was a word: with anything more, the calls for a one-word dict built it
+    /// on the stack and passed it through memory, 30 instructions a call.
+    width: usize,
 }
 
 impl Layout {
-    /// The layout of entries `width` words wide whose value is the last `value_words` of them.
-    fn of(key: Word, value: Word, width: usize, value_words: usize) -> Option<Layout> {
-        let wide = u32::try_from(width).ok()?;
-        let value_from = u32::try_from(width.checked_sub(value_words)?).ok()?;
-        Some(Layout { key, value, wide, value_from })
-    }
-
     /// How many words an entry takes.
     fn width(self) -> usize {
-        self.wide as usize
+        self.width
     }
 
-    /// Where an entry's value is, from the entry's start.
+    /// Where an entry's value is, from the entry's start: after its hash and its key, which is
+    /// one word or a string's three.
     fn value_at(self) -> usize {
-        self.value_from as usize
+        if self.key == Word::Text { HEADER_ENTRY_WORDS - 1 } else { ENTRY_WORDS - 1 }
     }
 
-    /// How many words the value takes.
+    /// How many words the value takes: one, but for a value held in place.
     fn value_words(self) -> usize {
-        (self.wide - self.value_from) as usize
+        self.width - self.value_at()
     }
 
     /// Whether the value is held in the entry as its own words (`Word::InPlace`).
@@ -287,9 +279,8 @@ fn shape_layout(state: &State, shape: u64) -> Option<Layout> {
     } else {
         return in_place_layout(state, shape);
     };
-    // The two widths an entry of one-word values has, each with where its value is.
-    let (wide, value_from) = if key == Word::Text { (5, 4) } else { (3, 2) };
-    Some(Layout { key, value, wide, value_from })
+    let width = if key == Word::Text { HEADER_ENTRY_WORDS } else { ENTRY_WORDS };
+    Some(Layout { key, value, width })
 }
 
 /// `shape_layout` for a dict that holds its values in place, whose entries are as wide as the
@@ -302,7 +293,7 @@ fn in_place_layout(state: &State, shape: u64) -> Option<Layout> {
     // a dict can find again.
     let value_words =
         value_element(state, value).map(|element| element.words()).filter(|words| *words > 0)?;
-    Layout::of(key, value, width - 1 + value_words, value_words)
+    Some(Layout { key, value, width: width - 1 + value_words })
 }
 
 /// What the keys and values of a dict of this shape are, when the shape is a dict's.

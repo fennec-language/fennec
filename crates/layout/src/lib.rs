@@ -324,7 +324,7 @@ fn describe_numbered(layouts: &Layouts, ty: Ty, numbering: &Numbering) -> Option
         Ty::List(item) => Element::List(Rc::new(describe(layouts, item.ty())?)),
         Ty::Dict(key, value) => {
             let str_shape = numbering.str_shape();
-            let shape = dicts::shape(str_shape, key, value)?;
+            let shape = dicts::shape(str_shape, key, layouts.dict_value_for_runtime(value))?;
             Element::Boxed(usize::try_from(shape).ok()?)
         }
         Ty::Struct(id) => {
@@ -500,7 +500,8 @@ impl<'l> Registry<'l> {
             let described = describe_numbered(layouts, Ty::Struct(id), &numbering).unwrap_or(Element::Int);
             let number = tables.elements.len();
             tables.elements.push(Rc::new(described));
-            elements.insert(Ty::Struct(id), i64::try_from(number).unwrap_or(0));
+            // A list of one of these goes by the same number, unless it has one already.
+            elements.entry(Ty::Struct(id)).or_insert_with(|| i64::try_from(number).unwrap_or(0));
         }
         Self { layouts, tables, elements, strings: HashMap::new(), numbering }
     }

@@ -68,9 +68,9 @@ pub struct Layouts {
     /// The types laid out by `add_through_lists`, whose items a list's description names by
     /// their place here.
     through_lists: Vec<u32>,
-    /// The plain types a dict holds in its entries, in the order each was first asked for. One
-    /// goes by its place here, counted on from the types laid out through lists, which is the
-    /// number the runtime's tables give that kind of item (see `Registry::numbered`).
+    /// The plain types a dict holds in its entries, in the order each was first asked for, which
+    /// is the number a dict's value word names one by here. The runtime's tables give each the
+    /// kind of item that many after the types laid out through lists (see `Registry::numbered`).
     dict_values: std::cell::RefCell<Vec<u32>>,
     /// The types decided to be blocks before anything was laid out, when they were (see
     /// [`boxed_types`]): no pass lays one of them out in place, and every other is.
@@ -801,33 +801,40 @@ impl Layouts {
         }
     }
 
-    /// The number a plain type goes by as a dict's value held in the entry: its place among the
-    /// types laid out through lists, if it's one, or after them in the order it was first asked
-    /// for here.
+    /// The number a plain type goes by here as a dict's value held in the entry: its place in the
+    /// order such types were first asked for. It's asked for while types are still being laid
+    /// out, so it can't lean on how many are laid out through lists; the runtime's number for it
+    /// is worked out from this one once they all are (`dict_value_for_runtime`).
     fn dict_value_number(&self, id: u32) -> Option<u32> {
-        if let Some(at) = self.through_lists(id) {
-            return u32::try_from(at).ok();
-        }
         let mut values = self.dict_values.borrow_mut();
         let at = values.iter().position(|known| *known == id).unwrap_or_else(|| {
             values.push(id);
             values.len() - 1
         });
-        u32::try_from(self.through_lists.len() + at).ok()
+        u32::try_from(at).ok()
     }
 
     /// The plain type a dict holds in its entries under this number.
     #[must_use]
     pub fn dict_value(&self, number: u32) -> Option<u32> {
-        let at = usize::try_from(number).ok()?;
-        if let Some(id) = self.through_lists.get(at) {
-            return Some(*id);
-        }
-        self.dict_values.borrow().get(at.checked_sub(self.through_lists.len())?).copied()
+        self.dict_values.borrow().get(usize::try_from(number).ok()?).copied()
     }
 
-    /// The plain types dicts hold in their entries that aren't laid out through lists, in the
-    /// order of their numbers.
+    /// A dict's value word as the runtime knows it: one held in the entry goes by its kind of
+    /// item's number in the runtime's tables, which come after the types laid out through lists
+    /// (see `Registry::numbered`). Any other word is the same there as here.
+    #[must_use]
+    pub fn dict_value_for_runtime(&self, value: Word) -> Word {
+        match value {
+            Word::InPlace(number) => {
+                let after = u32::try_from(self.through_lists.len()).unwrap_or(u32::MAX);
+                Word::InPlace(after.saturating_add(number))
+            }
+            other => other,
+        }
+    }
+
+    /// The plain types dicts hold in their entries, in the order of their numbers.
     #[must_use]
     pub fn dict_values(&self) -> Vec<u32> {
         self.dict_values.borrow().clone()

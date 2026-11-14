@@ -24,10 +24,6 @@ use std::rc::Rc;
 use super::{AddressHasher, State, children_into, is_never_freed, shape_of, shape_word};
 use crate::packed::Element;
 
-/// The exit code of a run whose audit found something wrong.
-#[cfg(feature = "audit")]
-pub(crate) const EXIT_CODE: i32 = 87;
-
 /// How many of the blocks found wrong are said with the way to them.
 const WAYS: usize = 16;
 

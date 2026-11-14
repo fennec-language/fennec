@@ -1,0 +1,7 @@
+# What ThreadSanitizer may leave unreported, read by .github/scripts/tsan-programs.sh. Empty is the
+# aim: each entry is a race nobody has fixed yet, not one that's fine.
+#
+# The rules, which tsan-suppressions-check.sh holds every entry to:
+# - one runtime function, by its exact name: `race:fennec_rt::some::path::function`, with no
+#   wildcard, and never anything in a program's own code, which the compiler makes;
+# - a line above it, starting `# why:`, saying in one line why it's there and what fixes it.

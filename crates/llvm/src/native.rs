@@ -174,9 +174,11 @@ fn named_mentions(program: &Program, name: &str, target: &str, seen: &mut HashSe
 }
 
 /// What frees a native block back to where it came from, and what makes one: the system's own
-/// under the address sanitizer, as the runtime's are then, and mimalloc otherwise.
+/// under either sanitizer, as the runtime's are then, built with its `sanitize` feature, which
+/// leaves mimalloc out; and mimalloc otherwise. Under the thread sanitizer it once still asked for
+/// mimalloc, and a program with native blocks didn't link.
 fn allocator() -> (&'static str, &'static str) {
-    if std::env::var("FENNEC_SANITIZE").as_deref() == Ok("address") {
+    if crate::build::sanitizer().is_some() {
         ("declare noalias ptr @malloc(i64) nounwind", "declare void @free(ptr) nounwind")
     } else {
         ("declare noalias ptr @mi_malloc(i64) nounwind", "declare void @mi_free(ptr) nounwind")

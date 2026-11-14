@@ -1,0 +1,21 @@
+# A task serves a server with a loop while `main` is answered once and closes it: the loop ends,
+# and the task with it. For the test that a server can be stopped from inside its program.
+from std.concurrent import Crashed
+from std.net import NetError, Server
+
+# Answers each connection with a line, until the server is closed.
+def serving(server: Server, stdout: Stdout):
+    for conn in parallel(server):
+        conn.write("hello\n") except why:
+            stdout.print(f"a write failed: {why}")
+    stdout.print("the loop ended")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => serving(server, stdout))?:
+            with net.connect("127.0.0.1", port)? as conn:
+                stdout.print(conn.read_line()? else "nothing")
+            server.close()
+            stdout.print("closed")
+    stdout.print("stopped")

@@ -45,6 +45,12 @@ def pairs(count: int) -> int:
         total += key[0] + value
     for key in more.keys():
         total += key[0]
+    # A dict something else holds too is copied to take a key out of it only when the key is
+    # there: without it, the dict stays the one both hold.
+    also = by_pair
+    total += by_pair.remove(pair(-2)) else -1
+    total += by_pair.pop(pair(-1))
+    total += len(also) - len(by_pair)
     by_pair.clear()
     return total + len(by_pair)
 
@@ -105,6 +111,11 @@ def sets(count: int) -> int:
         total += key[0]
     for key in cells_seen:
         total += key.x
+    # And a set something else holds too.
+    also = seen
+    seen.discard(pair(count + 9))
+    seen.remove(pair(1))
+    total += len(also) - len(seen)
     return total + len(seen) + len(cells_seen)
 
 def all_of(count: int) -> int:
@@ -126,6 +137,14 @@ def fails(which: int) -> int:
         seen.remove(pair(2))
     if which == 4: return len(by_cell[cell(2)])
     if which == 5: return len(by_cell.pop(cell(2)))
+    # The same of a dict and a set something else holds too, which the failure leaves as they were.
+    if which == 6:
+        also = by_pair
+        return by_pair.pop(pair(2)) + len(also)
+    if which == 7:
+        also = seen
+        seen.remove(pair(2))
+        return len(also) + len(seen)
     return len(by_pair) + len(seen)
 
 def failing(which: int, out: Channel[int]):
@@ -143,7 +162,7 @@ def one_failing(which: int) fails Crashed:
 # How many of the tasks asking for a missing key were stopped by it.
 def stopped() -> int:
     mut crashed = 0
-    for which in range(6):
+    for which in range(8):
         one_failing(which) except Crashed():
             crashed += 1
     return crashed

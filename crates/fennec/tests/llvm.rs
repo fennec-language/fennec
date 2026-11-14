@@ -9289,6 +9289,94 @@ def main(stdout: Stdout):
     )
 }
 
+/// A `pop` of a key that isn't there and a `remove` of an item that isn't there fail and change
+/// nothing. Generated code stored the failed `pop`'s result, nothing, over the dict before it
+/// looked at whether the call had failed, and the runtime had already copied a dict or set with
+/// two owners and moved the caller's owner to the copy. So a task that crashed on one left the
+/// dict and what it held behind: 5 blocks here. Now the dict is written only once the call has
+/// worked, and a shared one without the key is left alone. Alone and with two owners, each fails
+/// in a task that crashes and then works on a key that's there, and the counts are pinned: nothing
+/// left, and no copy for a take that fails or a `discard` that finds nothing.
+#[test]
+fn a_pop_or_remove_that_fails_changes_nothing_and_leaves_nothing() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("failed_takes", FAILED_TAKES, FAILED_TAKES_PRINTS)?;
+    assert_eq!(
+        counts_of("failed_takes_counts", FAILED_TAKES)?,
+        "copies 20 copied_bytes 1104 largest_copy 80 allocations 91 allocated_bytes 11128 live 0"
+    );
+    Ok(())
+}
+
+const FAILED_TAKES: &str = r#"# A `pop` of a key that isn't there, and a `remove` of an item that isn't there, fail and change
+# nothing: the dict or set is as it was, alone or with another owner, and a task that crashes on
+# one leaves nothing behind. Each then works on a key that is there.
+
+from std.concurrent import Crashed
+
+def popped(key: int, two_owners: bool) -> int:
+    mut local = {1: "one, long enough for a block of its own", 2: "two"}
+    other = local if two_owners else {9: "nine"}
+    _ = local.pop(key)
+    return len(local) * 10 + len(other)
+
+def removed(key: str, two_owners: bool) -> int:
+    mut local = {"one, long enough for a block of its own", "two"}
+    other = local if two_owners else {"nine"}
+    local.remove(key)
+    return len(local) * 10 + len(other)
+
+def discarded(key: str, two_owners: bool) -> int:
+    mut local = {"one, long enough for a block of its own", "two"}
+    other = local if two_owners else {"nine"}
+    local.discard(key)
+    return len(local) * 10 + len(other)
+
+def note(out: shared list[int], value: int):
+    lock out as ref held:
+        held.append(value)
+    return
+
+def try_pop(out: shared list[int], key: int, two_owners: bool):
+    note(out, popped(key, two_owners))
+
+def try_remove(out: shared list[int], key: str, two_owners: bool):
+    note(out, removed(key, two_owners))
+
+def pops(out: shared list[int], key: int, two_owners: bool) fails Crashed:
+    with launch(() => try_pop(out, key, two_owners)):
+        pass
+
+def removes(out: shared list[int], key: str, two_owners: bool) fails Crashed:
+    with launch(() => try_remove(out, key, two_owners)):
+        pass
+
+def main(stdout: Stdout):
+    shared out = list[int]()
+    for two_owners in [False, True]:
+        for key in [5, 2]:
+            _ = pops(out, key, two_owners) except Crashed():
+                stdout.print(f"pop({key}) crashed, two owners: {two_owners}")
+        for key in ["missing", "two"]:
+            _ = removes(out, key, two_owners) except Crashed():
+                stdout.print(f"remove({key}) crashed, two owners: {two_owners}")
+        stdout.print(discarded("missing", two_owners), discarded("two", two_owners))
+    lock out as held:
+        stdout.print(held)
+    return
+"#;
+
+const FAILED_TAKES_PRINTS: &str = r"pop(5) crashed, two owners: False
+remove(missing) crashed, two owners: False
+21 11
+pop(5) crashed, two owners: True
+remove(missing) crashed, two owners: True
+22 12
+[11, 11, 12, 12]
+";
+
 /// A key a dict of blocks doesn't have fails as pinned.
 #[test]
 fn a_missing_key_in_a_dict_of_lists_fails_as_pinned() -> std::io::Result<()> {
@@ -9749,6 +9837,126 @@ def main(stdout: Stdout):
 ",
     )
 }
+
+/// A generator that fails lets go of what it failed with when it's let go of. The header's slot
+/// for the failure was laid out as a number, so the generator's free left its block behind: an
+/// error, its notes and what it holds, for every failure. A generator holding a `with` is one of
+/// its own, not written into its loop, so these are. Each fails as it closes or inside the
+/// `with`, stopped where one can be: run to its end, with nothing given, left partway, made and
+/// never started, and in a task. Then a thousand fail one after another. The counts are pinned:
+/// nothing left. On main this ends with 10,023 blocks.
+#[test]
+fn a_generator_that_fails_lets_go_of_its_failure_wherever_its_stopped() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("failed_generators", FAILED_GENERATORS, FAILED_GENERATORS_PRINTS)?;
+    assert_eq!(
+        counts_of("failed_generators_counts", FAILED_GENERATORS)?,
+        "copies 2 copied_bytes 80 largest_copy 40 allocations 16063 allocated_bytes 1324784 live 0"
+    );
+    Ok(())
+}
+
+const FAILED_GENERATORS: &str = r#"# A generator that fails lets go of what it failed with when it's let go of. Each of these holds a
+# `with`, so it's a generator of its own and not written into its loop. It fails as it closes, or
+# in the `with`'s body, and is stopped at every point one can be: run to its end, left partway,
+# made and never started, and in a task. Then a thousand of them fail one after another.
+
+from std.concurrent import Crashed
+
+struct Tally:
+    count: int
+
+error Shut:
+    code: int
+    why: str
+
+def shutting(code: int) -> with Tally fails Shut:
+    lend Tally(count=code)
+    fail Shut(code=code, why=f"closing {code}, in words long enough for a block")
+
+def lending(code: int) -> with Tally:
+    lend Tally(count=code)
+
+def closes_badly(limit: int) -> Iterator[int] fails Shut:
+    with shutting(limit)? as tally:
+        for at in range(limit):
+            yield at + tally.count
+
+def fails_inside(limit: int) -> Iterator[int] fails Shut:
+    with lending(limit) as tally:
+        for at in range(limit):
+            yield at + tally.count
+        fail Shut(code=limit + 100, why=f"inside {limit}, in words long enough for a block")
+
+def to_the_end(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in closes_badly(limit)?:
+        running += value
+    return running
+
+def left_partway(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in closes_badly(limit)?:
+        running += value
+        if value > limit:
+            break
+    return running
+
+def never_started(limit: int) -> int fails Shut:
+    made = closes_badly(limit)?
+    return limit
+
+def inside(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in fails_inside(limit)?:
+        running += value
+    return running
+
+def show(stdout: Stdout, name: str, run: () -> int fails Shut):
+    got = run() except why:
+        case Shut():
+            stdout.print(name, "shut", why.code, why.why)
+            return
+    stdout.print(name, got)
+    return
+
+def quietly(limit: int) -> int:
+    ended = to_the_end(limit) except Shut(): -1
+    partway = left_partway(limit) except Shut(): -2
+    within = inside(limit) except Shut(): -3
+    return ended + partway + within
+
+def in_a_task(limit: int):
+    _ = quietly(limit)
+
+def tasked(limit: int) fails Crashed:
+    with launch(() => in_a_task(limit)):
+        pass
+
+def main(stdout: Stdout):
+    show(stdout, "to the end:", () => to_the_end(3)?)
+    show(stdout, "nothing given:", () => to_the_end(0)?)
+    show(stdout, "left partway:", () => left_partway(3)?)
+    show(stdout, "never started:", () => never_started(3)?)
+    show(stdout, "inside:", () => inside(3)?)
+    _ = tasked(3) except Crashed():
+        stdout.print("the task crashed")
+    mut failed = 0
+    for round in range(1_000):
+        failed += quietly(round % 4)
+    stdout.print("a thousand:", failed)
+    return
+"#;
+
+const FAILED_GENERATORS_PRINTS: &str = r"to the end: shut 3 closing 3, in words long enough for a block
+nothing given: shut 0 closing 0, in words long enough for a block
+left partway: shut 3 closing 3, in words long enough for a block
+never started: 3
+inside: shut 103 inside 3, in words long enough for a block
+a thousand: -6000
+";
 
 /// A generator's failure passes up however the generator was reached: from a name, and from inside
 /// `with` blocks, where the loop is over a name too, as well as from the loop that calls it.
@@ -11073,7 +11281,7 @@ fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io
     let dir = folder("keys_let_go")?;
     let program = dir.join("keys_let_go.fen");
     std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keys_let_go.fen"), &program)?;
-    prints_with_nothing_left(&dir, &program, "3060\n3060\n4380\n6\n", &["1", "4"])
+    prints_with_nothing_left(&dir, &program, "3065\n3065\n4400\n8\n", &["1", "4"])
 }
 
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what

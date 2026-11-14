@@ -1625,20 +1625,30 @@ fn a_kits_kept_image_is_passed_over_when_its_manifest_or_a_dependency_changes() 
 /// A program the store has is the one built with the output switches a run has now: one run
 /// with `FENNEC_BOXED_RESULTS` or `FENNEC_STRIP_FACTS` makes a program of its own, and runs
 /// without them go on using theirs.
+///
+/// Counted by the programs the store holds, each under its root, since how a run puts one out
+/// differs: on a Mac it's the store's own file, and elsewhere a copy, a new file every run.
 #[test]
 fn a_run_with_another_output_switch_never_gets_the_program_built_without_it() {
     let dir = scratch("run_switches").unwrap();
     std::fs::write(dir.join("main.fen"), "def main(stdout: Stdout):\n    stdout.print(42)\n").unwrap();
-    let made = dir.join("made.txt");
-    // How many new executables a run made, and that it printed what it should.
+    // The programs the store holds: a file named for each root, beside its `.sum` and `.functions`.
+    let stored = || {
+        let mut found = 0;
+        for version in std::fs::read_dir(dir.join("home/cache")).into_iter().flatten().flatten() {
+            let programs = std::fs::read_dir(version.path().join("programs")).into_iter().flatten().flatten();
+            found += programs.filter(|entry| !entry.file_name().to_string_lossy().contains('.')).count();
+        }
+        found
+    };
+    // How many programs a run added to the store, and that it printed what it should.
     let run = |switch: Option<&str>| {
-        std::fs::write(&made, "").unwrap();
+        let before = stored();
         let mut command = crate::executables::fennec_command();
         command
             .args(["run", "--no-test", "main.fen"])
             .current_dir(&dir)
             .env("FENNEC_HOME", dir.join("home"))
-            .env("FENNEC_NEW_EXECUTABLES", &made)
             .env_remove("FENNEC_NO_CACHE")
             .env_remove("FENNEC_BOXED_RESULTS")
             .env_remove("FENNEC_STRIP_FACTS");
@@ -1647,7 +1657,7 @@ fn a_run_with_another_output_switch_never_gets_the_program_built_without_it() {
         }
         let output = command.output().unwrap();
         assert_eq!(text(&output.stdout), "42\n", "{}", text(&output.stderr));
-        std::fs::read_to_string(&made).unwrap().lines().count()
+        stored() - before
     };
     assert_eq!(run(None), 1, "the first run builds its program");
     assert_eq!(run(None), 0, "a second runs the one the store has");
@@ -4214,7 +4224,8 @@ fn a_program_built_again_where_one_ran_runs() -> std::io::Result<()> {
 #[test]
 fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io::Result<()> {
     use crate::executables::Within as _;
-    if !crate::llvm::ready() {
+    // A build under `FENNEC_AUDIT` links the runtime with the audit in it.
+    if !crate::llvm::ready() || !crate::executables::audited_runtimes_built() {
         return Ok(());
     }
     let dir = scratch("switches")?;

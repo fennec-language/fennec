@@ -311,11 +311,7 @@ pub(crate) fn struct_definitions(layouts: &Layouts, id: u32, out: &mut Vec<Strin
     if is_array(layout)
         && let Some(first) = layout.fields.first()
     {
-        if let Ty::Struct(inner) = first.ty
-            && layouts.get(inner).is_some_and(|layout| layout.cases.is_none())
-        {
-            struct_definitions(layouts, inner, out);
-        }
+        definitions_inside(layouts, first.ty, out);
         let item =
             Kind::from_ty(layouts, first.ty).map_or_else(|| "i64".to_owned(), |kind| kind.memory(layouts));
         out.push(format!("%\"s.{}\" = type {{ [{} x {item}] }}\n", layout.name, layout.fields.len()));
@@ -323,16 +319,33 @@ pub(crate) fn struct_definitions(layouts: &Layouts, id: u32, out: &mut Vec<Strin
     }
     let mut fields = Vec::with_capacity(layout.fields.len());
     for field in &layout.fields {
-        if let Ty::Struct(inner) = field.ty
-            && layouts.get(inner).is_some_and(|layout| layout.cases.is_none())
-        {
-            struct_definitions(layouts, inner, out);
-        }
+        definitions_inside(layouts, field.ty, out);
         fields.push(
             Kind::from_ty(layouts, field.ty).map_or_else(|| "i64".to_owned(), |kind| kind.memory(layouts)),
         );
     }
     out.push(format!("%\"s.{}\" = type {{ {} }}\n", layout.name, fields.join(", ")));
+}
+
+/// The lines defining the structs a field held in place needs: the struct's own, or, for an enum
+/// in place, those of the structs its cases hold. An enum is words with no type of its own, so a
+/// struct only ever held inside one, like the `Inner` of an `Inner?`, is found through it. Types
+/// held in place never hold themselves, so this ends.
+fn definitions_inside(layouts: &Layouts, ty: Ty, out: &mut Vec<String>) {
+    let Ty::Struct(inner) = ty else { return };
+    match layouts.get(inner).map(|layout| layout.cases.is_some()) {
+        Some(false) => struct_definitions(layouts, inner, out),
+        Some(true) => case_definitions(layouts, inner, out),
+        None => {}
+    }
+}
+
+/// The lines defining the structs held in place in an enum's cases, and inside those.
+pub(crate) fn case_definitions(layouts: &Layouts, id: u32, out: &mut Vec<String>) {
+    let cases = layouts.get(id).and_then(|layout| layout.cases.as_ref());
+    for field in cases.into_iter().flatten().flat_map(|case| &case.fields) {
+        definitions_inside(layouts, field.ty, out);
+    }
 }
 
 /// Whether a layout is an array kept in place: a field for each item, `0` first.

@@ -59,9 +59,10 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     // In a program with no other threads, `Named` is made of native blocks, which a dev build
     // says it made by calling `fennec_native_made`. Only one that printed a `Named`'s digest, whose
     // leaves read `l(...)`, surely made one: code that never runs, like everything after a
-    // failure the compiler can see, makes none and can be left out.
+    // failure the compiler can see, makes none and can be left out. A program built for a heap
+    // audit keeps no native blocks at all, so there's nothing to look for.
     let printed_named = dev.0.windows(2).any(|pair| pair == b"l(");
-    if program.threadless && printed_named && !makes_native_blocks()? {
+    if program.threadless && printed_named && !crate::llvm::audited() && !makes_native_blocks()? {
         return Err(with_program(
             "`Named` isn't made of native blocks, in a program with no other threads".to_owned(),
         ));
@@ -70,8 +71,15 @@ pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     // Built checking proofs (`FENNEC_CHECK_PROOFS=1`), a stop on one is a false proof, whether or
     // not both builds stop the same way. Built with AddressSanitizer (`FENNEC_SANITIZE=address`),
     // a report is memory touched that the program doesn't own, which both builds can share. A
-    // dev build stops when a native block reaches the runtime.
+    // dev build stops when a native block reaches the runtime. Built for a heap audit
+    // (`FENNEC_AUDIT=1`), a line of the audit's is a block left with no holder or counted
+    // otherwise than its holders, which both builds can share too.
     for (how, (_, said, _)) in [("dev", &dev), ("--release", &release)] {
+        if said.contains(crate::llvm::AUDIT) {
+            return Err(with_program(format!(
+                "the {how} build's heap audit found a block left or miscounted:\n{said}"
+            )));
+        }
         if said.contains("handed a native block") {
             return Err(with_program(format!(
                 "the {how} build handed a native block to the runtime: {said}"

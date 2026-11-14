@@ -1245,12 +1245,29 @@ pub extern "C" fn slice(list: i64, from: i64, to: i64) -> i64 {
     })
 }
 
+/// The number a kind of item goes by, given it now if it has none. The last few asked for are kept
+/// with their numbers, so a list of strings, which `split` makes on every call, isn't searched for
+/// among every kind the program describes.
+fn number_of_element(state: &mut State, element: &Rc<Element>) -> usize {
+    const KEPT: usize = 4;
+    let tables = &mut state.tables;
+    if let Some((_, at)) = tables.found_elements.iter().find(|(known, _)| known == element) {
+        return *at;
+    }
+    let at = tables.elements.iter().position(|known| known == element).unwrap_or_else(|| {
+        tables.elements.push(Rc::clone(element));
+        tables.elements.len() - 1
+    });
+    if tables.found_elements.len() == KEPT {
+        tables.found_elements.remove(0);
+    }
+    tables.found_elements.push((Rc::clone(element), at));
+    at
+}
+
 /// A new block owned once with a value's items, if it's a list of the kind of item given.
 pub(super) fn write_list(state: &mut State, element: &Rc<Element>, value: &Value) -> Option<i64> {
-    let at = state.tables.elements.iter().position(|known| known == element).unwrap_or_else(|| {
-        state.tables.elements.push(Rc::clone(element));
-        state.tables.elements.len() - 1
-    });
+    let at = number_of_element(state, element);
     let mut words = Vec::new();
     match value {
         Value::Packed(packed) if packed.element == *element => words.extend_from_slice(&packed.words),
@@ -1267,10 +1284,7 @@ pub(super) fn write_list(state: &mut State, element: &Rc<Element>, value: &Value
 
 /// A new list block owned once of items already laid out as words, of a kind of item.
 pub(super) fn list_of_items(state: &mut State, element: &Rc<Element>, words: &[u64]) -> i64 {
-    let at = state.tables.elements.iter().position(|known| known == element).unwrap_or_else(|| {
-        state.tables.elements.push(Rc::clone(element));
-        state.tables.elements.len() - 1
-    });
+    let at = number_of_element(state, element);
     let block = build(state, at, element.words(), words, 0);
     state.heap.insert(block)
 }

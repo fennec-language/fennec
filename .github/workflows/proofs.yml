@@ -60,6 +60,16 @@ jobs:
         id: programs
         if: always()
         run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed "$GITHUB_RUN_ID" --seconds 3600 --stuck 180 --found found | tee programs.txt
+      # Built for a heap audit, each program's heap is checked as it ends: a block left with no
+      # holder, or counted otherwise than its holders, fails the program that made it. No daemon,
+      # since one started earlier wouldn't have the switch in its environment.
+      - name: Fuzz random programs under the heap audit
+        id: audited
+        if: always()
+        env:
+          FENNEC_AUDIT: "1"
+          FENNEC_NO_DAEMON: "1"
+        run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed "$GITHUB_RUN_ID" --seconds 900 --stuck 180 --found found | tee audited.txt
       - name: Run every program four ways, which must print the same
         id: determinism
         if: always()
@@ -96,6 +106,7 @@ jobs:
           BUILDS: ${{ steps.builds.outcome }}
           FUZZ: ${{ steps.fuzz.outcome }}
           PROGRAMS: ${{ steps.programs.outcome }}
+          AUDITED: ${{ steps.audited.outcome }}
           DETERMINISM: ${{ steps.determinism.outcome }}
           AUDIT: ${{ steps.audit.outcome }}
           TIMING: ${{ steps.timing.outcome }}
@@ -106,12 +117,12 @@ jobs:
             echo
             echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo
-            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Determinism: $DETERMINISM. Heap audit: $AUDIT. Formatting in proportion: $TIMING. Tests: $TESTS."
+            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Random programs under the heap audit: $AUDITED. Determinism: $DETERMINISM. Heap audit: $AUDIT. Formatting in proportion: $TIMING. Tests: $TESTS."
             echo
             [ -f report.md ] && cat report.md
             echo
             echo "## Fuzzing"
-            grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck" fuzz.txt programs.txt 2>/dev/null | sed 's/^/- /'
+            grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck" fuzz.txt programs.txt audited.txt 2>/dev/null | sed 's/^/- /'
           } > nightly.md
           cat nightly.md >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the report

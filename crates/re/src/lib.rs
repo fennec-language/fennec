@@ -52,15 +52,33 @@ pub struct Regex {
     program: Program,
 }
 
-/// The most instructions a pattern may compile to, so `x{1000}{1000}` can't eat memory.
-const MAX_SIZE: usize = 100_000;
+/// The most instructions a pattern may compile to. Matching follows each instruction a
+/// thread can be at, for each character, so a pattern's size is what each character of the text
+/// costs, and this is what one from outside can make it cost: `(?:(?:a?){1000}){4}b`, 22
+/// characters, is about 8,000. It also keeps `x{1000}{1000}` from filling memory.
+pub const MAX_SIZE: usize = 10_000;
 
 impl Regex {
     pub fn new(pattern: &str) -> Result<Regex, Error> {
         let (node, groups) = parse::parse(pattern)?;
+        // Counted first, so a pattern too big is never built, and says how big it is.
+        let size = compile::size(&node).saturating_add(3);
+        if size > u64::try_from(MAX_SIZE).unwrap_or(u64::MAX) {
+            let message = format!(
+                "it compiles to {} steps, and the most a pattern may is {}, since each character of a text costs that many",
+                commas(size),
+                commas(u64::try_from(MAX_SIZE).unwrap_or(u64::MAX)),
+            );
+            return Err(Error { message, at: 0 });
+        }
         let program = compile::compile(&node, groups, MAX_SIZE)
             .ok_or_else(|| Error { message: "this pattern is too big".to_owned(), at: 0 })?;
         Ok(Regex { program })
+    }
+
+    /// How many instructions the pattern compiled to: what each character of a text costs.
+    pub fn size(&self) -> usize {
+        self.program.insts.len()
     }
 
     /// How many groups the pattern has, not counting the whole match.
@@ -86,6 +104,19 @@ impl Regex {
         }
         found
     }
+}
+
+/// `n` with a comma between each group of three digits.
+fn commas(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (at, digit) in digits.chars().enumerate() {
+        if at > 0 && (digits.len() - at).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 /// The byte offset of the character after the one at `at`, or past the end.

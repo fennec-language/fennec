@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(regexes.kept(), 256);
         let again = regexes.compiled("a+").ok();
         assert!(first.zip(again).is_some_and(|(first, again)| std::rc::Rc::ptr_eq(&first, &again)));
-        let long = "b".repeat(10_000);
+        let long = "b".repeat(5_000);
         assert!(regexes.compiled(&long).is_ok());
         assert_eq!(regexes.kept(), 256);
     }

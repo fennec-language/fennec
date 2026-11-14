@@ -295,6 +295,9 @@ impl Emit<'_, '_, '_> {
                 if !tuple {
                     // A program's own type named like one of std's is marked apart inside, not when shown.
                     let shown = fennec_syntax::without_kits(layout.name.trim_end_matches('\''));
+                    // A generic type's layout is named with its arguments, like `Grid[Tile]`, and
+                    // its values just `Grid`, as the runtime shows one it holds as a block.
+                    let shown = shown.split_once('[').map_or(shown.as_str(), |(declared, _)| declared);
                     let name = self.literal(&format!("{shown}("));
                     text = self.joined(&text, &name, false);
                 }
@@ -1258,6 +1261,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!(
             "{counted} = call ptr @fennec_str_index(ptr {text}, i64 {index}, i64 {from}, i64 {to})"
         ));
+        // An index past the end fails here: a block made for the text goes on the way out.
         self.leave_if_failed();
         let runtime_end = self.current.clone();
         self.line(&format!("br label %{joined}"));

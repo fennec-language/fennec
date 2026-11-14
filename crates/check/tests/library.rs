@@ -341,6 +341,24 @@ fn a_program_to_emit_is_checked_through_what_lowering_calls() {
     assert!(signatures.get("Deque.appendleft").is_none());
 }
 
+/// A program a source is written into, like `with launch(...)`, is checked again after it's
+/// written in over just what it reaches, as the first round checked it, not all of the library.
+#[test]
+fn a_program_checked_again_after_a_launch_is_written_in_reaches_no_more_of_the_library() {
+    let source = "from std.collections import Deque\nfrom std.concurrent import Crashed\n\n\
+        def tick(stdout: Stdout):\n    stdout.print(\"tick\")\n\n\
+        def main(stdout: Stdout) fails Crashed:\n    mut queue = Deque.of([1, 2])\n    stdout.print(queue.popleft())\n    \
+        with launch(() => tick(stdout))?:\n        stdout.print(\"ticking\")\n";
+    let mut module = fennec_syntax::parse(source).unwrap();
+    let signatures = fennec_check::check_to_run(&mut module).unwrap();
+    assert!(signatures.get("intrinsics.launch").is_some(), "launch isn't written in");
+    assert!(signatures.get("Deque.popleft").is_some());
+    assert!(
+        signatures.get("Deque.appendleft").is_none(),
+        "the round after launch checked all of the library"
+    );
+}
+
 /// `std.concurrent`'s channels check, and `with channel[Job](size=4) as jobs:`, a generic source,
 /// is written in where it's used with `Job` for its `T`, so what runs is the source's own body. A
 /// `Channel` is only made that way: its constructor's private.

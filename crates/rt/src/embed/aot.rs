@@ -467,10 +467,26 @@ fn report(output: &[u8], failure: &str) -> i32 {
     // A heap found wrong ends the run with a code of its own, whatever else it ended with.
     #[cfg(feature = "audit")]
     if AUDIT_FAILED.load(std::sync::atomic::Ordering::Relaxed) {
-        return heap::audit::EXIT_CODE;
+        return AUDIT_EXIT_CODE;
+    }
+    // Asked to audit, in a runtime that has no audit: saying nothing would read as a heap found
+    // right, so it says it checked nothing, and ends as a failed audit does.
+    #[cfg(not(feature = "audit"))]
+    if std::env::var_os("FENNEC_AUDIT").is_some() {
+        let _ = std::io::stderr().write_all(NO_AUDIT.as_bytes());
+        return AUDIT_EXIT_CODE;
     }
     code
 }
+
+/// The exit code of a run whose heap audit found something wrong, or that was asked to audit and
+/// couldn't.
+const AUDIT_EXIT_CODE: i32 = 87;
+
+/// What a run under `FENNEC_AUDIT` says when its runtime was built without the audit.
+#[cfg(not(feature = "audit"))]
+const NO_AUDIT: &str = "heap audit: FENNEC_AUDIT is set, but this program's runtime was built without the heap \
+                        audit, so nothing was checked\n";
 
 fn reported(output: &[u8], failure: &str) -> i32 {
     let printed = std::io::stdout().write_all(output).and_then(|()| std::io::stdout().flush());

@@ -617,6 +617,8 @@ Fennec has no sandbox for untrusted code: don't run code you don't trust, and do
 
 A dependency gets only the capabilities its line in `kit.toml` grants, as `http = { ..., gets = ["Net"] }`. No `gets` means nothing, `gets = []` is an error, and no tool, fix or error help ever writes it. It's checked wherever one kit hands a value to another, and `kit.lock` records what each kit `holds`. Narrowing comes later, as `{ Fs = { only = "saves/" } }`. Locked 2026-11-12; not built yet. See the guide's Dependencies.
 
+A program's own `main` is its grant: what `main` takes is everything it may do, and `gets` is only for dependencies. `fennec fix` never adds to a `main`. A kit's program is `src/main.fen`, and every other program, for another place it runs, a tool or a task, is a file of its own in `entries/`, run as `fennec run <name>`. `kit.lock` records what each program takes, kept up to date by every build: a `main` that takes more builds, and the lock gets what was added, said as it's built, so a widening shows in the source and in the lock. A bare name is a program in `entries/`, anything else a path; a program imports the kit's `src` modules, nothing imports a program, a program's file may hold tests, and a dependency's programs are never built or reached. A program is only a `main`, forever: no `cfg`, no feature flags, no profiles, no shell-string scripts and no install, pre or post hooks. Settings are plain values in a `Config` each `main` builds. Chris settled it on 2026-11-12; not built yet. See the guide's Several programs in one kit.
+
 ## Capabilities
 
 ```fennec

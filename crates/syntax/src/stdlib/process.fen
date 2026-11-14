@@ -13,7 +13,8 @@ export struct Output:
 
 ## Why a program couldn't be run.
 export error ProcessError:
-    ## It couldn't be run at all, like one that isn't installed.
+    ## It couldn't be run at all, like one that isn't installed, or one given a NUL byte or a
+    ## variable whose name is empty or holds `=`, which the system would read as another's.
     NotRun(program: str, reason: str)
     ## A value in `process.run(t"...")` starts an argument with `-`, so the program would read it
     ## as an option, rather than as what it was meant to be: `--upload-pack=` names a program

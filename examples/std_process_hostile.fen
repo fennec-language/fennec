@@ -1,0 +1,105 @@
+# `std.process` given what an attacker would write: shell syntax that has to stay text, values
+# that would add or start an argument, NUL bytes, variable names the system reads as others, a
+# program that never ends, one that writes without end, and one that leaves its input unread.
+# The tests run against the fake `Process`, which refuses what a real one would; `main` runs real
+# programs.
+from std.process import Output, ProcessError
+from std.time import Duration
+
+## The case of `ProcessError` a run fails with and its message, or "ran".
+def outcome(run: () -> Output fails ProcessError) -> str:
+    _ = run() except why:
+        case .NotRun(program=_, reason=reason):
+            return f"not run: {reason}"
+        case .LooksLikeAnOption(program=_, expression=expression):
+            return f"looks like an option: {expression}"
+        case .TimedOut(program=_, after=_):
+            return "timed out"
+        case .TooMuchOutput(program=_, most=most):
+            return f"too much output, past {most}"
+    return "ran"
+
+test "shell syntax in a value is one argument, as written"(process: Process):
+    process.script("grep", Output())
+    pattern = "a; rm -rf ~ #"
+    _ = process.run(t"grep -e {pattern} notes.txt")?
+    _ = process.run("grep", ["$(id)", "`id`", "*", "a|b", "a\nb", "'", "\""])?
+    assert (
+        process.ran()
+        == [
+            ["grep", "-e", "a; rm -rf ~ #", "notes.txt"],
+            ["grep", "$(id)", "`id`", "*", "a|b", "a\nb", "'", "\""],
+        ]
+    )
+
+test "a value can't add an argument, end one or vanish"(process: Process):
+    process.script("touch", Output())
+    name = "a b\tc"
+    empty = ""
+    _ = process.run(t"touch {name} {empty} x{empty}y")?
+    assert process.ran() == [["touch", "a b\tc", "", "xy"]]
+
+test "a value starting an argument with a dash is refused, after an empty one too"(
+    process: Process,
+):
+    process.script("git", Output())
+    empty = ""
+    remote = "--upload-pack=touch /tmp/owned"
+    assert (
+        outcome(() => process.run(t"git fetch {empty}{remote}")?) == "looks like an option: remote"
+    )
+    assert process.ran() == []
+
+test "a variable's name with `=` would set another, so nothing runs"(process: Process):
+    process.script("env", Output())
+    said = "can't be a variable's name: one is never empty, and holds no `=` or NUL byte"
+    assert (
+        outcome(() => process.run("env", [], env={"PATH=/evil:": "x"})?)
+        == f"not run: \"PATH=/evil:\" {said}"
+    )
+    assert outcome(() => process.run("env", [], env={"": "x"})?) == f"not run: \"\" {said}"
+    assert (
+        outcome(() => process.run("env", [], env={"A\u0000B": "x"})?)
+        == f"not run: \"A\\0B\" {said}"
+    )
+    assert (
+        outcome(() => process.run("env", [], env={"LANG": "C\u0000x"})?)
+        == "not run: the variable `LANG` holds a NUL byte, which no variable can"
+    )
+    assert process.ran() == []
+    _ = process.run("env", [], env={"LANG": "C", "A_B1": ""})?
+    assert len(process.ran()) == 1
+
+test "a NUL byte in an argument or a program's name is refused, naming where"(process: Process):
+    process.script("echo", Output())
+    assert (
+        outcome(() => process.run("echo", ["a", "b\u0000c"])?)
+        == "not run: argument 2 holds a NUL byte, which no program can be given"
+    )
+    cut = "rm\u0000-rf"
+    assert (
+        outcome(() => process.run(t"echo {cut}")?)
+        == "not run: argument 1 holds a NUL byte, which no program can be given"
+    )
+    assert (
+        outcome(() => process.run("ec\u0000ho", [])?)
+        == "not run: its name holds a NUL byte, which no program's name can"
+    )
+    assert process.ran() == []
+
+def main(stdout: Stdout, process: Process):
+    # A program that exits without reading its input leaves this one running.
+    mut unread = "x"
+    for _ in range(20):
+        unread = unread + unread
+    left_unread = outcome(() => process.run("true", [], input=unread)?)
+    stdout.print(f"true, given a MB it never reads: {left_unread}")
+    # Nothing is read by a shell: each argument prints as it's written.
+    printed = process.run("printf", ["%s|", "$(id)", "a;b", "`id`", "*", "~"]) except why:
+        stdout.print(f"printf couldn't run: {why.message()}")
+        return
+    stdout.print(printed.stdout)
+    never_ends = outcome(() => process.run("sleep", ["30"], timeout=Duration.millis(200))?)
+    stdout.print(f"a program that never ends: {never_ends}")
+    endless = outcome(() => process.run("yes", [], most_output=1000)?)
+    stdout.print(f"a program that writes without end: {endless}")

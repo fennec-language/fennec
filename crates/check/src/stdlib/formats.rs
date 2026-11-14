@@ -2,8 +2,11 @@
 //! in brackets: `json.loads[Settings](text)`. Every type made of numbers, text, bytes, bools,
 //! lists, dicts with text keys, tuples, optionals and structs of those can be read and written.
 
+use std::collections::BTreeSet;
+
 use fennec_syntax::{Arg, Diagnostic, Expr, Span};
 
+use crate::checker::Checker;
 use crate::function::FnCx;
 use crate::messages::{mismatch, unhandled_result};
 use crate::program::TypeKind;
@@ -35,7 +38,7 @@ impl FnCx<'_> {
             self.error(problem);
         } else if format == "TOML" && mentions_none(first, &self.checker.program) {
             self.error(Diagnostic::new("TOML has no None, so leave the key out instead", call));
-        } else if self.fits_interface(first, "Serializable").is_ok() {
+        } else if self.fits_bound(first, WRITES).is_ok() {
             self.checker
                 .native_formats
                 .insert((call.start, call.end), format!("{}.native_dumps", format.to_lowercase()));
@@ -48,7 +51,7 @@ impl FnCx<'_> {
     pub(crate) fn json_body(&mut self, ty: &Type, at: Span) {
         if let Err(problem) = self.holds("JSON", ty, (at, None, false), &mut Vec::new()) {
             self.error(problem);
-        } else if self.fits_interface(ty, "Serializable").is_ok() {
+        } else if self.fits_bound(ty, WRITES).is_ok() {
             self.checker.native_json_bodies.insert((at.start, at.end));
         }
     }
@@ -91,7 +94,7 @@ impl FnCx<'_> {
             self.error(Diagnostic::new(message, index.span));
         } else if let Err(problem) = self.holds(&format, &ty, (index.span, None, true), &mut Vec::new()) {
             self.error(problem);
-        } else if self.fits_interface(&ty, "Deserializable").is_ok() {
+        } else if self.fits_bound(&ty, READS).is_ok() {
             self.checker
                 .native_formats
                 .insert((span.start, span.end), format!("{}.native_loads", format.to_lowercase()));
@@ -148,6 +151,21 @@ impl FnCx<'_> {
             || self.checker.program.kind_of(ty) == Some(TypeKind::Struct)
     }
 
+    /// Whether a type parameter is bounded by the interface a value is written or read through.
+    /// Each call's own type is checked where the call is, once every function is checked, so
+    /// it's noted.
+    fn saved_param(&mut self, name: &str, ty: &Type, (format, loading): (&str, bool)) -> bool {
+        let interface = if loading { READS } else { WRITES };
+        if !self.bounds_of(name).iter().any(|bound| bound == interface) {
+            return false;
+        }
+        if self.report {
+            let noted = (self.key.clone(), ty.clone(), format.to_owned(), interface.to_owned());
+            self.checker.format_params.insert(noted);
+        }
+        true
+    }
+
     /// Whether a format can hold values of a type. `field` is the struct field the value is
     /// in, if any, as `Type.field`, which a message names. `loading` says it's being read, where
     /// a `Secret` may go though it's never written. `seen` are the structs being looked at, so a
@@ -177,6 +195,7 @@ impl FnCx<'_> {
             | Type::Str
             | Type::Bytes
             | Type::Id(_) => Ok(()),
+            Type::Param(name) if self.saved_param(name, ty, (format, loading)) => Ok(()),
             // A union is saved tagged with its member, which a type's name alone has to say.
             Type::Union(members) if !members.iter().all(crate::saving::tested_by_name) => Err(cannot(ty)),
             Type::Dict(key, _) if crate::saving::holds_union(key) => Err(cannot(ty)),
@@ -239,6 +258,54 @@ impl FnCx<'_> {
         }
     }
 }
+
+/// Checks, at each call of a generic function, what it writes or reads with a format as its type
+/// parameter: the format has to hold the type the call gives it, as a value written out there
+/// would. A call made with the caller's own type parameter passes the check on to the caller's
+/// calls.
+pub(crate) fn formats_at_calls(checker: &mut Checker) {
+    let mut work: Vec<(String, Type, String, String)> = checker.format_params.iter().cloned().collect();
+    let (mut seen, mut refused) = (BTreeSet::new(), BTreeSet::new());
+    while let Some(noted) = work.pop() {
+        if !seen.insert(noted.clone()) {
+            continue;
+        }
+        let (function, ty, format, interface) = noted;
+        let Some(entry) = checker.program.functions.get(&function) else { continue };
+        let names: Vec<String> =
+            checker.program.generics_of(entry).into_iter().map(|generic| generic.name).collect();
+        let calls: Vec<((u32, u32), crate::generic_copies::Call)> = checker
+            .generic_calls
+            .iter()
+            .filter(|(_, call)| call.callee == function)
+            .map(|(at, call)| (*at, call.clone()))
+            .collect();
+        for (at, call) in calls {
+            let types = call.types.iter().map(|ty| checker.settled(ty));
+            let given: Vec<(String, Type)> = names.iter().cloned().zip(types).collect();
+            let wanted = ty.substitute(&given);
+            if wanted.has_params() {
+                work.push((call.caller.clone(), wanted, format.clone(), interface.clone()));
+                continue;
+            }
+            let span = Span { start: at.0, end: at.1 };
+            let mut cx = FnCx::new(checker, &call.caller, "", true);
+            let loading = interface == READS;
+            if let Err(problem) = cx.holds(&format, &wanted, (span, None, loading), &mut Vec::new())
+                && refused.insert(at)
+            {
+                let shown = fennec_syntax::without_kits(&function);
+                let says = format!("`{shown}` writes or reads what it's given as {format}");
+                let help = problem.help.clone().map_or(says.clone(), |help| format!("{says}. {help}"));
+                cx.error(problem.with_help(help));
+            }
+        }
+    }
+}
+
+/// The interface a value is written through, and the one it's read through.
+const WRITES: &str = "Serializable";
+const READS: &str = "Deserializable";
 
 /// That a format can't hold `what`, naming the field it's in, if there is one.
 fn cant_hold(format: &str, field: Option<&str>, what: &str) -> String {

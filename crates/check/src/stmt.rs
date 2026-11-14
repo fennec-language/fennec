@@ -403,6 +403,7 @@ impl FnCx<'_> {
             }
             None if is_mut => {
                 let held = self.peek_type(iter);
+                self.no_ref_over_keys(&held, iter);
                 self.positions_item(&held, false, iter.span)
             }
             None => None,
@@ -424,6 +425,23 @@ impl FnCx<'_> {
         self.pop();
         let after = self.snapshot();
         self.merge(&[before, after]);
+    }
+
+    /// A dict's keys and a set's items are what it finds them by, so `for ref` can't change them
+    /// where they are: what it changed would be a copy, and the dict or set would be as it was.
+    fn no_ref_over_keys(&mut self, over: &Type, iter: &Expr) {
+        let (message, instead) = match self.checker.settled(over) {
+            Type::Dict(..) => (
+                "`for ref` can't go over a dict: its keys are what find its values, so they can't change where they are",
+                "loop with a plain `for key in d:`, and change a value with `d[key] = ...`",
+            ),
+            Type::Set(_) => (
+                "`for ref` can't go over a set: its items are what it holds them by, so they can't change where they are",
+                "make a new set from the changed items, as `{f(item) for item in items}`",
+            ),
+            _ => return,
+        };
+        self.error(Diagnostic::new(message, iter.span).with_help(instead));
     }
 
     /// `for at, ref item in enumerate(items):`: each item changed where it is, with its position.

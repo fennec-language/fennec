@@ -1039,7 +1039,7 @@ fn a_worker_failing_under_a_lock_ends_the_program() -> std::io::Result<()> {
              def main(stdout: Stdout):\n    shared one = Counter()\n    \
              mut items = [n for n in range(50_000)]\n    for ref item in parallel(items):\n        \
              lock one as ref x:\n            x.total = 100 // (item - 25_000)\n        item += 1\n    \
-             stdout.print(items.len())\n"
+             stdout.print(len(items))\n"
         );
         let built = build_on_threads(&dir, &source, name)?;
         for threads in ["1", "4"] {

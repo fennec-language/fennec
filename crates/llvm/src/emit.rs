@@ -668,8 +668,8 @@ impl<'p> Module<'_, 'p> {
             failed,
             leaves: std::cell::Cell::new(false),
             needs_prop: false,
-            start,
             start_symbol,
+            sites: Vec::new(),
             self_target,
             taken_at: BTreeMap::new(),
             found_entries: Vec::new(),
@@ -788,8 +788,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     /// Whether a way out for a failure was written.
     leaves: std::cell::Cell<bool>,
     needs_prop: bool,
-    start: u32,
     start_symbol: String,
+    /// The places in the source this function's text names by number: where each starts.
+    sites: Vec<u32>,
     self_target: Option<&'e str>,
     /// Where each item taken out of a list to change was, to put it back without looking again.
     pub(crate) taken_at: BTreeMap<usize, String>,
@@ -1481,27 +1482,39 @@ impl Emit<'_, '_, '_> {
         self.fail_if(&low, TOO_DEEP, span);
     }
 
+    /// This function's number for a place in the source, and the symbol of its table of places.
+    /// The table is written fresh each build, in the module every build makes anyway, so the
+    /// function's own text holds only the number and how long the span is: text added anywhere
+    /// before the place moves the table's entry, and the function isn't compiled again.
+    fn site(&mut self, at: u32) -> (usize, String) {
+        let symbol = format!("{}.sites", self.start_symbol);
+        let number = self.sites.iter().position(|known| *known == at).unwrap_or_else(|| {
+            self.sites.push(at);
+            self.sites.len() - 1
+        });
+        self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
+        self.module.shared.places.insert(symbol.clone(), self.sites.clone());
+        (number, symbol)
+    }
+
     /// Where a span is in the source, for a runtime call that says where it failed: its two ends,
-    /// each worked out from the symbol for where this function starts. The function's text holds
-    /// only how far into the function the span is, so a line added anywhere above the function
-    /// leaves its text as it was, and it isn't compiled again. The start is the same for every
-    /// call, which LLVM sees, so it's loaded once.
+    /// the first read from this function's table of places and the second that far on.
     pub(crate) fn place_in_source(&mut self, span: Span) -> (String, String) {
-        let symbol = self.start_symbol.clone();
-        let (from, to) = (span.start.saturating_sub(self.start), span.end.saturating_sub(self.start));
-        let (start, first, last) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("{start} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
-        self.line(&format!("{first} = add i64 {start}, {from}"));
-        self.line(&format!("{last} = add i64 {start}, {to}"));
+        let (number, symbol) = self.site(span.start);
+        let length = span.end.saturating_sub(span.start);
+        let (place, first, last) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{place} = getelementptr inbounds i64, ptr @\"{symbol}\", i64 {number}"));
+        self.line(&format!("{first} = load i64, ptr {place}, !invariant.load !1"));
+        self.line(&format!("{last} = add i64 {first}, {length}"));
         (first, last)
     }
 
-    /// Where a span is, from the symbol for where this function starts, for failing with.
+    /// Where a span is, from this function's table of places, for failing with.
     pub(crate) fn span_values(&mut self, fail: &str, span: Span) -> (String, String) {
-        let symbol = self.start_symbol.clone();
-        let (from, to) = (span.start.saturating_sub(self.start), span.end.saturating_sub(self.start));
+        let (number, symbol) = self.site(span.start);
+        let length = span.end.saturating_sub(span.start);
         let text = format!(
-            "  %s{fail} = load i64, ptr @\"{symbol}\"\n  %a{fail} = add i64 %s{fail}, {from}\n  %b{fail} = add i64 %s{fail}, {to}\n"
+            "  %s{fail} = getelementptr inbounds i64, ptr @\"{symbol}\", i64 {number}\n  %a{fail} = load i64, ptr %s{fail}\n  %b{fail} = add i64 %a{fail}, {length}\n"
         );
         (text, format!("i64 %a{fail}, i64 %b{fail}"))
     }
@@ -1585,7 +1598,8 @@ impl Emit<'_, '_, '_> {
         self.needs_prop = true;
         let (out, last) = self.ways_out("left_traced");
         let from = last.unwrap_or_else(|| self.current.clone());
-        self.traced_calls.push((from, span.start.saturating_sub(self.start)));
+        let (number, _) = self.site(span.start);
+        self.traced_calls.push((from, u32::try_from(number).unwrap_or(0)));
         self.line(&format!("br i1 {failed}, label %{out}, label %{ok}, !prof !0"));
         self.start_block(&ok);
     }
@@ -1599,10 +1613,10 @@ impl Emit<'_, '_, '_> {
         self.declare("declare void @fennec_trace_frame(i64, i64) nounwind cold");
         let arms: Vec<String> =
             self.traced_calls.iter().map(|(block, from)| format!("[ {from}, %{block} ]")).collect();
-        let symbol = self.start_symbol.clone();
+        let symbol = format!("{}.sites", self.start_symbol);
         let _ = writeln!(
             self.cold,
-            "left_traced:\n  %left_from = phi i64 {}\n  %left_start = load i64, ptr @\"{symbol}\"\n  %left_at = add i64 %left_start, %left_from\n  call void @fennec_trace_frame(i64 %left_at, i64 %left_at)\n  br label %prop",
+            "left_traced:\n  %left_from = phi i64 {}\n  %left_place = getelementptr inbounds i64, ptr @\"{symbol}\", i64 %left_from\n  %left_at = load i64, ptr %left_place\n  call void @fennec_trace_frame(i64 %left_at, i64 %left_at)\n  br label %prop",
             arms.join(", ")
         );
     }

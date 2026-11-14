@@ -129,7 +129,8 @@ impl<'p> Emit<'_, '_, 'p> {
     }
 
     /// Puts what a generator failed with in a block its slot holds the address of. It stays there
-    /// for whatever asks, however many times, so the block is only let go of with the program.
+    /// for whatever asks, however many times, and is let go of with the generator: the slot is one
+    /// of its owners, which the generator's layout says.
     fn write_failure(&mut self, value: &Operand, at: &str) -> Result<(), String> {
         let (value, kind) = self.operand(value)?;
         let block = match kind {

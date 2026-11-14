@@ -219,6 +219,52 @@ mod tests {
         assert!(found.iter().all(|count| *count >= 3), "{found:?}");
     }
 
+    /// Inside a loop, no list of nodes is appended to or set with a node holding that same list,
+    /// as in `nodes.append(.Branch(label="a", children=nodes))`, which doubles it every round:
+    /// with loops inside loops, more than any machine holds. Outside one it still happens.
+    #[test]
+    fn no_list_of_nodes_takes_itself_in_a_loop() {
+        let (mut in_loops, mut outside) = (0, 0);
+        for (seed, length) in (0_u8..=255).flat_map(|seed| [(seed, 160_u8), (seed, 96)]) {
+            let bytes: Vec<u8> = (0_u8..length)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect();
+            let source = source::source(&generate::program(&bytes));
+            // Each open block's indent, and whether it's a loop's.
+            let mut open: Vec<(usize, bool)> = Vec::new();
+            for line in source.lines().filter(|line| !line.trim().is_empty()) {
+                let indent = line.len() - line.trim_start().len();
+                let line = line.trim();
+                open.retain(|(at, _)| *at < indent);
+                let in_loop = open.iter().any(|(_, looping)| *looping);
+                if line.ends_with(':') {
+                    open.push((indent, line.starts_with("for ") || line.starts_with("while ")));
+                }
+                let target = line
+                    .strip_prefix("if len(")
+                    .and_then(|rest| rest.split_once(") > 0: "))
+                    .map(|(name, _)| name)
+                    .or_else(|| line.split_once(".append(").map(|(name, _)| name))
+                    .filter(|name| {
+                        name.strip_prefix('v').is_some_and(|digits| {
+                            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                    });
+                let nodes = ["Leaf(", "Number(", "Branch(", "Tagged(", "node_or_leaf("];
+                let Some(name) = target.filter(|_| nodes.iter().any(|node| line.contains(node))) else {
+                    continue;
+                };
+                if line.contains(&format!("children={name})")) || line.contains(&format!("inner={name})")) {
+                    assert!(!in_loop, "a list of nodes takes itself in a loop: {line}");
+                    outside += 1;
+                }
+                in_loops += usize::from(in_loop);
+            }
+        }
+        assert!(in_loops >= 50, "only {in_loops} lists of nodes appended to or set in loops");
+        assert!(outside >= 3, "only {outside} lists of nodes take themselves outside loops");
+    }
+
     /// Local `ref`s name list items, fields, a holder's items, its list and its tag, and items
     /// under a lock, and pass themselves on as `ref` arguments, often enough to matter.
     #[test]

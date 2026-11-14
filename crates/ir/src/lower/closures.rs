@@ -64,7 +64,15 @@ impl Lowering<'_> {
         });
         let own: Vec<&str> = params.iter().map(String::as_str).collect();
         let captures = self.captures(names, &own);
-        let key = format!("{}.arrow@{}", self.name, expr.span.start);
+        // Named by its number among this function's arrows, not by where it is in the source:
+        // text added above it would rename it, and every function that names it, which a build
+        // then compiles again for nothing. The same arrow lowered again keeps its number.
+        let at = expr.span.start;
+        let number = self.arrows.iter().position(|known| *known == at).unwrap_or_else(|| {
+            self.arrows.push(at);
+            self.arrows.len() - 1
+        });
+        let key = format!("{}.arrow#{number}", self.name);
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut lifted = Lowering::new(&instance, self.context, self.body, *returns.clone());

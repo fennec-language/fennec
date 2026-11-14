@@ -86,7 +86,7 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         let dest = dest.ok_or("no result")?;
         let arg = |at: usize| args.get(at).ok_or_else(|| "no argument".to_owned());
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         if name == "is_regex" || name == "re.is_regex" {
             let pattern = self.regex_text(arg(0)?, made)?;
             self.declare("declare i8 @fennec_regex_is_valid(ptr) nounwind");
@@ -223,7 +223,7 @@ impl Emit<'_, '_, '_> {
     /// The characters from `start` to `end` of a string, as a new one.
     fn chars_between(&mut self, whole: &str, start: &str, end: &str, span: Span) -> String {
         self.declare("declare ptr @fennec_str_slice(ptr, i64, i64, i64, i64) nounwind");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         let part = self.temp();
         self.line(&format!(
             "{part} = call ptr @fennec_str_slice(ptr {whole}, i64 {start}, i64 {end}, i64 {from}, i64 {to})"

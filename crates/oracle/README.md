@@ -50,8 +50,9 @@ how values are held, copied, compared and printed, is modeled here on its own, f
   `ref` name holds, unless a failure or a crash left it, which undoes the block's changes, while
   `return`, `break` and `continue` keep them. Nothing else reaches a cell a `lock` holds, as a
   `lock` inside another is a compile error, so that's exact; one that's reached anyway is refused,
-  as are a `yield` inside a `lock`, one `lock` taking a value twice, and printing or comparing a
-  `shared` value, which the language says nothing of.
+  as are a `yield` inside a `lock`, one `lock` taking a value twice, and printing a `shared` value,
+  which waits for its fix to print what it holds. `==` on two `shared` values compares what they
+  hold, as decided on 2026-11-14, and a cell is equal to itself; one a `lock` holds is refused.
 - The model is one thread, and what the compiled program runs side by side is run one after
   another here only where every order it could take gives the same. `parallel(xs)` over a list or
   a `Table` runs its rounds in the list's order: a comprehension's results are in that order, as

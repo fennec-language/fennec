@@ -1,0 +1,59 @@
+# HTTP requests from `parallel` rounds to a server in the same program. Each request parks its
+# task while it waits, so the worker it was on goes on serving meanwhile, at any number of threads.
+# A front server's rounds call a back server the same way, as a backend calling another service
+# does. Each request gives up after 5 seconds, so one that holds its worker fails rather than hangs.
+from std.concurrent import Crashed
+from std.net import Connection, NetError, Server
+
+# Reads a request's line and headers, and gives its line.
+def request_line(conn: Connection) -> str fails NetError:
+    line = conn.read_line()? else ""
+    while True:
+        header = conn.read_line()? else ""
+        if header == "":
+            return line
+
+def write_answer(conn: Connection, said: str) fails NetError:
+    conn.write(f"HTTP/1.1 200 OK\r\ncontent-length: {len(said)}\r\nconnection: close\r\n\r\n{said}")?
+
+# What a request answered, as its status and text, or why it failed.
+def fetched(net: Net, url: str) -> str:
+    got = net.get(url, timeout=5s) except why:
+        return f"failed: {why}"
+    return f"{got.status} {got.text()}"
+
+# Answers each request with `said`, until one for /stop.
+def back(server: Server, said: str) fails NetError:
+    for conn in parallel(server):
+        line = request_line(conn)?
+        write_answer(conn, said=said)?
+        if line.startswith("GET /stop"):
+            break
+
+# Answers each request with what the back server answered it, until one for /stop.
+def front(net: Net, server: Server, back_port: int) fails NetError:
+    for conn in parallel(server):
+        line = request_line(conn)?
+        if line.startswith("GET /stop"):
+            write_answer(conn, said="stopped")?
+            break
+        inside = fetched(net, url=f"http://127.0.0.1:{back_port}/inside")
+        write_answer(conn, said=f"the front heard {inside}")?
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as back_server, net.listen(0)? as front_server:
+        back_port = back_server.port
+        front_port = front_server.port
+        with launch(() => back(back_server, said="the back's answer")?)?:
+            with launch(() => front(net, front_server, back_port=back_port)?)?:
+                stdout.print("from main:", fetched(net, url=f"http://127.0.0.1:{back_port}/main"))
+                for answer in [
+                    fetched(net, url=f"http://127.0.0.1:{back_port}/round") for _ in parallel(range(4))
+                ]:
+                    stdout.print("from a round:", answer)
+                for answer in [
+                    fetched(net, url=f"http://127.0.0.1:{front_port}/round") for _ in parallel(range(4))
+                ]:
+                    stdout.print("through the front:", answer)
+                stdout.print("the front:", fetched(net, url=f"http://127.0.0.1:{front_port}/stop"))
+            stdout.print("the back:", fetched(net, url=f"http://127.0.0.1:{back_port}/stop"))

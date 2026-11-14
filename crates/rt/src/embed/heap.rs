@@ -80,6 +80,12 @@ pub(crate) struct Heap {
     spare_words: usize,
     /// How many of the blocks live for the whole run.
     statics: usize,
+    /// How many blocks left outside tasks this thread has counted already, as a worker that
+    /// stopped serving, and which of them an audit has said.
+    #[cfg(any(test, feature = "threads"))]
+    counted_left: usize,
+    #[cfg(all(feature = "audit", any(test, feature = "threads")))]
+    pub(super) said_left: std::collections::HashSet<u64, BuildHasherDefault<AddressHasher>>,
     /// Whether this thread's string literals were moved where every thread can read them.
     shared_statics: bool,
     /// Strings' text as a `Value` holds it, made once per block.
@@ -355,6 +361,14 @@ pub(super) fn is_never_freed(block: &[u64]) -> bool {
 /// Marks a block as never freed, by its owner.
 pub(super) fn mark_never_freed(block: &mut [u64]) {
     mark_owner(block, NEVER_FREED_OWNER << OWNER_SHIFT);
+}
+
+/// Whether a block was made outside any task that keeps accounts of its own on its thread: by
+/// the thread's own code or by a server's round, and not by a launched task or a range that can
+/// wait. Such a task's blocks leave with it when it ends, so one still here is one still running.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn made_outside_tasks(block: &[u64]) -> bool {
+    block.get(1).is_some_and(|word| word & TASK_BITS == 0)
 }
 
 /// Sets the thread and task a block was made by, in its shape word.
@@ -732,6 +746,18 @@ impl Heap {
     /// `live` leaves out only those made as it starts.
     pub(crate) fn leftover(&self) -> usize {
         self.blocks.freeable()
+    }
+
+    /// How many more blocks are left than when this was last asked, of those no task still
+    /// running on this thread made: what a worker with no round left to serve should have none
+    /// of, whatever tasks are parked on it. A block that's left is never freed, so what was there
+    /// before is there still, and is counted once.
+    #[cfg(any(test, feature = "threads"))]
+    pub(crate) fn newly_left_outside_tasks(&mut self) -> usize {
+        let left = self.blocks.freeable_where(made_outside_tasks);
+        let new = left.saturating_sub(self.counted_left);
+        self.counted_left = self.counted_left.max(left);
+        new
     }
 
     /// How many blocks are live but those made as it started, for tests.

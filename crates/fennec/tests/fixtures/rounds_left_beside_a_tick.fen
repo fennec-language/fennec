@@ -1,0 +1,37 @@
+# An echo server in a launched task, beside a task that ticks: it moves its monsters in
+# `parallel` and waits, over and over, and is still doing so when the server ends. Six rounds.
+# For the test that what a round leaves is found wherever the server runs.
+from std.concurrent import Crashed
+from std.net import NetError, Server
+
+struct Monster:
+    position: float
+    velocity: float
+
+# The server, in a task of its own: each round echoes one line, until one says to stop.
+def serve(server: Server) fails NetError:
+    for conn in parallel(server):
+        line = conn.read_line()? else ""
+        if line == "stop": break
+        conn.write(f"{line}, as a text long enough for a block of its own\n")?
+
+# The tick, in a task beside it: every monster moved in `parallel`, then a wait, over and over,
+# until its block ends and stops it.
+def tick(clock: Clock):
+    mut monsters = [Monster(position=0.0, velocity=1.5) for _ in range(256)]
+    for _ in range(1_000_000):
+        for ref monster in parallel(monsters):
+            monster.position += monster.velocity
+        clock.sleep(1ms)
+
+def asked(net: Net, port: int, line: str) -> str fails NetError:
+    with net.connect("127.0.0.1", port)? as conn:
+        conn.write(f"{line}\n")?
+        return conn.read_line()? else ""
+
+def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        with launch(() => tick(clock), stop_after=1ms)?:
+            with launch(() => serve(server)?)?:
+                for line in ["a", "b", "c", "d", "e", "stop"]:
+                    stdout.print(asked(net, port=server.port, line=line)?)

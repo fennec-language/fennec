@@ -588,7 +588,7 @@ impl Emit<'_, '_, '_> {
     fn words_of(&self, kind: &Kind, at: u32, words: &mut Vec<(u32, Word)>) -> Result<(), String> {
         match kind {
             Kind::Int | Kind::Float | Kind::Bool | Kind::U64 | Kind::F32 => words.push((at, Word::Plain)),
-            Kind::Str if self.headers() => words.push((at, Word::Header)),
+            Kind::Str | Kind::MaybeText if self.headers() => words.push((at, Word::Header)),
             // An enum holding nothing counted is only words.
             Kind::Enum(_) if !self.holds_inline(kind) => {
                 let size = kind.size(self.module.layouts);
@@ -765,7 +765,9 @@ impl Emit<'_, '_, '_> {
     /// Saves the field at `place`, inside `block`, before a store of a `kind` writes it. Gives
     /// back whether the log took over the old value's count, so the store mustn't let go of it.
     pub(crate) fn save_before_store(&mut self, block: &str, place: &str, kind: &Kind) -> bool {
-        if matches!(kind, Kind::Str) && self.headers() {
+        // An optional string is a header too, all zero for `None`: saved as one word, its other
+        // two stayed as the failed write left them, and what came back was a mix of the two.
+        if matches!(kind, Kind::Str | Kind::MaybeText) && self.headers() {
             self.declare("declare void @fennec_lock_save_text(i64, i64, i64, i64, i64) nounwind");
             let (block, word) = self.word_in(block, place);
             let mut words = Vec::with_capacity(3);

@@ -11398,6 +11398,37 @@ fn counts_of(name: &str, source: &str) -> std::io::Result<String> {
     Ok(errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default().to_owned())
 }
 
+/// A run asked to audit its heap, by a runtime built without the audit, says that it checked
+/// nothing and exits as a failed audit does. It used to say nothing and exit with 0, which reads
+/// as a heap found right: a probe of a leak was misled that way. The tests' runtime has no audit,
+/// as a release's hasn't.
+#[test]
+fn a_run_asked_to_audit_by_a_runtime_without_the_audit_says_so_and_fails() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("audit_not_built")?;
+    let program = dir.join("audit_not_built.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"ran\")\n    return\n")?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("audit_not_built"));
+    let built = fennec(&["build", "--llvm", &program, "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let asked = Command::new(&executable).env("FENNEC_AUDIT", "1").output_within()?;
+    let plain = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(asked.status.code(), Some(87));
+    assert_eq!(String::from_utf8_lossy(&asked.stdout), "ran\n");
+    assert_eq!(
+        String::from_utf8_lossy(&asked.stderr),
+        "heap audit: FENNEC_AUDIT is set, but this program's runtime was built without the heap audit, so \
+         nothing was checked\n"
+    );
+    // Not asked, it runs as ever.
+    assert_eq!(plain.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&plain.stderr), "");
+    Ok(())
+}
+
 /// A field changed in place, by a builtin, a method on `ref self` or a `ref` argument, with an
 /// argument worked out with a branch, a loop or a call: the field is read once the arguments
 /// are, so it has one owner while it changes. Each way gives what was pinned, copies and failures

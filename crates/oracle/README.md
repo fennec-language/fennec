@@ -23,11 +23,15 @@ how values are held, copied, compared and printed, is modeled here on its own, f
 
 Where a standard library module is written in Fennec, the oracle can run its own source, as
 `fennec-syntax` gives it to the compiler, and model only the functions the runtime writes in Rust
-beneath it. `std.math` is run this way (`RUN_FROM_SOURCE` in `src/load.rs`): its vectors,
-quaternions and matrices, `dot` and `lerp` are its Fennec code, and `sqrt`, `floor` and `ceil`
-are modeled here. So the oracle still checks how the compiler and runtime run that code, but a
-mistake in the module's own Fennec would be the same on both sides. A module modeled on its own,
-like `std.json`, isn't run from source. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's
+beneath it. `std.math` and `std.collections` are run this way (`RUN_FROM_SOURCE` in
+`src/load.rs`). In `std.math`, the vectors, quaternions and matrices, `dot` and `lerp` are its
+Fennec code, and `sqrt`, `floor` and `ceil` are modeled here. In `std.collections`, `Deque`,
+`Heap`, `Counter`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Tree` and the rest are its Fennec
+code. Its `extend`s of `Table` and `Id`, which the oracle models on its own, are left out. The
+types of the module's expressions are what the checker gave them as it checked the program. So
+the oracle still checks how the compiler and runtime run that code, but a mistake in the module's
+own Fennec would be the same on both sides. A module modeled on its own, like `std.json`, isn't
+run from source. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's
 `**` are computed with the `libm` crate, as `docs/language.md` says they are, at the version the
 workspace pins.
 

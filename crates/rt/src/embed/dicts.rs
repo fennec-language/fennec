@@ -1172,13 +1172,12 @@ pub(super) fn found_puts() -> u64 {
 /// `dict[key] = value` with the key's words: takes over the owners `dict`, a key held in a
 /// block and `value` had, and gives back the dict's.
 fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i64> {
-    let at = u64::try_from(dict).ok()?;
+    let mut at = u64::try_from(dict).ok()?;
     let block = state.heap.block(at)?;
     let layout = layout(state, block)?;
     // A key of the wrong width changes nothing: it's refused before the dict grows or a slot
-    // is taken.
-    // So is a value of one word for a dict that holds its values in place, whose words these
-    // setters don't know the owners in.
+    // is taken. So is a value of one word for a dict that holds its values in place, whose words
+    // these setters don't know the owners in.
     if key.len() + 2 != layout.width() || layout.in_place() {
         return None;
     }
@@ -1187,7 +1186,45 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     {
         return Some(changed);
     }
-    let (at, hash, probe, mask) = ready_for(state, at, layout, key)?;
+    let block = state.heap.block(at)?;
+    let how = Hashing::of(block);
+    let mut hash = hash_key(state, layout.key, key, how);
+    let slots = usize::try_from(*block.get(4)?).ok()? + 1;
+    let used = usize::try_from(*block.get(3)?).ok()?;
+    let shared = !state.heap.is_alone(at, block);
+    if shared {
+        let (shape, live) = (shape_word(block)?, entries(block, layout.width()));
+        // An empty dict shared, as the empty constant a dict can start as is, is made anew: there's
+        // nothing to copy, so no copy is counted.
+        if !live.is_empty() {
+            state.heap.copied(live.len());
+        }
+        for entry in live.chunks_exact(layout.width()) {
+            retain_entry(state, layout, entry);
+        }
+        release(state, at);
+        let copy = build(state, (shape, how), layout.width(), &live, 2 * (live.len() / layout.width() + 1));
+        at = u64::try_from(state.heap.insert(copy)).ok()?;
+    } else if used >= capacity(slots) {
+        let shape = shape_word(block)?;
+        at = grown(state, at, shape, layout.width())?;
+    }
+    // Growing or copying may have changed how this dict hashes.
+    let block = state.heap.block(at)?;
+    if Hashing::of(block) != how {
+        hash = hash_key(state, layout.key, key, Hashing::of(block));
+    }
+    let mask = usize::try_from(*block.get(4)?).ok()?;
+    let mut probe = find(state, block, layout, key, hash);
+    if let Probe::Empty(slot) = probe
+        && Hashing::of(block) == Hashing::Fast
+        && too_far(hash, slot, mask)
+    {
+        strengthen(state, at, layout)?;
+        let block = state.heap.block(at)?;
+        hash = hash_key(state, layout.key, key, Hashing::Strong);
+        probe = find(state, block, layout, key, hash);
+    }
     let start = DICT_HEADER_WORDS + mask + 1;
     let block = state.heap.block_mut(at)?;
     match probe {
@@ -1218,11 +1255,14 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     i64::try_from(at).ok()
 }
 
-/// Makes the dict at `at` ready for `key` to be written: one that's shared is copied, one that's
-/// full grown, and one whose probe for the key got too long hashed the strong way. Gives the dict's
-/// address, which may be new, the key's hash there, where the key is or goes, and one less than
-/// the dict's slots.
-#[inline(always)]
+/// Makes the dict at `at` ready for `key` to be written, for a dict that holds its values in
+/// place: one that's shared is copied, one that's full grown, and one whose probe for the key got
+/// too long hashed the strong way. Gives the dict's address, which may be new, the key's hash
+/// there, where the key is or goes, and one less than the dict's slots.
+///
+/// `set_words` does the same for a value of one word, written out in it and not shared with
+/// this: shared, the one-word setter came out 30 instructions a call longer, with a second caller
+/// of everything it used to be the only caller of.
 fn ready_for(
     state: &mut State,
     mut at: u64,

@@ -16,7 +16,7 @@
 //!   code that makes and frees them is never the code audited.
 //! - Blocks in the table behind a `shared` value's lock.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::hash::BuildHasherDefault;
 use std::rc::Rc;
@@ -84,13 +84,32 @@ type Tallies = HashMap<u64, Tally, BuildHasherDefault<AddressHasher>>;
 /// Checks every block in this thread's table. `held` is each address the runtime holds itself,
 /// outside any block, once for each owner it has there.
 pub(in crate::embed) fn audit(state: &State, held: &[u64]) -> Audit {
+    audit_of(state, held, |_| true)
+}
+
+/// Checks the blocks in this thread's table that no task still running on it made: what's left
+/// on a worker with no round left to serve. A parked task's blocks are taken as they are, as the
+/// blocks kept for the whole run are: native code's frames hold owners of them that nothing here
+/// can show, and what they hold is held.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn audit_outside_tasks(state: &State, held: &[u64]) -> Audit {
+    audit_of(state, held, super::made_outside_tasks)
+}
+
+/// `audit`, of the blocks `judged` picks. The others are roots: never said, and holders of what
+/// they hold.
+fn audit_of(state: &State, held: &[u64], judged: impl Fn(&[u64]) -> bool) -> Audit {
     let mut tallies = Tallies::default();
     let mut children = Vec::new();
     let mut roots = held.to_vec();
     let mut freeable = Vec::new();
+    // What a block that isn't judged holds. It may be lent to that block's task alone, and so
+    // not be readable from here: finding no block at one of these says nothing.
+    let mut held_unjudged: HashSet<u64, BuildHasherDefault<AddressHasher>> = HashSet::default();
     for block in state.heap.blocks.all() {
         let address = address_of(block);
-        if is_never_freed(block) {
+        let judge = judged(block);
+        if is_never_freed(block) || !judge {
             roots.push(address);
         } else {
             freeable.push(address);
@@ -99,6 +118,9 @@ pub(in crate::embed) fn audit(state: &State, held: &[u64]) -> Audit {
         children_into(state, block, &mut children);
         for child in &children {
             hold(&mut tallies, *child);
+            if !judge {
+                held_unjudged.insert(*child);
+            }
         }
     }
     for address in held {
@@ -139,6 +161,7 @@ pub(in crate::embed) fn audit(state: &State, held: &[u64]) -> Audit {
     let mut gone: Vec<(u64, u32)> = tallies
         .iter()
         .filter(|(address, _)| **address != 0 && state.heap.block(**address).is_none())
+        .filter(|(address, _)| !held_unjudged.contains(*address))
         .map(|(address, tally)| (*address, tally.found))
         .collect();
     gone.sort_unstable();

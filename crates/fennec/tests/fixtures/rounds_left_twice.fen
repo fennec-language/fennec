@@ -1,0 +1,26 @@
+# Two echo servers, one after the other, each asked five lines and a stop: twelve rounds, the
+# second served by the workers that served the first. For the test that what a round leaves
+# is found wherever the server runs, and counted once.
+from std.concurrent import Crashed
+from std.net import NetError
+
+def asked(net: Net, port: int, line: str) -> str fails NetError:
+    with net.connect("127.0.0.1", port)? as conn:
+        conn.write(f"{line}\n")?
+        return conn.read_line()? else ""
+
+def clients(net: Net, port: int, stdout: Stdout) fails NetError:
+    for line in ["a", "b", "c", "d", "e", "stop"]:
+        stdout.print(asked(net, port=port, line=line)?)
+
+# Two servers, one after the other, each in `main` with its clients in a task: the workers that
+# served the first serve the second.
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    for _ in range(2):
+        with net.listen(0)? as server:
+            port = server.port
+            with launch(() => clients(net, port=port, stdout=stdout)?)?:
+                for conn in parallel(server):
+                    line = conn.read_line()? else ""
+                    if line == "stop": break
+                    conn.write(f"{line}, as a text long enough for a block of its own\n")?

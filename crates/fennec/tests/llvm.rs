@@ -8739,12 +8739,16 @@ fn not_native_yet(path: &Path) -> bool {
 }
 
 /// Every example builds through LLVM, prints exactly what it should and finishes without failing.
+///
+/// Each is run with `fennec run`, in the Fennec folder every test that runs the examples shares,
+/// so one built already, by another test or an earlier run, is the program the store keeps,
+/// launched again. Built in a folder of its own and copied out, each would be a new file, which
+/// macOS holds at its first launch while it's assessed.
 #[test]
 fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let dir = folder("examples")?;
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(examples)? {
@@ -8754,41 +8758,32 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
         }
     }
     paths.sort();
-    // What became of each: built and printed this, or refused with this.
-    let outcomes = crate::executables::at_once(&paths, |worker, path| {
-        let home = dir.join(format!("home-{worker}"));
-        let executable = dir.join(format!("example-{worker}"));
-        let made = fennec(
-            &["build", "--llvm", &path.to_string_lossy(), "-o", &executable.to_string_lossy()],
-            &home,
-        )?;
-        if !made.status.success() {
-            return Ok(Err(String::from_utf8_lossy(&made.stderr).trim().to_owned()));
-        }
-        let ran = Command::new(&executable)
-            .output_within()
+    // What became of each: printed this, or failed, to build or to run, saying this.
+    let outcomes = crate::executables::at_once(&paths, |_, path| {
+        let ran = crate::executables::fennec_command()
+            .args(["run", "--no-test", &path.to_string_lossy()])
+            .output_before(FENNEC_DEADLINE)
             .map_err(|error| std::io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
-        // What it printed, or that it failed.
-        let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
-        Ok(Ok(ran.status.success().then_some(printed)))
+        if !ran.status.success() {
+            return Ok(Err(String::from_utf8_lossy(&ran.stderr).trim().to_owned()));
+        }
+        Ok(Ok(String::from_utf8_lossy(&ran.stdout).into_owned()))
     })?;
-    let (mut refused, mut wrong, mut now_native) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut failed, mut wrong, mut now_native) = (Vec::new(), Vec::new(), Vec::new());
     for (path, outcome) in paths.iter().zip(outcomes) {
         match outcome {
             Ok(_) if not_native_yet(path) => now_native.push(path),
             Err(_) if not_native_yet(path) => {}
-            Err(why) => refused.push(format!("{}: {why}", path.display())),
-            Ok(None) => wrong.push(path),
-            Ok(Some(printed)) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
+            Err(why) => failed.push(format!("{}: {why}", path.display())),
+            Ok(printed) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
                 wrong.push(path);
             }
-            Ok(Some(_)) => {}
+            Ok(_) => {}
         }
     }
-    std::fs::remove_dir_all(&dir)?;
     assert!(now_native.is_empty(), "these build natively now: take them off NOT_NATIVE_YET: {now_native:?}");
-    assert!(wrong.is_empty(), "printed the wrong thing or failed: {wrong:?}");
-    assert!(refused.is_empty(), "these don't build through LLVM:\n{}", refused.join("\n"));
+    assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
+    assert!(failed.is_empty(), "these didn't build through LLVM, or failed:\n{}", failed.join("\n"));
     Ok(())
 }
 
@@ -16300,6 +16295,86 @@ def main(stdout: Stdout):
     assert_eq!(wanted, "read\n`x` should be an int, but it's a str\n");
     Ok(())
 }
+
+/// A generic struct is shown by the name it's written with, never with its type arguments:
+/// `Holder(item=3)`, not `Holder[int](item=3)`. One held in place took its layout's name, which
+/// has the arguments, while one in a block, or inside a list or a dict, was shown without. Here
+/// it holds an int, a string, a float, another generic struct and an array, alone and inside a
+/// list, a dict, a tuple and an optional, through `print`, an f-string and `str()`.
+#[test]
+fn a_generic_struct_is_shown_without_its_type_arguments() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("generic_shown", GENERIC_SHOWN, GENERIC_SHOWN_PRINTS)
+}
+
+const GENERIC_SHOWN: &str = r#"struct Holder[T]:
+    item: T
+
+struct Pair[A, B]:
+    left: A
+    right: B
+
+def main(stdout: Stdout):
+    stdout.print(Holder(item=3))
+    stdout.print(Holder(item="x"))
+    stdout.print(Holder(item=2.5))
+    stdout.print([Holder(item=1)])
+    stdout.print(Holder(item=Holder(item=4)))
+    stdout.print(Pair(left=1, right="one"))
+    stdout.print({"a": Holder(item=1)}, (Holder(item=1), 2))
+    maybe: Holder[int]? = Holder(item=9)
+    stdout.print(maybe)
+    number = Holder(item=3)
+    text = Holder(item="x")
+    stdout.print(f"{number} {text}", str(number), str(Holder(item=2.5)), str(text))
+    grid: array[int, 2] = [1, 2]
+    stdout.print(grid, [grid], Holder(item=grid))
+    return
+"#;
+
+const GENERIC_SHOWN_PRINTS: &str = r#"Holder(item=3)
+Holder(item="x")
+Holder(item=2.5)
+[Holder(item=1)]
+Holder(item=Holder(item=4))
+Pair(left=1, right="one")
+{"a": Holder(item=1)} (Holder(item=1), 2)
+Holder(item=9)
+Holder(item=3) Holder(item="x") Holder(item=3) Holder(item=2.5) Holder(item="x")
+[1, 2] [[1, 2]] Holder(item=[1, 2])
+"#;
+
+/// A failed `assert` says both sides the same way, with no type arguments.
+#[test]
+fn a_failed_assert_shows_a_generic_struct_without_its_type_arguments() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("generic_assert")?;
+    let (program, executable) = (dir.join("generic_assert.fen"), dir.join("generic_assert"));
+    std::fs::write(&program, GENERIC_ASSERT)?;
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!((printed.as_str(), code), ("", Some(1)), "{said}");
+    assert!(said.contains("the left side is Holder(item=3) and the right side is Holder(item=4)"), "{said}");
+    Ok(())
+}
+
+const GENERIC_ASSERT: &str = r#"struct Holder[T]:
+    item: T
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    assert Holder(item=3 + shift) == Holder(item=4)
+    stdout.print("not reached")
+    return
+"#;
 
 /// A list of a union's values, whose members are generic or tuples, prints each value as itself,
 /// from a literal or from fields, in `print` and in an f-string.

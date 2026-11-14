@@ -57,6 +57,48 @@ test "a value passed over counts toward how deep JSON may nest"():
         "arrays and objects nest more than 500 deep here",
     )
 
+## A struct that writes no fields at all.
+struct Blank:
+    @skip
+    note = ""
+
+struct Line:
+    start: Point
+    end: Point
+
+test "a struct's braces close round its fields, wherever it's written"():
+    assert json.dumps(Blank()) == "{}"
+    assert json.dumps(Point(x=1, y=2)) == "{\"x\": 1, \"y\": 2}"
+    assert (
+        json.dumps(Line(start=Point(x=1, y=2), end=Point(x=3, y=4)))
+        == "{\"start\": {\"x\": 1, \"y\": 2}, \"end\": {\"x\": 3, \"y\": 4}}"
+    )
+    assert (
+        json.dumps([Point(x=1, y=2), Point(x=3, y=4)])
+        == "[{\"x\": 1, \"y\": 2}, {\"x\": 3, \"y\": 4}]"
+    )
+    assert json.dumps([Blank(), Blank()]) == "[{}, {}]"
+    assert (
+        json.dumps({"a": Point(x=1, y=2), "b": Point(x=3, y=4)})
+        == "{\"a\": {\"x\": 1, \"y\": 2}, \"b\": {\"x\": 3, \"y\": 4}}"
+    )
+    assert json.dumps(Point(x=1, y=2), indent=2) == "{\n  \"x\": 1,\n  \"y\": 2\n}"
+    assert json.dumps(Blank(), indent=2) == "{}"
+    assert json.dumps(Point(x=1, y=2), names=.CamelCase) == "{\"x\": 1, \"y\": 2}"
+    assert (
+        json.loads[Line](json.dumps(Line(start=Point(x=1, y=2), end=Point(x=3, y=4))))?.end.y == 4
+    )
+
+test "a text is written whole, escaped only where it has to be"():
+    assert json.dumps("plain") == "\"plain\""
+    assert json.dumps("") == "\"\""
+    assert json.dumps("a\"b\\c\nd") == "\"a\\\"b\\\\c\\nd\""
+    # Both start with the byte 194: a degree sign is written as it is, and U+0085, a control
+    # character, is escaped.
+    assert json.dumps("20°") == "\"20°\""
+    assert json.dumps("a\u0085b") == "\"a\\u0085b\""
+    assert json.dumps(["x", "y\tz"]) == "[\"x\", \"y\\tz\"]"
+
 def main(stdout: Stdout):
     text = "\n".join([
         "{",

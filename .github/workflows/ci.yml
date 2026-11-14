@@ -427,6 +427,10 @@ jobs:
         run: .github/scripts/test-within.sh
       - name: Sweeping old build files, on worktrees made for it
         run: .github/scripts/test-sweep-builds.sh
+      - name: Naming what failed, and the known failures' file, as the gate reads them
+        run: |
+          .github/scripts/known-failures.sh
+          .github/scripts/test-known-failures.sh
       # The installer runs as `sh` on machines Fennec has never seen, so it keeps to POSIX sh.
       - name: shellcheck the installer
         run: shellcheck --shell=sh site/public/install.sh

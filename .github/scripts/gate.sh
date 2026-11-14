@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
-# The checks a commit passes on this machine before it lands, in the order that fails fastest. It
-# tests the working tree, so whatever runs it has to be sure that's the commit in question. Each
-# step's time goes to standard output, and a failed step's output is printed, and stops the rest.
+# The checks a commit passes on this machine before it lands. It tests the working tree, so whatever
+# runs it has to be sure that's the commit in question.
+#
+# Every step runs, whatever an earlier one did, so a failure main already has never hides one this
+# change brings: tests run with `--no-fail-fast`, and the examples and the Rosetta pass go through
+# every program. Only the steps that need the build are left out when it fails, and a step that
+# didn't run fails the gate. A step's failures are named: a test by its exact name, a program by
+# its path. The gate passes when every step ran and failed on nothing but what
+# `.github/known-failures.txt` names, the failures main has, each with the change that broke it.
+# It ends with a line for every step: whether it ran, and what it found.
 set -u
 root="$(git rev-parse --show-toplevel)" || exit 1
 cd "$root" || exit 1
@@ -14,19 +21,53 @@ log="$logs/gate.log"
 # LLVM is the main backend, so its tests have to run, not skip.
 export FENNEC_EXPECT_LLVM=1
 
+# Each step's outcome, in order, as `name|outcome`: passed, known, failed or didn't run.
+outcomes=()
+# What main is known to fail, one name a line, from `.github/known-failures.txt`.
+known="$logs/known.txt"
+.github/scripts/known-failures.sh names > "$known" || exit 1
+
+# Runs a step and keeps its outcome. A step may name its failures in `$names`, one a line: a step
+# that fails naming only what main is known to fail is "known"; one that fails naming nothing, or
+# anything else, has failed.
+names="$logs/names.txt"
 step() {
-  local name=$1 started=$SECONDS
+  local name=$1 started=$SECONDS status=0
   shift
-  if ! "$@" > "$logs/step.log" 2>&1; then
-    echo "FAILED after $((SECONDS - started))s: $name"
-    tail -n 60 "$logs/step.log"
-    grep gate-watch "$log"
-    # Kept under the code it tested: if that passes later, this was a flake, and goes in the
-    # ledger. See `flakes.sh`.
-    .github/scripts/flakes.sh failed "$name" "$logs/step.log"
-    return 1
+  : > "$names"
+  "$@" > "$logs/step.log" 2>&1 || status=$?
+  local took=$((SECONDS - started))
+  if [ "$status" -eq 0 ]; then
+    echo "${took}s  $name"
+    outcomes+=("$name|passed")
+    return 0
   fi
-  echo "$((SECONDS - started))s  $name"
+  local unknown
+  unknown=$(grep -vxF -f "$known" "$names" || true)
+  if [ -s "$names" ] && [ -z "$unknown" ]; then
+    echo "${took}s  $name: failed only on what main is known to fail:"
+    sed 's/^/  /' "$names"
+    outcomes+=("$name|known")
+    return 0
+  fi
+  echo "FAILED after ${took}s: $name"
+  if [ -n "$unknown" ]; then
+    echo "  failures main isn't known to have:"
+    printf '%s\n' "$unknown" | sed 's/^/    /'
+  fi
+  tail -n 60 "$logs/step.log"
+  grep gate-watch "$log"
+  # Kept under the code it tested: if that passes later, this was a flake, and goes in the
+  # ledger. See `flakes.sh`.
+  .github/scripts/flakes.sh failed "$name" "$logs/step.log"
+  outcomes+=("$name|failed")
+  return 1
+}
+
+# A step left out, which fails the gate as surely as one that failed.
+skipped() {
+  echo "didn't run: $1, $2"
+  outcomes+=("$1|didn't run")
 }
 
 # A runtime library built a little at a time has come out without parts of what it uses, which a
@@ -74,20 +115,40 @@ fennec_ok() {
   return 1
 }
 
-# Every example and kit through the command, as the first thing a person would do with them.
+# Every example and kit through the command, as the first thing a person would do with them. Each
+# one is tried, and each that fails is named by its path.
 examples() {
-  local printed="$logs/printed.txt" program kit
+  local printed="$logs/printed.txt" program kit failed=0
   for program in examples/*.fen; do
-    fennec_ok run "$program" > "$printed" || return 1
-    diff --strip-trailing-cr "${program%.fen}.out" "$printed" || return 1
-    fennec_ok test "$program" > /dev/null || return 1
+    if ! { fennec_ok run "$program" > "$printed" \
+      && diff --strip-trailing-cr "${program%.fen}.out" "$printed" \
+      && fennec_ok test "$program" > /dev/null; }; then
+      echo "$program" >> "$names"
+      failed=1
+    fi
   done
   for kit in examples/projects/*/; do
     [ -f "$kit/kit.toml" ] || continue
-    fennec_ok run "$kit" > "$printed" || return 1
-    diff --strip-trailing-cr "${kit%/}.out" "$printed" || return 1
-    fennec_ok test "$kit" > /dev/null || return 1
+    if ! { fennec_ok run "$kit" > "$printed" \
+      && diff --strip-trailing-cr "${kit%/}.out" "$printed" \
+      && fennec_ok test "$kit" > /dev/null; }; then
+      echo "${kit%/}" >> "$names"
+      failed=1
+    fi
   done
+  return "$failed"
+}
+
+# Every test, with `--no-fail-fast`, so a test binary that fails doesn't stop the rest. Each test
+# that fails is named exactly, as `cargo test` says it; a binary that fails without naming one,
+# by not building or by crashing, is named as that, which nothing known matches.
+tests() {
+  local said="$logs/tests.txt" status=0
+  cargo test --locked --no-fail-fast > "$said" 2>&1 || status=$?
+  cat "$said"
+  [ "$status" -eq 0 ] && return 0
+  .github/scripts/known-failures.sh tests-failed "$said" >> "$names"
+  return "$status"
 }
 
 # Whether Rosetta runs a new x86-64 program. When it's wedged, every one sits unkillable instead
@@ -121,13 +182,18 @@ x86() {
   tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
   mkdir -p "$work/bin" || return 1
   printf '#!/bin/sh\nexec /usr/bin/cc -arch x86_64 "$@"\n' > "$work/bin/cc" && chmod +x "$work/bin/cc" || return 1
+  local failed=0
   for program in examples/*.fen; do
-    PATH="$work/bin:$PATH" FENNEC_HOME="$work/home" FENNEC_LLVM_BIN="$tools" \
+    if ! { PATH="$work/bin:$PATH" FENNEC_HOME="$work/home" FENNEC_LLVM_BIN="$tools" \
       .github/scripts/within.sh 120 ./target/x86_64-apple-darwin/debug/fennec build "$program" -o "$work/program" \
-      > /dev/null || return 1
-    .github/scripts/within.sh 60 "$work/program" < /dev/null > "$work/printed" || return 1
-    diff --strip-trailing-cr "${program%.fen}.out" "$work/printed" || return 1
+      > /dev/null \
+      && .github/scripts/within.sh 60 "$work/program" < /dev/null > "$work/printed" \
+      && diff --strip-trailing-cr "${program%.fen}.out" "$work/printed"; }; then
+      echo "$program" >> "$names"
+      failed=1
+    fi
   done
+  return "$failed"
 }
 
 watched() {
@@ -142,20 +208,55 @@ watched() {
 }
 
 started=$SECONDS
-step "format" cargo fmt --check || exit 1
-step "build the command and the runtimes" runtime || exit 1
-step "clippy" cargo clippy --all-targets --locked -- -D warnings || exit 1
-step "the workspace and its tests compile on Linux" .github/scripts/linux-check.sh || exit 1
-step "the workspace and its tests compile for Windows" .github/scripts/windows-check.sh || exit 1
-step "tests" watched cargo test --locked || exit 1
-step "examples and kits" watched examples || exit 1
-step "every example as x86-64 under Rosetta" watched x86 || exit 1
+step "format" cargo fmt --check
+built=1
+step "build the command and the runtimes" runtime || built=0
+step "clippy" cargo clippy --all-targets --locked -- -D warnings
+step "the workspace and its tests compile on Linux" .github/scripts/linux-check.sh
+step "the workspace and its tests compile for Windows" .github/scripts/windows-check.sh
+for name in "tests" "examples and kits" "every example as x86-64 under Rosetta"; do
+  if [ "$built" -eq 0 ]; then
+    skipped "$name" "since the build failed"
+    continue
+  fi
+  case "$name" in
+    tests) step "$name" watched tests ;;
+    examples*) step "$name" watched examples ;;
+    *) step "$name" watched x86 ;;
+  esac
+done
 if [ -s "$log" ]; then
   echo "the gate stopped test programs:"
   cat "$log"
   .github/scripts/flakes.sh failed "test programs the gate stopped" "$log"
+  outcomes+=("test programs the gate stopped|failed")
+fi
+
+# A line for every step, and the verdict: every step ran, and failed on nothing main isn't known
+# to fail.
+echo
+echo "the gate's steps:"
+passed=1
+for outcome in "${outcomes[@]}"; do
+  printf '  %-12s %s\n' "${outcome##*|}" "${outcome%|*}"
+  case "${outcome##*|}" in
+    passed | known) ;;
+    *) passed=0 ;;
+  esac
+done
+echo "$((SECONDS - started))s  altogether"
+if [ "$passed" -eq 0 ]; then
+  # What gate-watch stopped, and what each was doing, printed above, kept beyond the gate's own
+  # folder, which goes when it ends.
+  if [ -s "$log" ]; then
+    kept="${FENNEC_HOME:-$HOME/.fennec}/gate-logs"
+    mkdir -p "$kept"
+    kept="$kept/$(date '+%Y-%m-%d-%H%M%S')-$(git rev-parse --short HEAD).log"
+    cp "$log" "$kept"
+    echo "what gate-watch stopped, and what each was doing, is kept in $kept"
+  fi
+  echo "the gate failed"
   exit 1
 fi
 # Whatever failed before on this same code passed now, so each is a flake, written in the ledger.
 .github/scripts/flakes.sh passed
-echo "$((SECONDS - started))s  altogether"

@@ -66,7 +66,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The block a header holds, or null for an inline one.
-    fn header_block(&mut self, header: &str) -> String {
+    pub(crate) fn header_block(&mut self, header: &str) -> String {
         let in_block = self.header_in_block(header);
         let first = self.header_word(header, 0);
         let (word, block) = (self.temp(), self.temp());
@@ -164,6 +164,24 @@ impl Emit<'_, '_, '_> {
         header
     }
 
+    /// The header of a string's block of `bytes` bytes, more than 23, taking over the owner
+    /// given: its address and length, as `fennec_text_of` gives for such a block, with nothing
+    /// looked up.
+    pub(crate) fn text_of_long_block(&mut self, block: &str, bytes: &str) -> String {
+        // A build that checks proofs checks it's past 23 bytes, which a header would hold inline.
+        if self.checks_proofs() {
+            let short = self.temp();
+            self.line(&format!("{short} = icmp ule i64 {bytes}, 23"));
+            let span = self.here_span();
+            self.proof_held_here(&short, "a text joined in a block is past 23 bytes", span);
+        }
+        let (address, first, header) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{address} = ptrtoint ptr {block} to i64"));
+        self.line(&format!("{first} = insertvalue {HEADER} zeroinitializer, i64 {address}, 0"));
+        self.line(&format!("{header} = insertvalue {HEADER} {first}, i64 {bytes}, 1"));
+        header
+    }
+
     /// The header for a string's block, which keeps its own owner.
     pub(crate) fn text_from_borrowed_block(&mut self, block: &str) -> String {
         self.retain(block);
@@ -212,6 +230,40 @@ impl Emit<'_, '_, '_> {
     /// or the block itself without headers.
     pub(crate) fn text_value(&mut self, block: &str) -> String {
         if self.headers() { self.text_from_block(block) } else { block.to_owned() }
+    }
+
+    /// `==` on two optional strings held as headers, all zero for `None`: the same words are equal,
+    /// a `None` equals only a `None`, and two strings compare as strings do.
+    pub(crate) fn same_maybe_headers(&mut self, a: &str, b: &str) -> String {
+        let (mut same_words, mut words_of_a, mut words_of_b) =
+            ("true".to_owned(), "0".to_owned(), "0".to_owned());
+        for at in 0..3 {
+            let (x, y) = (self.header_word(a, at), self.header_word(b, at));
+            let (equal, all, any_a, any_b) = (self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{equal} = icmp eq i64 {x}, {y}"));
+            self.line(&format!("{all} = and i1 {same_words}, {equal}"));
+            self.line(&format!("{any_a} = or i64 {words_of_a}, {x}"));
+            self.line(&format!("{any_b} = or i64 {words_of_b}, {y}"));
+            (same_words, words_of_a, words_of_b) = (all, any_a, any_b);
+        }
+        let (none_a, none_b, either, decided) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{none_a} = icmp eq i64 {words_of_a}, 0"));
+        self.line(&format!("{none_b} = icmp eq i64 {words_of_b}, 0"));
+        self.line(&format!("{either} = or i1 {none_a}, {none_b}"));
+        self.line(&format!("{decided} = or i1 {same_words}, {either}"));
+        let (quick, texts, joined) =
+            (self.label("maybe_text_decided"), self.label("maybe_texts"), self.label("maybe_text_compared"));
+        self.line(&format!("br i1 {decided}, label %{quick}, label %{texts}"));
+        self.start_block(&texts);
+        let same = self.same_headers(a, b);
+        let texts_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&quick);
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let result = self.temp();
+        self.line(&format!("{result} = phi i1 [ {same_words}, %{quick} ], [ {same}, %{texts_end} ]"));
+        result
     }
 
     /// Whether two headers hold the same text. Equal strings always have the same form, so two

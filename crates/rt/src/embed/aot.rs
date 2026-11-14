@@ -317,6 +317,8 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     SOURCES.set(Some(sources.clone()));
     let here = 0_u8;
     let limit = std::ptr::from_ref(&here).addr().saturating_sub(NATIVE_STACK_BYTES);
+    // The runtime has as much again below native code's part: a read into a tree may use most.
+    heap::reads_may_reach(limit.saturating_sub(NATIVE_STACK_BYTES / 4 * 3));
     entry(i64::try_from(limit).unwrap_or(0));
     let (output, failure, leftovers) = super::finish_for_exit();
     crate::replay::ended();
@@ -351,6 +353,21 @@ pub fn counting() -> i64 {
 /// one making blocks outside the runtime's table while `counting` says 1.
 pub fn trace_allocated(bytes: i64) {
     with(|state: &mut State| state.heap.allocated(u64::try_from(bytes).unwrap_or(0)));
+}
+
+/// The native blocks made and not yet freed, in a run that counts: on any thread, as a block made
+/// in a task is freed there. Native blocks aren't in the runtime's table, so without this one left
+/// held, or a whole tree of them, would still end a run with `live 0`.
+static NATIVE_LIVE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// How many native blocks a run that counts has made and not freed.
+fn native_left() -> usize {
+    usize::try_from(NATIVE_LIVE.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(0)
+}
+
+/// Native code made (`1`) or freed (`-1`) a block of its own while `counting` says 1.
+pub fn native_live(change: i64) {
+    NATIVE_LIVE.fetch_add(change, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// With `FENNEC_TRACE_FILE` set, writes what each place in the source cost there, for
@@ -399,7 +416,8 @@ fn report_counts(counts: &heap::Counts, live: usize) {
         0 => said,
         strays => format!("{said} stray_frees {strays}"),
     };
-    let _ = writeln!(std::io::stderr(), "{said} live {live}");
+    // The runtime's own blocks, and native code's, which its table doesn't hold.
+    let _ = writeln!(std::io::stderr(), "{said} live {}", live + native_left());
 }
 
 /// The line `report_counts` writes, given how many `parallel` calls native code made and how many
@@ -483,4 +501,20 @@ pub extern "C" fn literal(at: i64) -> i64 {
         state.heap.adopt(&mut state.tables.statics);
         address
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// A native block made and not freed is one left held, wherever it was made, and none is once
+    /// it's freed: what `live` adds to the runtime's own blocks.
+    #[test]
+    fn native_blocks_made_and_not_freed_are_left() {
+        let before = super::native_left();
+        super::native_live(1);
+        std::thread::spawn(|| super::native_live(1)).join().unwrap_or(());
+        assert_eq!(super::native_left(), before + 2);
+        super::native_live(-1);
+        super::native_live(-1);
+        assert_eq!(super::native_left(), before);
+    }
 }

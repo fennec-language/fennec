@@ -296,6 +296,83 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Marks each block a constant held in place holds as living for the whole run, as a constant
+    /// held in a block is, so a task anywhere can read it and it's never counted as left over.
+    pub(crate) fn keep_inline(&mut self, kind: &Kind, at: &str) {
+        for part in self.inline_parts(kind) {
+            self.keep_part(part, at);
+        }
+    }
+
+    fn keep_part(&mut self, part: InlinePart, at: &str) {
+        match part {
+            InlinePart::Block(offset, held) => {
+                let place = self.offset(at, offset);
+                let block = match &held {
+                    // A string's block, when its header holds one: null when it's inline or `None`.
+                    Kind::Str | Kind::MaybeText if self.headers() => {
+                        let header = self.temp();
+                        self.line(&format!("{header} = load {}, ptr {place}", crate::headers::HEADER));
+                        self.header_block(&header)
+                    }
+                    Kind::Str
+                    | Kind::List(_)
+                    | Kind::Dict(..)
+                    | Kind::Boxed(_)
+                    | Kind::Bytes
+                    | Kind::Maybe(_) => {
+                        let block = self.temp();
+                        self.line(&format!("{block} = load ptr, ptr {place}"));
+                        block
+                    }
+                    // A closure, a generator or a capability: never a constant's.
+                    _ => return,
+                };
+                let none = self.temp();
+                self.line(&format!("{none} = icmp eq ptr {block}, null"));
+                let (keep, done) = (self.label("keep_block"), self.label("kept_block"));
+                self.line(&format!("br i1 {none}, label %{done}, label %{keep}"));
+                self.start_block(&keep);
+                self.declare("declare void @fennec_constant_kept(ptr) nounwind");
+                self.line(&format!("call void @fennec_constant_kept(ptr {block})"));
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+            }
+            InlinePart::Enum(offset, id) => {
+                let (base, tag, done) = (self.offset(at, offset), self.temp(), self.label("kept_case"));
+                self.line(&format!("{tag} = load i64, ptr {base}"));
+                for (number, parts) in self.case_parts(id) {
+                    let (this, next, same) =
+                        (self.label("keep_case"), self.label("not_kept_case"), self.temp());
+                    self.line(&format!("{same} = icmp eq i64 {tag}, {number}"));
+                    self.line(&format!("br i1 {same}, label %{this}, label %{next}"));
+                    self.start_block(&this);
+                    for part in parts {
+                        self.keep_part(part, &base);
+                    }
+                    self.line(&format!("br label %{done}"));
+                    self.start_block(&next);
+                }
+                self.line(&format!("br label %{done}"));
+                self.start_block(&done);
+            }
+            InlinePart::Items(offset, count, stride, parts) => {
+                let base = self.offset(at, offset);
+                self.each_position(&count.to_string(), |emit, position| {
+                    let item = emit.temp();
+                    emit.line(&format!(
+                        "{item} = getelementptr inbounds [{stride} x i8], ptr {base}, i64 {position}"
+                    ));
+                    for part in parts.clone() {
+                        emit.keep_part(part, &item);
+                    }
+                    Ok(())
+                })
+                .unwrap_or_default();
+            }
+        }
+    }
+
     /// One more owner for each block an inline struct or enum at `at` holds.
     pub(crate) fn retain_inline(&mut self, kind: &Kind, at: &str) {
         for part in self.inline_parts(kind) {
@@ -829,6 +906,9 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br i1 {none}, label %{first}, label %{ready}, !prof !0"));
         self.start_block(&first);
         let made = self.new_block(id)?;
+        if self.is_native(id) {
+            self.uncount_native();
+        }
         self.line(&format!("store i64 {SHARED_CASE_COUNT}, ptr {made}{HEADER_ACCESS}"));
         // No thread's, as every block that's never freed is, so no thread but this one, which
         // hasn't shared it yet, reads its count.
@@ -1134,7 +1214,7 @@ impl Emit<'_, '_, '_> {
                 _ => {
                     let (x, y) = (self.load_field(kind, &x_at, ""), self.load_field(kind, &y_at, ""));
                     match kind {
-                        Kind::Int | Kind::Bool => {
+                        Kind::Int | Kind::U64 | Kind::Bool => {
                             let equal = self.temp();
                             let text = if *kind == Kind::Bool { "i1" } else { "i64" };
                             self.line(&format!("{equal} = icmp eq {text} {x}, {y}"));
@@ -1143,10 +1223,19 @@ impl Emit<'_, '_, '_> {
                         // An `f32` is held as the `double` that's exactly its value.
                         Kind::Float | Kind::F32 => self.float_compare(BinOp::Eq, (&x, &y)),
                         Kind::Str if self.headers() => self.same_headers(&x, &y),
+                        Kind::MaybeText => self.same_maybe_headers(&x, &y),
                         Kind::Str => self.string_binary(BinOp::Eq, (&x, &y))?,
-                        Kind::Boxed(_) | Kind::List(_) | Kind::Dict(..) => {
-                            self.same_blocks(BinOp::Eq, (&x, &y))
-                        }
+                        // A block of any kind goes to the runtime, which compares it by its shape,
+                        // as it does a boxed value's.
+                        Kind::Boxed(_)
+                        | Kind::List(_)
+                        | Kind::Dict(..)
+                        | Kind::Bytes
+                        | Kind::Cap
+                        | Kind::TextBlock
+                        | Kind::Closure(..)
+                        | Kind::Gen => self.same_blocks(BinOp::Eq, (&x, &y)),
+                        Kind::Maybe(_) => self.same_maybe_blocks(&x, &y),
                         other => {
                             return Err(format!(
                                 "it compares a struct holding a {other:?}, which this backend doesn't take yet"
@@ -1160,6 +1249,31 @@ impl Emit<'_, '_, '_> {
             same = both;
         }
         Ok(same)
+    }
+
+    /// `==` on two optionals of a block, each the block's address or null for `None`: the same
+    /// address is equal, a `None` equals only a `None`, and two blocks compare by their shape.
+    fn same_maybe_blocks(&mut self, x: &str, y: &str) -> String {
+        let (same, x_none, y_none, either, decided) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{same} = icmp eq ptr {x}, {y}"));
+        self.line(&format!("{x_none} = icmp eq ptr {x}, null"));
+        self.line(&format!("{y_none} = icmp eq ptr {y}, null"));
+        self.line(&format!("{either} = or i1 {x_none}, {y_none}"));
+        self.line(&format!("{decided} = or i1 {same}, {either}"));
+        let (quick, blocks, joined) =
+            (self.label("maybe_decided"), self.label("maybe_blocks"), self.label("maybe_compared"));
+        self.line(&format!("br i1 {decided}, label %{quick}, label %{blocks}"));
+        self.start_block(&blocks);
+        let equal = self.same_blocks(BinOp::Eq, (x, y));
+        let blocks_end = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&quick);
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&joined);
+        let result = self.temp();
+        self.line(&format!("{result} = phi i1 [ {same}, %{quick} ], [ {equal}, %{blocks_end} ]"));
+        result
     }
 
     /// -1, 0 or 1, by the first field that differs.
@@ -1183,6 +1297,10 @@ impl Emit<'_, '_, '_> {
                         Kind::Int => {
                             self.line(&format!("{less} = icmp slt i64 {x}, {y}"));
                             self.line(&format!("{more} = icmp sgt i64 {x}, {y}"));
+                        }
+                        Kind::U64 => {
+                            self.line(&format!("{less} = icmp ult i64 {x}, {y}"));
+                            self.line(&format!("{more} = icmp ugt i64 {x}, {y}"));
                         }
                         Kind::Bool => {
                             self.line(&format!("{less} = icmp ult i1 {x}, {y}"));

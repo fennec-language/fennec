@@ -1086,7 +1086,11 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     let shared = !state.heap.is_alone(at, block);
     if shared {
         let (shape, live) = (shape_word(block)?, entries(block, layout.width));
-        state.heap.copied(live.len());
+        // An empty dict shared, as the empty constant a dict can start as is, is made anew: there's
+        // nothing to copy, so no copy is counted.
+        if !live.is_empty() {
+            state.heap.copied(live.len());
+        }
         for entry in live.chunks_exact(layout.width) {
             retain_entry(state, layout, entry);
         }
@@ -1266,7 +1270,10 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
     }
     let layout = layout(state, block)?;
     let (shape, live, how) = (shape_word(block)?, entries(block, layout.width), Hashing::of(block));
-    state.heap.copied(live.len());
+    // An empty dict shared is made anew, with no copy counted, as in `set_words`.
+    if !live.is_empty() {
+        state.heap.copied(live.len());
+    }
     for entry in live.chunks_exact(layout.width) {
         retain_entry(state, layout, entry);
     }
@@ -1644,7 +1651,7 @@ fn release_entry(state: &mut State, layout: Layout, entry: &[u64]) {
 }
 
 /// Whether two dicts' blocks hold the same keys with equal values, in any order.
-pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
+pub(super) fn equal(state: &State, left: &[u64], right: &[u64], later: &mut Vec<(u64, u64)>) -> bool {
     let (Some(layout), theirs) = (layout(state, left), layout(state, right)) else { return false };
     // Dicts of the same type always share a layout, so differing ones are never equal.
     if theirs != Some(layout) {
@@ -1661,7 +1668,9 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64]) -> bool {
                         Word::Float | Word::F32 => {
                             crate::value::floats_same(f64::from_bits(value), f64::from_bits(*other))
                         }
-                        Word::Str | Word::Plain(_) | Word::Block(_) => same(state, value, *other),
+                        Word::Str | Word::Plain(_) | Word::Block(_) => {
+                            super::heap::compare_later(later, value, *other)
+                        }
                         Word::Int | Word::U64 | Word::Bool | Word::Nothing | Word::Text => value == *other,
                     }),
                 Probe::Empty(_) => false,

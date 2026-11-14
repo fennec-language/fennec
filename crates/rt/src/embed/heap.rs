@@ -445,6 +445,51 @@ pub(in crate::embed) fn runtime_bug(what: &str) -> ! {
     panic!("{what}");
 }
 
+thread_local! {
+    /// The lowest place on this thread's stack the runtime may read a value into a tree from: 0
+    /// where nothing has said, as in a test, which is no limit.
+    static DEEPEST_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How much of a parked task's stack is kept clear below a read: what the read's own caller and
+/// a failure's way out still need.
+#[cfg(any(test, feature = "threads"))]
+const TASK_STACK_KEPT: usize = 64 << 10;
+
+/// Says how low on this thread's stack the runtime may still read a value into a tree: for the
+/// program's own thread and each worker, some way below where native code may go. A parked task's
+/// stack says for itself.
+pub(in crate::embed) fn reads_may_reach(lowest: usize) {
+    DEEPEST_READ.set(lowest);
+}
+
+/// Whether there's stack left here to read one more block into a tree, which calls itself for
+/// each block the value holds.
+fn room_to_read() -> bool {
+    let here = 0_u8;
+    let at = std::ptr::from_ref(&here).addr();
+    #[cfg(any(test, feature = "threads"))]
+    if let Some(low) = fennec_parked::stack_low() {
+        return at > low + TASK_STACK_KEPT;
+    }
+    at > DEEPEST_READ.get()
+}
+
+/// Stops the program: a value is nested deeper than there's stack left to read it into a tree, as
+/// hashing a dict's key that holds blocks does. Comparing and printing read nothing into a tree,
+/// and take any depth. This is reached with the runtime's state borrowed, so it says so itself.
+#[cold]
+#[inline(never)]
+fn too_deep() -> ! {
+    super::write_kept_output();
+    let _ = writeln!(
+        std::io::stderr(),
+        "error: a value is nested too deep to be a dict's key or a set's item: it holds values \
+         inside values further down than there's stack to follow them"
+    );
+    super::aot::stop_now(1)
+}
+
 /// Stops the program: it asked for a block too big to exist. This is reached with the runtime's
 /// state borrowed, so it says so itself.
 pub(super) fn too_big() -> ! {
@@ -957,21 +1002,31 @@ impl Heap {
     /// Takes a list out of this thread's own table, not one behind it, if its items hold nothing and
     /// it isn't a `shared` value's handle, looking it up once. Lists' shapes start at `first_list`.
     /// `None`, having taken nothing, for any other block.
-    pub(super) fn take_plain_list(&mut self, at: usize, first_list: u64) -> Option<Box<[u64]>> {
+    pub(super) fn take_plain_list(
+        &mut self,
+        at: usize,
+        first_list: u64,
+        str_shape: u64,
+    ) -> Option<Box<[u64]>> {
         let (empty_items, text_items) = (&self.empty_items, &self.text_items);
         self.blocks.take_if(at, |block| {
-            // A list of a kind whose items hold nothing, or one with no items at all, as a list
-            // made empty and never added to is, or one of strings' headers all inline, as a
-            // `split` into short parts makes. Only a kind of list's shape is looked at: past them
-            // are other blocks, like cells, whose third word means something else.
+            // A string, which holds no other block, or a list of a kind whose items hold nothing,
+            // or one with no items at all, as a list made empty and never added to is, or one of
+            // strings' headers all inline, as a `split` into short parts makes. Only a kind of
+            // list's shape is looked at: past them are other blocks, like cells, whose third word
+            // means something else.
             !is_handle_block(block)
-                && shape_word(block)
-                    .and_then(|shape| usize::try_from(shape.checked_sub(first_list)?).ok())
-                    .is_some_and(|number| {
-                        empty_items.get(number).is_some_and(|empty| *empty)
-                            || block.get(2) == Some(&0)
-                            || (text_items.get(number).is_some_and(|text| *text) && all_inline(block))
-                    })
+                && shape_word(block).is_some_and(|shape| {
+                    shape == str_shape
+                        || shape
+                            .checked_sub(first_list)
+                            .and_then(|number| usize::try_from(number).ok())
+                            .is_some_and(|number| {
+                                empty_items.get(number).is_some_and(|empty| *empty)
+                                    || block.get(2) == Some(&0)
+                                    || (text_items.get(number).is_some_and(|text| *text) && all_inline(block))
+                            })
+                })
         })
     }
 
@@ -1560,6 +1615,9 @@ pub(super) fn lent_block(
 }
 
 pub(super) fn read_block(state: &State, address: u64) -> Value {
+    if !room_to_read() {
+        too_deep();
+    }
     let at = usize::try_from(address).unwrap_or(0);
     // A string only changes in place by growing, so a text of the same length is current.
     let length = state.heap.block(address).and_then(|block| block.get(2)).copied();
@@ -1856,7 +1914,48 @@ pub extern "C" fn equal(a: i64, b: i64) -> i8 {
     with(|state| i8::from(same(state, u64::try_from(a).unwrap_or(0), u64::try_from(b).unwrap_or(0))))
 }
 
+thread_local! {
+    /// The pairs of blocks a compare has still to look at, kept to save making the list anew.
+    static PAIRS: std::cell::Cell<Vec<(u64, u64)>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// Whether the blocks at `a` and `b` hold equal values. The blocks they hold are compared from a
+/// list of what's left, never by this calling itself, so a value as deep as memory allows, like
+/// a chain of millions of structs, each in the last one's field, compares on any stack.
 pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
+    if a == b {
+        return true;
+    }
+    let mut left = PAIRS.take();
+    left.clear();
+    let equal = same_here(state, a, b, &mut left) && rest_same(state, &mut left);
+    left.clear();
+    PAIRS.set(left);
+    equal
+}
+
+/// Whether every pair `left` holds, and every pair those lead to, is equal.
+fn rest_same(state: &State, left: &mut Vec<(u64, u64)>) -> bool {
+    while let Some((a, b)) = left.pop() {
+        if !same_here(state, a, b, left) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Notes that the blocks at `a` and `b` are still to compare, for a value to be equal: true, as
+/// nothing's found unequal yet.
+pub(super) fn compare_later(left: &mut Vec<(u64, u64)>, a: u64, b: u64) -> bool {
+    if a != b {
+        left.push((a, b));
+    }
+    true
+}
+
+/// Whether the blocks at `a` and `b` are equal in themselves, with each pair of blocks they hold
+/// put on `left` to compare after.
+fn same_here(state: &State, a: u64, b: u64, later: &mut Vec<(u64, u64)>) -> bool {
     if a == b {
         return true;
     }
@@ -1888,14 +1987,15 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
             && left.get(text.clone()) == right.get(text);
     }
     if super::dicts::is_dict(state, left) {
-        return super::dicts::equal(state, left, right);
+        return super::dicts::equal(state, left, right, later);
     }
     if let Some(element) = super::lists::element_of(state, left) {
         // Items compare bit by bit, unless they hold floats or blocks.
         let stride = element.words();
         let (mine, theirs) = (super::lists::items(left, stride), super::lists::items(right, stride));
         if super::lists::owns_items(&element) {
-            return mine.len() == theirs.len() && mine.iter().zip(theirs).all(|(x, y)| same(state, *x, *y));
+            return mine.len() == theirs.len()
+                && mine.iter().zip(theirs).all(|(x, y)| compare_later(later, *x, *y));
         }
         if holds_blocks(&element) || holds_floats(&element) {
             let stride = stride.max(1);
@@ -1903,7 +2003,7 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
                 && mine
                     .chunks(stride)
                     .zip(theirs.chunks(stride))
-                    .all(|(x, y)| same_words(state, &element, x, y));
+                    .all(|(x, y)| same_words_here(state, &element, x, y, later));
         }
         return mine == theirs;
     }
@@ -1916,21 +2016,24 @@ pub(super) fn same(state: &State, a: u64, b: u64) -> bool {
     if let Element::Struct { name, fields } = shape.as_ref()
         && named::is_id_map(name)
     {
-        return same_tables(state, fields, left, right);
+        return same_tables(fields, left, right, later);
     }
-    same_words(state, &shape, left, right)
+    same_words_here(state, &shape, left, right, later)
 }
 
 /// Whether two `Table`s are equal: the same items in the same slots, with the same generations.
 /// Which `Table` each is, its tag, and where a search for a free slot starts don't count.
-fn same_tables(state: &State, fields: &[(Rc<str>, Element)], left: &[u64], right: &[u64]) -> bool {
+fn same_tables(
+    fields: &[(Rc<str>, Element)],
+    left: &[u64],
+    right: &[u64],
+    later: &mut Vec<(u64, u64)>,
+) -> bool {
     let mut at = 0;
     for (field, element) in fields {
         if matches!(field.as_ref(), "items" | "generations") {
             let (Some(x), Some(y)) = (left.get(at), right.get(at)) else { return false };
-            if !same(state, *x, *y) {
-                return false;
-            }
+            compare_later(later, *x, *y);
         }
         at += element.words();
     }
@@ -1940,13 +2043,26 @@ fn same_tables(state: &State, fields: &[(Rc<str>, Element)], left: &[u64], right
 /// Whether two values of a kind, laid out as words, are equal: the same plain words, and
 /// equal blocks where they hold blocks.
 pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: &[u64]) -> bool {
+    let mut later = Vec::new();
+    same_words_here(state, element, left, right, &mut later) && rest_same(state, &mut later)
+}
+
+/// [`same_words`] of the words themselves, with each pair of blocks they hold put on `later` to
+/// compare after.
+fn same_words_here(
+    state: &State,
+    element: &Element,
+    left: &[u64],
+    right: &[u64],
+    later: &mut Vec<(u64, u64)>,
+) -> bool {
     // An error compares by its values, whose notes don't count.
     if holds_notes(element) {
         return read(state, element, &mut left.iter()) == read(state, element, &mut right.iter());
     }
     // A float's bits don't say what's equal, so one with floats in it goes field by field.
     if holds_floats(element) {
-        return same_fields(state, element, (left, right), &mut 0);
+        return same_fields(element, (left, right), &mut 0, later);
     }
     let mut boxed = Vec::new();
     boxed_words(element, left, &mut 0, &mut boxed);
@@ -1955,7 +2071,7 @@ pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: 
     plain_same
         && boxed.iter().all(|at| {
             let (Some(x), Some(y)) = (left.get(*at), right.get(*at)) else { return false };
-            same(state, *x, *y)
+            compare_later(later, *x, *y)
         })
 }
 
@@ -1963,11 +2079,16 @@ pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: 
 /// a float as Fennec compares floats, `-0.0` the same as `0.0` and every NaN the same, as they hash;
 /// a block by what it holds; and an enum by its case, then only that case's fields. Nothing is
 /// read into a `Value`, so a value whose type holds a float anywhere costs what one without does.
-fn same_fields(state: &State, element: &Element, (left, right): (&[u64], &[u64]), at: &mut usize) -> bool {
+fn same_fields(
+    element: &Element,
+    (left, right): (&[u64], &[u64]),
+    at: &mut usize,
+    later: &mut Vec<(u64, u64)>,
+) -> bool {
     let word = |words: &[u64], at: usize| words.get(at).copied().unwrap_or(0);
     let (x, y) = (word(left, *at), word(right, *at));
     match element {
-        element if element.is_optional_text() => same_fields(state, &Element::Text, (left, right), at),
+        element if element.is_optional_text() => same_fields(&Element::Text, (left, right), at, later),
         Element::Float | Element::F32 => {
             *at += 1;
             crate::value::floats_same(f64::from_bits(x), f64::from_bits(y))
@@ -1984,7 +2105,7 @@ fn same_fields(state: &State, element: &Element, (left, right): (&[u64], &[u64])
         | Element::Maybe(_) => {
             *at += 1;
             // No block is `None`, which is equal only to another.
-            x == y || (x != 0 && y != 0 && same(state, x, y))
+            x == y || (x != 0 && y != 0 && compare_later(later, x, y))
         }
         Element::Text => {
             let (mine, theirs) = (header_at(left, *at), header_at(right, *at));
@@ -1994,10 +2115,10 @@ fn same_fields(state: &State, element: &Element, (left, right): (&[u64], &[u64])
             }
             // Equal strings have the same form, so only two blocks need their bytes compared.
             let block = |header: Option<[u64; 3]>| header.and_then(|header| super::text::block_of(&header));
-            matches!((block(mine), block(theirs)), (Some(a), Some(b)) if same(state, a, b))
+            matches!((block(mine), block(theirs)), (Some(a), Some(b)) if compare_later(later, a, b))
         }
         Element::Struct { fields, .. } => {
-            fields.iter().all(|(_, field)| same_fields(state, field, (left, right), at))
+            fields.iter().all(|(_, field)| same_fields(field, (left, right), at, later))
         }
         Element::Enum { cases, words: size, .. } => {
             let start = *at;
@@ -2009,7 +2130,7 @@ fn same_fields(state: &State, element: &Element, (left, right): (&[u64], &[u64])
             let mut inside = start + 1;
             case.map_or(&[][..], |(_, fields)| fields)
                 .iter()
-                .all(|(_, field)| same_fields(state, field, (left, right), &mut inside))
+                .all(|(_, field)| same_fields(field, (left, right), &mut inside, later))
         }
     }
 }

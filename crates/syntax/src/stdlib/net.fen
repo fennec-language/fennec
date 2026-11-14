@@ -66,7 +66,7 @@ export struct Response:
 
     ## A 404, for a path nothing's at, or a route's parameter its handler doesn't take.
     def not_found() -> Response:
-        return Response(status=404, body="there's nothing here".encode())
+        return NOT_FOUND
 
     ## Whether the status is one of the 200s.
     def ok(self) -> bool:
@@ -324,7 +324,14 @@ export struct Captured:
 
     ## Parameter `at`, its percent-escapes decoded as a request's path's are.
     def text_at(self, at: int) -> str:
-        return unquote(text_part(self._path, self._starts[at], self._ends[at]))
+        start = self._starts[at]
+        end = self._ends[at]
+        mut place = start
+        while place < end:
+            # A `%` starts an escape, and only then is there anything to decode.
+            if text_byte(self._path, place) == 37: return unquote(text_part(self._path, start, end))
+            place += 1
+        return text_part(self._path, start, end)
 
 ## A route's handler as a `Router` keeps it, given the route's parameters as `Captured`. One that
 ## doesn't take what a parameter holds, like `abc` for an `int`, gives `Response.not_found()`.
@@ -338,6 +345,11 @@ struct RouteNode:
     parameter = -1
     methods = list[str]()
     handlers = list[Routed]()
+    ## The 405 for a method this place doesn't take, made as each route is added.
+    refused = Response(status=405)
+
+## The 404 a router answers a path no route has with, made once.
+NOT_FOUND = Response(status=404, body="there's nothing here".encode())
 
 ## Sends each request to the handler of the route its method and path match:
 ##
@@ -395,10 +407,17 @@ export struct Router:
             stop(f"`{route}` is routed twice")
         self._nodes[node].methods.append(method)
         self._nodes[node].handlers.append(handler)
+        allowed = ", ".join(sorted(self._nodes[node].methods))
+        self._nodes[node].refused = Response(
+            status=405,
+            headers={"allow": allowed},
+            body=f"this takes {allowed}".encode(),
+        )
 
     ## The node a static segment from `start` up to `end` of `path` leads to from `node`, or -1.
     def _static(self, node: int, path: str, start: int, end: int) -> int:
-        for at, written in enumerate(self._nodes[node].statics):
+        for at in range(len(self._nodes[node].statics)):
+            written = self._nodes[node].statics[at]
             if text_size(written) == end - start and text_same_at(path, start, written):
                 return self._nodes[node].children[at]
         return -1
@@ -433,21 +452,15 @@ export struct Router:
             else:
                 return Response.not_found()
             at = end
-        here = self._nodes[node]
-        if len(here.methods) == 0: return Response.not_found()
+        if len(self._nodes[node].methods) == 0: return Response.not_found()
         mut asked = request.method
-        if asked == "HEAD" and "HEAD" not in here.methods:
+        if asked == "HEAD" and "HEAD" not in self._nodes[node].methods:
             asked = "GET"
-        for place, method in enumerate(here.methods):
-            if method == asked:
-                handler = here.handlers[place]
+        for place in range(len(self._nodes[node].methods)):
+            if self._nodes[node].methods[place] == asked:
+                handler = self._nodes[node].handlers[place]
                 return handler(request, Captured.of(path, starts=starts, ends=ends))
-        allowed = ", ".join(sorted(here.methods))
-        return Response(
-            status=405,
-            headers={"allow": allowed},
-            body=f"this takes {allowed}".encode(),
-        )
+        return self._nodes[node].refused
 
 ## The most a request's headers may hold, in lines and in bytes, and the most its body may be.
 MOST_HEADERS = 100

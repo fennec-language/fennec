@@ -129,6 +129,8 @@ installed, its column is left out.
 
 `game_server` is an MMO zone server and its load in one program. 48 clients connect over TCP and play 240 ticks in lockstep, speaking JSON a line at a time. Each connection's task keeps its player's session in a `shared` `Table`. A tick task moves 3,000 monsters with `parallel`, and a saver task writes snapshots to SQLite. Its twin uses a thread for each connection, `std::sync::mpsc`, a `Mutex`, rayon, serde_json and rusqlite. Its summary is the same on any number of threads, so the two sides can be compared.
 
+`router` is a web app's routes, 64 of them shaped like a REST API's, and two million requests through `std.net`'s `Router`. Seven in ten reach a handler, which parses an id, and the rest are 404s and 405s. Its twin routes with `matchit`, which axum routes with, decoding and parsing a parameter as `Captured` does.
+
 - It's outside the locked suite, whose twins are one file each, and has no targets. Being slow never fails it: only printing something other than the twin does.
 - The twins are a small cargo project of their own in `bench/realworld/twin`, built with the same flags as the suite's, with their crates pinned in its lock file. serde is there only to be measured against, and nothing shipped depends on it.
 - Each machine's table joins the suite's report.

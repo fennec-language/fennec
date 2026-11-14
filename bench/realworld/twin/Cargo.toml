@@ -1,6 +1,6 @@
 # The twins of the kernels in `bench/realworld`. Not part of the workspace: serde, serde_json,
-# bincode, glam, petgraph, rayon and rusqlite are here only to be measured or checked against,
-# pinned so a change in the numbers is a change in Fennec.
+# bincode, glam, petgraph, rayon, rusqlite and matchit are here only to be measured or checked
+# against, pinned so a change in the numbers is a change in Fennec.
 [package]
 name = "fennec-realworld-twins"
 version = "0.0.0"
@@ -33,6 +33,10 @@ path = "game_math_check.rs"
 name = "game_server"
 path = "game_server.rs"
 
+[[bin]]
+name = "router"
+path = "router.rs"
+
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
@@ -45,6 +49,8 @@ glam = { version = "=0.33.12", features = ["libm"] }
 # SQLite compiled in as std.sqlite has it.
 rayon = "=1.12.0"
 rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
+# The router benchmark's: matchit is what axum routes with.
+matchit = "=0.9.2"
 
 # As the suite's Rust twins are built, overflow checks on, with the whole program in one unit.
 [profile.release]

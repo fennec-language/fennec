@@ -11,15 +11,19 @@ on:
   # By hand on any branch, `gh workflow run CI --ref <branch>`, for what only another system shows,
   # like a Windows failure.
   workflow_dispatch:
+  # A full run on main's newest commit every four hours, whatever pushes are doing, so main is
+  # never long without one that finished.
+  schedule:
+    - cron: "17 */4 * * *"
 
 permissions:
   contents: read
 
-# A newer push to the same pull request cancels its older run. Pushes to main share a group, which
-# keeps one running and only the newest waiting: each run covers every commit before it, and the
-# one running finishes, as it's what saves the caches pull requests start from. Anything else,
-# like a merge group or a run for `staging.yml`, gets a group of its own, since sharing one would
-# drop some that are needed.
+# A newer push to the same pull request cancels its older run. A run on main is never cancelled
+# once it starts: pushes to main share a group, which keeps one running and only the newest
+# waiting, and a waiting run a newer push replaces never started, as the newer one covers every
+# commit before it. Anything else, like a scheduled run, a merge group or a run for
+# `staging.yml`, gets a group of its own, since sharing one would drop some that are needed.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.ref == 'refs/heads/main' && github.event_name == 'push' && 'main' || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -343,9 +347,15 @@ jobs:
   coverage:
     name: Coverage
     needs: changes
-    if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
+    # A measurement rather than a check, and the slowest job: its tests take 13 to 25 minutes
+    # instrumented, as fast or slow as the runner is. So it runs in the scheduled run every four
+    # hours, and by hand, rather than holding up every push to main. A limit too short cuts each
+    # run off before its cache is saved, so the next starts cold and is cut off sooner still.
+    if: >-
+      needs.changes.outputs.docs_only != 'true'
+      && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -896,10 +906,17 @@ jobs:
           rustup component add llvm-tools-preview
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build fennec, and the runtime libraries with ThreadSanitizer
+      - name: Build fennec and the fuzzer, and the runtime libraries with ThreadSanitizer
         run: .github/scripts/tsan-runtime.sh
-      - name: Run the programs that use threads
-        run: .github/scripts/tsan-programs.sh target/release/fennec
+      - name: Run the programs that use threads, and random programs
+        run: .github/scripts/tsan-programs.sh target/release/fennec 300
+      - name: Keep what fuzzing found
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tsan-fuzz-found
+          path: found
+          if-no-files-found: ignore
 
   # Parked tasks switch stacks, the one place our own code follows a pointer `unsafe`ly, so
   # their stress tests run under AddressSanitizer, told of each switch, with leaks checked,
@@ -1029,8 +1046,12 @@ jobs:
           while read -r job result; do
             [ "$result" = success ] && continue
             [ "$result" = skipped ] && [ "$DOCS_ONLY" = true ] && continue
+            # Coverage runs only in the scheduled run and by hand.
+            if [ "$result" = skipped ] && [ "$job" = coverage ] \
+              && [ "$EVENT" != schedule ] && [ "$EVENT" != workflow_dispatch ]; then
+              continue
+            fi
             if [ "$result" = skipped ] && [ "$EVENT" = merge_group ]; then
-              [ "$job" = coverage ] && continue
               [ "$job" = x86-mac ] && continue
               [ "$job" = parked-sanitizers ] && [ "$PARKED_CHANGED" != true ] && continue
             fi

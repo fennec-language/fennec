@@ -61,6 +61,10 @@ struct TomlParser:
         b = self.byte()
         if b < 0: return "the end of the text"
         if b == 10: return "the end of the line"
+        # A control character, a byte order mark or a no-break space shows as nothing, or as a
+        # space, so it's named by its code.
+        if b < 32 or b == 127: return f"the control character U+{hex_code(b)}"
+        if self.starts("\ufeff"): return "a byte order mark, U+FEFF"
         mut size = 1
         if b >= 240:
             size = 4
@@ -96,29 +100,36 @@ struct TomlParser:
         while self.byte() == 32 or self.byte() == 9:
             self.at += 1
 
-    def skip_comment(ref self):
+    ## A comment, to the end of its line. It can't hold a control character other than a tab, as
+    ## TOML has it: a NUL would end the line early for a reader in C, which would read what follows
+    ## it as more of the document.
+    def skip_comment(ref self) fails ParseError:
         if self.byte() == 35:
-            while self.byte() >= 0 and self.byte() != 10:
+            while self.byte() >= 0 and self.byte() != 10 and not self.starts("\r\n"):
+                b = self.byte()
+                if (b < 32 and b != 9) or b == 127:
+                    fail self.bad("a comment can't hold a control character")
                 self.at += 1
 
-    ## Skips spaces, line breaks and comments, as between the items of a multi-line array.
-    def skip_blank_lines(ref self):
+    ## Whether a line break is here: a line feed, or a carriage return and a line feed. A carriage
+    ## return alone isn't one, as TOML has it.
+    def at_line_break(self) -> bool:
+        return self.byte() == 10 or self.starts("\r\n")
+
+    ## Skips spaces, tabs, line breaks and comments, as between the items of a multi-line array.
+    def skip_blank_lines(ref self) fails ParseError:
         while True:
-            b = self.byte()
-            while b == 32 or b == 9 or b == 10 or b == 13 or b == 11 or b == 12:
-                self.at += 1
-                b = self.byte()
-            if b != 35: return
-            self.skip_comment()
+            while self.byte() == 32 or self.byte() == 9 or self.at_line_break():
+                self.at += 2 if self.byte() == 13 else 1
+            if self.byte() != 35: return
+            self.skip_comment()?
 
     ## After a header or key/value pair, only spaces and a comment can come before the line ends.
     def end_of_line(ref self) fails ParseError:
         self.skip_spaces()
-        self.skip_comment()
-        if self.byte() == 13:
-            self.at += 1
-        if self.byte() == 10:
-            self.at += 1
+        self.skip_comment()?
+        if self.at_line_break():
+            self.at += 2 if self.byte() == 13 else 1
         elif self.byte() >= 0:
             fail self.bad(f"expected the end of the line, but found {self.found()}")
 
@@ -126,7 +137,7 @@ struct TomlParser:
         mut root = TomlTable()
         mut current = list[str]()
         while True:
-            self.skip_blank_lines()
+            self.skip_blank_lines()?
             b = self.byte()
             if b < 0: return root
             if b == 91:
@@ -296,17 +307,25 @@ struct TomlParser:
                 mut after = self.at + 1
                 while text_byte(self.source, after) == 32 or text_byte(self.source, after) == 9:
                     after += 1
-                if text_byte(self.source, after) == 10 or text_byte(self.source, after) == 13:
+                breaks = (
+                    text_byte(self.source, after) == 10
+                    or (
+                        text_byte(self.source, after) == 13
+                        and text_byte(self.source, after + 1) == 10
+                    )
+                )
+                if breaks:
                     self.at = after
-                    mut c = self.byte()
-                    while c == 32 or c == 9 or c == 10 or c == 13 or c == 11 or c == 12:
-                        self.at += 1
-                        c = self.byte()
+                    while self.byte() == 32 or self.byte() == 9 or self.at_line_break():
+                        self.at += 2 if self.byte() == 13 else 1
                 else:
                     out += self.escape()?
-            elif b == 10 or b == 13:
-                out += text_of_code(b)
+            elif b == 10:
+                out += "\n"
                 self.at += 1
+            elif self.starts("\r\n"):
+                out += "\r\n"
+                self.at += 2
             elif b < 0:
                 fail self.bad_at("this string never ends", start)
             else:
@@ -387,12 +406,12 @@ struct TomlParser:
         self.at += 1
         mut items = list[TomlValue]()
         while True:
-            self.skip_blank_lines()
+            self.skip_blank_lines()?
             if self.byte() == 93:
                 self.at += 1
                 return .List(items=items)
             items.append(self.value(depth + 1)?)
-            self.skip_blank_lines()
+            self.skip_blank_lines()?
             if self.byte() == 93:
                 self.at += 1
                 return .List(items=items)
@@ -404,20 +423,20 @@ struct TomlParser:
     def inline_table(ref self, depth: int) -> TomlValue fails ParseError:
         self.at += 1
         mut table = TomlTable()
-        self.skip_blank_lines()
+        self.skip_blank_lines()?
         if self.byte() == 125:
             self.at += 1
             table.inline = True
             return .Table(table=table)
         while True:
-            self.skip_blank_lines()
+            self.skip_blank_lines()?
             at = self.at
             if depth >= TOML_MOST_DEEP: fail self.too_deep()
             keys = self.key_path()?
             # What's in an inline table is a table deeper than the table is.
             item = self.after_key(self.deeper(depth + 1, keys, at)?)?
             insert(ref table, list[str](), 0, keys, item, (self, at))?
-            self.skip_blank_lines()
+            self.skip_blank_lines()?
             if self.byte() == 125:
                 self.at += 1
                 table.inline = True
@@ -573,6 +592,15 @@ def digit_value(b: int) -> int:
     if b >= 97 and b <= 122: return b - 87
     if b >= 65 and b <= 90: return b - 55
     return 99
+
+## `code` as four upper-case hex digits, as `U+` writes it.
+def hex_code(code: int) -> str:
+    digits = "0123456789ABCDEF"
+    mut out = ""
+    for shift in [12, 8, 4, 0]:
+        at = (code >> shift) & 15
+        out += digits[at:at + 1]
+    return out
 
 ## Digits in a radix, with each underscore between two digits.
 def digits_ok(digits: str, radix: int) -> bool:

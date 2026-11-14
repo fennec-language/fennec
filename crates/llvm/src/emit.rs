@@ -3189,8 +3189,11 @@ impl Emit<'_, '_, '_> {
             InstKind::GetField { dest, object, field } => self.get_field(*dest, object, field),
             InstKind::SetField { object, path, value } => self.set_field(*object, path, value),
             InstKind::MakeTuple { dest, items } => self.make(*dest, items),
+            // A pair a walk over a map's items never made: its parts are read from the entry. The
+            // item of a walk over keys or values alone is a value like any other, and one that's
+            // a tuple has parts of its own.
             InstKind::GetTupleItem { dest, value: Operand::Local(pair), at }
-                if self.known.walk_items.contains_key(&pair.0) =>
+                if self.known.walk_items.get(&pair.0).is_some_and(|(_, pairs)| *pairs) =>
             {
                 self.walked_part(*dest, *pair, *at)
             }

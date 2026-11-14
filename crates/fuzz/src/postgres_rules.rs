@@ -1,7 +1,8 @@
 //! The `postgres` target: `std.postgres`'s `PgReader`, built natively, fed any bytes as a
 //! server's, all at once and in small pieces. Both ways have to give the same messages, and those
 //! have to be what a reader here makes of the bytes as Postgres's protocol (3.0) writes them: each
-//! message whole, with nothing left over in it and no count below zero, or a failure.
+//! message whole, with nothing left over in it and no count below zero, or a failure. A message
+//! over 30,000 bytes fails from its header unless its type is on libpq's list of long ones.
 
 /// The program that reads the input as a server's messages, all at once and then a few bytes at
 /// a time, printing a line for each message, then `fail` or `end`.
@@ -98,6 +99,12 @@ def main(fs: Fs, args: Args, stdout: Stdout) fails IoError:
 
 /// The longest message `std.postgres` takes.
 const LONGEST: i64 = 1 << 30;
+
+/// The longest a message may be unless its type is one of `LONG_KINDS`, as libpq has it.
+const LONGEST_SHORT: i64 = 30_000;
+
+/// The types of message that may be longer than `LONGEST_SHORT`: libpq's `VALID_LONG_MESSAGE_TYPE`.
+const LONG_KINDS: [u8; 8] = [b'd', b'D', b'E', b'V', b'N', b'A', b'T', b't'];
 
 /// A message's body, read from its start.
 struct Body<'a> {
@@ -242,7 +249,7 @@ fn wanted(input: &[u8]) -> (Vec<String>, bool) {
         };
         let (kind, size) = (head.first().copied().unwrap_or(0), head.get(1..5).unwrap_or_default());
         let size = i64::from(i32::from_be_bytes(size.try_into().unwrap_or([0; 4])));
-        if !(4..=LONGEST).contains(&size) {
+        if !(4..=LONGEST).contains(&size) || (size > LONGEST_SHORT && !LONG_KINDS.contains(&kind)) {
             lines.push("fail".to_owned());
             return (lines, true);
         }

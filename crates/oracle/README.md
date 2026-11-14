@@ -13,12 +13,23 @@ program. Fennec has no interpreter, on purpose. A test in this crate fails if an
 
 ## What it shares with the compiler
 
-It depends only on `fennec-syntax` and `fennec-check`. It uses the compiler's parser to read a
+Of Fennec's crates, it depends only on `fennec-syntax` and `fennec-check`, and besides them only
+on `libm`, below. It uses the compiler's parser to read a
 program and its checker to accept it and to type its expressions, where the source alone can't
 say what a value is, as for a leading-dot case like `.Circle`. So a bug in the parser or the
 checker can hide from it: both sides would see the same wrong tree. Everything after the checker,
 how values are held, copied, compared and printed, is modeled here on its own, from
 `docs/language.md` and the examples.
+
+Where a standard library module is written in Fennec, the oracle can run its own source, as
+`fennec-syntax` gives it to the compiler, and model only the functions the runtime writes in Rust
+beneath it. `std.math` is run this way (`RUN_FROM_SOURCE` in `src/load.rs`): its vectors,
+quaternions and matrices, `dot` and `lerp` are its Fennec code, and `sqrt`, `floor` and `ceil`
+are modeled here. So the oracle still checks how the compiler and runtime run that code, but a
+mistake in the module's own Fennec would be the same on both sides. A module modeled on its own,
+like `std.json`, isn't run from source. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's
+`**` are computed with the `libm` crate, as `docs/language.md` says they are, at the version the
+workspace pins.
 
 ## How it models a program
 

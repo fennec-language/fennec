@@ -69,6 +69,9 @@ impl Crossing {
 /// A function's type parameters as they are in one copy of it.
 type Given = Vec<(String, Type)>;
 
+/// The most copies of generic functions followed, as many as lowering makes before it stops.
+const MOST_COPIES: usize = 2000;
+
 /// The standard library's channels: a value of one of these hands its item to another task.
 const CHANNELS: [&str; 4] = ["Sender", "Receiver", "Inbox", "Channel"];
 
@@ -366,9 +369,19 @@ impl<'c> Walk<'c> {
             .map(|key| (key.clone(), Vec::new()))
             .collect();
         let mut seeds = self.launched();
+        let mut generic = 0;
         while let Some((key, given)) = queue.pop() {
             if !self.copies.insert((key.clone(), given.clone())) {
                 continue;
+            }
+            // A generic function that calls itself with a bigger type makes copies without end, as
+            // lowering stops it: past as many as lowering makes, everything counts as crossing.
+            if !given.is_empty() {
+                generic += 1;
+                if generic > MOST_COPIES {
+                    self.unplaced = true;
+                    break;
+                }
             }
             let types: BTreeMap<(u32, u32), Type> = match self.checker.typed.get(&key) {
                 Some(body) => body

@@ -264,7 +264,9 @@ fn layout(state: &State, block: &[u64]) -> Option<Layout> {
 ///
 /// Every call the runtime takes for a dict starts here, so the two kinds every program has, a
 /// dict of one-word values and a dict of blocks, are read in a few tests where the call is:
-/// neither goes through a function of its own, nor through what a value held in place needs.
+/// neither goes through a function of its own. A dict of values in place asks only how wide its
+/// kind is, which comes back in a register: a whole layout handed back from a function comes
+/// through memory, and the other kinds' then go through it too.
 #[inline]
 fn shape_layout(state: &State, shape: u64) -> Option<Layout> {
     let (key, value) = if shape <= BELOW_COUNTED_DOWN {
@@ -277,23 +279,26 @@ fn shape_layout(state: &State, shape: u64) -> Option<Layout> {
         let key = *KEYS.get(usize::try_from(at % KEY_KINDS).ok()?)?;
         (key, Word::Block(u32::try_from(at / KEY_KINDS).ok()?))
     } else {
-        return in_place_layout(state, shape);
+        // Of values in place, counted down from below those: an entry is as wide as its key and
+        // the value's kind.
+        let at = TOP_IN_PLACE_DICT - shape;
+        let key = *KEYS.get(usize::try_from(at % KEY_KINDS).ok()?)?;
+        let number = u32::try_from(at / KEY_KINDS).ok()?;
+        let key_words = if key == Word::Text { HEADER_ENTRY_WORDS } else { ENTRY_WORDS } - 1;
+        let width = key_words + words_in_place(state, number)?;
+        return Some(Layout { key, value: Word::InPlace(number), width });
     };
     let width = if key == Word::Text { HEADER_ENTRY_WORDS } else { ENTRY_WORDS };
     Some(Layout { key, value, width })
 }
 
-/// `shape_layout` for a dict that holds its values in place, whose entries are as wide as the
-/// value's kind says. Out of line, so reading the other kinds' layouts stays a few tests.
+/// How many words a value of this kind takes held in place: as many as its kind of item takes in
+/// a list. Nothing for a kind the run doesn't have, or one of no words, which is no value a dict
+/// can find again. Out of line, so reading the other kinds' layouts stays a few tests.
 #[inline(never)]
-fn in_place_layout(state: &State, shape: u64) -> Option<Layout> {
-    let (key, value) = shape_kinds(state.tables.str_shape, shape)?;
-    let width = if key == Word::Text { HEADER_ENTRY_WORDS } else { ENTRY_WORDS };
-    // A value in place is as wide as its kind of item is in a list. One of no words is no value
-    // a dict can find again.
-    let value_words =
-        value_element(state, value).map(|element| element.words()).filter(|words| *words > 0)?;
-    Some(Layout { key, value, width: width - 1 + value_words })
+fn words_in_place(state: &State, number: u32) -> Option<usize> {
+    let element = state.tables.elements.get(usize::try_from(number).ok()?)?;
+    Some(element.words()).filter(|words| *words > 0)
 }
 
 /// What the keys and values of a dict of this shape are, when the shape is a dict's.

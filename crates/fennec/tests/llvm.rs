@@ -16346,6 +16346,84 @@ Holder(item=3) Holder(item="x") Holder(item=3) Holder(item=2.5) Holder(item="x")
 [1, 2] [[1, 2]] Holder(item=[1, 2])
 "#;
 
+/// A generic enum is shown the same way, by the name it's written with: `Choice.Picked(value=7)`,
+/// never `Choice[int].Picked(value=7)`. Its cases hold an int, a string, a float and another
+/// generic enum, one has two type parameters, and one case holds nothing; alone, inside a generic
+/// struct, a list, a dict, a tuple and an optional; through `print`, an f-string, `str()` and a
+/// failed `assert`.
+#[test]
+fn a_generic_enum_is_shown_without_its_type_arguments() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("generic_enum_shown", GENERIC_ENUM_SHOWN, GENERIC_ENUM_SHOWN_PRINTS)?;
+    let dir = folder("generic_enum_assert")?;
+    let (program, executable) = (dir.join("generic_enum_assert.fen"), dir.join("generic_enum_assert"));
+    std::fs::write(&program, GENERIC_ENUM_ASSERT)?;
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!((printed.as_str(), code), ("", Some(1)), "{said}");
+    assert!(
+        said.contains("the left side is Choice.Picked(value=3) and the right side is Choice.Picked(value=4)"),
+        "{said}"
+    );
+    Ok(())
+}
+
+const GENERIC_ENUM_SHOWN: &str = r#"enum Choice[T]:
+    Picked(value: T)
+    Nothing
+
+enum Either[A, B]:
+    Left(value: A)
+    Right(value: B)
+
+struct Holder[T]:
+    item: T
+
+def none_of_ints() -> Choice[int]:
+    return .Nothing
+
+def main(stdout: Stdout):
+    number = Choice.Picked(value=7)
+    text = Choice.Picked(value="fox")
+    ratio = Choice.Picked(value=2.5)
+    nothing = none_of_ints()
+    stdout.print(number, text, ratio, nothing)
+    stdout.print(Choice.Picked(value=Choice.Picked(value=4)), Holder(item=Choice.Picked(value=1)))
+    left: Either[int, str] = Either[int, str].Left(value=3)
+    right: Either[int, str] = Either[int, str].Right(value="a text long enough for a block of its own")
+    stdout.print(left, right)
+    stdout.print([number, nothing], {"a": number}, (number, 2))
+    maybe: Choice[int]? = number
+    stdout.print(maybe)
+    stdout.print(f"{number} {text} {nothing}", str(number), str(text), str(nothing))
+    return
+"#;
+
+const GENERIC_ENUM_SHOWN_PRINTS: &str = r#"Choice.Picked(value=7) Choice.Picked(value="fox") Choice.Picked(value=2.5) Choice.Nothing
+Choice.Picked(value=Choice.Picked(value=4)) Holder(item=Choice.Picked(value=1))
+Either.Left(value=3) Either.Right(value="a text long enough for a block of its own")
+[Choice.Picked(value=7), Choice.Nothing] {"a": Choice.Picked(value=7)} (Choice.Picked(value=7), 2)
+Choice.Picked(value=7)
+Choice.Picked(value=7) Choice.Picked(value="fox") Choice.Nothing Choice.Picked(value=7) Choice.Picked(value="fox") Choice.Nothing
+"#;
+
+const GENERIC_ENUM_ASSERT: &str = r#"enum Choice[T]:
+    Picked(value: T)
+    Nothing
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    assert Choice.Picked(value=3 + shift) == Choice.Picked(value=4)
+    stdout.print("not reached")
+    return
+"#;
+
 /// A failed `assert` says both sides the same way, with no type arguments.
 #[test]
 fn a_failed_assert_shows_a_generic_struct_without_its_type_arguments() -> std::io::Result<()> {

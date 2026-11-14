@@ -339,10 +339,15 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
     } else {
         Vec::new()
     };
-    // A generator's block is laid out like a boxed struct's, its header first.
+    // A generator's block is laid out like a boxed struct's, its header first. One that can fail
+    // keeps what it failed with as a block of its own, whose address is in the header's failure
+    // slot: the slot is laid out as an iterator's is, a block whose own shape says what it holds,
+    // so the generator lets go of it when it's freed. Laid out as a number, it never was.
+    let failure = fennec_check::Type::Iterator(Box::new(fennec_check::Type::Int));
     let generators = program.generators.iter().map(|def| {
         let slots: Vec<_> = def.slots.iter().map(|slot| kinds::canon_in(blocks, slot)).collect();
-        (def.name.clone(), generator_definition(&kinds::canon_in(blocks, &def.item), None, &slots))
+        let item = kinds::canon_in(blocks, &def.item);
+        (def.name.clone(), generator_definition(&item, def.fails.then_some(&failure), &slots))
     });
     let errors = program.errors.iter().map(|def| {
         let mut written = fields(&def.fields);

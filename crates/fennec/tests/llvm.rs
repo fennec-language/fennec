@@ -9750,6 +9750,126 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generator that fails lets go of what it failed with when it's let go of. The header's slot
+/// for the failure was laid out as a number, so the generator's free left its block behind: an
+/// error, its notes and what it holds, for every failure. A generator holding a `with` is one of
+/// its own, not written into its loop, so these are. Each fails as it closes or inside the
+/// `with`, stopped where one can be: run to its end, with nothing given, left partway, made and
+/// never started, and in a task. Then a thousand fail one after another. The counts are pinned:
+/// nothing left. On main this ends with 10,023 blocks.
+#[test]
+fn a_generator_that_fails_lets_go_of_its_failure_wherever_its_stopped() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("failed_generators", FAILED_GENERATORS, FAILED_GENERATORS_PRINTS)?;
+    assert_eq!(
+        counts_of("failed_generators_counts", FAILED_GENERATORS)?,
+        "copies 2 copied_bytes 80 largest_copy 40 allocations 16063 allocated_bytes 1324784 live 0"
+    );
+    Ok(())
+}
+
+const FAILED_GENERATORS: &str = r#"# A generator that fails lets go of what it failed with when it's let go of. Each of these holds a
+# `with`, so it's a generator of its own and not written into its loop. It fails as it closes, or
+# in the `with`'s body, and is stopped at every point one can be: run to its end, left partway,
+# made and never started, and in a task. Then a thousand of them fail one after another.
+
+from std.concurrent import Crashed
+
+struct Tally:
+    count: int
+
+error Shut:
+    code: int
+    why: str
+
+def shutting(code: int) -> with Tally fails Shut:
+    lend Tally(count=code)
+    fail Shut(code=code, why=f"closing {code}, in words long enough for a block")
+
+def lending(code: int) -> with Tally:
+    lend Tally(count=code)
+
+def closes_badly(limit: int) -> Iterator[int] fails Shut:
+    with shutting(limit)? as tally:
+        for at in range(limit):
+            yield at + tally.count
+
+def fails_inside(limit: int) -> Iterator[int] fails Shut:
+    with lending(limit) as tally:
+        for at in range(limit):
+            yield at + tally.count
+        fail Shut(code=limit + 100, why=f"inside {limit}, in words long enough for a block")
+
+def to_the_end(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in closes_badly(limit)?:
+        running += value
+    return running
+
+def left_partway(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in closes_badly(limit)?:
+        running += value
+        if value > limit:
+            break
+    return running
+
+def never_started(limit: int) -> int fails Shut:
+    made = closes_badly(limit)?
+    return limit
+
+def inside(limit: int) -> int fails Shut:
+    mut running = 0
+    for value in fails_inside(limit)?:
+        running += value
+    return running
+
+def show(stdout: Stdout, name: str, run: () -> int fails Shut):
+    got = run() except why:
+        case Shut():
+            stdout.print(name, "shut", why.code, why.why)
+            return
+    stdout.print(name, got)
+    return
+
+def quietly(limit: int) -> int:
+    ended = to_the_end(limit) except Shut(): -1
+    partway = left_partway(limit) except Shut(): -2
+    within = inside(limit) except Shut(): -3
+    return ended + partway + within
+
+def in_a_task(limit: int):
+    _ = quietly(limit)
+
+def tasked(limit: int) fails Crashed:
+    with launch(() => in_a_task(limit)):
+        pass
+
+def main(stdout: Stdout):
+    show(stdout, "to the end:", () => to_the_end(3)?)
+    show(stdout, "nothing given:", () => to_the_end(0)?)
+    show(stdout, "left partway:", () => left_partway(3)?)
+    show(stdout, "never started:", () => never_started(3)?)
+    show(stdout, "inside:", () => inside(3)?)
+    _ = tasked(3) except Crashed():
+        stdout.print("the task crashed")
+    mut failed = 0
+    for round in range(1_000):
+        failed += quietly(round % 4)
+    stdout.print("a thousand:", failed)
+    return
+"#;
+
+const FAILED_GENERATORS_PRINTS: &str = r"to the end: shut 3 closing 3, in words long enough for a block
+nothing given: shut 0 closing 0, in words long enough for a block
+left partway: shut 3 closing 3, in words long enough for a block
+never started: 3
+inside: shut 103 inside 3, in words long enough for a block
+a thousand: -6000
+";
+
 /// A generator's failure passes up however the generator was reached: from a name, and from inside
 /// `with` blocks, where the loop is over a name too, as well as from the loop that calls it.
 #[test]

@@ -6696,6 +6696,51 @@ fn prints_with_nothing_left(
     std::fs::remove_dir_all(dir)
 }
 
+/// A program built for a heap audit, under `FENNEC_AUDIT=1`, links a runtime with the audit in it
+/// and is checked as it ends. One whose heap is right says nothing and exits with 0. With the
+/// runtime told to leave a block that nothing holds, `FENNEC_AUDIT_SELFTEST`, the audit names it
+/// and the program exits with 87: so whatever runs every program audited can tell an audit that
+/// found nothing from one that didn't run. A program with a task links the threads runtime's.
+#[test]
+fn a_program_built_for_a_heap_audit_is_checked_as_it_ends() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let plain = "def main(stdout: Stdout):\n    stdout.print(\"ran\")\n    return\n";
+    let with_a_task = "from std.concurrent import Crashed\n\ndef works() -> int:\n    return 1\n\n\
+                       def main(stdout: Stdout) fails Crashed:\n    with launch(() => works())?:\n        pass\n    \
+                       stdout.print(\"ran\")\n    return\n";
+    let dir = folder("audited_as_it_ends")?;
+    for (name, source) in [("plain", plain), ("with_a_task", with_a_task)] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_NO_DAEMON", "1")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let clean = Command::new(&executable).env("FENNEC_AUDIT", "1").output_within()?;
+        assert_eq!(clean.status.code(), Some(0), "{name}: {}", String::from_utf8_lossy(&clean.stderr));
+        assert_eq!(String::from_utf8_lossy(&clean.stdout), "ran\n", "{name}");
+        assert_eq!(String::from_utf8_lossy(&clean.stderr), "", "{name}");
+        let left = Command::new(&executable)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_AUDIT_SELFTEST", "1")
+            .output_within()?;
+        let said = String::from_utf8_lossy(&left.stderr);
+        assert_eq!(left.status.code(), Some(87), "{name}: {said}");
+        assert!(said.contains("heap audit: leaked: str at "), "{name}: {said}");
+        assert!(said.contains(" is counted 1 and nothing holds it"), "{name}: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A message a task reads with `for ... in inbox` stays its own while it makes other values: a
 /// struct's text and an enum case's text and list, checked with `==` after fifty other texts are
 /// made, where a text freed under it read as one of those. Fable's thread-crossing reproducer, and
@@ -24227,7 +24272,8 @@ fn a_constant_of_any_kind_is_kept_for_the_run_and_never_left_over() -> std::io::
 /// are the runtime's, and both print the same.
 #[test]
 fn a_program_built_for_a_heap_audit_keeps_no_native_blocks() -> std::io::Result<()> {
-    if !ready() {
+    // An audited build links the runtime with the audit in it.
+    if !ready() || !crate::executables::audited_runtimes_built() {
         return Ok(());
     }
     let mut drops = Vec::new();

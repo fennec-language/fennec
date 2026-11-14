@@ -188,6 +188,8 @@ const BLOCK_KINDS: u64 = 1 << 20;
 const TOP_IN_PLACE_DICT: u64 = TOP_BLOCK_DICT - BLOCK_KINDS * KEYS.len() as u64;
 /// How many kinds of value a dict can hold in place.
 const IN_PLACE_KINDS: u64 = 1 << 19;
+/// How many kinds of key there are, which the shapes counted down from the top go round in.
+const KEY_KINDS: u64 = KEYS.len() as u64;
 /// The shape just below every dict's that's counted down from the top.
 const BELOW_COUNTED_DOWN: u64 = TOP_IN_PLACE_DICT - IN_PLACE_KINDS * KEYS.len() as u64;
 
@@ -261,29 +263,41 @@ impl Layout {
 }
 
 /// How a dict's block lays out its entries, when it is a dict's.
+#[inline]
 fn layout(state: &State, block: &[u64]) -> Option<Layout> {
     shape_layout(state, shape_word(block)?)
 }
 
 /// How a dict of this shape lays out its entries, when the shape is a dict's.
+///
+/// Every call the runtime takes for a dict starts here, so the two kinds every program has, a
+/// dict of one-word values and a dict of blocks, are read in a few tests where the call is:
+/// neither goes through a function of its own, nor through what a value held in place needs.
+#[inline]
 fn shape_layout(state: &State, shape: u64) -> Option<Layout> {
-    // The shapes counted down from the top, of dicts of blocks and of values in place, are all
-    // above this one: every other dict's is told from them in one test.
-    if shape > BELOW_COUNTED_DOWN {
-        return counted_down_layout(state, shape);
-    }
-    let at = usize::try_from(shape.checked_sub(state.tables.str_shape + 1)?).ok()?;
-    let (key, value) = (*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?);
+    let (key, value) = if shape <= BELOW_COUNTED_DOWN {
+        // Numbered up from the string's shape.
+        let at = usize::try_from(shape.checked_sub(state.tables.str_shape + 1)?).ok()?;
+        (*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?)
+    } else if shape > TOP_IN_PLACE_DICT {
+        // Of blocks, counted down from the top. Anything above is no dict's.
+        let at = TOP_BLOCK_DICT.checked_sub(shape)?;
+        let key = *KEYS.get(usize::try_from(at % KEY_KINDS).ok()?)?;
+        (key, Word::Block(u32::try_from(at / KEY_KINDS).ok()?))
+    } else {
+        return in_place_layout(state, shape);
+    };
     // The two widths an entry of one-word values has, each with where its value is.
     let (wide, value_from) = if key == Word::Text { (5, 4) } else { (3, 2) };
     Some(Layout { key, value, wide, value_from })
 }
 
-/// `shape_layout` for a dict of blocks or of values in place.
-fn counted_down_layout(state: &State, shape: u64) -> Option<Layout> {
+/// `shape_layout` for a dict that holds its values in place, whose entries are as wide as the
+/// value's kind says. Out of line, so reading the other kinds' layouts stays a few tests.
+#[inline(never)]
+fn in_place_layout(state: &State, shape: u64) -> Option<Layout> {
     let (key, value) = shape_kinds(state.tables.str_shape, shape)?;
     let width = if key == Word::Text { HEADER_ENTRY_WORDS } else { ENTRY_WORDS };
-    let Word::InPlace(_) = value else { return Layout::of(key, value, width, 1) };
     // A value in place is as wide as its kind of item is in a list. One of no words is no value
     // a dict can find again.
     let value_words =
@@ -1208,7 +1222,7 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
 /// full grown, and one whose probe for the key got too long hashed the strong way. Gives the dict's
 /// address, which may be new, the key's hash there, where the key is or goes, and one less than
 /// the dict's slots.
-#[inline]
+#[inline(always)]
 fn ready_for(
     state: &mut State,
     mut at: u64,
@@ -1366,15 +1380,22 @@ fn set_inline(state: &mut State, dict: i64, key: [u64; 3], value: u64) -> Option
     Some(dict)
 }
 
+#[inline]
 fn retain_entry(state: &mut State, layout: Layout, entry: &[u64]) {
     if layout.in_place() {
-        for address in held_in_place(state, layout, entry) {
-            super::heap::retain(state, address);
-        }
-        return;
+        return retain_in_place(state, layout, entry);
     }
     let held = [key_block(layout.key, key_of(layout, entry)), layout.value.owned().then(|| value_of(entry))];
     for address in held.into_iter().flatten() {
+        super::heap::retain(state, address);
+    }
+}
+
+/// `retain_entry` for an entry whose value is held in place, out of line so an entry of one-word
+/// values is counted where the loop over them is.
+#[inline(never)]
+fn retain_in_place(state: &mut State, layout: Layout, entry: &[u64]) {
+    for address in held_in_place(state, layout, entry) {
         super::heap::retain(state, address);
     }
 }
@@ -1901,11 +1922,13 @@ pub(super) fn read(state: &State, block: &[u64]) -> Value {
     if layout.value == Word::Nothing {
         return read_set(state, layout, block);
     }
+    // What a value in place is laid out as, looked up once and not for every entry.
+    let in_place = value_element(state, layout.value);
     let pairs: Vec<_> = entries(block, layout.width())
         .chunks_exact(layout.width())
         .map(|entry| {
-            let value = match value_element(state, layout.value) {
-                Some(element) => super::heap::read_in_place(state, &element, value_words(layout, entry)),
+            let value = match &in_place {
+                Some(element) => super::heap::read_in_place(state, element, value_words(layout, entry)),
                 None => word_value(state, layout.value, value_of(entry)),
             };
             (key_value(state, layout.key, key_of(layout, entry)), value)
@@ -1927,6 +1950,7 @@ pub(super) fn shown(state: &State, block: &[u64], out: &mut Written) {
         return;
     }
     out.push('{');
+    let in_place = value_element(state, layout.value);
     for (at, entry) in held.chunks_exact(layout.width()).enumerate() {
         if at > 0 {
             out.push_str(", ");
@@ -1934,9 +1958,9 @@ pub(super) fn shown(state: &State, block: &[u64], out: &mut Written) {
         word_shown(state, layout.key, key_of(layout, entry), out);
         if !is_set {
             out.push_str(": ");
-            match value_element(state, layout.value) {
+            match &in_place {
                 Some(element) => {
-                    super::heap::shown::item(state, &element, &mut value_words(layout, entry).iter(), out);
+                    super::heap::shown::item(state, element, &mut value_words(layout, entry).iter(), out);
                 }
                 None => word_shown(state, layout.value, &[value_of(entry)], out),
             }
@@ -2082,15 +2106,21 @@ pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64>
     Some(state.heap.insert(block))
 }
 
+#[inline]
 fn release_entry(state: &mut State, layout: Layout, entry: &[u64]) {
     if layout.in_place() {
-        for address in held_in_place(state, layout, entry) {
-            release(state, address);
-        }
-        return;
+        return release_in_place(state, layout, entry);
     }
     let held = [key_block(layout.key, key_of(layout, entry)), layout.value.owned().then(|| value_of(entry))];
     for address in held.into_iter().flatten() {
+        release(state, address);
+    }
+}
+
+/// `release_entry` for an entry whose value is held in place, out of line as `retain_in_place` is.
+#[inline(never)]
+fn release_in_place(state: &mut State, layout: Layout, entry: &[u64]) {
+    for address in held_in_place(state, layout, entry) {
         release(state, address);
     }
 }

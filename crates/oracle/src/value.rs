@@ -95,6 +95,12 @@ pub(crate) enum Cap {
     Args,
     Stdin,
     Fs(Reach),
+    /// Standard error, which the oracle writes to as the program would, and never compares.
+    Stderr,
+    /// Whether the program's been asked to stop, which it never is while the oracle runs it.
+    Signals,
+    /// The system's clock, which `sleep` moves on without waiting.
+    Clock,
 }
 
 /// What an `Fs` reaches: everything, as the one `main` is given does, or less, once `only` or

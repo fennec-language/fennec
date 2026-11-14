@@ -713,6 +713,7 @@ impl<'p> Module<'_, 'p> {
             leave_after_crash: None,
             holding: Holding::default(),
             holding_now: BTreeSet::new(),
+            empties: None,
             dying: crate::dying::Dying::new(),
             back_edges: HashSet::new(),
             filling: Vec::new(),
@@ -885,6 +886,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     holding: Holding,
     /// The locals that may hold something as the instruction being written starts.
     holding_now: BTreeSet<usize>,
+    /// In a build that checks proofs, the locals a function with many of them checks empty at
+    /// its returns through one table (see [`Emit::check_all_empty`]), once it's written.
+    empties: Option<EmptyTable>,
     /// The owned locals each instruction reads for the last time, let go of after it.
     dying: crate::dying::Dying,
     /// The jumps back to the start of a loop, from block to block (see [`back_edges`]).
@@ -3626,13 +3630,110 @@ impl Emit<'_, '_, '_> {
     /// Everything local lets go of what it owns, except what's leaving, on a return: what's known
     /// to be empty here has nothing to let go of. A build that checks proofs checks that it is.
     fn release_locals(&mut self, except: Option<LocalId>) {
+        let empty = |emit: &Self, at: usize| {
+            emit.holding.tracked(at) && !emit.holding_now.contains(&at) && Some(LocalId(at)) != except
+        };
+        // A function with many such locals checks them through one table, in one call.
+        let together = self.checks_proofs() && self.checked_empty().len() > CHECKED_ONE_BY_ONE;
+        if together {
+            let all: Vec<usize> = (0..self.kinds.len()).filter(|at| empty(self, *at)).collect();
+            self.check_all_empty(&all, "a local a return leaves is empty");
+        }
         for at in 0..self.kinds.len() {
-            if self.holding.tracked(at) && !self.holding_now.contains(&at) && Some(LocalId(at)) != except {
-                self.check_empty(at, "a local a return leaves is empty");
+            if empty(self, at) {
+                if !together {
+                    self.check_empty(at, "a local a return leaves is empty");
+                }
                 continue;
             }
             self.release_local(at, except);
         }
+    }
+
+    /// The locals a build that checks proofs can check are empty, with how many words each is: a
+    /// followed local that's one address, or held in place.
+    fn checked_empty(&self) -> Vec<(usize, u32)> {
+        let words = |at: usize| {
+            let kind = self.kinds.get(at)?;
+            if self.owns_inline(LocalId(at)) {
+                Some(kind.size(self.module.layouts) / 8)
+            } else {
+                (self.text_of(kind) == "ptr").then_some(1)
+            }
+        };
+        (0..self.kinds.len())
+            .filter(|at| self.holding.tracked(*at))
+            .filter_map(|at| Some((at, words(at)?)))
+            .collect()
+    }
+
+    /// In a build that checks proofs, ends the program unless each of the locals `empty` is, as
+    /// [`Self::check_empty`] does for one, in a single call: for a function with many locals to
+    /// check, where a check written out for each local at each return grew with their product.
+    /// `main` in the `chat_server` kernel has 9,600 such locals and hundreds of returns, and its
+    /// text ran to gigabytes.
+    ///
+    /// The function keeps one table of where those locals are, filled as it starts, beside a
+    /// constant of how many words each is. A return hands `fen_proof_empty` the table and a
+    /// constant of its own, a bit for each local it wants empty.
+    fn check_all_empty(&mut self, empty: &[usize], proof: &str) {
+        if self.empties.is_none() {
+            let checked = self.checked_empty();
+            let name = self.function.name.clone();
+            let _ = writeln!(self.allocas, "  %proof.slots = alloca [{} x ptr]", checked.len());
+            for (place, (at, _)) in checked.iter().enumerate() {
+                let slot = self.slot(LocalId(*at));
+                let _ = writeln!(
+                    self.allocas,
+                    "  %proof.slot{place} = getelementptr inbounds ptr, ptr %proof.slots, i64 {place}\n  store ptr {slot}, ptr %proof.slot{place}"
+                );
+            }
+            let words: Vec<String> = checked.iter().map(|(_, words)| format!("i32 {words}")).collect();
+            let sizes = format!("@\"f_{name}.proof.words\"");
+            self.declare(&format!(
+                "{sizes} = private unnamed_addr constant [{} x i32] [{}]",
+                checked.len(),
+                words.join(", ")
+            ));
+            let places = checked.iter().enumerate().map(|(place, (at, _))| (*at, place)).collect();
+            self.empties = Some(EmptyTable { places, sizes, masks: HashMap::new() });
+        }
+        let Some(table) = self.empties.as_mut() else { return };
+        let count = table.places.len();
+        let mut bits = vec![0_u64; count.div_ceil(64)];
+        for place in empty.iter().filter_map(|at| table.places.get(at)) {
+            if let Some(word) = bits.get_mut(place / 64) {
+                *word |= 1 << (place % 64);
+            }
+        }
+        if bits.iter().all(|word| *word == 0) {
+            return;
+        }
+        let sizes = table.sizes.clone();
+        // Returns that want the same locals empty share a constant.
+        let made = table.masks.len();
+        let fresh = format!("@\"f_{}.proof.empty.{made}\"", self.function.name);
+        let mask = table.masks.entry(bits.clone()).or_insert(fresh).clone();
+        // Written as LLVM reads an `i64`: the same bits, signed.
+        let written: Vec<String> =
+            bits.iter().map(|word| format!("i64 {}", i64::from_ne_bytes(word.to_ne_bytes()))).collect();
+        self.declare(&format!(
+            "{mask} = private unnamed_addr constant [{} x i64] [{}]",
+            bits.len(),
+            written.join(", ")
+        ));
+        self.declare("declare void @fennec_proof_broken(ptr, i64, i64) #1");
+        self.module.add_helper("fen_proof_empty", PROOF_EMPTY.to_owned());
+        let text = self.literal(&format!("proof broken: {proof}"));
+        let here = self.label("proof_at");
+        let span = self.here_span();
+        let (place, args) = self.span_values(&here, span);
+        for line in place.lines() {
+            self.line(line.trim_start());
+        }
+        self.line(&format!(
+            "call void @fen_proof_empty(ptr %proof.slots, ptr {sizes}, ptr {mask}, i64 {count}, ptr {text}, {args})"
+        ));
     }
 
     /// Everything local lets go of what it owns at `prop`, but for what each failure let go of
@@ -4246,6 +4347,47 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A build that checks proofs checks, at each return, that the locals let go of before it
+    /// are empty. A function with many of them does it through one table and one call a return,
+    /// so its text grows with its locals and its returns, not with their product: `main` in the
+    /// `chat_server` kernel, 9,600 such locals and hundreds of returns, ran the compiler past
+    /// 6 GB. A function with few still checks each where it is.
+    #[test]
+    fn a_function_with_many_locals_checks_them_empty_through_a_table() -> Result<(), String> {
+        let (locals, returns) = (300, 40);
+        let mut source = String::from("def many(n: int) -> int:\n");
+        for at in 0..locals {
+            source.push_str(&format!(
+                "    held{at} = [n + {at}, n]\n    if len(held{at}) > 2:\n        return {at}\n"
+            ));
+        }
+        for at in 0..returns {
+            source.push_str(&format!("    if n == {at}:\n        return n + {at}\n"));
+        }
+        source.push_str("    return 0\n\n");
+        source.push_str("def few(n: int) -> int:\n    held = [n, n]\n    if len(held) > 2:\n        return 1\n    return 0\n\n");
+        source.push_str("def main(stdout: Stdout):\n    stdout.print(many(3), few(3))\n    return\n");
+        let program = lowered(&source)?;
+        let checked = Shared { proofs: crate::Proofs::Checked, ..Shared::default() };
+        let (units, shared, _) = emit_with(&program, Cpu::Usual, checked)?;
+        let text = |name: &str| {
+            units.iter().find(|unit| unit.function == name).map_or("", |unit| unit.text.as_str())
+        };
+        let said: Vec<&String> = shared.literals.values().collect();
+        assert!(said.iter().any(|said| said.contains("proof broken: a local a return leaves is empty")));
+        let (many, few) = (text("many"), text("few"));
+        let calls = many.matches("call void @fen_proof_empty(").count();
+        assert!(calls >= returns, "{calls} calls for {returns} returns");
+        assert!(many.contains("%proof.slots = alloca ["), "the table");
+        // Written out for each local at each return, the returns alone had over 100,000 lines.
+        assert!(many.lines().count() < 40_000, "{} lines", many.lines().count());
+        assert!(!few.contains("@fen_proof_empty(") && few.contains("proof_broken"), "{few}");
+        // A build that doesn't check proofs has none of it.
+        let (plain, _, _) = emit(&program)?;
+        assert!(plain.iter().all(|unit| !unit.text.contains("proof.slots")));
+        Ok(())
+    }
+
     /// A build that checks proofs writes the checks they left out, each saying which proof broke:
     /// a loop's count can't overflow, and its index is inside the list it goes through.
     #[test]
@@ -4556,6 +4698,71 @@ fn written_in_std(function: &Function) -> bool {
 
 /// Whether a function is one `fennec test` makes for a test, named `test:` and its number, or for
 /// an attempt of a property test's shrinking.
+/// How many locals a function checks empty one at a time at each return, in a build that checks
+/// proofs. Past this it checks them through a table: see [`Emit::check_all_empty`].
+const CHECKED_ONE_BY_ONE: usize = 256;
+
+/// The locals a function checks empty through a table, in a build that checks proofs.
+struct EmptyTable {
+    /// Each local's place in the table.
+    places: HashMap<usize, usize>,
+    /// The constant holding how many words each is.
+    sizes: String,
+    /// The constants written so far, each by the bits it holds: a bit for each local a return
+    /// wants empty.
+    masks: HashMap<Vec<u64>, String>,
+}
+
+/// Ends the program, as a broken proof does, unless every local `%mask` has a bit for is empty:
+/// each word of it zero. `%slots` holds where each of `%count` locals is, and `%words` how many
+/// words it is. Kept out of line: it's called at every return of a function with many locals.
+const PROOF_EMPTY: &str = "define internal void @fen_proof_empty(ptr nocapture readonly %slots, ptr nocapture readonly %words, ptr nocapture readonly %mask, i64 %count, ptr %proof, i64 %from, i64 %to) noinline #0 {
+entry:
+  br label %next
+next:
+  %at = phi i64 [ 0, %entry ], [ %after, %step ]
+  %done = icmp eq i64 %at, %count
+  br i1 %done, label %out, label %test
+test:
+  %mask_word = lshr i64 %at, 6
+  %mask_at = getelementptr inbounds i64, ptr %mask, i64 %mask_word
+  %bits = load i64, ptr %mask_at
+  %bit = and i64 %at, 63
+  %shifted = lshr i64 %bits, %bit
+  %one = and i64 %shifted, 1
+  %wanted = icmp ne i64 %one, 0
+  br i1 %wanted, label %check, label %step
+check:
+  %slot_at = getelementptr inbounds ptr, ptr %slots, i64 %at
+  %slot = load ptr, ptr %slot_at
+  %size_at = getelementptr inbounds i32, ptr %words, i64 %at
+  %size32 = load i32, ptr %size_at
+  %size = zext i32 %size32 to i64
+  br label %word
+word:
+  %which = phi i64 [ 0, %check ], [ %which_next, %word_step ]
+  %words_done = icmp eq i64 %which, %size
+  br i1 %words_done, label %step, label %read
+read:
+  %held_at = getelementptr inbounds i64, ptr %slot, i64 %which
+  %held = load i64, ptr %held_at
+  %full = icmp ne i64 %held, 0
+  br i1 %full, label %broken, label %word_step
+word_step:
+  %which_next = add i64 %which, 1
+  br label %word
+step:
+  %after = add i64 %at, 1
+  br label %next
+broken:
+  call void @fennec_proof_broken(ptr %proof, i64 %from, i64 %to)
+  unreachable
+out:
+  ret void
+}
+
+";
+
 fn is_test(name: &str) -> bool {
     name.strip_prefix("test:")
         .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))

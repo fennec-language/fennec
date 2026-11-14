@@ -259,6 +259,15 @@ impl Interp {
         if BUILTINS.contains(&name) {
             return Ok(Target::Builtin(name.to_owned()));
         }
+        // An empty `StrWriter`, as the standard library's own code makes one to write into.
+        if name == "StrWriter" {
+            let parts = vec![("_parts".to_owned(), Value::List(Vec::new()))];
+            return Ok(Target::Given(Value::instance("StrWriter", None, parts)));
+        }
+        // A name imported from a module run from its own source, under the name it's run by.
+        if let Some(found) = self.program.std_name(name).filter(|found| *found != name) {
+            return self.named_target(found, span);
+        }
         if let Some(from) = self.program.imported.get(name) {
             if super::library::has_function(from) {
                 return Ok(Target::Builtin(from.clone()));
@@ -316,6 +325,10 @@ impl Interp {
             }
             if let Some(from) = self.program.imported.get(owner.as_str()) {
                 let path = format!("{from}.{name}");
+                // `math.dot(...)`, of a module run from its own source.
+                if let Some(found) = self.program.from_std.get(&path) {
+                    return self.named_target(&found.clone(), expr.span).map(Some);
+                }
                 if super::library::has_function(&path) {
                     return Ok(Some(Target::Builtin(path)));
                 }

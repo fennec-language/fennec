@@ -138,8 +138,11 @@ pub const NEVER_FAIL: &[&str] = &[
     // a part read as text holds its places to what's there too, and bytes that aren't UTF-8 give
     // the empty text, which what calls it tests for as an answer;
     "fennec_bytes_text_part",
-    // and a join only copies the two it's given.
+    // a join only copies the two it's given;
     "fennec_bytes_join",
+    // and bytes read as text whatever they hold give a text always, with what isn't UTF-8
+    // replaced: `fennec_bytes_decode` above without its one refusal.
+    "fennec_bytes_text",
 ];
 
 /// Whether `symbol` is in [`NEVER_FAIL`], worked out as each export is compiled.
@@ -247,6 +250,7 @@ export! {
     fennec_lock_save(a0: i64, a1: i64, a2: i64, a3: i64) => rollback::save(a0, a1, a2, a3);
     fennec_lock_save_text(a0: i64, a1: i64, a2: i64, a3: i64, a4: i64) => rollback::save_text(a0, a1, a2, a3, a4);
     fennec_lock_save_ref(a0: i64, a1: i64, a2: i64) => rollback::save_ref(a0, a1, a2);
+    fennec_lock_save_entry(a0: i64, a1: i64) => dicts::save_entry(a0, a1);
     fennec_lock_to_change(a0: i64) -> i64 => rollback::to_change(a0);
     fennec_lock_kept() => rollback::kept();
     fennec_lock_undo() => rollback::undo();

@@ -243,14 +243,20 @@ fn a_buffer_is_held_as_the_list_it_prints_as() {
 }
 
 #[test]
-fn a_value_of_a_generic_type_isnt_printed_as_a_guess() {
-    let (_, ended) = ran("
+fn a_value_of_a_generic_type_prints_with_no_type_arguments() {
+    prints(
+        "
         struct Holder[T]:
             item: T
 
+        struct Pair[A, B]:
+            first: A
+            second: B
+
         def main(stdout: Stdout):
-            stdout.print(Holder(item=3).item)
-            stdout.print(Holder(item=3))
-        ");
-    assert_eq!(ended, Ended::Unsupported("printing a value of a generic type".to_owned()));
+            stdout.print(Holder(item=3), Holder(item='x'), Holder(item=2.5), [Holder(item=1)])
+            stdout.print(f'{Holder(item=[1, 2])} {str(Pair(first=4, second=Holder(item=True)))}')
+        ",
+        "Holder(item=3) Holder(item=\"x\") Holder(item=2.5) [Holder(item=1)]\nHolder(item=[1, 2]) Pair(first=4, second=Holder(item=True))\n",
+    );
 }

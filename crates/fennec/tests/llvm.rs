@@ -11052,6 +11052,30 @@ fn a_shared_empty_list_or_dict_written_once_copies_nothing() -> std::io::Result<
     Ok(())
 }
 
+/// A key held in a block, a tuple's or a struct's, is let go of by every dict and set operation
+/// it's given to: `in`, `get`, reading, setting, `+=`, `setdefault`, `update`, `remove`, `pop` and
+/// iteration on a dict, and `add`, `in`, `remove`, `discard`, `update` and the set operations on a
+/// set, for keys that are there and keys that aren't, on the main thread, in a launched task and
+/// in `parallel`. And where a key that isn't there fails, in reading it, `+=`, `pop` and a set's
+/// `remove`, each in a task it stops: the key goes, and so does the dict the task held. No block
+/// is left.
+///
+/// Three things left blocks behind. `pop`, `remove` and `discard` never let go of the key they
+/// were handed, a block a call: `dicts_large` ended with 1 live and `struct_keys_native` with 4.
+/// Reading a key that isn't there left the key its failure was told of. And `pop` of one gave
+/// back no dict with its failure, which native code stored over the dict before looking, losing
+/// it and all it held.
+#[test]
+fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("keys_let_go")?;
+    let program = dir.join("keys_let_go.fen");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keys_let_go.fen"), &program)?;
+    prints_with_nothing_left(&dir, &program, "3060\n3060\n4380\n6\n", &["1", "4"])
+}
+
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what
 /// changes it next finds the list with one owner: a `ref` function changing the items, then a
 /// plain loop reading them, round after round, copies nothing.

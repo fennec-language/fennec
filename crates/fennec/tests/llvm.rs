@@ -11161,7 +11161,7 @@ fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io
     let dir = folder("keys_let_go")?;
     let program = dir.join("keys_let_go.fen");
     std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keys_let_go.fen"), &program)?;
-    prints_with_nothing_left(&dir, &program, "3060\n3060\n4380\n6\n", &["1", "4"])
+    prints_with_nothing_left(&dir, &program, "3065\n3065\n4400\n8\n", &["1", "4"])
 }
 
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what

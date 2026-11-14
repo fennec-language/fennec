@@ -271,6 +271,23 @@ fn a_top_level_name_cant_be_a_builtins() {
     );
 }
 
+/// `x.len()` and `x.abs()` on a value, the forms before 2026-11-11, are refused with what to
+/// write: `len` and `abs` are builtins. A type's own `def len` is still how `len(x)` reaches it.
+#[test]
+fn a_len_or_abs_method_on_a_value_is_refused() {
+    assert_eq!(
+        problems_as_written(
+            "struct Bag:\n    items: list[int]\n\n    def len(self) -> int:\n        return len(self.items)\n\n\
+             def main(stdout: Stdout):\n    bag = Bag(items=[1])\n    below = -2\n    stdout.print([1, 2].len(), bag.len(), below.abs(), len(bag))\n"
+        ),
+        [
+            "`len` is a builtin, written `len(x)`, as in Python @ [1, 2].len()",
+            "`len` is a builtin, written `len(x)`, as in Python @ bag.len()",
+            "`abs` is a builtin, written `abs(x)`, as in Python @ below.abs()",
+        ]
+    );
+}
+
 /// `abs(x)` is a builtin the same way: it gives back a number of the type it's given.
 #[test]
 fn abs_calls_the_values_own_abs() {

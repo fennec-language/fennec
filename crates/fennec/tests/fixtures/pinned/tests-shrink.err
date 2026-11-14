@@ -15,15 +15,15 @@ error: this assertion failed
 error: this assertion failed
  --> <dir>/game.fen:8:12
   |
-8 |     assert word.len() < 3
-  |            ^^^^^^^^^^^^^^
+8 |     assert len(word) < 3
+  |            ^^^^^^^^^^^^^
   |
   = help: it failed for word = "nnc"; the left side is 3 and the right side is 3
 error: this assertion failed
   --> <dir>/game.fen:11:12
    |
-11 |     assert items.len() < 2
-   |            ^^^^^^^^^^^^^^^
+11 |     assert len(items) < 2
+   |            ^^^^^^^^^^^^^^
    |
    = help: it failed for items = [-1, 1]; the left side is 2 and the right side is 2
 error: this assertion failed

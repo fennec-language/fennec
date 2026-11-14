@@ -161,7 +161,7 @@ use std::collections::HashMap;
 use crate::format;
 use crate::value::{Capability, Value};
 
-pub use heap::{Counts, count_allocations};
+pub use heap::{Counts, RanOn, count_allocations};
 pub use tests::next_test;
 
 /// What the compiler registers before a program runs: the names, text and layouts its native
@@ -660,7 +660,8 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
                 guarded::forget_ending(&state.heap);
                 threads::forget_ending(&state.heap);
             }
-            aot::report_sites(&state.heap.sites);
+            // Every thread's, as a server's cost is on its workers and a program's in its tasks.
+            aot::report_sites(&heap::every_threads_sites(&state.heap.sites));
             let leftovers = Leftovers {
                 temps: state.temps.len(),
                 boxes: state.heap.leftover(),

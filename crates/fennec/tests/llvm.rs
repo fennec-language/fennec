@@ -563,6 +563,88 @@ fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
     )
 }
 
+/// `case _: fail why` passes up only what the earlier cases left, the set of errors made smaller:
+/// two of three left, and one error left once each case of an error with cases is taken.
+const EXCEPT_NARROWS: &str = r#"error Finished:
+    at: int
+
+error Gone:
+    path: str
+
+error Bad:
+    line: int
+
+error Net:
+    Closed
+    Timeout(seconds: int)
+
+def load(n: int) -> int fails Finished | Gone | Bad:
+    if n == 1:
+        fail Finished(at=1)
+    if n == 2:
+        fail Gone(path="x")
+    if n == 3:
+        fail Bad(line=3)
+    return n
+
+def read(n: int) -> int fails Net | Bad:
+    if n == 1:
+        fail .Closed
+    if n == 2:
+        fail .Timeout(seconds=2)
+    if n == 3:
+        fail Bad(line=3)
+    return n
+
+def first(n: int) -> int fails Gone | Bad:
+    x = load(n) except why:
+        case Finished(at):
+            at * 10
+        case _:
+            fail why
+    return x
+
+def cases(n: int) -> int fails Bad:
+    x = read(n) except why:
+        case .Closed:
+            0
+        case .Timeout(seconds):
+            seconds
+        case _:
+            fail why
+    return x
+
+def main(stdout: Stdout):
+    for n in range(5):
+        got = first(n) except why:
+            case Gone(path):
+                stdout.print(f"gone {path}")
+                -1
+            case Bad(line):
+                stdout.print(f"bad {line}")
+                -2
+        stdout.print(got)
+        more = cases(n) except why:
+            stdout.print(f"cases failed: {why.line}")
+            -3
+        stdout.print(more)
+    return
+"#;
+
+/// A failure `except why:`'s earlier cases left is passed up as the smaller set it is, and the
+/// caller's cases each find their own error in it.
+#[test]
+fn what_earlier_except_cases_left_is_failed_with_as_the_smaller_set() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "except_narrows",
+        EXCEPT_NARROWS,
+        "0\n0\n10\n0\ngone x\n-1\n2\nbad 3\n-2\ncases failed: 3\n-3\n4\n4\n",
+    )
+}
+
 /// Built with every type that doesn't contain itself in place and with `FENNEC_BOXED_TYPES=1`, in
 /// dev and release, a program prints `wanted` each way and ends with nothing held.
 fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
@@ -2596,6 +2678,77 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
         include_str!("fixtures/workers/lock_undo_by_crash.fen"),
         "wrong 0 crashed True kept True\n",
     )
+}
+
+/// One write to one entry of a `Table`, a dict or a list that a `shared` value holds, under
+/// `lock ... as ref`: an item's field, a list inside it, the item whole, and a `Table`'s remove and
+/// add. Each is written in the lock's own block and through a `ref self` method, and ends
+/// normally, by failing, and by crashing in a task. What's left is what the writes that ended make
+/// of a plain value, at 40 entries and at 400.
+///
+/// And a write costs the same however much the lock holds: two rounds more of every write copy
+/// exactly as much at 400 entries as at 40. The lock's log can change a `Table`, a list or a dict
+/// it marked where it is, the one item saved, but only when the write asks it for that item. A
+/// `Table`'s writes never did, and nothing called from a lock's block did, so each copied the
+/// whole `Table` or dict: 4.2 MB for these two rounds at 400 entries, where 15 KB is copied now.
+#[test]
+fn a_write_under_a_lock_costs_the_same_however_much_the_lock_holds() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("lock_writes_one_item")?;
+    let program = dir.join("lock_writes_one_item.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/lock_writes_one_item.fen"))?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("lock_writes_one_item"));
+    let output = executable.to_string_lossy().into_owned();
+    // The number after a label in what a run says it copied.
+    let said = |counts: &str, label: &str| -> u64 {
+        counts
+            .split_once(label)
+            .and_then(|(_, after)| after.split(' ').next())
+            .and_then(|number| number.parse().ok())
+            .unwrap_or(u64::MAX)
+    };
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let mut two_rounds_more = Vec::new();
+        for (entries, left) in [("40", "left 8382 228270906"), ("400", "left 84162 617508521")] {
+            let mut copied = Vec::new();
+            for rounds in ["1", "3"] {
+                let ran = Command::new(&executable)
+                    .args([entries, rounds])
+                    .env("FENNEC_COUNTS", "1")
+                    .output_within()?;
+                let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+                if rounds == "3" {
+                    let wanted = format!("wrong 0 kept 60 failed 60 crashed 60\n{left}\n");
+                    assert_eq!(printed, wanted, "{how:?}, {entries} entries");
+                } else {
+                    let ended = printed.starts_with("wrong 0 kept 20 failed 20 crashed 20\n");
+                    assert!(ended, "{how:?}, {entries} entries: {printed}");
+                }
+                let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert!(counts.ends_with(" live 0"), "{how:?}, {entries} entries: {counts}");
+                copied.push((said(counts, "copies "), said(counts, "copied_bytes ")));
+            }
+            let [(first, first_bytes), (third, third_bytes)] = copied[..] else { unreachable!() };
+            two_rounds_more.push((third - first, third_bytes - first_bytes));
+        }
+        assert_eq!(
+            two_rounds_more.first(),
+            two_rounds_more.last(),
+            "{how:?}: what two rounds more copy, and its bytes, at 40 entries and at 400"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 /// A lock on a struct with a list, a dict and a string, changed in place: kept, failed, crashed in
@@ -12545,6 +12698,71 @@ fn a_trace_counts_what_a_plain_build_counts() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A trace counts what tasks and `parallel`'s workers cost too, where a server's or a worker
+/// pool's cost is, and says which kind of thread each place's cost was on.
+#[test]
+fn a_trace_counts_what_tasks_and_parallel_workers_cost_and_says_where() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "\
+from std.concurrent import Crashed
+
+struct Said:
+    total: int
+
+def built(n: int) -> int:
+    pair = [n, n + 1]
+    return pair[0]
+
+def summed(n: int) -> int:
+    mut total = 0
+    for i in range(3):
+        total += built(n + i)
+    return total
+
+def tasked(said: shared Said):
+    mut total = 0
+    for i in range(20):
+        total += built(i)
+    lock said as ref held:
+        held.total += total
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    shared said = Said(total=0)
+    # A loop in its body sends it to the pool, however few its items.
+    workers = sum([summed(n) for n in parallel(range(30))])
+    with launch(() => tasked(said))?:
+        pass
+    lock said as held:
+        stdout.print(workers, held.total)
+    return
+";
+    let dir = folder("trace_threads")?;
+    let program = dir.join("threads.fen");
+    std::fs::write(&program, source)?;
+    let path = program.to_string_lossy().into_owned();
+    let traced = fennec(&["dev", "trace", &path], &dir)?;
+    let (said, errors) = (String::from_utf8_lossy(&traced.stdout), String::from_utf8_lossy(&traced.stderr));
+    assert!(traced.status.success(), "{errors}");
+    // The list each call makes, counted where each call ran: none of them on the main thread.
+    let at = |on: &str| {
+        said.lines().find(|line| line.contains(".fen:7:") && line.contains(on)).unwrap_or_default()
+    };
+    assert!(at(", in a task:").contains("20 allocations"), "{said}");
+    assert!(at(", on a parallel worker:").contains("90 allocations"), "{said}");
+    assert!(at(", on main:").is_empty(), "{said}");
+    assert!(said.lines().any(|line| line.starts_with("  in a task: ")), "{said}");
+
+    let json = fennec(&["dev", "trace", "--json", &path], &dir)?;
+    let json = String::from_utf8_lossy(&json.stdout);
+    assert!(json.contains("\"ran_on\":\"task\"") && json.contains("\"ran_on\":\"parallel\""), "{json}");
+    assert!(json.contains("\"by_thread\":{"), "{json}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Result<()> {
     if !ready() {
@@ -15788,6 +16006,75 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A server can be stopped from inside its program, each way there is. Served from a launched
+/// task, nothing could end it: closing it did nothing, as its listener is with its workers while
+/// it's served and not among the open sockets, and a task told to stop while it served went on
+/// waiting for its server. So a program that served in a task could never end.
+///
+/// - `server.close()` ends a loop over the server, and `serve`, as their docs say: it takes no more
+///   connections, the rounds running finish, and the task goes on past the loop. A task can
+///   close a server `main` serves the same way.
+/// - Failing out of the block that launched the task stops the task, and its server with it.
+/// - So does the block's `stop_after`, when the block ends with the task still serving.
+///
+/// Each program is its own client, and each is built for a heap audit and run under it: it ends
+/// with what it should have printed, nothing live and nothing said. A task prints beside `main`,
+/// so the lines are compared in any order.
+#[test]
+fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("server-stopped-inside")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shapes: [(&str, &[&str]); 5] = [
+        ("server_closed_while_served", &["closed", "hello", "stopped", "the loop ended"]),
+        ("server_served_by_main_closed_by_a_task", &["hello", "stopped", "the loop ended"]),
+        (
+            "http_server_closed_while_served",
+            &["200 hello /burrow", "200 hello /den", "serve returned", "stopped"],
+        ),
+        ("server_stopped_by_a_failed_block", &["200 hello /den", "finished after 1", "stopped"]),
+        ("server_stopped_by_stop_after", &["200 hello /den", "stopped"]),
+    ];
+    for (shape, wanted) in shapes {
+        let program = dir.join(format!("{shape}.fen"));
+        std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+        let executable = dir.join(shape);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_NO_DAEMON", "1")
+            .env_remove("FENNEC_THREADS_RUNTIME")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "16"] {
+            let how = format!("{shape} on {threads} threads");
+            // A server that isn't stopped waits for ever, spending nothing: two minutes by the
+            // clock says so, where these take under a second.
+            let ended = Command::new(&executable)
+                .env("FENNEC_AUDIT", "1")
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .env_remove("FENNEC_AUDIT_SELFTEST")
+                .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+            let (printed, said) =
+                (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+            assert_eq!(ended.status.code(), Some(0), "{how}: {printed}{said}");
+            let mut lines: Vec<&str> = printed.lines().collect();
+            lines.sort_unstable();
+            assert_eq!(lines, wanted, "{how}: {said}");
+            assert!(said.contains(" live 0"), "{how}: {said}");
+            assert!(!said.contains("heap audit"), "{how}: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// Runs the echo server at `executable` under a heap audit on two workers, has it serve five
 /// lines and a stop, six rounds, and gives how it ended and what it said. `selftest` is what
 /// `FENNEC_AUDIT_SELFTEST` is set to, if anything.
@@ -16553,6 +16840,70 @@ fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()>
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "done\n", "{}", String::from_utf8_lossy(&ran.stderr));
     Ok(())
+}
+
+/// What `main` printed comes out before the end of a `with launch` block waits for its task. A
+/// task writes what it printed before it parks or waits, and this wait on the program's own
+/// thread didn't: a program waiting there for a task that goes on, a server say, showed nothing
+/// of what it had printed, and lost it if it was stopped.
+///
+/// The task ends only when a line comes on standard input, so the program is surely waiting at
+/// its block's end when its first line is read, and the test then gives it the line. Built for a
+/// heap audit and run under it, on 1, 4 and 16 threads: it ends with nothing live and nothing said.
+#[test]
+fn what_main_printed_comes_out_before_a_block_end_waits_for_its_task() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("printed-before-waiting")?;
+    let program = dir.join("printed.fen");
+    std::fs::write(&program, include_str!("fixtures/printed_before_a_block_end_waits.fen"))?;
+    let executable = dir.join("printed");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let mut command = Command::new(&executable);
+        command
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut waiting = Running(command.spawn()?);
+        // Read while the task still waits for its line: nothing has been given it yet.
+        assert_eq!(waiting.first_line()?, "printed before the block's end", "on {threads} threads");
+        let mut told = waiting.0.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        told.write_all(b"go\n")?;
+        drop(told);
+        let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
+        let ended = loop {
+            if let Some(status) = waiting.0.try_wait()? {
+                break status;
+            }
+            assert!(std::time::Instant::now() < deadline, "it went on after its task was given a line");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let mut said = String::new();
+        if let Some(mut errors) = waiting.0.stderr.take() {
+            errors.read_to_string(&mut said)?;
+        }
+        assert_eq!(ended.code(), Some(0), "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
 }
 
 /// A channel to `.Every` gives every listener every message. One that falls behind fails loudly

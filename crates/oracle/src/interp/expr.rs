@@ -24,6 +24,21 @@ impl Interp {
                 Some(Type::Sized(_)) => unsupported("f32"),
                 _ => Ok(Value::Float(*x)),
             },
+            // A duration written out, as `30s`, is `std.time`'s `Duration`, when that module runs here.
+            ExprKind::Duration(nanos)
+                if self
+                    .program
+                    .from_std
+                    .get("std.time.Duration")
+                    .is_some_and(|found| found == "Duration") =>
+            {
+                let duration = crate::value::Instance {
+                    ty: "Duration".to_owned(),
+                    case: None,
+                    fields: vec![("nanos".to_owned(), Value::Int(*nanos))],
+                };
+                Ok(Value::Instance(Box::new(duration)))
+            }
             ExprKind::Duration(_) => unsupported("durations"),
             ExprKind::Bytes(_) | ExprKind::Folder(_) => unsupported("embedded files"),
             ExprKind::Str(text) => Ok(Value::Str(text.clone())),
@@ -196,15 +211,24 @@ impl Interp {
             return Ok(Value::Func(Box::new(Func::Builtin(name.to_owned()))));
         }
         if let Some(from) = self.program.imported.get(name) {
-            return Self::library_value(from);
+            return self.library_value(&from.clone());
         }
         unsupported(format!("the name `{name}`"))
     }
 
-    /// A name from the standard library, as a value: a constant, or a function the oracle models.
-    fn library_value(path: &str) -> Run<Value> {
+    /// A name from the standard library, as a value: a constant, a function the oracle models,
+    /// or one of a module run from its own source.
+    fn library_value(&mut self, path: &str) -> Run<Value> {
         if let Some(value) = super::library::constant(path) {
             return Ok(value);
+        }
+        if let Some(found) = self.program.from_std.get(path) {
+            if self.program.functions.contains_key(found) {
+                return Ok(Value::Func(Box::new(Func::Named(found.clone()))));
+            }
+            if let Some(value) = self.constant(&found.clone())? {
+                return Ok(value);
+            }
         }
         if super::library::has_function(path) {
             return Ok(Value::Func(Box::new(Func::Builtin(path.to_owned()))));
@@ -494,7 +518,7 @@ impl Interp {
                 return unsupported(format!("`{owner}.{name}`"));
             }
             if let Some(from) = self.program.imported.get(owner.as_str()) {
-                return Self::library_value(&format!("{from}.{name}"));
+                return self.library_value(&format!("{from}.{name}"));
             }
             return unsupported(format!("`{owner}.{name}`"));
         }
@@ -915,32 +939,32 @@ fn float_arithmetic(op: BinOp, a: f64, b: f64, span: Span) -> Run<Value> {
         BinOp::Div => a / b,
         BinOp::FloorDiv => (a / b).floor(),
         BinOp::Mod => a - b * (a / b).floor(),
-        BinOp::Pow => float_power(a, b)?,
+        BinOp::Pow => float_power(a, b),
         _ => return unsupported(format!("`{}` on floats", op.symbol())),
     }))
 }
 
-/// `a ** b` on floats, for the powers the runtime works out without `libm`: any other one is
-/// `libm`'s, which the oracle doesn't have.
-fn float_power(a: f64, b: f64) -> Run<f64> {
+/// `a ** b` on floats: the powers the runtime works out without `libm`, each exact in IEEE 754,
+/// and any other by `libm`'s `pow`, as `docs/language.md` says.
+fn float_power(a: f64, b: f64) -> f64 {
     if b.to_bits() == 2.0_f64.to_bits() {
-        Ok(a * a)
+        a * a
     } else if b.to_bits() == 0.5_f64.to_bits() {
-        Ok(if a == 0.0 {
+        if a == 0.0 {
             0.0
         } else if a == f64::NEG_INFINITY {
             f64::INFINITY
         } else {
             a.sqrt()
-        })
+        }
     } else if b.to_bits() == 1.0_f64.to_bits() {
-        Ok(a)
+        a
     } else if b == 0.0 {
-        Ok(1.0)
+        1.0
     } else if b.to_bits() == (-1.0_f64).to_bits() {
-        Ok(1.0 / a)
+        1.0 / a
     } else {
-        unsupported("`**` on floats, which libm works out")
+        libm::pow(a, b)
     }
 }
 

@@ -488,6 +488,10 @@ struct State {
     /// The words of a dict's value held in place, on its way in or out (see
     /// `dicts::value_buffer_of`): made the first time one's wanted, and this run's own.
     dict_value: std::cell::OnceCell<Box<[Cell<u64>]>>,
+    /// How many words each kind of item this run has takes held in place, worked out the first
+    /// time a dict of values in place asks: its width is a walk over the kind's type, which every
+    /// call for such a dict would otherwise make.
+    value_widths: std::cell::OnceCell<Box<[usize]>>,
 }
 
 thread_local! {
@@ -601,6 +605,7 @@ pub fn start(mut tables: Tables, inputs: crate::Inputs) {
         keys_by_value,
         trace: Trace::default(),
         dict_value: std::cell::OnceCell::new(),
+        value_widths: std::cell::OnceCell::new(),
     }));
 }
 

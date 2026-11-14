@@ -231,10 +231,10 @@ fn what_it_doesnt_model_is_refused_by_name() {
     assert_eq!(printed, "");
     assert_eq!(ended, Ended::Unsupported("std.toml.dumps".to_owned()));
     let (_, ended) = ran("
-        def main(stdout: Stdout, clock: Clock):
+        def main(stdout: Stdout, net: Net):
             stdout.print('hi')
         ");
-    assert_eq!(ended, Ended::Unsupported("the capability Clock".to_owned()));
+    assert_eq!(ended, Ended::Unsupported("the capability Net".to_owned()));
 }
 
 #[test]
@@ -470,6 +470,99 @@ fn rounding_scales_by_the_power_of_ten_nearest_it() {
         "[0.1, 0.12346, 0.123456789, 0.123456789012346, 0.1234567890123457, 0.12345678901234568, \
          0.12345678901234568]\n[1.2345678901234566e+40, 1.2345678901234566e+40, 1.2345679e+40, 1.234568e+40, \
          1.235e+40, 1.2e+40, 1e+40]\n",
+    );
+}
+
+/// `std.math` runs from its own Fennec source: its vectors, `dot`, and `lerp` taken under
+/// another name with named arguments. `sin` and a float's `**` are `libm`'s, as the docs say,
+/// an int given to `sqrt` is a float, and `reversed` of a tuple is a list. What it prints is what
+/// the compiled program printed.
+#[test]
+fn std_math_runs_from_its_own_source() {
+    prints(
+        "
+        from std import math
+        from std.math import Vec3, lerp as blend, sin, sqrt
+
+        def main(stdout: Stdout):
+            a = Vec3(x=1.0, y=-2.0, z=3.0)
+            b = Vec3.zero() + Vec3(x=0.5, y=0.5, z=0.5)
+            stdout.print(a + b, abs(a - b), a.dot(b), a.cross(b))
+            stdout.print(a.normalize().length(), math.dot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]))
+            stdout.print(blend(start=0.0, end=10.0, amount=0.25), sqrt(16), sin(1.0), 2.0 ** 0.3)
+            stdout.print(reversed((1, 2, 3)), len([a, b]), abs(-1.5))
+            return
+        ",
+        "Vec3(x=1.5, y=-1.5, z=3.5) Vec3(x=0.5, y=2.5, z=2.5) 1.0 Vec3(x=-2.5, y=1.0, z=1.5)\n\
+         1.0 32.0\n\
+         2.5 4.0 0.8414709848078965 1.2311444133449163\n\
+         [3, 2, 1] 2 1.5\n",
+    );
+    // A program's own type with the name of one of the module's is refused, not mixed up with it.
+    let (_, ended) = ran("
+        from std.math import sqrt
+
+        struct Vec3:
+            x: float
+
+        def main(stdout: Stdout):
+            stdout.print(Vec3(x=sqrt(4.0)))
+        ");
+    assert_eq!(ended, Ended::Unsupported("`Vec3`, declared by the program and by std.math".to_owned()));
+}
+
+/// `std.collections` runs from its own Fennec source too: a `Deque`, a `Heap` and a
+/// `SortedMap`, with the `len(x)` its code has written as `x.len()` on a list and a dict. What
+/// it prints is what the compiled program printed.
+#[test]
+fn std_collections_runs_from_its_own_source() {
+    prints(
+        "
+        from std.collections import Deque, Heap, SortedMap
+
+        def main(stdout: Stdout):
+            mut queue = Deque.of([1, 2, 3])
+            queue.append(4)
+            first = queue.popleft() else 0
+            stdout.print(queue, first, queue == Deque.of([2, 3, 4]))
+            mut heap = Heap.of([5, 1, 4])
+            heap.push(2)
+            stdout.print(heap.pop() else 0, heap.pop() else 0, len(heap))
+            mut counts = SortedMap[str, int]()
+            for word in ['fox', 'den', 'kit', 'den']:
+                counts[word] = (counts.get(word) else 0) + 1
+            stdout.print(counts, counts.keys())
+            return
+        ",
+        "Deque([2, 3, 4]) 1 True\n1 2 2\nSortedMap({\"den\": 2, \"fox\": 1, \"kit\": 1}) [\"den\", \"fox\", \"kit\"]\n",
+    );
+}
+
+/// `main` may take `Env`, `Stderr`, `Signals` and a `Clock`. `Env` is `std.env`'s, run from its
+/// own source, with `get` reading the variables the oracle was started with and `secret`
+/// failing with `Missing`. Standard error is written and not compared, no signal ever comes, and
+/// a `Clock`'s `sleep` moves it on without waiting. A duration written out is `std.time`'s
+/// `Duration`. What it prints is what the compiled program printed.
+#[test]
+fn main_takes_env_stderr_signals_and_a_clock() {
+    prints(
+        "
+        from std.time import Clock, Duration
+
+        def told(env: Env) -> str:
+            _ = env.secret('FENNEC_ORACLE_NO_SUCH_VARIABLE') except missing:
+                return f'{missing.name} is not set'
+            return 'it is set'
+
+        def main(stdout: Stdout, stderr: Stderr, env: Env, signals: Signals, clock: Clock) fails IoError:
+            stdout.print(env.get('FENNEC_ORACLE_NO_SUCH_VARIABLE') is None, signals.stopping(), told(env))
+            stderr.write_line('to standard error')?
+            started = clock.now()
+            clock.sleep(1500ms)
+            stdout.print(not clock.now() - started < 1500ms, 90s, Duration.millis(16), clock.time().year() >= 2026)
+            return
+        ",
+        "True False FENNEC_ORACLE_NO_SUCH_VARIABLE is not set\nTrue 1min30s 16ms True\n",
     );
 }
 

@@ -507,16 +507,18 @@ fn emitted_with(
     checked: Option<fennec_check::Signatures>,
 ) -> Result<Emitted, String> {
     // Reading and writing JSON and TOML go through std's code in Fennec, where LLVM can take it.
+    // So does sorting what has its own `<`. Finding that out checks the program, which is all
+    // the checking it needs when nothing changes.
     let mut routed = reached.clone();
-    // So does sorting what has its own `<`, before formats, which resolve what they change.
-    let sorts = fennec_check::route_sorts_natively(&mut routed);
-    let formats = fennec_check::route_formats_natively(&mut routed);
-    if (formats || sorts)
-        && let Ok(emitted) = emitted_as_written(&routed, emit, tests, None)
-    {
-        return Ok(emitted);
+    match fennec_check::route_natively(&mut routed) {
+        fennec_check::Routed::Changed => {
+            if let Ok(emitted) = emitted_as_written(&routed, emit, tests, None) {
+                return Ok(emitted);
+            }
+            emitted_as_written(reached, emit, tests, checked)
+        }
+        fennec_check::Routed::Unchanged(found) => emitted_as_written(reached, emit, tests, checked.or(found)),
     }
-    emitted_as_written(reached, emit, tests, checked)
 }
 
 /// What LLVM emits for a trimmed program, with its calls as they are.

@@ -177,7 +177,13 @@ impl Interp {
                 ExprKind::Name(name) if self.program.types.contains_key(&*self.type_named(name)) => {
                     Target::Construct { ty: self.type_named(name).into_owned(), case: None }
                 }
+                ExprKind::Name(name) if name == "Table" && args.is_empty() && self.is_the_table() => {
+                    Target::Given(Value::Table(Box::new(crate::value::Table::new(self.shared.new_tag()))))
+                }
                 ExprKind::Name(name) => match self.program.imported.get(name.as_str()) {
+                    Some(from) if !self.is_bound(name) && super::library::has_function(from) => {
+                        Target::Builtin(from.clone())
+                    }
                     Some(from) => return unsupported(from.clone()),
                     None => return unsupported(format!("`{name}[...]()`")),
                 },
@@ -213,6 +219,7 @@ impl Interp {
             Value::Str(text) => Some(text.chars().count()),
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => Some(items.len()),
             Value::Dict(pairs) => Some(pairs.len()),
+            Value::Table(table) => Some(table.len()),
             _ => None,
         })?;
         if let Some(count) = counted {
@@ -426,7 +433,7 @@ impl Interp {
         self.invoke(target, given, expr)
     }
 
-    fn call_lambda(
+    pub(crate) fn call_lambda(
         &mut self,
         params: &[String],
         body: &'static Expr,
@@ -439,8 +446,11 @@ impl Interp {
         let mut vars: Vec<(String, Binding)> =
             captured.into_iter().map(|(name, value)| (name, Binding::Value(value))).collect();
         for (param, arg) in params.iter().zip(given) {
-            let value = self.arg_as_value(arg)?;
-            vars.push((param.clone(), Binding::Value(value)));
+            let binding = match arg {
+                ArgVal::Ref(_, place) => Binding::Ref(place),
+                other => Binding::Value(self.arg_as_value(other)?),
+            };
+            vars.push((param.clone(), binding));
         }
         let previous = self.push_frame(vars, None)?;
         let value = self.eval(body);
@@ -647,6 +657,11 @@ impl Interp {
         expr: &'static Expr,
         given: Vec<ArgVal>,
     ) -> Run<Value> {
+        if given.is_empty()
+            && let Some(value) = super::json::option_case_typed(self.program.type_at(expr.span), case)
+        {
+            return Ok(value);
+        }
         let ty = self.enum_named_at(case, &[expr.span])?;
         self.construct(&ty, Some(case), given, expr.span)
     }

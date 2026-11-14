@@ -18,13 +18,15 @@
 //! fennec-bench pin [--fennec PATH] [--kernels DIR] [--targets DIR]
 //! fennec-bench rehash [--fennec PATH] [--kernels DIR] [--targets DIR]
 //! fennec-bench budgets [--fennec PATH] [--runs N] [--files N]
+//! fennec-bench build-times [--fennec PATH] [--runs N] [--budgets PATH] [--pin]
 //! fennec-bench llvm-suite [--fennec PATH] [--runs N] [--kernels DIR] [--json PATH]
 //! fennec-bench parallel [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
 //! fennec-bench realworld [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
 //! fennec-bench server [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
 //! ```
 //!
-//! `budgets` measures something else: see the `budgets` module. `llvm-suite` compares what
+//! `budgets` measures something else: see the `budgets` module. `build-times` measures how much
+//! work building, checking and starting the real programs takes: see the `build_times` module. `llvm-suite` compares what
 //! `fennec build --llvm --release` makes with the Rust twins: see the `llvm_suite` module.
 //! `parallel` compares `parallel` with rayon, by threads: see the `parallel` module. `realworld`
 //! compares programs using the standard library with Rust using crates: see the `realworld` module.
@@ -32,6 +34,7 @@
 #![expect(clippy::print_stderr, reason = "the suite reports failures")]
 
 mod budgets;
+mod build_times;
 mod kernels;
 mod llvm_suite;
 mod machine;
@@ -165,6 +168,16 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|first| first == "ops") {
         return match ops::run(args.into_iter().skip(1)) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.first().is_some_and(|first| first == "build-times") {
+        return match build_times::command(args.into_iter().skip(1)) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,
             Err(message) => {

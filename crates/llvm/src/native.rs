@@ -24,6 +24,10 @@ use crate::kinds::Kind;
 
 /// The layouts of the boxed enums whose blocks can be native in `program`.
 pub(crate) fn native_types(program: &Program, layouts: &Layouts) -> BTreeSet<u32> {
+    // A heap audit walks what the runtime holds, and a native block isn't the runtime's.
+    if crate::build::audited() {
+        return BTreeSet::new();
+    }
     program
         .enums
         .iter()

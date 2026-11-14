@@ -156,7 +156,13 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
 /// The standard library's modules the oracle runs from their own Fennec source, as the compiler
 /// builds them. Only the functions the runtime writes in Rust beneath them are modeled here, in
 /// `interp/library.rs`, so a bug in one of these modules' own Fennec would show on both sides.
-const RUN_FROM_SOURCE: &[&str] = &["math", "collections"];
+const RUN_FROM_SOURCE: &[&str] = &["math", "collections", "env", "time", "string"];
+
+/// The capabilities `main` may take whose type a module run from its own source declares, which
+/// that module is loaded for even when the program imports nothing from it: `Env` is
+/// `std.env`'s, with its `secret` and its `Missing` written in Fennec, and a `Clock` gives
+/// `std.time`'s `Instant` and `Time`.
+const CAPABILITY_MODULES: &[(&str, &str)] = &[("Env", "env"), ("Clock", "time")];
 
 /// The types the oracle models on its own, whose methods a module run from its source adds in an
 /// `extend` are left out: `std.collections` extends `Table` and `Id`, which `interp/tables.rs`
@@ -245,28 +251,60 @@ impl Gathered {
         }
     }
 
+    /// Whether `main` takes a capability whose type `module` declares.
+    fn main_takes(&self, module: &str) -> bool {
+        let Some(main) = self.functions.get("main") else { return false };
+        CAPABILITY_MODULES.iter().any(|(cap, from)| {
+            *from == module
+                && main.params.iter().any(|param| param.ty.as_ref().is_some_and(|ty| ty.name == *cap))
+        })
+    }
+
     /// Takes in each standard library module the program imports that's run from its own
-    /// source. The checker typed its code as it checked the program.
+    /// source, and each such module those import in turn, as `std.time` imports `std.string`.
+    /// The checker typed their code as it checked the program.
     fn std_modules(&mut self) -> Result<(), Refused> {
-        let mut wanted: Vec<&str> = RUN_FROM_SOURCE
+        let mut wanted: Vec<&'static str> = RUN_FROM_SOURCE
             .iter()
             .copied()
             .filter(|module| {
                 let whole = format!("std.{module}");
                 self.imported.values().any(|from| *from == whole || from.starts_with(&format!("{whole}.")))
+                    || self.main_takes(module)
             })
             .collect();
-        wanted.dedup();
-        for name in wanted {
+        let mut loaded = Vec::new();
+        while let Some(name) = wanted.pop() {
+            if loaded.contains(&name) {
+                continue;
+            }
+            loaded.push(name);
             let module = fennec_syntax::module_to_run(name)
                 .map_err(|problem| Refused::Invalid(problem.message.clone()))?
                 .ok_or_else(|| Refused::Unsupported(format!("std.{name}")))?;
             for item in &module.items {
+                if let Item::Import(import) = item {
+                    wanted.extend(
+                        modules_imported(import)
+                            .filter_map(|used| RUN_FROM_SOURCE.iter().copied().find(|run| *run == used)),
+                    );
+                }
                 self.take(item, Some(name))?;
             }
         }
         Ok(())
     }
+}
+
+/// The standard library modules an import names: `from std.string import ...` names `string`,
+/// and `from std import math, json` names both.
+fn modules_imported(import: &fennec_syntax::Import) -> impl Iterator<Item = String> + '_ {
+    let named = match import.module.as_slice() {
+        [std, module, ..] if std == "std" => vec![module.clone()],
+        [std] if std == "std" => import.bound().map(|(name, _)| name.to_owned()).collect(),
+        _ => Vec::new(),
+    };
+    named.into_iter()
 }
 
 fn tables(
@@ -346,12 +384,14 @@ fn typed_fields(
     (fields, cases)
 }
 
-/// The capabilities `main` may take here: standard output, which is real, the arguments and
-/// standard input, which are empty, and the file system, which is modeled.
+/// The capabilities `main` may take here: standard output and standard error, which are real,
+/// the arguments and standard input, which are empty, the file system, which is modeled, the
+/// environment, which is read, `Signals`, which never says to stop, and a `Clock`, read from the
+/// system's, whose `sleep` moves it on without waiting.
 fn given_to_main(main: &FnDef) -> Result<(), Refused> {
     for param in &main.params {
         let ty = param.ty.as_ref().map_or("", |ty| ty.name.as_str());
-        if !matches!(ty, "Stdout" | "Args" | "Stdin" | "Fs") {
+        if !matches!(ty, "Stdout" | "Args" | "Stdin" | "Fs" | "Stderr" | "Signals" | "Env" | "Clock") {
             return Err(Refused::Unsupported(format!("the capability {ty}")));
         }
     }

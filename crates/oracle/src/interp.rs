@@ -98,6 +98,10 @@ pub(crate) struct Shared {
     /// How many rounds and tasks have started, so a generator made before the one running now is
     /// told apart from one made in it.
     pub(crate) rounds_started: AtomicU64,
+    /// When the run started, which a `Clock`'s `now` counts from, and how far its `sleep`s have
+    /// moved the clock on, in nanoseconds, without waiting.
+    pub(crate) started: std::time::Instant,
+    pub(crate) slept: AtomicU64,
 }
 
 impl Shared {
@@ -114,6 +118,8 @@ impl Shared {
             next_cell: AtomicU64::new(1),
             scopes: Mutex::new(Vec::new()),
             rounds_started: AtomicU64::new(0),
+            started: std::time::Instant::now(),
+            slept: AtomicU64::new(0),
         }
     }
 
@@ -237,6 +243,19 @@ impl Interp {
                 Some("Args") => Cap::Args,
                 Some("Stdin") => Cap::Stdin,
                 Some("Fs") => Cap::Fs(Reach { folders: None, read_only: false }),
+                Some("Stderr") => Cap::Stderr,
+                Some("Signals") => Cap::Signals,
+                Some("Clock") => Cap::Clock,
+                // `std.env`'s struct, run from its own source, whose `get` is modeled here.
+                Some("Env") => {
+                    let env = crate::value::Instance {
+                        ty: "Env".to_owned(),
+                        case: None,
+                        fields: vec![("_given".to_owned(), Value::Int(0))],
+                    };
+                    given.push(calls::ArgVal::Value(None, Value::Instance(Box::new(env))));
+                    continue;
+                }
                 _ => return MainEnded::Unsupported("a capability main takes".to_owned()),
             };
             given.push(calls::ArgVal::Value(None, Value::Cap(cap)));

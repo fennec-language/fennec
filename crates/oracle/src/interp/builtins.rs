@@ -575,27 +575,39 @@ pub(crate) fn invalid(message: String, span: Span) -> Flow {
     Flow::Fail(error, span)
 }
 
+/// The powers of ten a float holds exactly, ten to 0 up to ten to 22, written out as the runtime
+/// has them: `powi`'s precision is left to the platform.
+const EXACT_TENS: [f64; 23] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18,
+    1e19, 1e20, 1e21, 1e22,
+];
+
+/// Ten to `power` as the float nearest it, or nothing past the last a float can be: exact from the
+/// table, and read from its digits past that, as the runtime's is.
+fn ten_to(power: usize) -> Option<f64> {
+    match EXACT_TENS.get(power) {
+        Some(ten) => Some(*ten),
+        None if power <= 308 => format!("1e{power}").parse().ok(),
+        None => None,
+    }
+}
+
 /// `round(x, places)`, by the number `x` really is, as the runtime rounds it.
-#[expect(clippy::cast_possible_truncation, reason = "places is checked to be small first")]
 fn round_places(x: f64, places: i64) -> f64 {
     if !x.is_finite() {
         return x;
     }
     if places < 0 {
-        let power = places.checked_neg().and_then(|power| i32::try_from(power).ok());
-        return match power.filter(|power| *power <= 308) {
-            Some(power) => {
-                let scale = 10_f64.powi(power);
-                (x / scale).round_ties_even() * scale
-            }
+        let power = places.checked_neg().and_then(|power| usize::try_from(power).ok());
+        return match power.and_then(ten_to) {
+            Some(scale) => (x / scale).round_ties_even() * scale,
             None => 0.0_f64.copysign(x),
         };
     }
     if places > 1100 {
         return x;
     }
-    if places <= 22 {
-        let scale = 10_f64.powi(places as i32);
+    if let Some(scale) = usize::try_from(places).ok().and_then(|places| EXACT_TENS.get(places)).copied() {
         let scaled = x * scale;
         if scaled.abs() < 4_503_599_627_370_496.0 && (scaled.fract().abs() - 0.5).abs() > 1e-6 {
             return scaled.round_ties_even() / scale;

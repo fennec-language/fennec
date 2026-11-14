@@ -181,6 +181,13 @@ impl Lowering<'_> {
             {
                 Ok(value)
             }
+            // An error from a set the checker narrowed to some of it, as what `except why:`'s
+            // `case _:` holds after earlier cases took the rest.
+            (Type::Errors(members), Type::Errors(left))
+                if left.iter().all(|member| members.contains(member)) =>
+            {
+                Ok(self.errors_narrowed(&value, &left, expr.span))
+            }
             // An error from a set the checker narrowed to one, as a `match` whose earlier cases
             // took the others.
             (Type::Errors(members), Type::Named(read)) if members.contains(&read) => {
@@ -195,6 +202,31 @@ impl Lowering<'_> {
             }
             (from, read) => Err(format!("it reads {from} as {read}")),
         }
+    }
+
+    /// An error from a set read as one of fewer errors, which the checker showed it is. A set is
+    /// laid out with a case for each of its errors, so each it may be is tested for, read as
+    /// itself, and put in the smaller set.
+    fn errors_narrowed(&mut self, value: &Operand, left: &[String], span: Span) -> Operand {
+        let dest = self.temporary(Type::Errors(left.to_vec()));
+        let join = self.new_block();
+        for member in left {
+            let is = self.temporary(Type::Bool);
+            let type_name = member.clone();
+            self.emit(InstKind::IsError { dest: is, value: value.clone(), type_name }, span);
+            let (this, next) = (self.new_block(), self.new_block());
+            self.finish(Terminator::Branch { cond: Operand::Local(is), then: this, otherwise: next });
+            self.current = this;
+            let one = self.temporary(Type::Named(member.clone()));
+            self.emit(InstKind::AsError { dest: one, value: value.clone() }, span);
+            self.emit(InstKind::Copy { dest, value: Operand::Local(one) }, span);
+            self.finish(Terminator::Jump(join));
+            self.current = next;
+        }
+        // The checker showed it's one of those.
+        self.finish(Terminator::Unreachable);
+        self.current = join;
+        Operand::Local(dest)
     }
 
     /// A tuple read item by item as the tuple the checker narrowed it to: an optional item it

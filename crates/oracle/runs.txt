@@ -9,6 +9,7 @@ bits.fen
 calculator.fen
 case_guards.fen
 collections.fen
+collections_more.fen
 comprehensions_native.fen
 constants_native.fen
 copy.fen
@@ -31,10 +32,13 @@ extend.fen
 fails.fen
 fails_several.fen
 field_annotations.fen
+fields_native.fen
 fields_of_any_type.fen
+files.fen
 fizzbuzz.fen
 float_is_nan.fen
 formatting.fen
+fs.fen
 functions.fen
 functions_as_values.fen
 functions_passed.fen
@@ -75,6 +79,8 @@ own_std_names.fen
 own_str.fen
 packed_lists.fen
 particles.fen
+path_inside.fen
+path_inside_windows.fen
 projects/cases
 projects/constants
 projects/packages
@@ -85,6 +91,7 @@ self_type.fen
 sets_native.fen
 sorted_native.fen
 sources.fen
+std_fs.fen
 std_json.fen
 std_long_input_errors.fen
 std_net_hostile.fen

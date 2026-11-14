@@ -64,29 +64,42 @@ enum Runtime {
 }
 
 impl Runtime {
-    /// The library's file name.
+    /// The library's file name. A program built for a heap audit, under `FENNEC_AUDIT=1`, links
+    /// the one built with the audit in it, which no release has: so it's refused there, as any
+    /// library that's missing is, rather than run with nothing checked.
     fn library(self) -> &'static str {
-        match self {
-            Self::Plain => "libfennec_runtime.a",
-            Self::Threads => "libfennec_runtime_threads.a",
+        match (self, fennec_llvm::audited()) {
+            (Self::Plain, false) => "libfennec_runtime.a",
+            (Self::Threads, false) => "libfennec_runtime_threads.a",
+            (Self::Plain, true) => "libfennec_runtime_audit.a",
+            (Self::Threads, true) => "libfennec_runtime_threads_audit.a",
         }
     }
 
     /// The runtime's own bitcode, which a release build puts in the program's unit when it's
     /// there.
     fn bitcode(self) -> &'static str {
-        match self {
-            Self::Plain => "libfennec_runtime.bc",
-            Self::Threads => "libfennec_runtime_threads.bc",
+        match (self, fennec_llvm::audited()) {
+            (Self::Plain, false) => "libfennec_runtime.bc",
+            (Self::Threads, false) => "libfennec_runtime_threads.bc",
+            (Self::Plain, true) => "libfennec_runtime_audit.bc",
+            (Self::Threads, true) => "libfennec_runtime_threads_audit.bc",
         }
     }
 
     /// How to build the library, for saying when it's missing.
     fn how_to_build(self) -> &'static str {
-        match self {
-            Self::Plain => "`cargo build -p fennec-runtime`",
-            Self::Threads => {
+        match (self, fennec_llvm::audited()) {
+            (Self::Plain, false) => "`cargo build -p fennec-runtime`",
+            (Self::Threads, false) => {
                 "`cargo build -p fennec-runtime --features threads --target-dir target/threads`, copying it there"
+            }
+            (Self::Plain, true) => {
+                "`cargo build -p fennec-runtime --features audit --target-dir target/audit`, copying it there"
+            }
+            (Self::Threads, true) => {
+                "`cargo build -p fennec-runtime --features threads,audit --target-dir target/threads-audit`, copying \
+                 it there"
             }
         }
     }

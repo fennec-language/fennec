@@ -9,7 +9,9 @@ name: Proofs
 # stripped, and must print the same. Every example, kit, fixture and 50 random programs also run with
 # another hash seed, more threads and load, and recorded and replayed, and must print the same each
 # way (`.github/scripts/determinism.sh`). Every program that uses threads runs under ThreadSanitizer too
-# (`.github/scripts/tsan-programs.sh`). The night's report is kept as `nightly-report`, which
+# (`.github/scripts/tsan-programs.sh`). Every example and kit is built for a heap audit and run under
+# it too, with each block's owners counted again as it ends (`.github/scripts/audit.sh`). The
+# night's report is kept as `nightly-report`, which
 # `.github/scripts/nightly-report.sh` copies into the lanes' notes. No pull request waits on this.
 on:
   schedule:
@@ -41,8 +43,12 @@ jobs:
       - name: Build fennec, its runtime libraries and the fuzzer
         run: |
           cargo build --release --locked -p fennec -p fennec-runtime -p fennec-fuzz
-          cargo build --release --locked -p fennec-runtime --features threads --target-dir target/threads
-          cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
+          # With threads, and each way again with the heap audit in it, for the audit's step.
+          for features in threads audit threads,audit; do
+            dir="target/$(echo "$features" | tr , -)"
+            cargo build --release --locked -p fennec-runtime --features "$features" --target-dir "$dir"
+            cp "$dir/release/libfennec_runtime.a" "target/release/libfennec_runtime_$(echo "$features" | tr , _).a"
+          done
       - name: Build and run every example, kit and kernel, both ways
         id: builds
         run: .github/scripts/nightly-proofs.sh target/release/fennec report.md
@@ -58,6 +64,15 @@ jobs:
         id: determinism
         if: always()
         run: .github/scripts/determinism.sh target/release/fennec report.md 50
+      # Its findings go in the night's report, each naming the program and the blocks.
+      - name: Audit the heap of every example and kit as it ends
+        id: audit
+        if: always()
+        env:
+          FENNEC: target/release/fennec
+        run: |
+          echo "## Heap audit" >> report.md
+          .github/scripts/audit.sh report.md
       - name: Check formatting takes time in proportion to the program
         id: timing
         if: always()
@@ -82,6 +97,7 @@ jobs:
           FUZZ: ${{ steps.fuzz.outcome }}
           PROGRAMS: ${{ steps.programs.outcome }}
           DETERMINISM: ${{ steps.determinism.outcome }}
+          AUDIT: ${{ steps.audit.outcome }}
           TIMING: ${{ steps.timing.outcome }}
           TESTS: ${{ steps.tests.outcome }}
         run: |
@@ -90,7 +106,7 @@ jobs:
             echo
             echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo
-            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Determinism: $DETERMINISM. Formatting in proportion: $TIMING. Tests: $TESTS."
+            echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Determinism: $DETERMINISM. Heap audit: $AUDIT. Formatting in proportion: $TIMING. Tests: $TESTS."
             echo
             [ -f report.md ] && cat report.md
             echo
@@ -121,7 +137,7 @@ jobs:
           {
             cat nightly.md
             echo
-            echo "A program stopping with \"proof broken\" means the compiler left out a check that could fail. One printing otherwise with facts stripped means a fact handed to LLVM is wrong. One printing otherwise with another seed, thread count or load, or when replayed, isn't deterministic. What fuzzing found and the tests' output are in the run's artifact."
+            echo "A program stopping with \"proof broken\" means the compiler left out a check that could fail. One printing otherwise with facts stripped means a fact handed to LLVM is wrong. One printing otherwise with another seed, thread count or load, or when replayed, isn't deterministic. A line of the heap audit's names a block whose count of owners differs from the holders found for it, or that nothing leads to any more. What fuzzing found and the tests' output are in the run's artifact."
           } > issue.md
           gh issue create --title "A proof the compiler made broke" --body-file issue.md --label "bug" --label "priority: now" --repo "$GITHUB_REPOSITORY"
 

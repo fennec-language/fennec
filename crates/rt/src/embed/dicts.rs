@@ -151,12 +151,22 @@ pub enum Word {
     /// An `f32`, as the `f64` that's exactly its value: hashed and compared as a float is, and
     /// shown as the shortest text that reads back as that `f32`.
     F32,
+    /// As a value, one held in the entry itself, as the words a list holds an item of its kind
+    /// as: by the kind's number in `Tables::elements`, which says how many words it takes and
+    /// where among them it holds blocks. All zero holds nothing.
+    InPlace(u32),
 }
 
 impl Word {
     /// Whether a word of this kind is the address of a block the dict owns.
     fn owned(self) -> bool {
         matches!(self, Word::Str | Word::Plain(_) | Word::Block(_))
+    }
+
+    /// Whether a value of this kind is one word that holds no block, so writing over one lets go
+    /// of nothing: not a block's address, and not a value held in place.
+    fn plain_word(self) -> bool {
+        !matches!(self, Word::Str | Word::Plain(_) | Word::Block(_) | Word::InPlace(_))
     }
 }
 
@@ -173,6 +183,14 @@ const TOP_BLOCK_DICT: u64 = super::heap::SHAPE_BITS - 16;
 /// How many kinds of block a dict's values can be.
 const BLOCK_KINDS: u64 = 1 << 20;
 
+/// The highest shape of a dict with `Word::InPlace` values, which count down from here as those
+/// with `Word::Block` values do: just below theirs.
+const TOP_IN_PLACE_DICT: u64 = TOP_BLOCK_DICT - BLOCK_KINDS * KEYS.len() as u64;
+/// How many kinds of value a dict can hold in place.
+const IN_PLACE_KINDS: u64 = 1 << 19;
+/// The shape just below every dict's that's counted down from the top.
+const BELOW_COUNTED_DOWN: u64 = TOP_IN_PLACE_DICT - IN_PLACE_KINDS * KEYS.len() as u64;
+
 /// How many shapes dicts take, after the string shape.
 pub const SHAPES: u64 = (KEYS.len() * VALUES.len()) as u64;
 
@@ -181,9 +199,14 @@ pub const SHAPES: u64 = (KEYS.len() * VALUES.len()) as u64;
 pub fn shape(str_shape: u64, key: Word, value: Word) -> Option<u64> {
     let plain = |word| if let Word::Plain(_) = word { Word::Plain(0) } else { word };
     let key = KEYS.iter().position(|word| *word == plain(key))?;
+    let count = u64::try_from(KEYS.len()).ok()?;
     if let Word::Block(number) = value {
-        let count = u64::try_from(KEYS.len()).ok()?;
         return Some(TOP_BLOCK_DICT - u64::from(number) * count - u64::try_from(key).ok()?);
+    }
+    if let Word::InPlace(number) = value {
+        let number = u64::from(number);
+        return (number < IN_PLACE_KINDS)
+            .then_some(TOP_IN_PLACE_DICT - number * count - u64::try_from(key).ok()?);
     }
     let value = VALUES.iter().position(|word| *word == plain(value))?;
     u64::try_from(key * VALUES.len() + value).ok().map(|at| str_shape + 1 + at)
@@ -200,13 +223,40 @@ fn kind(state: &State, block: &[u64]) -> Option<(Word, Word)> {
 struct Layout {
     key: Word,
     value: Word,
-    width: usize,
+    /// How many words an entry takes, and where its value is from the entry's start: after its
+    /// hash and its key. The value is the one word left, but for one held in place, which is as
+    /// many as its kind takes. Both are small, and kept in the room one word had, so a layout
+    /// costs what it did when every value was a word.
+    wide: u32,
+    value_from: u32,
 }
 
 impl Layout {
+    /// The layout of entries `width` words wide whose value is the last `value_words` of them.
+    fn of(key: Word, value: Word, width: usize, value_words: usize) -> Option<Layout> {
+        let wide = u32::try_from(width).ok()?;
+        let value_from = u32::try_from(width.checked_sub(value_words)?).ok()?;
+        Some(Layout { key, value, wide, value_from })
+    }
+
+    /// How many words an entry takes.
+    fn width(self) -> usize {
+        self.wide as usize
+    }
+
     /// Where an entry's value is, from the entry's start.
     fn value_at(self) -> usize {
-        self.width - 1
+        self.value_from as usize
+    }
+
+    /// How many words the value takes.
+    fn value_words(self) -> usize {
+        (self.wide - self.value_from) as usize
+    }
+
+    /// Whether the value is held in the entry as its own words (`Word::InPlace`).
+    fn in_place(self) -> bool {
+        matches!(self.value, Word::InPlace(_))
     }
 }
 
@@ -217,32 +267,67 @@ fn layout(state: &State, block: &[u64]) -> Option<Layout> {
 
 /// How a dict of this shape lays out its entries, when the shape is a dict's.
 fn shape_layout(state: &State, shape: u64) -> Option<Layout> {
-    shape_layout_of(state.tables.str_shape, shape)
+    // The shapes counted down from the top, of dicts of blocks and of values in place, are all
+    // above this one: every other dict's is told from them in one test.
+    if shape > BELOW_COUNTED_DOWN {
+        return counted_down_layout(state, shape);
+    }
+    let at = usize::try_from(shape.checked_sub(state.tables.str_shape + 1)?).ok()?;
+    let (key, value) = (*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?);
+    // The two widths an entry of one-word values has, each with where its value is.
+    let (wide, value_from) = if key == Word::Text { (5, 4) } else { (3, 2) };
+    Some(Layout { key, value, wide, value_from })
 }
 
-/// `shape_layout`, knowing only the string shape.
-fn shape_layout_of(str_shape: u64, shape: u64) -> Option<Layout> {
-    let count = u64::try_from(KEYS.len()).ok()?;
-    let (key, value) = if shape <= TOP_BLOCK_DICT && shape > TOP_BLOCK_DICT - BLOCK_KINDS * count {
-        let at = TOP_BLOCK_DICT - shape;
-        let key = *KEYS.get(usize::try_from(at % count).ok()?)?;
-        (key, Word::Block(u32::try_from(at / count).ok()?))
-    } else {
-        let at = usize::try_from(shape.checked_sub(str_shape + 1)?).ok()?;
-        (*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?)
-    };
+/// `shape_layout` for a dict of blocks or of values in place.
+fn counted_down_layout(state: &State, shape: u64) -> Option<Layout> {
+    let (key, value) = shape_kinds(state.tables.str_shape, shape)?;
     let width = if key == Word::Text { HEADER_ENTRY_WORDS } else { ENTRY_WORDS };
-    Some(Layout { key, value, width })
+    let Word::InPlace(_) = value else { return Layout::of(key, value, width, 1) };
+    // A value in place is as wide as its kind of item is in a list. One of no words is no value
+    // a dict can find again.
+    let value_words =
+        value_element(state, value).map(|element| element.words()).filter(|words| *words > 0)?;
+    Layout::of(key, value, width - 1 + value_words, value_words)
+}
+
+/// What the keys and values of a dict of this shape are, when the shape is a dict's.
+fn shape_kinds(str_shape: u64, shape: u64) -> Option<(Word, Word)> {
+    let count = u64::try_from(KEYS.len()).ok()?;
+    if shape > BELOW_COUNTED_DOWN {
+        if shape > TOP_BLOCK_DICT {
+            return None;
+        }
+        let (top, in_place) =
+            if shape > TOP_IN_PLACE_DICT { (TOP_BLOCK_DICT, false) } else { (TOP_IN_PLACE_DICT, true) };
+        let at = top - shape;
+        let key = *KEYS.get(usize::try_from(at % count).ok()?)?;
+        let number = u32::try_from(at / count).ok()?;
+        return Some((key, if in_place { Word::InPlace(number) } else { Word::Block(number) }));
+    }
+    let at = usize::try_from(shape.checked_sub(str_shape + 1)?).ok()?;
+    Some((*KEYS.get(at / VALUES.len())?, *VALUES.get(at % VALUES.len())?))
+}
+
+/// The kind of item a value held in place is laid out as.
+fn value_element(state: &State, value: Word) -> Option<std::rc::Rc<Element>> {
+    let Word::InPlace(number) = value else { return None };
+    state.tables.elements.get(usize::try_from(number).ok()?).cloned()
 }
 
 /// An entry's key: its words between the hash and the value.
-fn key_of(entry: &[u64]) -> &[u64] {
-    entry.get(1..entry.len().saturating_sub(1)).unwrap_or_default()
+fn key_of(layout: Layout, entry: &[u64]) -> &[u64] {
+    entry.get(1..layout.value_at()).unwrap_or_default()
 }
 
-/// An entry's value: its last word.
+/// An entry's value, when it's one word: the entry's last.
 fn value_of(entry: &[u64]) -> u64 {
     entry.last().copied().unwrap_or(0)
+}
+
+/// An entry's value as its words: one, or as many as a value held in place takes.
+fn value_words(layout: Layout, entry: &[u64]) -> &[u64] {
+    entry.get(layout.value_at()..).unwrap_or_default()
 }
 
 /// The block a key is held in, when its kind is held in one: a one-word key's address.
@@ -319,7 +404,7 @@ pub extern "C" fn find_by_value(dict: i64, key: i64) -> i64 {
         match find(state, block, layout, &word, hash) {
             Probe::Found(entry) => {
                 let mask = block.get(4).and_then(|mask| usize::try_from(*mask).ok()).unwrap_or(0);
-                let at = DICT_HEADER_WORDS + mask + 1 + entry * layout.width;
+                let at = DICT_HEADER_WORDS + mask + 1 + entry * layout.width();
                 block.get(at).map_or(0, |place| i64::try_from(std::ptr::from_ref(place).addr()).unwrap_or(0))
             }
             Probe::Empty(_) => 0,
@@ -509,8 +594,8 @@ fn fill(
 
 /// Entries with each key's hash changed to its strong one.
 fn strongly_hashed(state: &State, layout: Layout, mut entries: Vec<u64>) -> Vec<u64> {
-    for entry in entries.chunks_exact_mut(layout.width) {
-        let hash = hash_key(state, layout.key, key_of(entry), Hashing::Strong);
+    for entry in entries.chunks_exact_mut(layout.width()) {
+        let hash = hash_key(state, layout.key, key_of(layout, entry), Hashing::Strong);
         if let Some(first) = entry.first_mut() {
             *first = hash;
         }
@@ -523,11 +608,11 @@ fn strengthen(state: &mut State, at: u64, layout: Layout) -> Option<()> {
     let block = state.heap.block(at)?;
     let shape = shape_word(block)?;
     let slots = usize::try_from(*block.get(4)?).ok()? + 1;
-    let live = entries(block, layout.width);
+    let live = entries(block, layout.width());
     let strong = strongly_hashed(state, layout, live);
     let block = state.heap.block_mut(at)?;
     block.get_mut(DICT_HEADER_WORDS..DICT_HEADER_WORDS + slots)?.fill(0);
-    place_entries(block, (shape, slots, Hashing::Strong), layout.width, &strong);
+    place_entries(block, (shape, slots, Hashing::Strong), layout.width(), &strong);
     Some(())
 }
 
@@ -619,7 +704,7 @@ fn find(state: &State, block: &[u64], layout: Layout, key: &[u64], hash: u64) ->
     loop {
         let taken = block.get(DICT_HEADER_WORDS + slot).and_then(|taken| usize::try_from(*taken).ok());
         let Some(entry) = taken.and_then(|taken| taken.checked_sub(1)) else { return Probe::Empty(slot) };
-        let at = start + entry * layout.width;
+        let at = start + entry * layout.width();
         if block.get(at) == Some(&hash)
             && block
                 .get(at + 1..at + layout.value_at())
@@ -634,7 +719,7 @@ fn find(state: &State, block: &[u64], layout: Layout, key: &[u64], hash: u64) ->
 /// Where entry number `entry`'s value is in a dict's block.
 fn value_place(block: &[u64], layout: Layout, entry: usize) -> Option<usize> {
     let mask = usize::try_from(*block.get(4)?).ok()?;
-    Some(DICT_HEADER_WORDS + mask + 1 + entry * layout.width + layout.value_at())
+    Some(DICT_HEADER_WORDS + mask + 1 + entry * layout.width() + layout.value_at())
 }
 
 /// `text[from:to]`, with positions in characters clamped the way slicing clamps them, as a
@@ -686,7 +771,7 @@ fn packed_words(bytes: &[u8]) -> Vec<u64> {
 /// and then the key's length and words, with no key of its own made.
 fn find_text(state: &State, block: &[u64], (bytes, chars): (&[u8], usize)) -> Option<(Probe, u64)> {
     let layout = layout(state, block)?;
-    let width = layout.width;
+    let width = layout.width();
     let short = (bytes.len() <= super::text::INLINE_BYTES).then(|| super::text::inline(bytes));
     let words = packed_words(bytes);
     let length = u64::try_from(bytes.len()).ok()?;
@@ -750,7 +835,7 @@ pub extern "C" fn add_slice(dict: i64, text: i64, from: i64, to: i64, value: i64
         let at = u64::try_from(dict).ok()?;
         let block = state.heap.block(at)?;
         let (key_word, value_word) = kind(state, block)?;
-        if !matches!(key_word, Word::Str | Word::Text) {
+        if !matches!(key_word, Word::Str | Word::Text) || matches!(value_word, Word::InPlace(_)) {
             return None;
         }
         let unique = state.heap.is_alone(at, block);
@@ -913,12 +998,14 @@ pub extern "C" fn set_header(dict: i64, a: u64, b: u64, c: u64, value: i64) -> i
             let block = state.heap.block(at)?;
             let (key_word, value_word) = kind(state, block)?;
             if key_word == Word::Text {
+                // Both of these refuse a dict that holds its values in place.
                 let value = value.cast_unsigned();
                 return set_inline(state, dict, header, value)
                     .or_else(|| set_words(state, dict, &header, value));
             }
             let (bytes, chars) = header_text(state, &header)?;
-            if key_word != Word::Str {
+            // One word can't be written over a value held in place.
+            if key_word != Word::Str || matches!(value_word, Word::InPlace(_)) {
                 return None;
             }
             let owned = super::text::block_of(&header);
@@ -965,7 +1052,7 @@ pub extern "C" fn pop_header(dict: i64, a: u64, b: u64, c: u64, start: i64, end:
 pub extern "C" fn new(shape: i64, room: i64) -> i64 {
     super::made_with("fennec_dict_new", |state| {
         let shape = u64::try_from(shape).unwrap_or(0);
-        let width = shape_layout(state, shape).map_or(ENTRY_WORDS, |layout| layout.width);
+        let width = shape_layout(state, shape).map_or(ENTRY_WORDS, Layout::width);
         let block = build(state, (shape, Hashing::Fast), width, &[], usize::try_from(room).unwrap_or(0));
         state.heap.insert(block)
     })
@@ -1004,7 +1091,7 @@ fn set_at_entry(state: &mut State, dict: i64, entry: i64, key: u64, value: u64) 
         return None;
     }
     let layout = layout(state, block)?;
-    if layout.width != 3 {
+    if layout.width() != 3 || layout.in_place() {
         return None;
     }
     let mask = usize::try_from(*block.get(4)?).ok()?;
@@ -1013,7 +1100,7 @@ fn set_at_entry(state: &mut State, dict: i64, entry: i64, key: u64, value: u64) 
     let bytes = usize::try_from(entry.cast_unsigned().checked_sub(at)?).ok()?;
     let word = (bytes % 8 == 0).then_some(bytes / 8)?;
     let number = word.checked_sub(start)?;
-    if number % layout.width != 0 || number / layout.width >= used {
+    if number % layout.width() != 0 || number / layout.width() >= used {
         return None;
     }
     if block.get(word) == Some(&REMOVED) || block.get(word + 1) != Some(&key) {
@@ -1055,7 +1142,7 @@ fn live_entry_of_alone(state: &State, dict: i64, entry: i64) -> Option<()> {
     let word = (bytes % 8 == 0).then_some(bytes / 8)?;
     let number = word.checked_sub(start)?;
     let live =
-        number % layout.width == 0 && number / layout.width < used && block.get(word) != Some(&REMOVED);
+        number % layout.width() == 0 && number / layout.width() < used && block.get(word) != Some(&REMOVED);
     live.then_some(())
 }
 
@@ -1071,12 +1158,14 @@ pub(super) fn found_puts() -> u64 {
 /// `dict[key] = value` with the key's words: takes over the owners `dict`, a key held in a
 /// block and `value` had, and gives back the dict's.
 fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i64> {
-    let mut at = u64::try_from(dict).ok()?;
+    let at = u64::try_from(dict).ok()?;
     let block = state.heap.block(at)?;
     let layout = layout(state, block)?;
     // A key of the wrong width changes nothing: it's refused before the dict grows or a slot
     // is taken.
-    if key.len() + 2 != layout.width {
+    // So is a value of one word for a dict that holds its values in place, whose words these
+    // setters don't know the owners in.
+    if key.len() + 2 != layout.width() || layout.in_place() {
         return None;
     }
     if super::lists::marked_alone(block)
@@ -1084,6 +1173,48 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     {
         return Some(changed);
     }
+    let (at, hash, probe, mask) = ready_for(state, at, layout, key)?;
+    let start = DICT_HEADER_WORDS + mask + 1;
+    let block = state.heap.block_mut(at)?;
+    match probe {
+        Probe::Found(entry) => {
+            let slot = block.get_mut(start + entry * layout.width() + layout.value_at())?;
+            let old = std::mem::replace(slot, value);
+            if layout.value.owned() {
+                release(state, old);
+            }
+            if let Some(address) = key_block(layout.key, key) {
+                release(state, address);
+            }
+        }
+        Probe::Empty(slot) => {
+            let used = usize::try_from(*block.get(3)?).ok()?;
+            *block.get_mut(DICT_HEADER_WORDS + slot)? = u64::try_from(used + 1).ok()?;
+            let entry = start + used * layout.width();
+            let words = block.get_mut(entry..entry + layout.width())?;
+            let (hash_word, rest) = words.split_first_mut()?;
+            let (value_word, key_words) = rest.split_last_mut()?;
+            *hash_word = hash;
+            *value_word = value;
+            key_words.copy_from_slice(key);
+            *block.get_mut(2)? += 1;
+            *block.get_mut(3)? += 1;
+        }
+    }
+    i64::try_from(at).ok()
+}
+
+/// Makes the dict at `at` ready for `key` to be written: one that's shared is copied, one that's
+/// full grown, and one whose probe for the key got too long hashed the strong way. Gives the dict's
+/// address, which may be new, the key's hash there, where the key is or goes, and one less than
+/// the dict's slots.
+#[inline]
+fn ready_for(
+    state: &mut State,
+    mut at: u64,
+    layout: Layout,
+    key: &[u64],
+) -> Option<(u64, u64, Probe, usize)> {
     let block = state.heap.block(at)?;
     let how = Hashing::of(block);
     let mut hash = hash_key(state, layout.key, key, how);
@@ -1091,21 +1222,21 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
     let used = usize::try_from(*block.get(3)?).ok()?;
     let shared = !state.heap.is_alone(at, block);
     if shared {
-        let (shape, live) = (shape_word(block)?, entries(block, layout.width));
+        let (shape, live) = (shape_word(block)?, entries(block, layout.width()));
         // An empty dict shared, as the empty constant a dict can start as is, is made anew: there's
         // nothing to copy, so no copy is counted.
         if !live.is_empty() {
             state.heap.copied(live.len());
         }
-        for entry in live.chunks_exact(layout.width) {
+        for entry in live.chunks_exact(layout.width()) {
             retain_entry(state, layout, entry);
         }
         release(state, at);
-        let copy = build(state, (shape, how), layout.width, &live, 2 * (live.len() / layout.width + 1));
+        let copy = build(state, (shape, how), layout.width(), &live, 2 * (live.len() / layout.width() + 1));
         at = u64::try_from(state.heap.insert(copy)).ok()?;
     } else if used >= capacity(slots) {
         let shape = shape_word(block)?;
-        at = grown(state, at, shape, layout.width)?;
+        at = grown(state, at, shape, layout.width())?;
     }
     // Growing or copying may have changed how this dict hashes.
     let block = state.heap.block(at)?;
@@ -1123,34 +1254,7 @@ fn set_words(state: &mut State, dict: i64, key: &[u64], value: u64) -> Option<i6
         hash = hash_key(state, layout.key, key, Hashing::Strong);
         probe = find(state, block, layout, key, hash);
     }
-    let start = DICT_HEADER_WORDS + mask + 1;
-    let block = state.heap.block_mut(at)?;
-    match probe {
-        Probe::Found(entry) => {
-            let slot = block.get_mut(start + entry * layout.width + layout.value_at())?;
-            let old = std::mem::replace(slot, value);
-            if layout.value.owned() {
-                release(state, old);
-            }
-            if let Some(address) = key_block(layout.key, key) {
-                release(state, address);
-            }
-        }
-        Probe::Empty(slot) => {
-            let used = usize::try_from(*block.get(3)?).ok()?;
-            *block.get_mut(DICT_HEADER_WORDS + slot)? = u64::try_from(used + 1).ok()?;
-            let entry = start + used * layout.width;
-            let words = block.get_mut(entry..entry + layout.width)?;
-            let (hash_word, rest) = words.split_first_mut()?;
-            let (value_word, key_words) = rest.split_last_mut()?;
-            *hash_word = hash;
-            *value_word = value;
-            key_words.copy_from_slice(key);
-            *block.get_mut(2)? += 1;
-            *block.get_mut(3)? += 1;
-        }
-    }
-    i64::try_from(at).ok()
+    Some((at, hash, probe, mask))
 }
 
 /// `set_words` on a dict a lock's log marked, with no other owner: changed in place, each word that
@@ -1167,7 +1271,8 @@ fn set_marked(state: &mut State, at: u64, layout: Layout, key: &[u64], value: u6
     match find(state, block, layout, key, hash) {
         Probe::Found(entry) => {
             let owned = layout.value.owned();
-            let old = noted_write(state, at, start + entry * layout.width + layout.value_at(), value, owned)?;
+            let old =
+                noted_write(state, at, start + entry * layout.width() + layout.value_at(), value, owned)?;
             if owned {
                 release(state, old);
             }
@@ -1180,7 +1285,7 @@ fn set_marked(state: &mut State, at: u64, layout: Layout, key: &[u64], value: u6
                 return None;
             }
             let count = |n: usize| u64::try_from(n).unwrap_or(0);
-            let entry = start + used * layout.width;
+            let entry = start + used * layout.width();
             let words = std::iter::once(hash).chain(key.iter().copied()).chain(std::iter::once(value));
             for (offset, word) in words.enumerate() {
                 noted_write(state, at, entry + offset, word, false)?;
@@ -1218,9 +1323,10 @@ fn set_inline(state: &mut State, dict: i64, key: [u64; 3], value: u64) -> Option
         return None;
     }
     let block = heap.block_mut(u64::try_from(dict).ok()?)?;
-    let layout = shape_layout_of(tables.str_shape, shape_word(block)?)?;
-    if layout.key != Word::Text
-        || layout.value.owned()
+    let (key_word, value_word) = shape_kinds(tables.str_shape, shape_word(block)?)?;
+    // One word of a value that owns nothing: a value in place has its own way in.
+    if key_word != Word::Text
+        || !value_word.plain_word()
         || block.first() != Some(&1)
         || Hashing::of(block) == Hashing::Strong
     {
@@ -1261,10 +1367,26 @@ fn set_inline(state: &mut State, dict: i64, key: [u64; 3], value: u64) -> Option
 }
 
 fn retain_entry(state: &mut State, layout: Layout, entry: &[u64]) {
-    let held = [key_block(layout.key, key_of(entry)), layout.value.owned().then(|| value_of(entry))];
+    if layout.in_place() {
+        for address in held_in_place(state, layout, entry) {
+            super::heap::retain(state, address);
+        }
+        return;
+    }
+    let held = [key_block(layout.key, key_of(layout, entry)), layout.value.owned().then(|| value_of(entry))];
     for address in held.into_iter().flatten() {
         super::heap::retain(state, address);
     }
+}
+
+/// The blocks an entry holds when its value is held in place: its key's, if it's held in one, and
+/// each one the value's words hold, as its kind of item says.
+fn held_in_place(state: &State, layout: Layout, entry: &[u64]) -> Vec<u64> {
+    let mut held: Vec<u64> = key_block(layout.key, key_of(layout, entry)).into_iter().collect();
+    if let Some(element) = value_element(state, layout.value) {
+        super::heap::held_addresses(&element, value_words(layout, entry), &mut held);
+    }
+    held
 }
 
 /// A block only one owner holds, taking over the owner `at` had. One a lock's log marked, with no
@@ -1275,16 +1397,16 @@ fn unshared(state: &mut State, at: u64) -> Option<u64> {
         return Some(at);
     }
     let layout = layout(state, block)?;
-    let (shape, live, how) = (shape_word(block)?, entries(block, layout.width), Hashing::of(block));
+    let (shape, live, how) = (shape_word(block)?, entries(block, layout.width()), Hashing::of(block));
     // An empty dict shared is made anew, with no copy counted, as in `set_words`.
     if !live.is_empty() {
         state.heap.copied(live.len());
     }
-    for entry in live.chunks_exact(layout.width) {
+    for entry in live.chunks_exact(layout.width()) {
         retain_entry(state, layout, entry);
     }
     release(state, at);
-    let copy = build(state, (shape, how), layout.width, &live, live.len() / layout.width);
+    let copy = build(state, (shape, how), layout.width(), &live, live.len() / layout.width());
     u64::try_from(state.heap.insert(copy)).ok()
 }
 
@@ -1323,15 +1445,36 @@ fn take(state: &mut State, at: u64, key: &[u64]) -> Option<Taken> {
     let hash = hash_key(state, layout.key, key, Hashing::of(block));
     let mask = usize::try_from(*block.get(4)?).ok()?;
     let Probe::Found(entry) = find(state, block, layout, key, hash) else { return Some(Taken::Missing) };
-    let place = DICT_HEADER_WORDS + mask + 1 + entry * layout.width;
-    let removed = block.get(place..place + layout.width)?;
-    let (held, value) = (key_block(layout.key, key_of(removed)), value_of(removed));
+    let place = DICT_HEADER_WORDS + mask + 1 + entry * layout.width();
+    let removed = block.get(place..place + layout.width())?;
+    let held = key_block(layout.key, key_of(layout, removed));
+    // A value in place leaves as its words, in this thread's buffer for whoever took it out, with
+    // the owners they hold: there's no one word to give back.
+    let mut holding = Vec::new();
+    let value = match value_element(state, layout.value) {
+        Some(element) => {
+            let fits = value_buffer_of(state, |buffer| {
+                for (kept, word) in buffer.iter().zip(value_words(layout, removed)) {
+                    kept.set(*word);
+                }
+                buffer.len() >= layout.value_words()
+            });
+            if !fits {
+                too_wide_for_the_buffer();
+            }
+            super::heap::boxed_words(&element, removed, &mut layout.value_at(), &mut holding);
+            0
+        }
+        None => value_of(removed),
+    };
     if super::lists::marked_alone(block) {
         // A lock's log saves each word first, with owners of what the key and the value hold.
         let holds = |offset: usize| {
-            (offset == 1 && held.is_some()) || (offset == layout.value_at() && layout.value.owned())
+            (offset == 1 && held.is_some())
+                || (offset == layout.value_at() && layout.value.owned())
+                || holding.contains(&offset)
         };
-        for offset in 0..layout.width {
+        for offset in 0..layout.width() {
             let new = if offset == 0 { REMOVED } else { 0 };
             noted_write(state, at, place + offset, new, holds(offset))?;
         }
@@ -1343,7 +1486,7 @@ fn take(state: &mut State, at: u64, key: &[u64]) -> Option<Taken> {
         return Some(Taken::Removed(value));
     }
     // The whole entry is cleared, so nothing reads a key it no longer owns.
-    state.heap.block_mut(at)?.get_mut(place..place + layout.width)?.fill(0);
+    state.heap.block_mut(at)?.get_mut(place..place + layout.width())?.fill(0);
     let block = state.heap.block_mut(at)?;
     *block.get_mut(place)? = REMOVED;
     *block.get_mut(2)? -= 1;
@@ -1413,6 +1556,207 @@ fn remove_words(set: i64, key: &[u64], whose: Key, must: i8, (start, end): (i64,
 thread_local! {
     /// The value the last `pop` took out of a dict, for native code to pick up.
     static POPPED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The words of a value held in place on its way into a dict or out of one: native code puts
+    /// them here before `fennec_dict_set_words`, and finds them here after `fennec_dict_pop_words`.
+    /// The runtime reads only its own memory, so a value of several words can't come as a pointer
+    /// into native code's. Each word is a cell, as native code writes them where Rust can't see.
+    static VALUE: std::cell::OnceCell<Box<[std::cell::Cell<u64>]>> = const { std::cell::OnceCell::new() };
+}
+
+/// Does `with` this thread's buffer for a value held in place, made the first time it's wanted: as
+/// long as the widest kind of item this run has, so any value a dict holds in place fits.
+fn value_buffer_of<T>(state: &State, with: impl FnOnce(&[std::cell::Cell<u64>]) -> T) -> T {
+    VALUE.with(|value| {
+        let buffer = value.get_or_init(|| {
+            let widest = state.tables.elements.iter().map(|element| element.words()).max().unwrap_or(0);
+            (0..widest.max(1)).map(|_| std::cell::Cell::new(0)).collect()
+        });
+        with(buffer)
+    })
+}
+
+/// A dict's value in place is wider than this thread's buffer, which is as long as the widest kind
+/// of item the run started with. Every dict native code makes names one of those kinds, so this is
+/// a bug in Fennec: stopping says so, where going on would lose a write or hand back half a value.
+fn too_wide_for_the_buffer() {
+    // The fuzzer hands made-up dicts on purpose, and goes on.
+    if !super::made_up_inputs() {
+        super::heap::runtime_bug("a dict's value held in place is wider than the buffer it's passed in");
+    }
+}
+
+/// The first `count` words of this thread's buffer for a value held in place, if it's that long.
+fn buffered(state: &State, count: usize) -> Option<Vec<u64>> {
+    value_buffer_of(state, |buffer| {
+        buffer.get(..count).map(|words| words.iter().map(std::cell::Cell::get).collect())
+    })
+}
+
+/// `fennec_dict_value_words()`: where this thread's buffer for a value held in place is. It never
+/// moves, so native code may ask once and keep the answer for as long as the thread runs.
+pub extern "C" fn value_buffer() -> i64 {
+    with(|state| value_buffer_of(state, |buffer| i64::try_from(buffer.as_ptr().addr()).unwrap_or(0)))
+}
+
+/// `fennec_dict_set_words(dict, key)`: `dict[key] = value` for a dict that holds its values in
+/// place, the value's words being in this thread's buffer. As `set`, it takes over the owners
+/// `dict` and a key held in a block had, and those the value's words hold, and gives back the
+/// dict's. A dict that isn't one of values in place is given back unchanged.
+pub extern "C" fn set_in_place(dict: i64, key: i64) -> i64 {
+    super::made_with("fennec_dict_set_words", |state| {
+        set_buffered(state, dict, &[key.cast_unsigned()]).unwrap_or(dict)
+    })
+}
+
+/// `fennec_dict_set_words_header(dict, a, b, c)`: `set_in_place` for a string key given as its
+/// header's words. A key in a block is taken over, as `set_header` takes it.
+pub extern "C" fn set_in_place_header(dict: i64, a: u64, b: u64, c: u64) -> i64 {
+    super::made_with("fennec_dict_set_words_header", |state| {
+        let key_word = u64::try_from(dict)
+            .ok()
+            .and_then(|at| state.heap.block(at))
+            .and_then(|block| kind(state, block))
+            .map(|(key, _)| key);
+        let set = match key_word {
+            Some(Word::Text) => set_buffered(state, dict, &[a, b, c]),
+            // Held by its block's address: the block the header names, or one made for it.
+            Some(Word::Str) => {
+                let key = super::text::block(a, b, c).cast_unsigned();
+                set_buffered(state, dict, &[key])
+            }
+            _ => None,
+        };
+        set.unwrap_or(dict)
+    })
+}
+
+/// The value's words are copied out of the buffer before anything else, and are in the entry
+/// before anything is let go of: letting go of the value replaced may run a program's own code,
+/// which may use the buffer again.
+fn set_buffered(state: &mut State, dict: i64, key: &[u64]) -> Option<i64> {
+    let block = state.heap.block(u64::try_from(dict).ok()?)?;
+    let layout = layout(state, block)?;
+    if !layout.in_place() {
+        return None;
+    }
+    let Some(value) = buffered(state, layout.value_words()) else {
+        too_wide_for_the_buffer();
+        return None;
+    };
+    set_wide(state, dict, key, &value)
+}
+
+/// `dict[key] = value` for a dict that holds its values in place, the value given as its words:
+/// takes over the owners `dict`, a key held in a block and the value's words had, and gives back
+/// the dict's. `None`, having changed nothing, for a key or a value of the wrong width.
+fn set_wide(state: &mut State, dict: i64, key: &[u64], value: &[u64]) -> Option<i64> {
+    let at = u64::try_from(dict).ok()?;
+    let block = state.heap.block(at)?;
+    let layout = layout(state, block)?;
+    let element = value_element(state, layout.value)?;
+    if value.len() != layout.value_words() || 1 + key.len() + value.len() != layout.width() {
+        return None;
+    }
+    if super::lists::marked_alone(block)
+        && let Some(changed) = set_marked_wide(state, at, (layout, &element), key, value)
+    {
+        return Some(changed);
+    }
+    let (at, hash, probe, mask) = ready_for(state, at, layout, key)?;
+    let start = DICT_HEADER_WORDS + mask + 1;
+    let block = state.heap.block_mut(at)?;
+    match probe {
+        Probe::Found(entry) => {
+            let place = start + entry * layout.width() + layout.value_at();
+            let held = block.get_mut(place..place + value.len())?;
+            let old = held.to_vec();
+            held.copy_from_slice(value);
+            // What the value it replaces held goes, and the key given, as the entry keeps its own.
+            let mut let_go = Vec::new();
+            super::heap::held_addresses(&element, &old, &mut let_go);
+            let_go.extend(key_block(layout.key, key));
+            for address in let_go {
+                release(state, address);
+            }
+        }
+        Probe::Empty(slot) => {
+            let used = usize::try_from(*block.get(3)?).ok()?;
+            *block.get_mut(DICT_HEADER_WORDS + slot)? = u64::try_from(used + 1).ok()?;
+            let entry = start + used * layout.width();
+            let words = block.get_mut(entry..entry + layout.width())?;
+            *words.first_mut()? = hash;
+            words.get_mut(1..layout.value_at())?.copy_from_slice(key);
+            words.get_mut(layout.value_at()..)?.copy_from_slice(value);
+            *block.get_mut(2)? += 1;
+            *block.get_mut(3)? += 1;
+        }
+    }
+    i64::try_from(at).ok()
+}
+
+/// `set_wide` on a dict a lock's log marked, with no other owner, as `set_marked` is to
+/// `set_words`: each word that changes is saved in the log first. `None`, having changed nothing,
+/// when it would have to grow or change how it hashes.
+fn set_marked_wide(
+    state: &mut State,
+    at: u64,
+    (layout, element): (Layout, &Element),
+    key: &[u64],
+    value: &[u64],
+) -> Option<i64> {
+    let block = state.heap.block(at)?;
+    let how = Hashing::of(block);
+    let hash = hash_key(state, layout.key, key, how);
+    let mask = usize::try_from(*block.get(4)?).ok()?;
+    let (keys, used) = (*block.get(2)?, usize::try_from(*block.get(3)?).ok()?);
+    let start = DICT_HEADER_WORDS + mask + 1;
+    match find(state, block, layout, key, hash) {
+        Probe::Found(entry) => {
+            let place = start + entry * layout.width() + layout.value_at();
+            let old = block.get(place..place + value.len())?.to_vec();
+            // The log takes an owner of each block the old words hold, at the word that holds it.
+            let mut holding = Vec::new();
+            super::heap::boxed_words(element, &old, &mut 0, &mut holding);
+            for (offset, word) in value.iter().enumerate() {
+                noted_write(state, at, place + offset, *word, holding.contains(&offset))?;
+            }
+            let mut let_go = Vec::new();
+            super::heap::held_addresses(element, &old, &mut let_go);
+            let_go.extend(key_block(layout.key, key));
+            for address in let_go {
+                release(state, address);
+            }
+        }
+        Probe::Empty(slot) => {
+            if used >= capacity(mask + 1) || (how == Hashing::Fast && too_far(hash, slot, mask)) {
+                return None;
+            }
+            let count = |n: usize| u64::try_from(n).unwrap_or(0);
+            let entry = start + used * layout.width();
+            let words = std::iter::once(hash).chain(key.iter().copied()).chain(value.iter().copied());
+            for (offset, word) in words.enumerate() {
+                noted_write(state, at, entry + offset, word, false)?;
+            }
+            noted_write(state, at, DICT_HEADER_WORDS + slot, count(used + 1), false)?;
+            noted_write(state, at, 2, keys + 1, false)?;
+            noted_write(state, at, 3, count(used + 1), false)?;
+        }
+    }
+    i64::try_from(at).ok()
+}
+
+/// `fennec_dict_pop_words(dict, key, start, end)`: `pop` for a dict that holds its values in
+/// place. The key and a failure go as `pop`'s do. A value taken out is left as its words in this
+/// thread's buffer, with the owners they hold, which are the caller's now; a key that isn't there
+/// leaves the buffer as it was.
+pub extern "C" fn pop_in_place(dict: i64, key: i64, start: i64, end: i64) -> i64 {
+    pop_words(dict, &[key.cast_unsigned()], Key::HandedOver, (start, end))
+}
+
+/// `fennec_dict_pop_words_header(dict, a, b, c, start, end)`: `pop_in_place` for a string key
+/// given as its header's words, which stays the caller's, as `pop_header`'s does.
+pub extern "C" fn pop_in_place_header(dict: i64, a: u64, b: u64, c: u64, start: i64, end: i64) -> i64 {
+    pop_header(dict, a, b, c, start, end)
 }
 
 /// `dict.pop(key)`: takes over the dict's owner and gives back the dict's, copying it first if
@@ -1467,7 +1811,7 @@ pub extern "C" fn set_clear(set: i64) -> i64 {
         let at = u64::try_from(set).unwrap_or(0);
         let shape = state.heap.block(at).and_then(shape_word).unwrap_or(0);
         release(state, at);
-        let width = shape_layout(state, shape).map_or(ENTRY_WORDS, |layout| layout.width);
+        let width = shape_layout(state, shape).map_or(ENTRY_WORDS, Layout::width);
         let empty = build(state, (shape, Hashing::Fast), width, &[], 0);
         state.heap.insert(empty)
     })
@@ -1507,17 +1851,21 @@ fn missing_words(dict: i64, key: &[u64], whose: Key, augmented: i8, (start, end)
 pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
     let Some(layout) = layout(state, block) else { return Vec::new() };
     // Numbers as keys and values hold no blocks, so there's nothing to look through.
-    if !layout.value.owned() && !layout.key.owned() && layout.key != Word::Text {
+    if !layout.value.owned() && !layout.key.owned() && layout.key != Word::Text && !layout.in_place() {
         return Vec::new();
     }
+    let in_place = value_element(state, layout.value);
     let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
     let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
     let start = DICT_HEADER_WORDS + slots;
-    let words = block.get(start..start + used * layout.width).unwrap_or_default();
+    let words = block.get(start..start + used * layout.width()).unwrap_or_default();
     let mut found = Vec::new();
-    for entry in words.chunks_exact(layout.width).filter(|entry| entry.first() != Some(&REMOVED)) {
-        found.extend(key_block(layout.key, key_of(entry)));
-        found.extend(layout.value.owned().then(|| value_of(entry)));
+    for entry in words.chunks_exact(layout.width()).filter(|entry| entry.first() != Some(&REMOVED)) {
+        found.extend(key_block(layout.key, key_of(layout, entry)));
+        match &in_place {
+            Some(element) => super::heap::held_addresses(element, value_words(layout, entry), &mut found),
+            None => found.extend(layout.value.owned().then(|| value_of(entry))),
+        }
     }
     found
 }
@@ -1528,16 +1876,20 @@ pub(super) fn child_places(state: &State, block: &[u64], found: &mut Vec<usize>)
     let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
     let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
     let start = DICT_HEADER_WORDS + slots;
+    let in_place = value_element(state, layout.value);
     for at in 0..used {
-        let entry = start + at * layout.width;
-        let Some(words) = block.get(entry..entry + layout.width) else { return };
+        let entry = start + at * layout.width();
+        let Some(words) = block.get(entry..entry + layout.width()) else { return };
         if words.first() == Some(&REMOVED) {
             continue;
         }
-        if key_block(layout.key, key_of(words)).is_some_and(|held| held != 0) {
+        if key_block(layout.key, key_of(layout, words)).is_some_and(|held| held != 0) {
             found.push(entry + 1);
         }
-        if layout.value.owned() && value_of(words) != 0 {
+        if let Some(element) = &in_place {
+            // Each place among the value's words that holds a block, as in a list's item.
+            super::heap::boxed_words(element, block, &mut (entry + layout.value_at()), found);
+        } else if layout.value.owned() && value_of(words) != 0 {
             found.push(entry + layout.value_at());
         }
     }
@@ -1549,10 +1901,14 @@ pub(super) fn read(state: &State, block: &[u64]) -> Value {
     if layout.value == Word::Nothing {
         return read_set(state, layout, block);
     }
-    let pairs: Vec<_> = entries(block, layout.width)
-        .chunks_exact(layout.width)
+    let pairs: Vec<_> = entries(block, layout.width())
+        .chunks_exact(layout.width())
         .map(|entry| {
-            (key_value(state, layout.key, key_of(entry)), word_value(state, layout.value, value_of(entry)))
+            let value = match value_element(state, layout.value) {
+                Some(element) => super::heap::read_in_place(state, &element, value_words(layout, entry)),
+                None => word_value(state, layout.value, value_of(entry)),
+            };
+            (key_value(state, layout.key, key_of(layout, entry)), value)
         })
         .collect();
     Value::Dict(std::rc::Rc::new(pairs.into()))
@@ -1565,20 +1921,25 @@ pub(super) fn shown(state: &State, block: &[u64], out: &mut Written) {
         return;
     };
     let is_set = layout.value == Word::Nothing;
-    let held = entries(block, layout.width);
+    let held = entries(block, layout.width());
     if is_set && held.is_empty() {
         out.push_str("set()");
         return;
     }
     out.push('{');
-    for (at, entry) in held.chunks_exact(layout.width).enumerate() {
+    for (at, entry) in held.chunks_exact(layout.width()).enumerate() {
         if at > 0 {
             out.push_str(", ");
         }
-        word_shown(state, layout.key, key_of(entry), out);
+        word_shown(state, layout.key, key_of(layout, entry), out);
         if !is_set {
             out.push_str(": ");
-            word_shown(state, layout.value, &[value_of(entry)], out);
+            match value_element(state, layout.value) {
+                Some(element) => {
+                    super::heap::shown::item(state, &element, &mut value_words(layout, entry).iter(), out);
+                }
+                None => word_shown(state, layout.value, &[value_of(entry)], out),
+            }
         }
     }
     out.push('}');
@@ -1592,16 +1953,17 @@ fn word_shown(state: &State, word: Word, words: &[u64], out: &mut Written) {
         Word::F32 => Element::F32,
         Word::Bool => Element::Bool,
         Word::Text => Element::Text,
-        Word::Str | Word::Plain(_) | Word::Block(_) | Word::Nothing => Element::Str,
+        // A value in place is shown by its own kind of item, in `shown`.
+        Word::Str | Word::Plain(_) | Word::Block(_) | Word::Nothing | Word::InPlace(_) => Element::Str,
     };
     super::heap::shown::item(state, &element, &mut words.iter(), out);
 }
 
 /// A set's block as a `Value`.
 fn read_set(state: &State, layout: Layout, block: &[u64]) -> Value {
-    let items = entries(block, layout.width)
-        .chunks_exact(layout.width)
-        .map(|entry| key_value(state, layout.key, key_of(entry)))
+    let items = entries(block, layout.width())
+        .chunks_exact(layout.width())
+        .map(|entry| key_value(state, layout.key, key_of(layout, entry)))
         .collect();
     Value::Set(std::rc::Rc::new(items))
 }
@@ -1620,7 +1982,8 @@ fn word_value(state: &State, word: Word, bits: u64) -> Value {
         Word::Float | Word::F32 => Value::Float(f64::from_bits(bits)),
         Word::Bool => Value::Bool(bits != 0),
         Word::Str | Word::Plain(_) | Word::Block(_) => super::heap::read_block(state, bits),
-        Word::Nothing | Word::Text => Value::Unit,
+        // A value in place is more than a word, and is read by its own kind of item, in `read`.
+        Word::Nothing | Word::Text | Word::InPlace(_) => Value::Unit,
     }
 }
 
@@ -1679,28 +2042,54 @@ pub(super) fn write(state: &mut State, shape: u64, value: &Value) -> Option<i64>
             _ => return None,
         })
     };
-    let mut entries = Vec::with_capacity(pairs.len() * layout.width);
+    let mut entries = Vec::with_capacity(pairs.len() * layout.width());
     for (key, value) in pairs {
         let key = match (key_word, key) {
             (Word::Text, Value::Str(text)) => Some(super::text::header(state, text).to_vec()),
             _ => words(state, key_word, key).map(|key| vec![key]),
         };
-        let (Some(key), Some(value)) = (key, words(state, value_word, value)) else {
-            for entry in entries.chunks_exact(layout.width) {
+        // A value in place is written as its kind of item is in a list, to exactly its width.
+        let value = match value_element(state, value_word) {
+            Some(element) => {
+                let mut held = Vec::with_capacity(layout.value_words());
+                let written = super::heap::write(state, &element, value, &mut held);
+                let whole = written.is_some() && held.len() == layout.value_words();
+                if !whole {
+                    // What was written before it went wrong holds blocks made for it: zeros
+                    // stand for the rest, which hold nothing.
+                    held.resize(layout.value_words(), 0);
+                    let mut made = Vec::new();
+                    super::heap::held_addresses(&element, &held, &mut made);
+                    for address in made {
+                        release(state, address);
+                    }
+                }
+                whole.then_some(held)
+            }
+            None => words(state, value_word, value).map(|value| vec![value]),
+        };
+        let (Some(key), Some(value)) = (key, value) else {
+            for entry in entries.chunks_exact(layout.width()) {
                 release_entry(state, layout, entry);
             }
             return None;
         };
         entries.push(hash_key(state, key_word, &key, Hashing::Fast));
         entries.extend(key);
-        entries.push(value);
+        entries.extend(value);
     }
-    let block = build(state, (shape, Hashing::Fast), layout.width, &entries, pairs.len());
+    let block = build(state, (shape, Hashing::Fast), layout.width(), &entries, pairs.len());
     Some(state.heap.insert(block))
 }
 
 fn release_entry(state: &mut State, layout: Layout, entry: &[u64]) {
-    let held = [key_block(layout.key, key_of(entry)), layout.value.owned().then(|| value_of(entry))];
+    if layout.in_place() {
+        for address in held_in_place(state, layout, entry) {
+            release(state, address);
+        }
+        return;
+    }
+    let held = [key_block(layout.key, key_of(layout, entry)), layout.value.owned().then(|| value_of(entry))];
     for address in held.into_iter().flatten() {
         release(state, address);
     }
@@ -1713,11 +2102,24 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64], later: &mut Vec<
     if theirs != Some(layout) {
         return false;
     }
-    let (ours, theirs) = (entries(left, layout.width), entries(right, layout.width));
+    let (ours, theirs) = (entries(left, layout.width()), entries(right, layout.width()));
     ours.len() == theirs.len()
-        && ours.chunks_exact(layout.width).all(|entry| {
+        && ours.chunks_exact(layout.width()).all(|entry| {
             let (hash, value) = (entry.first().copied().unwrap_or(0), value_of(entry));
-            match find(state, right, layout, key_of(entry), hash) {
+            match find(state, right, layout, key_of(layout, entry), hash) {
+                // Values in place are the same as two items of their kind in a list are.
+                Probe::Found(at) if layout.in_place() => value_place(right, layout, at)
+                    .and_then(|place| right.get(place..place + layout.value_words()))
+                    .zip(value_element(state, layout.value))
+                    .is_some_and(|(other, element)| {
+                        super::heap::same_words_here(
+                            state,
+                            &element,
+                            value_words(layout, entry),
+                            other,
+                            later,
+                        )
+                    }),
                 Probe::Found(at) => value_place(right, layout, at)
                     .and_then(|place| right.get(place))
                     .is_some_and(|other| match layout.value {
@@ -1727,9 +2129,17 @@ pub(super) fn equal(state: &State, left: &[u64], right: &[u64], later: &mut Vec<
                         Word::Str | Word::Plain(_) | Word::Block(_) => {
                             super::heap::compare_later(later, value, *other)
                         }
-                        Word::Int | Word::U64 | Word::Bool | Word::Nothing | Word::Text => value == *other,
+                        Word::Int
+                        | Word::U64
+                        | Word::Bool
+                        | Word::Nothing
+                        | Word::Text
+                        | Word::InPlace(_) => value == *other,
                     }),
                 Probe::Empty(_) => false,
             }
         })
 }
+
+#[cfg(test)]
+mod tests;

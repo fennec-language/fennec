@@ -28,6 +28,17 @@ pub(crate) enum Source {
     Paired(Box<Source>, Box<Source>),
     /// Another stream, read on from where it is.
     Of(Stream),
+    /// The lines of a file a `with` lent, read one at a time as they're asked for.
+    Lines(FileLines),
+}
+
+/// Where a file's `lines()` reads from: the file system, the file's handle, and where `lines()`
+/// was called, which a failure to read is said to be.
+#[derive(Debug)]
+pub(crate) struct FileLines {
+    pub(crate) disk: Arc<Mutex<super::disk::Disk>>,
+    pub(crate) handle: i64,
+    pub(crate) span: Span,
 }
 
 /// The reader's end of a generator.
@@ -113,6 +124,12 @@ impl Source {
             Source::Of(stream) => {
                 let Ok(mut source) = stream.source.lock() else { return unsupported("a generator was lost") };
                 source.next()
+            }
+            Source::Lines(lines) => {
+                let Ok(mut disk) = lines.disk.lock() else { return unsupported("the file system was lost") };
+                let read = disk.read_line(lines.handle);
+                drop(disk);
+                super::files::done(read, lines.span).map(|line| line.map(Value::Str))
             }
         }
     }

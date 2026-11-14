@@ -1,9 +1,26 @@
 //! Small programs, each with what the oracle prints for it and how it ends.
 
-use fennec_oracle::{Ended, run_source, run_source_within};
+use fennec_oracle::{Ended, Workdir, run_source_in, run_source_within};
 
-/// Runs a program, with single quotes standing in for double ones and its indentation taken off.
+/// Runs a program, with single quotes standing in for double ones and its indentation taken off,
+/// in the folder the test runs in.
 fn ran(text: &str) -> (String, Ended) {
+    ran_in(text, Workdir::current())
+}
+
+/// Runs a program as `ran` does, in an empty folder at `/work`, which the disk is never looked at
+/// for.
+fn ran_in_work(text: &str) -> (String, Ended) {
+    ran_in(text, Workdir::empty(std::path::Path::new("/work")))
+}
+
+fn prints_in_work(text: &str, expected: &str) {
+    let (printed, ended) = ran_in_work(text);
+    assert_eq!(ended, Ended::Exited(0), "it printed:\n{printed}");
+    assert_eq!(printed, expected);
+}
+
+fn ran_in(text: &str, workdir: Workdir) -> (String, Ended) {
     let text = text.replace('\'', "\"");
     let indent = text
         .lines()
@@ -13,7 +30,7 @@ fn ran(text: &str) -> (String, Ended) {
         .unwrap_or(0);
     let lines: Vec<&str> = text.lines().map(|line| line.get(indent..).unwrap_or("")).collect();
     let source = format!("{}\n", lines.join("\n").trim_matches('\n'));
-    let outcome = run_source(&source, "test.fen");
+    let outcome = run_source_in(&source, "test.fen", workdir);
     (String::from_utf8_lossy(&outcome.stdout).into_owned(), outcome.ended)
 }
 
@@ -214,16 +231,16 @@ fn what_it_doesnt_model_is_refused_by_name() {
     assert_eq!(printed, "");
     assert_eq!(ended, Ended::Unsupported("std.toml.dumps".to_owned()));
     let (_, ended) = ran("
-        def main(stdout: Stdout, fs: Fs):
+        def main(stdout: Stdout, clock: Clock):
             stdout.print('hi')
         ");
-    assert_eq!(ended, Ended::Unsupported("the capability Fs".to_owned()));
+    assert_eq!(ended, Ended::Unsupported("the capability Clock".to_owned()));
 }
 
 #[test]
 fn a_run_that_goes_on_too_long_is_stopped() {
     let source = "def main(stdout: Stdout):\n    mut n = 0\n    while True:\n        n = (n + 1) % 7\n";
-    let outcome = run_source_within(source, "test.fen", 100_000);
+    let outcome = run_source_within(source, "test.fen", 100_000, Workdir::current());
     assert_eq!(outcome.ended, Ended::Unsupported("ran too long".to_owned()));
 }
 
@@ -472,23 +489,55 @@ fn a_json_load_that_fails_says_what_and_where_as_std_json_does() {
 }
 
 #[test]
+fn a_json_enum_with_a_key_after_its_case_fails_once_its_fields_have_read() {
+    prints(
+        "
+        from std import json
+
+        enum Shape:
+            Box(width: int, height: int)
+            Dot
+
+        struct Holder:
+            shape: Shape
+
+        def why[T](run: () -> T fails ParseError) -> str:
+            _ = run() except problem:
+                return problem.message
+            return 'read'
+
+        def main(stdout: Stdout):
+            stdout.print(why(() => json.loads[Shape]('{\\'Box\\': {\\'width\\': 1, \\'height\\': 2}, \\'extra\\': 1}')?))
+            stdout.print(why(() => json.loads[Shape]('{\\'Box\\': {\\'width\\': \\'no\\', \\'height\\': 2}, \\'extra\\': 1}')?))
+            stdout.print(why(() => json.loads[Shape]('{\\'Dot\\': {}, \\'Box\\': 1}')?))
+            stdout.print(why(() => json.loads[Holder]('{\\'shape\\': {\\'Dot\\': {}, \\'a\\\\nb\\': [1]}}')?))
+        ",
+        "the text has \"extra\" after its case, but an enum is written as an object with its case as the only key\n\
+         `width` should be an int, but it's a str\n\
+         the text has \"Box\" after its case, but an enum is written as an object with its case as the only key\n\
+         `shape` has \"a\\nb\" after its case, but an enum is written as an object with its case as the only key\n",
+    );
+}
+
+#[test]
 fn json_refuses_a_failing_load_it_cant_be_sure_of_and_stops_on_nan() {
     let (printed, ended) = ran("
         from std import json
 
-        enum Order:
-            Hold
-            Move(to: int)
+        struct Note:
+            text: str
+            @skip
+            seen = 0
 
         def main(stdout: Stdout):
             stdout.print('before')
-            _ = json.loads[Order]('{\\'Move\\': {\\'to\\': 1}, \\'Hold\\': {}}') except ParseError():
-                .Hold
+            _ = json.loads[Note]('{\\'text\\': \\'a\\', \\'\\': 1}') except ParseError():
+                Note(text='')
         ");
     assert_eq!(printed, "");
     assert_eq!(
         ended,
-        Ended::Unsupported("json.loads failing (a case's object with more than its case in it)".to_owned())
+        Ended::Unsupported("json.loads failing (a key that names a field `@skip` leaves out)".to_owned())
     );
     let (printed, ended) = ran("
         from std import json, math
@@ -504,5 +553,282 @@ fn json_refuses_a_failing_load_it_cant_be_sure_of_and_stops_on_nan() {
     assert!(
         matches!(&ended, Ended::Stopped(said) if said.contains("`[1].values[1]` is nan, which JSON can't write")),
         "{ended:?}"
+    );
+}
+
+#[test]
+fn a_file_written_is_read_back_and_writing_again_replaces_it() {
+    prints_in_work(
+        "
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            stdout.print(fs.exists('notes.txt')?)
+            fs.write_text('notes.txt', 'a longer first note')?
+            fs.write_text('notes.txt', 'short')?
+            stdout.print(fs.read_text('notes.txt')?, fs.metadata('notes.txt')?.size, fs.exists('notes.txt')?)
+            stdout.print(fs.read_text_if_present('none.txt')? else 'nothing yet')
+            fs.remove('notes.txt')?
+            stdout.print(fs.exists('notes.txt')?)
+        ",
+        "False\nshort 5 True\nnothing yet\nFalse\n",
+    );
+}
+
+#[test]
+fn a_file_made_in_a_with_block_is_written_in_pieces_and_takes_its_place_when_the_block_ends() {
+    prints_in_work(
+        "
+        error Stop:
+            why: str
+
+        def save(fs: Fs, lines: list[str]) -> bool fails IoError | Stop:
+            with fs.create('save.txt')? as file:
+                for line in lines:
+                    if line == '': fail Stop('an empty line')
+                    file.write(line)?
+                    file.write_line('!')?
+                return fs.exists('save.txt')?
+            return False
+
+        def main(stdout: Stdout, fs: Fs) fails IoError | Stop:
+            stdout.print(save(fs, ['one', 'two'])?)
+            stdout.print(fs.read_text('save.txt')?)
+            _ = save(fs, ['three', '']) except why:
+                stdout.print(why)
+                False
+            mut found = list[str]()
+            with fs.open('save.txt')? as file:
+                found.append(file.read_line()? else 'none')
+                for line in file.lines()?:
+                    found.append(line)
+                found.append(str(file.read_line()? is None))
+            stdout.print(found)
+        ",
+        "False\none!\ntwo!\n\nStop(why=\"an empty line\")\n[\"one!\", \"two!\", \"True\"]\n",
+    );
+}
+
+#[test]
+fn a_folder_is_listed_in_order_and_walked_a_folder_before_what_is_in_it() {
+    prints_in_work(
+        "
+        from std.path import Path
+
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            fs.make_dir('game/world')?
+            fs.write_text('game/world/map.fen', '')?
+            fs.write_text('game/main.fen', '')?
+            fs.write_text('game/Notes.txt', '')?
+            stdout.print([path.text for path in fs.list_dir('game')?])
+            stdout.print([path.text for path in fs.walk(Path('game'))?])
+            first = fs.list_dir('./game/')?
+            stdout.print(first[0], fs.metadata('game/world')?.is_dir)
+        ",
+        "[\"game/Notes.txt\", \"game/main.fen\", \"game/world\"]\n\
+         [\"game/Notes.txt\", \"game/main.fen\", \"game/world\", \"game/world/map.fen\"]\n\
+         Path(text=\"./game/Notes.txt\") True\n",
+    );
+}
+
+/// What makes each of these fail, as `why` shows it, indented as the programs that use it are.
+const WHY: &str = "
+        def why[T](run: () -> T fails IoError) -> str:
+            _ = run() except failed:
+                return f'{failed}'
+            return 'fine'
+";
+
+#[test]
+fn the_file_system_fails_with_the_case_and_the_words_the_runtime_gives() {
+    prints_in_work(
+        &format!(
+            "{WHY}
+        def read(fs: Fs, path: str) -> str fails IoError:
+            with fs.open(path)? as file:
+                return file.read_text()?
+            return ''
+
+        def removed(fs: Fs, path: str) -> str fails IoError:
+            fs.remove(path)?
+            return 'removed'
+
+        def made(fs: Fs, path: str) -> str fails IoError:
+            fs.make_dir(path)?
+            return 'made'
+
+        def written(fs: Fs) -> str fails IoError:
+            with fs.open('note.txt')? as file:
+                file.write_line('more')?
+            return 'written'
+
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            fs.make_dir('folder/inner')?
+            fs.write_text('note.txt', 'x')?
+            stdout.print(why(() => fs.read_text('missing.txt')?))
+            stdout.print(why(() => fs.read_text('folder')?))
+            stdout.print(why(() => read(fs, 'folder')?))
+            stdout.print(why(() => fs.list_dir('missing')?))
+            stdout.print(why(() => removed(fs, 'folder')?))
+            stdout.print(why(() => made(fs, 'note.txt')?))
+            stdout.print(why(() => written(fs)?))
+            stdout.print(why(() => fs.read_text('a\\x00b')?))
+        "
+        ),
+        "IoError.NotFound(reason=\"nothing is there\")\n\
+         IoError.Other(reason=\"it's a folder, not a file\")\n\
+         IoError.Other(reason=\"it's a folder, not a file\")\n\
+         IoError.NotFound(reason=\"nothing is there\")\n\
+         IoError.Other(reason=\"the folder isn't empty\")\n\
+         IoError.AlreadyExists(reason=\"something is there already\")\n\
+         IoError.Other(reason=\"this file was opened to read, not to write\")\n\
+         IoError.Other(reason=\"`a\\\\0b` can't be a path: it holds a NUL\")\n",
+    );
+}
+
+/// Windows says a path through a file isn't there, so the oracle refuses one there.
+#[cfg(unix)]
+#[test]
+fn a_path_through_a_file_fails_as_not_a_folder() {
+    prints_in_work(
+        &format!(
+            "{WHY}
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            fs.write_text('note.txt', 'x')?
+            stdout.print(why(() => fs.read_text('note.txt/x')?))
+            stdout.print(why(() => fs.exists('note.txt/x')?))
+            stdout.print(why(() => fs.list_dir('note.txt')?))
+        "
+        ),
+        &"IoError.Other(reason=\"part of the path is a file, not a folder\")\n".repeat(3),
+    );
+}
+
+#[test]
+fn a_narrowed_fs_reaches_only_its_folder_and_a_read_only_one_changes_nothing() {
+    prints_in_work(
+        "
+        def why[T](run: () -> T fails IoError) -> str:
+            _ = run() except failed:
+                return failed.message()
+            return 'fine'
+
+        def wrote(fs: Fs, path: str) -> str fails IoError:
+            fs.write_text(path, 'x')?
+            return 'written'
+
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            fs.make_dir('saves/slot1')?
+            fs.write_text('secret.txt', 'hunter2')?
+            saves = fs.only('saves')
+            saves.write_text('saves/slot1/game.json', '{}')?
+            stdout.print(saves.read_text('saves/./slot1/../slot1/game.json')?, saves.exists('saves')?)
+            stdout.print(why(() => saves.read_text('secret.txt')?))
+            stdout.print(why(() => saves.read_text('saves/../secret.txt')?))
+            stdout.print(why(() => saves.only('other').exists('other')?))
+            stdout.print(why(() => fs.only('missing').exists('missing/x')?))
+            reader = saves.read_only()
+            stdout.print(reader.read_text('saves/slot1/game.json')?, why(() => wrote(reader, 'saves/new.txt')?))
+            stdout.print(why(() => saves.read_text('saves/a\\x00b')?))
+        ",
+        "{} True\n\
+         `secret.txt` is outside what this Fs can reach: `/work/saves`\n\
+         `saves/../secret.txt` is outside what this Fs can reach: `/work/saves`\n\
+         `other` is outside what this Fs can reach: nothing\n\
+         nothing is there\n\
+         {} this Fs only reads, so it can't change `saves/new.txt`\n\
+         `saves/a\\0b` can't be a path: it holds a NUL\n",
+    );
+}
+
+#[test]
+fn a_path_is_its_text_and_its_methods_only_look_at_it() {
+    prints_in_work(
+        "
+        from std.path import Path
+
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            slot = Path('saves') / 'slot1.json'
+            stdout.print(slot, slot.name(), slot.stem(), slot.extension(), slot.parent().text, slot.is_absolute())
+            stdout.print(Path('a/./b/../c').normalize().text, Path('/a/../../b').normalize().text, Path('x').join('/etc').text)
+            inside = Path('www').inside('/css/site.css') except why:
+                Path(why.message)
+            outside = Path('www').inside('../secret') except why:
+                Path(why.message)
+            stdout.print(inside.text, outside.text)
+            fs.write_text(slot.name(), 'kept')?
+            stdout.print(fs.read_text(Path('slot1.json'))?)
+        ",
+        "Path(text=\"saves/slot1.json\") slot1.json slot1 json saves False\n\
+         a/c /b /etc\n\
+         www/css/site.css `../secret` would leave `www`\n\
+         kept\n",
+    );
+}
+
+#[test]
+fn a_program_makes_an_io_error_of_its_own() {
+    prints_in_work(
+        "
+        def checked(fs: Fs, path: str) -> str fails IoError:
+            text = fs.read_text(path) except why:
+                case .NotFound():
+                    fail .Other(reason=f'{path} is missing: {why.message()}')
+                case _:
+                    fail why
+            return text
+
+        def main(stdout: Stdout, fs: Fs):
+            _ = checked(fs, 'missing.txt') except why:
+                stdout.print(why, why.message())
+                ''
+        ",
+        "IoError.Other(reason=\"missing.txt is missing: nothing is there\") missing.txt is missing: nothing is there\n",
+    );
+}
+
+#[test]
+fn what_differs_from_one_system_to_another_is_refused() {
+    let refused = |body: &str, why: &str| {
+        let source = format!("def main(stdout: Stdout, fs: Fs) fails IoError:\n{body}");
+        let (printed, ended) = ran_in_work(&source);
+        assert_eq!((printed.as_str(), ended), ("", Ended::Unsupported(why.to_owned())), "{body}");
+    };
+    refused(
+        "    with fs.create('made.txt')? as file:\n        stdout.print(fs.list_dir('.')?)\n",
+        "what's in a folder while a file is made in it, under a name holding the process's number",
+    );
+    refused(
+        "    fs.write_text('Notes.txt', 'a')?\n    stdout.print(fs.exists('notes.txt')?)\n",
+        "the name `notes.txt` beside `Notes.txt`, which some systems take as the same name",
+    );
+    refused("    stdout.print(fs.exists('/etc/hosts')?)\n", "a path outside the folder the program runs in");
+    refused(
+        "    stdout.print(fs.metadata('.')?.is_dir)\n    stdout.print(fs.metadata('.')?)\n",
+        "a folder's size, which differs from one system to another",
+    );
+    refused("    _ = fs.read_bytes('a.bin')?\n", "bytes");
+}
+
+/// In the folder the test runs in, the crate's own, the oracle sees what's there, reads none of
+/// it, and writes nothing to the disk.
+#[test]
+fn the_disk_is_looked_at_and_never_written() {
+    let (printed, ended) = ran("
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            fs.write_text('written-by-the-oracle.txt', 'x')?
+            fs.make_dir('made-by-the-oracle/inside')?
+            stdout.print(fs.exists('Cargo.toml')?, fs.exists('src')?, fs.exists('no-such-file.txt')?)
+            stdout.print(fs.read_text('written-by-the-oracle.txt')?, fs.walk('made-by-the-oracle')?)
+        ");
+    assert_eq!(ended, Ended::Exited(0), "it printed:\n{printed}");
+    assert_eq!(printed, "True True False\nx [Path(text=\"made-by-the-oracle/inside\")]\n");
+    assert!(!std::path::Path::new("written-by-the-oracle.txt").exists());
+    assert!(!std::path::Path::new("made-by-the-oracle").exists());
+    let (_, ended) = ran("
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            stdout.print(fs.read_text('Cargo.toml')?)
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported("reading a file that was there before the program started".to_owned())
     );
 }

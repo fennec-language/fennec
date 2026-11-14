@@ -52,15 +52,19 @@ impl Within for Command {
     }
 
     fn output_limited(&mut self, cpu: Duration, wall: Duration) -> std::io::Result<Output> {
+        let counted = counted_for_what_it_leaves(self);
         let child = cpu_limited(self, cpu)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        finished_before(child, Limits { cpu, wall })
+        let mut output = finished_before(child, Limits { cpu, wall })?;
+        left_nothing(counted, &mut output);
+        Ok(output)
     }
 
     fn output_given(&mut self, input: &[u8], cpu: Duration) -> std::io::Result<Output> {
+        let counted = counted_for_what_it_leaves(self);
         let mut limited = cpu_limited(self, cpu);
         let mut child =
             limited.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
@@ -68,7 +72,56 @@ impl Within for Command {
         let input = input.to_vec();
         // Written from a thread of its own, so a program that never reads it can't hold this up.
         std::thread::spawn(move || std::io::Write::write_all(&mut stdin, &input));
-        finished_before(child, Limits { cpu, wall: WALL_DEADLINE.max(cpu) })
+        let mut output = finished_before(child, Limits { cpu, wall: WALL_DEADLINE.max(cpu) })?;
+        left_nothing(counted, &mut output);
+        Ok(output)
+    }
+}
+
+/// Programs that end normally holding blocks, by the name of what's run, each with who is finding
+/// out why. There are none. A new one isn't added here: it's a leak to fix.
+const MAY_LEAVE_BLOCKS: &[&str] = &[];
+
+/// Has a built program count what it leaves, as every one a test runs does: its name, and whether
+/// the test asked for the counts itself. `None` for the compiler and for anything that isn't a
+/// program a test built.
+fn counted_for_what_it_leaves(command: &mut Command) -> Option<(String, bool)> {
+    let name = Path::new(command.get_program()).file_name()?.to_string_lossy().into_owned();
+    if name.starts_with("fennec") || name == "sh" || name == "cargo" {
+        return None;
+    }
+    let asked = command.get_envs().any(|(key, _)| key == "FENNEC_COUNTS");
+    command.env("FENNEC_COUNTS", "1");
+    Some((name, asked))
+}
+
+/// The rule every program a test runs is held to: **one that ends normally, with exit code 0, has
+/// let go of everything it made.** Its last line of counts says how many blocks it still held,
+/// and anything but 0 fails the test, whatever the test was looking at.
+///
+/// A program the runtime stops for a failure nothing handled in `main` isn't held to it: a failed
+/// `assert`, an overflow that stops it, an error out of `main`. The process ends there, holding
+/// the failure it's saying and what `main` still held. A task or a generator that fails while the
+/// program carries on and ends normally is held to it like any other.
+///
+/// The counts' line is taken back out of what the program said unless the test asked for it.
+fn left_nothing(counted: Option<(String, bool)>, output: &mut Output) {
+    let Some((name, asked)) = counted else { return };
+    let said = String::from_utf8_lossy(&output.stderr).into_owned();
+    let Some(counts) = said.lines().rev().find(|line| line.starts_with("copies ")) else { return };
+    let left = counts.rsplit_once(" live ").map_or("0", |(_, left)| left.trim());
+    let excused = MAY_LEAVE_BLOCKS.iter().any(|known| name.starts_with(known));
+    assert!(
+        output.status.code() != Some(0) || left == "0" || excused,
+        "`{name}` ended normally holding {left} blocks it never let go of: {counts}"
+    );
+    if !asked {
+        let mut kept = String::with_capacity(said.len());
+        for line in said.lines().filter(|line| !line.starts_with("copies ")) {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+        output.stderr = kept.into_bytes();
     }
 }
 
@@ -369,6 +422,17 @@ pub(crate) fn runtime_beside_fennec() -> bool {
 pub(crate) fn threads_runtime_built() -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
     *BUILT.get_or_init(|| runtime_variant_built("threads", "threads", "fennec_runtime_threads"))
+}
+
+/// Builds both runtime libraries with the heap audit in them, next to `fennec`, as
+/// `libfennec_runtime_audit.a` and `libfennec_runtime_threads_audit.a`: what a program built under
+/// `FENNEC_AUDIT=1` links. Each is built in the folder the gate builds it in.
+pub(crate) fn audited_runtimes_built() -> bool {
+    static BUILT: OnceLock<bool> = OnceLock::new();
+    *BUILT.get_or_init(|| {
+        runtime_variant_built("audit", "audit", "fennec_runtime_audit")
+            && runtime_variant_built("threads,audit", "threads-audit", "fennec_runtime_threads_audit")
+    })
 }
 
 /// Builds the runtime library with `features`, in a folder of its own named `folder`, beside the

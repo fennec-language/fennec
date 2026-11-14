@@ -1,6 +1,7 @@
 //! The few parts of the standard library the oracle models, each on its own: `std.math`'s
-//! constants and the functions whose result IEEE 754 fixes exactly, and `std.json`'s `dumps` and
-//! `loads`, in `json.rs`. The rest of it, and every function `libm` computes, is unsupported.
+//! constants and the functions whose result IEEE 754 fixes exactly, `std.json`'s `dumps` and
+//! `loads`, in `json.rs`, `std.path`'s `Path`, in `paths.rs`, and `std.fs`, in `files.rs`. The
+//! rest of it, and every function `libm` computes, is unsupported.
 
 use fennec_syntax::Span;
 
@@ -31,6 +32,7 @@ pub(crate) fn has_function(path: &str) -> bool {
             | "std.math.lerp"
             | "std.json.dumps"
             | "std.json.loads"
+            | "std.path.Path"
     )
 }
 
@@ -50,6 +52,7 @@ pub(crate) fn call(path: &str, args: &[Value], span: Span) -> Run<Value> {
         ("std.math.lerp", [Value::Float(start), Value::Float(end), Value::Float(amount)]) => {
             Ok(Value::Float(start + (end - start) * amount))
         }
+        ("std.path.Path", [Value::Str(text)]) => Ok(super::files::path_value(text.clone())),
         _ => unsupported(path.to_owned()),
     }
 }

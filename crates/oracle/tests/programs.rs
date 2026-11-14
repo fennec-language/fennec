@@ -881,6 +881,29 @@ fn a_lock_changes_the_one_cell_every_copy_reaches_and_a_failure_undoes_it() {
     );
 }
 
+/// `==` on two `shared` values compares what they hold, as decided on 2026-11-14, not which cell
+/// they are: two cells holding equal values are equal, a cell is equal to itself and to a copy
+/// of itself, and a change through one cell is seen by the next comparison.
+#[test]
+fn two_shared_values_are_equal_when_they_hold_equal_values() {
+    prints(
+        "
+        struct Account:
+            total = 0
+
+        def main(stdout: Stdout):
+            shared first = Account(total=1)
+            shared second = Account(total=1)
+            copy = first
+            stdout.print(first == second, first == copy, first == first)
+            lock second as ref held:
+                held.total += 1
+            stdout.print(first == second, first != second)
+        ",
+        "True True True\nFalse True\n",
+    );
+}
+
 /// `parallel` gives its results in the list's order, a sum of ints adds up exactly, each `for ref`
 /// round changes its own item, the failure passed up is the first round's that fails, by
 /// position, and a stream's item fails only once it's read.

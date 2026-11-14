@@ -1443,7 +1443,8 @@ fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
 }
 
 /// Whether a cleanup statement can fail: a `fail`, or a whole line that's a `?`, here or in an
-/// `if` inside it.
+/// `if` inside it. A `match` isn't looked into: a `with launch`'s cleanup fails from one with the
+/// task's failure, which is why the block failed, so it fails the block rather than being a note.
 fn cleanup_fails(each: &Stmt) -> bool {
     match &each.kind {
         StmtKind::Fail(_)

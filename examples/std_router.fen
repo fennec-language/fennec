@@ -39,7 +39,8 @@ def answered(router: Router, asked: str, raw_path = "") -> str:
     request = Request(method=asked[:space], path=asked[space + 1:], raw_path=raw_path)
     response = router.respond(request)
     allowed = response.headers.get("allow") else ""
-    shown = f"{response.status} {response.text()}"
+    body = response.body.decode() except InvalidValue(): "(not text)"
+    shown = f"{response.status} {body}"
     return f"{shown} (allow: {allowed})" if allowed != "" else shown
 
 test "a route written out and one with a parameter each find their handler":

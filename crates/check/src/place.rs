@@ -107,6 +107,7 @@ impl FnCx<'_> {
         declare_mut: bool,
         written: Option<&TypeExpr>,
     ) {
+        self.note_written(target, value);
         match &target.kind {
             ExprKind::Name(name) => {
                 if !declare_mut

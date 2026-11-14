@@ -2,14 +2,16 @@
 //! in its source that allocated or copied in the run, how often, how much, and why. The place that
 //! did it most comes first, since that's where it costs the most. What the program prints is left
 //! out. Blocks the runtime makes are all counted, but what it holds as a `fennec_rt::Value`
-//! isn't.
+//! isn't. Every thread's cost is counted, each place's by the kind of thread it was on: the
+//! program's own, a task, a parallel worker or a server's, since a server's cost is in its workers
+//! and its tasks rather than in `main`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
 use fennec_ir::{Cost, Finding};
-use fennec_rt::embed::Counts;
+use fennec_rt::embed::{Counts, RanOn};
 use fennec_syntax::Span;
 
 use crate::copies::{bytes, ran};
@@ -17,6 +19,8 @@ use crate::copies::{bytes, ran};
 /// A place in the source that cost something in a run.
 struct Place {
     site: u32,
+    /// The kind of thread it cost this on.
+    ran_on: RanOn,
     counts: Counts,
     why: String,
     loops: usize,
@@ -44,6 +48,11 @@ impl Place {
         said.join(", ")
     }
 
+    /// Which kind of thread it cost this on, in words.
+    fn on(&self) -> &'static str {
+        on(self.ran_on)
+    }
+
     /// Where it sits among loops, in words.
     fn hot(&self) -> String {
         match (self.loops, &self.called_from_loop) {
@@ -52,6 +61,16 @@ impl Place {
             (1, _) => " (in a loop)".to_owned(),
             (loops, _) => format!(" (in {loops} loops)"),
         }
+    }
+}
+
+/// A kind of thread, in words.
+fn on(ran_on: RanOn) -> &'static str {
+    match ran_on {
+        RanOn::Main => "on main",
+        RanOn::Task => "in a task",
+        RanOn::Parallel => "on a parallel worker",
+        RanOn::Server => "on a server worker",
     }
 }
 
@@ -72,8 +91,9 @@ fn why(counts: &Counts, found: &[&Finding], what: &str) -> String {
     said.join("; ")
 }
 
-/// Reads what each place cost, as the run wrote it.
-fn read_sites(text: &str) -> Vec<(u32, Counts)> {
+/// Reads what each place cost on each kind of thread, as the run wrote it: the kind's number is
+/// last, and a line without one is the program's own thread's.
+fn read_sites(text: &str) -> Vec<(u32, RanOn, Counts)> {
     text.lines()
         .filter_map(|line| {
             let mut numbers = line.split(' ').map(str::parse::<u64>);
@@ -86,26 +106,35 @@ fn read_sites(text: &str) -> Vec<(u32, Counts)> {
                 copied_bytes: next()?,
                 largest_copy: next()?,
             };
-            Some((site, counts))
+            let ran_on = match numbers.next() {
+                None => RanOn::Main,
+                Some(number) => RanOn::from_number(number.ok()?)?,
+            };
+            Some((site, ran_on, counts))
         })
         .collect()
 }
 
 /// The places that cost something, the one that did it most first.
-fn places_from(costs: Vec<(u32, Counts)>, sites: &BTreeMap<u32, String>, findings: &[Finding]) -> Vec<Place> {
+fn places_from(
+    costs: Vec<(u32, RanOn, Counts)>,
+    sites: &BTreeMap<u32, String>,
+    findings: &[Finding],
+) -> Vec<Place> {
     let mut by_place: HashMap<u32, Vec<&Finding>> = HashMap::new();
     for finding in findings {
         by_place.entry(finding.span.start).or_default().push(finding);
     }
     let mut places: Vec<Place> = costs
         .into_iter()
-        .filter(|(_, counts)| counts.allocations + counts.copies > 0)
-        .map(|(site, counts)| {
+        .filter(|(_, _, counts)| counts.allocations + counts.copies > 0)
+        .map(|(site, ran_on, counts)| {
             let found = by_place.get(&site).map_or(&[][..], Vec::as_slice);
             let what = sites.get(&site).map_or("this", String::as_str);
             let first = found.first();
             Place {
                 site,
+                ran_on,
                 counts,
                 why: why(&counts, found, what),
                 loops: first.map_or(0, |finding| finding.loops),
@@ -113,14 +142,14 @@ fn places_from(costs: Vec<(u32, Counts)>, sites: &BTreeMap<u32, String>, finding
             }
         })
         .collect();
-    places.sort_by_key(|place| (std::cmp::Reverse(place.times()), place.site));
+    places.sort_by_key(|place| (std::cmp::Reverse(place.times()), place.site, place.ran_on));
     places
 }
 
-/// What a run cost altogether.
-fn total(places: &[Place]) -> Counts {
+/// What a run cost altogether, on the kinds of thread `on` takes.
+fn total(places: &[Place], on: impl Fn(RanOn) -> bool) -> Counts {
     let mut all = Counts::default();
-    for Place { counts, .. } in places {
+    for Place { counts, .. } in places.iter().filter(|place| on(place.ran_on)) {
         all.allocations += counts.allocations;
         all.allocated_bytes += counts.allocated_bytes;
         all.copies += counts.copies;
@@ -128,6 +157,14 @@ fn total(places: &[Place]) -> Counts {
         all.largest_copy = all.largest_copy.max(counts.largest_copy);
     }
     all
+}
+
+/// The kinds of thread something cost on, in order.
+fn kinds(places: &[Place]) -> Vec<RanOn> {
+    let mut kinds: Vec<RanOn> = places.iter().map(|place| place.ran_on).collect();
+    kinds.sort();
+    kinds.dedup();
+    kinds
 }
 
 /// A run of a program built to trace itself.
@@ -206,10 +243,23 @@ fn human(path: &str) -> ExitCode {
         for place in &run.places {
             let span = Span { start: place.site, end: place.site };
             let (file, line, column, text) = run.program.sources.locate(span).unwrap_or(("?", 0, 0, ""));
-            println!("{file}:{line}:{column}{}: {}: {}", place.hot(), place.cost(), place.why);
+            println!(
+                "{file}:{line}:{column}{}, {}: {}: {}",
+                place.hot(),
+                place.on(),
+                place.cost(),
+                place.why
+            );
             println!("    {}", text.trim());
         }
-        println!("{}", ran(&total(&run.places)));
+        println!("{}", ran(&total(&run.places, |_| true)));
+        // Where it went, once anything but the program's own thread cost something.
+        if run.places.iter().any(|place| place.ran_on != RanOn::Main) {
+            for kind in kinds(&run.places) {
+                let counts = total(&run.places, |ran_on| ran_on == kind);
+                println!("  {}", ran(&counts).replacen("in a run", on(kind), 1));
+            }
+        }
     })
 }
 
@@ -229,18 +279,33 @@ fn json(path: &str) -> ExitCode {
                 ("copies", number(place.counts.copies)),
                 ("copied_bytes", number(place.counts.copied_bytes)),
                 ("largest_copy", number(place.counts.largest_copy)),
+                ("ran_on", Json::string(place.ran_on.name())),
                 ("why", Json::string(&place.why)),
                 ("loops", Json::number(place.loops)),
                 ("called_from_loop", place.called_from_loop.as_deref().map_or(Json::Null, Json::string)),
             ])
         });
-        let all = total(&run.places);
+        let all = total(&run.places, |_| true);
+        let by_thread = kinds(&run.places)
+            .into_iter()
+            .map(|kind| {
+                let counts = total(&run.places, |ran_on| ran_on == kind);
+                let counted = Json::object([
+                    ("allocations", number(counts.allocations)),
+                    ("allocated_bytes", number(counts.allocated_bytes)),
+                    ("copies", number(counts.copies)),
+                    ("copied_bytes", number(counts.copied_bytes)),
+                ]);
+                (kind.name().to_owned(), counted)
+            })
+            .collect();
         let report = Json::object([
             ("places", Json::Array(places.collect())),
             ("allocations", number(all.allocations)),
             ("allocated_bytes", number(all.allocated_bytes)),
             ("copies", number(all.copies)),
             ("copied_bytes", number(all.copied_bytes)),
+            ("by_thread", Json::Object(by_thread)),
             ("failed", Json::Bool(run.failure.is_some())),
         ]);
         println!("{report}");
@@ -249,7 +314,7 @@ fn json(path: &str) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use fennec_rt::embed::Counts;
+    use fennec_rt::embed::{Counts, RanOn};
 
     use super::read_sites;
 
@@ -257,6 +322,22 @@ mod tests {
     fn it_reads_what_a_run_wrote() {
         let wanted =
             Counts { allocations: 2, allocated_bytes: 80, copies: 3, copied_bytes: 24, largest_copy: 8 };
-        assert_eq!(read_sites("7 2 80 3 24 8\nnot numbers\n9 1\n"), [(7, wanted)]);
+        assert_eq!(read_sites("7 2 80 3 24 8\nnot numbers\n9 1\n"), [(7, RanOn::Main, wanted)]);
+    }
+
+    /// Each place's kind of thread is its line's last number, and a number that's no kind is
+    /// passed over rather than taken for one.
+    #[test]
+    fn it_reads_which_kind_of_thread_each_cost_was_on() {
+        let one = Counts { allocations: 1, allocated_bytes: 8, ..Counts::default() };
+        assert_eq!(
+            read_sites("7 1 8 0 0 0 0\n7 1 8 0 0 0 1\n8 1 8 0 0 0 2\n9 1 8 0 0 0 3\n9 1 8 0 0 0 4\n"),
+            [
+                (7, RanOn::Main, one),
+                (7, RanOn::Task, one),
+                (8, RanOn::Parallel, one),
+                (9, RanOn::Server, one)
+            ]
+        );
     }
 }

@@ -346,8 +346,8 @@ pub(super) fn write(state: &mut State, value: &Value) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{HEADER_WORDS, grow, make};
-    use crate::embed::{Tables, dicts, finish, heap, start, with};
+    use super::{HEADER_WORDS, data_at, grow, join, make, slice, text_at, text_part};
+    use crate::embed::{Tables, dicts, failed, finish, heap, start, with};
 
     /// A builder's block for these bytes, with its room past them filled with junk, as nothing
     /// promises it's zero.
@@ -395,6 +395,74 @@ mod tests {
             for block in [exact, from_builder, longer] {
                 heap::free(block);
             }
+        }
+        finish();
+    }
+    /// A slice, a part read as text and a join never set the failure flag, whatever they're given:
+    /// bounds below zero, past the end, the wrong way round, as far out as an `int` goes, bytes
+    /// that aren't UTF-8, and an address that's no block. A slice is what Python's would be.
+    #[test]
+    fn a_slice_a_text_part_and_a_join_never_fail_whatever_theyre_given() {
+        start(Tables::default(), crate::Inputs::default());
+        let data: Vec<u8> = (0..19).map(|n| b'a' + n).collect();
+        let whole = with(|state| make(state, &data));
+        let length = i64::try_from(data.len()).unwrap_or(0);
+        let bounds =
+            [i64::MIN, i64::MIN + 1, -100, -19, -18, -8, -1, 0, 1, 7, 8, 9, 18, 19, 20, 100, i64::MAX];
+        for start_at in bounds {
+            for end_at in bounds {
+                let part = slice(whole, start_at, end_at);
+                assert!(!failed(), "a slice from {start_at} to {end_at} failed");
+                // Python's rule: a missing bound is its end, one below zero counts from the back,
+                // and each is held to the bytes.
+                let place = |at: i64, missing: i64| {
+                    let at = if at == i64::MIN {
+                        missing
+                    } else if at < 0 {
+                        at.saturating_add(length)
+                    } else {
+                        at
+                    };
+                    usize::try_from(at.clamp(0, length)).unwrap_or(0)
+                };
+                let (from, to) = (place(start_at, 0), place(end_at, length));
+                let wanted = data.get(from..to.max(from)).unwrap_or_default();
+                assert_eq!(with(|state| data_at(state, part)), wanted, "from {start_at} to {end_at}");
+                let text = text_part(whole, start_at, end_at);
+                assert!(!failed() && text != 0, "a part as text from {start_at} to {end_at} failed");
+                heap::free(part);
+                heap::free(text);
+            }
+        }
+        // Bytes that aren't UTF-8 read as the empty text, and that's an answer, not a failure.
+        let broken = with(|state| make(state, &[0xff, 0xfe, b'a']));
+        let text = text_part(broken, 0, 3);
+        assert!(!failed());
+        assert_eq!(with(|state| text_at(state, text)), "");
+        // A join of anything, the empty bytes and an address that's no block among them.
+        let empty = slice(whole, 5, 5);
+        for (a, b, wanted) in [
+            (whole, empty, data.len()),
+            (empty, empty, 0),
+            (whole, whole, data.len() * 2),
+            (0, whole, data.len()),
+            (whole, 12_345, data.len()),
+        ] {
+            let both = join(a, b);
+            assert!(!failed(), "a join failed");
+            assert_eq!(with(|state| data_at(state, both)).len(), wanted);
+            heap::free(both);
+        }
+        // An address that's no block is no bytes, to a slice and to a part as text too.
+        for nothing in [0, 12_345] {
+            let (part, text) = (slice(nothing, 0, 4), text_part(nothing, 0, 4));
+            assert!(!failed());
+            assert_eq!(with(|state| data_at(state, part)), Vec::<u8>::new());
+            heap::free(part);
+            heap::free(text);
+        }
+        for block in [whole, broken, text, empty] {
+            heap::free(block);
         }
         finish();
     }

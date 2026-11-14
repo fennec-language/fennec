@@ -35,7 +35,7 @@ pub fn what_main_reaches(module: &Module) -> Module {
     Module {
         items: items.collect(),
         std_rewritten: module.std_rewritten.clone(),
-        grants: module.grants.clone(),
+        holds: module.holds.clone(),
     }
 }
 

@@ -141,10 +141,14 @@ pub(crate) struct Checker {
     /// What's followed through function values: which function parameters are called, what's
     /// passed for them, and what each arrow function waits on.
     pub(crate) values: crate::waits::Values,
-    /// What the program's code hands from kit to kit, which `gets` holds to what each kit gets.
-    pub(crate) handovers: crate::gets::Handovers,
-    /// What each kit's `kit.toml` says the kits it names get.
-    pub(crate) grants: Vec<fennec_syntax::Grant>,
+    /// What the program's code hands from kit to kit, which is held to what `kit.lock` says each
+    /// kit holds.
+    pub(crate) handovers: crate::holds::Handovers,
+    /// What `kit.lock` says each kit holds.
+    pub(crate) holds: fennec_syntax::Holds,
+    /// What each kit is handed, by kit and capability, where it's first handed over, when the
+    /// module asks only for that to be worked out.
+    pub(crate) worked_out: BTreeMap<String, BTreeMap<String, Span>>,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
@@ -249,8 +253,9 @@ impl Checker {
             lock_calls: Vec::new(),
             lock_verdicts: BTreeMap::new(),
             values: crate::waits::Values::default(),
-            handovers: crate::gets::Handovers::default(),
-            grants: module.grants.clone(),
+            handovers: crate::holds::Handovers::default(),
+            holds: module.holds.clone(),
+            worked_out: BTreeMap::new(),
             diagnostics,
         }
     }
@@ -310,7 +315,7 @@ impl Checker {
         }
         // What a program as lowering rewrote it hands over is what it handed as written.
         if self.diagnostics.is_empty() && !self.again {
-            let refused = crate::gets::refused(&mut self);
+            let refused = crate::holds::refused(&mut self);
             self.diagnostics.extend(refused);
         }
         if self.diagnostics.is_empty() {
@@ -413,6 +418,7 @@ impl Checker {
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
             saved_types,
+            holds: self.worked_out,
         }
     }
 

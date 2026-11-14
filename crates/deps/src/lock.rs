@@ -1,6 +1,12 @@
 //! The lines of `kit.lock` that pin dependencies: `kit <name> <hash> <url> <commit> [folder]`, one
 //! for each kit from git, beside the `toolchain` line the launcher writes. The hash is of the kit's
 //! files, so a commit can't come back with other content than it had when it was pinned.
+//!
+//! And the lines that say what each kit holds: `holds <name> <capability>...`, one for each kit the
+//! program hands a capability to, its own dependencies' included. The compiler works that out, and
+//! a check stops where a kit would hold more than its line says, until `fennec update` accepts it.
+
+use std::fmt::Write as _;
 
 use fennec_blake3::Hash;
 
@@ -83,4 +89,85 @@ pub fn with_pins(lock: &str, pins: &[Pin]) -> String {
         return format!("# What this kit builds with, by hash. Only `fennec update` changes it.\n{pinned}");
     }
     format!("{kept}{pinned}")
+}
+
+/// What each kit `kit.lock` says it holds, from its `holds` lines: a kit with none holds nothing.
+///
+/// # Errors
+///
+/// When a `holds` line names no kit, or something that isn't a capability.
+pub fn holds(lock: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+    let mut holds: Vec<(String, Vec<String>)> = Vec::new();
+    for line in lock.lines() {
+        let mut words = line.split(' ');
+        if words.next() != Some("holds") {
+            continue;
+        }
+        let bad = || format!("kit.lock's `{line}` isn't `holds <kit> <capability>...`");
+        let kit = words.next().filter(|kit| crate::valid_name(kit)).ok_or_else(bad)?;
+        let held: Vec<String> = words.map(str::to_owned).collect();
+        if held.is_empty()
+            || !held.iter().all(|capability| fennec_syntax::HOLDABLE.contains(&capability.as_str()))
+        {
+            return Err(bad());
+        }
+        match holds.iter_mut().find(|(had, _)| had == kit) {
+            Some((_, had)) => had.extend(held),
+            None => holds.push((kit.to_owned(), held)),
+        }
+    }
+    Ok(holds)
+}
+
+/// `kit.lock` saying each kit holds exactly what `holds` gives it, in order of kit, with every line
+/// that isn't a `holds` line as it was. A kit holding nothing has no line.
+pub fn with_holds(lock: &str, holds: &[(String, Vec<String>)]) -> String {
+    let mut kept: String = lock
+        .split_inclusive('\n')
+        .filter(|line| !line.starts_with("holds "))
+        .map(|line| if line.ends_with('\n') { line.to_owned() } else { format!("{line}\n") })
+        .collect();
+    let mut sorted: Vec<&(String, Vec<String>)> = holds.iter().filter(|(_, held)| !held.is_empty()).collect();
+    sorted.sort();
+    if kept.is_empty() && !sorted.is_empty() {
+        kept.push_str("# What this kit builds with, by hash, and what each kit it depends on holds. Only `fennec update` changes it.\n");
+    }
+    for (kit, held) in sorted {
+        let mut held = held.clone();
+        held.sort();
+        held.dedup();
+        let _ = writeln!(kept, "holds {kit} {}", held.join(" "));
+    }
+    kept
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{holds, with_holds};
+
+    /// `holds` lines say what each kit holds, and writing them back keeps every other line, puts
+    /// them in order, and leaves out a kit that holds nothing.
+    #[test]
+    fn holds_lines_read_and_write_back_in_order() {
+        let lock = "toolchain 0.4.2\nholds net_kit Net\nholds saves Fs Clock\n";
+        assert_eq!(
+            holds(lock).unwrap(),
+            [
+                ("net_kit".to_owned(), vec!["Net".to_owned()]),
+                ("saves".to_owned(), vec!["Fs".to_owned(), "Clock".to_owned()])
+            ]
+        );
+        let written = with_holds(
+            lock,
+            &[
+                ("saves".to_owned(), vec!["Fs".to_owned(), "Clock".to_owned()]),
+                ("empty".to_owned(), Vec::new()),
+                ("http".to_owned(), vec!["Net".to_owned()]),
+            ],
+        );
+        assert_eq!(written, "toolchain 0.4.2\nholds http Net\nholds saves Clock Fs\n");
+        for bad in ["holds", "holds http", "holds http Network", "holds Http Net", "holds http Secret"] {
+            assert!(holds(bad).is_err(), "{bad}");
+        }
+    }
 }

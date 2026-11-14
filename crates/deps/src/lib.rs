@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 use fennec_blake3::Hash;
-pub use lock::{Pin, pins, with_pins};
+pub use lock::{Pin, holds, pins, with_holds, with_pins};
 pub use manifest::{Dependency, Manifest, Source, valid_name};
 pub use plain::{plain, plain_text};
 
@@ -74,8 +74,6 @@ pub struct Found {
     pub pin: Option<Pin>,
     /// The kits it names in its own `kit.toml`, which are the only ones it can import.
     pub uses: Vec<String>,
-    /// What its own `kit.toml` says each kit it names gets: nothing for a line with no `gets`.
-    pub grants: Vec<(String, Vec<String>)>,
 }
 
 /// The kits in the store, and whether fetching any that are missing is allowed.
@@ -451,21 +449,9 @@ fn walk(root: &Path, local_git_chains: bool, resolve: Resolve<'_>) -> Result<Vec
         let by = format!("`{name}`");
         follow(&Named { folder: folder.clone(), by, from_git: pin.is_some() }, &manifest, &mut queue);
         let uses = manifest.dependencies.iter().map(|used| used.name.clone()).collect();
-        let grants = grants_of(&manifest);
-        found.push((Found { name: name.to_owned(), folder, pin, uses, grants }, place));
+        found.push((Found { name: name.to_owned(), folder, pin, uses }, place));
     }
     Ok(found.into_iter().map(|(found, _)| found).collect())
-}
-
-/// What a kit's `kit.toml` says each kit it names gets, by each line: nothing for a line with no
-/// `gets`.
-#[must_use]
-pub fn grants_of(manifest: &Manifest) -> Vec<(String, Vec<String>)> {
-    manifest
-        .dependencies
-        .iter()
-        .map(|dependency| (dependency.name.clone(), dependency.gets.clone()))
-        .collect()
 }
 
 /// Puts the dependencies a kit names on the queue.

@@ -1,14 +1,27 @@
-//! `fennec update`: pins a kit's dependencies from git in `kit.lock`, see `fennec-deps`, and
-//! adds the layouts of what the kit saves in `std.pack` to `pack.lock`. `fennec fetch`: fetches
+//! `fennec update`: pins a kit's dependencies from git in `kit.lock`, see `fennec-deps`, records
+//! there what each kit the program depends on holds, which a check stops at any kit being handed
+//! more than, and adds the layouts of what the kit saves in `std.pack` to `pack.lock`.
+//! `fennec update --check` says whether `kit.lock`'s holds are what the program hands over, for CI,
+//! and writes nothing. `fennec fetch`: fetches
 //! what `kit.lock` pins and this machine hasn't got. They're the only commands that reach the
 //! network: loading a program fetches nothing.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
-/// `fennec update` or `fennec fetch`, as `which` names, in the kit around `path`.
-pub(crate) fn named(which: &str, path: &str) -> ExitCode {
-    if which == "fetch" { fetch(path) } else { update(path) }
+/// `fennec update`, `fennec update --check` or `fennec fetch`, as `which` and `rest` name, in the kit
+/// around the current folder.
+pub(crate) fn named(which: &str, rest: &[&str]) -> ExitCode {
+    match (which, rest) {
+        ("fetch", []) => fetch("."),
+        ("update", []) => update("."),
+        ("update", ["--check"]) => holds_up_to_date("."),
+        _ => {
+            eprintln!("error: `fennec {which}` takes no {}", rest.join(" "));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `fennec update`, in the kit around `path`.
@@ -24,7 +37,10 @@ pub(crate) fn update(path: &str) -> ExitCode {
     match kits.update(&root) {
         Ok(said) => {
             print!("{said}");
-            match lock_layouts(&root) {
+            match lock_holds(&root, path).and_then(|said| {
+                print!("{said}");
+                lock_layouts(&root)
+            }) {
                 Ok(said) => {
                     print!("{said}");
                     ExitCode::SUCCESS
@@ -37,6 +53,100 @@ pub(crate) fn update(path: &str) -> ExitCode {
         }
         Err(message) => {
             eprintln!("error: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// What each kit the program depends on holds now, as `kit.lock` would say it, and each change from
+/// what `kit.lock` says: a kit holding something new, worded as "now holds" or "would now hold",
+/// and one that no longer holds something.
+struct HoldsNow {
+    holds: Vec<(String, Vec<String>)>,
+    changes: Vec<String>,
+}
+
+/// Works out what each kit the program hands anything to holds: from all of the kit's code, tests
+/// included, since anything that's checked is held to `kit.lock`.
+fn holds_now(root: &Path, shown: &str, (lock, will): (&str, &str)) -> Result<HoldsNow, String> {
+    let program = fennec_kit::load(root, shown, fennec_kit::Entry::Tests)?;
+    let worked =
+        fennec_check::holds_worked_out(&program.module).map_err(|problems| program.render(&problems))?;
+    let before = fennec_deps::holds(lock)?;
+    let had = |kit: &str| -> Vec<&str> {
+        before
+            .iter()
+            .filter(|(had, _)| had == kit)
+            .flat_map(|(_, held)| held.iter().map(String::as_str))
+            .collect()
+    };
+    let mut changes = Vec::new();
+    for (kit, held) in &worked {
+        for (capability, span) in held {
+            if had(kit).contains(&capability.as_str()) {
+                continue;
+            }
+            let at = program
+                .sources
+                .locate(*span)
+                .map(|(path, line, column, _)| format!(", first handed over at {path}:{line}:{column}"))
+                .unwrap_or_default();
+            changes.push(format!("`{kit}` {will} `{capability}`{at}"));
+        }
+    }
+    for (kit, held) in &before {
+        for capability in held {
+            if !worked.get(kit).is_some_and(|now| now.contains_key(capability)) {
+                changes.push(format!("`{kit}` no longer holds `{capability}`"));
+            }
+        }
+    }
+    let holds = worked.into_iter().map(|(kit, held)| (kit, held.into_keys().collect())).collect();
+    Ok(HoldsNow { holds, changes })
+}
+
+/// Records in `kit.lock` what each kit the program depends on holds, saying what changed. This is
+/// the one place a kit's being handed more is accepted: a check stops at it until it's here.
+fn lock_holds(root: &Path, shown: &str) -> Result<String, String> {
+    let path = root.join("kit.lock");
+    let lock = std::fs::read_to_string(&path).unwrap_or_default();
+    let now = holds_now(root, shown, (&lock, "now holds"))?;
+    if now.changes.is_empty() {
+        return Ok(String::new());
+    }
+    fennec_dist::write_kit_file(&path, &fennec_deps::with_holds(&lock, &now.holds))?;
+    let mut said = String::new();
+    for change in &now.changes {
+        let _ = writeln!(said, "kit.lock: {change}");
+    }
+    Ok(said)
+}
+
+/// `fennec update --check`, in the kit around `path`: whether `kit.lock`'s holds are what the program
+/// hands over, both ways, for CI. It reaches no network and writes nothing.
+pub(crate) fn holds_up_to_date(path: &str) -> ExitCode {
+    let root = match kit_around(path, "check") {
+        Ok(root) => root,
+        Err(code) => return code,
+    };
+    let lock = std::fs::read_to_string(root.join("kit.lock")).unwrap_or_default();
+    match holds_now(&root, path, (&lock, "would now hold")) {
+        Ok(now) if now.changes.is_empty() => {
+            println!("kit.lock's holds are what the program hands over");
+            ExitCode::SUCCESS
+        }
+        Ok(now) => {
+            eprintln!("error: kit.lock's holds aren't what the program hands over:");
+            for change in &now.changes {
+                eprintln!("  {change}");
+            }
+            eprintln!(
+                "  = help: `fennec update` records what each kit holds, to be reviewed with the change that made it"
+            );
+            ExitCode::FAILURE
+        }
+        Err(message) => {
+            eprint!("{message}");
             ExitCode::FAILURE
         }
     }

@@ -71,7 +71,9 @@ const USAGE: &str = "usage:
   fennec bench [path]       run its `bench` blocks: instructions and times, against the last run
   fennec new <name>         start a kit in a new folder
   fennec update             pin the kit's dependencies from git to the commits kit.toml names,
-                            fetching the ones not fetched yet, and say what changed
+                            fetching the ones not fetched yet, record in kit.lock what each
+                            dependency is handed, which a build stops at more of, and say what changed
+  fennec update --check     whether kit.lock's holds are what the program hands each dependency, for CI
   fennec fetch              fetch the kits kit.lock pins that this machine hasn't got, or that
                             changed since; no other command reaches the network
   fennec init               set up this folder: a kit if it's new, and Fennec's guidance in AGENTS.md
@@ -151,7 +153,7 @@ fn main() -> ExitCode {
         ["bench"] => bench::bench("."),
         ["bench", path] => bench::bench(path),
         ["new", path] => new(path),
-        [which @ ("update" | "fetch")] => dependencies::named(which, "."),
+        [which @ ("update" | "fetch"), rest @ ..] => dependencies::named(which, rest),
         ["init"] => init(),
         ["fmt", rest @ ..] => fmt::fmt(rest),
         ["lint"] => on_big_stack(lint::lint, "."),

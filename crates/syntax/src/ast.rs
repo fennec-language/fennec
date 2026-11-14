@@ -10,29 +10,30 @@ pub struct Module {
     /// like `concurrent.told` or `Pool.borrowed`: rewritten as a program's own code is, as by a
     /// `with` source or `launch` written in where it's used. They stand in for the library's.
     pub std_rewritten: Vec<(String, FnDef)>,
-    /// Each line of each kit's `kit.toml` naming a kit it depends on, with what that kit gets, as
-    /// `gets = ["Net"]` says: nothing for a line with none. A module made without these refuses any
-    /// capability handed to another kit.
-    pub grants: Vec<Grant>,
+    /// What `kit.lock` says each kit the program depends on holds, which checking it holds the
+    /// program to.
+    pub holds: Holds,
 }
 
-/// What a dependency can be given in `gets`, by the type a capability has in code: the program's
-/// ways to reach outside it, and `File` and `Database`, which reach a file or storage already open.
-pub const GRANTABLE: [&str; 13] = [
+/// The capabilities a dependency can be handed, by their type in code: the program's ways to reach
+/// outside it, and `File` and `Database`, which reach a file or storage already open. A `Secret`
+/// isn't one: it carries no authority.
+pub const HOLDABLE: [&str; 13] = [
     "Stdout", "Stderr", "Stdin", "Args", "Env", "Fs", "File", "Net", "Database", "Clock", "Entropy",
     "Process", "Signals",
 ];
 
-/// One line's `gets` in a kit's `kit.toml`: `http = { ..., gets = ["Net"] }`. Only a person writes
-/// one: no tool, fix or help adds it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Grant {
-    /// The kit whose `kit.toml` says it: empty for the program's own.
-    pub by: String,
-    /// The kit it depends on, by the name it imports it as.
-    pub to: String,
-    /// The capabilities it gets, by type, as written: `Net`, `Fs`.
-    pub gets: Vec<String>,
+/// What each kit a program depends on is accepted as holding: the `holds` lines of `kit.lock`,
+/// which only `fennec update` writes. The compiler works out what each kit is handed, and a check
+/// stops where a kit would hold more than these say.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Holds {
+    /// Each kit, by the name it's imported as, with the capabilities it's accepted as holding. A kit
+    /// not here holds nothing, so a module made without `kit.lock` holds every kit to nothing.
+    pub accepted: Vec<(String, Vec<String>)>,
+    /// Set when what each kit holds is only worked out, not held to anything: how `fennec update`
+    /// checks a program to find what to write.
+    pub only_worked_out: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

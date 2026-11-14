@@ -142,8 +142,7 @@ fn kit_toml_reads_dependencies_from_git_and_paths() {
         commit: commit.to_owned(),
         folder: folder.map(str::to_owned),
     };
-    let named =
-        |name: &str, source| fennec_kit::Dependency { name: name.to_owned(), source, gets: Vec::new() };
+    let named = |name: &str, source| fennec_kit::Dependency { name: name.to_owned(), source };
     assert_eq!(
         manifest.dependencies,
         [
@@ -200,55 +199,25 @@ fn kit_toml_says_what_is_wrong_with_a_dependency() {
     );
 }
 
-/// A dependency's `gets` names whole capabilities in quotes, each once. `gets = []` says what no
-/// `gets` already says, an unknown name or a table that narrows one is refused, and none of these
-/// offers a fix: what a kit gets is a person's to write.
+/// What a dependency is handed isn't written in kit.toml: the compiler works it out, and
+/// `fennec update` records it in kit.lock. A `gets` on a dependency's line is refused, saying so,
+/// with no fix.
 #[test]
-fn kit_toml_gets_names_capabilities_a_person_gives() {
-    let parsed = |line: &str| {
+fn kit_toml_has_no_gets_as_capabilities_are_worked_out() {
+    for line in [
+        "http = { path = \"../http\", gets = [\"Net\"] }",
+        "http = { gets = [], path = \"../http\" }",
+        "http = { path = \"../http\", gets = \"Net\" }",
+    ] {
         let text =
             format!("name = \"arena\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\n{line}\n");
-        fennec_kit::Manifest::parse(&text)
-    };
-    let message = |line: &str| -> String {
-        let errors = parsed(line).unwrap_err();
+        let errors = fennec_kit::Manifest::parse(&text).unwrap_err();
         assert_eq!(errors.len(), 1, "{line}");
-        assert!(errors.iter().all(|error| error.fixes.is_empty()), "{line}");
-        errors.into_iter().next().map(|error| error.message).unwrap_or_default()
-    };
-    let gets = |line: &str| parsed(line).unwrap().dependencies.into_iter().next().unwrap().gets;
-    assert_eq!(gets("http = { path = \"../http\", gets = [\"Net\"] }"), ["Net"]);
-    assert_eq!(gets("http = { gets = [\"Net\", \"Fs\",], path = \"../http\" }"), ["Net", "Fs"]);
-    assert_eq!(gets("db = { path = \"../db\", gets = [ \"Database\" , \"File\" ] }"), ["Database", "File"]);
-    assert_eq!(gets("shapes = { path = \"../shapes\" }"), Vec::<String>::new());
-    assert_eq!(
-        message("http = { path = \"../http\", gets = [] }"),
-        "`gets = []` gives `http` nothing, which leaving `gets` out already says"
-    );
-    assert_eq!(
-        message("http = { path = \"../http\", gets = [\"Network\"] }"),
-        "`Network` isn't a capability, so `http` can't get it"
-    );
-    assert_eq!(
-        message("http = { path = \"../http\", gets = [\"Secret\"] }"),
-        "`Secret` isn't a capability, so `http` can't get it"
-    );
-    assert_eq!(
-        message("http = { path = \"../http\", gets = [\"Net\", \"Net\"] }"),
-        "`Net` is in `http`'s `gets` twice"
-    );
-    assert_eq!(
-        message("saves = { path = \"../saves\", gets = [{ Fs = { only = \"saves/\" } }] }"),
-        "narrowing what `saves` gets, as `{ Fs = { only = \"saves/\" } }`, isn't built yet"
-    );
-    assert_eq!(
-        message("http = { path = \"../http\", gets = [Net] }"),
-        "`Net` in `http`'s `gets` should be a capability's type in quotes"
-    );
-    assert_eq!(
-        message("http = { path = \"../http\", gets = \"Net\" }"),
-        "`http`'s `gets` should be a list in brackets"
-    );
+        assert_eq!(errors[0].message, "`http`'s capabilities aren't written in kit.toml", "{line}");
+        assert!(errors[0].fixes.is_empty() && errors[0].hint.is_none(), "{line}");
+        let help = errors[0].help.clone().unwrap_or_default();
+        assert!(help.contains("`fennec update` shows it and records it in kit.lock"), "{help}");
+    }
 }
 
 #[test]

@@ -896,6 +896,17 @@ impl Io {
         if let Some(listener) = &mut here.listener {
             let _ = self.poll.registry().deregister(listener);
         }
+        // With nothing else to run here, what this worker still holds was left by a round: looked
+        // at while what the server lent can still be read.
+        if self.servers.is_empty()
+            && self.waiting.is_empty()
+            && self.ready.is_empty()
+            && self.accounts.is_empty()
+            && self.temporaries.is_empty()
+            && self.owners.is_empty()
+        {
+            super::aot::worker_stopped_serving();
+        }
         let (owners, _) = super::threads::serving_ends();
         here.served.owners.extend(owners);
         here.server.total.lock().unwrap_or_else(PoisonError::into_inner).add(here.served);

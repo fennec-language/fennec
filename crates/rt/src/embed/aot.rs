@@ -417,7 +417,7 @@ fn report_counts(counts: &heap::Counts, live: usize) {
         strays => format!("{said} stray_frees {strays}"),
     };
     // The runtime's own blocks, and native code's, which its table doesn't hold.
-    let _ = writeln!(std::io::stderr(), "{said} live {}", live + native_left());
+    let _ = writeln!(std::io::stderr(), "{said} live {}", live + native_left() + left_on_workers());
 }
 
 /// The line `report_counts` writes, given how many `parallel` calls native code made and how many
@@ -500,6 +500,50 @@ pub(super) fn audit_at_the_end(state: &State) {
         let _ = std::io::stderr().write_all(said.as_bytes());
         AUDIT_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// The blocks workers were left holding when they stopped serving, in a run that counts. A
+/// served round's blocks end with it and are handed to no one, so one that's left stays in its
+/// worker's table, which the count at the end of a run never reads: without this, a server that
+/// left a block for every request would end with `live 0`.
+#[cfg(any(test, feature = "threads"))]
+static LEFT_ON_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many blocks workers were left holding when they stopped serving.
+fn left_on_workers() -> usize {
+    #[cfg(any(test, feature = "threads"))]
+    return LEFT_ON_WORKERS.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(any(test, feature = "threads")))]
+    0
+}
+
+/// A worker has left its last server with no task of its own still to run, so it should hold
+/// nothing a run could free: what it does hold was left by a round, or by the runtime serving
+/// one. It's counted for `live`, in a run that counts. Under a heap audit each block is said, as
+/// at the end of a run, and the run ends with the audit's exit code: this worker has no native
+/// code's frames left, so every owner is one its table can show.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn worker_stopped_serving() {
+    with(|state| {
+        // What the rounds' dropped temporaries held goes first.
+        state.let_go();
+        let left = state.heap.leftover();
+        if left == 0 {
+            return;
+        }
+        if state.heap.counting() {
+            LEFT_ON_WORKERS.fetch_add(left, std::sync::atomic::Ordering::Relaxed);
+        }
+        #[cfg(feature = "audit")]
+        if std::env::var_os("FENNEC_AUDIT").is_some() {
+            let said = heap::audit::audit(state, &[]).said();
+            if !said.is_empty() {
+                let said = format!("heap audit: a worker that stopped serving was left holding blocks\n{said}");
+                let _ = std::io::stderr().write_all(said.as_bytes());
+                AUDIT_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    });
 }
 
 /// Where the failure flag native code checks is.

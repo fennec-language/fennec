@@ -286,7 +286,7 @@ pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnost
     refuse_reserved(module)?;
     let checked = check_typed(module).map_err(|problems| as_written(problems, &names))?;
     refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
-    resolved(module, checked)
+    resolved(module, checked, checker::Scope::Everything)
 }
 
 /// Makes the calls to `json.dumps`, `json.loads`, `toml.dumps` and `toml.loads` in a checked and
@@ -480,7 +480,7 @@ pub fn check_to_build(module: &mut Module) -> Result<Option<Signatures>, Vec<Dia
     // the module again types as what's written there: the first check's types are only those of
     // a module it left as it was.
     let checked_module = module.clone();
-    let (signatures, as_left) = resolved_saying(module, checked)?;
+    let (signatures, as_left) = resolved_saying(module, checked, checker::Scope::ReachedWithFields)?;
     let reused = as_left && *module == checked_module;
     Ok(reused.then_some(signatures))
 }
@@ -498,7 +498,7 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     let checked =
         checker::Checker::new(module).run(scope).map_err(|problems| as_written(problems, &names))?;
     refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
-    resolved(module, checked)
+    resolved(module, checked, scope)
 }
 
 /// A call the checker sent to a standard library function, like `sum` of a list of floats to
@@ -576,14 +576,24 @@ fn start_written(call: &mut Expr, checked: &Checked, span: (u32, u32)) {
     }
 }
 
-fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Diagnostic>> {
-    resolved_saying(module, checked).map(|(signatures, _)| signatures)
+fn resolved(
+    module: &mut Module,
+    checked: Checked,
+    scope: checker::Scope,
+) -> Result<Signatures, Vec<Diagnostic>> {
+    resolved_saying(module, checked, scope).map(|(signatures, _)| signatures)
 }
 
 /// Like `resolved`, saying too whether the signatures are those the first check found of the
-/// module as it's left: they aren't once anything was written in, which is checked again with all
-/// of the library, or once stages kept in names were moved to where they're used.
-fn resolved_saying(module: &mut Module, checked: Checked) -> Result<(Signatures, bool), Vec<Diagnostic>> {
+/// module as it's left: they aren't once anything was written in, which is checked again, or once
+/// stages kept in names were moved to where they're used. What's written in is checked again over
+/// `scope`, as much of the library as the first round checked: written-in code that reaches more
+/// of it reaches it in the round that checks it.
+fn resolved_saying(
+    module: &mut Module,
+    checked: Checked,
+    scope: checker::Scope,
+) -> Result<(Signatures, bool), Vec<Diagnostic>> {
     // The library's functions this program needs rewritten go through this round with its own.
     let std_in = std_rewritten_in(module, &checked);
     let round = resolved_round(module, &checked);
@@ -594,8 +604,8 @@ fn resolved_saying(module: &mut Module, checked: Checked) -> Result<(Signatures,
             fennec_syntax::rename::discards_apart(module);
             let mut second = checker::Checker::new(module);
             second.again = true;
-            match second.run(checker::Scope::Everything) {
-                Ok(again) => resolved_saying(module, again).map(|(signatures, _)| (signatures, false)),
+            match second.run(scope) {
+                Ok(again) => resolved_saying(module, again, scope).map(|(signatures, _)| (signatures, false)),
                 Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
             }
         }
@@ -603,8 +613,8 @@ fn resolved_saying(module: &mut Module, checked: Checked) -> Result<(Signatures,
             // What was written in the library's functions is checked as what runs.
             let mut second = checker::Checker::new(module);
             second.again = true;
-            match second.run(checker::Scope::Everything) {
-                Ok(again) => resolved_saying(module, again).map(|(signatures, _)| (signatures, false)),
+            match second.run(scope) {
+                Ok(again) => resolved_saying(module, again, scope).map(|(signatures, _)| (signatures, false)),
                 Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
             }
         }
@@ -929,7 +939,7 @@ impl Checked {
     ///
     /// When the program as lowering rewrote it doesn't check, which is the compiler's mistake.
     pub fn resolve(&self, module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
-        resolved(module, self.clone())
+        resolved(module, self.clone(), checker::Scope::Everything)
     }
 }
 

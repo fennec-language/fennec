@@ -235,10 +235,13 @@ enum Baked {
     Failed(Diagnostic),
 }
 
-/// Whether a constant's value is a literal already: a number, string, bool or `None`.
+/// Whether a constant's value is a literal already: a number, string, bool or `None`, or a list,
+/// tuple, set or dict of them, which working it out would write the same again.
 fn is_literal(value: &fennec_syntax::Expr) -> bool {
     use fennec_syntax::ExprKind;
     match &value.kind {
+        ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => items.iter().all(is_literal),
+        ExprKind::Dict(pairs) => pairs.iter().all(|(key, value)| is_literal(key) && is_literal(value)),
         ExprKind::Int(_)
         | ExprKind::Float(_)
         | ExprKind::Duration(_)

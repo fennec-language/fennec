@@ -205,14 +205,14 @@ fn an_else_ends_a_chain_at_a_missing_or_failed_step() {
 #[test]
 fn what_it_doesnt_model_is_refused_by_name() {
     let (printed, ended) = ran("
-        from std import json
+        from std import toml
 
         def main(stdout: Stdout):
             stdout.print('before')
-            stdout.print(json.dumps([1, 2]))
+            stdout.print(toml.dumps({'a': 1}))
         ");
     assert_eq!(printed, "");
-    assert_eq!(ended, Ended::Unsupported("std.json.dumps".to_owned()));
+    assert_eq!(ended, Ended::Unsupported("std.toml.dumps".to_owned()));
     let (_, ended) = ran("
         def main(stdout: Stdout, fs: Fs):
             stdout.print('hi')
@@ -377,4 +377,132 @@ def today() -> Kind:
         KIT_TOML.replace("[dependencies]\n", "[dependencies]\nphysics = { folder = '../physics' }\n");
     let (_, ended) = kit_ran("depends", &[("kit.toml", &depends), ("src/main.fen", main)]).unwrap();
     assert_eq!(ended, Ended::Unsupported("a kit with dependencies".to_owned()));
+}
+
+#[test]
+fn json_writes_a_value_as_its_type_saves_it_and_reads_it_back() {
+    prints(
+        "
+        from std import json
+
+        enum Tile:
+            Floor
+            Door(locked: bool)
+
+        struct Room:
+            name: str
+            tiles: list[Tile]
+            doors: dict[str, int]
+            corners: dict[(int, int), str]
+            pet: str? = None
+            @serialize(name='Size')
+            size = (3, 4)
+            @skip
+            seen = 0
+
+        def main(stdout: Stdout):
+            room = Room(
+                name='hall',
+                tiles=[Tile.Floor, Tile.Door(locked=True)],
+                doors={'north': 1},
+                corners={(0, 0): 'start'},
+            )
+            text = json.dumps(room)
+            stdout.print(text)
+            stdout.print(json.dumps(room.doors, indent=2))
+            back = json.loads[Room](text)?
+            stdout.print(back == room, back.pet is None, back.seen)
+            stdout.print(json.loads[list[int?]]('[1, null, 3]')?)
+        ",
+        "{\"name\": \"hall\", \"tiles\": [\"Floor\", {\"Door\": {\"locked\": true}}], \"doors\": {\"north\": 1}, \
+         \"corners\": [[[0, 0], \"start\"]], \"pet\": null, \"Size\": [3, 4]}\n\
+         {\n  \"north\": 1\n}\n\
+         True True 0\n\
+         [1, None, 3]\n",
+    );
+}
+
+#[test]
+fn json_writes_floats_to_read_back_the_same_and_escapes_only_what_it_must() {
+    prints(
+        "
+        from std import json
+
+        def main(stdout: Stdout):
+            floats = [1e20, 1e-7, -0.0, 0.1, 100.0]
+            stdout.print(json.dumps(floats))
+            stdout.print(json.loads[list[float]](json.dumps(floats))? == floats)
+            stdout.print(json.dumps('tab\\there \\'quoted\\' \\\\ \\u0001 \\u0085 é'))
+            stdout.print(json.loads[str]('\\'\\\\u00e9t\\\\u00e9 \\\\ud83d\\\\ude00\\'')?)
+        ",
+        "[1e20, 1e-7, -0.0, 0.1, 100.0]\nTrue\n\"tab\\there \\\"quoted\\\" \\\\ \\u0001 \\u0085 é\"\nété 😀\n",
+    );
+}
+
+#[test]
+fn a_json_load_that_fails_says_what_and_where_as_std_json_does() {
+    prints(
+        "
+        from std import json
+
+        struct Point:
+            x: int
+            y: int
+
+        def why[T](run: () -> T fails ParseError) -> str:
+            _ = run() except problem:
+                return f'{problem.message} ({problem.line}:{problem.column})'
+            return 'read'
+
+        def main(stdout: Stdout):
+            stdout.print(why(() => json.loads[list[Point]]('[\\n  {\\'x\\': 1,}\\n]')?))
+            stdout.print(why(() => json.loads[list[Point]]('[{\\'x\\': 1, \\'y\\': \\'2\\'}]')?))
+            stdout.print(why(() => json.loads[Point]('{\\'x\\': 1}')?))
+            stdout.print(why(() => json.loads[Point]('{\\'x\\': 1, \\'y\\': 2, \\'z\\': 3}')?))
+            stdout.print(why(() => json.loads[Point]('{\\'x\\': 1, \\'x\\': 2, \\'y\\': 3}')?))
+            stdout.print(why(() => json.loads[dict[int, int]]('{\\'01\\': 1}')?))
+        ",
+        "expected a key in double quotes, but found `}`, at line 2, column 11 (2:11)\n\
+         `[0].y` should be an int, but it's a str (0:0)\n\
+         `y` is missing (0:0)\n\
+         `Point` has no field \"z\", but the text has one (0:0)\n\
+         the text has `x` twice (0:0)\n\
+         the text has the key \"01\", which isn't how that int is written (0:0)\n",
+    );
+}
+
+#[test]
+fn json_refuses_a_failing_load_it_cant_be_sure_of_and_stops_on_nan() {
+    let (printed, ended) = ran("
+        from std import json
+
+        enum Order:
+            Hold
+            Move(to: int)
+
+        def main(stdout: Stdout):
+            stdout.print('before')
+            _ = json.loads[Order]('{\\'Move\\': {\\'to\\': 1}, \\'Hold\\': {}}') except ParseError():
+                .Hold
+        ");
+    assert_eq!(printed, "");
+    assert_eq!(
+        ended,
+        Ended::Unsupported("json.loads failing (a case's object with more than its case in it)".to_owned())
+    );
+    let (printed, ended) = ran("
+        from std import json, math
+
+        struct Stats:
+            values: list[float]
+
+        def main(stdout: Stdout):
+            stdout.print('before')
+            stdout.print(json.dumps([Stats(values=[1.0]), Stats(values=[2.0, math.NAN])]))
+        ");
+    assert_eq!(printed, "before\n");
+    assert!(
+        matches!(&ended, Ended::Stopped(said) if said.contains("`[1].values[1]` is nan, which JSON can't write")),
+        "{ended:?}"
+    );
 }

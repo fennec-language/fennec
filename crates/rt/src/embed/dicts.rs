@@ -258,6 +258,12 @@ pub(super) fn is_dict(state: &State, block: &[u64]) -> bool {
     kind(state, block).is_some()
 }
 
+/// Whether a block is a set's: a dict's whose keys have nothing for values.
+#[cfg(any(test, feature = "audit"))]
+pub(super) fn is_set(state: &State, block: &[u64]) -> bool {
+    kind(state, block).is_some_and(|(_, value)| value == Word::Nothing)
+}
+
 /// How many keys a table with `slots` slots holds before it grows.
 pub fn capacity(slots: usize) -> usize {
     slots - slots / 4

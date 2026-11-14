@@ -56,3 +56,5 @@ threads = ["fennec-rt/threads"]
 # For AddressSanitizer runs only: the system's allocator, which ASan watches, and freed
 # blocks given back at once (see `fennec-rt`'s feature of the same name).
 sanitize = ["fennec-rt/sanitize"]
+# For audited test builds only: the heap's audit (see `fennec-rt`'s feature of the same name).
+audit = ["fennec-rt/audit"]

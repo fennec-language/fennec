@@ -259,6 +259,11 @@ impl Interp {
         if BUILTINS.contains(&name) {
             return Ok(Target::Builtin(name.to_owned()));
         }
+        // An empty `StrWriter`, as the standard library's own code makes one to write into.
+        if name == "StrWriter" {
+            let parts = vec![("_parts".to_owned(), Value::List(Vec::new()))];
+            return Ok(Target::Given(Value::instance("StrWriter", None, parts)));
+        }
         // A name imported from a module run from its own source, under the name it's run by.
         if let Some(found) = self.program.std_name(name).filter(|found| *found != name) {
             return self.named_target(found, span);

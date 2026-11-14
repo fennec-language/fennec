@@ -29,6 +29,17 @@ impl Interp {
                 None => args.push(value),
             }
         }
+        // The standard library's own code has `len(x)` and `abs(x)` written as these methods
+        // when it's parsed, which a program can't call on a built-in value.
+        if matches!(name, "len" | "abs") && args.is_empty() && named.is_empty() {
+            let value = match &receiver {
+                Receiver::Place(place) => self.read_place(place, span)?,
+                Receiver::Value(value) => value.clone(),
+            };
+            if !matches!(value, Value::Instance(_)) {
+                return self.builtin(name, vec![ArgVal::Value(None, value)], expr);
+            }
+        }
         let is_table = match &receiver {
             Receiver::Place(place) => self.peek_place(place, span, |held| matches!(held, Value::Table(_)))?,
             Receiver::Value(value) => matches!(value, Value::Table(_)),
@@ -58,15 +69,6 @@ impl Interp {
             Receiver::Place(place) => self.read_place(place, span)?,
             Receiver::Value(value) => value.clone(),
         };
-        // The standard library's own code has `len(x)` and `abs(x)` written as these methods
-        // when it's parsed, which a program can't call on a built-in value.
-        if matches!(name, "len" | "abs")
-            && args.is_empty()
-            && named.is_empty()
-            && !matches!(value, Value::Instance(_))
-        {
-            return self.builtin(name, vec![ArgVal::Value(None, value)], expr);
-        }
         if let Value::Instance(instance) = &value
             && instance.ty == "StrWriter"
         {
@@ -190,6 +192,16 @@ impl Interp {
         span: Span,
     ) -> Option<Run<Value>> {
         let ty = instance.ty.as_str();
+        // `std.env`'s `Env`, run from its own source: its `get` is written in Rust. It reads the
+        // variables the oracle was started with, as the compiled program reads its own.
+        if ty == "Env" && self.program.from_std.get("std.env.Env").is_some_and(|found| found == "Env") {
+            return Some(match (name, args) {
+                ("get", [Value::Str(variable)]) if named.is_empty() => {
+                    Ok(std::env::var(variable).map_or(Value::None, Value::Str))
+                }
+                _ => unsupported(format!("the Env method `{name}`")),
+            });
+        }
         if !matches!(ty, "Path" | "File" | "IoError") || !self.is_std_type(ty) {
             return None;
         }
@@ -232,6 +244,52 @@ impl Interp {
             (Cap::Stdin, "lines") => Ok(Value::List(Vec::new())),
             (Cap::Stdin, "read_line") => Ok(Value::None),
             (Cap::Args, "len") => Ok(Value::Int(0)),
+            // Standard error is written as the program writes it, and never compared.
+            (Cap::Stderr, "write_line" | "write_text") => match args {
+                [Value::Str(text)] => {
+                    let mut text = text.clone();
+                    if name == "write_line" {
+                        text.push('\n');
+                    }
+                    let _ = std::io::Write::write_all(&mut std::io::stderr(), text.as_bytes());
+                    Ok(Value::Unit)
+                }
+                _ => unsupported(format!("`stderr.{name}` of something other than text")),
+            },
+            (Cap::Stderr, "flush") => Ok(Value::Unit),
+            // The system's clocks, as `std.time`'s `Instant` and `Time`, each moved on by every
+            // `sleep` so far, which takes no time here. What they read can't be known, so a
+            // program's output can't depend on more than their order.
+            (Cap::Clock, "now" | "time") if args.is_empty() => {
+                let slept = self.shared.slept.load(std::sync::atomic::Ordering::Relaxed);
+                let (ty, read) = if name == "now" {
+                    ("Instant", self.shared.started.elapsed().as_nanos())
+                } else {
+                    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+                    ("Time", since.map_or(0, |since| since.as_nanos()))
+                };
+                let nanos = i64::try_from(read.saturating_add(u128::from(slept))).unwrap_or(i64::MAX);
+                let moment = crate::value::Instance {
+                    ty: ty.to_owned(),
+                    case: None,
+                    fields: vec![("nanos".to_owned(), Value::Int(nanos))],
+                };
+                Ok(Value::Instance(Box::new(moment)))
+            }
+            (Cap::Clock, "sleep") => match args {
+                [Value::Instance(duration)] if duration.ty == "Duration" => {
+                    let Some(Value::Int(nanos)) = duration.field("nanos") else {
+                        return unsupported("a Duration without its nanoseconds");
+                    };
+                    let nanos = u64::try_from(*nanos).unwrap_or(0);
+                    self.shared.slept.fetch_add(nanos, std::sync::atomic::Ordering::Relaxed);
+                    Ok(Value::Unit)
+                }
+                _ => unsupported("`clock.sleep` of something other than a Duration"),
+            },
+            // No signal comes while the oracle runs a program, so it's never asked to stop.
+            (Cap::Signals, "stopping") => Ok(Value::Bool(false)),
+            (Cap::Signals, "wait") => unsupported("waiting for a signal, which never comes"),
             _ => {
                 let _ = span;
                 unsupported(format!("the capability method `{name}`"))

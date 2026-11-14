@@ -642,7 +642,7 @@ impl Emit<'_, '_, '_> {
         self.declare("declare i64 @fennec_box_to_value(ptr) nounwind");
         self.declare("declare void @fennec_main_result(i64, i64, i64) nounwind");
         let handle = self.temp();
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         self.line(&format!("{handle} = call i64 @fennec_box_to_value(ptr {block})"));
         self.line(&format!("call void @fennec_main_result(i64 {handle}, i64 {from}, i64 {to})"));
         self.leave_if_failed();
@@ -981,7 +981,7 @@ impl Emit<'_, '_, '_> {
         let (word, passed) = self.item_word(item, &held)?;
         let owned = self.unshared(list);
         self.declare("declare void @fennec_list_remove(ptr, i64, i64, i64) nounwind");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         self.line(&format!("call void @fennec_list_remove(ptr {owned}, i64 {word}, i64 {from}, i64 {to})"));
         // What was made to pass the item goes before the failure is looked at: an item that isn't
         // there leaves here, and the runtime only compared with it.

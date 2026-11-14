@@ -1366,10 +1366,10 @@ fn f(_0) -> int
   bb0:
     _1 = _0 + 1
     _2 = _1
-    _3 = closure f.arrow@139[_2]
+    _3 = closure f.arrow#0[_2]
     _4 = call apply(_0, _3)
     return _4
-fn f.arrow@139(_0, _1) -> int
+fn f.arrow#0(_0, _1) -> int
   local _0 offset: int
   local _1 n: int
   local _2: int
@@ -1462,7 +1462,7 @@ fn a_key_goes_last_and_names_the_call() {
   local _1: (int) -> int
   local _2: list[int]
   bb0:
-    _1 = closure f.arrow@61[]
+    _1 = closure f.arrow#0[]
     _2 = builtin sorted.key(_0, _1)
     return _2
 "
@@ -1790,7 +1790,7 @@ def f() -> int:
     _4 = _3
     _5 = make Enemy(3)
     _1[_4] = _5
-    _6 = closure f.arrow@236[]
+    _6 = closure f.arrow#0[]
     _7 = builtin Table.modify(ref _1, _4, _6)
     _8 = _7
     _9 = builtin Table.slots(_1)

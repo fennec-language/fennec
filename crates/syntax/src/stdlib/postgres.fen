@@ -23,7 +23,7 @@
 from std import base64, crypto
 from std.concurrent import Pool, Timeout, pool
 from std.crypto import Secret
-from std.intrinsics import bytes_text
+from std.intrinsics import bytes_builder, bytes_push_bytes, bytes_text
 from std.net import Connection, NetError
 from std.sql import SqlError, SqlRows, SqlValue, rows_as
 from std.string import quoted_input
@@ -38,6 +38,15 @@ MOST_ROUNDS = 1_000_000
 
 ## The longest message a reader takes, so a server can't make it hold more than this.
 LONGEST = 1073741824
+
+## The longest a message may be unless it's one of `LONG_KINDS`, fixed, as libpq has it, so a
+## server can't make the reader wait for or hold a gigabyte to say what's a few bytes.
+LONGEST_SHORT = 30000
+
+## The types of message that may be longer than `LONGEST_SHORT`, exactly libpq's list: `d`
+## copied data, `D` a row, `E` a failure, `V` a function's result, `N` a notice, `A` a
+## notification, `T` a row's columns and `t` a statement's parameters.
+LONG_KINDS = [100, 68, 69, 86, 78, 65, 84, 116]
 
 ## A message a Postgres server sends.
 export enum PgMessage:
@@ -146,13 +155,21 @@ struct PgWriter:
 ## Reads a server's messages from the bytes it's sent so far: `feed` takes more, and `next` gives
 ## the next whole message, or `None` until there's enough for one.
 export struct PgReader:
-    _data = bytes([])
+    ## What the server's sent, read up to `_at`: a builder, so what's fed is added in place,
+    ## rather than all that's held being copied each time a long message comes in another piece.
+    _data = bytes_builder()
     _at = 0
 
     ## Adds bytes the server sent.
     def feed(ref self, more: bytes):
-        self._data = self._data[self._at:len(self._data)] + more
-        self._at = 0
+        # What's been read is let go of once it's half of what's held, so each byte is copied a
+        # few times at most.
+        if self._at > 0 and self._at * 2 >= len(self._data):
+            mut left = bytes_builder()
+            bytes_push_bytes(ref left, self._data[self._at:len(self._data)])
+            self._data = left
+            self._at = 0
+        bytes_push_bytes(ref self._data, more)
 
     ## The next whole message, or `None` until there's enough for one. A message that isn't what a
     ## server sends fails with `SqlError.Failed`.
@@ -162,6 +179,10 @@ export struct PgReader:
         size = int32_at(self._data, self._at + 1)
         if size < 4 or size > LONGEST:
             fail .Failed(reason=f"the server sent a message {size} bytes long")
+        if size > LONGEST_SHORT and not (kind in LONG_KINDS):
+            fail .Failed(
+                reason=f"the server sent a message of type {kind} {size} bytes long, and only rows, column and parameter lists, failures, notices, notifications, copied data and function results may be over {LONGEST_SHORT:,}",
+            )
         if len(self._data) - self._at < 1 + size: return None
         body = self._data[self._at + 5:self._at + 1 + size]
         self._at += 1 + size

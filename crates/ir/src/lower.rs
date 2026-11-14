@@ -392,6 +392,9 @@ struct Lowering<'a> {
     context: &'a Context<'a>,
     body: &'a Body,
     returns: Type,
+    /// Where each arrow function written in this function starts, in the order they're lowered:
+    /// an arrow's place here is the number in its name.
+    arrows: Vec<u32>,
     locals: Vec<Local>,
     blocks: Vec<Open>,
     current: BlockId,
@@ -539,6 +542,7 @@ impl<'a> Lowering<'a> {
             context,
             body,
             returns,
+            arrows: Vec::new(),
             locals: Vec::new(),
             blocks: vec![Open::default()],
             current: BlockId(0),

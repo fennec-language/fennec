@@ -545,7 +545,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br i1 {empty}, label %{fail}, label %{ok}, !prof !0"));
         self.start_block(&fail);
         self.declare("declare void @fennec_pop_empty(i64, i64) #1");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         self.line(&format!("call void @fennec_pop_empty(i64 {from}, i64 {to})"));
         let failed = self.failed_exit();
         self.line(&failed);

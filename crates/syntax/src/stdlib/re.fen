@@ -1,9 +1,15 @@
 from std.re import is_regex
 
-## A regular expression. Matching takes time in proportion to the text's length whatever the
-## pattern, since nothing backtracks. Patterns follow Python's `re`: `.`, classes like `[a-z]`
-## and `\d`, anchors `^ $ \b`, repeats `* + ? {m,n}` (lazy with a `?` after), groups,
-## `(?:...)` and `|`. Write them as raw strings, like `Regex(r"\d+")`.
+## A regular expression. Nothing backtracks, so a pattern like `(a+)+$`, which can take a
+## backtracking engine years, takes time that grows with the text alone. What each character of
+## the text costs is the pattern's size, what it compiles to, which may be at most 10,000 steps:
+## a pattern past that is refused before it's built, saying how big it is. In a release build,
+## `[a-z]+@[a-z]+\.com` runs through a megabyte in about 0.1 s, and the costliest pattern that
+## fits, `(?:(?:a?){1000}){4}b`, in about 107 s, 0.1 ms a character. So when a pattern comes from
+## outside, as a search box's does, bound its length, or the length of what it runs over.
+## Patterns follow Python's `re`: `.`, classes like `[a-z]` and `\d`, anchors `^ $ \b`, repeats
+## `* + ? {m,n}` (lazy with a `?` after), groups, `(?:...)` and `|`. Write them as raw strings,
+## like `Regex(r"\d+")`.
 ##
 ## Its methods: `match(text)` at the start, `fullmatch(text)` for all of it, `search(text)`
 ## anywhere (each gives a `Match?`); `find_all(text)`; `replace(text, with)`, where `\1` in

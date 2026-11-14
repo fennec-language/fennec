@@ -11398,6 +11398,31 @@ fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io
     prints_with_nothing_left(&dir, &program, "3065\n3065\n4400\n8\n", &["1", "4"])
 }
 
+/// A task stopped while it waits in a call to the runtime leaves nothing behind. The call here is a
+/// read with `timeout=`, whose `Duration` is a block made for the call: native code holds one
+/// owner of it and the runtime's temporaries another. The task is stopped by its launcher leaving
+/// through a failure, from `main` and from inside a task.
+///
+/// Both owners used to be left. Native code let go of what it made for a call's arguments only
+/// after it had looked at whether the call failed, and a stopped task leaves there. And a task's
+/// leftover temporaries were dropped after its blocks were handed over, when letting go of what
+/// they held reached nothing. A pool's reset of a Postgres connection, cut short as its pool
+/// ended, left the `Duration` this way.
+#[test]
+fn a_task_stopped_in_a_call_to_the_runtime_lets_go_of_what_the_call_was_given() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stopped_in_a_wait")?;
+    let program = dir.join("stopped_in_a_wait.fen");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stopped_in_a_wait.fen"),
+        &program,
+    )?;
+    let stopped = "Refused(why=\"leaving this way stops the task\")\n";
+    prints_with_nothing_left(&dir, &program, &stopped.repeat(2), &["1", "4"])
+}
+
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what
 /// changes it next finds the list with one owner: a `ref` function changing the items, then a
 /// plain loop reading them, round after round, copies nothing.

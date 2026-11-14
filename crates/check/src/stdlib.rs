@@ -2,7 +2,7 @@
 //! per module. Types written in Fennec are checked like any other code. Adding a module adds
 //! one line to the list here.
 
-mod formats;
+pub(crate) mod formats;
 
 use fennec_syntax::{Arg, Span};
 

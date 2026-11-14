@@ -39,6 +39,42 @@ fn a_loop_can_change_what_it_doesnt_go_over() {
     assert_eq!(changes("for ref name in names:\n    name = name.upper()\n"), empty);
 }
 
+/// `for key, ref value in x.items()` goes over a dict or a `Table` held in a `mut` name, its
+/// value changed where it is and its key as it is: the body can't change `x` itself, the key isn't
+/// `ref`, and a list's positions are `enumerate`'s.
+#[test]
+fn a_ref_over_items_changes_only_the_values() {
+    let program = "
+        def main(stdout: Stdout):
+            mut scores = {'x': 1}
+            for key, ref score in scores.items():
+                score += len(key)
+            stdout.print(scores)
+    ";
+    assert_eq!(problems(program), Vec::<String>::new());
+    let refused = "
+        def main(stdout: Stdout):
+            mut scores = {'x': 1}
+            for key, ref score in scores.items():
+                key += '!'
+            kept = {'x': 1}
+            for key, ref score in kept.items():
+                score += 1
+            mut xs = [1]
+            for at, ref x in xs.items():
+                x += 1
+            stdout.print(scores, kept, xs)
+    ";
+    assert_eq!(
+        problems(refused),
+        [
+            "`key` isn't `ref` @ key",
+            "`kept` isn't mut @ kept",
+            "`for key, ref value in x.items()` goes over a dict or a `Table`, but this is a list[int] @ xs",
+        ]
+    );
+}
+
 /// A dict's keys and a set's items are what find them, so `for ref` can't change them where they
 /// are: it's refused, saying what to write. Over a list, it changes each item.
 #[test]

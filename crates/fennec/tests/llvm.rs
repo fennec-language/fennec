@@ -563,6 +563,88 @@ fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
     )
 }
 
+/// `case _: fail why` passes up only what the earlier cases left, the set of errors made smaller:
+/// two of three left, and one error left once each case of an error with cases is taken.
+const EXCEPT_NARROWS: &str = r#"error Finished:
+    at: int
+
+error Gone:
+    path: str
+
+error Bad:
+    line: int
+
+error Net:
+    Closed
+    Timeout(seconds: int)
+
+def load(n: int) -> int fails Finished | Gone | Bad:
+    if n == 1:
+        fail Finished(at=1)
+    if n == 2:
+        fail Gone(path="x")
+    if n == 3:
+        fail Bad(line=3)
+    return n
+
+def read(n: int) -> int fails Net | Bad:
+    if n == 1:
+        fail .Closed
+    if n == 2:
+        fail .Timeout(seconds=2)
+    if n == 3:
+        fail Bad(line=3)
+    return n
+
+def first(n: int) -> int fails Gone | Bad:
+    x = load(n) except why:
+        case Finished(at):
+            at * 10
+        case _:
+            fail why
+    return x
+
+def cases(n: int) -> int fails Bad:
+    x = read(n) except why:
+        case .Closed:
+            0
+        case .Timeout(seconds):
+            seconds
+        case _:
+            fail why
+    return x
+
+def main(stdout: Stdout):
+    for n in range(5):
+        got = first(n) except why:
+            case Gone(path):
+                stdout.print(f"gone {path}")
+                -1
+            case Bad(line):
+                stdout.print(f"bad {line}")
+                -2
+        stdout.print(got)
+        more = cases(n) except why:
+            stdout.print(f"cases failed: {why.line}")
+            -3
+        stdout.print(more)
+    return
+"#;
+
+/// A failure `except why:`'s earlier cases left is passed up as the smaller set it is, and the
+/// caller's cases each find their own error in it.
+#[test]
+fn what_earlier_except_cases_left_is_failed_with_as_the_smaller_set() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "except_narrows",
+        EXCEPT_NARROWS,
+        "0\n0\n10\n0\ngone x\n-1\n2\nbad 3\n-2\ncases failed: 3\n-3\n4\n4\n",
+    )
+}
+
 /// Built with every type that doesn't contain itself in place and with `FENNEC_BOXED_TYPES=1`, in
 /// dev and release, a program prints `wanted` each way and ends with nothing held.
 fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
@@ -12616,6 +12698,71 @@ fn a_trace_counts_what_a_plain_build_counts() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A trace counts what tasks and `parallel`'s workers cost too, where a server's or a worker
+/// pool's cost is, and says which kind of thread each place's cost was on.
+#[test]
+fn a_trace_counts_what_tasks_and_parallel_workers_cost_and_says_where() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "\
+from std.concurrent import Crashed
+
+struct Said:
+    total: int
+
+def built(n: int) -> int:
+    pair = [n, n + 1]
+    return pair[0]
+
+def summed(n: int) -> int:
+    mut total = 0
+    for i in range(3):
+        total += built(n + i)
+    return total
+
+def tasked(said: shared Said):
+    mut total = 0
+    for i in range(20):
+        total += built(i)
+    lock said as ref held:
+        held.total += total
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    shared said = Said(total=0)
+    # A loop in its body sends it to the pool, however few its items.
+    workers = sum([summed(n) for n in parallel(range(30))])
+    with launch(() => tasked(said))?:
+        pass
+    lock said as held:
+        stdout.print(workers, held.total)
+    return
+";
+    let dir = folder("trace_threads")?;
+    let program = dir.join("threads.fen");
+    std::fs::write(&program, source)?;
+    let path = program.to_string_lossy().into_owned();
+    let traced = fennec(&["dev", "trace", &path], &dir)?;
+    let (said, errors) = (String::from_utf8_lossy(&traced.stdout), String::from_utf8_lossy(&traced.stderr));
+    assert!(traced.status.success(), "{errors}");
+    // The list each call makes, counted where each call ran: none of them on the main thread.
+    let at = |on: &str| {
+        said.lines().find(|line| line.contains(".fen:7:") && line.contains(on)).unwrap_or_default()
+    };
+    assert!(at(", in a task:").contains("20 allocations"), "{said}");
+    assert!(at(", on a parallel worker:").contains("90 allocations"), "{said}");
+    assert!(at(", on main:").is_empty(), "{said}");
+    assert!(said.lines().any(|line| line.starts_with("  in a task: ")), "{said}");
+
+    let json = fennec(&["dev", "trace", "--json", &path], &dir)?;
+    let json = String::from_utf8_lossy(&json.stdout);
+    assert!(json.contains("\"ran_on\":\"task\"") && json.contains("\"ran_on\":\"parallel\""), "{json}");
+    assert!(json.contains("\"by_thread\":{"), "{json}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Result<()> {
     if !ready() {
@@ -16738,6 +16885,70 @@ fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()>
     Ok(())
 }
 
+/// What `main` printed comes out before the end of a `with launch` block waits for its task. A
+/// task writes what it printed before it parks or waits, and this wait on the program's own
+/// thread didn't: a program waiting there for a task that goes on, a server say, showed nothing
+/// of what it had printed, and lost it if it was stopped.
+///
+/// The task ends only when a line comes on standard input, so the program is surely waiting at
+/// its block's end when its first line is read, and the test then gives it the line. Built for a
+/// heap audit and run under it, on 1, 4 and 16 threads: it ends with nothing live and nothing said.
+#[test]
+fn what_main_printed_comes_out_before_a_block_end_waits_for_its_task() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("printed-before-waiting")?;
+    let program = dir.join("printed.fen");
+    std::fs::write(&program, include_str!("fixtures/printed_before_a_block_end_waits.fen"))?;
+    let executable = dir.join("printed");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let mut command = Command::new(&executable);
+        command
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut waiting = Running(command.spawn()?);
+        // Read while the task still waits for its line: nothing has been given it yet.
+        assert_eq!(waiting.first_line()?, "printed before the block's end", "on {threads} threads");
+        let mut told = waiting.0.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        told.write_all(b"go\n")?;
+        drop(told);
+        let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
+        let ended = loop {
+            if let Some(status) = waiting.0.try_wait()? {
+                break status;
+            }
+            assert!(std::time::Instant::now() < deadline, "it went on after its task was given a line");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let mut said = String::new();
+        if let Some(mut errors) = waiting.0.stderr.take() {
+            errors.read_to_string(&mut said)?;
+        }
+        assert_eq!(ended.code(), Some(0), "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A channel to `.Every` gives every listener every message. One that falls behind fails loudly
 /// unless it asked for `.DropOldest`, when it goes on from the oldest message kept.
 #[test]
@@ -18517,6 +18728,60 @@ fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
     let main_said = String::from_utf8_lossy(&ran.stderr).into_owned();
     assert!(main_said.contains("Refused.Denied(token=Secret(hidden))"), "{main_said}");
     assert!(!main_said.contains("hunter2"), "{main_said}");
+    Ok(())
+}
+
+/// What the next test builds: failed asserts, each with a `shared` value on a side.
+const SHARED_SHOWN: &str = r#"struct Account:
+    total = 0
+
+struct Bank:
+    name: str
+    first: shared Account
+
+test "the shared value itself"():
+    shared account = Account(total=1)
+    shared other = Account(total=2)
+    assert account == other
+
+test "in a list"():
+    shared account = Account(total=1)
+    assert [account] == []
+
+test "in a tuple"():
+    shared account = Account(total=1)
+    assert (1, account) == (2, account)
+
+test "in a struct"():
+    shared account = Account(total=1)
+    assert Bank(name="a", first=account) == Bank(name="b", first=account)
+"#;
+
+/// A failed `assert` shows a `shared` value on either side as what it holds, as printing it does:
+/// by itself, in a list, in a tuple and in a struct. It showed the cell lowering keeps it in,
+/// `Shared__Account(value=Account(total=1))`.
+#[test]
+fn a_failed_assert_shows_what_a_shared_value_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shared_shown")?;
+    let program = dir.join("shared_shown.fen");
+    std::fs::write(&program, SHARED_SHOWN)?;
+    let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    let said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    assert!(said.contains("0 passed, 4 failed"), "{said}");
+    assert!(!said.contains("Shared__"), "{said}");
+    for sides in [
+        "the left side is Account(total=1) and the right side is Account(total=2)",
+        "the left side is [Account(total=1)] and the right side is []",
+        "the left side is (1, Account(total=1)) and the right side is (2, Account(total=1))",
+        "the left side is Bank(name=\"a\", first=Account(total=1)) and the right side is Bank(name=\"b\", first=Account(total=1))",
+    ] {
+        assert!(said.contains(sides), "{sides}: {said}");
+    }
     Ok(())
 }
 

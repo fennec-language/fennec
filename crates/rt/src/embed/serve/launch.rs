@@ -263,6 +263,9 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
         .ok()
         .filter(|_| failed == 0)
         .map(|nanos| Instant::now() + Duration::from_nanos(nanos));
+    // What this thread printed comes out before it waits for its task, however long that is, as
+    // before any other wait: a program stopped while it waits here has said what it had to say.
+    super::super::write_kept_output();
     let outcome = wait_for(&launched, deadline);
     match held {
         Some(held) => super::super::fail_with(held),

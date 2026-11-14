@@ -1441,6 +1441,224 @@ fn a_run_after_an_edit_finds_its_mistakes_however_it_checks() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A single file is kept for its next run as a kit is, with the files it read: itself and what it
+/// imports. An edit to either runs the edit, and a mistake in either is found.
+#[test]
+fn a_single_files_run_after_an_edit_to_it_or_what_it_imports_runs_the_edit() {
+    let dir = scratch("single_file_edits").unwrap();
+    let maths = "export def twice(number: int) -> int:\n    return number * 2\n";
+    let main = "from maths import twice\n\ndef main(stdout: Stdout):\n    stdout.print(twice(21))\n";
+    std::fs::write(dir.join("maths.fen"), maths).unwrap();
+    std::fs::write(dir.join("main.fen"), main).unwrap();
+    let run = || {
+        crate::executables::fennec_command()
+            .args(["run", "--no-test", "main.fen"])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    assert_eq!(text(&first.stdout), "42\n", "{}", text(&first.stderr));
+    // Unchanged, from what the first run kept.
+    assert_eq!(text(&run().stdout), "42\n");
+    // What it imports changes.
+    std::fs::write(dir.join("maths.fen"), maths.replace("number * 2", "number + number + 1")).unwrap();
+    assert_eq!(text(&run().stdout), "43\n");
+    // What it imports has a mistake.
+    std::fs::write(dir.join("maths.fen"), maths.replace("number * 2", "number * \"two\"")).unwrap();
+    let broken = run();
+    assert!(
+        !broken.status.success() && text(&broken.stderr).contains("maths.fen"),
+        "{}",
+        text(&broken.stderr)
+    );
+    // Put right, then the file itself changes.
+    std::fs::write(dir.join("maths.fen"), maths).unwrap();
+    assert_eq!(text(&run().stdout), "42\n");
+    std::fs::write(dir.join("main.fen"), main.replace("twice(21)", "twice(5)")).unwrap();
+    assert_eq!(text(&run().stdout), "10\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A single file's kept image holds every file it read, however deep: an edit to what an import
+/// imports, one of them swapped for a link to a file that says otherwise, or taken away, is seen,
+/// and never runs the old program.
+#[test]
+fn a_single_files_kept_image_is_passed_over_when_any_file_it_read_changes() {
+    let dir = scratch("single_file_deep").unwrap();
+    std::fs::write(dir.join("leaf.fen"), "export def base() -> int:\n    return 1\n").unwrap();
+    std::fs::write(
+        dir.join("mid.fen"),
+        "from leaf import base\n\nexport def twice() -> int:\n    return base() * 2\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.fen"),
+        "from mid import twice\n\ndef main(stdout: Stdout):\n    stdout.print(twice())\n",
+    )
+    .unwrap();
+    let run = || {
+        crate::executables::fennec_command()
+            .args(["run", "--no-test", "main.fen"])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    assert_eq!(text(&first.stdout), "2\n", "{}", text(&first.stderr));
+    assert_eq!(text(&run().stdout), "2\n");
+    // What an import imports changes.
+    std::fs::write(dir.join("leaf.fen"), "export def base() -> int:\n    return 5\n").unwrap();
+    assert_eq!(text(&run().stdout), "10\n");
+    // It's swapped for a link to a file that says otherwise.
+    #[cfg(unix)]
+    {
+        std::fs::write(dir.join("other.fen"), "export def base() -> int:\n    return 7\n").unwrap();
+        std::fs::remove_file(dir.join("leaf.fen")).unwrap();
+        std::os::unix::fs::symlink(dir.join("other.fen"), dir.join("leaf.fen")).unwrap();
+        assert_eq!(text(&run().stdout), "14\n");
+    }
+    // It's taken away.
+    std::fs::remove_file(dir.join("leaf.fen")).unwrap();
+    let gone = run();
+    assert!(!gone.status.success() && text(&gone.stderr).contains("leaf"), "{}", text(&gone.stderr));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The same program in two folders is two programs to the store: each run's failure names its own
+/// folder, and quotes its own text, as a comment changed to one just as long, which leaves the
+/// program the same, shows.
+#[test]
+fn a_failure_names_the_folder_and_quotes_the_text_its_run_was_given() {
+    let dir = scratch("kept_by_path").unwrap();
+    let source = "def main(stdout: Stdout):\n    zero = len(\"\")\n    stdout.print(1 // zero)  # first\n";
+    for folder in ["one", "two"] {
+        std::fs::create_dir_all(dir.join(folder)).unwrap();
+        std::fs::write(dir.join(folder).join("main.fen"), source).unwrap();
+    }
+    let run = |folder: &str| {
+        let output = crate::executables::fennec_command()
+            .args(["run", "--no-test", "main.fen"])
+            .current_dir(dir.join(folder))
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{}", text(&output.stdout));
+        text(&output.stderr)
+    };
+    // Each twice, so the second run of each is the one the store has.
+    for folder in ["one", "two", "one", "two"] {
+        let said = run(folder);
+        assert!(said.contains("division by zero") && said.contains("# first"), "{said}");
+    }
+    std::fs::write(dir.join("one/main.fen"), source.replace("# first", "# other")).unwrap();
+    for _ in 0..2 {
+        let said = run("one");
+        assert!(said.contains("# other") && !said.contains("# first"), "{said}");
+    }
+    // Run from outside the folder, so the path it's given names it.
+    for folder in ["one", "two", "one", "two"] {
+        let output = crate::executables::fennec_command()
+            .args(["run", "--no-test", &format!("{folder}/main.fen")])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap();
+        let said = text(&output.stderr);
+        assert!(said.contains(&format!("{folder}/main.fen")), "{folder}: {said}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A kit's kept image holds its manifest and the files of what it depends on by path: a manifest
+/// that names another dependency, or an edit to a dependency's file, runs the new program.
+#[test]
+fn a_kits_kept_image_is_passed_over_when_its_manifest_or_a_dependency_changes() {
+    let dir = scratch("kit_image_manifest").unwrap();
+    let says = |word: &str| format!("export def word() -> str:\n    return \"{word}\"\n");
+    write_kit(&dir.join("first"), "first", "", &[("lib.fen", &says("first"))]).unwrap();
+    write_kit(&dir.join("second"), "second", "", &[("lib.fen", &says("second"))]).unwrap();
+    let main = |kit: &str| {
+        format!("from {kit} import word\n\ndef main(stdout: Stdout):\n    stdout.print(word())\n")
+    };
+    let app = dir.join("app");
+    write_kit(
+        &app,
+        "app",
+        "[dependencies]\nfirst = { path = \"../first\" }\n",
+        &[("main.fen", &main("first"))],
+    )
+    .unwrap();
+    let run = || {
+        crate::executables::fennec_command()
+            .args(["run", "--no-test"])
+            .current_dir(&app)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap()
+    };
+    let first = run();
+    assert_eq!(text(&first.stdout), "first\n", "{}", text(&first.stderr));
+    assert_eq!(text(&run().stdout), "first\n");
+    // A dependency's file changes.
+    std::fs::write(dir.join("first/src/lib.fen"), says("changed")).unwrap();
+    assert_eq!(text(&run().stdout), "changed\n");
+    // The manifest names another dependency, which the program then imports.
+    write_kit(
+        &app,
+        "app",
+        "[dependencies]\nsecond = { path = \"../second\" }\n",
+        &[("main.fen", &main("second"))],
+    )
+    .unwrap();
+    assert_eq!(text(&run().stdout), "second\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A program the store has is the one built with the output switches a run has now: one run
+/// with `FENNEC_BOXED_RESULTS` or `FENNEC_STRIP_FACTS` makes a program of its own, and runs
+/// without them go on using theirs.
+#[test]
+fn a_run_with_another_output_switch_never_gets_the_program_built_without_it() {
+    let dir = scratch("run_switches").unwrap();
+    std::fs::write(dir.join("main.fen"), "def main(stdout: Stdout):\n    stdout.print(42)\n").unwrap();
+    let made = dir.join("made.txt");
+    // How many new executables a run made, and that it printed what it should.
+    let run = |switch: Option<&str>| {
+        std::fs::write(&made, "").unwrap();
+        let mut command = crate::executables::fennec_command();
+        command
+            .args(["run", "--no-test", "main.fen"])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env("FENNEC_NEW_EXECUTABLES", &made)
+            .env_remove("FENNEC_NO_CACHE")
+            .env_remove("FENNEC_BOXED_RESULTS")
+            .env_remove("FENNEC_STRIP_FACTS");
+        if let Some(switch) = switch {
+            command.env(switch, "1");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(text(&output.stdout), "42\n", "{}", text(&output.stderr));
+        std::fs::read_to_string(&made).unwrap().lines().count()
+    };
+    assert_eq!(run(None), 1, "the first run builds its program");
+    assert_eq!(run(None), 0, "a second runs the one the store has");
+    for switch in ["FENNEC_BOXED_RESULTS", "FENNEC_STRIP_FACTS"] {
+        assert_eq!(run(Some(switch)), 1, "a run with {switch} builds a program of its own");
+        assert_eq!(run(Some(switch)), 0, "and runs it again with {switch}");
+    }
+    assert_eq!(run(None), 0, "a run without them has its own still");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Everything Fennec keeps between commands goes in its store, so a kit's folder holds only its own
 /// files after running, testing, checking, linting, formatting and building it, cache and all. A
 /// build writes the program where `-o` says. See `docs/store.md`.
@@ -3921,6 +4139,33 @@ fn a_build_refuses_what_a_check_refuses() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A build checks all of the program, as `check` does, though it builds only what `main` reaches:
+/// a mistake in a function nothing calls is refused. Of the standard library it checks what the
+/// program reaches, whose own tests check the rest.
+#[test]
+fn a_build_refuses_a_mistake_in_a_function_nothing_calls() -> std::io::Result<()> {
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec_build_unreached_{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("unreached.fen");
+    std::fs::write(
+        &program,
+        "def unused(count: int) -> str:\n    return count + 1\n\ndef main(stdout: Stdout):\n    stdout.print(\"hi\")\n",
+    )?;
+    let program = program.to_string_lossy().into_owned();
+    let executable = dir.join("unreached").to_string_lossy().into_owned();
+    let built = fennec(&["build", &program, "-o", &executable], "")?;
+    assert!(!built.status.success());
+    assert!(
+        text(&built.stderr).contains("`unused` returns a str, but this is an int"),
+        "{}",
+        text(&built.stderr)
+    );
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// One program built for release in two folders, with two Fennec folders, a second apart, is the
 /// same bytes each time, as a signed release has to be to check by building it again, and a dev
 /// build is the same bytes in one folder a second later: a kit built by its whole path, as `.`, and with a dependency it names by a path, and
@@ -3988,6 +4233,7 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
             "FENNEC_STRIP_FACTS",
             "FENNEC_THREADS_RUNTIME",
             "FENNEC_BOXED_RESULTS",
+            "FENNEC_AUDIT",
             "FENNEC_NO_CACHE",
         ] {
             command.env_remove(name);
@@ -4021,6 +4267,7 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
         ("FENNEC_STRIP_FACTS", "1"),
         ("FENNEC_THREADS_RUNTIME", "0"),
         ("FENNEC_BOXED_RESULTS", "1"),
+        ("FENNEC_AUDIT", "1"),
     ]
     .into_iter()
     .enumerate()

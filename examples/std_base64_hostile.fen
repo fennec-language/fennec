@@ -1,0 +1,78 @@
+# Base64 from outside, like a token or an image in JSON, reads one way only, or fails with an
+# `InvalidValue` saying why: padding is `=` and only at the end, in the count the length needs;
+# each alphabet takes its own two digits and not the other's; a space or a line break isn't a
+# digit; and a last digit can't hold bits that stand for nothing, so one value has one text.
+from std import base64
+
+## Why `text` isn't standard base64, or "read".
+def why_not(text: str) -> str:
+    _ = base64.decode(text) except why:
+        return why.message
+    return "read"
+
+## Why `text` isn't URL-safe base64, or "read".
+def why_not_url(text: str) -> str:
+    _ = base64.url_decode(text) except why:
+        return why.message
+    return "read"
+
+test "padding is = at the end, as many as the length needs"():
+    assert base64.decode("QQ==")? == "A".encode()
+    assert base64.decode("QUI=")? == "AB".encode()
+    for text in ["QQ", "QQ=", "QQ===", "QUI", "QUI==", "Q", "Q===", "===="]:
+        assert why_not(text) != "read"
+    # Padding inside is a character that isn't a digit.
+    assert why_not("QQ==QQ==") == "`QQ==QQ==` isn't base64: character 3 isn't a base64 digit"
+    assert why_not("=QQ=") == "`=QQ=` isn't base64: character 1 isn't a base64 digit"
+    # URL-safe takes it with or without its padding, and only the padding the length needs.
+    assert base64.url_decode("QQ")? == "A".encode() and base64.url_decode("QQ==")? == "A".encode()
+    assert why_not_url("QQ=") == "`QQ=` isn't base64: its length with `=` isn't a multiple of 4"
+    assert why_not_url("Q") == "`Q` isn't base64: it has a digit too many at its end"
+
+test "each alphabet takes its own digits and not the other's"():
+    assert base64.decode("+/+/")? == base64.url_decode("-_-_")?
+    assert why_not("-_-_") == "`-_-_` isn't base64: character 1 isn't a base64 digit"
+    assert why_not_url("+/+/") == "`+/+/` isn't base64: character 1 isn't a base64 digit"
+    assert why_not("ab+_") == "`ab+_` isn't base64: character 4 isn't a base64 digit"
+
+test "a space, a line break or any other byte isn't a digit"():
+    # Each four bytes long, so it's the character that's refused, not the length.
+    for text, at in [
+        ("QU J", 3),
+        ("QUJ\n", 4),
+        ("Q\r\nJ", 2),
+        (" QUJ", 1),
+        ("QUJ\x00", 4),
+        ("QUJ\x7f", 4),
+        ("QUé", 3),
+        ("QUJ.", 4),
+    ]:
+        assert why_not(text).endswith(f"character {at} isn't a base64 digit")
+
+test "a last digit with bits that stand for nothing fails, so a value has one text"():
+    # `QQ==` is A; `QR==` and `QZ==` say the same with bits left over, which no encoder writes.
+    for text in ["QR==", "QZ==", "QUJ=", "QUL="]:
+        assert (
+            why_not(text)
+            == f"`{text}` isn't base64: its last digit has bits that stand for nothing"
+        )
+    for text in ["QR", "QUJ"]:
+        assert why_not_url(text).endswith("its last digit has bits that stand for nothing")
+    assert base64.encode("A".encode()) == "QQ==" and base64.url_encode("AB".encode()) == "QUI"
+
+test "every cut of a text reads only where a group ends, and as what it holds so far"():
+    data = bytes([0, 1, 2, 253, 254, 255, 62, 63, 64])
+    whole = base64.encode(data)
+    for end in range(len(whole)):
+        part = whole[0:end]
+        found = base64.decode(part) except InvalidValue():
+            assert end % 4 != 0
+            continue
+        assert end % 4 == 0 and found == data[0:end // 4 * 3]
+    assert base64.decode(whole)? == data
+    # A long text reads whole.
+    long = bytes([at % 256 for at in range(300_000)])
+    assert base64.decode(base64.encode(long))? == long
+
+def main(stdout: Stdout):
+    stdout.print(why_not("QR=="))

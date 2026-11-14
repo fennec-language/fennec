@@ -1,0 +1,75 @@
+# A program's arguments and environment come from whoever started it. `Cli.parse` reads
+# arguments the way getopt does, and fails with a `CliError` saying why where they don't fit:
+# `--` ends the options, a value can start with `-`, a repeated option keeps its last value, and
+# a positional that takes many and is required needs one. `Env.get` gives `None` for a name no
+# variable can have, empty or holding `=` or a NUL, rather than asking the system, which can read
+# `PATH=` as `PATH`.
+from std.cli import Cli, CliArgs
+
+def cli() -> Cli:
+    return (
+        Cli(name="tool").flag("loud", short="l").option("name", short="n").positional(
+            "files",
+            many=True,
+        )
+    )
+
+## What `args` read as, as `name`, `loud` and the rest, or why they couldn't be.
+def read(args: list[str]) -> str:
+    given = cli().parse(args) except why:
+        return why.message
+    return shown(given)
+
+def shown(given: CliArgs) -> str:
+    name = given.values.get("name") else "-"
+    loud = "loud" in given.flags
+    return f"name={name} loud={loud} rest={given.rest}"
+
+test "a positional that takes many and is required needs one"():
+    assert read([]) == "<files> is required"
+    assert read(["--loud"]) == "<files> is required"
+    assert read(["a"]) == "name=- loud=False rest=[\"a\"]"
+    # One that isn't required takes none.
+    optional = Cli(name="tool").positional("files", many=True, required=False)
+    assert len(optional.parse([])?.rest) == 0
+
+test "options are read as getopt reads them"():
+    assert read(["--name", "a", "--name", "b", "x"]) == "name=b loud=False rest=[\"x\"]"
+    assert read(["-n", "--loud", "x"]) == "name=--loud loud=False rest=[\"x\"]"
+    assert read(["-nl", "x"]) == "name=l loud=False rest=[\"x\"]"
+    assert read(["-ln", "v", "x"]) == "name=v loud=True rest=[\"x\"]"
+    assert read(["--name=", "x"]) == "name= loud=False rest=[\"x\"]"
+    assert read(["--name=a=b", "x"]) == "name=a=b loud=False rest=[\"x\"]"
+    assert read(["--loud", "--loud", "x"]) == "name=- loud=True rest=[\"x\"]"
+    assert read(["-", "x"]) == "name=- loud=False rest=[\"-\", \"x\"]"
+
+test "-- ends the options, so what follows is never one"():
+    assert (
+        read(["--", "--loud", "-n", "--help"])
+        == "name=- loud=False rest=[\"--loud\", \"-n\", \"--help\"]"
+    )
+    assert read(["x", "--", "--"]) == "name=- loud=False rest=[\"x\", \"--\"]"
+
+test "arguments that don't fit say why, quoting what they can"():
+    assert read(["--loud=yes", "x"]) == "`--loud` is a flag, so it takes no value"
+    assert read(["--name"]) == "`--name` needs a value"
+    assert read(["-n"]) == "`-n` needs a value"
+    assert read(["--nope", "x"]) == "there's no option `--nope`"
+    assert read(["--=x", "x"]) == "there's no option `--`"
+    assert read(["-lz", "x"]) == "there's no option `-z`"
+    assert read(["---", "x"]) == "there's no option `---`"
+
+test "a long or odd argument is an argument like any other"():
+    long = "x" * 200_000
+    assert read([long]) == f"name=- loud=False rest=[\"{long}\"]"
+    assert read(["--name", "a\x00b\nc", "é"]) == "name=a\x00b\nc loud=False rest=[\"é\"]"
+
+test "a name no variable can have is None, never another variable"(env: Env):
+    env.set("PATH", "/bin")
+    env.set("A", "1")
+    assert env.get("PATH") == "/bin"
+    for name in ["", "PATH=", "A=", "=", "A\x00", "\x00"]:
+        assert env.get(name) is None
+
+def main(stdout: Stdout):
+    stdout.print(read([]))

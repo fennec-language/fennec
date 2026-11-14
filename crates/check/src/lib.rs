@@ -282,23 +282,59 @@ pub fn builtin_method_params(ty: &Type, name: &str) -> Option<Vec<Type>> {
 /// start of `0.0` written in. Running a module needs this, since what runs it doesn't know
 /// types.
 pub fn check_and_resolve(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
+    checked_and_resolved_in(module, checker::Scope::Everything)
+}
+
+/// Like `check_and_resolve`, checking as much of the library as `scope` says.
+fn checked_and_resolved_in(
+    module: &mut Module,
+    scope: checker::Scope,
+) -> Result<Signatures, Vec<Diagnostic>> {
     let names = own_types_apart(module);
     refuse_reserved(module)?;
-    let checked = check_typed(module).map_err(|problems| as_written(problems, &names))?;
+    let checked = checked_typed_in(module, scope).map_err(|problems| as_written(problems, &names))?;
     refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
-    resolved(module, checked)
+    resolved(module, checked, scope)
+}
+
+/// What routing a module about to be emitted did, as `route_natively` gives it back.
+pub enum Routed {
+    /// Something now calls std's code written in Fennec, so the module is to be checked again.
+    Changed,
+    /// Nothing changed. When routing had to check the module to find that out, these are the
+    /// signatures `check_to_emit` would give for it, so it needn't be checked again.
+    Unchanged(Option<Signatures>),
+}
+
+/// Routes a checked, resolved and trimmed module's sorts and formats to std's code written in
+/// Fennec, as `route_sorts_natively` and then `route_formats_natively` each do, so they build
+/// natively. A module that sorts or reads and writes a format is checked to find out, once, over
+/// what it reaches, as `check_to_emit` checks it: not over all of the library.
+pub fn route_natively(module: &mut Module) -> Routed {
+    let sorts = calls_sorted(module);
+    let formats = imports_a_format(module) || sends_json(module);
+    if !sorts && !formats {
+        return Routed::Unchanged(None);
+    }
+    let Ok(checked) = checked_typed_in(module, checker::Scope::ReachedWithFields) else {
+        return Routed::Unchanged(None);
+    };
+    let sorted = if sorts { route_sorts_natively(module, &checked) } else { None };
+    // Formats look at the module as sorting left it, which sorting checked if it changed it.
+    let formatted = formats && route_formats_natively(module, sorted.as_ref().unwrap_or(&checked));
+    if sorted.is_some() || formatted {
+        Routed::Changed
+    } else {
+        Routed::Unchanged(Some(checked.into_signatures()))
+    }
 }
 
 /// Makes the calls to `json.dumps`, `json.loads`, `toml.dumps` and `toml.loads` in a checked and
 /// resolved module call std's readers and writers written in Fennec instead, where what's read or
 /// written has its own `def serialize` or `def deserialize`, so they build natively. The rest
-/// stay as they were. Says whether anything changed. If the changed module
-/// doesn't check, which would be a mistake here, it's left as it was.
-pub fn route_formats_natively(module: &mut Module) -> bool {
-    if !imports_a_format(module) && !sends_json(module) {
-        return false;
-    }
-    let Ok(checked) = check_typed(module) else { return false };
+/// stay as they were. `checked` is what checking the module found. Says whether anything changed.
+/// If the changed module doesn't check, which would be a mistake here, it's left as it was.
+fn route_formats_natively(module: &mut Module, checked: &Checked) -> bool {
     if checked.native_formats.is_empty() && checked.native_json_bodies.is_empty() {
         return false;
     }
@@ -340,7 +376,7 @@ pub fn route_formats_natively(module: &mut Module) -> bool {
             }
         }
     });
-    if check_and_resolve(&mut routed).is_err() {
+    if checked_and_resolved_in(&mut routed, checker::Scope::ReachedWithFields).is_err() {
         return false;
     }
     *module = routed;
@@ -382,22 +418,24 @@ def fennec_sorted_in_order[T: Ordered](items: list[T]) -> list[T]:
     return merged + left[at_left:] + right[at_right:]
 ";
 
-/// Makes each `sorted(items)` whose items have their own `<` call a merge sort written in Fennec,
-/// which calls that `<` as any code does, so native code sorts them. Says whether anything changed.
-/// If the changed module doesn't check, which would be a mistake here, it's left as it was. It's
-/// left unresolved, so run this before `route_formats_natively`.
-pub fn route_sorts_natively(module: &mut Module) -> bool {
-    // Checking again costs a build its time, so only a program that sorts is.
+/// Whether a module calls `sorted`: only then is it checked for `route_sorts_natively`, since
+/// checking again costs a build its time.
+fn calls_sorted(module: &Module) -> bool {
     let mut sorts = false;
     fennec_syntax::visit::exprs_mut(&mut module.clone(), &mut |expr| {
         if let ExprKind::Call { callee, .. } = &expr.kind {
             sorts |= matches!(&callee.kind, ExprKind::Name(name) if name == "sorted");
         }
     });
-    if !sorts {
-        return false;
-    }
-    let Ok(checked) = check_typed(module) else { return false };
+    sorts
+}
+
+/// Makes each `sorted(items)` whose items have their own `<` call a merge sort written in Fennec,
+/// which calls that `<` as any code does, so native code sorts them. `checked` is what checking the
+/// module found. Gives back what checking the changed module found, when anything changed. If the
+/// changed module doesn't check, which would be a mistake here, it's left as it was. It's left
+/// unresolved, so run this before `route_formats_natively`.
+fn route_sorts_natively(module: &mut Module, checked: &Checked) -> Option<Checked> {
     let types: BTreeMap<(u32, u32), Type> = checked
         .types
         .iter()
@@ -430,17 +468,15 @@ pub fn route_sorts_natively(module: &mut Module) -> bool {
         changed = true;
     });
     if !changed {
-        return false;
+        return None;
     }
-    let Ok(parsed) = fennec_syntax::parse_prelude(SORTED_IN_ORDER) else { return false };
+    let parsed = fennec_syntax::parse_prelude(SORTED_IN_ORDER).ok()?;
     routed.items.extend(parsed.items);
     // Checked as it is, and left unresolved for what checks it next: resolving makes some of it,
     // like `list[Score]()` turned into `[]`, what can't be checked twice.
-    if check_typed(&routed).is_err() {
-        return false;
-    }
+    let again = checked_typed_in(&routed, checker::Scope::ReachedWithFields).ok()?;
     *module = routed;
-    true
+    Some(again)
 }
 
 fn imports_a_format(module: &Module) -> bool {
@@ -480,7 +516,7 @@ pub fn check_to_build(module: &mut Module) -> Result<Option<Signatures>, Vec<Dia
     // the module again types as what's written there: the first check's types are only those of
     // a module it left as it was.
     let checked_module = module.clone();
-    let (signatures, as_left) = resolved_saying(module, checked)?;
+    let (signatures, as_left) = resolved_saying(module, checked, checker::Scope::ReachedWithFields)?;
     let reused = as_left && *module == checked_module;
     Ok(reused.then_some(signatures))
 }
@@ -498,7 +534,7 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     let checked =
         checker::Checker::new(module).run(scope).map_err(|problems| as_written(problems, &names))?;
     refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
-    resolved(module, checked)
+    resolved(module, checked, scope)
 }
 
 /// A call the checker sent to a standard library function, like `sum` of a list of floats to
@@ -576,14 +612,24 @@ fn start_written(call: &mut Expr, checked: &Checked, span: (u32, u32)) {
     }
 }
 
-fn resolved(module: &mut Module, checked: Checked) -> Result<Signatures, Vec<Diagnostic>> {
-    resolved_saying(module, checked).map(|(signatures, _)| signatures)
+fn resolved(
+    module: &mut Module,
+    checked: Checked,
+    scope: checker::Scope,
+) -> Result<Signatures, Vec<Diagnostic>> {
+    resolved_saying(module, checked, scope).map(|(signatures, _)| signatures)
 }
 
 /// Like `resolved`, saying too whether the signatures are those the first check found of the
-/// module as it's left: they aren't once anything was written in, which is checked again with all
-/// of the library, or once stages kept in names were moved to where they're used.
-fn resolved_saying(module: &mut Module, checked: Checked) -> Result<(Signatures, bool), Vec<Diagnostic>> {
+/// module as it's left: they aren't once anything was written in, which is checked again, or once
+/// stages kept in names were moved to where they're used. What's written in is checked again over
+/// `scope`, as much of the library as the first round checked: written-in code that reaches more
+/// of it reaches it in the round that checks it.
+fn resolved_saying(
+    module: &mut Module,
+    checked: Checked,
+    scope: checker::Scope,
+) -> Result<(Signatures, bool), Vec<Diagnostic>> {
     // The library's functions this program needs rewritten go through this round with its own.
     let std_in = std_rewritten_in(module, &checked);
     let round = resolved_round(module, &checked);
@@ -594,8 +640,8 @@ fn resolved_saying(module: &mut Module, checked: Checked) -> Result<(Signatures,
             fennec_syntax::rename::discards_apart(module);
             let mut second = checker::Checker::new(module);
             second.again = true;
-            match second.run(checker::Scope::Everything) {
-                Ok(again) => resolved_saying(module, again).map(|(signatures, _)| (signatures, false)),
+            match second.run(scope) {
+                Ok(again) => resolved_saying(module, again, scope).map(|(signatures, _)| (signatures, false)),
                 Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
             }
         }
@@ -603,8 +649,8 @@ fn resolved_saying(module: &mut Module, checked: Checked) -> Result<(Signatures,
             // What was written in the library's functions is checked as what runs.
             let mut second = checker::Checker::new(module);
             second.again = true;
-            match second.run(checker::Scope::Everything) {
-                Ok(again) => resolved_saying(module, again).map(|(signatures, _)| (signatures, false)),
+            match second.run(scope) {
+                Ok(again) => resolved_saying(module, again, scope).map(|(signatures, _)| (signatures, false)),
                 Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
             }
         }
@@ -929,7 +975,7 @@ impl Checked {
     ///
     /// When the program as lowering rewrote it doesn't check, which is the compiler's mistake.
     pub fn resolve(&self, module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> {
-        resolved(module, self.clone())
+        resolved(module, self.clone(), checker::Scope::Everything)
     }
 }
 

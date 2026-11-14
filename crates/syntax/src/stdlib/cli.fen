@@ -121,7 +121,9 @@ export struct Cli:
         self._place(positionals, ref given)?
         if not given.wants_help:
             for taken in self.takes:
-                if taken.required and taken.name not in given.values and not taken.many:
+                # One that takes many, and is required, as its help says, needs at least one.
+                missing = (len(given.rest) == 0 if taken.many else taken.name not in given.values)
+                if taken.required and missing:
                     what = f"<{taken.name}>" if taken.positional else f"`--{taken.name}`"
                     fail CliError(message=f"{what} is required")
         for taken in self.takes:

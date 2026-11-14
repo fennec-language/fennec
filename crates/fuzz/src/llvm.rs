@@ -234,6 +234,9 @@ fn ran_on(
     if let Some(threads) = threads {
         command.env("FENNEC_THREADS", threads.to_string());
     }
+    // A program counts what it holds at its end, and one that ran to its end holding anything
+    // let a block go unfreed.
+    command.env("FENNEC_COUNTS", "1");
     let mut child = command
         .args(args)
         .stdout(file(&out)?)
@@ -243,11 +246,37 @@ fn ran_on(
     let failure = watch(&mut child, STUCK, None, most_kilobytes, || false);
     let printed = std::fs::read(&out).unwrap_or_default();
     let said = String::from_utf8_lossy(&std::fs::read(&err).unwrap_or_default()).into_owned();
+    let (said, live) = counted(&said);
     match (failure, child.wait()) {
+        (None, Ok(status)) if status.success() && live > 0 => {
+            Err(format!("it ran to its end with {live} blocks still live, which nothing freed:\n{said}"))
+        }
         (None, Ok(status)) => Ok((printed, said, status.success())),
         (_, Ok(status)) if status.code() == Some(1) => Ok((printed, said, false)),
         (failure, status) => Err(format!("what LLVM built {failure:?} ({status:?}):\n{said}")),
     }
+}
+
+/// What a program said with its counts line taken out, and how many blocks that line says were
+/// still live at its end, 0 if it wrote none. The line is the last that starts `copies ` and ends
+/// `live <n>`, which `FENNEC_COUNTS` has the program write, and it's taken out so what's compared
+/// between builds is only what the program itself said.
+fn counted(said: &str) -> (String, u64) {
+    let lines: Vec<&str> = said.lines().collect();
+    let counts = lines.iter().rposition(|line| line.starts_with("copies ") && line.contains(" live "));
+    let Some(at) = counts else { return (said.to_owned(), 0) };
+    let live = lines
+        .get(at)
+        .and_then(|line| line.rsplit(' ').next())
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(0);
+    let kept: Vec<&str> =
+        lines.iter().enumerate().filter(|(number, _)| *number != at).map(|(_, line)| *line).collect();
+    let mut kept = kept.join("\n");
+    if !kept.is_empty() && said.ends_with('\n') {
+        kept.push('\n');
+    }
+    (kept, live)
 }
 
 /// What a run did: what it printed, the first line it said on standard error, and whether it
@@ -550,6 +579,23 @@ pub(crate) fn read_natively(name: &str, input: &[u8]) -> Result<Option<Vec<u8>>,
     std::fs::write(&file, input).map_err(|err| format!("{}: {err}", file.display()))?;
     ran_holding(&executable, &[file.as_os_str()], &work, READER_KILOBYTES)
         .map(|(printed, _, _)| Some(printed))
+}
+
+#[cfg(test)]
+mod counted_tests {
+    use super::counted;
+
+    #[test]
+    fn the_counts_line_is_taken_out_and_its_live_count_read() {
+        let said =
+            "error: boom\ncopies 1 copied_bytes 8 largest_copy 8 allocations 3 allocated_bytes 90 live 2\n";
+        assert_eq!(counted(said), ("error: boom\n".to_owned(), 2));
+        assert_eq!(
+            counted("copies 0 copied_bytes 0 largest_copy 0 allocations 0 allocated_bytes 0 live 0\n"),
+            (String::new(), 0)
+        );
+        assert_eq!(counted("just this\n"), ("just this\n".to_owned(), 0));
+    }
 }
 
 #[cfg(test)]

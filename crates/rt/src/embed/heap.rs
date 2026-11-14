@@ -1232,7 +1232,7 @@ fn header_at(words: &[u64], at: usize) -> Option<[u64; 3]> {
 }
 
 /// Where each boxed field of a value sits among its words, from `at`.
-fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<usize>) {
+pub(super) fn boxed_words(element: &Element, words: &[u64], at: &mut usize, found: &mut Vec<usize>) {
     match element {
         // An optional string's header: all zero, `None`, holds nothing, as an inline one doesn't.
         element if element.is_optional_text() => boxed_words(&Element::Text, words, at, found),
@@ -1663,6 +1663,11 @@ pub(super) fn read_items(state: &State, element: &Element, words: &[u64], count:
     Value::list((0..count).map(|_| read(state, element, &mut words)).collect())
 }
 
+/// A value held in place as `words`, laid out as a list's item of its kind is, as a `Value`.
+pub(super) fn read_in_place(state: &State, element: &Element, words: &[u64]) -> Value {
+    read(state, element, &mut words.iter())
+}
+
 /// A value of a word, as a `Value`.
 pub(super) fn read_word(state: &State, element: &Element, word: u64) -> Value {
     read(state, element, &mut std::iter::once(&word))
@@ -2051,7 +2056,7 @@ pub(super) fn same_words(state: &State, element: &Element, left: &[u64], right: 
 
 /// [`same_words`] of the words themselves, with each pair of blocks they hold put on `later` to
 /// compare after.
-fn same_words_here(
+pub(super) fn same_words_here(
     state: &State,
     element: &Element,
     left: &[u64],

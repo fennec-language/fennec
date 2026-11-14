@@ -6614,17 +6614,17 @@ struct Holder:
 def whole() -> int fails Oops:
     mut holder = Holder()
     holder.push(7)
-    return holder.top()? * 10 + NOTHING.len()
+    return holder.top()? * 10 + len(NOTHING)
 
 def reads() -> int:
     mut total = 0
     for _ in range(50):
-        total += NOTHING.len()
+        total += len(NOTHING)
     return total
 
 ## Called only on the main thread, so its code counts the constant there.
 def main_reads() -> int:
-    return NOTHING.len() + NOTHING.len() + NOTHING.len()
+    return len(NOTHING) + len(NOTHING) + len(NOTHING)
 
 def in_task(stdout: Stdout) fails Oops:
     stdout.print("task:", whole()?, reads())
@@ -6635,7 +6635,7 @@ def main(stdout: Stdout) fails Oops | Crashed:
     first = whole()?
     with launch(() => in_task(stdout)?)?:
         pass
-    stdout.print("main:", before, first, "after:", whole()?, NOTHING.len())
+    stdout.print("main:", before, first, "after:", whole()?, len(NOTHING))
 "#,
         "task: 70 0\nmain: 0 70 after: 70 0\n",
     )
@@ -10615,7 +10615,7 @@ fn failing_partway() -> String {
     let lines = (0..50).fold(String::new(), |mut lines, line| {
         let _ = writeln!(
             lines,
-            "    total += checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?.len()"
+            "    total += len(checked([f\"line {line} of {{at}}, long enough to need a block of its own\"], (at + {line}) % 50 // 49)?)"
         );
         lines
     });
@@ -10686,7 +10686,7 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
     let mut body = String::new();
     let mut total: i64 = 0;
     for line in 0..lines {
-        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + f\"{{total}}\".len()");
+        let _ = writeln!(body, "    total += at_or_zero(twice({line}), {line} % 2) + len(f\"{{total}}\")");
         let written = i64::try_from(total.to_string().len()).unwrap_or(0);
         total += line + written;
     }
@@ -11172,7 +11172,7 @@ fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Resul
         return Ok(());
     }
     let source = "from std.collections import Packed\n\ndef main(stdout: Stdout):\n    mut packed = Packed[int]()\n    for n in range(100):\n        packed.append([n, n + 1, n + 2])\n";
-    let building = counts_of("packed_built", &format!("{source}    stdout.print(packed.len())\n"))?;
+    let building = counts_of("packed_built", &format!("{source}    stdout.print(len(packed))\n"))?;
     let looped = counts_of(
         "packed_looped",
         &format!(
@@ -22589,6 +22589,64 @@ fn native_blocks_are_counted() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Native blocks come from the allocator the runtime they're linked with uses: mimalloc in a plain
+/// build, and the system's under either sanitizer, whose runtime leaves mimalloc out. Under the
+/// thread sanitizer they once still asked for mimalloc, and such a program didn't link. A build's
+/// LLVM text is kept and read, so this holds wherever the sanitized link itself can't run.
+#[test]
+fn native_blocks_come_from_the_allocator_each_sanitizer_links() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("native_allocator")?;
+    let program = dir.join("tree.fen");
+    std::fs::write(
+        &program,
+        format!("{SHARED_LEAVES_TREE}def main(stdout: Stdout):\n    stdout.print(count(build(5)))\n"),
+    )?;
+    for (sanitize, wanted, not) in [
+        (None, "@mi_malloc(", "@malloc("),
+        (Some("address"), "@malloc(", "@mi_malloc("),
+        (Some("thread"), "@malloc(", "@mi_malloc("),
+    ] {
+        let home = dir.join(format!("home-{}", sanitize.unwrap_or("plain")));
+        let mut command = crate::executables::fennec_command();
+        command
+            .args(["build", "--llvm", &program.to_string_lossy(), "-o", &dir.join("tree").to_string_lossy()])
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_LLVM_KEEP", "1")
+            .env("FENNEC_NO_CACHE", "1")
+            .env_remove("FENNEC_SANITIZE");
+        if let Some(sanitize) = sanitize {
+            command.env("FENNEC_SANITIZE", sanitize);
+        }
+        // Linking may fail where the sanitizer's runtime isn't there; the text is what's read.
+        command.output_before(FENNEC_DEADLINE)?;
+        let mut declared = String::new();
+        let mut folders = vec![home.join("work")];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "ll") {
+                    let text = std::fs::read_to_string(&path)?;
+                    declared.extend(
+                        text.lines()
+                            .filter(|line| line.starts_with("declare"))
+                            .map(|line| format!("{line}\n")),
+                    );
+                }
+            }
+        }
+        let shown = sanitize.unwrap_or("no sanitizer");
+        assert!(declared.contains(wanted), "{shown}: native blocks don't come from {wanted}\n{declared}");
+        assert!(!declared.contains(not), "{shown}: native blocks come from {not}\n{declared}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A recursive enum holding strings, inline and in blocks of their own, is made and freed by
 /// generated code, which lets go of each string as its block goes: built and dropped over and
 /// over, read along the way, in a dev build and with `--release`.
@@ -23633,7 +23691,7 @@ fn an_embedded_folders_lists_are_made_once() -> std::io::Result<()> {
         let source = format!(
             "def site() -> EmbeddedFolder:\n    return embed_folder(\"site\")\n\n\
              def main(stdout: Stdout):\n    mut total = 0\n    for i in range({calls}):\n        \
-             files = site()\n        total += len(files) + (files.get(\"index.html\") else bytes()).len()\n    \
+             files = site()\n        total += len(files) + len(files.get(\"index.html\") else bytes())\n    \
              mut paths = site().keys()\n    paths.append(\"extra\")\n    \
              stdout.print(total, paths, site().keys())\n"
         );
@@ -25504,7 +25562,7 @@ test \"nothing runs\"(process: Process):
     problem = failure_of(() => process.run(\"echo\", [\"hello\"])?)
     assert problem is not None
     assert problem.program() == \"echo\"
-    assert process.ran().len() == 1
+    assert len(process.ran()) == 1
 ",
     )?;
     let path = program.to_string_lossy().into_owned();

@@ -770,7 +770,7 @@ def build[T: Made]() -> T:
     return T.make()
 ";
     let fits =
-        format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(build[Pile[Part]]().items.len())\n");
+        format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(len(build[Pile[Part]]().items))\n");
     assert_eq!(problems(&fits), Vec::<String>::new());
     let misfits =
         format!("{source}\ndef main(stdout: Stdout):\n    stdout.print(build[Pile[Rock]]().items.len())\n");

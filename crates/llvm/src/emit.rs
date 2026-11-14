@@ -4115,7 +4115,7 @@ def main(stdout: Stdout):
     fn a_put_into_a_dict_nothing_else_holds_checks_nothing() -> Result<(), String> {
         let program = |body: &str| {
             format!(
-                "def keep(d: dict[int, int]) -> int:\n    return d.len()\n\ndef counted(n: int, given: dict[int, int]) -> int:\n{body}\n\ndef main(stdout: Stdout):\n    stdout.print(counted(10, given={{}}))\n    return\n"
+                "def keep(d: dict[int, int]) -> int:\n    return len(d)\n\ndef counted(n: int, given: dict[int, int]) -> int:\n{body}\n\ndef main(stdout: Stdout):\n    stdout.print(counted(10, given={{}}))\n    return\n"
             )
         };
         let checked = |body: &str| -> Result<(usize, usize), String> {

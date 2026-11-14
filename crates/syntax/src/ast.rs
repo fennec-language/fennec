@@ -10,6 +10,29 @@ pub struct Module {
     /// like `concurrent.told` or `Pool.borrowed`: rewritten as a program's own code is, as by a
     /// `with` source or `launch` written in where it's used. They stand in for the library's.
     pub std_rewritten: Vec<(String, FnDef)>,
+    /// Each line of each kit's `kit.toml` naming a kit it depends on, with what that kit gets, as
+    /// `gets = ["Net"]` says: nothing for a line with none. A module made without these refuses any
+    /// capability handed to another kit.
+    pub grants: Vec<Grant>,
+}
+
+/// What a dependency can be given in `gets`, by the type a capability has in code: the program's
+/// ways to reach outside it, and `File` and `Database`, which reach a file or storage already open.
+pub const GRANTABLE: [&str; 13] = [
+    "Stdout", "Stderr", "Stdin", "Args", "Env", "Fs", "File", "Net", "Database", "Clock", "Entropy",
+    "Process", "Signals",
+];
+
+/// One line's `gets` in a kit's `kit.toml`: `http = { ..., gets = ["Net"] }`. Only a person writes
+/// one: no tool, fix or help adds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Grant {
+    /// The kit whose `kit.toml` says it: empty for the program's own.
+    pub by: String,
+    /// The kit it depends on, by the name it imports it as.
+    pub to: String,
+    /// The capabilities it gets, by type, as written: `Net`, `Fs`.
+    pub gets: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

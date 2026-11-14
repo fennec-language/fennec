@@ -82,6 +82,8 @@ struct Dependencies {
     uses: HashSet<String>,
     /// All of them, and those they name, by name.
     kits: HashMap<String, Rc<Place>>,
+    /// What each kit's `kit.toml` says the kits it names get.
+    grants: Vec<fennec_syntax::Grant>,
 }
 
 /// Whether an import is of the standard library rather than of the program's own files.
@@ -343,6 +345,13 @@ fn dependencies(root: &Path, manifest: &Manifest) -> Result<Dependencies, Proble
         })?
         .for_loading();
     let found = store.ensure(root).map_err(|message| Problems::unplaced(format!("error: {message}\n")))?;
+    let grant =
+        |by: &str, (to, gets): (String, Vec<String>)| fennec_syntax::Grant { by: by.to_owned(), to, gets };
+    let mut grants: Vec<fennec_syntax::Grant> =
+        fennec_deps::grants_of(manifest).into_iter().map(|line| grant("", line)).collect();
+    for kit in &found {
+        grants.extend(kit.grants.iter().cloned().map(|line| grant(&kit.name, line)));
+    }
     let kits = found
         .into_iter()
         .map(|kit| {
@@ -357,7 +366,7 @@ fn dependencies(root: &Path, manifest: &Manifest) -> Result<Dependencies, Proble
         })
         .collect();
     let uses = manifest.dependencies.iter().map(|dependency| dependency.name.clone()).collect();
-    Ok(Dependencies { uses, kits })
+    Ok(Dependencies { uses, kits, grants })
 }
 
 /// The names a file of a dependency marks `export`. A kit keeps the first word of each such line,
@@ -485,6 +494,8 @@ struct Loader<'a> {
     own: Rc<Place>,
     /// The kits it depends on, and those they depend on, by name.
     kits: HashMap<String, Rc<Place>>,
+    /// What each kit's `kit.toml` says the kits it names get, which the checker holds them to.
+    grants: Vec<fennec_syntax::Grant>,
     /// Whether the examples in the doc comments of the kit being loaded become tests.
     doc_examples: bool,
     embedded: Vec<Embedded>,
@@ -513,6 +524,7 @@ impl<'a> Loader<'a> {
             overlay,
             own: Rc::new(Place { name: String::new(), src, shown_src, root, uses: dependencies.uses }),
             kits: dependencies.kits,
+            grants: dependencies.grants,
             doc_examples: false,
             embedded: Vec::new(),
             sources: Sources::new(),
@@ -723,7 +735,7 @@ impl<'a> Loader<'a> {
             .collect();
         let kit_src = manifest.as_ref().map(|_| (self.own.src.clone(), self.own.shown_src.clone()));
         Ok(Program {
-            module: Module { items, ..Default::default() },
+            module: Module { items, grants: self.grants, ..Default::default() },
             sources: self.sources,
             manifest,
             embedded: self.embedded,

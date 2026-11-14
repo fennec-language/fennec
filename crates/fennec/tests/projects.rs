@@ -142,7 +142,8 @@ fn kit_toml_reads_dependencies_from_git_and_paths() {
         commit: commit.to_owned(),
         folder: folder.map(str::to_owned),
     };
-    let named = |name: &str, source| fennec_kit::Dependency { name: name.to_owned(), source };
+    let named =
+        |name: &str, source| fennec_kit::Dependency { name: name.to_owned(), source, gets: Vec::new() };
     assert_eq!(
         manifest.dependencies,
         [
@@ -196,6 +197,57 @@ fn kit_toml_says_what_is_wrong_with_a_dependency() {
     assert_eq!(
         message("tools = { path = \"../tools\" }\ntools = { path = \"../other\" }"),
         "`tools` is listed twice"
+    );
+}
+
+/// A dependency's `gets` names whole capabilities in quotes, each once. `gets = []` says what no
+/// `gets` already says, an unknown name or a table that narrows one is refused, and none of these
+/// offers a fix: what a kit gets is a person's to write.
+#[test]
+fn kit_toml_gets_names_capabilities_a_person_gives() {
+    let parsed = |line: &str| {
+        let text =
+            format!("name = \"arena\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\n{line}\n");
+        fennec_kit::Manifest::parse(&text)
+    };
+    let message = |line: &str| -> String {
+        let errors = parsed(line).unwrap_err();
+        assert_eq!(errors.len(), 1, "{line}");
+        assert!(errors.iter().all(|error| error.fixes.is_empty()), "{line}");
+        errors.into_iter().next().map(|error| error.message).unwrap_or_default()
+    };
+    let gets = |line: &str| parsed(line).unwrap().dependencies.into_iter().next().unwrap().gets;
+    assert_eq!(gets("http = { path = \"../http\", gets = [\"Net\"] }"), ["Net"]);
+    assert_eq!(gets("http = { gets = [\"Net\", \"Fs\",], path = \"../http\" }"), ["Net", "Fs"]);
+    assert_eq!(gets("db = { path = \"../db\", gets = [ \"Database\" , \"File\" ] }"), ["Database", "File"]);
+    assert_eq!(gets("shapes = { path = \"../shapes\" }"), Vec::<String>::new());
+    assert_eq!(
+        message("http = { path = \"../http\", gets = [] }"),
+        "`gets = []` gives `http` nothing, which leaving `gets` out already says"
+    );
+    assert_eq!(
+        message("http = { path = \"../http\", gets = [\"Network\"] }"),
+        "`Network` isn't a capability, so `http` can't get it"
+    );
+    assert_eq!(
+        message("http = { path = \"../http\", gets = [\"Secret\"] }"),
+        "`Secret` isn't a capability, so `http` can't get it"
+    );
+    assert_eq!(
+        message("http = { path = \"../http\", gets = [\"Net\", \"Net\"] }"),
+        "`Net` is in `http`'s `gets` twice"
+    );
+    assert_eq!(
+        message("saves = { path = \"../saves\", gets = [{ Fs = { only = \"saves/\" } }] }"),
+        "narrowing what `saves` gets, as `{ Fs = { only = \"saves/\" } }`, isn't built yet"
+    );
+    assert_eq!(
+        message("http = { path = \"../http\", gets = [Net] }"),
+        "`Net` in `http`'s `gets` should be a capability's type in quotes"
+    );
+    assert_eq!(
+        message("http = { path = \"../http\", gets = \"Net\" }"),
+        "`http`'s `gets` should be a list in brackets"
     );
 }
 

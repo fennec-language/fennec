@@ -1231,6 +1231,7 @@ impl FnCx<'_> {
             let error = self.checker.join_all(&errors).unwrap_or(Type::Unknown);
             returns = Type::Result(Box::new(returns), Box::new(error));
         }
+        self.note_arrow_made(span, params, body, &known);
         let ty = Type::Arrow(known, Box::new(returns));
         self.record(span, &ty);
         ty

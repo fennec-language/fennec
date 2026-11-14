@@ -141,6 +141,10 @@ pub(crate) struct Checker {
     /// What's followed through function values: which function parameters are called, what's
     /// passed for them, and what each arrow function waits on.
     pub(crate) values: crate::waits::Values,
+    /// What the program's code hands from kit to kit, which `gets` holds to what each kit gets.
+    pub(crate) handovers: crate::gets::Handovers,
+    /// What each kit's `kit.toml` says the kits it names get.
+    pub(crate) grants: Vec<fennec_syntax::Grant>,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
@@ -245,6 +249,8 @@ impl Checker {
             lock_calls: Vec::new(),
             lock_verdicts: BTreeMap::new(),
             values: crate::waits::Values::default(),
+            handovers: crate::gets::Handovers::default(),
+            grants: module.grants.clone(),
             diagnostics,
         }
     }
@@ -301,6 +307,11 @@ impl Checker {
         }
         if self.diagnostics.is_empty() {
             self.body_rules(scope);
+        }
+        // What a program as lowering rewrote it hands over is what it handed as written.
+        if self.diagnostics.is_empty() && !self.again {
+            let refused = crate::gets::refused(&mut self);
+            self.diagnostics.extend(refused);
         }
         if self.diagnostics.is_empty() {
             return Ok(self.checked(structs, errors));

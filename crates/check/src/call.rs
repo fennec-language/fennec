@@ -377,6 +377,10 @@ impl FnCx<'_> {
             self.note_wait(what, span);
         }
         self.note_lock_call(key, name, span);
+        if self.checker.program.functions.get(key).is_some_and(|entry| !entry.prelude) {
+            let values: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+            self.note_handed(crate::gets::To::Function(key.to_owned()), span, &values);
+        }
         self.calling.push(key.to_owned());
         self.bind_args(name, &signature.params, args, span);
         self.calling.pop();
@@ -875,6 +879,8 @@ impl FnCx<'_> {
             let what = format!("`{method}` changes its value, so call it on something held in a mut name");
             self.mut_place(object, &what);
         }
+        let values: Vec<&Expr> = std::iter::once(object).chain(args.iter().map(|arg| &arg.value)).collect();
+        self.note_handed(crate::gets::To::Interface(method.to_owned()), span, &values);
         self.bind_args(method, signature.params.get(1..).unwrap_or_default(), args, span);
         signature.returns
     }
@@ -1069,6 +1075,12 @@ impl FnCx<'_> {
                 )
                 .with_help(format!("lock it to write with `as ref {name}`")),
             );
+        }
+        if self.checker.program.functions.get(key).is_some_and(|entry| !entry.prelude) {
+            let given = args.iter().map(|arg| &arg.value);
+            let values: Vec<&Expr> =
+                if takes_self { std::iter::once(object).chain(given).collect() } else { given.collect() };
+            self.note_handed(crate::gets::To::Function(key.to_owned()), span, &values);
         }
         self.calling.push(key.to_owned());
         self.bind_args(method, params, args, span);
@@ -1502,6 +1514,10 @@ impl FnCx<'_> {
     /// is written as a literal, so `where` rules can be checked when the value is made.
     fn build(&mut self, target: &Target<'_>, fields: &[Field], args: &[Arg], span: Span) -> bool {
         let Target { name: type_name, case, .. } = *target;
+        if self.checker.program.type_info(type_name).is_some_and(|info| !info.prelude) {
+            let values: Vec<&Expr> = args.iter().map(|arg| &arg.value).collect();
+            self.note_handed(crate::gets::To::Type(type_name.to_owned()), span, &values);
+        }
         let display = case.map_or_else(|| type_name.to_owned(), |case| format!("{type_name}.{case}"));
         let mut given = vec![false; fields.len()];
         let mut unmatched_args = false;

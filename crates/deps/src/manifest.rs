@@ -23,6 +23,9 @@ pub struct Manifest {
 pub struct Dependency {
     pub name: String,
     pub source: Source,
+    /// The capabilities it may hold, as its line's `gets = [...]` says: none when it has no `gets`.
+    /// Only a person writes these.
+    pub gets: Vec<String>,
 }
 
 /// Where a dependency comes from.
@@ -238,7 +241,8 @@ fn dependency(name: &str, value: &str) -> Result<Dependency, (String, String)> {
             format!("for now a kit comes from git or a path: {DEPENDENCY_HELP}"),
         ));
     }
-    let Some(pairs) = inline_table(value) else {
+    let (value, gets) = gets_taken(name, value)?;
+    let Some(pairs) = inline_table(&value) else {
         return Err((format!("`{name}` should be a table in braces"), DEPENDENCY_HELP.to_owned()));
     };
     let get = |key: &str| pairs.iter().find(|(had, _)| had == key).map(|(_, value)| value.clone());
@@ -295,7 +299,137 @@ fn dependency(name: &str, value: &str) -> Result<Dependency, (String, String)> {
             ));
         }
     };
-    Ok(Dependency { name: name.to_owned(), source })
+    Ok(Dependency { name: name.to_owned(), source, gets })
+}
+
+/// A dependency's line with its `gets = [...]` taken out, and the capabilities it lists. Nothing
+/// that finds a problem here offers a fix: what a kit gets is a person's to write.
+fn gets_taken(name: &str, value: &str) -> Result<(String, Vec<String>), (String, String)> {
+    let Some((key_at, open)) = gets_key(value) else { return Ok((value.to_owned(), Vec::new())) };
+    let Some((open, close)) = open.and_then(|open| Some((open, closing_bracket(value, open)?))) else {
+        return Err((
+            format!("`{name}`'s `gets` should be a list in brackets"),
+            "write the capabilities it gets in quotes, as `gets = [\"Net\"]`".to_owned(),
+        ));
+    };
+    let inside = value.get(open + 1..close).unwrap_or_default();
+    let mut gets: Vec<String> = Vec::new();
+    for item in top_level_items(inside) {
+        if item.starts_with('{') {
+            return Err((
+                format!("narrowing what `{name}` gets, as `{item}`, isn't built yet"),
+                "for now each entry of `gets` names a capability's whole type, in quotes".to_owned(),
+            ));
+        }
+        let Some(capability) = string(item) else {
+            return Err((
+                format!("`{item}` in `{name}`'s `gets` should be a capability's type in quotes"),
+                format!("`gets` names capabilities by their type: {}", grantable_list()),
+            ));
+        };
+        if !fennec_syntax::GRANTABLE.contains(&capability.as_str()) {
+            return Err((
+                format!("`{capability}` isn't a capability, so `{name}` can't get it"),
+                format!("`gets` names capabilities by their type: {}", grantable_list()),
+            ));
+        }
+        if gets.contains(&capability) {
+            return Err((format!("`{capability}` is in `{name}`'s `gets` twice"), "keep one".to_owned()));
+        }
+        gets.push(capability);
+    }
+    if gets.is_empty() {
+        return Err((
+            format!("`gets = []` gives `{name}` nothing, which leaving `gets` out already says"),
+            "take `gets = []` out: a dependency with no `gets` gets nothing".to_owned(),
+        ));
+    }
+    // The rest of the line, with `gets` and the comma that set it apart taken out.
+    let before = value.get(..key_at).unwrap_or_default().trim_end();
+    let after = value.get(close + 1..).unwrap_or_default().trim_start();
+    let rest = match (before.strip_suffix(','), after.strip_prefix(',')) {
+        (_, Some(after)) => format!("{before} {}", after.trim_start()),
+        (Some(before), None) => format!("{before} {after}"),
+        (None, None) => format!("{before} {after}"),
+    };
+    Ok((rest, gets))
+}
+
+/// Where a line's `gets` key starts, outside any string, and where the `[` after its `=` is, when
+/// what it's given is a list.
+fn gets_key(value: &str) -> Option<(usize, Option<usize>)> {
+    let mut in_string = false;
+    // The last character outside a string: a key starts after `{` or `,`.
+    let mut before = '{';
+    for (at, c) in value.char_indices() {
+        if c == '"' {
+            in_string = !in_string;
+        }
+        if !in_string
+            && matches!(before, '{' | ',')
+            && value.get(at..).is_some_and(|rest| rest.starts_with("gets"))
+        {
+            let after = value.get(at + 4..)?.trim_start();
+            if let Some(given) = after.strip_prefix('=') {
+                let given = given.trim_start();
+                return Some((at, given.starts_with('[').then(|| value.len() - given.len())));
+            }
+        }
+        if !in_string && !c.is_whitespace() {
+            before = c;
+        }
+    }
+    None
+}
+
+/// The `]` that closes the `[` at `open`, outside strings, past any nested brackets or braces.
+fn closing_bracket(value: &str, open: usize) -> Option<usize> {
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    for (at, c) in value.char_indices().skip_while(|(at, _)| *at < open) {
+        match c {
+            '"' => in_string = !in_string,
+            '[' | '{' if !in_string => depth += 1,
+            ']' | '}' if !in_string => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return (c == ']').then_some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A list's items, split at the commas outside strings, brackets and braces, each trimmed. A
+/// comma after the last item is allowed, as TOML allows it.
+fn top_level_items(inside: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let (mut depth, mut in_string, mut start) = (0_usize, false, 0);
+    for (at, c) in inside.char_indices() {
+        match c {
+            '"' => in_string = !in_string,
+            '[' | '{' if !in_string => depth += 1,
+            ']' | '}' if !in_string => depth = depth.saturating_sub(1),
+            ',' if !in_string && depth == 0 => {
+                items.push(inside.get(start..at).unwrap_or_default().trim());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(inside.get(start..).unwrap_or_default().trim());
+    items.retain(|item| !item.is_empty());
+    items
+}
+
+/// The capabilities `gets` can name, as a sentence lists them.
+fn grantable_list() -> String {
+    let quoted: Vec<String> = fennec_syntax::GRANTABLE.iter().map(|name| format!("`{name}`")).collect();
+    let (last, rest) =
+        quoted.split_last().map_or((String::new(), &[][..]), |(last, rest)| (last.clone(), rest));
+    format!("{} and {last}", rest.join(", "))
 }
 
 /// Whether a commit is named by its whole hash: 40 lowercase hex digits, or 64 in a repository

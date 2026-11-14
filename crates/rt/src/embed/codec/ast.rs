@@ -3,8 +3,8 @@
 
 use fennec_syntax::{
     Annotation, Arg, BinOp, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic,
-    Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr,
-    UnaryOp, WithName,
+    Grant, Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef,
+    TypeExpr, UnaryOp, WithName,
 };
 
 use super::{Decode, Encode, Reader, Writer};
@@ -26,7 +26,8 @@ macro_rules! fields {
     };
 }
 
-fields!(Module { items, std_rewritten });
+fields!(Module { items, std_rewritten, grants });
+fields!(Grant { by, to, gets });
 fields!(FnDef { name, generics, params, ret, arrow, fails, body, annotations, span });
 fields!(Generic { name, bounds, span });
 fields!(Param { name, ty, is_mut, is_self, default, span });

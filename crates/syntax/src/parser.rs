@@ -313,7 +313,7 @@ impl Parser {
             };
             items.push(item);
         }
-        Ok(Module { items, std_rewritten: Vec::new() })
+        Ok(Module { items, std_rewritten: Vec::new(), grants: Vec::new() })
     }
 
     fn item(&mut self) -> Result<Item, Diagnostic> {

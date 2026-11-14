@@ -3534,6 +3534,285 @@ fn a_dependency_sees_only_its_own_names_what_it_imports_and_the_languages() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A program whose main kit is `app` and whose dependencies are written as `(name, kit.toml's
+/// dependencies, lib.fen)`, in a scratch folder of their own, with what `fennec` says there.
+struct Kits {
+    dir: fennec_temp::Temp,
+}
+
+impl Kits {
+    fn new(name: &str, app: (&str, &str), dependencies: &[(&str, &str, &str)]) -> std::io::Result<Kits> {
+        let dir = scratch(name)?;
+        let (manifest, main) = app;
+        write_kit(&dir.join("app"), "app", manifest, &[("main.fen", main)])?;
+        for (kit, manifest, lib) in dependencies {
+            write_kit(&dir.join(kit), kit, manifest, &[("lib.fen", lib)])?;
+        }
+        Ok(Kits { dir })
+    }
+
+    fn fennec(&self, command: &str) -> std::io::Result<Output> {
+        crate::executables::fennec_command()
+            .args([command, "."])
+            .current_dir(self.dir.join("app"))
+            .env("FENNEC_HOME", self.dir.join("home"))
+            .output()
+    }
+
+    /// What `check` and `build` both say when they refuse the program, which `fix` leaves as it is.
+    fn refused(&self) -> std::io::Result<String> {
+        let main = std::fs::read_to_string(self.dir.join("app/src/main.fen"))?;
+        let manifest = std::fs::read_to_string(self.dir.join("app/kit.toml"))?;
+        let checked = self.fennec("check")?;
+        assert!(!checked.status.success(), "it checks");
+        let said = text(&checked.stderr);
+        let built = text(&self.fennec("build")?.stderr);
+        assert!(
+            said.lines().filter(|line| line.starts_with("error")).all(|line| built.contains(line)),
+            "{said}\n{built}"
+        );
+        // What a kit gets is a person's to write: nothing here has a fix for `fix` to make.
+        let fixed = self.fennec("fix")?;
+        assert!(!text(&fixed.stdout).contains("fixed"), "{}", text(&fixed.stdout));
+        assert_eq!(std::fs::read_to_string(self.dir.join("app/src/main.fen"))?, main);
+        assert_eq!(std::fs::read_to_string(self.dir.join("app/kit.toml"))?, manifest);
+        Ok(said)
+    }
+
+    fn checks(&self) -> std::io::Result<()> {
+        let checked = self.fennec("check")?;
+        assert!(checked.status.success(), "{}", text(&checked.stderr));
+        Ok(())
+    }
+
+    fn write(&self, kit: &str, file: &str, source: &str) -> std::io::Result<()> {
+        std::fs::write(self.dir.join(kit).join(file), source)
+    }
+}
+
+/// A dependency is handed only what its line in kit.toml says it gets: nothing without a `gets`.
+/// A capability counts however it's held: on its own, in a struct the program builds of the
+/// dependency's type, or in a list, a tuple or an optional.
+#[test]
+fn a_dependency_gets_only_what_its_line_in_kit_toml_says() {
+    let helper = "from std.fs import File\n\nexport def save(fs: Fs, text: str) fails IoError:\n    fs.write_text(\"out.txt\", text)?\n\n\
+                  export def size(file: File) -> int:\n    return 1\n\n\
+                  export struct Holder:\n    files: Fs\n\n\
+                  export def count[T](items: list[T]) -> int:\n    return len(items)\n\n\
+                  export def first[T](pair: (T, int)) -> int:\n    return pair[1]\n\n\
+                  export def maybe[T](item: T?) -> bool:\n    return item is None\n";
+    let main = "import helper\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    helper.save(fs, text=\"hi\")?\n";
+    let line = |gets: &str| format!("[dependencies]\nhelper = {{ path = \"../helper\"{gets} }}\n");
+    let kits = Kits::new("gets-direct", (&line(""), main), &[("helper", "", helper)]).unwrap();
+    let said = kits.refused().unwrap();
+    assert!(
+        said.contains("error: `helper` is handed an `Fs` here, and kit.toml says it gets nothing"),
+        "{said}"
+    );
+    assert!(
+        said.contains("nothing here is fixed for you: if `helper` should hold an `Fs`, a person adds it to `gets` on its line in kit.toml"),
+        "{said}"
+    );
+    kits.write(
+        "app",
+        "kit.toml",
+        &format!("name = \"app\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n{}", line(", gets = [\"Net\"]")),
+    )
+    .unwrap();
+    let said = text(&kits.fennec("check").unwrap().stderr);
+    assert!(said.contains("`helper` is handed an `Fs` here, and kit.toml says it gets only `Net`"), "{said}");
+    kits.write(
+        "app",
+        "kit.toml",
+        &format!("name = \"app\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n{}", line(", gets = [\"Fs\"]")),
+    )
+    .unwrap();
+    kits.checks().unwrap();
+    kits.write(
+        "app",
+        "kit.toml",
+        &format!("name = \"app\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n{}", line("")),
+    )
+    .unwrap();
+    for (handed, says) in [
+        ("helper.Holder(files=fs)", "`helper` is handed an `Fs` here"),
+        ("helper.count([fs])", "`helper` is handed an `Fs`, in a `list[Fs]` here"),
+        ("helper.first((fs, 1))", "`helper` is handed an `Fs`, in a `(Fs, int)` here"),
+        ("helper.maybe(found(fs))", "`helper` is handed an `Fs`, in an `Fs?` here"),
+    ] {
+        kits.write(
+            "app",
+            "src/main.fen",
+            &format!(
+                "import helper\n\ndef found(fs: Fs) -> Fs?:\n    return fs\n\ndef main(fs: Fs, stdout: Stdout):\n    _ = {handed}\n    stdout.print(\"done\")\n"
+            ),
+        ).unwrap();
+        let said = kits.refused().unwrap();
+        assert!(said.contains(says), "{handed}: {said}");
+    }
+    // A file already open is reach into the disk, as an `Fs` is: a `File` needs its own grant.
+    kits.write(
+        "app",
+        "src/main.fen",
+        "import helper\n\ndef main(fs: Fs, stdout: Stdout) fails IoError:\n    with fs.open(\"note.txt\")? as file:\n        stdout.print(helper.size(file))\n",
+    ).unwrap();
+    let said = kits.refused().unwrap();
+    assert!(said.contains("`helper` is handed a `File` here, and kit.toml says it gets nothing"), "{said}");
+}
+
+/// A capability handed through a generic function is counted in the copy the program makes for
+/// it: `helper` never names `Fs`, and is handed one. When `helper` passes it on to a kit it
+/// depends on, `helper`'s own line for that kit is the one that counts, and the error says it's
+/// `helper`'s to change.
+#[test]
+fn a_capability_smuggled_through_a_generic_is_refused_where_it_crosses() {
+    let inner = "export interface Store:\n    def write_text(self, path: str, text: str) fails IoError\n\n\
+                 export def write[S: Store](store: S, text: str) fails IoError:\n    store.write_text(\"inner.txt\", text)?\n";
+    let helper = "import inner\n\n\
+                  export def save[S: inner.Store](store: S, text: str) fails IoError:\n    store.write_text(\"proof.txt\", text)?\n\n\
+                  export def pass_on[S: inner.Store](store: S, text: str) fails IoError:\n    inner.write(store, text=text)?\n";
+    let main = "import helper\n\ndef main(fs: Fs) fails IoError:\n    helper.save(fs, text=\"hi\")?\n";
+    let kits = Kits::new(
+        "gets-generic",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", main),
+        &[("helper", "[dependencies]\ninner = { path = \"../inner\" }\n", helper), ("inner", "", inner)],
+    )
+    .unwrap();
+    let said = kits.refused().unwrap();
+    assert!(said.contains("`helper` is handed an `Fs` here, and kit.toml says it gets nothing"), "{said}");
+    // Given `Fs`, `helper` still can't hand it on to `inner`, which its own line gives nothing.
+    kits.write(
+        "app",
+        "kit.toml",
+        "name = \"app\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\nhelper = { path = \"../helper\", gets = [\"Fs\"] }\n",
+    ).unwrap();
+    kits.write(
+        "app",
+        "src/main.fen",
+        "import helper\n\ndef main(fs: Fs) fails IoError:\n    helper.pass_on(fs, text=\"hi\")?\n",
+    )
+    .unwrap();
+    let said = kits.refused().unwrap();
+    assert!(
+        said.contains("`helper` hands `inner` an `Fs` here, and `helper`'s kit.toml says `inner` gets nothing: that's `helper`'s to change"),
+        "{said}"
+    );
+    assert!(said.contains("helper/src/lib.fen"), "{said}");
+    kits.write(
+        "helper",
+        "kit.toml",
+        "name = \"helper\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\ninner = { path = \"../inner\", gets = [\"Fs\"] }\n",
+    ).unwrap();
+    kits.checks().unwrap();
+}
+
+/// A function handed to a dependency holds what it captures. An arrow function or a nested `def`
+/// written where it's handed holds what it reads from around it, a function named at the top of a
+/// file holds nothing, and one whose making can't be seen, as a parameter, may hold anything the
+/// program holds. A task and another kit's function used as a value count too.
+#[test]
+fn a_function_handed_to_a_dependency_holds_what_it_captures() {
+    let helper = "export def twice(work: (int) -> int) -> int:\n    return work(work(1))\n\n\
+                  export def touch(fs: Fs) -> int:\n    return 1\n";
+    let kits = Kits::new(
+        "gets-functions",
+        (
+            "[dependencies]\nhelper = { path = \"../helper\" }\n",
+            "import helper\n\ndef main(stdout: Stdout):\n    stdout.print(helper.twice((n) => n + 1))\n",
+        ),
+        &[("helper", "", helper)],
+    )
+    .unwrap();
+    // What reads nothing from around it holds nothing, and so does a function named at the top.
+    kits.checks().unwrap();
+    kits.write(
+        "app",
+        "src/main.fen",
+        "import helper\n\ndef double(n: int) -> int:\n    return n * 2\n\ndef main(stdout: Stdout):\n    stdout.print(helper.twice(double))\n",
+    ).unwrap();
+    kits.checks().unwrap();
+    for (main, says) in [
+        (
+            "import helper\n\ndef main(stdout: Stdout):\n    stdout.print(helper.twice((n) => shout(stdout, n)))\n\n\
+             def shout(stdout: Stdout, n: int) -> int:\n    stdout.print(n)\n    return n\n",
+            "`helper` is handed a function that holds a `Stdout` here, and kit.toml says it gets nothing",
+        ),
+        (
+            "import helper\n\ndef main(stdout: Stdout):\n    def loud(n: int) -> int:\n        stdout.print(n)\n        return n\n    \
+             stdout.print(helper.twice(loud))\n",
+            "`helper` is handed a function that holds a `Stdout` here",
+        ),
+        (
+            "import helper\n\ndef main(stdout: Stdout):\n    stdout.print(run(stdout, (n) => n + 1))\n\n\
+             def run(stdout: Stdout, step: (int) -> int) -> int:\n    return helper.twice(step)\n",
+            "`helper` is handed a function here whose making can't be seen, so it may hold anything the program holds",
+        ),
+        (
+            "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    touching = helper.touch\n    stdout.print(\"kept\")\n",
+            "`helper.touch` takes an `Fs`, and it's used here as a value, which hands `helper` what it's called with",
+        ),
+        (
+            "from std.concurrent import Crashed\nimport helper\n\ndef main(fs: Fs, stdout: Stdout) fails Crashed:\n    \
+             with launch(() => helper.touch(fs))?:\n        stdout.print(\"working\")\n",
+            "`helper` is handed an `Fs` here, and kit.toml says it gets nothing",
+        ),
+    ] {
+        kits.write("app", "src/main.fen", main).unwrap();
+        let said = kits.refused().unwrap();
+        assert!(said.contains(says), "{main}\n{said}");
+    }
+}
+
+/// A function a dependency makes is called with what its parameters take, by whatever it's handed
+/// to, so a kit that makes one taking a capability no line gives it is refused, in its own code.
+#[test]
+fn a_dependency_that_makes_a_function_taking_a_capability_needs_the_grant() {
+    let helper = "export def printer() -> (Stdout) -> int:\n    return (out) => 1\n";
+    let main = "import helper\n\ndef main(stdout: Stdout):\n    show = helper.printer()\n    stdout.print(show(stdout))\n";
+    let kits = Kits::new(
+        "gets-made",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", main),
+        &[("helper", "", helper)],
+    )
+    .unwrap();
+    let said = kits.refused().unwrap();
+    assert!(
+        said.contains(
+            "`helper` makes a function here that takes a `Stdout`, and no kit.toml gives `helper` a `Stdout`"
+        ),
+        "{said}"
+    );
+    assert!(said.contains("helper/src/lib.fen"), "{said}");
+    kits.write(
+        "app",
+        "kit.toml",
+        "name = \"app\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n[dependencies]\nhelper = { path = \"../helper\", gets = [\"Stdout\"] }\n",
+    ).unwrap();
+    kits.checks().unwrap();
+}
+
+/// What isn't a hand-over to another kit is never refused: passing a capability to the standard
+/// library, a dependency calling back into the program's own code through an interface, and
+/// values of the dependency's own types that hold nothing.
+#[test]
+fn what_stays_in_the_program_or_std_needs_no_grant() {
+    let helper = "export interface Speaker:\n    def speak(self, words: str) -> int\n\n\
+                  export def greet[S: Speaker](speaker: S) -> int:\n    return speaker.speak(\"hello\")\n\n\
+                  export struct Point:\n    x: int\n\n\
+                  export def moved(point: Point) -> Point:\n    return Point(x=point.x + 1)\n";
+    let main = "import helper\n\nstruct Plain:\n    count: int\n\n\
+                extend Plain:\n    def speak(self, words: str) -> int:\n        return len(words) + self.count\n\n\
+                def main(stdout: Stdout, fs: Fs) fails IoError:\n    fs.write_text(\"note.txt\", \"kept\")?\n    \
+                stdout.print(helper.greet(Plain(count=1)))\n    stdout.print(helper.moved(helper.Point(x=1)).x)\n";
+    let kits = Kits::new(
+        "gets-none-needed",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", main),
+        &[("helper", "", helper)],
+    )
+    .unwrap();
+    kits.checks().unwrap();
+}
+
 /// A small kit and a folder for Fennec's own files, in a folder that holds both and goes when the
 /// first is dropped.
 fn small_kit(name: &str) -> std::io::Result<(fennec_temp::Temp, PathBuf, PathBuf)> {

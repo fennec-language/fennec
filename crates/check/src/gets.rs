@@ -1,0 +1,771 @@
+//! What a kit may hold. A dependency's line in a `kit.toml` says which capabilities it gets, as
+//! `http = { ..., gets = ["Net"] }`, and a line with no `gets` gives it nothing. Only a person
+//! writes one: nothing here offers a fix, and no help writes the line for them.
+//!
+//! The rule holds wherever one kit's code hands a value to another kit's, worked out from the
+//! values' types once every function is checked:
+//!
+//! - A call to another kit's function or method, the value it's called on included, and the
+//!   building of another kit's struct, error or enum case. Operators, `for`, `str` and `with` on
+//!   another kit's value hand over only that value, which was handed over when it was built.
+//! - In a generic function, each value's type as it is in each copy the program makes: a value of
+//!   type `S` handed on is an `Fs` in the copy called with an `Fs`, though no code names `Fs`.
+//! - A function handed over holds what it captures: nothing for a named function, what an arrow
+//!   function or a nested `def` reads from around it, and, for one whose making can't be seen,
+//!   everything the program's code holds.
+//! - Another kit's function used as a value, which whoever holds it can call with what its
+//!   parameters take, and an arrow function a kit makes, which is called with what its parameters
+//!   take: the standard library's code calls functions it's handed with values it was handed.
+//!
+//! The line that counts is in the `kit.toml` of the kit whose code hands the value over. A kit
+//! that reaches another it doesn't name, through an interface, gives it nothing. Code handed back
+//! to the program's own kit, and the standard library, aren't held to anything: the program's own
+//! code is the person's, and std's is Fennec's.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use fennec_syntax::{Diagnostic, ExprKind, Grant, KIT_MARK, Span};
+
+use crate::checker::Checker;
+use crate::function::FnCx;
+use crate::types::Type;
+
+/// Where the values a call or a build hands over go.
+#[derive(Clone, Debug)]
+pub(crate) enum To {
+    /// A function or method, by its key.
+    Function(String),
+    /// A struct, error or enum being built, by its name.
+    Type(String),
+    /// A method of a type parameter, by its name: whose it is depends on the copy of the function
+    /// the call is in.
+    Interface(String),
+}
+
+/// One value handed over.
+#[derive(Clone, Debug)]
+pub(crate) struct Value {
+    pub(crate) span: Span,
+    /// The arrow function it is, or that the local name it's read from holds, by its span.
+    pub(crate) arrow: Option<(u32, u32)>,
+}
+
+/// The values one call or build hands over.
+#[derive(Clone, Debug)]
+pub(crate) struct Handed {
+    pub(crate) to: To,
+    pub(crate) values: Vec<Value>,
+}
+
+/// An arrow function, by what it reads from around it and what its parameters take.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Arrow {
+    /// Where it reads names that aren't its own parameters.
+    pub(crate) reads: Vec<Span>,
+    pub(crate) params: Vec<Type>,
+}
+
+/// What the program's code hands from kit to kit, noted as it's checked.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Handovers {
+    /// Each call or build, by the function it's in and its span.
+    pub(crate) handed: BTreeMap<String, BTreeMap<(u32, u32), Handed>>,
+    /// Each arrow function, by the function it's in and its span.
+    pub(crate) arrows: BTreeMap<String, BTreeMap<(u32, u32), Arrow>>,
+}
+
+impl FnCx<'_> {
+    /// Notes the values a call or build at `span` hands to `to`: `values` are the arguments, and
+    /// the value a method is called on before them. A function checked again notes the same
+    /// values, so the last check's are kept.
+    pub(crate) fn note_handed(&mut self, to: To, span: Span, values: &[&fennec_syntax::Expr]) {
+        if !self.report {
+            return;
+        }
+        let values: Vec<Value> =
+            values.iter().map(|value| Value { span: value.span, arrow: self.arrow_in(value) }).collect();
+        let calls = self.checker.handovers.handed.entry(self.key.clone()).or_default();
+        let handed = calls.entry((span.start, span.end)).or_insert_with(|| Handed { to, values: Vec::new() });
+        for value in values {
+            match handed.values.iter_mut().find(|had| had.span == value.span) {
+                Some(had) => *had = value,
+                None => handed.values.push(value),
+            }
+        }
+    }
+
+    /// The arrow function a value is, or that the local name it reads holds, when that's known.
+    fn arrow_in(&self, value: &fennec_syntax::Expr) -> Option<(u32, u32)> {
+        match &value.kind {
+            ExprKind::Lambda { .. } => Some((value.span.start, value.span.end)),
+            ExprKind::Name(name) => self.arrow_locals.get(name).copied().flatten(),
+            _ => None,
+        }
+    }
+
+    /// Notes an arrow function: the names it reads from around it, and what it takes.
+    pub(crate) fn note_arrow_made(
+        &mut self,
+        span: Span,
+        params: &[String],
+        body: &fennec_syntax::Expr,
+        takes: &[Type],
+    ) {
+        if !self.report {
+            return;
+        }
+        let mut reads = Vec::new();
+        fennec_syntax::read::in_expr(body, &mut |expr| {
+            if let ExprKind::Name(name) = &expr.kind
+                && !params.contains(name)
+            {
+                reads.push(expr.span);
+            }
+        });
+        let arrows = self.checker.handovers.arrows.entry(self.key.clone()).or_default();
+        arrows.insert((span.start, span.end), Arrow { reads, params: takes.to_vec() });
+    }
+}
+
+/// Whose code a function is: a kit the program depends on, the program's own, or the standard
+/// library's.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Kit {
+    Std,
+    Own,
+    Named(String),
+}
+
+/// A type's parameters as they are in one copy of a generic function.
+type Given = Vec<(String, Type)>;
+
+/// Places in the source, by where they start and end.
+type Spans = BTreeSet<(u32, u32)>;
+
+/// What a value holds, and how it's held, to say so.
+#[derive(Clone, Debug, Default)]
+struct Held {
+    capabilities: BTreeSet<&'static str>,
+    /// The type it's held in, when it isn't a capability itself.
+    inside: Option<Type>,
+    /// Whether it's a function, which holds what it captures.
+    function: bool,
+    /// Whether it's a function whose making can't be seen, which may hold anything the program's
+    /// code holds.
+    unseen: bool,
+}
+
+/// The capability a value of a standard library type is, by the name `gets` gives it: a `File` and
+/// a `Database` reach a file or storage already open, as an `Fs` reaches every file.
+fn granted_as(name: &str) -> Option<&'static str> {
+    let found = match name {
+        "Database" | "Transaction" | "PgDatabase" | "PgPool" | "PgTransaction" => "Database",
+        other => other,
+    };
+    fennec_syntax::GRANTABLE.iter().copied().find(|grantable| *grantable == found)
+}
+
+/// Works out what the program's code hands from kit to kit, and refuses each value handed to a
+/// kit that the line naming it doesn't let hold what the value holds.
+pub(crate) fn refused(checker: &mut Checker) -> Vec<Diagnostic> {
+    // A program with no kit besides its own hands nothing over.
+    if !checker.program.functions.keys().any(|key| key.contains(KIT_MARK)) {
+        return Vec::new();
+    }
+    let mut walk = Walk::new(checker);
+    walk.run();
+    walk.found
+}
+
+/// The walk over every copy of every function the program checks.
+struct Walk<'c> {
+    checker: &'c mut Checker,
+    handovers: Handovers,
+    grants: Vec<Grant>,
+    /// What each type holds, once worked out.
+    held: BTreeMap<Type, BTreeSet<&'static str>>,
+    /// Everything the program's code holds, once worked out: what a function whose making can't
+    /// be seen may hold.
+    everything: Option<BTreeSet<&'static str>>,
+    /// Set while `everything` is being worked out, when a function or a type parameter in a type
+    /// adds nothing to it, and what types hold isn't kept, as it's not yet whole.
+    gathering: bool,
+    /// The copies of functions looked at, by key and what their type parameters are.
+    seen: BTreeSet<(String, Given)>,
+    found: Vec<Diagnostic>,
+}
+
+impl<'c> Walk<'c> {
+    fn new(checker: &'c mut Checker) -> Self {
+        let handovers = std::mem::take(&mut checker.handovers);
+        let grants = checker.grants.clone();
+        Walk {
+            checker,
+            handovers,
+            grants,
+            held: BTreeMap::new(),
+            everything: None,
+            gathering: false,
+            seen: BTreeSet::new(),
+            found: Vec::new(),
+        }
+    }
+
+    fn run(&mut self) {
+        // Each function that isn't generic is one copy, from which the generic ones it calls are
+        // found as they're copied.
+        let mut queue: Vec<(String, Given)> = Vec::new();
+        for (key, entry) in &self.checker.program.functions {
+            if !entry.prelude && !self.is_generic(key) {
+                queue.push((key.clone(), Vec::new()));
+            }
+        }
+        for test in &self.checker.program.tests {
+            queue.push((format!("test \"{}\"", test.name), Vec::new()));
+        }
+        while let Some((key, given)) = queue.pop() {
+            if !self.seen.insert((key.clone(), given.clone())) {
+                continue;
+            }
+            queue.extend(self.copy(&key, &given));
+        }
+        self.found.sort_by(|first, second| {
+            (first.span.start, &first.message).cmp(&(second.span.start, &second.message))
+        });
+        self.found.dedup();
+    }
+
+    /// Whether a function has type parameters of its own, or from the function or type it's in.
+    fn is_generic(&self, key: &str) -> bool {
+        let Some(entry) = self.checker.program.functions.get(key) else { return false };
+        !entry.def.generics.is_empty()
+            || !entry.inherited.is_empty()
+            || !entry.extension.is_empty()
+            || entry
+                .owner
+                .as_deref()
+                .and_then(|owner| self.checker.program.type_info(owner))
+                .is_some_and(|info| !info.def.generics.is_empty())
+    }
+
+    /// Looks at one copy of a function, giving back the copies of generic functions it calls.
+    fn copy(&mut self, key: &str, given: &Given) -> Vec<(String, Given)> {
+        let from = self.kit_of(key);
+        let mut copies = Vec::new();
+        let calls = self.handovers.handed.get(key).cloned().unwrap_or_default();
+        for (span, handed) in &calls {
+            let span = Span { start: span.0, end: span.1 };
+            let Some((to, callee)) = self.receiver(key, given, handed) else { continue };
+            if let Kit::Named(to) = &to
+                && from != Kit::Named(to.clone())
+            {
+                for value in &handed.values {
+                    self.hand_over((key, given), (&from, to), value);
+                }
+            }
+            if let Some(callee) = callee
+                && self.is_generic(&callee)
+            {
+                copies.push((callee.clone(), self.given_to(key, given, span, &callee, handed)));
+            }
+        }
+        if let Kit::Named(kit) = &from {
+            self.arrows_made(key, given, kit);
+        }
+        self.functions_as_values(key, given, &from);
+        copies
+    }
+
+    /// Whose code a call or build hands its values to, and the function called, when it's one.
+    fn receiver(&mut self, key: &str, given: &Given, handed: &Handed) -> Option<(Kit, Option<String>)> {
+        match &handed.to {
+            To::Function(callee) => Some((self.kit_of(callee), Some(callee.clone()))),
+            To::Type(name) => Some((self.kit_of_type(name), None)),
+            To::Interface(method) => {
+                let object = handed.values.first()?;
+                let ty = self.type_at(key, given, object.span)?;
+                let owner = ty.type_name()?.to_owned();
+                let callee = format!("{owner}.{method}");
+                let kit = self.kit_of_type(&owner);
+                Some((kit, self.checker.program.functions.contains_key(&callee).then_some(callee)))
+            }
+        }
+    }
+
+    /// The types a generic function's parameters are where it's called, in this copy of its caller.
+    fn given_to(&mut self, key: &str, given: &Given, span: Span, callee: &str, handed: &Handed) -> Given {
+        let mut chosen: Given = Vec::new();
+        if let Some(entry) = self.checker.program.functions.get(callee)
+            && let Some(call) = self.checker.generic_calls.get(&(span.start, span.end))
+        {
+            // Its parameters in the order a call chooses them: the type's, the function's it's in,
+            // then its own.
+            let names = self.checker.program.generics_of(entry).into_iter().map(|generic| generic.name);
+            chosen.extend(names.zip(call.types.iter().map(|ty| self.checker.settled(ty).substitute(given))));
+        }
+        // A method of a generic type has the type's parameters as the value it's called on has them.
+        let owner = self.checker.program.functions.get(callee).and_then(|entry| entry.owner.clone());
+        if let (Some(owner), Some(object)) = (owner, handed.values.first())
+            && let Some(Type::Generic(_, args)) = self.type_at(key, given, object.span)
+            && let Some(info) = self.checker.program.type_info(&owner)
+        {
+            chosen.extend(info.def.generics.iter().map(|generic| generic.name.clone()).zip(args));
+        }
+        // A nested function has the type parameters of the function it's in.
+        if let Some(entry) = self.checker.program.functions.get(callee)
+            && !entry.inherited.is_empty()
+        {
+            chosen.extend(
+                given
+                    .iter()
+                    .filter(|(name, _)| entry.inherited.iter().any(|generic| &generic.name == name))
+                    .cloned(),
+            );
+        }
+        chosen
+    }
+
+    /// A value's type, as it is in this copy of the function it's in.
+    fn type_at(&self, key: &str, given: &Given, span: Span) -> Option<Type> {
+        let ty = self.checker.typed.get(key)?.expr(span)?;
+        Some(self.checker.settled(ty).substitute(given))
+    }
+
+    /// Refuses a value handed from one kit's code to another's that holds what the line for it
+    /// doesn't give.
+    fn hand_over(&mut self, (key, given): (&str, &Given), (from, to): (&Kit, &str), value: &Value) {
+        let Some(ty) = self.type_at(key, given, value.span) else { return };
+        // A value of the kit's own type was handed to it when it was built, from wherever that was.
+        if ty.type_name().is_some_and(|name| self.kit_of_type(name) == Kit::Named(to.to_owned())) {
+            return;
+        }
+        let held = self.value_held(key, given, &ty, value.arrow);
+        let gets = self.gets(from, to);
+        let missing: Vec<&'static str> =
+            held.capabilities.iter().copied().filter(|capability| !gets.contains(capability)).collect();
+        if missing.is_empty() {
+            return;
+        }
+        let by = match from {
+            Kit::Named(by) => Some(by.as_str()),
+            _ => None,
+        };
+        let line = if self.names(by.unwrap_or_default(), to) { Line::Says(gets) } else { Line::None };
+        let diagnostic = refusal(Handing { by, to, held: &held, missing: &missing, line }, value.span);
+        self.found.push(diagnostic);
+    }
+
+    /// What the line in `from`'s kit.toml says `to` gets. A kit `from` doesn't name, reached
+    /// through a value another kit gave back, may be handed only what some line gives it: what it
+    /// may hold at all.
+    fn gets(&self, from: &Kit, to: &str) -> BTreeSet<&'static str> {
+        let by = match from {
+            Kit::Named(by) => by.as_str(),
+            _ => "",
+        };
+        if !self.names(by, to) {
+            return self.every_grant_to(to);
+        }
+        self.grants
+            .iter()
+            .filter(|grant| grant.by == by && grant.to == to)
+            .flat_map(|grant| grant.gets.iter())
+            .filter_map(|name| granted_as(name))
+            .collect()
+    }
+
+    /// Whether the kit `by` names `to` in its own kit.toml: empty for the program's own kit.
+    fn names(&self, by: &str, to: &str) -> bool {
+        self.grants.iter().any(|grant| grant.by == by && grant.to == to)
+    }
+
+    /// Everything any line gives `kit`.
+    fn every_grant_to(&self, kit: &str) -> BTreeSet<&'static str> {
+        self.grants
+            .iter()
+            .filter(|grant| grant.to == kit)
+            .flat_map(|grant| grant.gets.iter())
+            .filter_map(|name| granted_as(name))
+            .collect()
+    }
+
+    /// Refuses each arrow function a kit makes that takes what no line gives the kit: whoever it's
+    /// handed to calls it with what its parameters take, which the kit then holds.
+    fn arrows_made(&mut self, key: &str, given: &Given, kit: &str) {
+        let arrows = self.handovers.arrows.get(key).cloned().unwrap_or_default();
+        let gets = self.every_grant_to(kit);
+        for (span, arrow) in arrows {
+            let mut takes = BTreeSet::new();
+            for param in &arrow.params {
+                let param = self.checker.settled(param).substitute(given);
+                takes.extend(self.type_held(&param).capabilities);
+            }
+            let missing: Vec<&'static str> =
+                takes.into_iter().filter(|capability| !gets.contains(capability)).collect();
+            if missing.is_empty() {
+                continue;
+            }
+            let span = Span { start: span.0, end: span.1 };
+            self.found.push(
+                Diagnostic::new(
+                    format!("`{kit}` makes a function here that takes {}, and no kit.toml gives `{kit}` {}", listed(&missing), listed(&missing)),
+                    span,
+                )
+                .with_help(format!(
+                    "whatever this function is handed to calls it with what it takes, so `{kit}` would hold {}; what a kit gets is a person's decision, written on its line in kit.toml, so nothing here is fixed for you",
+                    listed(&missing)
+                )),
+            );
+        }
+    }
+
+    /// Refuses each function of another kit used as a value, not called, that takes what the line
+    /// for that kit doesn't give: whoever holds it can call it with what its parameters take.
+    fn functions_as_values(&mut self, key: &str, given: &Given, from: &Kit) {
+        let Some(body) = self.checker.typed.get(key) else { return };
+        let (called, naming) = self.function_names(key);
+        let named: Vec<(Span, String)> = body
+            .exprs()
+            .filter(|(span, _)| {
+                let at = (span.start, span.end);
+                !called.contains(&at) && naming.contains(&at)
+            })
+            .filter_map(|(span, ty)| match ty {
+                Type::Function(function) => Some((span, function.clone())),
+                _ => None,
+            })
+            .collect();
+        for (span, function) in named {
+            let Kit::Named(to) = self.kit_of(&function) else { continue };
+            if *from == Kit::Named(to.clone()) {
+                continue;
+            }
+            let Some(signature) = self.checker.signature(&function) else { continue };
+            let mut takes = BTreeSet::new();
+            for param in &signature.params {
+                let param = self.checker.settled(&param.ty).substitute(given);
+                takes.extend(self.type_held(&param).capabilities);
+            }
+            let gets = self.gets(from, &to);
+            let missing: Vec<&'static str> =
+                takes.into_iter().filter(|capability| !gets.contains(capability)).collect();
+            if missing.is_empty() {
+                continue;
+            }
+            let shown = fennec_syntax::without_kits(&function);
+            self.found.push(
+                Diagnostic::new(
+                    format!(
+                        "`{to}.{shown}` takes {}, and it's used here as a value, which hands `{to}` what it's called with; kit.toml says `{to}` gets {}",
+                        listed(&missing),
+                        gets_said(&gets)
+                    ),
+                    span,
+                )
+                .with_help(format!(
+                    "what a dependency gets is a person's decision, so nothing here is fixed for you: if `{to}` should hold {}, a person adds it to `gets` on its line in kit.toml",
+                    listed(&missing)
+                )),
+            );
+        }
+    }
+
+    /// The spans of what's called in a function, and of each name written there that names a
+    /// function, rather than a local holding one.
+    fn function_names(&self, key: &str) -> (Spans, Spans) {
+        let mut spans = BTreeSet::new();
+        let mut naming = BTreeSet::new();
+        let functions = &self.checker.program.functions;
+        let mut look = |expr: &fennec_syntax::Expr| {
+            if let ExprKind::Call { callee, .. } = &expr.kind {
+                spans.insert((callee.span.start, callee.span.end));
+                if let ExprKind::Index { object, .. } = &callee.kind {
+                    spans.insert((object.span.start, object.span.end));
+                }
+            }
+            if let ExprKind::Name(name) = &expr.kind
+                && functions.contains_key(name)
+            {
+                naming.insert((expr.span.start, expr.span.end));
+            }
+        };
+        if let Some(entry) = self.checker.program.functions.get(key) {
+            fennec_syntax::read::in_function(&entry.def, &mut look);
+        } else if let Some(test) =
+            self.checker.program.tests.iter().find(|test| format!("test \"{}\"", test.name) == key)
+        {
+            fennec_syntax::read::in_stmts(&test.body, &mut look);
+        }
+        (spans, naming)
+    }
+
+    /// What a value of type `ty` holds, the arrow function it is when that's known.
+    fn value_held(&mut self, key: &str, given: &Given, ty: &Type, arrow: Option<(u32, u32)>) -> Held {
+        match ty {
+            Type::Arrow(..) => {
+                let mut held =
+                    match arrow.and_then(|arrow| self.handovers.arrows.get(key)?.get(&arrow).cloned()) {
+                        Some(made) => {
+                            let mut held = Held::default();
+                            for read in &made.reads {
+                                if let Some(read) = self.type_at(key, given, *read) {
+                                    held.capabilities
+                                        .extend(self.value_held(key, given, &read, None).capabilities);
+                                }
+                            }
+                            held
+                        }
+                        None => Held { capabilities: self.everything(), unseen: true, ..Held::default() },
+                    };
+                held.function = true;
+                held
+            }
+            Type::Function(function) => {
+                let mut held = Held { capabilities: self.captured_by(function), ..Held::default() };
+                held.function = true;
+                held
+            }
+            other => self.type_held(other),
+        }
+    }
+
+    /// What a named function captures: nothing for one at the top of a file, and for a nested
+    /// `def`, what it reads that isn't its own.
+    fn captured_by(&mut self, function: &str) -> BTreeSet<&'static str> {
+        let Some(body) = self.checker.typed.get(function) else { return BTreeSet::new() };
+        let own: BTreeSet<&str> = body.names().map(|(_, name, _)| name).collect();
+        let Some(entry) = self.checker.program.functions.get(function) else { return BTreeSet::new() };
+        let mut reads = Vec::new();
+        fennec_syntax::read::in_function(&entry.def, &mut |expr| {
+            if let ExprKind::Name(name) = &expr.kind
+                && !own.contains(name.as_str())
+                && !entry.def.params.iter().any(|param| &param.name == name)
+            {
+                reads.push(expr.span);
+            }
+        });
+        let types: Vec<Type> = reads.iter().filter_map(|span| body.expr(*span).cloned()).collect();
+        let mut held = BTreeSet::new();
+        for ty in types {
+            let ty = self.checker.settled(&ty);
+            held.extend(self.value_held(function, &Vec::new(), &ty, None).capabilities);
+        }
+        held
+    }
+
+    /// Everything the program's code holds: what a function whose making can't be seen may hold.
+    fn everything(&mut self) -> BTreeSet<&'static str> {
+        if let Some(everything) = &self.everything {
+            return everything.clone();
+        }
+        if self.gathering {
+            return BTreeSet::new();
+        }
+        self.gathering = true;
+        let types: BTreeSet<Type> = self
+            .checker
+            .typed
+            .iter()
+            .filter(|(key, _)| self.checker.program.functions.get(*key).is_none_or(|entry| !entry.prelude))
+            .flat_map(|(_, body)| body.exprs().map(|(_, ty)| self.checker.settled(ty)))
+            .filter(|ty| !matches!(ty, Type::Arrow(..)))
+            .collect();
+        let mut everything = BTreeSet::new();
+        for ty in types {
+            everything.extend(self.type_held(&ty).capabilities);
+        }
+        self.gathering = false;
+        self.everything = Some(everything.clone());
+        everything
+    }
+
+    /// What a value of a type holds, in it or anything inside it: its fields, its cases' fields,
+    /// the types it's given, and what a function in it may hold.
+    fn type_held(&mut self, ty: &Type) -> Held {
+        let capabilities = self.capabilities_in(ty, &mut Vec::new());
+        let inside = ty.type_name().is_none_or(|name| granted_as(name).is_none()).then(|| ty.clone());
+        Held { capabilities, inside, ..Held::default() }
+    }
+
+    fn capabilities_in(&mut self, ty: &Type, open: &mut Vec<String>) -> BTreeSet<&'static str> {
+        if let Some(held) = self.held.get(ty) {
+            return held.clone();
+        }
+        let mut held = BTreeSet::new();
+        match ty {
+            Type::Named(name) | Type::Generic(name, _) if granted_as(name).is_some() => {
+                held.extend(granted_as(name));
+            }
+            // A function in a value may hold anything: what it captures can't be seen from here.
+            Type::Arrow(..) => {
+                if open.is_empty() {
+                    return BTreeSet::new();
+                }
+                held.extend(self.everything());
+            }
+            // A type parameter left unknown may be anything the program holds.
+            Type::Param(_) => held.extend(self.everything()),
+            _ => {}
+        }
+        for child in ty.children() {
+            if !matches!(ty, Type::Arrow(..)) {
+                held.extend(self.capabilities_in(&child.clone(), open));
+            }
+        }
+        if let Type::Named(name) | Type::Generic(name, _) = ty
+            && !open.contains(name)
+            && let Some(info) = self.checker.program.type_info(name)
+        {
+            let def = info.def.clone();
+            // A field typed by the type's own parameter holds what it's given: what `ty` says.
+            let args = match ty {
+                Type::Generic(_, args) => args.clone(),
+                _ => Vec::new(),
+            };
+            let given: Given = def.generics.iter().map(|generic| generic.name.clone()).zip(args).collect();
+            open.push(name.clone());
+            let fields: Vec<(Option<String>, String)> = def
+                .fields
+                .iter()
+                .map(|field| (None, field.name.clone()))
+                .chain(def.cases.iter().flat_map(|case| {
+                    case.fields.iter().map(|field| (Some(case.name.clone()), field.name.clone()))
+                }))
+                .collect();
+            for (case, field) in fields {
+                let field = self.checker.field_type(name, case.as_deref(), &field).substitute(&given);
+                // Its own parameters are what `ty` gives them, which the children have already.
+                if !matches!(field, Type::Param(_)) {
+                    held.extend(self.capabilities_in(&field, open));
+                }
+            }
+            open.pop();
+        }
+        if open.is_empty() && !self.gathering {
+            self.held.insert(ty.clone(), held.clone());
+        }
+        held
+    }
+
+    /// Whose code a function is, by its key.
+    fn kit_of(&self, key: &str) -> Kit {
+        if key.starts_with("test \"") {
+            return Kit::Own;
+        }
+        if self.checker.program.functions.get(key).is_some_and(|entry| entry.prelude) {
+            return Kit::Std;
+        }
+        kit_by_name(key)
+    }
+
+    /// Whose code a type is, by its name.
+    fn kit_of_type(&self, name: &str) -> Kit {
+        if self.checker.program.type_info(name).is_none_or(|info| info.prelude) {
+            return Kit::Std;
+        }
+        kit_by_name(name)
+    }
+}
+
+/// The kit a name in the merged program belongs to: the part before its kit's mark, or the
+/// program's own when it has none.
+fn kit_by_name(name: &str) -> Kit {
+    match name.split_once(KIT_MARK) {
+        Some((kit, _)) if !kit.is_empty() && kit.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {
+            Kit::Named(kit.to_owned())
+        }
+        _ => Kit::Own,
+    }
+}
+
+/// What a line's `gets` says, for a message: "nothing", or "only `Net`".
+fn gets_said(gets: &BTreeSet<&'static str>) -> String {
+    if gets.is_empty() {
+        return "nothing".to_owned();
+    }
+    let names: Vec<String> = gets.iter().map(|name| format!("`{name}`")).collect();
+    format!("only {}", joined(&names))
+}
+
+/// Capabilities as a message lists them: "an `Fs`", "a `Clock` and an `Fs`".
+fn listed(capabilities: &[&'static str]) -> String {
+    let each: Vec<String> = capabilities.iter().map(|capability| with_article(capability)).collect();
+    joined(&each)
+}
+
+/// A name in backticks, after "a" or "an" as it's said: "an `Fs`", "a `File`", "an `Env`".
+fn with_article(name: &str) -> String {
+    let said_with_a_vowel =
+        name.starts_with("Fs") || name.starts_with(['A', 'E', 'I', 'O', 'U', 'a', 'e', 'i', 'o', 'u']);
+    format!("{} `{name}`", if said_with_a_vowel { "an" } else { "a" })
+}
+
+/// The line that governs a hand-over: what the handing kit's kit.toml says, or none, when it
+/// doesn't name the kit it hands to, which may then hold only what some line gives it.
+enum Line {
+    Says(BTreeSet<&'static str>),
+    None,
+}
+
+/// One value handed over that holds what it may not.
+struct Handing<'h> {
+    /// The kit whose code hands it over: `None` for the program's own.
+    by: Option<&'h str>,
+    to: &'h str,
+    held: &'h Held,
+    missing: &'h [&'static str],
+    line: Line,
+}
+
+/// The error for a value handed to a kit that may not hold what it holds. It never has a fix, and
+/// its help never writes a `gets` line: what a kit gets is a person's to write.
+fn refusal(handing: Handing<'_>, span: Span) -> Diagnostic {
+    let Handing { by, to, held, missing, line } = handing;
+    let capabilities = listed(missing);
+    let (what, after) = if held.unseen {
+        ("a function".to_owned(), " whose making can't be seen, so it may hold anything the program holds")
+    } else if held.function {
+        (format!("a function that holds {capabilities}"), "")
+    } else {
+        let what = match &held.inside {
+            Some(inside) => format!("{capabilities}, in {}", with_article(&inside.to_string())),
+            None => capabilities.clone(),
+        };
+        (what, "")
+    };
+    let rule = match (&line, by) {
+        (Line::Says(gets), None) => format!("kit.toml says it gets {}", gets_said(gets)),
+        (Line::Says(gets), Some(by)) => {
+            format!("`{by}`'s kit.toml says `{to}` gets {}: that's `{by}`'s to change", gets_said(gets))
+        }
+        (Line::None, _) => format!("no kit.toml gives `{to}` {capabilities}"),
+    };
+    let message = match by {
+        None => format!("`{to}` is handed {what} here{after}, and {rule}"),
+        Some(by) => format!("`{by}` hands `{to}` {what} here{after}, and {rule}"),
+    };
+    let decided = match by {
+        None => format!(
+            "what a dependency gets is a person's decision, so nothing here is fixed for you: if `{to}` should hold {capabilities}, a person adds it to `gets` on its line in kit.toml"
+        ),
+        Some(by) => format!(
+            "what a kit gets is a person's decision, written in the kit.toml of the kit that names it, so nothing here is fixed for you: whether `{to}` should hold {capabilities} is for `{by}`'s author"
+        ),
+    };
+    let help = if held.unseen {
+        format!(
+            "the program holds {capabilities}; write the function where it's handed over, as an arrow function or a nested `def`, and only what it reads counts. Otherwise {decided}"
+        )
+    } else {
+        decided
+    };
+    Diagnostic::new(message, span).with_help(help)
+}
+
+fn joined(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}

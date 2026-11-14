@@ -11,7 +11,8 @@ name: Proofs
 # way (`.github/scripts/determinism.sh`). Every program that uses threads runs under ThreadSanitizer too
 # (`.github/scripts/tsan-programs.sh`). Every example and kit is built for a heap audit and run under
 # it too, with each block's owners counted again as it ends (`.github/scripts/audit.sh`). The
-# night's report is kept as `nightly-report`, which
+# runtime's tests run under Miri, which stops on undefined behavior in the crates under it
+# (`.github/scripts/miri.sh`). The night's report is kept as `nightly-report`, which
 # `.github/scripts/nightly-report.sh` copies into the lanes' notes. No pull request waits on this.
 on:
   schedule:
@@ -202,3 +203,54 @@ jobs:
             echo "What fuzzing found, and the whole output, are in the run's \`tsan-found\` artifact."
           } > issue.md
           gh issue create --title "ThreadSanitizer reported in the nightly run" --body-file issue.md --label "bug" --label "priority: now" --repo "$GITHUB_REPOSITORY"
+
+  # The runtime's tests under Miri, each on its own, split eight ways: see `miri.sh`, which says
+  # what Miri can't run and what checks it instead. Undefined behavior or a deadlock fails it, and
+  # the issue carries what Miri said and the seed to run it again with. Each night's seed differs,
+  # so threads take turns in another order.
+  miri:
+    name: Runtime tests under Miri (shard ${{ matrix.shard }} of 8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    env:
+      MIRI_TOOLCHAIN: nightly-2026-10-15
+      MIRI_SEED: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the nightly compiler and Miri
+        run: rustup toolchain install "$MIRI_TOOLCHAIN" --profile minimal --component miri,rust-src
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: miri-${{ matrix.shard }}
+      - name: Run this shard's tests under Miri
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: .github/scripts/miri.sh miri.md "$SHARD/8" | tee miri.txt
+      - name: Show what didn't pass on the run's summary page
+        if: always()
+        run: '[ -f miri.md ] && cat miri.md >> "$GITHUB_STEP_SUMMARY" || true'
+      - name: File an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          {
+            echo "Miri found undefined behavior or a deadlock in the runtime's tests, in shard $SHARD of the nightly run, with \`-Zmiri-seed=$MIRI_SEED\`."
+            echo
+            echo '```'
+            grep -A80 "::error::" miri.txt | head -200
+            echo '```'
+            echo
+            echo "To run one again: \`MIRI_SEED=$MIRI_SEED MIRI_ONLY='<its name>' .github/scripts/miri.sh report.md\`."
+          } > issue.md
+          gh issue create --title "Miri found undefined behavior in the nightly run" --body-file issue.md --label "bug" --label "priority: now" --repo "$GITHUB_REPOSITORY"

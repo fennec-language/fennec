@@ -4237,6 +4237,67 @@ fn a_u64_to_a_power() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An optional string crosses a `shared` value's lock as what it is. `None`'s header is all zero,
+/// which reads as a block at no address, and that was made a text on the way across: a `None` put
+/// in a `shared list[str?]` read back as the empty string, by a task or by the same thread. Here
+/// `None`, the empty string, a short string and one in a block each go in and come out the same,
+/// in a list of them and inside a tuple.
+#[test]
+fn an_optional_string_that_is_none_crosses_a_lock_as_none() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("none_text_crosses", NONE_TEXT_CROSSES, NONE_TEXT_CROSSES_PRINTS)?;
+    assert!(counts_of("none_text_crosses_counts", NONE_TEXT_CROSSES)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const NONE_TEXT_CROSSES: &str = r#"# An optional string crosses a `shared` value's lock as what it is: `None` stays `None`, and the
+# empty string stays the empty string, in a list of them and inside a tuple, written by a task
+# and by the thread that reads them.
+
+def put(out: shared list[(int, str?)], pair: (int, str?)):
+    lock out as ref held:
+        held.append(pair)
+    return
+
+def put_one(out: shared list[str?], one: str?):
+    lock out as ref held:
+        held.append(one)
+    return
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so `nothing` is `None`, but the compiler can't know it.
+    nothing: str? = None if len(args) < 5 else "given"
+    texts: list[str?] = [nothing, "", "short", "a text long enough for a block of its own"]
+    shared out = list[(int, str?)]()
+    shared ones = list[str?]()
+    for at in range(len(texts)):
+        one = texts[at]
+        pair = (at, one)
+        with launch(() => put(out, pair)):
+            pass
+        with launch(() => put_one(ones, one)):
+            pass
+        put(out, pair)
+        put_one(ones, one)
+    lock ones as held:
+        stdout.print(held)
+        stdout.print(held[0] == None, held[1] == None, held[2] == "", held[3] == "", held[2] == None)
+        stdout.print([held[at * 2] == texts[at] and held[at * 2 + 1] == texts[at] for at in range(len(texts))])
+    lock out as held:
+        stdout.print(held)
+        stdout.print(held[0][1] == None, held[2][1] == "", held[2][1] == None, held[1] == (0, nothing))
+    return
+"#;
+
+const NONE_TEXT_CROSSES_PRINTS: &str = r#"[None, None, "", "", "short", "short", "a text long enough for a block of its own", "a text long enough for a block of its own"]
+True True True True False
+[True, True, True, True]
+[(0, None), (0, None), (1, ""), (1, ""), (2, "short"), (2, "short"), (3, "a text long enough for a block of its own"), (3, "a text long enough for a block of its own")]
+True True False True
+"#;
+
 /// A struct held in place compares, orders as a tuple and crosses a lock whatever its fields hold, as
 /// it would boxed: here a `u64` and an `f32` beside a text, which `==` refused in place while the
 /// same struct boxed, with a `dict` beside them, compared fine. A `u64` orders unsigned.

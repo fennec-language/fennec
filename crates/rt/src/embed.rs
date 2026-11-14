@@ -193,6 +193,10 @@ pub struct Tables {
     /// Whether native code holds a `str` as its 24-byte header (see `text`), so a list of
     /// strings the runtime makes holds headers.
     pub text_headers: bool,
+    /// The kinds of item the runtime last asked the number of, with each one's number in
+    /// `elements`, which never changes once given: a list of strings `split` makes finds its
+    /// number here, however many kinds a program describes before strings.
+    pub found_elements: Vec<(Rc<crate::packed::Element>, usize)>,
 }
 
 impl Tables {

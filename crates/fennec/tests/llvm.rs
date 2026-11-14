@@ -563,6 +563,493 @@ fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
     )
 }
 
+/// Built with every type that doesn't contain itself in place and with `FENNEC_BOXED_TYPES=1`, in
+/// dev and release, a program prints `wanted` each way and ends with nothing held.
+fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    for boxed in [false, true] {
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder(name)?;
+            let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+            std::fs::write(&program, source)?;
+            let mut command = crate::executables::fennec_command();
+            command.arg("build").args(how).arg(&program).arg("-o").arg(&executable).env("FENNEC_HOME", &dir);
+            if boxed {
+                command.env("FENNEC_BOXED_TYPES", "1");
+            }
+            let built = command.output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "boxed {boxed} {how:?}: {said}");
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "boxed {boxed} {how:?}: {said}");
+        }
+    }
+    Ok(())
+}
+
+/// A struct holding a `u64`, an `f32`, `bytes`, a set, a text, a `str?` and a dict is held in place,
+/// as are a program's own types named `Option`, `Match`, `Table` and `Id`: each compared with `==`,
+/// printed, copied and changed, its copy unchanged, and used as a dict's value, after other values
+/// of the same shape are made. It prints the same boxed.
+#[test]
+fn a_struct_holding_any_kind_of_field_is_held_in_place_as_it_prints_boxed() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_in_place_and_boxed("any_field_in_place", ANY_FIELD_IN_PLACE, ANY_FIELD_IN_PLACE_PRINTS)
+}
+
+const ANY_FIELD_IN_PLACE: &str = r#"# Each kind of field Fable's matrix was missing, in a struct that's now held in place: made after
+# other values of the same shape, then compared with `==`, printed, copied and let go of.
+
+struct Mixed:
+    big: u64
+    small: f32
+    data: bytes
+    seen: set[int]
+    name: str
+    maybe: str?
+    counts: dict[str, int]
+
+struct Option:
+    value: int
+    label: str
+
+struct Match:
+    text: str
+    at: int
+
+struct Table:
+    rows: list[str]
+
+struct Id:
+    key: str
+
+def mixed(n: int) -> Mixed:
+    return Mixed(
+        big=u64(n) * u64(1 << 40),
+        small=f32(n) / f32(4),
+        data=f"bytes long enough for a block {n}".encode(),
+        seen={n, n + 1, n * 7},
+        name=f"a name long enough for a block {n}",
+        maybe=f"a maybe long enough for a block {n}" if n % 2 == 0 else None,
+        counts={f"key {n}": n, "other": n * 2},
+    )
+
+def main(stdout: Stdout):
+    noise = [mixed(n + 50) for n in range(4)]
+    items = [mixed(n) for n in range(5)]
+    copy = items[2]
+    stdout.print(copy == mixed(2), copy == mixed(3), copy.big, copy.small, copy.data, len(copy.seen), copy.maybe)
+    stdout.print(items[3])
+    mut changed = items
+    changed[1].counts["new"] = 9
+    changed[1].seen.add(1000)
+    stdout.print(items[1] == mixed(1), changed[1] == mixed(1), len(changed[1].counts), len(items[1].counts))
+    by_name = {item.name: item for item in items}
+    stdout.print(by_name[f"a name long enough for a block 4"] == mixed(4), len(by_name))
+    mine = [Option(value=n, label=f"a label long enough for a block {n}") for n in range(3)]
+    found = Match(text="a matched text long enough for a block", at=3)
+    table = Table(rows=["one", "two long enough for a block of its own"])
+    key = Id(key="an id long enough for a block of its own")
+    stdout.print(mine[1], found, table, key, mine[2] == Option(value=2, label="a label long enough for a block 2"))
+    stdout.print(len(noise))
+    return
+"#;
+
+const ANY_FIELD_IN_PLACE_PRINTS: &str = r#"True False 2199023255552 0.5 bytes([98, 121, 116, 101, 115, 32, 108, 111, 110, 103, 32, 101, 110, 111, 117, 103, 104, 32, 102, 111, 114, 32, 97, 32, 98, 108, 111, 99, 107, 32, 50]) 3 a maybe long enough for a block 2
+Mixed(big=3298534883328, small=0.75, data=bytes([98, 121, 116, 101, 115, 32, 108, 111, 110, 103, 32, 101, 110, 111, 117, 103, 104, 32, 102, 111, 114, 32, 97, 32, 98, 108, 111, 99, 107, 32, 51]), seen={3, 4, 21}, name="a name long enough for a block 3", maybe=None, counts={"key 3": 3, "other": 6})
+True False 3 2
+True 5
+Option(value=1, label="a label long enough for a block 1") Match(text="a matched text long enough for a block", at=3) Table(rows=["one", "two long enough for a block of its own"]) Id(key="an id long enough for a block of its own") True
+4
+"#;
+
+/// Fable's ten shapes of types that hold themselves, each made, copied, compared and printed: the
+/// blocks only those that contain themselves by value. It prints the same with every type boxed.
+#[test]
+fn types_holding_themselves_every_way_print_the_same_in_place_and_boxed() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_in_place_and_boxed("shapes_in_place", SHAPES_IN_PLACE, SHAPES_IN_PLACE_PRINTS)
+}
+
+const SHAPES_IN_PLACE: &str = r#"# The recursive shapes the block decision has to get right.
+
+struct Node:
+    value: int
+    next: Node?
+
+struct Forest:
+    root: Node?
+    name: str
+
+struct Pair:
+    left: Tree?
+    right: Tree?
+
+struct Tree:
+    kids: Pair
+    value: int
+
+struct Bush:
+    kids: list[Bush]
+    name: str
+
+struct Dir:
+    entries: dict[str, Dir]
+    size: int
+
+struct Linked[T]:
+    value: T
+    next: Linked[T]?
+
+struct Grid:
+    cells: array[Grid?, 2]
+    value: int
+
+struct Leaf:
+    name: str
+
+struct Wrap:
+    inner: Shape
+    depth: int
+
+type Shape = Wrap | Leaf
+
+struct Pairs:
+    items: list[(int, Pairs)]
+    name: str
+
+enum Expr:
+    Num(value: int)
+    Neg(inner: Expr)
+    Add(left: Expr, right: Expr)
+
+def chain(n: int) -> Node:
+    mut node = Node(value=0, next=None)
+    for at in range(1, n):
+        node = Node(value=at, next=node)
+    return node
+
+def length(node: Node) -> int:
+    rest = node.next else return 1
+    return 1 + length(rest)
+
+def bush(depth: int) -> Bush:
+    if depth == 0:
+        return Bush(kids=[], name="leaf with a long enough name")
+    return Bush(kids=[bush(depth - 1), bush(depth - 1)], name=f"bush at depth {depth} with a long name")
+
+def count(bush: Bush) -> int:
+    return 1 + sum(count(kid) for kid in bush.kids)
+
+def value(expr: Expr) -> int:
+    match expr:
+        case .Num(n):
+            return n
+        case .Neg(inner):
+            return -value(inner)
+        case .Add(left, right):
+            return value(left) + value(right)
+
+def main(stdout: Stdout):
+    node = chain(5)
+    forest = Forest(root=node, name="a forest with a long enough name")
+    other = forest
+    stdout.print(length(node), forest == other, forest)
+    tree = Tree(kids=Pair(left=Tree(kids=Pair(left=None, right=None), value=1), right=None), value=2)
+    stdout.print(tree)
+    made = bush(3)
+    stdout.print(count(made), made.kids[1].kids[0].name)
+    mut dir = Dir(entries={}, size=1)
+    dir.entries["sub"] = Dir(entries={"deep": Dir(entries={}, size=3)}, size=2)
+    copy = dir
+    dir.entries["sub"].size += 10
+    stdout.print(copy.entries["sub"].size, dir.entries["sub"].size, dir.entries["sub"].entries["deep"].size, copy == dir)
+    linked = Linked[str](value="first with a long enough text", next=Linked[str](value="second", next=None))
+    rest = linked.next else linked
+    stdout.print(linked.value, rest.value, rest.next is None)
+    grid = Grid(cells=[Grid(cells=[None, None], value=1), None], value=2)
+    first = grid.cells[0] else grid
+    stdout.print(grid.value, first.value, grid.cells[1] is None)
+    shape: Shape = Wrap(inner=Wrap(inner=Leaf(name="a leaf with a long enough name"), depth=1), depth=2)
+    stdout.print(shape)
+    pairs = Pairs(items=[(1, Pairs(items=[], name="inner pairs with a long name"))], name="outer")
+    stdout.print(pairs.items[0][1].name, len(pairs.items))
+    expr = Expr.Add(left=.Num(value=3), right=.Neg(inner=.Num(value=1)))
+    stdout.print(value(expr), expr)
+    many = [forest, other]
+    held = {1: tree}
+    stdout.print(len(many), many[1].name, held[1].value)
+    return
+"#;
+
+const SHAPES_IN_PLACE_PRINTS: &str = r#"5 True Forest(root=Node(value=4, next=Node(value=3, next=Node(value=2, next=Node(value=1, next=Node(value=0, next=None))))), name="a forest with a long enough name")
+Tree(kids=Pair(left=Tree(kids=Pair(left=None, right=None), value=1), right=None), value=2)
+15 bush at depth 1 with a long name
+2 12 3 False
+first with a long enough text second True
+2 1 True
+Wrap(inner=Wrap(inner=Leaf(name="a leaf with a long enough name"), depth=1), depth=2)
+inner pairs with a long name 1
+2 Expr.Add(left=Expr.Num(value=3), right=Expr.Neg(inner=Expr.Num(value=1)))
+2 a forest with a long enough name 2
+"#;
+
+/// A struct held in place in every place Fable's matrix was missing: sorted by a key, found with
+/// `in`, sliced, reversed, changed through a `ref` naming a list's item, in a tuple ordered with `<`,
+/// as a dict's key, an array's item and a module constant, and holding a `shared` handle written
+/// through a copy, a capability, a function and a sender, handed to a task, and a task recursing
+/// 2,000 deep with one. Its dict keyed by such a struct only builds in place.
+#[test]
+fn a_struct_held_in_place_goes_everywhere_a_value_goes() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds("places_in_place", PLACES_IN_PLACE, PLACES_IN_PLACE_PRINTS)?;
+    assert!(counts_of("places_in_place_counts", PLACES_IN_PLACE)?.ends_with(" live 0"));
+    Ok(())
+}
+
+const PLACES_IN_PLACE: &str = r#"# The places Fable's matrix was missing, for a struct now held in place, and a shared handle, a
+# capability, a sender and a closure held in one.
+
+from std.concurrent import Closed, Crashed, Sender, channel
+
+struct Item:
+    id: int
+    name: str
+    maybe: str?
+    counts: dict[str, int]
+
+struct Account:
+    balance: int
+
+struct Holder:
+    audit: shared list[str]
+    label: str
+    tags: dict[str, int]
+
+struct Talker:
+    out: Stdout
+    word: str
+    tags: dict[str, int]
+
+struct Scaler:
+    by: (int) -> int
+    name: str
+    tags: dict[str, int]
+
+struct Teller:
+    back: Sender[str]
+    name: str
+    tags: dict[str, int]
+
+FIRST = Item(id=0, name="a constant long enough for a block", maybe=None, counts={"c": 1})
+
+def item(n: int) -> Item:
+    return Item(id=n, name=f"a name long enough for a block {n}", maybe=f"maybe {n}" if n % 2 == 0 else None, counts={f"k{n}": n})
+
+def bump(ref target: Item):
+    target.id += 100
+    target.counts["bumped"] = 1
+    return
+
+def deep(n: int, carried: Item) -> int:
+    if n == 0:
+        return carried.id
+    next = Item(id=carried.id + 1, name=carried.name, maybe=carried.maybe, counts=carried.counts)
+    return deep(n - 1, next)
+
+def triple(x: int) -> int:
+    return x * 3
+
+def tell(teller: Teller):
+    teller.back.send(f"{teller.name} told") except Closed():
+        pass
+
+def told(teller: Teller) fails Crashed:
+    with launch(() => tell(teller)) as task:
+        pass
+
+def deep_quiet(n: int):
+    _ = deep(n, item(1))
+
+def deep_in_a_task(n: int) fails Crashed:
+    with launch(() => deep_quiet(n)) as task:
+        pass
+
+def main(stdout: Stdout):
+    noise = [item(n + 50) for n in range(4)]
+    mut items = [item(n) for n in range(6)]
+    stdout.print(sorted(items, key=it => -it.id)[0].id, item(3) in items, item(9) in items)
+    stdout.print([it.id for it in items[1:4]], items[1:3] == [item(1), item(2)])
+    items.reverse()
+    bump(ref items[2])
+    stdout.print(items[2], items[2] == item(3))
+    pairs = [(it.id, it.name) for it in items]
+    stdout.print(sorted(pairs)[0], (1, "a") < (1, "b"))
+    keyed = {item(1): "one", item(2): "two"}
+    stdout.print(keyed[item(2)], item(1) in keyed, item(5) in keyed)
+    grid: array[Item, 2] = [item(7), item(8)]
+    stdout.print(grid[1], FIRST, FIRST == item(0))
+    shared log = list[str]()
+    holder = Holder(audit=log, label="a label long enough for a block", tags={})
+    copied = holder
+    lock copied.audit as ref lines:
+        lines.append("written through a copy")
+    lock holder.audit as lines:
+        stdout.print(len(lines), lines[0], holder == copied)
+    talker = Talker(out=stdout, word="a word long enough for a block of its own", tags={})
+    again = talker
+    again.out.print(again.word)
+    scaler = Scaler(by=triple, name="triple", tags={})
+    kept = [scaler, scaler]
+    by = kept[1].by
+    stdout.print(by(14), kept[0].name)
+    with channel[str](size=4) as said:
+        teller = Teller(back=said.sender(), name="a teller long enough for a block", tags={})
+        _ = told(teller) except Crashed():
+            stdout.print("crashed")
+        stdout.print(said.receive() else "nothing")
+    _ = deep_in_a_task(2_000) except Crashed():
+        stdout.print("the deep task crashed")
+    stdout.print(deep(2_000, item(1)), len(noise))
+    return
+"#;
+
+const PLACES_IN_PLACE_PRINTS: &str = r#"5 True False
+[1, 2, 3] True
+Item(id=103, name="a name long enough for a block 3", maybe=None, counts={"k3": 3, "bumped": 1}) False
+(0, "a name long enough for a block 0") True
+two True False
+Item(id=8, name="a name long enough for a block 8", maybe="maybe 8", counts={"k8": 8}) Item(id=0, name="a constant long enough for a block", maybe=None, counts={"c": 1}) False
+1 written through a copy True
+a word long enough for a block of its own
+42 triple
+a teller long enough for a block told
+2001 4
+"#;
+
+/// The rest of the rows Fable's matrix was missing, for structs held in place: one holding a
+/// `shared` handle in a list, as a dict's value, in a message and in a capture, each copy writing
+/// the one list, which is freed once; one holding a capability, whole and narrowed with `only`;
+/// one holding an iterator; and a list of them sorted where it is by a key. It prints the same
+/// with every type boxed, and ends with nothing held.
+#[test]
+fn a_struct_in_place_holds_a_handle_a_capability_and_an_iterator_as_it_would_boxed() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    same_in_place_and_boxed("rest_in_place", REST_IN_PLACE, REST_IN_PLACE_PRINTS)
+}
+
+const REST_IN_PLACE: &str = r#"# The rest of the rows Fable's matrix was missing, for structs now held in place: one holding a
+# shared handle in a list, a dict, a message and a capture, one holding a capability whole and
+# narrowed, one holding an iterator, and a list of them sorted where it is by a key.
+
+from std.concurrent import Closed, channel
+
+struct Holder:
+    audit: shared list[str]
+    label: str
+    tags: dict[str, int]
+
+struct Files:
+    fs: Fs
+    root: str
+    tags: dict[str, int]
+
+struct Walk:
+    numbers: Iterator[int]
+    name: str
+
+struct Item:
+    id: int
+    name: str
+    counts: dict[str, int]
+
+def item(n: int) -> Item:
+    return Item(id=n, name=f"a name long enough for a block {n}", counts={f"k{n}": n})
+
+def holding(log: shared list[str], n: int) -> Holder:
+    return Holder(audit=log, label=f"a label long enough for a block {n}", tags={f"t{n}": n})
+
+def write(holder: Holder, line: str):
+    lock holder.audit as ref lines:
+        lines.append(line)
+    return
+
+def size(holder: Holder) -> int:
+    lock holder.audit as lines:
+        return len(lines)
+
+def upto(limit: int) -> Iterator[int]:
+    for n in range(limit):
+        yield n * n
+
+def total(walk: Walk) -> int:
+    mut added = 0
+    for n in walk.numbers:
+        added += n
+    return added
+
+def looked(files: Files, path: str) -> str:
+    found = files.fs.exists(path) except .NotFound() | .PermissionDenied() | .AlreadyExists() | .Other(
+    ): return f"{files.root} can't look at {path}"
+    return f"{files.root} sees {path}: {found}"
+
+def main(stdout: Stdout, fs: Fs):
+    noise = [item(n + 50) for n in range(4)]
+    shared log = list[str]()
+    # A shared handle in a struct, in a list and as a dict's value: every copy writes the one list.
+    holders = [holding(log, n) for n in range(3)]
+    by_label = {holder.label: holder for holder in holders}
+    write(holders[1], "through the list")
+    write(by_label["a label long enough for a block 2"], "through the dict")
+    stdout.print(size(holders[0]), holders[2] == by_label["a label long enough for a block 2"], len(by_label))
+    # In a message, and in a capture.
+    with channel[Holder](size=2) as box:
+        box.sender().send(holders[0]) except Closed():
+            stdout.print("closed")
+        got = box.receive() else holding(log, 9)
+        write(got, "through the message")
+        stdout.print(got.label, size(got))
+    held = holders[1]
+    count = () => size(held)
+    write(held, "beside the capture")
+    stdout.print(count(), held.tags)
+    # A capability, whole and narrowed.
+    whole = Files(fs=fs, root="a root long enough for a block: everything", tags={"w": 1})
+    narrow = Files(fs=fs.only("saves"), root="a root long enough for a block: saves", tags={"n": 2})
+    kept = [whole, narrow]
+    stdout.print(looked(kept[0], "no-such-file-here"))
+    stdout.print(looked(kept[1], "no-such-file-here"))
+    # An iterator.
+    walk = Walk(numbers=upto(5), name="a walk long enough for a block of its own")
+    stdout.print(walk.name, total(walk))
+    # Sorted where it is, by a key.
+    mut items = [item(n) for n in [3, 1, 2]]
+    items.sort(key=it => it.name)
+    stdout.print([it.id for it in items], items[0] == item(1), items[0])
+    items.sort(key=it => -it.id)
+    stdout.print([it.id for it in items], len(noise))
+    return
+"#;
+
+const REST_IN_PLACE_PRINTS: &str = r#"2 True 3
+a label long enough for a block 0 3
+3 {"t1": 1}
+a root long enough for a block: everything sees no-such-file-here: False
+a root long enough for a block: saves can't look at no-such-file-here
+a walk long enough for a block of its own 30
+[1, 2, 3] True Item(id=1, name="a name long enough for a block 1", counts={"k1": 1})
+[3, 2, 1] 4
+"#;
+
 /// A result kept in place, its value or its error in the caller's slot, for every kind of value:
 /// nothing, an int, a long text, a list, a dict, an optional, a struct in place and one in a block,
 /// on success and on failure, `fails A | B`, and a failure passed up through three `?`. Called
@@ -10208,7 +10695,7 @@ fn a_generator_that_fails_lets_go_of_its_failure_wherever_its_stopped() -> std::
     prints_in_both_builds("failed_generators", FAILED_GENERATORS, FAILED_GENERATORS_PRINTS)?;
     assert_eq!(
         counts_of("failed_generators_counts", FAILED_GENERATORS)?,
-        "copies 2 copied_bytes 80 largest_copy 40 allocations 16063 allocated_bytes 1324784 live 0"
+        "copies 2 copied_bytes 80 largest_copy 40 allocations 13055 allocated_bytes 1228528 live 0"
     );
     Ok(())
 }
@@ -26286,7 +26773,7 @@ fn an_error_and_a_struct_holding_a_str_optional_are_held_one_way_everywhere() ->
     )?;
     assert_eq!(
         counts_of("optional_texts_one_way_counts", OPTIONAL_TEXTS_ONE_WAY)?,
-        "copies 29 copied_bytes 1968 largest_copy 88 allocations 94 allocated_bytes 6440 live 0"
+        "copies 21 copied_bytes 1936 largest_copy 320 allocations 72 allocated_bytes 6720 live 0"
     );
     Ok(())
 }

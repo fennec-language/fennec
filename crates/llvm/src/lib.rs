@@ -194,25 +194,70 @@ pub struct Shared {
 pub fn layouts_of(program: &Program) -> Result<Layouts, String> {
     // Which named types are blocks doesn't depend on how optionals are held, so a first layout
     // with every optional as an enum says which optionals can be one word.
-    let first = laid_out(program, None);
-    let finished = laid_out(program, Some(&first));
+    let (first, finished) = if fennec_layout::types_in_place() {
+        // Which types are blocks is decided once, from the types as written, and both layouts keep
+        // to it: only a type that contains itself is a block.
+        let written = definitions_of(program, None);
+        let boxed =
+            fennec_layout::boxed_types(&written, &declared(program), &kept_as_blocks(program, &written));
+        let first = Layouts::from_definitions_boxing(&written, &boxed);
+        let finished = Layouts::from_definitions_boxing(&definitions_of(program, Some(&first)), &boxed);
+        if let Some(problem) = first.problem().or(finished.problem()) {
+            return Err(format!("{problem}, which is a bug in the compiler"));
+        }
+        (first, finished)
+    } else {
+        let first = laid_out(program, None);
+        let finished = laid_out(program, Some(&first));
+        (first, finished)
+    };
     agreed(program, &first, &finished)?;
     Ok(finished)
 }
 
-/// Whether the finished layout keeps what the first decided: each type a block in one is a block in
-/// the other, and each optional the program mentions, however deep, is held the same way by both.
-fn agreed(program: &Program, first: &Layouts, finished: &Layouts) -> Result<(), String> {
-    let ids = (0..first.len()).filter_map(|id| u32::try_from(id).ok());
-    for layout in ids.filter_map(|id| first.get(id)) {
-        let other = finished.id(&layout.name).and_then(|id| finished.get(id));
-        if other.is_some_and(|other| other.boxed != layout.boxed) {
-            return Err(format!(
-                "the layouts disagree on whether `{}` is a block, which is a bug in the compiler",
-                layout.name
-            ));
-        }
+/// The types the program declares, its own and the standard library's: structs, enums and errors,
+/// by where they're defined, never by their names.
+fn declared(program: &Program) -> BTreeSet<String> {
+    let structs = program.structs.iter().chain(&program.errors).map(|def| def.name.clone());
+    structs.chain(program.enums.iter().map(|def| def.name.clone())).collect()
+}
+
+/// The types kept as blocks whatever holds them, for now: errors and unions of errors, whose
+/// failures cross between tasks as blocks, and results too when `FENNEC_BOXED_RESULTS` says so.
+fn kept_as_blocks(program: &Program, written: &[(String, Written)]) -> BTreeSet<String> {
+    use fennec_check::Type;
+    // An error is known by its notes, whether the program or the standard library defines it.
+    let notes = |fields: &[fennec_layout::WrittenField]| {
+        fields.iter().any(|(name, ..)| name == fennec_rt::packed::NOTES)
+    };
+    let mut kept: BTreeSet<String> = written
+        .iter()
+        .filter(|(_, def)| match def {
+            Written::Struct(fields) => notes(fields),
+            Written::Enum(cases) => cases.iter().any(|(_, fields)| notes(fields)),
+            Written::Generator(_) | Written::Cell(_) => false,
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    kept.extend(program.errors.iter().map(|def| def.name.clone()));
+    let results = !fennec_layout::results_in_place();
+    for ty in mentioned(program) {
+        each_type(ty, &mut |ty| match ty {
+            Type::Errors(_) => {
+                kept.insert(ty.to_string());
+            }
+            Type::Result(value, error) if results => {
+                kept.insert(format!("Result[{value}, {error}]"));
+            }
+            _ => {}
+        });
     }
+    kept
+}
+
+/// Every type a program mentions where it's held: fields, what functions give back, locals, and
+/// generators' items and slots.
+fn mentioned(program: &Program) -> Vec<&fennec_check::Type> {
     let mut mentioned: Vec<&fennec_check::Type> = Vec::new();
     for def in program.structs.iter().chain(&program.errors) {
         mentioned.extend(def.fields.iter().map(|(_, ty)| ty));
@@ -228,7 +273,55 @@ fn agreed(program: &Program, first: &Layouts, finished: &Layouts) -> Result<(), 
         mentioned.push(&def.item);
         mentioned.extend(&def.slots);
     }
-    mentioned.into_iter().try_for_each(|ty| optionals_agree(ty, first, finished))
+    mentioned
+}
+
+/// Calls `found` with a type and every type inside it, however deep.
+fn each_type(ty: &fennec_check::Type, found: &mut dyn FnMut(&fennec_check::Type)) {
+    use fennec_check::Type;
+    found(ty);
+    match ty {
+        Type::Optional(inner)
+        | Type::List(inner)
+        | Type::Buffer(inner)
+        | Type::Set(inner)
+        | Type::Iterator(inner)
+        | Type::Id(inner)
+        | Type::Table(inner)
+        | Type::Array(inner, _) => each_type(inner, found),
+        Type::Dict(a, b) | Type::Result(a, b) => {
+            each_type(a, found);
+            each_type(b, found);
+        }
+        Type::Tuple(items) | Type::Union(items) | Type::Generic(_, items) => {
+            for item in items {
+                each_type(item, found);
+            }
+        }
+        Type::Arrow(params, returns) => {
+            for param in params {
+                each_type(param, found);
+            }
+            each_type(returns, found);
+        }
+        _ => {}
+    }
+}
+
+/// Whether the finished layout keeps what the first decided: each type a block in one is a block in
+/// the other, and each optional the program mentions, however deep, is held the same way by both.
+fn agreed(program: &Program, first: &Layouts, finished: &Layouts) -> Result<(), String> {
+    let ids = (0..first.len()).filter_map(|id| u32::try_from(id).ok());
+    for layout in ids.filter_map(|id| first.get(id)) {
+        let other = finished.id(&layout.name).and_then(|id| finished.get(id));
+        if other.is_some_and(|other| other.boxed != layout.boxed) {
+            return Err(format!(
+                "the layouts disagree on whether `{}` is a block, which is a bug in the compiler",
+                layout.name
+            ));
+        }
+    }
+    mentioned(program).into_iter().try_for_each(|ty| optionals_agree(ty, first, finished))
 }
 
 /// Whether every optional in a type is one word in both layouts or in neither.
@@ -299,6 +392,12 @@ pub fn wrap_main(program: &mut Program, span: fennec_syntax::Span) {
 }
 
 fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
+    Layouts::from_definitions(&definitions_of(program, blocks))
+}
+
+/// Every type a program defines and uses, by name, as the layouts take them: `blocks` says which
+/// optionals are one word, and with none every optional is an enum.
+fn definitions_of(program: &Program, blocks: Option<&Layouts>) -> Vec<(String, Written)> {
     let fields = |fields: &[(String, fennec_check::Type)]| {
         fields.iter().map(|(name, ty)| (name.clone(), kinds::canon_in(blocks, ty), None)).collect::<Vec<_>>()
     };
@@ -378,7 +477,7 @@ fn laid_out(program: &Program, blocks: Option<&Layouts>) -> Layouts {
         .chain(generators)
         .chain(closures)
         .collect();
-    Layouts::from_definitions(&definitions)
+    definitions
 }
 
 /// The module text for this machine starts with this, or says what's missing. Each module is
@@ -447,6 +546,153 @@ mod tests {
         }
         super::agreed(&program, &first, &finished)
     }
+
+    /// Fable's ten shapes of types that hold themselves, and which are blocks: only a type that
+    /// contains itself by value, however far round, every declared type in such a cycle. A list, a
+    /// dict or an optional of a block breaks a cycle; an array of optionals or a union doesn't.
+    #[test]
+    fn only_a_type_that_contains_itself_is_a_block() -> Result<(), String> {
+        if !fennec_layout::types_in_place() {
+            return Ok(());
+        }
+        let mut module = fennec_syntax::parse(SHAPES).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let layouts = super::layouts_of(&program)?;
+        // A program's own type named as one of the standard library's is marked apart, with a `'`.
+        let boxed = |name: &str| {
+            let id = layouts.id(name).or_else(|| layouts.id(&format!("{name}'")))?;
+            layouts.get(id).map(|layout| layout.boxed)
+        };
+        for (name, wanted) in [
+            ("Node", true),
+            ("Forest", false),
+            ("Tree", true),
+            ("Pair", true),
+            ("Bush", false),
+            ("Dir", false),
+            ("Linked[str]", true),
+            ("Grid", true),
+            ("Wrap", true),
+            ("Leaf", false),
+            ("Pairs", false),
+            ("Expr", true),
+        ] {
+            assert_eq!(boxed(name), Some(wanted), "{name}");
+        }
+        Ok(())
+    }
+
+    const SHAPES: &str = r#"# The recursive shapes the block decision has to get right.
+
+struct Node:
+    value: int
+    next: Node?
+
+struct Forest:
+    root: Node?
+    name: str
+
+struct Pair:
+    left: Tree?
+    right: Tree?
+
+struct Tree:
+    kids: Pair
+    value: int
+
+struct Bush:
+    kids: list[Bush]
+    name: str
+
+struct Dir:
+    entries: dict[str, Dir]
+    size: int
+
+struct Linked[T]:
+    value: T
+    next: Linked[T]?
+
+struct Grid:
+    cells: array[Grid?, 2]
+    value: int
+
+struct Leaf:
+    name: str
+
+struct Wrap:
+    inner: Shape
+    depth: int
+
+type Shape = Wrap | Leaf
+
+struct Pairs:
+    items: list[(int, Pairs)]
+    name: str
+
+enum Expr:
+    Num(value: int)
+    Neg(inner: Expr)
+    Add(left: Expr, right: Expr)
+
+def chain(n: int) -> Node:
+    mut node = Node(value=0, next=None)
+    for at in range(1, n):
+        node = Node(value=at, next=node)
+    return node
+
+def length(node: Node) -> int:
+    rest = node.next else return 1
+    return 1 + length(rest)
+
+def bush(depth: int) -> Bush:
+    if depth == 0:
+        return Bush(kids=[], name="leaf with a long enough name")
+    return Bush(kids=[bush(depth - 1), bush(depth - 1)], name=f"bush at depth {depth} with a long name")
+
+def count(bush: Bush) -> int:
+    return 1 + sum(count(kid) for kid in bush.kids)
+
+def value(expr: Expr) -> int:
+    match expr:
+        case .Num(n):
+            return n
+        case .Neg(inner):
+            return -value(inner)
+        case .Add(left, right):
+            return value(left) + value(right)
+
+def main(stdout: Stdout):
+    node = chain(5)
+    forest = Forest(root=node, name="a forest with a long enough name")
+    other = forest
+    stdout.print(length(node), forest == other, forest)
+    tree = Tree(kids=Pair(left=Tree(kids=Pair(left=None, right=None), value=1), right=None), value=2)
+    stdout.print(tree)
+    made = bush(3)
+    stdout.print(count(made), made.kids[1].kids[0].name)
+    mut dir = Dir(entries={}, size=1)
+    dir.entries["sub"] = Dir(entries={"deep": Dir(entries={}, size=3)}, size=2)
+    copy = dir
+    dir.entries["sub"].size += 10
+    stdout.print(copy.entries["sub"].size, dir.entries["sub"].size, dir.entries["sub"].entries["deep"].size, copy == dir)
+    linked = Linked[str](value="first with a long enough text", next=Linked[str](value="second", next=None))
+    rest = linked.next else linked
+    stdout.print(linked.value, rest.value, rest.next is None)
+    grid = Grid(cells=[Grid(cells=[None, None], value=1), None], value=2)
+    first = grid.cells[0] else grid
+    stdout.print(grid.value, first.value, grid.cells[1] is None)
+    shape: Shape = Wrap(inner=Wrap(inner=Leaf(name="a leaf with a long enough name"), depth=1), depth=2)
+    stdout.print(shape)
+    pairs = Pairs(items=[(1, Pairs(items=[], name="inner pairs with a long name"))], name="outer")
+    stdout.print(pairs.items[0][1].name, len(pairs.items))
+    expr = Expr.Add(left=.Num(value=3), right=.Neg(inner=.Num(value=1)))
+    stdout.print(value(expr), expr)
+    many = [forest, other]
+    held = {1: tree}
+    stdout.print(len(many), many[1].name, held[1].value)
+    return
+"#;
 
     const OPTIONAL_TEXTS: &str = r#"error Lost:
     place: str

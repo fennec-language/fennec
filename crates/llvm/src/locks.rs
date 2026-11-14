@@ -507,6 +507,8 @@ impl Emit<'_, '_, '_> {
 
     /// A struct or enum in place, copied at `at`, each thing it holds across the edge.
     fn cross_into(&mut self, value: &str, kind: &Kind, way: Way, at: &str) -> Result<(), String> {
+        // A struct inside what crosses may be one no local of this function holds.
+        self.module.define_types(kind);
         let text = self.text_of(kind);
         let whole = self.temp();
         self.line(&format!("{whole} = load {text}, ptr {value}"));

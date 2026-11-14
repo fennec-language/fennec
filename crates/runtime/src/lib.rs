@@ -127,6 +127,8 @@ pub const NEVER_FAIL: &[&str] = &[
     // for as an answer. It runs under `with`, which sets no flag, and only reads the text's bytes
     // and parses them.
     "fennec_parse_float_header",
+    // Only says where a buffer is.
+    "fennec_dict_value_words",
     // One atomic add to the count of native blocks made and not freed.
     "fennec_native_live",
 ];
@@ -303,6 +305,11 @@ export! {
     fennec_dict_find_header(a0: i64, a1: u64, a2: u64, a3: u64) -> i64 => dicts::find_header(a0, a1, a2, a3);
     fennec_dict_set_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64) -> i64 => dicts::set_header(a0, a1, a2, a3, a4);
     fennec_dict_pop_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64, a5: i64) -> i64 => dicts::pop_header(a0, a1, a2, a3, a4, a5);
+    fennec_dict_value_words() -> i64 => dicts::value_buffer();
+    fennec_dict_set_words(a0: i64, a1: i64) -> i64 => dicts::set_in_place(a0, a1);
+    fennec_dict_set_words_header(a0: i64, a1: u64, a2: u64, a3: u64) -> i64 => dicts::set_in_place_header(a0, a1, a2, a3);
+    fennec_dict_pop_words(a0: i64, a1: i64, a2: i64, a3: i64) -> i64 => dicts::pop_in_place(a0, a1, a2, a3);
+    fennec_dict_pop_words_header(a0: i64, a1: u64, a2: u64, a3: u64, a4: i64, a5: i64) -> i64 => dicts::pop_in_place_header(a0, a1, a2, a3, a4, a5);
     fennec_stop(a0: i64, a1: i64, a2: i64) => checks::stop(a0, a1, a2);
     fennec_proof_broken(a0: i64, a1: i64, a2: i64) => checks::proof_broken(a0, a1, a2);
     fennec_bytes_new(a0: i64) -> i64 => bytes::new(a0);

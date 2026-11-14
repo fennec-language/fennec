@@ -18688,6 +18688,60 @@ fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the next test builds: failed asserts, each with a `shared` value on a side.
+const SHARED_SHOWN: &str = r#"struct Account:
+    total = 0
+
+struct Bank:
+    name: str
+    first: shared Account
+
+test "the shared value itself"():
+    shared account = Account(total=1)
+    shared other = Account(total=2)
+    assert account == other
+
+test "in a list"():
+    shared account = Account(total=1)
+    assert [account] == []
+
+test "in a tuple"():
+    shared account = Account(total=1)
+    assert (1, account) == (2, account)
+
+test "in a struct"():
+    shared account = Account(total=1)
+    assert Bank(name="a", first=account) == Bank(name="b", first=account)
+"#;
+
+/// A failed `assert` shows a `shared` value on either side as what it holds, as printing it does:
+/// by itself, in a list, in a tuple and in a struct. It showed the cell lowering keeps it in,
+/// `Shared__Account(value=Account(total=1))`.
+#[test]
+fn a_failed_assert_shows_what_a_shared_value_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shared_shown")?;
+    let program = dir.join("shared_shown.fen");
+    std::fs::write(&program, SHARED_SHOWN)?;
+    let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    let said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    assert!(said.contains("0 passed, 4 failed"), "{said}");
+    assert!(!said.contains("Shared__"), "{said}");
+    for sides in [
+        "the left side is Account(total=1) and the right side is Account(total=2)",
+        "the left side is [Account(total=1)] and the right side is []",
+        "the left side is (1, Account(total=1)) and the right side is (2, Account(total=1))",
+        "the left side is Bank(name=\"a\", first=Account(total=1)) and the right side is Bank(name=\"b\", first=Account(total=1))",
+    ] {
+        assert!(said.contains(sides), "{sides}: {said}");
+    }
+    Ok(())
+}
+
 /// Replacing a file keeps what was true of it: who can read it, and that a link stays a link to
 /// the file it points at. What's being written is never readable by more than the file was.
 #[cfg(unix)]

@@ -260,7 +260,7 @@ fn a_kit_that_moves_keeps_what_passed() {
 fn an_edit_to_an_embedded_file_runs_only_the_tests_that_use_it() {
     let dir = kit_with_tests("kit_embed").unwrap();
     std::fs::write(dir.join("src/data.bin"), [1]).unwrap();
-    let uses = "DATA = embed_file(\"data.bin\")\n\ntest \"the data\":\n    assert DATA.len() == 1\n";
+    let uses = "DATA = embed_file(\"data.bin\")\n\ntest \"the data\":\n    assert len(DATA) == 1\n";
     std::fs::write(dir.join("src/with_data.fen"), uses).unwrap();
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "3 passed, 0 failed\n");
     assert_eq!(stdout(&test_kit(&dir).unwrap()), "3 passed, 0 failed (0 run, 3 unchanged)\n");
@@ -581,8 +581,8 @@ fn failing_property_tests_shrink_through_llvm() {
     let dir = scratch("llvm-shrinking").unwrap();
     let text = "test \"small ints\" for n: int:\n    assert n < 10\n\n\
                 test \"negative ints\" for n: int:\n    assert n > -7\n\n\
-                test \"short words\" for word: str:\n    assert word.len() < 3\n\n\
-                test \"short lists\" for items: list[int]:\n    assert items.len() < 2\n\n\
+                test \"short words\" for word: str:\n    assert len(word) < 3\n\n\
+                test \"short lists\" for items: list[int]:\n    assert len(items) < 2\n\n\
                 test \"flags\" for flag: bool:\n    assert not flag\n\n\
                 test \"two at once\" for a: int, b: int:\n    assert a + b < 50\n\n\
                 test \"passes\" for n: int:\n    assert n == n\n\n\

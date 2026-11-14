@@ -2464,7 +2464,8 @@ fn fix_moves_idmap_to_table() {
 // The migration's own tests, whose programs are in the old forms on purpose.
 // fennec-migrate: off
 /// Every failure form written before 2026-11-11 (`else` on a failure, `else as`, `lend x else:`
-/// and a def's last value as what it returns) is refused, and its rewrite is the fix: plain
+/// and a def's last value as what it returns) is refused, the two that no longer parse where
+/// they're read, and its rewrite is the fix: plain
 /// `fennec fix` and `fennec fix --migrate` both write `except` and `return` for them, a second run
 /// finds nothing more, and the program prints what it did.
 #[test]
@@ -2486,7 +2487,7 @@ fn fix_migrate_moves_a_program_to_the_failure_forms_and_it_runs_the_same() {
     let rewritten = std::fs::read_to_string(&program).unwrap();
     let after = fennec(&["run", &path], "").unwrap();
     assert!(!refused.status.success());
-    assert!(text(&refused.stderr).contains("`lend x except:` now"), "{}", text(&refused.stderr));
+    assert!(text(&refused.stderr).contains("is written `lend x except:`"), "{}", text(&refused.stderr));
     assert!(plain.status.success(), "{}", text(&plain.stderr));
     assert_eq!(plainly, migrated);
     assert!(fixed.status.success(), "{}", text(&fixed.stderr));
@@ -4247,7 +4248,7 @@ fn a_file_with_no_kit_embeds_only_from_its_own_folder() {
     std::os::unix::fs::symlink(dir.join("secret.txt"), inner.join("link.txt")).unwrap();
     let game = inner.join("game.fen");
     let checked = |path: &str| {
-        let source = format!("def main(stdout: Stdout):\n    stdout.print(embed_file({path:?}).len())\n");
+        let source = format!("def main(stdout: Stdout):\n    stdout.print(len(embed_file({path:?})))\n");
         std::fs::write(&game, source).unwrap();
         let output = fennec(&["check", &game.to_string_lossy()], "").unwrap();
         (output.status.success(), text(&output.stderr))
@@ -4282,7 +4283,7 @@ fn embed_folder_gives_a_folders_files_by_path() {
     std::fs::write(dir.join("outside.txt"), "above").unwrap();
     let game = dir.join("game/main.fen");
     let source = "SITE = embed_folder(\"site\")\n\ndef main(stdout: Stdout):\n    \
-        stdout.print(SITE.len(), SITE.keys())\n    stdout.print(SITE.get(\"css/app.css\"))\n    \
+        stdout.print(len(SITE), SITE.keys())\n    stdout.print(SITE.get(\"css/app.css\"))\n    \
         stdout.print(SITE.get(\"missing\") is None)\n    for path, data in SITE.items():\n        stdout.print(path, len(data))\n";
     std::fs::write(&game, source).unwrap();
     let ran = fennec(&["run", "--no-test", &game.to_string_lossy()], "").unwrap();
@@ -4295,7 +4296,7 @@ fn embed_folder_gives_a_folders_files_by_path() {
     let refused = |path: &str| {
         std::fs::write(
             &game,
-            format!("def main(stdout: Stdout):\n    stdout.print(embed_folder({path:?}).len())\n"),
+            format!("def main(stdout: Stdout):\n    stdout.print(len(embed_folder({path:?})))\n"),
         )
         .unwrap();
         let output = fennec(&["check", &game.to_string_lossy()], "").unwrap();

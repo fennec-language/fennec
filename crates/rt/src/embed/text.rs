@@ -292,43 +292,6 @@ pub extern "C" fn find_header(t0: u64, t1: u64, t2: u64, p0: u64, p1: u64, p2: u
     })
 }
 
-/// `fennec_str_same_at(text, start, word)`: whether `text`'s bytes from byte `start` on begin
-/// with all of `word`'s, for two headers. False when `start` is negative or `word` would run past
-/// `text`'s end. Compared eight bytes at a time, with neither copied, for matching a JSON field's
-/// name where it's found in what's read.
-pub extern "C" fn same_at(t0: u64, t1: u64, t2: u64, start: i64, w0: u64, w1: u64, w2: u64) -> i8 {
-    with(|state| {
-        let (text, word) = ([t0, t1, t2], [w0, w1, w2]);
-        i8::from(
-            usize::try_from(start)
-                .is_ok_and(|start| words_same_at(bytes_of(state, &text), start, bytes_of(state, &word))),
-        )
-    })
-}
-
-/// [`same_at`] on two texts' words, each with its length in bytes.
-fn words_same_at(
-    (text, text_length): (&[u64], usize),
-    start: usize,
-    (word, length): (&[u64], usize),
-) -> bool {
-    if start.checked_add(length).is_none_or(|end| end > text_length) {
-        return false;
-    }
-    let mut at = 0;
-    while at < length {
-        let left = length - at;
-        // The bytes past the word's end in its last eight aren't compared.
-        let mask = if left >= 8 { u64::MAX } else { (1_u64 << (left * 8)) - 1 };
-        let wanted = word.get(at / 8).copied().unwrap_or(0);
-        if (eight_bytes_at(text, start + at) ^ wanted) & mask != 0 {
-            return false;
-        }
-        at += 8;
-    }
-    true
-}
-
 /// The eight bytes of `words` from byte `at` on, as a word, zero past the words' end. Bytes are
 /// packed into words in order from each word's lowest byte, as a block and an inline header hold
 /// them.
@@ -373,25 +336,6 @@ pub extern "C" fn of(address: i64) -> Text {
         let words = inline(&bytes);
         release(state, at);
         Text { words }
-    })
-}
-
-/// `fennec_str_append_int(text, n)`: `text += str(n)`, taking over the owner `text` had and giving
-/// back the joined string's. The int's digits are written where they're worked out, on the stack,
-/// and go straight onto the end of `text`: in place when it has no other owner and its block has
-/// room, and otherwise into a new block with room to double, as any `+=` does. No text is made of
-/// the digits on the way.
-pub extern "C" fn append_int(text: i64, n: i64) -> i64 {
-    super::made_with("fennec_str_append_int", |state| {
-        let Text { words } = int_header(n);
-        let length = usize::from(tag(&words) & !INLINE).min(INLINE_BYTES);
-        // The header's words without its tag are the digits, packed as a block packs them.
-        let [first, second, last] = words;
-        let digits = [first, second, last & (u64::MAX >> 8)];
-        let added = digits.get(..length.div_ceil(8)).unwrap_or_default();
-        // An int's digits and sign are ASCII, a character each.
-        let chars = u64::try_from(length).unwrap_or(0);
-        super::strings::grow_by(state, text, added, length, chars).unwrap_or(text)
     })
 }
 
@@ -626,127 +570,6 @@ mod tests {
 
     fn live() -> usize {
         with(|state| state.heap.live())
-    }
-
-    /// `same_at` says what comparing the bytes one at a time says, for every start and every word
-    /// that's a piece of the text or one byte off from one: texts inline and in blocks, of 23 and
-    /// 24 bytes, of characters of one to four bytes, starts before, inside and past the end, and
-    /// words running past the end.
-    #[test]
-    fn a_word_is_the_same_at_a_place_exactly_when_its_bytes_are() {
-        begin();
-        let texts = [
-            "",
-            "a",
-            "\"user\": 1",
-            "aaaaaaaaaaaaaaaaaaaaaaa",
-            "bbbbbbbbbbbbbbbbbbbbbbbb",
-            "{\"user\": 12, \"item\": \"arrow-12\", \"quantity\": 13}",
-            "caf\u{e9} \u{65e5}\u{672c} \u{1f98a} long enough to be held in a block",
-        ];
-        for text in texts {
-            let held = header(text);
-            let bytes = text.as_bytes();
-            let mut words: Vec<Vec<u8>> = Vec::new();
-            for from in 0..=bytes.len() {
-                for to in from..=bytes.len().min(from + 30) {
-                    let piece = bytes.get(from..to).unwrap_or_default().to_vec();
-                    let mut changed = piece.clone();
-                    if let Some(last) = changed.last_mut() {
-                        *last ^= 1;
-                    }
-                    words.push(piece);
-                    words.push(changed);
-                }
-            }
-            words.push(b"past the end of every text here, and longer".to_vec());
-            for word in &words {
-                let Ok(word_text) = std::str::from_utf8(word) else { continue };
-                let word_held = header(word_text);
-                for start in -1..=i64::try_from(bytes.len()).unwrap() + 1 {
-                    let wanted = usize::try_from(start)
-                        .ok()
-                        .and_then(|start| bytes.get(start..start + word.len()))
-                        .is_some_and(|there| there == word.as_slice());
-                    let [t0, t1, t2] = held;
-                    let [w0, w1, w2] = word_held;
-                    let said = super::same_at(t0, t1, t2, start, w0, w1, w2) == 1;
-                    assert_eq!(said, wanted, "{word_text:?} at {start} in {text:?}");
-                }
-            }
-        }
-        finish();
-    }
-
-    /// An int added onto a text gives the text with the int's digits after it: for 0, negative
-    /// numbers and both ends of what an int holds, onto an empty text, one with room, one at
-    /// exactly its room, and one past it. A text with one owner and room grows where it is, and one
-    /// that's shared is left as it was, with the sum a text of its own.
-    #[test]
-    fn an_int_added_onto_a_text_is_its_digits_after_it() {
-        begin();
-        let text_at = |address: i64| {
-            with(|state| Some(heap::block_text(state.heap.block(address.cast_unsigned())?))).unwrap()
-        };
-        let room_of =
-            |address: i64| with(|state| state.heap.block(address.cast_unsigned())?.get(4).copied()).unwrap();
-        let numbers = [0, 7, -7, 10, -1_000_000, 123_456_789, i64::MAX, i64::MIN];
-        // Texts of 0, 5, 8, 16, 30 and 64 bytes, the last two of characters past ASCII too.
-        let starts = [
-            "",
-            "user=",
-            "eightlen",
-            "sixteen bytes it",
-            "caf\u{e9} \u{65e5}\u{672c} of thirty bytes!!",
-            &"x".repeat(64),
-        ];
-        for start in starts {
-            for n in numbers {
-                let made = with(|state| heap::text_address(state, start));
-                let joined = super::append_int(made, n);
-                assert_eq!(text_at(joined), format!("{start}{n}"), "{start:?} and {n}");
-                let chars = with(|state| state.heap.block(joined.cast_unsigned())?.get(3).copied()).unwrap();
-                assert_eq!(chars, u64::try_from(format!("{start}{n}").chars().count()).unwrap());
-                // Again and again onto what it gave: past its room, then within the doubled room.
-                let mut grown = joined;
-                let mut wanted = format!("{start}{n}");
-                for _ in 0..6 {
-                    let before = (grown, room_of(grown), wanted.len());
-                    grown = super::append_int(grown, n);
-                    wanted.push_str(&n.to_string());
-                    assert_eq!(text_at(grown), wanted);
-                    // With room for the digits it grows where it is, and without, it moves.
-                    let fitted = u64::try_from(wanted.len()).unwrap() <= before.1;
-                    assert_eq!(
-                        grown == before.0,
-                        fitted,
-                        "{wanted:?} from {} bytes in {}",
-                        before.2,
-                        before.1
-                    );
-                }
-                heap::free_text(grown);
-            }
-        }
-        // A text filled to exactly its room, then one digit more.
-        let exact = with(|state| heap::text_address(state, "12345678"));
-        assert_eq!(room_of(exact), 8);
-        let more = super::append_int(exact, 9);
-        assert_eq!(text_at(more), "123456789");
-        assert_ne!(more, exact);
-        heap::free_text(more);
-        // A shared text is left as it was: the sum is a text of its own, and the other owner's
-        // still reads as before.
-        let shared = with(|state| heap::text_address(state, "shared text with room to spare? "));
-        with(|state| heap::retain(state, shared.cast_unsigned()));
-        let sum = super::append_int(shared, -42);
-        assert_ne!(sum, shared);
-        assert_eq!(text_at(shared), "shared text with room to spare? ");
-        assert_eq!(text_at(sum), "shared text with room to spare? -42");
-        heap::free_text(sum);
-        heap::free_text(shared);
-        assert_eq!(live(), 0);
-        finish();
     }
 
     /// An int's text, as a header or as a string's block, is what Rust writes for it, at both ends

@@ -2593,7 +2593,7 @@ def f(n: int) -> int:
             if n == 1:
                 break
             if n == 2:
-                return door.name.len()
+                return len(door.name)
     with opened(\"b\") as other:
         pass
     return 0

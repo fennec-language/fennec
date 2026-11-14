@@ -284,7 +284,7 @@ const CHECK_CASES: &[(&str, &str)] = &[
     (
         "call_type_arguments",
         "from std import json\n\ndef read(text: str) -> int:\n    found = json.loads[Draft](text) else 0\n    \
-         made = list[Tokn]()\n    if len(made) == 0 and parsed[Mising](text):\n        return 1\n    return [x for x in f[Wrong](1)].len() + found\n",
+         made = list[Tokn]()\n    if len(made) == 0 and parsed[Mising](text):\n        return 1\n    return len([x for x in f[Wrong](1)]) + found\n",
     ),
     (
         "unknown_types",

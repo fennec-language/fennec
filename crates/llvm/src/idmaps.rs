@@ -411,9 +411,13 @@ impl Emit<'_, '_, '_> {
                     self.retain_inline(&held, &value);
                 }
                 let place = self.slot(*map);
-                let block = self.alone_at(&place, "fennec_unshare");
-                let (generations_place, generations) = self.part(&block, parts.generations, true);
-                let (items_place, items) = self.part(&block, parts.items, true);
+                // Where a lock's log is asked first, neither list is made alone here, which would
+                // copy one the log marked: a slot used again is asked for by itself, and an item
+                // more on the end asks as any list's does.
+                let asks = self.asks_the_log();
+                let block = self.table_to_change(&place);
+                let (generations_place, generations) = self.part(&block, parts.generations, !asks);
+                let (items_place, items) = self.part(&block, parts.items, !asks);
                 let length = self.list_length(&generations);
                 // The first removed slot, if there is one, from where there could be one.
                 let fields = self.offset(&block, FIELDS_OFFSET);
@@ -456,9 +460,18 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store i64 {above}, ptr {free_at}"));
                 let again = self.temp();
                 self.line(&format!("{again} = sub i64 0, {stored}"));
+                let (generation_at, items) = if asks {
+                    let generations = self.list_for_item(&block, parts.generations, &at);
+                    let items = self.list_for_item(&block, parts.items, &at);
+                    (self.item_address(&generations, "i64", &at), items)
+                } else {
+                    (generation_at, items)
+                };
                 self.line(&format!("store i64 {again}, ptr {generation_at}{ITEM_ACCESS}"));
                 let item_at = self.item_address(&items, &memory, &at);
                 self.store_field(&held, &value, &item_at, ITEM_ACCESS);
+                // Asking for the slot's lists may have started other blocks.
+                let reused = self.current.clone();
                 self.line(&format!("br label %{done}"));
                 self.start_block(&append);
                 let past = self.temp();
@@ -470,8 +483,8 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("br label %{done}"));
                 self.start_block(&done);
                 let (slot, generation) = (self.temp(), self.temp());
-                self.line(&format!("{slot} = phi i64 [ {at}, %{reuse} ], [ {length}, %{appended} ]"));
-                self.line(&format!("{generation} = phi i64 [ {again}, %{reuse} ], [ 0, %{appended} ]"));
+                self.line(&format!("{slot} = phi i64 [ {at}, %{reused} ], [ {length}, %{appended} ]"));
+                self.line(&format!("{generation} = phi i64 [ {again}, %{reused} ], [ 0, %{appended} ]"));
                 let fields = self.offset(&block, FIELDS_OFFSET);
                 let live_at = self.offset(&fields, parts.live);
                 let (live, one_more) = (self.temp(), self.temp());

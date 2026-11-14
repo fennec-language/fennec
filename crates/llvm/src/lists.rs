@@ -482,7 +482,9 @@ impl Emit<'_, '_, '_> {
         (root, list_path, index): (LocalId, &[String], &Operand),
         field: &str,
     ) -> Result<(), String> {
-        let list = self.alone_list(root, list_path)?;
+        let index_operand = index;
+        let (index, _) = self.operand(index)?;
+        let list = self.list_for_item_at(root, list_path, &index)?;
         let item_kind = self.place_kind(root, list_path)?;
         let Kind::List(item) = item_kind else { return Err("an item of something else".to_owned()) };
         let held = self.item_kind(item)?;
@@ -491,8 +493,6 @@ impl Emit<'_, '_, '_> {
         }
         // The item was read at this index just before, so it's inside the list, counting from
         // the end if it's negative.
-        let index_operand = index;
-        let (index, _) = self.operand(index)?;
         let length = self.list_length(&list);
         let (negative, from_end, position) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{negative} = icmp slt i64 {index}, 0"));
@@ -1717,13 +1717,16 @@ impl Emit<'_, '_, '_> {
             .item_home(dest)
             .filter(|(_, path)| held.counted() || holds_counted || !path.is_empty() || over_loop)
             .cloned();
-        let list = match &taken {
-            Some((home, path)) if over_loop && path.is_empty() => self.unshared(*home),
-            Some((home, path)) => self.alone_list(*home, path)?,
-            None => list,
-        };
         let index_operand = index;
         let (index, _) = self.operand(index)?;
+        let handed = |emit: &Self, home: LocalId| emit.asks_the_log() && emit.is_mut_param(home);
+        let list = match &taken {
+            Some((home, path)) if over_loop && path.is_empty() && !handed(self, *home) => {
+                self.unshared(*home)
+            }
+            Some((home, path)) => self.list_for_item_at(*home, path, &index)?,
+            None => list,
+        };
         let position = if inside {
             let proof =
                 if guarded { "index inside its list, by the guard before" } else { "index inside its list" };
@@ -1867,6 +1870,18 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The list at a field path from a local, with no other owner, nor anything it's inside.
+    /// The list at a field path from a local, for its item at `index` to be changed: with no
+    /// other owner, as [`Self::alone_list`] gives it, or, in a function that asks a lock's log
+    /// first, one the log marked where it is, the item noted as it was. Making a marked list alone
+    /// copies every item of it for the one that changes.
+    fn list_for_item_at(&mut self, object: LocalId, path: &[String], index: &str) -> Result<String, String> {
+        if !self.asks_the_log() || (path.is_empty() && !self.is_mut_param(object)) {
+            return self.alone_list(object, path);
+        }
+        let place = if path.is_empty() { self.slot(object) } else { self.list_place(object, path)? };
+        Ok(self.item_to_set(&place, index))
+    }
+
     fn alone_list(&mut self, object: LocalId, path: &[String]) -> Result<String, String> {
         if path.is_empty() {
             return Ok(self.check_alone(object));

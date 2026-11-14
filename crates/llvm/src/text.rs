@@ -361,7 +361,7 @@ impl Emit<'_, '_, '_> {
         let happened =
             if kind == Kind::Str && self.headers() { self.owned_text_block(&value) } else { value };
         self.declare("declare void @fennec_assert_said(ptr, i64, i64) #1");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         self.line(&format!("call void @fennec_assert_said(ptr {happened}, i64 {from}, i64 {to})"));
         self.leave_if_failed();
         Ok(())
@@ -372,7 +372,7 @@ impl Emit<'_, '_, '_> {
             return Ok(());
         };
         self.declare("declare void @fennec_assert_sides(ptr, ptr, i64, i64) #1");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         self.line(&format!("call void @fennec_assert_sides(ptr {left}, ptr {right}, i64 {from}, i64 {to})"));
         self.leave_if_failed();
         Ok(())
@@ -632,7 +632,7 @@ impl Emit<'_, '_, '_> {
             return Ok(temp);
         };
         let spec = self.literal(spec);
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         match kind {
             Kind::Int => {
                 self.declare("declare ptr @fennec_int_spec_text(i64, ptr, i64, i64) nounwind");
@@ -1256,7 +1256,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("br label %{joined}"));
         self.start_block(&runtime_path);
         self.declare("declare ptr @fennec_str_index(ptr, i64, i64, i64) nounwind");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         let counted = self.temp();
         self.line(&format!(
             "{counted} = call ptr @fennec_str_index(ptr {text}, i64 {index}, i64 {from}, i64 {to})"
@@ -1481,7 +1481,7 @@ tagged:
             other => return Err(format!("it matches on a {other:?}, which this backend doesn't take yet")),
         }
         self.declare("declare void @fennec_no_match(i64, i64, i64) #1");
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         self.line(&format!("call void @fennec_no_match(i64 {handle}, i64 {from}, i64 {to})"));
         // A match the checker saw covers everything, so this is never a check of the program's.
         self.next_check(span, None);
@@ -1574,7 +1574,7 @@ tagged:
                 self.line(&format!("br label %{joined}"));
                 self.start_block(&slow);
                 self.declare("declare i64 @fennec_str_code(ptr, i64, i64) nounwind");
-                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let (from, to) = self.place_in_source(span);
                 let counted = self.temp();
                 self.line(&format!(
                     "{counted} = call i64 @fennec_str_code(ptr {text}, i64 {from}, i64 {to})"
@@ -1686,7 +1686,7 @@ tagged:
                 self.declare(
                     "declare ptr @fennec_str_split_header(i64, i64, i64, i64, i64, i64, i64, i64) nounwind",
                 );
-                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let (from, to) = self.place_in_source(span);
                 let parts = self.temp();
                 self.line(&format!(
                     "{parts} = call ptr @fennec_str_split_header(i64 {t0}, i64 {t1}, i64 {t2}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {from}, i64 {to})"
@@ -1701,7 +1701,7 @@ tagged:
                     None => "null".to_owned(),
                 };
                 self.declare("declare ptr @fennec_str_split(ptr, ptr, i64, i64) nounwind");
-                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let (from, to) = self.place_in_source(span);
                 let parts = self.temp();
                 self.line(&format!(
                     "{parts} = call ptr @fennec_str_split(ptr {text}, ptr {separator}, i64 {from}, i64 {to})"

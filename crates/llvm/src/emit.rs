@@ -1481,6 +1481,21 @@ impl Emit<'_, '_, '_> {
         self.fail_if(&low, TOO_DEEP, span);
     }
 
+    /// Where a span is in the source, for a runtime call that says where it failed: its two ends,
+    /// each worked out from the symbol for where this function starts. The function's text holds
+    /// only how far into the function the span is, so a line added anywhere above the function
+    /// leaves its text as it was, and it isn't compiled again. The start is the same for every
+    /// call, which LLVM sees, so it's loaded once.
+    pub(crate) fn place_in_source(&mut self, span: Span) -> (String, String) {
+        let symbol = self.start_symbol.clone();
+        let (from, to) = (span.start.saturating_sub(self.start), span.end.saturating_sub(self.start));
+        let (start, first, last) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{start} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
+        self.line(&format!("{first} = add i64 {start}, {from}"));
+        self.line(&format!("{last} = add i64 {start}, {to}"));
+        (first, last)
+    }
+
     /// Where a span is, from the symbol for where this function starts, for failing with.
     pub(crate) fn span_values(&mut self, fail: &str, span: Span) -> (String, String) {
         let symbol = self.start_symbol.clone();
@@ -2347,7 +2362,7 @@ impl Emit<'_, '_, '_> {
             }
             BinOp::Pow => {
                 self.declare("declare i64 @fennec_int_power(i64, i64, i64, i64) nounwind");
-                let (from, to) = (i64::from(span.start), i64::from(span.end));
+                let (from, to) = self.place_in_source(span);
                 let temp = self.temp();
                 self.line(&format!(
                     "{temp} = call i64 @fennec_int_power(i64 {a}, i64 {b}, i64 {from}, i64 {to})"

@@ -823,7 +823,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
         self.line(&format!("br i1 {missing}, label %{absent}, label %{found}, !prof !0"));
         self.start_block(&absent);
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         if key_word == Word::Text {
             self.declare("declare void @fennec_dict_missing_header(ptr, i64, i64, i64, i8, i64, i64) #1");
             let [a, b, c] = [0, 1, 2].map(|at| self.header_word(&key, at));
@@ -1598,7 +1598,7 @@ found:
         let key = self.key_value(key, key_word)?;
         let place = self.slot(set);
         let (held, changed) = (self.temp(), self.temp());
-        let (from, to, must) = (i64::from(span.start), i64::from(span.end), i8::from(must));
+        let ((from, to), must) = (self.place_in_source(span), i8::from(must));
         self.line(&format!("{held} = load ptr, ptr {place}"));
         if key_word == Word::Text {
             // The key's owner stays here.
@@ -1635,7 +1635,7 @@ found:
         self.declare("declare i64 @fennec_dict_popped() nounwind");
         let place = self.slot(*dict);
         let (held, changed, word) = (self.temp(), self.temp(), self.temp());
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         self.line(&format!("{held} = load ptr, ptr {place}"));
         if key_word == Word::Text {
             // The key's owner stays here.

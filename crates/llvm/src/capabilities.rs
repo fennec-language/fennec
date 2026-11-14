@@ -91,7 +91,7 @@ impl Emit<'_, '_, '_> {
     /// `args[index]`, as a new string, which leaves the function if it's out of range.
     pub(crate) fn args_item(&mut self, dest: LocalId, index: &Operand, span: Span) -> Result<(), String> {
         let (index, _) = self.operand(index)?;
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         self.declare("declare ptr @fennec_args_item(i64, i64, i64) nounwind");
         let block = self.temp();
         self.line(&format!("{block} = call ptr @fennec_args_item(i64 {index}, i64 {from}, i64 {to})"));
@@ -197,7 +197,7 @@ impl Emit<'_, '_, '_> {
         rest: &[Operand],
         span: Span,
     ) -> Result<(), String> {
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         let (mark, crossed) = self.cross_arguments(rest)?;
         let named = self.literal(method);
         self.declare(&format!("declare i64 @{runtime}({word_type}, ptr, i64, i64, i64) nounwind"));
@@ -218,7 +218,7 @@ impl Emit<'_, '_, '_> {
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         let (mark, crossed) = self.cross_arguments(args)?;
         let named = self.literal(name);
         self.declare("declare i64 @fennec_crypto_call(ptr, i64, i64, i64) nounwind");
@@ -257,7 +257,7 @@ impl Emit<'_, '_, '_> {
         (mark, crossed): (&str, Vec<String>),
         span: Span,
     ) -> Result<(), String> {
-        let (from, to) = (i64::from(span.start), i64::from(span.end));
+        let (from, to) = self.place_in_source(span);
         for block in crossed {
             self.release(&block);
         }

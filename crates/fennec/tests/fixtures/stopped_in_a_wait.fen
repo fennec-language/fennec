@@ -1,0 +1,73 @@
+# A task stopped while it waits in a call to the runtime lets go of what the call was given: here
+# a read with `timeout=`, whose `Duration` is a block made for the call. The task is stopped by
+# its launcher leaving the block that launched it through a failure. It's done from `main` and
+# from inside a task, where the stopped task's launcher is a task too.
+#
+# And a call that fails by itself does the same: `remove` of an item a list doesn't have stops
+# its task, and the block made to pass the item goes all the same.
+from std.concurrent import Channel, Closed, Crashed, channel
+from std.net import NetError
+
+error Refused:
+    why: str
+
+# Waits for bytes that never come, on a connection to itself, saying first that it's about to.
+def waits(net: Net, ready: Channel[int]) -> int fails NetError | Closed:
+    with net.listen(0)? as server:
+        with net.connect("127.0.0.1", server.port)? as client:
+            ready.send(1)?
+            data = client.read(65536, timeout=5000ms)?
+            return len(data)
+
+def waiting(net: Net, ready: Channel[int]) -> int:
+    heard = waits(net, ready) except why:
+        return len(f"{why}")
+    return heard
+
+# Launches the wait, and once it has begun leaves the block by a failure, which stops the task.
+def stopped(net: Net) fails Refused | Crashed | Closed:
+    with channel[int](size=1) as ready:
+        with launch(() => waiting(net, ready=ready))?:
+            _ = ready.receive() else 0
+            fail Refused(why="leaving this way stops the task")
+
+def once(net: Net) -> str:
+    stopped(net) except why:
+        return f"{why}"
+    return "it wasn't stopped"
+
+def inside(net: Net, out: Channel[str]):
+    out.send(once(net)) except Closed():
+        return
+    return
+
+struct Spot:
+    at: int
+    name: str
+
+def takes_out() -> int:
+    mut spots = [Spot(at=1, name="a name long enough for a block of its own")]
+    spots.remove(Spot(at=2, name="another name long enough for a block"))
+    return len(spots)
+
+def taking(out: Channel[int]):
+    out.send(takes_out()) except Closed():
+        return
+    return
+
+def one_taking() fails Crashed:
+    with channel[int](size=1) as out:
+        with launch(() => taking(out=out))?:
+            pass
+    return
+
+def main(stdout: Stdout, net: Net) fails Closed | Crashed:
+    stdout.print(once(net))
+    with channel[str](size=1) as out:
+        with launch(() => inside(net, out=out))?:
+            stdout.print(out.receive() else "nothing")
+    mut crashed = 0
+    one_taking() except Crashed():
+        crashed += 1
+    stdout.print(crashed)
+    return

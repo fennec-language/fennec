@@ -1,0 +1,76 @@
+# What `std.crypto` is given can come from outside: a token to check, a message to sign, a file
+# to hash. `equal` and `==` on secrets compare every byte, so how long they take says nothing of
+# where two values differ; HMAC takes a key of any length, hashing one longer than its block as
+# RFC 2104 says; and a hash is the same however its input is cut into chunks.
+from std import crypto
+from std.crypto import Secret
+
+test "equal looks at every byte, and two of different lengths are never equal"():
+    assert crypto.equal("token", "token")
+    for other in ["tokeN", "Token", "toke", "tokens", "", "token\x00"]:
+        assert not crypto.equal("token", other)
+    assert crypto.equal("", "") and crypto.equal(bytes([0, 255]), bytes([0, 255]))
+    assert not crypto.equal(bytes([0, 255]), bytes([0, 254]))
+    # Text and its bytes are the same bytes.
+    assert crypto.equal("héllo", "héllo".encode())
+
+test "secrets compare what they hold, the same way"():
+    token = Secret.of("s3cret")
+    assert token == Secret.of("s3cret")
+    for other in ["s3creT", "s3cre", "s3crets", ""]:
+        assert not (token == Secret.of(other))
+    assert Secret.of(bytes([1, 2])) == Secret.of(bytes([1, 2]))
+
+test "HMAC takes a key of any length, hashing one longer than its block"():
+    message = "the message"
+    # SHA-256's block is 64 bytes: a longer key is used as its hash, so the two sign alike.
+    long = "k" * 65
+    assert (
+        crypto.hmac_sha256(long, message)
+        == crypto.hmac_sha256(bytes_of_hex(crypto.sha256(long)), message)
+    )
+    assert crypto.hmac_sha256("k" * 64, message) != crypto.hmac_sha256("k" * 65, message)
+    # A key padded with NULs up to the block is the same key, as RFC 2104 has it.
+    assert crypto.hmac_sha256("key", message) == crypto.hmac_sha256("key\x00\x00", message)
+    assert crypto.hmac_sha256("", message) == crypto.hmac_sha256("\x00" * 64, message)
+    # RFC 4231's case 6.
+    assert (
+        crypto.hmac_sha256(
+            bytes([170 for _ in range(131)]),
+            "Test Using Larger Than Block-Size Key - Hash Key First",
+        )
+        == "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+    )
+
+test "a hash is the same however its input is cut"():
+    whole = "the quick brown fox, ünïcödé, and \x00 a NUL " * 50
+    assert crypto.blake3([whole]) == crypto.blake3(whole)
+    assert crypto.sha256(["", whole, ""]) == crypto.sha256(whole)
+    pieces = [whole[at:at + 7] for at in range(0, len(whole), 7)]
+    assert (
+        crypto.blake3(pieces) == crypto.blake3(whole)
+        and crypto.sha256(pieces) == crypto.sha256(whole)
+    )
+    assert crypto.sha256(list[str]()) == crypto.sha256("")
+    assert crypto.sha256("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+test "a derived key is 64 hex digits, and keys BLAKE3 in either case"():
+    key = crypto.derive_key("den 2026-11 sessions", "the secret")
+    assert len(key) == 64
+    assert crypto.keyed_blake3(key, "message") == crypto.keyed_blake3(key.upper(), "message")
+    assert crypto.keyed_blake3(key, "message") != crypto.blake3("message")
+    assert crypto.derive_key("", "the secret") != crypto.derive_key(" ", "the secret")
+
+## The bytes that hex text stands for.
+def bytes_of_hex(text: str) -> bytes:
+    digits = "0123456789abcdef"
+    return bytes([
+        (digits.find(text[at]) else 0) * 16 + (digits.find(text[at + 1]) else 0) for at in range(
+            0,
+            len(text),
+            2,
+        )
+    ])
+
+def main(stdout: Stdout):
+    stdout.print(crypto.equal("token", "token"))

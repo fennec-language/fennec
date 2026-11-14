@@ -1,0 +1,73 @@
+# A pattern can come from outside, like a search box's, and so can the text it runs over.
+# Nothing backtracks, so the patterns that blow a backtracking engine up, like `(a+)+$`, take
+# time that grows with the text alone. What a pattern costs for each character of the text is
+# its size, so a pattern too big is refused before it's built, saying how big it is and the most
+# allowed; so is one nested too deep or with a repeat over 1000; and a pattern that isn't one says
+# what's wrong.
+from std.re import Regex, is_regex
+
+## Why `pattern` can't be a `Regex`, or "built".
+def refused(pattern: str) -> str:
+    _ = Regex(pattern=pattern) except why:
+        return why.message
+    return "built"
+
+test "a pattern too big is refused before it's built, saying how big"():
+    assert (
+        refused("(a{1000}){1000}")
+        == (
+            "this pattern isn't valid: it compiles to 1,002,003 steps, and the most a pattern may is 10,000, since each character of a text costs that many (at character 0)"
+        )
+    )
+    # Too big to build at all is still counted, without building it.
+    assert refused("(?:(?:(?:a?){1000}){1000}){1000}").startswith(
+        "this pattern isn't valid: it compiles to 2,000,000,003 steps",
+    )
+    assert refused("(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){3}") == "built"
+    assert (
+        refused("(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){999}(?:a?){4}b").find(
+            "it compiles to 10,002 steps",
+        )
+        is not None
+    )
+
+test "a repeat over 1000, or groups nested over 250 deep, are refused"():
+    assert refused("a{1001}").find("repeats are limited to 1000") is not None
+    assert refused("a{2,1}").find("in `{m,n}`, m can't be bigger than n") is not None
+    assert refused("(" * 251 + "a" + ")" * 251).find("groups nest more than 250 deep") is not None
+    assert not is_regex("(" * 100_000)
+
+test "patterns that blow a backtracker up take time that grows with the text alone"():
+    text = "a" * 20_000 + "!"
+    for pattern in ["(a+)+$", "(a*)*b", "(a|a)*b", "(a|aa)*c", "(?:a?){30}a{30}$"]:
+        assert Regex(pattern=pattern)?.search(text) is None
+    assert Regex(pattern="(a+)+!").search(text) is not None
+
+test "the costliest pattern allowed runs through a long text and finishes"():
+    worst = Regex(pattern="(?:(?:a?){1000}){4}b")
+    assert worst.search("a" * 5_000) is None
+    assert worst.search("a" * 5_000 + "b") is not None
+
+test "a pattern that isn't one says what's wrong"():
+    for pattern, said in [
+        ("(ab", "this `(` is never closed"),
+        ("ab)", "this `)` has no `(` before it"),
+        ("[ab", "this `[` is never closed"),
+        ("*a", "there's nothing here to repeat"),
+        ("a**", "this repeats a repeat"),
+        ("[z-a]", "the range `z-a` is backwards"),
+        ("a\\", "escapes nothing"),
+        ("(?=a)", "the only group extension so far is `(?:...)`"),
+    ]:
+        assert refused(pattern).find(said) is not None
+
+test "matches over odd text are where the text's characters are"():
+    found = Regex(pattern="é+").search("café éé")
+    assert found is not None and found.start == 3 and found.end == 4
+    # An empty match moves on a character, so finding all of them ends.
+    assert len(Regex(pattern="x*").find_all("ab")) == 3
+    assert len(Regex(pattern="").find_all("a" * 1_000)) == 1_001
+    assert Regex(pattern="\x00").search("a\x00b") is not None
+
+def main(stdout: Stdout):
+    stdout.print(refused("(a{1000}){1000}"))

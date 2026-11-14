@@ -721,7 +721,6 @@ impl Emit<'_, '_, '_> {
         span: Span,
     ) -> Result<(), String> {
         let (list, _, held) = self.list_operand(list)?;
-        let keys = key.map(|key| self.keys_of(&list, &held, key, span)).transpose()?;
         let length = self.list_length(&list);
         let (empty, stop, go) = (self.temp(), self.label("empty"), self.label("some"));
         self.line(&format!("{empty} = icmp eq i64 {length}, 0"));
@@ -730,6 +729,12 @@ impl Emit<'_, '_, '_> {
         let message = self.literal(&format!("`{name}` of an empty list"));
         self.stop_with(&message, span);
         self.start_block(&go);
+        // The keys are made once the list is known to have items: an empty one stops above with
+        // none made. A comparison that fails leaves the function, and they go on its way out.
+        let keys = key.map(|key| self.keys_of(&list, &held, key, span)).transpose()?;
+        if let Some((keys, _)) = &keys {
+            self.made_for_body.push(vec![(keys.clone(), "true".to_owned())]);
+        }
         let (scores, score_kind) = keys.clone().unwrap_or_else(|| (list.clone(), held.clone()));
         let best_slot = self.counter();
         let (at, end) = self.loop_begin(&length);
@@ -743,6 +748,7 @@ impl Emit<'_, '_, '_> {
         self.line(&format!("store i64 {picked}, ptr {best_slot}"));
         self.loop_end(&end);
         if let Some((keys, _)) = keys {
+            self.made_for_body.pop();
             self.release(&keys);
         }
         let winner = self.temp();
@@ -977,8 +983,10 @@ impl Emit<'_, '_, '_> {
         self.declare("declare void @fennec_list_remove(ptr, i64, i64, i64) nounwind");
         let (from, to) = (i64::from(span.start), i64::from(span.end));
         self.line(&format!("call void @fennec_list_remove(ptr {owned}, i64 {word}, i64 {from}, i64 {to})"));
-        self.leave_if_failed();
+        // What was made to pass the item goes before the failure is looked at: an item that isn't
+        // there leaves here, and the runtime only compared with it.
         self.let_go_of_passed(passed);
+        self.leave_if_failed();
         Ok(())
     }
 

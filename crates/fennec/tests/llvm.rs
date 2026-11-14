@@ -9446,6 +9446,86 @@ def main(stdout: Stdout):
     )
 }
 
+/// A call that fails lets go of what was made for it. A block made for one call, which no local
+/// holds, was let go of only once the call's result was read, so a call that failed and left the
+/// function left the block for good. The runtime lane's sweep found these two with an audited
+/// build: `text[i]` past the end of a short string, which left the block made for the text, and
+/// `max` with `key=` of an empty list, which left the list of keys. Each stops a task whose
+/// launcher carries on, and the program ends with nothing left.
+#[test]
+fn a_call_that_fails_lets_go_of_what_was_made_for_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for (name, source) in [("failed_index", FAILED_INDEX), ("failed_max_key", FAILED_MAX_KEY)] {
+        prints_in_both_builds(
+            name, source, "1
+",
+        )?;
+        assert!(counts_of(&format!("{name}_counts"), source)?.ends_with(" live 0"), "{name}");
+    }
+    Ok(())
+}
+
+const FAILED_INDEX: &str = r#"# `text[i]` past the end of a short string stops its task.
+def does(which: int) -> int:
+    text = f"ab{which}"
+    return len(text[which + 7])
+
+from std.concurrent import Channel, Closed, Crashed, channel
+
+def taking(out: Channel[int], which: int):
+    out.send(does(which)) except Closed():
+        return
+    return
+
+def one(which: int) fails Crashed:
+    with channel[int](size=1) as out:
+        with launch(() => taking(out=out, which=which))?:
+            pass
+    return
+
+def main(stdout: Stdout):
+    mut crashed = 0
+    for which in range(1):
+        one(which) except Crashed():
+            crashed += 1
+    stdout.print(crashed)
+    return
+"#;
+
+const FAILED_MAX_KEY: &str = r#"# `max` with `key=` of an empty list stops its task.
+def size(text: str) -> int:
+    return len(text)
+
+def does(which: int) -> int:
+    mut names: list[str] = []
+    if which > 5:
+        names.append("never")
+    return len(max(names, key=size))
+
+from std.concurrent import Channel, Closed, Crashed, channel
+
+def taking(out: Channel[int], which: int):
+    out.send(does(which)) except Closed():
+        return
+    return
+
+def one(which: int) fails Crashed:
+    with channel[int](size=1) as out:
+        with launch(() => taking(out=out, which=which))?:
+            pass
+    return
+
+def main(stdout: Stdout):
+    mut crashed = 0
+    for which in range(1):
+        one(which) except Crashed():
+            crashed += 1
+    stdout.print(crashed)
+    return
+"#;
+
 /// A `pop` of a key that isn't there and a `remove` of an item that isn't there fail and change
 /// nothing. Generated code stored the failed `pop`'s result, nothing, over the dict before it
 /// looked at whether the call had failed, and the runtime had already copied a dict or set with
@@ -11439,6 +11519,34 @@ fn a_key_given_to_a_dict_or_a_set_is_let_go_of_whatever_comes_of_it() -> std::io
     let program = dir.join("keys_let_go.fen");
     std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keys_let_go.fen"), &program)?;
     prints_with_nothing_left(&dir, &program, "3065\n3065\n4400\n8\n", &["1", "4"])
+}
+
+/// A task stopped while it waits in a call to the runtime leaves nothing behind. The call here is a
+/// read with `timeout=`, whose `Duration` is a block made for the call: native code holds one
+/// owner of it and the runtime's temporaries another. The task is stopped by its launcher leaving
+/// through a failure, from `main` and from inside a task.
+///
+/// Both owners used to be left. Native code let go of what it made for a call's arguments only
+/// after it had looked at whether the call failed, and a stopped task leaves there. And a task's
+/// leftover temporaries were dropped after its blocks were handed over, when letting go of what
+/// they held reached nothing. A pool's reset of a Postgres connection, cut short as its pool
+/// ended, left the `Duration` this way.
+///
+/// `list.remove` had the same order: an item that isn't there stops its task, which left the block
+/// made to pass the item. It's taken out in a task here, whose crash its launcher handles.
+#[test]
+fn a_task_stopped_in_a_call_to_the_runtime_lets_go_of_what_the_call_was_given() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stopped_in_a_wait")?;
+    let program = dir.join("stopped_in_a_wait.fen");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stopped_in_a_wait.fen"),
+        &program,
+    )?;
+    let stopped = "Refused(why=\"leaving this way stops the task\")\n";
+    prints_with_nothing_left(&dir, &program, &format!("{}1\n", stopped.repeat(2)), &["1", "4"])
 }
 
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what
@@ -16387,6 +16495,84 @@ Pair(left=1, right="one")
 Holder(item=9)
 Holder(item=3) Holder(item="x") Holder(item=3) Holder(item=2.5) Holder(item="x")
 [1, 2] [[1, 2]] Holder(item=[1, 2])
+"#;
+
+/// A generic enum is shown the same way, by the name it's written with: `Choice.Picked(value=7)`,
+/// never `Choice[int].Picked(value=7)`. Its cases hold an int, a string, a float and another
+/// generic enum, one has two type parameters, and one case holds nothing; alone, inside a generic
+/// struct, a list, a dict, a tuple and an optional; through `print`, an f-string, `str()` and a
+/// failed `assert`.
+#[test]
+fn a_generic_enum_is_shown_without_its_type_arguments() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("generic_enum_shown", GENERIC_ENUM_SHOWN, GENERIC_ENUM_SHOWN_PRINTS)?;
+    let dir = folder("generic_enum_assert")?;
+    let (program, executable) = (dir.join("generic_enum_assert.fen"), dir.join("generic_enum_assert"));
+    std::fs::write(&program, GENERIC_ENUM_ASSERT)?;
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!((printed.as_str(), code), ("", Some(1)), "{said}");
+    assert!(
+        said.contains("the left side is Choice.Picked(value=3) and the right side is Choice.Picked(value=4)"),
+        "{said}"
+    );
+    Ok(())
+}
+
+const GENERIC_ENUM_SHOWN: &str = r#"enum Choice[T]:
+    Picked(value: T)
+    Nothing
+
+enum Either[A, B]:
+    Left(value: A)
+    Right(value: B)
+
+struct Holder[T]:
+    item: T
+
+def none_of_ints() -> Choice[int]:
+    return .Nothing
+
+def main(stdout: Stdout):
+    number = Choice.Picked(value=7)
+    text = Choice.Picked(value="fox")
+    ratio = Choice.Picked(value=2.5)
+    nothing = none_of_ints()
+    stdout.print(number, text, ratio, nothing)
+    stdout.print(Choice.Picked(value=Choice.Picked(value=4)), Holder(item=Choice.Picked(value=1)))
+    left: Either[int, str] = Either[int, str].Left(value=3)
+    right: Either[int, str] = Either[int, str].Right(value="a text long enough for a block of its own")
+    stdout.print(left, right)
+    stdout.print([number, nothing], {"a": number}, (number, 2))
+    maybe: Choice[int]? = number
+    stdout.print(maybe)
+    stdout.print(f"{number} {text} {nothing}", str(number), str(text), str(nothing))
+    return
+"#;
+
+const GENERIC_ENUM_SHOWN_PRINTS: &str = r#"Choice.Picked(value=7) Choice.Picked(value="fox") Choice.Picked(value=2.5) Choice.Nothing
+Choice.Picked(value=Choice.Picked(value=4)) Holder(item=Choice.Picked(value=1))
+Either.Left(value=3) Either.Right(value="a text long enough for a block of its own")
+[Choice.Picked(value=7), Choice.Nothing] {"a": Choice.Picked(value=7)} (Choice.Picked(value=7), 2)
+Choice.Picked(value=7)
+Choice.Picked(value=7) Choice.Picked(value="fox") Choice.Nothing Choice.Picked(value=7) Choice.Picked(value="fox") Choice.Nothing
+"#;
+
+const GENERIC_ENUM_ASSERT: &str = r#"enum Choice[T]:
+    Picked(value: T)
+    Nothing
+
+def main(stdout: Stdout, args: Args):
+    # No arguments are given, so this is 0, but the compiler can't know it.
+    shift = len(args)
+    assert Choice.Picked(value=3 + shift) == Choice.Picked(value=4)
+    stdout.print("not reached")
+    return
 "#;
 
 /// A failed `assert` says both sides the same way, with no type arguments.
@@ -23983,6 +24169,100 @@ def main(stdout: Stdout, clock: Clock):
 ",
     )
 }
+
+/// A constant is kept for the whole run whatever kind of value it is, and never counted as left
+/// over. A string worked out into a block, an optional held as one word and an optional string
+/// were kept with an owner but not marked as living for the run, so each ended a run as a block
+/// left: 3 for this program, which is `examples/constants_kept.fen`. A list, a dict, a boxed
+/// value and anything held in place were marked already. Its constants can't fail, so a program
+/// that uses `parallel` keeps them too, and it reads them in a `parallel` loop as well.
+#[test]
+fn a_constant_of_any_kind_is_kept_for_the_run_and_never_left_over() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let (source, wanted) = (
+        include_str!("../../../examples/constants_kept.fen"),
+        include_str!("../../../examples/constants_kept.out"),
+    );
+    prints_in_both_builds("constants_kept", source, wanted)?;
+    assert!(counts_of("constants_kept_counts", source)?.ends_with(" live 0"));
+    Ok(())
+}
+
+/// A program built for a heap audit, with `FENNEC_AUDIT=1`, keeps no native blocks: the audit
+/// walks what the runtime holds, and can't see what a native block does. An enum of numbers and
+/// itself gets a drop of its own in a plain build and none in an audited one, where its blocks
+/// are the runtime's, and both print the same.
+#[test]
+fn a_program_built_for_a_heap_audit_keeps_no_native_blocks() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let mut drops = Vec::new();
+    for audited in [false, true] {
+        let dir = folder("audit_no_native")?;
+        let (program, executable) = (dir.join("audit_no_native.fen"), dir.join("audit_no_native"));
+        std::fs::write(&program, AUDIT_NO_NATIVE)?;
+        let mut command = crate::executables::fennec_command();
+        command.arg("build").arg(&program).arg("-o").arg(&executable);
+        command.env("FENNEC_HOME", &dir).env("FENNEC_LLVM_KEEP", "1").env("FENNEC_NO_CACHE", "1");
+        if audited {
+            command.env("FENNEC_AUDIT", "1");
+        } else {
+            command.env_remove("FENNEC_AUDIT");
+        }
+        let built = command.output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let ran = Command::new(&executable).env_remove("FENNEC_AUDIT").output_within()?;
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout),
+            "99
+",
+            "audited {audited}"
+        );
+        // The text of every function it built, kept under its home.
+        let mut with_a_drop = 0;
+        for work in std::fs::read_dir(dir.join("work"))?.flatten() {
+            for kept in std::fs::read_dir(work.path())?.flatten() {
+                if kept.path().extension().is_some_and(|ext| ext == "ll")
+                    && std::fs::read_to_string(kept.path())?.contains("@fen_drop_")
+                {
+                    with_a_drop += 1;
+                }
+            }
+        }
+        drops.push(with_a_drop);
+        std::fs::remove_dir_all(&dir)?;
+    }
+    let [plain, audited] = drops.as_slice() else { unreachable!("two builds") };
+    assert!(*plain > 0, "a plain build's enum should be native");
+    assert_eq!(*audited, 0, "an audited build kept a native drop");
+    Ok(())
+}
+
+const AUDIT_NO_NATIVE: &str = r"enum Plain:
+    End
+    Two(left: Plain, right: Plain, n: int)
+
+def chain(depth: int) -> Plain:
+    mut made = Plain.End
+    for at in range(depth):
+        made = .Two(left=made, right=.End, n=at)
+    return made
+
+def top(depth: int) -> int:
+    plain = chain(depth)
+    match plain:
+        case .Two(_, _, n):
+            return n
+        case _:
+            return 0
+
+def main(stdout: Stdout):
+    stdout.print(top(100))
+    return
+";
 
 /// Native blocks made in a launched task and in `parallel`'s workers are freed there: chains
 /// through the first field, a block holding the one below it twice, and one subtree under two

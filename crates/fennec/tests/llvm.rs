@@ -13016,6 +13016,49 @@ fn json_dumps_grows_its_text_in_place() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A generic function writes a `T: Serializable` as JSON, and reads a `T: Deserializable`, each
+/// copy natively as its own type: a struct, a struct holding a list, a list of ints, a list of
+/// structs, and a struct read back.
+const GENERIC_JSON: &str = r#"from std import json
+
+struct Account:
+    name: str
+
+struct Note:
+    title: str
+    tags: list[str]
+
+def answer[T: Serializable](status: int, value: T) -> str:
+    return f"{status} {json.dumps(value)}"
+
+def many[T: Serializable](values: list[T]) -> str:
+    return json.dumps(values)
+
+def back[T: Deserializable](text: str) -> T fails ParseError:
+    return json.loads[T](text)?
+
+def main(stdout: Stdout) fails ParseError:
+    stdout.print(answer(201, value=Account(name="ash")))
+    stdout.print(answer(200, value=Note(title="hi", tags=["a", "b"])))
+    stdout.print(answer(200, value=[1, 2, 3]))
+    stdout.print(many([Account(name="a"), Account(name="b")]))
+    note = back[Note]("{\"title\": \"x\", \"tags\": [\"t\"]}")?
+    stdout.print(note.title, len(note.tags))
+    return
+"#;
+
+#[test]
+fn a_type_parameter_bounded_to_be_saved_is_written_and_read_as_json_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generic_json",
+        GENERIC_JSON,
+        "201 {\"name\": \"ash\"}\n200 {\"title\": \"hi\", \"tags\": [\"a\", \"b\"]}\n200 [1, 2, 3]\n[{\"name\": \"a\"}, {\"name\": \"b\"}]\nx 1\n",
+    )
+}
+
 #[test]
 fn json_matches_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

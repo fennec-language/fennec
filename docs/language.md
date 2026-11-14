@@ -558,6 +558,7 @@ back = json.loads[World](text)?
 ```
 
 - JSON, TOML and `std.pack` save any type whose fields can all be saved, through one `serialize` and `deserialize`. Built.
+- A generic function writes a `T: Serializable` and reads a `T: Deserializable`, as `def answer[T: Serializable](status: int, value: T) -> str: return json.dumps(value)`. Each call's own type is checked against the format where the call is: `answer(200, value=set[int]())` is refused there, as JSON can't hold a set, and so is a call that hands its own type parameter on to one. Built.
 - A `Table` saves as a list of its items in order, and an `Id` as where its item is in that list. Loading makes a new `Table`, and every `Id` loaded with it finds its item there. An `Id` has to be in a `Table` saved with it. Built.
 - A union saves tagged with its member's type name, as in `{"Circle": {"radius": 1.0}}`. Built.
 - A JSON `null` is a value, and a field left out is missing. A default fills only a field left out. So a field that isn't optional fails on `null`, as in "`x` should be an int, but it's null", default or not. An optional field holds `None` for `null` even when its default is something else, so `dumps` then `loads` gives back what was saved. A field left out takes its default, or `None` if it's optional, and otherwise fails as "`x` is missing". SQL's `NULL` reads the same way. Built.

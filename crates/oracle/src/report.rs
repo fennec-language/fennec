@@ -81,22 +81,43 @@ fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("").to_owned()
 }
 
-/// The line the coverage report gives one example: run, a mismatch, or skipped and why.
+/// The examples the oracle can never model, from `never.txt`, each with why.
+pub fn never() -> Vec<(&'static str, &'static str)> {
+    include_str!("../never.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_once(" | "))
+        .collect()
+}
+
+/// Why an example is one the oracle can never model, when it's one.
+fn never_why(name: &str) -> Option<&'static str> {
+    never().into_iter().find(|(never, _)| *never == name).map(|(_, why)| why)
+}
+
+/// The line the coverage report gives one example: run, a mismatch, skipped and why, or one it
+/// can never model and why.
 pub fn line(example: &Example, verdict: &Verdict) -> String {
     match verdict {
         Verdict::Matches => format!("run      {}\n", example.name),
         Verdict::Differs(_) => format!("MISMATCH {}\n", example.name),
-        Verdict::Skipped(why) => format!("skipped  {}: {why}\n", example.name),
+        Verdict::Skipped(why) => match never_why(&example.name) {
+            Some(never) => format!("never    {}: {never}\n", example.name),
+            None => format!("skipped  {}: {why}\n", example.name),
+        },
     }
 }
 
-/// The end of the coverage report: the features that skipped examples, most first, the
-/// mismatches, and the share it runs.
+/// The end of the coverage report: the features that skipped examples, most first, the ones it
+/// can never model, the mismatches, and the share it runs, of every example and of those it can
+/// model.
 pub fn summary(examples: &[Example], judged: &[Verdict]) -> String {
     let mut text = String::new();
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     let mut ran = 0;
     let mut differ = Vec::new();
+    let mut nevers = Vec::new();
     for (example, verdict) in examples.iter().zip(judged) {
         match verdict {
             Verdict::Matches => ran += 1,
@@ -104,7 +125,10 @@ pub fn summary(examples: &[Example], judged: &[Verdict]) -> String {
                 ran += 1;
                 differ.push((example.name.as_str(), why.as_str()));
             }
-            Verdict::Skipped(why) => *counts.entry(why.as_str()).or_default() += 1,
+            Verdict::Skipped(why) => match never_why(&example.name) {
+                Some(never) => nevers.push((example.name.as_str(), never)),
+                None => *counts.entry(why.as_str()).or_default() += 1,
+            },
         }
     }
     let mut ranked: Vec<(&str, usize)> = counts.into_iter().collect();
@@ -113,6 +137,12 @@ pub fn summary(examples: &[Example], judged: &[Verdict]) -> String {
     for (why, count) in ranked {
         let _ = writeln!(text, "{count:5}  {why}");
     }
+    if !nevers.is_empty() {
+        let _ = writeln!(text, "\nwhat it can never model (never.txt):");
+        for (name, why) in &nevers {
+            let _ = writeln!(text, "       {name}: {why}");
+        }
+    }
     if !differ.is_empty() {
         let _ = writeln!(text, "\nmismatches with their .out files:");
         for (name, why) in &differ {
@@ -120,14 +150,24 @@ pub fn summary(examples: &[Example], judged: &[Verdict]) -> String {
         }
     }
     let total = examples.len();
-    let share = if total == 0 {
-        0.0
-    } else {
-        crate::text::int_as_float(crate::interp::as_int(ran)) * 100.0
-            / crate::text::int_as_float(crate::interp::as_int(total))
-    };
-    let _ = writeln!(text, "\nruns {ran} of {total} examples ({share:.1}%), {} mismatched", differ.len());
+    let modeled = total - nevers.len();
+    let _ = writeln!(
+        text,
+        "\nruns {ran} of {total} examples ({:.1}%), and {ran} of the {modeled} it can model ({:.1}%), {} mismatched",
+        percent(ran, total),
+        percent(ran, modeled),
+        differ.len()
+    );
     text
+}
+
+/// `part` of `whole`, in percent.
+fn percent(part: usize, whole: usize) -> f64 {
+    if whole == 0 {
+        return 0.0;
+    }
+    crate::text::int_as_float(crate::interp::as_int(part)) * 100.0
+        / crate::text::int_as_float(crate::interp::as_int(whole))
 }
 
 /// A line diff of what was expected and what came: each line only one of them has, `-` for the

@@ -10,6 +10,48 @@ pub struct Module {
     /// like `concurrent.told` or `Pool.borrowed`: rewritten as a program's own code is, as by a
     /// `with` source or `launch` written in where it's used. They stand in for the library's.
     pub std_rewritten: Vec<(String, FnDef)>,
+    /// What `kit.lock` says each kit the program depends on holds, which checking it holds the
+    /// program to.
+    pub holds: Holds,
+}
+
+/// The capabilities a dependency can be handed, by their type in code: the program's ways to reach
+/// outside it, and `File`, `Server`, `Connection`, `UdpSocket` and `Database`, which reach a file,
+/// the network or storage through what they have open. A `Secret` isn't one: it carries no
+/// authority.
+pub const HOLDABLE: [&str; 16] = [
+    "Stdout",
+    "Stderr",
+    "Stdin",
+    "Args",
+    "Env",
+    "Fs",
+    "File",
+    "Net",
+    "Server",
+    "Connection",
+    "UdpSocket",
+    "Database",
+    "Clock",
+    "Entropy",
+    "Process",
+    "Signals",
+];
+
+/// What each kit a program depends on is accepted as holding: the `holds` lines of `kit.lock`,
+/// which only `fennec update` writes. The compiler works out what each kit is handed, and a check
+/// stops where a kit would hold more than these say.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Holds {
+    /// Each kit, by the name it's imported as, with the capabilities it's accepted as holding. A kit
+    /// not here holds nothing, so a module made without `kit.lock` holds every kit to nothing.
+    pub accepted: Vec<(String, Vec<String>)>,
+    /// Set when what each kit holds is only worked out, not held to anything: how `fennec update`
+    /// checks a program to find what to write.
+    pub only_worked_out: bool,
+    /// The kits whose `holds` line in `kit.lock` was accepted for another source than the one they
+    /// come from now, so they hold nothing until it's accepted again.
+    pub moved: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

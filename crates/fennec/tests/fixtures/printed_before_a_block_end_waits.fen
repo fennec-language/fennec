@@ -1,0 +1,11 @@
+# `main` prints, then its block's end waits for a task that ends only when a line comes on
+# standard input. For the test that what was printed comes out before that wait.
+from std.concurrent import Crashed
+
+def until_told(stdin: Stdin) fails IoError:
+    _ = stdin.read_line()?
+
+def main(stdin: Stdin, stdout: Stdout) fails Crashed | IoError:
+    with launch(() => until_told(stdin)?)?:
+        stdout.print("printed before the block's end")
+    stdout.print("the block ended")

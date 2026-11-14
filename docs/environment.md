@@ -60,7 +60,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_REPLAY`: the program replays the inputs recorded in this file, for `fennec replay`.
 - `FENNEC_RUN_AS`: the name `fennec run` gives the program it runs.
 - `FENNEC_TESTS_REAL`: a test binary uses real capabilities, for `fennec test --real`.
-- `FENNEC_TRACE_FILE`: where the program writes what each site cost, for `fennec dev trace`.
+- `FENNEC_TRACE_FILE`: where the program writes what each site cost on each kind of thread (main, a task, a parallel worker or a server worker), for `fennec dev trace`.
 
 ## Set while building Fennec
 

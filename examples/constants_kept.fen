@@ -5,11 +5,17 @@
 # here and in a `parallel` loop, and the run ends holding nothing but what it keeps.
 
 TEXT = "a constant's text, " + "worked out and long enough for a block"
+
 NUMBERS: list[int]? = [2, 3]
+
 NO_NUMBERS: list[int]? = None
+
 NAMED: str? = "a name, " + "worked out and long enough for a block"
+
 NOT_NAMED: str? = None
+
 SHORT: str? = "sh" + "ort"
+
 PAIR = ("a pair's text, " + "worked out and long enough for a block", [5, 6])
 
 def size(round: int) -> int:

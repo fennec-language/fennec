@@ -51,6 +51,9 @@ pub struct Program {
     pub(crate) aliases: HashMap<String, Vec<String>>,
     /// The names an import brings in, each with the standard library module it's from.
     pub(crate) imported: HashMap<String, String>,
+    /// What each name of a standard library module run from its own source is called in these
+    /// tables, by its whole name: `std.math.Vec3` is `Vec3`, and `std.math.dot` is `math.dot`.
+    pub(crate) from_std: HashMap<String, String>,
     /// The type the checker gave each expression of the program's own code, by its span.
     pub(crate) types_at: HashMap<(u32, u32), Type>,
     pub(crate) main: &'static FnDef,
@@ -86,6 +89,12 @@ impl Program {
 
     pub(crate) fn type_at(&self, span: Span) -> Option<&Type> {
         self.types_at.get(&(span.start, span.end))
+    }
+
+    /// What a name the program imports from a standard library module run from its own source
+    /// is called in the tables.
+    pub(crate) fn std_name(&self, imported_as: &str) -> Option<&str> {
+        self.from_std.get(self.imported.get(imported_as)?).map(String::as_str)
     }
 
     /// The method `name` of the type called `ty`, written in the type or in an `extend` of it.
@@ -143,36 +152,53 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
     Ok(Box::leak(Box::new(program)))
 }
 
-fn tables(
-    module: &'static Module,
-    sources: Sources,
-    types_at: HashMap<(u32, u32), Type>,
-) -> Result<Program, Refused> {
-    let mut functions = HashMap::new();
-    let mut types = HashMap::new();
-    let mut extensions: HashMap<String, Vec<&'static FnDef>> = HashMap::new();
-    let mut constants = HashMap::new();
-    let mut aliases = HashMap::new();
-    let mut imported = HashMap::new();
-    for item in &module.items {
-        match item {
+/// The standard library's modules the oracle runs from their own Fennec source, as the compiler
+/// builds them. Only the functions the runtime writes in Rust beneath them are modeled here, in
+/// `interp/library.rs`, so a bug in one of these modules' own Fennec would show on both sides.
+const RUN_FROM_SOURCE: &[&str] = &["math"];
+
+/// What the tables are made from: the program's own declarations, and those of each standard
+/// library module it imports that's run from its own source.
+#[derive(Default)]
+struct Gathered {
+    functions: HashMap<String, &'static FnDef>,
+    types: HashMap<String, Declared>,
+    extensions: HashMap<String, Vec<&'static FnDef>>,
+    constants: HashMap<String, &'static Expr>,
+    aliases: HashMap<String, Vec<String>>,
+    imported: HashMap<String, String>,
+    from_std: HashMap<String, String>,
+}
+
+impl Gathered {
+    /// Takes in one of a module's items: the program's own, or, with `std` naming it, one of a
+    /// standard library module's, which mustn't share a name with anything already taken in.
+    fn take(&mut self, item: &'static Item, std: Option<&str>) -> Result<(), Refused> {
+        let declared = match item {
             Item::Function(def) => {
-                functions.insert(def.name.clone(), def);
+                self.unclaimed(&def.name, std)?;
+                self.functions.insert(def.name.clone(), def);
+                // A module's functions are named `module.function` when it's run.
+                std.zip(def.name.split_once('.')).map(|(module, (_, short))| (module, short, &def.name))
             }
-            Item::Struct(def) => {
-                types.insert(def.name.clone(), Declared { def, kind: Kind::Struct, ruled: ruled(def) });
-            }
-            Item::Enum(def) => {
-                types.insert(def.name.clone(), Declared { def, kind: Kind::Enum, ruled: ruled(def) });
-            }
-            Item::Error(def) => {
-                types.insert(def.name.clone(), Declared { def, kind: Kind::Error, ruled: ruled(def) });
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
+                let kind = match item {
+                    Item::Struct(_) => Kind::Struct,
+                    Item::Enum(_) => Kind::Enum,
+                    _ => Kind::Error,
+                };
+                self.unclaimed(&def.name, std)?;
+                self.types.insert(def.name.clone(), Declared { def, kind, ruled: ruled(def) });
+                std.map(|module| (module, def.name.as_str(), &def.name))
             }
             Item::Extend(extension) => {
-                extensions.entry(extension.name.clone()).or_default().extend(extension.methods.iter());
+                self.extensions.entry(extension.name.clone()).or_default().extend(extension.methods.iter());
+                None
             }
             Item::Const { name, value, .. } => {
-                constants.insert(name.clone(), value);
+                self.unclaimed(name, std)?;
+                self.constants.insert(name.clone(), value);
+                std.map(|module| (module, name.as_str(), name))
             }
             Item::TypeAlias { name, ty, .. } => {
                 let members = if ty.name == "|" {
@@ -180,13 +206,78 @@ fn tables(
                 } else {
                     vec![ty.name.clone()]
                 };
-                aliases.insert(name.clone(), members);
+                self.aliases.insert(name.clone(), members);
+                None
             }
-            Item::Import(import) => bring_in(import, &mut imported)?,
-            Item::Interface(_) | Item::Test(_) => {}
+            Item::Import(import) => {
+                bring_in(import, &mut self.imported)?;
+                None
+            }
+            Item::Interface(_) | Item::Test(_) => None,
             Item::Stmt(_) => return Err(Refused::Unsupported("a statement at the top level".to_owned())),
+        };
+        if let Some((module, short, name)) = declared {
+            self.from_std.insert(format!("std.{module}.{short}"), name.clone());
+        }
+        Ok(())
+    }
+
+    /// Refuses a standard library module's declaration that has a name the program, or another
+    /// module, already gave something.
+    fn unclaimed(&self, name: &str, std: Option<&str>) -> Result<(), Refused> {
+        let taken = self.functions.contains_key(name)
+            || self.types.contains_key(name)
+            || self.constants.contains_key(name);
+        match std {
+            Some(module) if taken => {
+                Err(Refused::Unsupported(format!("`{name}`, declared by the program and by std.{module}")))
+            }
+            _ => Ok(()),
         }
     }
+
+    /// Takes in each standard library module the program imports that's run from its own
+    /// source, with the types the checker gives its code.
+    fn std_modules(&mut self, types_at: &mut HashMap<(u32, u32), Type>) -> Result<(), Refused> {
+        let mut wanted: Vec<&str> = RUN_FROM_SOURCE
+            .iter()
+            .copied()
+            .filter(|module| {
+                let whole = format!("std.{module}");
+                self.imported.values().any(|from| *from == whole || from.starts_with(&format!("{whole}.")))
+            })
+            .collect();
+        wanted.dedup();
+        for name in wanted {
+            let module = fennec_syntax::module_to_run(name)
+                .map_err(|problem| Refused::Invalid(problem.message.clone()))?
+                .ok_or_else(|| Refused::Unsupported(format!("std.{name}")))?;
+            for item in &module.items {
+                self.take(item, Some(name))?;
+            }
+            let checked = fennec_check::check_typed(module)
+                .map_err(|_| Refused::Unsupported(format!("std.{name}, which doesn't check alone")))?;
+            for (_, body) in checked.types.iter() {
+                for (span, ty) in body.exprs() {
+                    types_at.entry((span.start, span.end)).or_insert_with(|| ty.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn tables(
+    module: &'static Module,
+    sources: Sources,
+    mut types_at: HashMap<(u32, u32), Type>,
+) -> Result<Program, Refused> {
+    let mut gathered = Gathered::default();
+    for item in &module.items {
+        gathered.take(item, None)?;
+    }
+    gathered.std_modules(&mut types_at)?;
+    let Gathered { functions, types, extensions, constants, aliases, imported, from_std } = gathered;
     let mut owners = HashMap::new();
     for (name, declared) in &types {
         for def in &declared.def.methods {
@@ -210,6 +301,7 @@ fn tables(
         constants,
         aliases,
         imported,
+        from_std,
         types_at,
         main,
         owners,

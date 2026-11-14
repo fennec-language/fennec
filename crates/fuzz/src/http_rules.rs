@@ -218,18 +218,21 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
         || !is_token(method.as_bytes())
         || target.is_empty()
         || has_control(target.as_bytes(), false)
+        || !target.is_ascii()
     {
         return refused(400);
     }
-    let headers = match headers(input, at, first.chars().count()) {
+    let headers = match headers(input, at, first.len()) {
         Ok(headers) => headers,
         Err(Early::Refused(status)) => return refused(status),
         Err(Early::Stop(stop)) => return Err(stop),
     };
     let header =
         |wanted: &str| headers.iter().find(|(name, _)| name == wanted).map(|(_, value)| value.as_str());
-    if header("transfer-encoding").is_some() {
-        return refused(501);
+    // Both, or a coding that isn't plainly `chunked`, never; `chunked` alone, not yet.
+    if let Some(coding) = header("transfer-encoding") {
+        let plain = coding.to_lowercase() == "chunked" && header("content-length").is_none();
+        return refused(if plain { 501 } else { 400 });
     }
     let mut body = Vec::new();
     if let Some(written) = header("content-length") {
@@ -250,13 +253,13 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
         return Ok((Wanted::Head, keep));
     }
     let (path, query_text) = target.split_once('?').unwrap_or((target, ""));
-    let answer = Wanted::Echoed {
-        method: (*method).to_owned(),
-        path: decoded(path, false),
-        query: if target.contains('?') { query(query_text) } else { Vec::new() },
-        headers,
-        body,
-    };
+    let (path, query) =
+        (decoded(path, false), if target.contains('?') { query(query_text) } else { Vec::new() });
+    // A NUL decoded into the path or the query is refused.
+    if path.contains('\0') || query.iter().any(|(name, value)| name.contains('\0') || value.contains('\0')) {
+        return refused(400);
+    }
+    let answer = Wanted::Echoed { method: (*method).to_owned(), path, query, headers, body };
     Ok((answer, keep))
 }
 
@@ -266,8 +269,8 @@ enum Early {
     Stop(Stop),
 }
 
-/// The headers of a request from `at`, past the empty line that ends them, with `size` counted
-/// from its first line.
+/// The headers of a request from `at`, past the empty line that ends them, with `size` bytes
+/// counted from its first line.
 fn headers(input: &[u8], at: &mut usize, size: usize) -> Result<Vec<(String, String)>, Early> {
     let mut headers: Vec<(String, String)> = Vec::new();
     let (mut size, mut lines) = (size, 0);
@@ -278,7 +281,7 @@ fn headers(input: &[u8], at: &mut usize, size: usize) -> Result<Vec<(String, Str
             break;
         }
         let line = std::str::from_utf8(line).map_err(|_| Early::Stop(Stop::Unpromised))?;
-        size += line.chars().count();
+        size += line.len();
         lines += 1;
         // Near a limit, how it's counted decides, which isn't promised.
         if lines > MOST_HEADERS || size > MOST_HEADER_BYTES {
@@ -510,10 +513,15 @@ enum Answer {
     Unpromised,
 }
 
-/// A response line from `at`, which has to end in `\r\n`: a bare `\n` isn't certain.
+/// A response line from `at`, which has to end in `\r\n`: a bare `\n` isn't certain. Nor is a
+/// line near or past the most the client reads in one, 100 KiB: how much it holds when it gives up
+/// depends on how the bytes came.
 fn crlf_line(input: &[u8], at: &mut usize) -> Result<Vec<u8>, Answer> {
     let rest = input.get(*at..).unwrap_or_default();
     let Some(end) = rest.iter().position(|byte| *byte == b'\n') else { return Err(Answer::Fails) };
+    if end > 64 * 1024 {
+        return Err(Answer::Unpromised);
+    }
     let line = rest.get(..end).unwrap_or_default();
     let line = line.strip_suffix(b"\r").ok_or(Answer::Unpromised)?;
     if line.contains(&b'\r') {

@@ -15,8 +15,10 @@ item_reverse 954 402 adf72e6a83cfef86
 item_sort 5030 3587 c850c0d83e882bc0
 json_dumps 2263 1861 61c1c49ae8b00250
 json_loads 2808 2125 31892504485fcc05
+parse_float 384 147 fc8d1df0147fbed2
 parse_int 58 52 b6183ab1f49e0410
 removesuffix 86 44 c681687395f67e8b
 slice 69 57 8d902c28b52fde04
-split 1163 441 26cc9da55878ca96
+split 991 441 26cc9da55878ca96
+split_lines 2456 984 ffd4968b601ef24f
 struct_new 46 20 6d31aee4c54b4aa0

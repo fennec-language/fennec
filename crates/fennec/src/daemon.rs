@@ -73,7 +73,7 @@ pub(crate) fn command(action: &str) -> ExitCode {
     };
     match action {
         "status" => {
-            if let Some(outcome) = unix::send(&home, &["status"]) {
+            if let unix::Reply::Answered(outcome) = unix::send(&home, &["status"]) {
                 outcome.print()
             } else {
                 println!("not running");
@@ -81,7 +81,7 @@ pub(crate) fn command(action: &str) -> ExitCode {
             }
         }
         "stop" => {
-            let stopped = unix::send(&home, &["stop"]).is_some();
+            let stopped = matches!(unix::send(&home, &["stop"]), unix::Reply::Answered(_));
             println!("{}", if stopped { "stopped" } else { "not running" });
             ExitCode::SUCCESS
         }
@@ -94,15 +94,12 @@ pub(crate) fn command(action: &str) -> ExitCode {
 }
 
 /// Sends a request to the daemon, starting it first if it isn't running. None if it can't be
-/// reached, so the caller does the work itself.
+/// reached, or takes the request and gives no answer in time, so the caller does the work itself.
 pub(crate) fn ask(home: &Path, request: &[&str]) -> Option<Outcome> {
     if std::env::var_os("FENNEC_NO_DAEMON").is_some() {
         return None;
     }
-    unix::send(home, request).or_else(|| {
-        unix::start(home)?;
-        unix::send(home, request)
-    })
+    unix::ask_within(home, request, unix::REPLY_WAIT)
 }
 
 /// A connection to the daemon serving a language server session, starting the daemon first
@@ -243,7 +240,13 @@ mod unix {
                 if left.is_zero() {
                     return Err(ErrorKind::TimedOut.into());
                 }
-                self.stream.set_read_timeout(Some(left))?;
+                // macOS refuses a timeout, with "invalid argument", once the other end has closed the
+                // connection, as the daemon does after its whole answer. A read then gives the end
+                // at once, so it can't wait past the deadline either.
+                match self.stream.set_read_timeout(Some(left)) {
+                    Err(err) if err.kind() != ErrorKind::InvalidInput => return Err(err),
+                    _ => {}
+                }
             }
             self.stream.read(buf)
         }
@@ -288,14 +291,58 @@ mod unix {
         stopping: bool,
     }
 
-    pub(super) fn send(home: &Path, request: &[&str]) -> Option<Outcome> {
-        let mut stream = connect(&socket_path(home, false)?, home)?;
+    /// How long a command waits for the daemon's answer, all told, once it has sent a request: far
+    /// longer than any answer takes, and short enough that a daemon that's stuck never holds a
+    /// command up for good. Past it, the command does the work itself.
+    pub(super) const REPLY_WAIT: Duration = Duration::from_secs(30);
+
+    /// What came of sending the daemon a request.
+    pub(super) enum Reply {
+        Answered(Outcome),
+        /// No daemon could be reached, so one may be started.
+        Unreached,
+        /// One took the request and gave no answer in time, or a broken one. Another isn't
+        /// started, as this one may yet answer, and the request isn't sent again.
+        Unanswered,
+    }
+
+    pub(super) fn send(home: &Path, request: &[&str]) -> Reply {
+        send_within(home, request, REPLY_WAIT)
+    }
+
+    /// `send`, waiting at most `wait` for the answer.
+    fn send_within(home: &Path, request: &[&str], wait: Duration) -> Reply {
+        let Some(mut stream) = socket_path(home, false).and_then(|socket| connect(&socket, home)) else {
+            return Reply::Unreached;
+        };
         let message = format!("{}\n{}\n", header(), request.join("\n"));
-        stream.write_all(message.as_bytes()).ok()?;
-        stream.shutdown(std::net::Shutdown::Write).ok()?;
+        if stream.write_all(message.as_bytes()).is_err()
+            || stream.shutdown(std::net::Shutdown::Write).is_err()
+        {
+            return Reply::Unanswered;
+        }
         let mut reply = String::new();
-        stream.read_to_string(&mut reply).ok()?;
-        Outcome::decode(&reply)
+        let mut within = Within { stream, until: Some(Instant::now() + wait) };
+        match within.read_to_string(&mut reply).ok().and_then(|_| Outcome::decode(&reply)) {
+            Some(outcome) => Reply::Answered(outcome),
+            None => Reply::Unanswered,
+        }
+    }
+
+    /// `ask`, waiting at most `wait` for each answer: a daemon is started only when none could be
+    /// reached, and one that took the request and didn't answer leaves the work to the command.
+    pub(super) fn ask_within(home: &Path, request: &[&str], wait: Duration) -> Option<Outcome> {
+        match send_within(home, request, wait) {
+            Reply::Answered(outcome) => Some(outcome),
+            Reply::Unanswered => None,
+            Reply::Unreached => {
+                start(home)?;
+                match send_within(home, request, wait) {
+                    Reply::Answered(outcome) => Some(outcome),
+                    Reply::Unreached | Reply::Unanswered => None,
+                }
+            }
+        }
     }
 
     /// Opens a language server session: after `lsp`, the connection carries its messages.
@@ -506,7 +553,10 @@ mod unix {
         use std::path::Path;
         use std::time::{Duration, Instant};
 
-        use super::{BUILD, State, VERSION, answer, handle, socket_in, socket_owned_by, socket_path};
+        use super::{
+            BUILD, Reply, State, VERSION, answer, ask_within, handle, send_within, socket_in,
+            socket_owned_by, socket_path,
+        };
 
         fn state() -> State {
             State {
@@ -590,6 +640,73 @@ mod unix {
                 Duration::from_secs(10),
             );
             assert_eq!(reply, "", "a request past 1 MiB was answered");
+        }
+
+        /// A daemon that takes a request and never answers holds a command up only so long: past
+        /// its wait, the command does the work itself, without starting another daemon or asking
+        /// again. One that answers is heard.
+        #[test]
+        fn a_daemon_that_never_answers_holds_a_command_up_only_so_long() {
+            // Short, so the socket fits in Fennec's own folder rather than the one under `/tmp`.
+            let home = fennec_temp::Temp::at(Path::new("/tmp").join(format!("fpq-{}", std::process::id())));
+            std::fs::create_dir_all(&home).unwrap();
+            let socket = socket_in(&home, None, true).unwrap();
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            // Takes each request, reads it, and keeps the connection open without a word.
+            let held = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let holding = std::sync::Arc::clone(&held);
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let mut stream = stream;
+                    let mut asked = Vec::new();
+                    let _ = stream.read_to_end(&mut asked);
+                    if let Ok(mut held) = holding.lock() {
+                        held.push(stream);
+                    }
+                }
+            });
+            let started = Instant::now();
+            assert!(matches!(send_within(&home, &["status"], Duration::from_millis(300)), Reply::Unanswered));
+            assert!(ask_within(&home, &["status"], Duration::from_millis(300)).is_none());
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "a daemon that never answers held a command for {:?}",
+                started.elapsed()
+            );
+            // Asked twice, once each: not sent again, and no other daemon started over it.
+            std::thread::sleep(Duration::from_millis(100));
+            assert_eq!(held.lock().map(|held| held.len()).unwrap_or_default(), 2);
+            assert!(socket_owned_by(
+                &socket,
+                std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(&home).unwrap())
+            ));
+        }
+
+        /// A daemon that answers and closes the connection, as the daemon does, is heard: on macOS
+        /// a socket whose other end has closed refuses a read timeout, which once lost every
+        /// answer, and the command did the work again itself.
+        #[test]
+        fn an_answer_and_then_a_closed_connection_is_heard() {
+            let home = fennec_temp::Temp::at(Path::new("/tmp").join(format!("fpa-{}", std::process::id())));
+            std::fs::create_dir_all(&home).unwrap();
+            let socket = socket_in(&home, None, true).unwrap();
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let mut stream = stream;
+                    let mut asked = Vec::new();
+                    let _ = stream.read_to_end(&mut asked);
+                    let answer = super::Outcome { stdout: "heard\n".to_owned(), ..super::Outcome::default() };
+                    let _ = stream.write_all(answer.encode().as_bytes());
+                    // Closed, as the daemon closes it once its whole answer is written.
+                }
+            });
+            match send_within(&home, &["status"], Duration::from_secs(10)) {
+                Reply::Answered(outcome) => assert_eq!(outcome.stdout, "heard\n"),
+                Reply::Unreached | Reply::Unanswered => {
+                    panic!("an answer the daemon wrote whole wasn't heard")
+                }
+            }
         }
 
         /// A command connects only to a socket the user's own: one another user bound, where the
@@ -704,11 +821,20 @@ mod unix {
 
     use super::Outcome;
 
-    pub(super) fn send(_: &Path, _: &[&str]) -> Option<Outcome> {
-        None
+    pub(super) const REPLY_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// What came of sending a request, which here is always that there's no daemon.
+    pub(super) enum Reply {
+        #[expect(dead_code, reason = "no daemon runs here to answer, but `fennec daemon` names it")]
+        Answered(Outcome),
+        Unreached,
     }
 
-    pub(super) fn start(_: &Path) -> Option<()> {
+    pub(super) fn send(_: &Path, _: &[&str]) -> Reply {
+        Reply::Unreached
+    }
+
+    pub(super) fn ask_within(_: &Path, _: &[&str], _: std::time::Duration) -> Option<Outcome> {
         None
     }
 

@@ -346,17 +346,30 @@ impl Emit<'_, '_, '_> {
         } else {
             None
         };
-        let (block, made) = if self.headers() {
+        // A float's text goes to the runtime as its header's words, read where it is: only text
+        // that isn't a float is made a block, for the message that says so.
+        let by_header = name == "float" && self.headers();
+        let (block, made) = if by_header {
+            (None, None)
+        } else if self.headers() {
             let (block, made) = self.text_block(&value);
-            (block, Some(made))
+            (Some(block), Some(made))
         } else {
-            (value, None)
+            (Some(value.clone()), None)
         };
-        let function = if name == "int" { "fennec_parse_int" } else { "fennec_parse_float" };
-        self.declare(&format!("declare i64 @{function}(ptr, ptr) nounwind"));
         let bits_at = self.place_for(&Kind::Int);
         let (read, bits, is_number) = (self.temp(), self.temp(), self.temp());
-        self.line(&format!("{read} = call i64 @{function}(ptr {block}, ptr {bits_at})"));
+        if let Some(block) = &block {
+            let function = if name == "int" { "fennec_parse_int" } else { "fennec_parse_float" };
+            self.declare(&format!("declare i64 @{function}(ptr, ptr) nounwind"));
+            self.line(&format!("{read} = call i64 @{function}(ptr {block}, ptr {bits_at})"));
+        } else {
+            let [t0, t1, t2] = [0, 1, 2].map(|at| self.header_word(&value, at));
+            self.declare("declare i64 @fennec_parse_float_header(i64, i64, i64, ptr) nounwind");
+            self.line(&format!(
+                "{read} = call i64 @fennec_parse_float_header(i64 {t0}, i64 {t1}, i64 {t2}, ptr {bits_at})"
+            ));
+        }
         self.line(&format!("{is_number} = icmp ne i64 {read}, 0"));
         let (good, bad, joined) = (self.label("number"), self.label("not_number"), self.label("read"));
         self.line(&format!("br i1 {is_number}, label %{good}, label %{bad}"));
@@ -371,14 +384,25 @@ impl Emit<'_, '_, '_> {
         self.declare("declare ptr @fennec_not_a_number(ptr, i64) nounwind");
         let message = self.temp();
         let int = i64::from(name == "int");
-        self.line(&format!("{message} = call ptr @fennec_not_a_number(ptr {block}, i64 {int})"));
+        // Text read by its header is made a block here, where it wasn't a number, and let go of
+        // once the message is made.
+        let (quoted, made_here) = if let Some(block) = &block {
+            (block.clone(), None)
+        } else {
+            let (block, made) = self.text_block(&value);
+            (block, Some(made))
+        };
+        self.line(&format!("{message} = call ptr @fennec_not_a_number(ptr {quoted}, i64 {int})"));
         let message = self.text_value(&message);
         let error_at = self.offset(&base, err_offset);
         self.invalid_value(&err_kind, &message, &error_at)?;
+        if let Some(made) = made_here {
+            self.let_go_text_block(&quoted, &made);
+        }
         self.line(&format!("br label %{joined}"));
         self.start_block(&joined);
-        if let Some(made) = made {
-            self.let_go_text_block(&block, &made);
+        if let (Some(block), Some(made)) = (&block, made) {
+            self.let_go_text_block(block, &made);
         }
         if let Some(end) = quick_end {
             self.line(&format!("br label %{end}"));

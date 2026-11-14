@@ -1,0 +1,61 @@
+# Values a million and three million deep, a chain of structs each in the last one's field, are
+# compared, written as text and sent to a task, on the main thread and in a launched task. The
+# runtime does each from a list of what's left, so none of them needs stack for the depth.
+from std.concurrent import Channel, Closed, Crashed, Timeout, channel
+
+struct Link:
+    n: int
+    next: Link? = None
+
+def chain(depth: int, first: int) -> Link:
+    mut made = Link(n=first)
+    for at in range(depth):
+        made = Link(n=at + 1, next=made)
+    return made
+
+# Equal all the way down, and unequal only at the very last link.
+def compared(depth: int) -> str:
+    one = chain(depth, first=0)
+    same = one == chain(depth, first=0)
+    other = one == chain(depth, first=-1)
+    return f"{same} {other}"
+
+# How long its text is, and whether it starts and ends as it should.
+def written(depth: int) -> str:
+    text = str(chain(depth, first=0))
+    starts = text.startswith(f"Link(n={depth}, next=Link(n={depth - 1}, next=")
+    ends = text.endswith("Link(n=0, next=None" + ")" * (depth + 1))
+    return f"{len(text)} {starts} {ends}"
+
+def taken(inbox: Channel[Link], out: Channel[int]):
+    link = inbox.receive() else Link(n=-5)
+    out.send(link.n) except Closed():
+        return
+    return
+
+# The chain is copied for the task that takes it, which says what its first link holds.
+def sent(depth: int) -> int fails Closed | Crashed | Timeout:
+    mut got = -1
+    with channel[Link](size=1) as inbox:
+        with channel[int](size=1) as out:
+            with launch(() => taken(inbox, out=out))?:
+                inbox.send(chain(depth, first=0))?
+                got = out.receive() else -2
+    return got
+
+def in_task(depth: int, out: Channel[str]):
+    out.send(compared(depth)) except Closed():
+        return
+    out.send(written(depth)) except Closed():
+        return
+    return
+
+def main(stdout: Stdout) fails Closed | Crashed | Timeout:
+    for depth in [1_000_000, 3_000_000]:
+        stdout.print(depth, compared(depth), written(depth), sent(depth)?)
+        with channel[str](size=2) as out:
+            with launch(() => in_task(depth, out=out))?:
+                same = out.receive() else "none"
+                text = out.receive() else "none"
+                stdout.print("in a task:", same, text)
+    return

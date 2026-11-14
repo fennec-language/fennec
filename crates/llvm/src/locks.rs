@@ -412,15 +412,23 @@ impl Emit<'_, '_, '_> {
     /// A value copied across a lock's edge, as it's passed around, with owners of its own.
     fn crossed(&mut self, value: &str, kind: &Kind, way: Way) -> Result<String, String> {
         match kind {
-            Kind::Int | Kind::Float | Kind::Bool | Kind::Unit | Kind::Cap => Ok(value.to_owned()),
+            Kind::Int | Kind::Float | Kind::Bool | Kind::U64 | Kind::F32 | Kind::Unit | Kind::Cap => {
+                Ok(value.to_owned())
+            }
             Kind::Str | Kind::MaybeText if self.headers() => Ok(self.crossed_text(value, way)),
             Kind::Boxed(_) if self.is_cell(kind) => {
                 self.retain(value);
                 Ok(value.to_owned())
             }
-            Kind::Str | Kind::TextBlock | Kind::List(_) | Kind::Dict(..) | Kind::Boxed(_) => {
-                Ok(self.cross_block(value, way))
-            }
+            // Any other block is copied by the runtime, by its shape, as a boxed value's is.
+            Kind::Str
+            | Kind::TextBlock
+            | Kind::List(_)
+            | Kind::Dict(..)
+            | Kind::Boxed(_)
+            | Kind::Bytes
+            | Kind::Closure(..)
+            | Kind::Gen => Ok(self.cross_block(value, way)),
             Kind::Maybe(inner) if !self.is_cell(inner) => Ok(self.cross_block(value, way)),
             Kind::Maybe(_) => {
                 let place = self.temp_slot("null");
@@ -442,16 +450,20 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// A string held as a header: an inline one is its own copy.
+    /// A string held as a header: an inline one is its own copy, and so is an optional string's
+    /// `None`, whose header is all zero. That reads as a block at no address, which mustn't be made
+    /// a text: it would come back as the empty string.
     fn crossed_text(&mut self, value: &str, way: Way) -> String {
         let in_block = self.header_in_block(value);
         let (block, inline, done) =
             (self.label("cross_text"), self.label("cross_inline"), self.label("crossed_text"));
         let place = self.place_for_text();
         self.line(&format!("store {HEADER} {value}, ptr {place}"));
-        self.line(&format!("br i1 {in_block}, label %{block}, label %{inline}"));
+        let (first, held_there, copied) = (self.header_word(value, 0), self.temp(), self.temp());
+        self.line(&format!("{held_there} = icmp ne i64 {first}, 0"));
+        self.line(&format!("{copied} = and i1 {in_block}, {held_there}"));
+        self.line(&format!("br i1 {copied}, label %{block}, label %{inline}"));
         self.start_block(&block);
-        let first = self.header_word(value, 0);
         let held = self.temp();
         self.line(&format!("{held} = inttoptr i64 {first} to ptr"));
         let copy = self.cross_block(&held, way);

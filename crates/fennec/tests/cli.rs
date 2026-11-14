@@ -3797,6 +3797,72 @@ fn a_function_handed_to_a_dependency_holds_what_it_captures() {
     assert!(said.contains("kit.lock: `helper` now holds `Stdout`"), "{said}");
 }
 
+/// A program that hands nothing to another kit never meets kit.lock: a single file, and a kit
+/// with no dependencies, check, run and test with none, `fennec update --check` passes, and
+/// nothing writes one.
+#[test]
+fn a_program_with_no_dependencies_never_needs_kit_lock() {
+    let dir = scratch("holds-no-dependencies").unwrap();
+    let main = "def main(fs: Fs, stdout: Stdout) fails IoError:\n    fs.write_text(\"note.txt\", \"kept\")?\n    stdout.print(\"saved\")\n\n\
+                test \"it saves\":\n    assert True\n";
+    std::fs::write(dir.join("single.fen"), main).unwrap();
+    write_kit(&dir.join("kit"), "solo", "", &[("main.fen", main)]).unwrap();
+    let fennec = |args: &[&str], at: &str| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(dir.join(at))
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let mut commands: Vec<(Vec<&str>, &str)> = vec![
+        (vec!["check", "single.fen"], "."),
+        (vec!["test", "single.fen"], "."),
+        (vec!["check", "."], "kit"),
+        (vec!["test", "."], "kit"),
+        (vec!["update", "--check"], "kit"),
+        (vec!["update"], "kit"),
+    ];
+    if crate::llvm::ready() {
+        commands
+            .extend([(vec!["run", "--no-test", "single.fen"], "."), (vec!["run", "--no-test", "."], "kit")]);
+    }
+    for (args, at) in commands {
+        let output = fennec(&args, at);
+        assert!(output.status.success(), "{args:?}: {}", text(&output.stderr));
+        assert!(!text(&output.stderr).contains("kit.lock"), "{args:?}: {}", text(&output.stderr));
+    }
+    assert!(!dir.join("kit.lock").exists() && !dir.join("kit/kit.lock").exists());
+}
+
+/// kit.lock is part of what a run's kept program was checked against: one changed by hand to hold
+/// less than the program hands over stops the next run, though no source file changed.
+#[test]
+fn a_run_checks_again_once_kit_lock_changes() {
+    if !crate::llvm::ready() {
+        return;
+    }
+    let helper = "export def size(fs: Fs) -> int:\n    return 7\n";
+    let main = "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(helper.size(fs))\n";
+    let kits = Kits::new(
+        "holds-warm-run",
+        ("[dependencies]\nhelper = { path = \"../helper\" }\n", main),
+        &[("helper", "", helper)],
+    )
+    .unwrap();
+    kits.accepted().unwrap();
+    for _ in 0..2 {
+        let ran = kits.fennec(&["run", "--no-test", "."]).unwrap();
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        assert_eq!(text(&ran.stdout), "7\n");
+    }
+    let lock = kits.lock().unwrap();
+    kits.write("app", "kit.lock", &lock.replace("holds helper Fs\n", "")).unwrap();
+    let ran = kits.fennec(&["run", "--no-test", "."]).unwrap();
+    assert!(!ran.status.success(), "{}", text(&ran.stdout));
+    assert!(text(&ran.stderr).contains("`helper` would now receive an `Fs` here"), "{}", text(&ran.stderr));
+}
+
 /// What isn't handed to another kit is never stopped at: passing a capability to the standard
 /// library, a dependency calling back into the program's own code through an interface, and
 /// values of the dependency's own types that hold nothing.

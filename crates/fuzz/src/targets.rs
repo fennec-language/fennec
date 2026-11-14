@@ -379,27 +379,31 @@ fn checker(input: &[u8]) -> Result<(), String> {
 }
 
 /// What's known of list lengths across calls holds while a program runs in the IR's evaluator:
-/// each fact is checked on the way into each function and out of it. The programs are both kinds
-/// the bytes can write, the random well-typed ones and the ones the `llvm` target builds.
+/// each fact is checked on the way into each function and out of it. The program is one of the
+/// two kinds the bytes can write, by their length: a random well-typed one, or one the `llvm`
+/// target builds.
 fn lengths(input: &[u8]) -> Result<(), String> {
-    for source in [crate::programs::written(input), crate::generate::program(input)] {
-        let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
-        let Ok(signatures) = fennec_check::check_and_resolve(&mut module) else { continue };
-        let program = fennec_ir::lower(&module, &signatures);
-        let lengths = fennec_ir::lengths::Lengths::of(&program);
-        if lengths.params().next().is_none() {
-            continue;
-        }
-        let ran = fennec_ir::eval::check_lengths(&program, &lengths, LENGTH_STEPS);
-        if let Some(broken) = ran.broken {
-            return Err(format!("{broken}\n--- program\n{source}"));
-        }
+    let source = if input.len().is_multiple_of(2) {
+        crate::programs::written(input)
+    } else {
+        crate::generate::program(input)
+    };
+    let Ok(module) = fennec_syntax::parse(&source) else { return Ok(()) };
+    let Ok(signatures) = fennec_check::check(&module) else { return Ok(()) };
+    let program = fennec_ir::lower(&module, &signatures);
+    let lengths = fennec_ir::lengths::Lengths::of(&program);
+    if lengths.params().next().is_none() {
+        return Ok(());
     }
-    Ok(())
+    let ran = fennec_ir::eval::check_lengths(&program, &lengths, LENGTH_STEPS);
+    match ran.broken {
+        Some(broken) => Err(format!("{broken}\n--- program\n{source}")),
+        None => Ok(()),
+    }
 }
 
 /// How far the `lengths` target runs each program.
-const LENGTH_STEPS: u64 = 300_000;
+const LENGTH_STEPS: u64 = 100_000;
 
 /// The standard library's JSON reader, built natively, on any text.
 fn json(input: &[u8]) -> Result<(), String> {

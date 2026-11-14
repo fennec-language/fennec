@@ -93,7 +93,52 @@ def main(stdout: Stdout, fs: Fs, args: Args):
 
 There's no global `print`, and no way to reach the disk or the network without being handed `Fs` or `Net`. The others are `Clock`, `Entropy`, `Stdin`, `Env` and `Process`. Tests get fakes of each, below.
 
-When a function deep in a program starts needing one, write it by its usual name, like `fs`, and run `fennec fix`. It gives that function an `fs: Fs` parameter, passes `fs` at each call, and does the same for each caller, up to the first one that already has an `Fs`, `main`, or a test. It changes nothing when a function in the chain is a method or is passed around as a value, and leaves the error for you.
+When a function deep in a program starts needing one, write it by its usual name, like `fs`, and run `fennec fix`. It gives that function an `fs: Fs` parameter, passes `fs` at each call, and does the same for each caller, up to the first one that already has an `Fs`, or a test. It changes nothing when a function in the chain is a method or is passed around as a value, and leaves the error for you.
+
+`fennec fix` never adds to `main`. What `main` takes is what the program may do, so only a person widens it. When the chain reaches a `main` without an `Fs`, `fennec fix` stops there and says so:
+
+```
+error: `load_settings` uses an `Fs`, and `main` doesn't take one
+  = help: `fennec fix` doesn't give `main` a capability: add `fs: Fs` to `main` if this program should touch files
+```
+
+Not built yet: today `fennec fix` still gives `main` the parameter too.
+
+### Several programs in one kit
+
+A kit's program is `src/main.fen`. Any other program, such as one for each place it runs, a tool, or a task, is a file of its own in `entries/`, beside `src/`, with a `main` of its own:
+
+```
+shop/
+  kit.toml
+  src/
+    main.fen
+    app.fen
+  entries/
+    deploy.fen
+    seed.fen
+```
+
+```fennec
+# entries/deploy.fen
+from app import Config, run
+
+def main(net: Net, env: Env, entropy: Entropy, stdout: Stdout) fails NetError:
+    config = Config(port=8080, site=env.get("SITE") else "https://shop.example")
+    run(config, net, entropy, stdout)?
+    return
+```
+
+- **Its `main` is its grant.** What `main` takes is everything that program may do, and there's no second list of it to keep in step. A program run on a laptop and one deployed differ in what their `main`s take.
+- **`kit.lock` records what each program takes,** `src/main.fen` included, as `entry entries/deploy.fen takes Net Env Entropy Stdout`, beside what each kit holds. A build keeps it up to date and never stops on it: a `main` that takes more than the lock records builds, and the lock gets what was added, said as it's built; one that takes less builds too, and the lock narrows. A person wrote the wider signature, so the widening shows twice in review: in the source, and in a small file that rarely changes.
+- **Tasks are programs too.** `fennec run seed` runs `entries/seed.fen`: a bare name, with no `/` and no `.fen`, is a program in `entries/`, and anything else is a path, as before. There are no shell-string scripts, and no install, pre or post hooks: a task is Fennec, checked like the rest, and takes only what its `main` names.
+- **A program imports the kit's modules,** those in `src/`, and nothing imports a program, so code two programs share goes in `src/`, and two `main`s never meet. A program's file can hold tests, and `fennec test` runs them, so its wiring can be tested with fakes.
+- **A dependency's programs are its own.** Only its library is what it gives others: a kit never builds, runs or reaches a dependency's `entries/`, so nothing of a dependency runs when it's fetched.
+- **A new program only when what it may do differs.** Staging and production differ in values, so they're one program with different settings; a game's client and its server differ in what they may do, so they're two.
+- **Settings are plain values.** Each `main` reads what it needs, from `Env`, literals or a file, and builds a `Config` it hands down. Nothing below `main` reads `Env`, and a test builds a `Config` itself.
+- **A program is only a `main`.** There's no conditional compilation of any kind: no `cfg`, no feature flags, no profiles, nothing that picks code for a place. What's checked while you edit is what ships.
+
+Not built yet: today a kit has one `main`, in `src/main.fen`.
 
 `main` ends the program. Failing out of it prints the failure to stderr and exits with code 1, and `def main(...) -> int:` exits with the `int` it gives back. There's no `exit()`.
 
@@ -450,7 +495,7 @@ test "a hash names its content" for text: str:
 
 | Command | What it does |
 |---|---|
-| `fennec run` | Runs the tests a change affects, then the kit's `main`. Arguments after the path go to `main`: `fennec run . src` |
+| `fennec run` | Runs the tests a change affects, then the kit's `main`. Arguments after the path go to `main`: `fennec run . src`. `fennec run seed` runs `entries/seed.fen`, once that's built |
 | `fennec run --no-test` | Runs it without the tests first |
 | `fennec test` | Runs the kit's tests, skipping unchanged ones that passed. `--all` runs every one |
 | `fennec build` | Makes a native program. `--release` optimizes the whole program as one, and `-o hoard` names it |

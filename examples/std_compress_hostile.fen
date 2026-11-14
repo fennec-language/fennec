@@ -10,10 +10,6 @@ def why_not(run: () -> bytes fails InvalidValue) -> str:
         return why.message
     return "read"
 
-## `data` with byte `at` as `byte`.
-def changed(data: bytes, at: int, byte: int) -> bytes:
-    return data[0:at] + bytes([byte]) + data[at + 1:len(data)]
-
 ## What `data` reads as, as gzip or as zlib, or "fails".
 def read_as(data: bytes, gzipped: bool) -> str:
     if gzipped:
@@ -67,9 +63,11 @@ test "nothing may follow the end, and a header is what its RFC has"():
     assert why_not(() => compress.unzlib(bytes([120, 187]) + packed[2:len(packed)])?).endswith(
         "it needs a preset dictionary, which this doesn't take",
     )
+    packed_gzip = compress.gzip(TEXT)
     for flag in [32, 64, 128]:
+        flagged = packed_gzip[0:3] + bytes([flag]) + packed_gzip[4:len(packed_gzip)]
         assert (
-            why_not(() => compress.gunzip(changed(compress.gzip(TEXT), at=3, byte=flag))?)
+            why_not(() => compress.gunzip(flagged)?)
             == "this isn't gzip data: its header has a flag gzip doesn't define"
         )
 
@@ -84,7 +82,7 @@ test "cut short anywhere it fails, and with a byte changed it fails or reads the
                 assert why_not(() => compress.unzlib(cut)?) != "read"
         for at in range(len(packed)):
             for byte in [0, 255]:
-                other = changed(packed, at=at, byte=byte)
+                other = packed[0:at] + bytes([byte]) + packed[at + 1:len(packed)]
                 assert read_as(other, gzipped) in ["fails", TEXT]
 
 def main(stdout: Stdout):

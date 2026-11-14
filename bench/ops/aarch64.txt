@@ -7,7 +7,7 @@ dict_get 116 220 81d02fe2c588940a
 dict_put 109 218 ab39a7ea05ce9935
 find 236 244 4e050ac418a81c6a
 fstring 144 490 39ea2f884cc5e6b7
-item_append 608 3024 3c7a1d5a1060105c
+item_append 536 3024 3c7a1d5a1060105c
 item_copy_change 113 1612 e5c4517945d7d51f
 item_dict_set 128 1726 cf8002fe848b737e
 item_put_back 102 1605 b682349c0503b22b

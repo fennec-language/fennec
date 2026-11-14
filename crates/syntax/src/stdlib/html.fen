@@ -52,6 +52,11 @@ export def render(page: Template[HtmlValue]) -> Html fails HtmlError:
     for at, piece in enumerate(page.strings):
         for c in piece:
             scan.step(c)
+        if scan.refused != "":
+            fail misplaced(
+                scan.refused,
+                reason="a refresh's `url=` has to be `http`, `https` or relative",
+            )
         out += piece
         if at < len(page.values):
             expression = page.expressions[at]
@@ -132,6 +137,12 @@ LINKS = [
     "xlink:href",
 ]
 
+## SVG's animation elements, whose `to`, `from`, `by` and `values` set another attribute as the
+## page runs: `<set attributeName="href" to="...">` makes a link of its value, so those four are
+## held to what a link is.
+ANIMATIONS = ["set", "animate", "animatemotion", "animatetransform", "animatecolor"]
+ANIMATED = ["to", "from", "by", "values"]
+
 ## Reads a page's text a character at a time, keeping where it's reached.
 struct PageScan:
     spot = PageSpot.Text
@@ -146,6 +157,23 @@ struct PageScan:
     ending = ""
     ## The last characters of a comment, to find its `-->`, or of `<!`, to find `<!--`.
     tail = ""
+    ## How many characters a comment has had, as `<!-->` and `<!--->` end it at once.
+    said = 0
+    ## Inside a `<script>`: whether a `<!--` has been read, and a `<script` after it, which a
+    ## browser reads as the script's escaped and double-escaped states. In the second, `</script>`
+    ## doesn't end the script, so a value after it is still in the script.
+    escaped = False
+    double = False
+    ## The last characters read inside a `<script>` or `<style>`, in lower case, to find those.
+    recent = ""
+    ## For a `<meta>`: whether its `http-equiv` is `refresh`, wherever in the tag it is, its
+    ## `content` as written, and the first value put in that `content`. A refresh's `url=` is
+    ## checked as a link once the tag ends, when both are known.
+    refresh = False
+    content = ""
+    in_content = ""
+    ## A value that turned out, once its tag ended, to be somewhere it can't go.
+    refused = ""
 
     def step(ref self, c: str):
         match self.spot:
@@ -220,18 +248,22 @@ struct PageScan:
                     self.value = c
             case .DoubleQuoted:
                 if c == "\"":
+                    self.value_ended()
                     self.spot = .BeforeAttribute
                 else:
                     self.value += c
             case .SingleQuoted:
                 if c == "'":
+                    self.value_ended()
                     self.spot = .BeforeAttribute
                 else:
                     self.value += c
             case .Unquoted:
                 if is_space(c):
+                    self.value_ended()
                     self.spot = .BeforeAttribute
                 elif c == ">":
+                    self.value_ended()
                     self.end_tag()
                 else:
                     self.value += c
@@ -240,13 +272,21 @@ struct PageScan:
                 if self.tail == "--":
                     self.spot = .Comment
                     self.tail = ""
+                    self.said = 0
                 elif c == ">":
                     self.spot = .Text
                 elif not "--".startswith(self.tail):
                     self.spot = .Declaration
             case .Comment:
-                self.tail = (self.tail + c)[-3:]
-                if self.tail == "-->":
+                self.said += 1
+                self.tail = (self.tail + c)[-4:]
+                # `-->` ends it, and so do `--!>`, and `>` or `->` straight after `<!--`, as a
+                # browser reads them.
+                ends = self.tail.endswith("-->") or self.tail.endswith("--!>")
+                if (
+                    ends
+                    or (c == ">" and (self.said == 1 or (self.said == 2 and self.tail == "->")))
+                ):
                     self.spot = .Text
             case .Declaration:
                 if c == ">":
@@ -258,19 +298,42 @@ struct PageScan:
         self.spot = .TagName
         self.tag = c.lower()
         self.closing = closing
+        self.refresh = False
+        self.content = ""
+        self.in_content = ""
 
-    ## A tag's `>`: a `<script>` or `<style>` starts text read as code, until its end tag.
+    ## An attribute's value has ended: a `<meta>` keeps what it needs of it.
+    def value_ended(ref self):
+        if self.tag != "meta": return
+        if self.attribute == "http-equiv":
+            self.refresh = self.value.strip().lower() == "refresh"
+        elif self.attribute == "content":
+            self.content = self.value
+
+    ## A tag's `>`: a `<script>` or `<style>` starts text read as code, until its end tag. A
+    ## `<meta>` refresh with a value in its `content` has its `url=` checked as a link.
     def end_tag(ref self):
+        if (
+            self.tag == "meta"
+            and self.refresh
+            and self.in_content != ""
+            and not refreshes_safely(self.content)
+        ):
+            self.refused = self.in_content
         if not self.closing and (self.tag == "script" or self.tag == "style"):
             self.spot = .RawText
             self.raw = self.tag
             self.ending = ""
+            self.escaped = False
+            self.double = False
+            self.recent = ""
         else:
             self.spot = .Text
 
     ## A character inside a `<script>` or `<style>`, watching for `</script` or `</style`
     ## followed by a space, `/` or `>`, in any case.
     def read_raw(ref self, c: str):
+        if self.raw == "script" and self.read_escapes(c): return
         wanted = "</" + self.raw
         if len(self.ending) == len(wanted):
             if is_space(c) or c == "/" or c == ">":
@@ -287,6 +350,30 @@ struct PageScan:
             self.ending = grown
         else:
             self.ending = "<" if c == "<" else ""
+
+    ## Keeps a `<script>`'s escaped and double-escaped states, as WHATWG's tokenizer does, and
+    ## says whether `c` was taken by them: a `</script>` in the double-escaped state only goes
+    ## back to the escaped one, without ending the script.
+    def read_escapes(ref self, c: str) -> bool:
+        before = self.recent
+        self.recent = (before + c.lower())[-10:]
+        delimiter = is_space(c) or c == "/" or c == ">"
+        if not self.escaped:
+            if self.recent.endswith("<!--"):
+                self.escaped = True
+            return False
+        if self.recent.endswith("-->"):
+            self.escaped = False
+            self.double = False
+            return False
+        if not self.double:
+            if delimiter and before.endswith("<script"):
+                self.double = True
+            return False
+        if delimiter and before.endswith("</script"):
+            self.double = False
+        self.ending = ""
+        return True
 
     ## What a value becomes where the text has reached, or why it can't go there.
     def put(ref self, value: HtmlValue, expression: str) -> str fails HtmlError:
@@ -308,8 +395,16 @@ struct PageScan:
                         expression,
                         reason="a `srcdoc` attribute reads its value as a page",
                     )
+                if self.tag == "meta" and name == "http-equiv":
+                    fail misplaced(
+                        expression,
+                        reason="a `<meta>`'s `http-equiv` says what the page does, so it's written in the template",
+                    )
+                if self.tag == "meta" and name == "content" and self.in_content == "":
+                    self.in_content = expression
                 text = text_of(value)
-                if name in LINKS and not followed(self.value, next=text):
+                linked = name in LINKS or (self.tag in ANIMATIONS and name in ANIMATED)
+                if linked and not followed(self.value, next=text):
                     fail misplaced(
                         expression,
                         reason="a link has to be `http`, `https`, `mailto` or relative",
@@ -371,6 +466,22 @@ def followed(before: str, next: str) -> bool:
         if scheme == "" and c <= " ": continue
         scheme += c
     return True
+
+## Whether a `<meta>` refresh's `content`, like `5; url=/next`, goes somewhere a browser can go
+## safely: `http`, `https` or relative. A refresh can't be a `mailto:`, which `followed` allows.
+def refreshes_safely(content: str) -> bool:
+    mut at = 0
+    while at < len(content) and content[at] != ";" and content[at] != ",":
+        at += 1
+    mut url = content[at + 1:].strip()
+    if url.lower().startswith("url"):
+        rest = url[3:].strip()
+        if rest.startswith("="):
+            url = rest[1:].strip()
+    if url.startswith("'") or url.startswith("\""):
+        url = url[1:]
+    if not followed("", next=url): return False
+    return not url.strip().lower().startswith("mailto:")
 
 def is_letter(c: str) -> bool:
     return (c >= "a" and c <= "z") or (c >= "A" and c <= "Z")

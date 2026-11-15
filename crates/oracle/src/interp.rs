@@ -246,6 +246,7 @@ impl Interp {
                 Some("Stderr") => Cap::Stderr,
                 Some("Signals") => Cap::Signals,
                 Some("Clock") => Cap::Clock,
+                Some("Entropy") => Cap::Entropy,
                 // `std.env`'s struct, run from its own source, whose `get` is modeled here.
                 Some("Env") => {
                     let env = crate::value::Instance {

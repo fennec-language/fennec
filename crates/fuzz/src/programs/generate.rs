@@ -20,7 +20,8 @@ use super::ast::{
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
 use super::ast::{
-    Calling, Field, FieldCall, FieldCalls, SWAP_KEYS, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
+    Calling, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField,
+    Swapping, Waking, Yielding,
 };
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
@@ -61,6 +62,11 @@ const YIELDS: bool = true;
 /// Whether random programs launch a task that crashes or fails while its launcher waits on a
 /// channel for its answer, which has to end the wait rather than hang. On since #1563.
 const CRASH_WAKES: bool = true;
+
+/// Whether random programs listen to a channel to every listener, through inboxes read one
+/// message at a time or in a loop, and through a loop that drops the oldest of what it falls
+/// behind on, with inboxes falling behind loudly, as #1799 decided.
+const EVERY_LISTENER: bool = true;
 
 /// Whether random programs keep what a lookup in a struct's dict found, set the struct whole to
 /// another, then store at the same key: the store has to go to the dict the struct holds now.
@@ -651,6 +657,7 @@ impl Writer<'_> {
             27 if FIELD_CALLS && self.choice(4) == 0 => self.field_calls(body),
             27 if YIELDS && !self.threadless && self.choice(4) == 0 => self.yields(body),
             27 if CRASH_WAKES && !self.threadless && self.choice(4) == 0 => self.wakes(body),
+            27 if EVERY_LISTENER && !self.threadless && self.choice(4) == 0 => self.listens(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1059,6 +1066,20 @@ impl Writer<'_> {
         body.push(Stmt::Woken(Waking { id, count, at, failing, rounds }));
     }
 
+    /// Listeners of a channel to every listener: inboxes, some falling behind, and a loop that
+    /// drops the oldest.
+    fn listens(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let size = 1 + i64::from(self.byte() % 4);
+        let early = self.choice(2) == 0;
+        let sent = 1 + i64::from(self.byte() % 6);
+        let dropping = self.choice(2) == 0;
+        let count = usize::from(!dropping) + self.choice(3 - usize::from(!dropping));
+        let inboxes = (0..count).map(|_| self.choice(2) == 0).collect();
+        body.push(Stmt::Listened(Listening { id, size, early, sent, dropping, inboxes }));
+    }
+
     /// A lookup kept while the struct whose dict it searched is set to another, then a store at
     /// the same key.
     fn swaps(&mut self, body: &mut Vec<Stmt>) {
@@ -1087,8 +1108,8 @@ impl Writer<'_> {
         }));
     }
 
-    /// A `shared` shelf's pouch changed under its lock in a task, by a `ref self` method on it or
-    /// by hand, crashing partway for a value past 1.
+    /// A pouch changed in a task, under a lock or in what the task holds alone, by a `ref self`
+    /// method on it or by hand, crashing partway for a value past 1.
     fn shelves(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;
         let id = self.made;
@@ -1096,15 +1117,27 @@ impl Writer<'_> {
         let seen = i64::from(self.byte() % 10);
         let mut steps = Vec::new();
         for _ in 0..2 + self.choice(4) {
-            let value = i64::from(self.byte() % 10);
-            let how = match self.choice(3) {
-                0 => Shelve::Fill,
-                1 => Shelve::ByHand,
-                _ => Shelve::Direct,
+            let picked = self.byte();
+            let value = i64::from(picked % 10);
+            // The byte's tens say whether a form that reaches the pouch through the list or dict
+            // hands that list or dict to a function to do it.
+            let handed = picked / 10 % 2 == 1;
+            let how = match (self.choice(3), handed) {
+                (0, _) => Shelve::Fill,
+                (1, false) => Shelve::ByHand,
+                (1, true) => Shelve::HandedByHand,
+                (_, false) => Shelve::Direct,
+                (_, true) => Shelve::Handed,
             };
             steps.push((value, how));
         }
-        body.push(Stmt::Shelved(Shelving { id, in_list, seen, steps }));
+        let place = match self.choice(3) {
+            0 => ShelfPlace::Locked,
+            1 => ShelfPlace::Owned,
+            _ => ShelfPlace::Bare,
+        };
+        let rounds = 1 + i64::from(self.byte() % 6);
+        body.push(Stmt::Shelved(Shelving { id, in_list, seen, place, rounds, steps }));
     }
 
     /// Generators yielding structs, tuples and enums holding texts from 20 to 66 bytes, and an

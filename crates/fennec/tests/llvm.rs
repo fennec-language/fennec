@@ -20607,6 +20607,40 @@ fn an_empty_buffer_fails_to_pop_as_pinned() -> std::io::Result<()> {
     )
 }
 
+/// `reserve(n)` makes room for `n` more than a buffer holds, as Rust's `Vec::reserve` does, so
+/// adding `n` items after it never grows. It once made room for `n` in all: a buffer holding 4
+/// that reserved 20 had room for 20, not 24, and one holding 20 that reserved 20 got none.
+#[test]
+fn a_buffer_reserves_room_for_that_many_more() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "buffer_reserve",
+        "def main(stdout: Stdout):
+    mut squares = Buffer[int]()
+    for i in range(4):
+        squares.push(i * i)
+    squares.reserve(20)
+    stdout.print(squares.capacity() >= len(squares) + 20, squares.capacity())
+    # Adding the 20 leaves its room as it was.
+    room = squares.capacity()
+    for i in range(20):
+        squares.push(i)
+    stdout.print(len(squares), squares.capacity() == room)
+    # It holds 24 now, and reserving 20 more makes room for 44, where it once made none.
+    squares.reserve(20)
+    stdout.print(squares.capacity() >= len(squares) + 20)
+    # Room it already has is left alone.
+    room = squares.capacity()
+    squares.reserve(3)
+    stdout.print(squares.capacity() == room, squares[23])
+",
+    )?;
+    assert_eq!(printed, "True 24\n24 True\nTrue\nTrue 19\n");
+    Ok(())
+}
+
 /// `Net` reaches native code as kind 7, and its methods run through the runtime by that kind,
 /// so a wrong number would send `listen` to another capability.
 #[test]

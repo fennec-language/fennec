@@ -161,12 +161,18 @@ fn a_buffer_reserves_room_and_truncates_letting_go_of_what_it_drops() {
     let before = live();
     let all = list(&["archer", "medic", "soldier"]);
     let room = |list: i64| with(|state| state.heap.block(u64::try_from(list).ok()?)?.get(3).copied());
+    // Room for 20 more than the 3 it holds, not for 20 in all.
     let reserved = super::reserve(all, 20);
-    assert_eq!(room(reserved), Some(20));
+    assert_eq!(room(reserved), Some(23));
+    // It has that room already, so asking again for as much, or for less, changes nothing.
+    assert_eq!(super::reserve(reserved, 20), reserved);
     assert_eq!(super::reserve(reserved, 2), reserved);
-    let cut = super::truncate(reserved, 1);
+    // One more than it has room for beyond what it holds makes more.
+    let more = super::reserve(reserved, 21);
+    assert_eq!(room(more), Some(24));
+    let cut = super::truncate(more, 1);
     assert_eq!(read(cut), Value::list(vec![unit("archer", 1)]));
-    assert_eq!(room(cut), Some(20));
+    assert_eq!(room(cut), Some(24));
     heap::free(cut);
     assert_eq!(live(), before);
     finish();

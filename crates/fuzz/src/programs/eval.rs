@@ -18,7 +18,33 @@ use super::ast::{
     Kept, LEDGER, Leave, Nested, Op, Place, Program, RefPlace, Size, Stmt, StreamMap, StreamRead, Streaming,
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
-use super::ast::{Calling, Field, FieldCall, FieldCalls, Waking, Yielding};
+use super::ast::{
+    Calling, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping,
+    Waking, Yielding,
+};
+use super::source::LONG_PIECE;
+
+/// A `Swapped`'s struct as the evaluator holds it: its counts and its lists, each in the order
+/// their keys went in.
+type Desk = (Vec<(String, i64)>, Vec<(String, Vec<i64>)>);
+
+/// Puts `value` at `key`, where it was or last.
+fn put<T>(pairs: &mut Vec<(String, T)>, key: &str, value: T) {
+    match pairs.iter_mut().find(|(held, _)| held == key) {
+        Some(slot) => slot.1 = value,
+        None => pairs.push((key.to_owned(), value)),
+    }
+}
+
+/// A `Swapped`'s struct as Fennec prints it.
+fn desk_shown(id: usize, (counts, lists): &Desk) -> String {
+    let counts: Vec<String> = counts.iter().map(|(key, n)| format!("\"{key}\": {n}")).collect();
+    let lists: Vec<String> = lists
+        .iter()
+        .map(|(key, items)| format!("\"{key}\": {}", shown(&Value::Ints(items.clone()))))
+        .collect();
+    format!("Desk{id}(counts={{{}}}, lists={{{}}})", counts.join(", "), lists.join(", "))
+}
 
 /// A value while the program runs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -636,7 +662,7 @@ fn changed(value: &mut Kept, how: Writing, at: usize, n: i64) -> Option<()> {
             let _ = write!(text, "b{n}{before}ç");
         }
         (Kept::Text(text), Writing::Long) => {
-            let _ = write!(text, "{}{n}", super::source::LONG_PIECE);
+            let _ = write!(text, "{LONG_PIECE}{n}");
         }
         (Kept::Text(text), _) => {
             let _ = write!(text, "p{n}");
@@ -1611,6 +1637,9 @@ impl Machine {
             Stmt::FieldCalls(calls) => self.fielded(calls)?,
             Stmt::Yielded(yielding) => self.yielded(yielding),
             Stmt::Woken(waking) => self.woken(waking),
+            Stmt::Swapped(swapping) => self.swapped(swapping),
+            Stmt::Shelved(shelving) => self.shelved(shelving),
+            Stmt::Listened(listening) => self.listened(listening),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -1988,6 +2017,113 @@ impl Machine {
                     self.out.push_str("crashed\n");
                 }
             }
+        }
+    }
+
+    /// What `swaps{id}` prints: the struct given as it was, and the other one with the store,
+    /// whatever the lookup searched.
+    fn swapped(&mut self, swapping: &Swapping) {
+        let Swapping { id, base, other_base, field, key, fresh, called, kept, owned, rounds } = *swapping;
+        let key = SWAP_KEYS.get(key).copied().unwrap_or("a");
+        let desk = |at: i64| -> Desk {
+            (
+                vec![("a".to_owned(), at), ("b".to_owned(), at + 1)],
+                vec![("a".to_owned(), vec![at, 1]), ("b".to_owned(), vec![at + 2])],
+            )
+        };
+        for turn in 0..rounds {
+            let given = desk(base + turn);
+            let mut after = if called {
+                desk(other_base)
+            } else {
+                (vec![("c".to_owned(), other_base)], vec![("c".to_owned(), vec![other_base])])
+            };
+            if field == SwapField::Lists {
+                let known = given.1.iter().find(|(held, _)| held == key).map(|(_, items)| items.clone());
+                put(&mut after.1, key, vec![fresh]);
+                match (kept, known) {
+                    (true, Some(known)) => put(&mut after.1, "known", known),
+                    (true, None) => {}
+                    (false, known) => put(&mut after.1, "found", vec![i64::from(known.is_some())]),
+                }
+            } else {
+                let known = given.0.iter().find(|(held, _)| held == key).map(|(_, n)| *n);
+                put(&mut after.0, key, fresh);
+                match (kept, known) {
+                    (true, Some(known)) => put(&mut after.0, "known", known),
+                    (true, None) => {}
+                    (false, known) => put(&mut after.0, "found", i64::from(known.is_some())),
+                }
+            }
+            if owned {
+                let _ = writeln!(self.out, "{} {}", desk_shown(id, &given), desk_shown(id, &after));
+            } else {
+                let _ = writeln!(self.out, "{}", desk_shown(id, &after));
+            }
+        }
+    }
+
+    /// What `shelved{id}` prints: for each step, `crashed` for a value past 1, and the pouches.
+    /// Under a lock, the shelf as it is after each step, with a crash's lock undone whole. Held
+    /// by the task alone, what the task made of them, printed by the task when it doesn't crash.
+    fn shelved(&mut self, shelving: &Shelving) {
+        let Shelving { id, in_list, seen, place, rounds, ref steps } = *shelving;
+        let first = (vec![format!("first, {LONG_PIECE}")], seen);
+        let mut kept = first.clone();
+        let limits = [1, 2];
+        for (value, how) in steps {
+            let Some(limit) = usize::try_from(*value).ok().and_then(|at| limits.get(at)) else {
+                self.out.push_str("crashed\n");
+                if place == ShelfPlace::Locked {
+                    self.pouches_shown(id, in_list, &kept);
+                }
+                continue;
+            };
+            let mut pouch = if place == ShelfPlace::Locked { kept.clone() } else { first.clone() };
+            for turn in 0..rounds {
+                if how.by_hand() {
+                    pouch.0.push(format!("by hand {value} {turn}, {LONG_PIECE}"));
+                } else {
+                    pouch.0.push(format!("added {value} {turn}, {LONG_PIECE}"));
+                    pouch.0.push(format!("again {value} {turn}, {LONG_PIECE}"));
+                }
+            }
+            pouch.1 += limit;
+            self.pouches_shown(id, in_list, &pouch);
+            if place == ShelfPlace::Locked {
+                kept = pouch;
+            }
+        }
+    }
+
+    /// What `listened{id}` prints: what the loop dropping the oldest heard, the last `size` sent,
+    /// then each inbox's messages, or `behind` for one that fell behind.
+    fn listened(&mut self, listening: &Listening) {
+        let Listening { size, sent, dropping, ref inboxes, .. } = *listening;
+        let shown = |from: i64| -> String {
+            let heard: Vec<String> = (from..=sent).map(|hit| hit.to_string()).collect();
+            format!("[{}]", heard.join(", "))
+        };
+        if dropping {
+            let _ = writeln!(self.out, "listened {}", shown((sent - size + 1).max(1)));
+        }
+        for looping in inboxes {
+            if sent > size {
+                self.out.push_str("behind\n");
+            } else {
+                let _ = writeln!(self.out, "{} {}", if *looping { "looped" } else { "took" }, shown(1));
+            }
+        }
+    }
+
+    /// A `Shelved` statement's list or dict holding its one pouch, as Fennec prints it.
+    fn pouches_shown(&mut self, id: usize, in_list: bool, (items, seen): &(Vec<String>, i64)) {
+        let texts: Vec<String> = items.iter().map(|text| format!("\"{text}\"")).collect();
+        let pouch = format!("Pouch{id}(items=[{}], seen={seen})", texts.join(", "));
+        if in_list {
+            let _ = writeln!(self.out, "[{pouch}]");
+        } else {
+            let _ = writeln!(self.out, "{{\"one\": {pouch}}}");
         }
     }
 

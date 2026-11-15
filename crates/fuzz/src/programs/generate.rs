@@ -19,7 +19,10 @@ use super::ast::{
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
-use super::ast::{Calling, Field, FieldCall, FieldCalls, Waking, Yielding};
+use super::ast::{
+    Calling, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField,
+    Swapping, Waking, Yielding,
+};
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
 /// It does since #1333; turned off, only a block that fails is given `guarded_noted`'s cleanup.
@@ -59,6 +62,27 @@ const YIELDS: bool = true;
 /// Whether random programs launch a task that crashes or fails while its launcher waits on a
 /// channel for its answer, which has to end the wait rather than hang. On since #1563.
 const CRASH_WAKES: bool = true;
+
+/// Whether random programs listen to a channel to every listener, through inboxes read one
+/// message at a time or in a loop, and through a loop that drops the oldest of what it falls
+/// behind on, with inboxes falling behind loudly, as #1799 decided.
+const EVERY_LISTENER: bool = true;
+
+/// Whether random programs keep what a lookup in a struct's dict found, set the struct whole to
+/// another, then store at the same key: the store has to go to the dict the struct holds now.
+/// Main stores into the dict the lookup searched, the caller's or one let go of, as the review of
+/// #1785 found (finding 3), and this shape finds it within a few dozen programs. Off until the
+/// LLVM lane's fix lands, since CI's run of this target would fail on main until then; the
+/// seed `review_1785_lookup_swapped` writes it once it's on.
+const LOOKUPS_SWAPPED: bool = false;
+
+/// Whether random programs crash inside a `ref self` method, or a change by hand, on part of a
+/// `shared` value under its lock, which has to undo the whole lock. Main puts back a freed block
+/// when the part is a list's item, so the pouch prints `items=None` and the program stops with
+/// "a list native code changed isn't one this thread can find", as the review of #1785 found
+/// (finding 1, `b5.fen`). Off until the LLVM lane's fix lands, as above; the seed
+/// `review_1785_crash_in_locked_part` writes it once it's on.
+const PART_CRASHES: bool = false;
 
 /// Whether a call handling several of `Crashed`, `Closed`, `Timeout` and `Refused` prints each
 /// one's own word, `crashed`, `closed`, `timeout` or `refused`, rather than one word for them all,
@@ -623,6 +647,8 @@ impl Writer<'_> {
             26 if self.choice(4) == 0 => self.turns(body),
             26 if PARALLEL_STREAMS && !self.threadless && self.choice(4) == 0 => self.streams(body),
             26 if ALIASING && self.choice(4) == 0 => self.aliasing(body),
+            26 if LOOKUPS_SWAPPED && self.choice(4) == 0 => self.swaps(body),
+            26 if PART_CRASHES && !self.threadless && self.choice(4) == 0 => self.shelves(body),
             26 => self.change_counts(body),
             // The guarded shapes are tried first, as they were before the shapes after them, so
             // each of their cases still comes up as often.
@@ -631,6 +657,7 @@ impl Writer<'_> {
             27 if FIELD_CALLS && self.choice(4) == 0 => self.field_calls(body),
             27 if YIELDS && !self.threadless && self.choice(4) == 0 => self.yields(body),
             27 if CRASH_WAKES && !self.threadless && self.choice(4) == 0 => self.wakes(body),
+            27 if EVERY_LISTENER && !self.threadless && self.choice(4) == 0 => self.listens(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1037,6 +1064,80 @@ impl Writer<'_> {
         let failing = self.choice(2) == 0;
         let rounds = if self.choice(4) == 0 { 70 } else { 1 };
         body.push(Stmt::Woken(Waking { id, count, at, failing, rounds }));
+    }
+
+    /// Listeners of a channel to every listener: inboxes, some falling behind, and a loop that
+    /// drops the oldest.
+    fn listens(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let size = 1 + i64::from(self.byte() % 4);
+        let early = self.choice(2) == 0;
+        let sent = 1 + i64::from(self.byte() % 6);
+        let dropping = self.choice(2) == 0;
+        let count = usize::from(!dropping) + self.choice(3 - usize::from(!dropping));
+        let inboxes = (0..count).map(|_| self.choice(2) == 0).collect();
+        body.push(Stmt::Listened(Listening { id, size, early, sent, dropping, inboxes }));
+    }
+
+    /// A lookup kept while the struct whose dict it searched is set to another, then a store at
+    /// the same key.
+    fn swaps(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 20);
+        let other_base = 100 + i64::from(self.byte() % 20);
+        let field = if self.choice(2) == 0 { SwapField::Lists } else { SwapField::Counts };
+        let key = self.choice(SWAP_KEYS.len());
+        let fresh = i64::from(self.byte() % 50);
+        let called = self.choice(2) == 0;
+        let kept = self.choice(2) == 0;
+        let owned = self.choice(2) == 0;
+        let rounds = if self.choice(4) == 0 { 20 } else { 1 };
+        body.push(Stmt::Swapped(Swapping {
+            id,
+            base,
+            other_base,
+            field,
+            key,
+            fresh,
+            called,
+            kept,
+            owned,
+            rounds,
+        }));
+    }
+
+    /// A pouch changed in a task, under a lock or in what the task holds alone, by a `ref self`
+    /// method on it or by hand, crashing partway for a value past 1.
+    fn shelves(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let in_list = self.choice(2) == 0;
+        let seen = i64::from(self.byte() % 10);
+        let mut steps = Vec::new();
+        for _ in 0..2 + self.choice(4) {
+            let picked = self.byte();
+            let value = i64::from(picked % 10);
+            // The byte's tens say whether a form that reaches the pouch through the list or dict
+            // hands that list or dict to a function to do it.
+            let handed = picked / 10 % 2 == 1;
+            let how = match (self.choice(3), handed) {
+                (0, _) => Shelve::Fill,
+                (1, false) => Shelve::ByHand,
+                (1, true) => Shelve::HandedByHand,
+                (_, false) => Shelve::Direct,
+                (_, true) => Shelve::Handed,
+            };
+            steps.push((value, how));
+        }
+        let place = match self.choice(3) {
+            0 => ShelfPlace::Locked,
+            1 => ShelfPlace::Owned,
+            _ => ShelfPlace::Bare,
+        };
+        let rounds = 1 + i64::from(self.byte() % 6);
+        body.push(Stmt::Shelved(Shelving { id, in_list, seen, place, rounds, steps }));
     }
 
     /// Generators yielding structs, tuples and enums holding texts from 20 to 66 bytes, and an

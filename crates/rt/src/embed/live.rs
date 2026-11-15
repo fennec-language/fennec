@@ -34,6 +34,10 @@ pub(crate) struct Counts {
     pub(crate) names: usize,
     /// A worker's parked tasks, and the accounts, temporaries and waits it keeps for them.
     pub(crate) tasks: usize,
+    /// The longest list of blocks made that any one task holds now: what a task keeps to hand
+    /// over at its end. A task lets its list go past a few thousand blocks, so this has a ceiling
+    /// however long a task runs, where it once grew with every block the task made.
+    pub(crate) task_held: usize,
     /// The connections it's serving.
     pub(crate) connections: usize,
     /// Words of freed blocks kept for reuse, at most 8 MB's worth on each thread.
@@ -56,6 +60,8 @@ impl Counts {
         self.texts += other.texts;
         self.names += other.names;
         self.tasks += other.tasks;
+        // The longest any one task holds, not all of them together.
+        self.task_held = self.task_held.max(other.task_held);
         self.connections += other.connections;
         self.spare += other.spare;
         self.threads += other.threads;
@@ -67,12 +73,13 @@ impl Counts {
     fn lines(&self) -> String {
         let blocks: usize = self.blocks.values().sum();
         let mut text = format!(
-            "blocks {blocks}\ntemps {}\ninputs {}\ntexts {}\nnames {}\ntasks {}\nconnections {}\nthreads {}\ncached spare {}\ncached pages {}\ncached constants {}\n",
+            "blocks {blocks}\ntemps {}\ninputs {}\ntexts {}\nnames {}\ntasks {}\ntask held {}\nconnections {}\nthreads {}\ncached spare {}\ncached pages {}\ncached constants {}\n",
             self.temps,
             self.inputs,
             self.texts,
             self.names,
             self.tasks,
+            self.task_held,
             self.connections,
             self.threads,
             self.spare,
@@ -215,14 +222,14 @@ mod tests {
     #[test]
     fn counts_add_up_by_size_and_read_as_lines() {
         let mut total = Counts::default();
-        let one = Counts { blocks: [(4, 2), (6, 1)].into(), temps: 1, ..Counts::default() };
-        let other = Counts { blocks: [(4, 1)].into(), connections: 2, ..Counts::default() };
+        let one = Counts { blocks: [(4, 2), (6, 1)].into(), temps: 1, task_held: 7, ..Counts::default() };
+        let other = Counts { blocks: [(4, 1)].into(), connections: 2, task_held: 5, ..Counts::default() };
         total.add(&one);
         total.add(&other);
         assert_eq!(total.blocks, [(4, 3), (6, 1)].into());
         assert_eq!(
             total.lines(),
-            "blocks 4\ntemps 1\ninputs 0\ntexts 0\nnames 0\ntasks 0\nconnections 2\nthreads 0\ncached spare 0\ncached pages 0\ncached constants 0\nwords 4 3\nwords 6 1\n"
+            "blocks 4\ntemps 1\ninputs 0\ntexts 0\nnames 0\ntasks 0\ntask held 7\nconnections 2\nthreads 0\ncached spare 0\ncached pages 0\ncached constants 0\nwords 4 3\nwords 6 1\n"
         );
     }
 }

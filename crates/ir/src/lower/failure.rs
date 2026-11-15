@@ -65,6 +65,11 @@ impl Lowering<'_> {
     /// be. The checker has shown it fits, so anything else isn't lowered yet.
     pub(super) fn coerce(&mut self, value: Operand, to: &Type, span: Span) -> Lowered<Operand> {
         let from = type_in(&self.locals, &value).ok_or("a value has no type")?;
+        // What an arrow giving back `None` gives holds nothing, so where an optional goes it's the
+        // `None` written there, which is laid out as the optional is. A local of type `None` isn't.
+        if from == Type::None && matches!(to, Type::Optional(_)) {
+            return Ok(Operand::None);
+        }
         if fits(to, &from) {
             return Ok(value);
         }
@@ -78,7 +83,16 @@ impl Lowering<'_> {
         }
         match to {
             Type::Optional(inner) => {
-                let value = self.coerce(value, inner, span)?;
+                let mut value = self.coerce(value, inner, span)?;
+                // An error where an optional set of errors goes is made one of the set first: a set
+                // is laid out with a case for each of its errors, and an optional holds it as it is.
+                if matches!(**inner, Type::Errors(_))
+                    && type_in(&self.locals, &value).is_some_and(|held| held != **inner)
+                {
+                    let widened = self.temporary((**inner).clone());
+                    self.emit(InstKind::Copy { dest: widened, value }, span);
+                    value = Operand::Local(widened);
+                }
                 let dest = self.temporary(to.clone());
                 self.emit(InstKind::MakeSome { dest, value }, span);
                 Ok(Operand::Local(dest))
@@ -494,9 +508,11 @@ impl Lowering<'_> {
     }
 
     /// Leaves with a failure written in this function: from a `parallel` loop's round that's
-    /// lowered as an ordinary loop it's one whose block hasn't run its cleanup yet.
+    /// lowered as an ordinary loop it's one whose block hasn't run its cleanup yet, and from a
+    /// `with` block's cleanup, it's one the block around that one cleans up after. A `with`
+    /// block's own failures leave it to its cleanup in what's written, so none reaches here.
     fn leave_with_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
-        if self.plain_rounds > 0 {
+        if self.plain_rounds > 0 || !self.on_failure.is_empty() {
             return self.pass_up_error(error, span);
         }
         self.return_error(error, span)

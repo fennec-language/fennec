@@ -58,3 +58,6 @@ fennec-parked.workspace = true
 mio.workspace = true
 # To let go of a test's connection without holding its port: see the server tests' `goodbye`.
 socket2.workspace = true
+# Only to hold `std.crypto`'s own Argon2id to, in a differential test: nothing that ships takes it,
+# which `rustcrypto_argon2_is_only_ever_a_dev_dependency` checks.
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc"] }

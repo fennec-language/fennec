@@ -13,10 +13,13 @@ pub(crate) const MODULE: Module = Module {
     construct: no_checks,
 };
 
-const FUNCTIONS: [Function; 14] = [
+const FUNCTIONS: [Function; 17] = [
     takes("crypto._add", (2, 2)),
+    takes("crypto._check_password", (2, 2)),
     takes("crypto._end", (1, 1)),
     takes("crypto._end_digest", (1, 1)),
+    takes("crypto._hash_password", (2, 2)),
+    takes("crypto._password_problem", (1, 1)),
     takes("crypto._start", (1, 1)),
     takes("crypto.blake3", (1, 1)),
     takes("crypto.blake3_digest", (1, 1)),
@@ -47,6 +50,7 @@ fn pieces(name: &str) -> Type {
     match name {
         "crypto._start" => Type::Int,
         "crypto._add" => Type::Unit,
+        "crypto._check_password" => Type::Bool,
         "crypto._end_digest" => Type::Bytes,
         _ => Type::Str,
     }

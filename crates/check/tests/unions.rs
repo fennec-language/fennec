@@ -73,6 +73,28 @@ fn a_union_has_a_method_every_member_has() {
 
 /// A `match` case naming a member narrows the subject to it inside the case, as `is` does: a
 /// method only that member has, or a field of its own, reads there.
+/// A union with a function member, as a server's `Router | (Request) -> Response`: a named
+/// function or an arrow goes where it's wanted, an arrow takes its parameters' types from the one
+/// function member, and `case _:` after the other members' cases, or `is` ruling them out, leaves
+/// the function to call. With another member left, it can't be called, and a function that
+/// doesn't fit the member doesn't go there.
+#[test]
+fn a_union_with_a_function_member_takes_a_function_and_calls_it_once_narrowed() {
+    let fine = "struct Table:\n    rows: int\n\ntype Answerer = Table | (int) -> str\n\ndef twice(number: int) -> str:\n    return str(number * 2)\n\ndef use(answer: Answerer) -> str:\n    match answer:\n        case Table(rows):\n            return str(rows)\n        case _:\n            return answer(3)\n\ndef also(answer: Answerer) -> str:\n    if answer is Table:\n        return f\"table {answer.rows}\"\n    return answer(5)\n\ndef main(stdout: Stdout):\n    stdout.print(use(Table(rows=2)))\n    stdout.print(use((number) => str(number * 2)))\n    stdout.print(use(twice))\n    held: Answerer = (number) => f\"held {number}\"\n    stdout.print(also(held), also(Table(rows=7)))\n    return\n";
+    assert_eq!(problems(fine), Vec::<String>::new());
+    let left = "struct Table:\n    rows: int\n\nstruct Chart:\n    bars: int\n\n\
+        def use(answer: Table | Chart | (int) -> str) -> str:\n    match answer:\n        case Table(rows):\n            \
+        return str(rows)\n        case _:\n            return answer(3)\n";
+    let wrong = "struct Table:\n    rows: int\n\ndef shown(text: str) -> str:\n    return text\n\n\
+        def use(answer: Table | (int) -> str) -> int:\n    return 1\n\n\
+        def main(stdout: Stdout):\n    stdout.print(use(shown))\n    return\n";
+    assert_eq!(problems(left), ["a (int) -> str | Chart can't be called @ answer"]);
+    assert_eq!(
+        problems(wrong),
+        ["`answer` should be a (int) -> str | Table, but this is a function @ shown"]
+    );
+}
+
 #[test]
 fn a_match_case_narrows_its_subject_to_the_member_it_names() {
     let empty: [&str; 0] = [];

@@ -1168,6 +1168,12 @@ fn live_entry_of_alone(state: &State, dict: i64, entry: i64) -> Option<()> {
         return None;
     }
     let layout = layout(state, block)?;
+    entry_word(block, at, layout, entry).map(|_| ())
+}
+
+/// The word in the dict's block at `at` where the entry native code holds the address of starts,
+/// when that's one of the dict's live entries: the address `fennec_dict_set_found` takes.
+fn entry_word(block: &[u64], at: u64, layout: Layout, entry: i64) -> Option<usize> {
     let mask = usize::try_from(*block.get(4)?).ok()?;
     let used = usize::try_from(*block.get(3)?).ok()?;
     let start = DICT_HEADER_WORDS + mask + 1;
@@ -1176,7 +1182,46 @@ fn live_entry_of_alone(state: &State, dict: i64, entry: i64) -> Option<()> {
     let number = word.checked_sub(start)?;
     let live =
         number % layout.width() == 0 && number / layout.width() < used && block.get(word) != Some(&REMOVED);
-    live.then_some(())
+    live.then_some(word)
+}
+
+/// `fennec_lock_save_entry(dict, entry)`: the value at `entry` in a dict a lock's log marked is
+/// about to be changed where it is, by native code that takes it out of its entry to change.
+/// Each of the value's words is saved in the log as it is, and the log takes an owner of its own
+/// of each block they hold: a crash puts the words back, and a normal end lets them go. A word
+/// saved already in this lock holds what was made under it, so saving an entry again does
+/// nothing.
+///
+/// Native code calls it only for a dict whose count is the mark and one owner, and goes on with
+/// the entry it looked up: nothing here moves the dict or gives anything back. For any other
+/// dict, or an address that's no live entry of this one, nothing is saved.
+pub extern "C" fn save_entry(dict: i64, entry: i64) {
+    with(|state| {
+        let _ = entry_saved(state, dict, entry);
+    });
+}
+
+fn entry_saved(state: &mut State, dict: i64, entry: i64) -> Option<()> {
+    let at = u64::try_from(dict).ok()?;
+    let block = state.heap.block(at)?;
+    if entry == 0 || !super::lists::marked_alone(block) {
+        return None;
+    }
+    let layout = layout(state, block)?;
+    let place = entry_word(block, at, layout, entry)? + layout.value_at();
+    let value = block.get(place..place + layout.value_words())?.to_vec();
+    // Which of the value's words hold blocks: as its kind of item says, or the one word of a
+    // value that's a block itself.
+    let mut holding = Vec::new();
+    match value_element(state, layout.value) {
+        Some(element) => super::heap::boxed_words(&element, &value, &mut 0, &mut holding),
+        None if layout.value.owned() => holding.push(0),
+        None => {}
+    }
+    for (offset, word) in value.iter().enumerate() {
+        super::guarded::rollback::changing(state, at, place + offset, *word, holding.contains(&offset));
+    }
+    Some(())
 }
 
 /// How many puts `set_found` made where the lookup found the key, in a run that counts what it does,

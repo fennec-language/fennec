@@ -16,11 +16,14 @@ type Called = (Value, Option<Value>);
 /// 2^63: a float converts to an int when it's at least -2^63 and below 2^63.
 const INT_LIMIT: f64 = 9_223_372_036_854_775_808.0;
 
-/// Calls the builtin `name` with these arguments, its object first for a method.
-pub(super) fn call(machine: &mut Machine<'_>, name: &str, args: &[Value], span: Span) -> Ran<Called> {
+/// Calls the builtin `name` with these arguments, its object first for a method. One that changes
+/// its object takes it from `args`, leaving a unit there, so a list that nothing else holds isn't
+/// copied to be changed.
+pub(super) fn call(machine: &mut Machine<'_>, name: &str, args: &mut [Value], span: Span) -> Ran<Called> {
     if let Some(changed) = changing(machine, name, args)? {
         return Ok(changed);
     }
+    let args: &[Value] = args;
     if let Some(worked) = math_call(name, args, span) {
         return worked.map(|value| (value, None));
     }
@@ -130,13 +133,24 @@ pub(super) fn call(machine: &mut Machine<'_>, name: &str, args: &[Value], span: 
     Ok((value, None))
 }
 
-/// The builtins that change their first argument, giving it back changed.
-fn changing(machine: &mut Machine<'_>, name: &str, args: &[Value]) -> Ran<Option<Called>> {
-    let mut args = args.iter().cloned();
-    let (Some(first), rest) = (args.next(), args.collect::<Vec<_>>()) else {
+/// The builtins that change their first argument, giving it back changed. The first argument is
+/// taken from `args` only by one of these.
+fn changing(machine: &mut Machine<'_>, name: &str, args: &mut [Value]) -> Ran<Option<Called>> {
+    let Some((first, rest)) = args.split_first_mut() else { return Ok(None) };
+    let handled = matches!(
+        (name, &*first, &*rest),
+        ("list.append" | "list.extend", Value::List(_), [_])
+            | ("list.insert", Value::List(_), [Value::Int(_), _])
+            | ("list.sort" | "list.reverse", Value::List(_), [])
+            | ("list.pop", Value::List(_), [] | [Value::Int(_)])
+            | ("set.add" | "set.update", Value::Set(_), [_])
+            | ("dict.update", Value::Dict(_), [Value::Dict(_)])
+    );
+    if !handled {
         return Ok(None);
-    };
-    let changed = match (name, first, rest.as_slice()) {
+    }
+    let first = std::mem::replace(first, Value::Unit);
+    let changed = match (name, first, &*rest) {
         ("list.append", Value::List(mut items), [item]) => {
             Rc::make_mut(&mut items).push(item.clone());
             (Value::Unit, Value::List(items))
@@ -152,6 +166,20 @@ fn changing(machine: &mut Machine<'_>, name: &str, args: &[Value]) -> Ran<Option
             let place = if *at < 0 { at.saturating_add(length) } else { *at }.clamp(0, length);
             Rc::make_mut(&mut items).insert(usize::try_from(place).unwrap_or(0), item.clone());
             (Value::Unit, Value::List(items))
+        }
+        // An item that isn't there ends the program, which is left for it to do when it runs.
+        ("list.pop", Value::List(mut items), at) => {
+            let length = i64::try_from(items.len()).unwrap_or(i64::MAX);
+            let place = match at {
+                [Value::Int(at)] if *at < 0 => at.saturating_add(length),
+                [Value::Int(at)] => *at,
+                _ => length - 1,
+            };
+            let Some(place) = usize::try_from(place).ok().filter(|place| *place < items.len()) else {
+                return not_here("popping an item that isn't there");
+            };
+            let item = Rc::make_mut(&mut items).remove(place);
+            (item, Value::List(items))
         }
         ("list.sort", Value::List(mut items), []) => {
             sort(Rc::make_mut(&mut items).as_mut_slice())?;
@@ -177,7 +205,7 @@ fn changing(machine: &mut Machine<'_>, name: &str, args: &[Value]) -> Ran<Option
             }
             (Value::Unit, Value::Dict(pairs))
         }
-        _ => return Ok(None),
+        _ => return not_here(format!("`{name}` on these values")),
     };
     Ok(Some((changed.0, Some(changed.1))))
 }

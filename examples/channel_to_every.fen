@@ -1,0 +1,45 @@
+# A channel to every listener: each listener hears every message sent after it started listening.
+# An inbox is a listener from when it's made, so its task hears everything sent after that,
+# however long the task takes to start, and whether it takes messages one at a time or in a loop.
+from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, channel
+
+# Takes `count` messages from its inbox one at a time, and sends on what they come to.
+def one_at_a_time(hits: Inbox[int], count: int, total: Sender[int]) fails Closed:
+    mut added = 0
+    for _ in range(count):
+        added += hits.receive() else 0
+    total.send(added)?
+
+# Loops over its inbox until it's heard `count` messages, and sends on what they come to.
+def in_a_loop(hits: Inbox[int], count: int, total: Sender[int]) fails Closed:
+    mut added = 0
+    mut heard = 0
+    for hit in hits:
+        added += hit
+        heard += 1
+        if heard == count: break
+    total.send(added)?
+
+# Sends 1 to 10 while a task listens through each inbox, and prints what each made of them.
+def heard(
+    hits: Channel[int],
+    first: Inbox[int],
+    second: Inbox[int],
+    totals: Channel[int],
+    stdout: Stdout,
+) fails Closed | Crashed:
+    with launch(() => one_at_a_time(first, count=10, total=totals.sender())?)?:
+        with launch(() => in_a_loop(second, count=10, total=totals.sender())?)?:
+            for hit in range(1, 11):
+                hits.send(hit)?
+            stdout.print(totals.receive() else -1)
+            stdout.print(totals.receive() else -1)
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with channel[int](size=16, to=.Every) as hits:
+        with channel[int](size=2) as totals:
+            hits.send(1000)?
+            # Each inbox listens from here: neither hears the 1000 sent before it was made.
+            first = hits.inbox()
+            second = hits.inbox()
+            heard(hits=hits, first=first, second=second, totals=totals, stdout=stdout)?

@@ -9624,14 +9624,17 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
             Ok(_) if not_native_yet(path) => now_native.push(path),
             Err(_) if not_native_yet(path) => {}
             Err(why) => failed.push(format!("{}: {why}", path.display())),
-            Ok(printed) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
-                wrong.push(path);
+            Ok(printed) => {
+                // What it printed is shown, since a platform only CI runs on can't be asked.
+                let should = std::fs::read_to_string(path.with_extension("out"))?;
+                if printed != should {
+                    wrong.push(format!("{}: printed {printed:?}, not {should:?}", path.display()));
+                }
             }
-            Ok(_) => {}
         }
     }
     assert!(now_native.is_empty(), "these build natively now: take them off NOT_NATIVE_YET: {now_native:?}");
-    assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
+    assert!(wrong.is_empty(), "printed the wrong thing:\n{}", wrong.join("\n"));
     assert!(failed.is_empty(), "these didn't build through LLVM, or failed:\n{}", failed.join("\n"));
     Ok(())
 }

@@ -1,0 +1,72 @@
+# For the test that `process.run` in a task parks while its program runs. Programs run in `parallel`
+# rounds, each as `run` promises, and 70 of them wait at once, more than there are blocking threads,
+# each for a file that only another round's write makes. Were each run to hold a blocking thread,
+# that write would wait behind them, and they'd wait for it until their timeouts.
+from std.process import Output, ProcessError
+from std.time import Duration
+
+WAITERS = 70
+CASES = 7
+
+# What a run came to: its status and what it wrote, or the failure it ended in.
+def outcome(run: () -> Output fails ProcessError) -> str:
+    done = run() except why:
+        case .TimedOut(program=_, after=_):
+            return "timed out"
+        case .TooMuchOutput(program=_, most=most):
+            return f"too much output, past {most}"
+        case .NotRun(program=_, reason=reason):
+            return f"not run: {reason}"
+        case .LooksLikeAnOption(program=_, expression=expression):
+            return f"looks like an option: {expression}"
+    return f"status {done.status}, out {done.stdout.strip()[:24]}, {len(done.stderr)} bytes on stderr"
+
+# A megabyte of input.
+def big() -> str:
+    mut text = "x"
+    for _ in range(20):
+        text = text + text
+    return text
+
+# One round: a case of `run`, a program waiting for `marker`, or the write that makes it.
+def one_round(process: Process, fs: Fs, clock: Clock, marker: str, number: int) -> str:
+    match number:
+        case 0:
+            return outcome(() => process.run("printf", ["%s|", "a b", "*"])?)
+        case 1:
+            return outcome(() => process.run("wc", ["-c"], input=big())?)
+        case 2:
+            return outcome(() => process.run("sleep", ["30"], timeout=Duration.millis(200))?)
+        case 3:
+            return outcome(() => process.run("yes", [], most_output=1000)?)
+        case 4:
+            return outcome(() => process.run("true", [], input=big())?)
+        case 5:
+            # It ends at once, but what it started holds its outputs open.
+            return outcome(() => process.run("sh", ["-c", "sleep 30 &"], timeout=Duration.millis(300))?)
+        case 6:
+            return outcome(() => process.run("sh", ["-c", "echo oops >&2; exit 3"])?)
+        case _:
+            pass
+    if number < CASES + WAITERS:
+        waiting = f"while [ ! -f '{marker}' ]; do sleep 0.01; done; echo here"
+        return outcome(() => process.run("sh", ["-c", waiting], timeout=Duration.seconds(20.0))?)
+    # The write waits a moment, so the waiters are running first.
+    clock.sleep(Duration.millis(300))
+    fs.write_text(marker, "go") except why:
+        return f"couldn't write: {why}"
+    return "wrote"
+
+def main(process: Process, fs: Fs, env: Env, clock: Clock, entropy: Entropy, stdout: Stdout) fails IoError:
+    folder = env.get("TMPDIR") else "/tmp"
+    marker = f"{folder}/fennec-process-parks-{entropy.bytes(8).hex()}"
+    rounds = CASES + WAITERS + 1
+    seen = [one_round(process, fs, clock, marker, number=number) for number in parallel(range(rounds))]
+    if fs.exists(marker)?:
+        fs.remove(marker)?
+    for number in range(CASES):
+        stdout.print(f"{number}: {seen[number]}")
+    waited = seen[CASES:CASES + WAITERS]
+    for shown in sorted(set(waited)):
+        stdout.print(f"{len([one for one in waited if one == shown])} waiters: {shown}")
+    stdout.print(seen[-1])

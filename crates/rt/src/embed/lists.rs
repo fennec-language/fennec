@@ -38,7 +38,7 @@ pub const MARKED: u64 = 1 << 40;
 /// lives for the whole run.
 pub(super) fn markable_block(state: &State, block: &[u64]) -> bool {
     block.first().is_some_and(|count| count & MARKED == 0 && *count < super::heap::IMMORTAL)
-        && (element_number(state, block).is_some_and(|at| at < state.tables.elements.len())
+        && (element_number(state, block).is_some_and(|at| state.tables.is_element(at))
             || super::dicts::is_dict(state, block))
 }
 
@@ -261,12 +261,12 @@ fn shape(state: &State, element: usize) -> u64 {
 /// The kind of item a block holds, when it's a list's.
 pub(super) fn element_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
     let at = shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
-    state.tables.elements.get(usize::try_from(at).ok()?).cloned()
+    state.tables.element(usize::try_from(at).ok()?).cloned()
 }
 
 /// `element_of`, borrowed.
 pub(super) fn element_in<'a>(state: &'a State, block: &[u64]) -> Option<&'a Element> {
-    state.tables.elements.get(element_number(state, block)?).map(AsRef::as_ref)
+    state.tables.element(element_number(state, block)?).map(AsRef::as_ref)
 }
 
 /// The number of the kind of item a list's block holds.
@@ -286,14 +286,14 @@ fn item_words(state: &State, element: i64) -> Option<(usize, usize)> {
     let at = usize::try_from(element).ok()?;
     let words = match state.heap.item_words(at) {
         Some(words) => words,
-        None => state.tables.elements.get(at)?.words(),
+        None => state.tables.element(at)?.words(),
     };
     Some((at, words))
 }
 
 fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
     let at = usize::try_from(element).ok()?;
-    Some((at, Rc::clone(state.tables.elements.get(at)?)))
+    Some((at, Rc::clone(state.tables.element(at)?)))
 }
 
 /// Whether a list of this kind of item owns a block for each.
@@ -1254,15 +1254,84 @@ fn number_of_element(state: &mut State, element: &Rc<Element>) -> usize {
     if let Some((_, at)) = tables.found_elements.iter().find(|(known, _)| known == element) {
         return *at;
     }
-    let at = tables.elements.iter().position(|known| known == element).unwrap_or_else(|| {
-        tables.elements.push(Rc::clone(element));
-        tables.elements.len() - 1
-    });
+    let at = tables
+        .elements
+        .iter()
+        .position(|known| known == element)
+        .unwrap_or_else(|| tables.elements.len() + added_number(element));
     if tables.found_elements.len() == KEPT {
         tables.found_elements.remove(0);
     }
     tables.found_elements.push((Rc::clone(element), at));
     at
+}
+
+/// The kinds of item the runtime numbered itself, past those the program described, as their
+/// bytes, in the order they were numbered: one numbering for every thread of the run. Each thread
+/// numbered its own before, so a list made on one, like an error's notes made on `main`, read as a
+/// kind another didn't know, or as another kind, on a task's thread (#1843).
+static ADDED_KINDS: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+
+/// How many kinds the runtime numbers itself at most: far past the few a program needs.
+const MOST_ADDED_KINDS: usize = 4096;
+
+/// A thread's copies of the kinds of item the runtime numbered itself, by number past those the
+/// program described, each read from [`ADDED_KINDS`] the first time this thread meets it. Each is
+/// written once and never moved, so it can be read with the runtime's state only borrowed.
+#[derive(Default)]
+pub struct AddedKinds(std::cell::OnceCell<Box<[std::cell::OnceCell<Rc<Element>>]>>);
+
+impl super::Tables {
+    /// The kind of item numbered `number`: one the program described, or one the runtime numbered
+    /// itself, on any thread.
+    #[inline]
+    pub(super) fn element(&self, number: usize) -> Option<&Rc<Element>> {
+        match self.elements.get(number) {
+            Some(element) => Some(element),
+            None => self.added_element(number.checked_sub(self.elements.len())?),
+        }
+    }
+
+    /// Whether `number` is a kind of item's.
+    pub(super) fn is_element(&self, number: usize) -> bool {
+        self.element(number).is_some()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn added_element(&self, at: usize) -> Option<&Rc<Element>> {
+        let slots = self
+            .added_elements
+            .0
+            .get_or_init(|| (0..MOST_ADDED_KINDS).map(|_| std::cell::OnceCell::new()).collect());
+        let slot = slots.get(at)?;
+        if let Some(element) = slot.get() {
+            return Some(element);
+        }
+        let bytes = ADDED_KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(at)?.clone();
+        let element = <Element as super::codec::Decode>::decode(&mut super::codec::Reader::new(&bytes))?;
+        Some(slot.get_or_init(|| Rc::new(element)))
+    }
+}
+
+/// The number past the kinds the program described of a kind it didn't, numbered now if no thread
+/// has numbered it yet.
+#[cold]
+#[inline(never)]
+fn added_number(element: &Element) -> usize {
+    let mut writer = super::codec::Writer::default();
+    super::codec::Encode::encode(element, &mut writer);
+    let bytes = writer.into_bytes();
+    let mut added = ADDED_KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(at) = added.iter().position(|known| *known == bytes) {
+        return at;
+    }
+    if added.len() >= MOST_ADDED_KINDS {
+        drop(added);
+        super::heap::runtime_bug("the runtime made lists of more kinds of item than it can number");
+    }
+    added.push(bytes);
+    added.len() - 1
 }
 
 /// A new block owned once with a value's items, if it's a list of the kind of item given.
@@ -1299,10 +1368,12 @@ pub(super) fn list_of_texts(state: &mut State, items: &[u64]) -> i64 {
         Element::Str => !headers,
         _ => false,
     });
-    let at = found.unwrap_or_else(|| {
-        state.tables.elements.push(super::text::string_element(state));
-        state.tables.elements.len() - 1
-    });
+    let at = if let Some(at) = found {
+        at
+    } else {
+        let element = super::text::string_element(state);
+        number_of_element(state, &element)
+    };
     let stride = if headers { Element::Text.words() } else { Element::Str.words() };
     let block = build(state, at, stride, items, 0);
     state.heap.insert(block)

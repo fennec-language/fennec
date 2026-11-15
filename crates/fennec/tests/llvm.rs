@@ -20299,6 +20299,44 @@ fn pack_loads_a_generic_types_earlier_fields_by_their_names() -> std::io::Result
     Ok(())
 }
 
+/// `docs/pack.md` pins `std.pack`'s format, and its test vectors are held to the compiled program
+/// here: each row's hash is the FNV-1a of its shape as the doc says, and `pack.dumps` writes each
+/// row's mode, hash and layout ahead of its value. A change to the format fails here until the
+/// doc says the same.
+#[test]
+fn pack_headers_are_the_ones_docs_pack_md_pins() -> std::io::Result<()> {
+    let doc = include_str!("../../../docs/pack.md");
+    let vectors = doc.split("## Test vectors").nth(1).unwrap_or_default();
+    let rows: Vec<Vec<String>> = vectors
+        .lines()
+        .filter(|line| line.starts_with("| `"))
+        .map(|line| {
+            line.trim_matches('|')
+                .split(" | ")
+                .map(|cell| cell.trim().trim_matches('`').replace("\\|", "|"))
+                .collect()
+        })
+        .collect();
+    assert!(rows.len() >= 15, "docs/pack.md's table: {rows:?}");
+    let mut wanted = Vec::new();
+    for row in &rows {
+        let [_, shape, hash, layout] = row.as_slice() else { unreachable!("a row of four: {row:?}") };
+        let mut fnv: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in shape.bytes() {
+            fnv ^= u64::from(byte);
+            fnv = fnv.wrapping_mul(0x0100_0000_01b3);
+        }
+        let written: String = fnv.to_le_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(&written, hash, "the hash of `{shape}`");
+        wanted.push(format!("FPK2 {hash} {layout}\n"));
+    }
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(printed_by("pack_vectors", include_str!("fixtures/pack_vectors.fen"))?, wanted.concat());
+    Ok(())
+}
+
 /// What the next test builds: many small values in one stream, read in order, by name, fed a
 /// byte at a time, cut off, and two `Packer`s' bytes one after the other.
 const PACK_STREAMS: &str = r#"from std import pack

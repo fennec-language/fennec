@@ -188,6 +188,7 @@ fn library_alone<'m>(
     // What a standard library module imports is its own: a program names it only by importing
     // it too.
     program.std_functions.clear();
+    program.std_constants.clear();
     program.imported_types.clear();
     program
 }

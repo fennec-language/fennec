@@ -216,7 +216,7 @@ impl FnCx<'_> {
             }
             ExprKind::Name(name) => match self.lookup(name) {
                 Some((Type::Function(key), _)) => Given::Function(key),
-                None if self.checker.program.functions.contains_key(name) => Given::Function(name.clone()),
+                None if self.names_function(name) => Given::Function(name.clone()),
                 _ => Given::Unknown,
             },
             _ => Given::Unknown,

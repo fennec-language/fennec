@@ -652,10 +652,12 @@ impl Lowering<'_> {
         match &callee.kind {
             ExprKind::Name(name) => {
                 // What the checker accepted and nothing here defines, like an import of
-                // `sqrt`, is the engines'.
+                // `sqrt`, is the engines'. A program's function of the same name as a builtin is
+                // its own: std's code and a dependency's still mean the builtin.
                 let written = signatures.get(name).is_some();
+                let own = self.own_function(name);
                 let plain = self.lookup(name).is_none()
-                    && !self.context.functions.contains(name.as_str())
+                    && !own
                     && (fennec_check::provided_everywhere(name) || !written);
                 plain.then(|| (name.clone(), None, false))
             }

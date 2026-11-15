@@ -201,6 +201,9 @@ impl FnCx<'_> {
         if let Some(problem) = self.missing_capability(name, span) {
             return problem;
         }
+        if let Some(problem) = self.std_own(name, span) {
+            return problem;
+        }
         let problem = unknown_name(name, span);
         match self.similar_name(name).filter(|_| problem.help.is_none()) {
             Some(similar) => problem.with_help(format!("did you mean `{similar}`?")),
@@ -267,13 +270,15 @@ impl FnCx<'_> {
         if let Some((ty, _)) = self.lookup(name) {
             return ty;
         }
-        if self.checker.program.functions.contains_key(name) {
+        if self.names_function(name) {
             return Type::Function(name.to_owned());
         }
         if let Some(function) = self.std_function(name, span) {
             return Type::Function(function);
         }
-        if let Some(ty) = self.checker.constant_type(name) {
+        if let Some(constant) = self.named_constant(name, span)
+            && let Some(ty) = self.checker.constant_type(&constant)
+        {
             return ty;
         }
         if name == "PI" {
@@ -332,7 +337,9 @@ impl FnCx<'_> {
             return Some(Member::Missing);
         }
         let qualified = format!("{module}.{name}");
-        if self.checker.program.functions.contains_key(&qualified) {
+        if self.checker.program.functions.contains_key(&qualified)
+            || self.checker.program.constants.contains_key(&qualified)
+        {
             self.checker.std_names.insert((span.start, span.end), qualified.clone());
             return Some(Member::Name(qualified));
         }
@@ -341,6 +348,10 @@ impl FnCx<'_> {
 
     /// The standard library function written in Fennec that a name was imported as.
     pub(crate) fn std_function(&mut self, name: &str, span: Span) -> Option<String> {
+        // Std's own code names its functions as they're qualified, never by what a program imports.
+        if span.in_prelude() {
+            return None;
+        }
         let function = self.checker.program.std_functions.get(name)?.clone();
         self.checker.std_names.insert((span.start, span.end), function.clone());
         Some(function)

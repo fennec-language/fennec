@@ -767,23 +767,29 @@ fn looked_at(front: &str, parts: &[String]) -> Done<Entry> {
     }
 }
 
-/// Refuses a name longer than every system allows, and on Windows one it reads its own way: one
-/// ending in `.` or a space, which it drops, one holding a character it won't take, or a
-/// device's name, like `NUL` or `com1.txt`.
+/// Refuses a name longer than every system allows, and on Windows one it reads its own way, as
+/// `checked_name_on` says.
 fn checked_name(name: &str) -> Done<()> {
+    checked_name_on(name, cfg!(windows))
+}
+
+/// `checked_name`, on Windows when `windows` says so: there, a name ending in `.` or a space,
+/// which it drops, one holding a character it won't take, or a device's name, like `NUL` or
+/// `com1.txt`, is refused. A NUL isn't one of those: every system refuses a path holding one for
+/// what it is, which the runtime checks before anything Windows does, and so does the oracle.
+fn checked_name_on(name: &str, windows: bool) -> Done<()> {
     if name.len() > LONGEST_NAME {
         return refused("a name longer than every system allows");
     }
-    if !cfg!(windows) {
+    if !windows {
         return Ok(());
     }
     let stem = name.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
     let device = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.chars().count() == 4);
-    if device
-        || name.ends_with(['.', ' '])
-        || name.chars().any(|c| c.is_control() || matches!(c, '<' | '>' | '"' | '|' | '?' | '*'))
-    {
+    let refused_here =
+        |c: char| (c.is_control() && c != '\0') || matches!(c, '<' | '>' | '"' | '|' | '?' | '*');
+    if device || name.ends_with(['.', ' ']) || name.chars().any(refused_here) {
         return refused("a name Windows reads its own way");
     }
     Ok(())
@@ -795,4 +801,19 @@ fn odd_on_windows(text: &str) -> Done<()> {
         return refused("a path with `\\` or `:`, which Windows reads its own way");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// On Windows a name it reads its own way is refused, but a NUL isn't one: the NUL check names
+    /// it there, as everywhere, as the runtime does. Checked as Windows, so it runs on every system.
+    #[test]
+    fn a_nul_is_refused_for_what_it_is_on_windows_too() {
+        for refused in ["nul.txt", "COM1", "a.", "a ", "a|b", "a\u{1}b"] {
+            assert!(super::checked_name_on(refused, true).is_err(), "{refused:?}");
+        }
+        for fine in ["a\0b", "slot1", "game.json"] {
+            assert!(super::checked_name_on(fine, true).is_ok(), "{fine:?}");
+        }
+    }
 }

@@ -442,11 +442,11 @@ fn wait(
         let mut queue = queue;
         let token = super::serve::next_token();
         // A crash of a task this one launched wakes it, said before its last look.
-        super::threads::Launcher::waiting_here(Box::new(move || {
+        let said = super::threads::Launcher::waiting_here(move || {
             pool.run_on(at, Box::new(move |io: &mut super::serve::Io| io.wake_token(token)));
-        }));
+        });
         if super::threads::Launcher::cut_short_here() {
-            super::threads::Launcher::waited_here();
+            super::threads::Launcher::waited_here(said);
             return Waited::CutShort;
         }
         let waiter = Waiter { pool, at, token };
@@ -456,7 +456,7 @@ fn wait(
         }
         drop(queue);
         let parked = super::serve::park_on(token, deadline);
-        super::threads::Launcher::waited_here();
+        super::threads::Launcher::waited_here(said);
         return match parked {
             // Stopped, it's failing. Cancelled, as by a server that's stopping, it can't wait any more
             // and ends here: it'd never be parked again, and nothing would ever change what it saw.
@@ -474,19 +474,20 @@ fn wait(
     // A crash of a task this code launched wakes it: told with the queue held, so the crash can't
     // come between this last look and the wait.
     #[cfg(any(test, feature = "threads"))]
-    {
+    let said = {
         let changed = Arc::downgrade(channel);
-        super::threads::Launcher::waiting_here(Box::new(move || {
+        let said = super::threads::Launcher::waiting_here(move || {
             if let Some(channel) = changed.upgrade() {
                 let _queue = channel.queue();
                 channel.changed.notify_all();
             }
-        }));
+        });
         if super::threads::Launcher::cut_short_here() {
-            super::threads::Launcher::waited_here();
+            super::threads::Launcher::waited_here(said);
             return Waited::CutShort;
         }
-    }
+        said
+    };
     // What this thread printed comes out first, as before anything else that waits. The queue stays
     // held, so no change is missed before the wait.
     super::write_kept_output();
@@ -518,7 +519,7 @@ fn wait(
     *counted -= 1;
     drop(queue);
     #[cfg(any(test, feature = "threads"))]
-    super::threads::Launcher::waited_here();
+    super::threads::Launcher::waited_here(said);
     if timed_out { Waited::TimedOut } else { Waited::Again }
 }
 

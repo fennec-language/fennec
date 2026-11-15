@@ -585,7 +585,9 @@ impl Latch {
     }
 }
 
-pub(super) use super::super::threads::{BeforeRange, range_of_task_ends, range_of_task_starts};
+pub(super) use super::super::threads::{
+    BeforeRange, Calling, range_off_its_caller_ends, range_off_its_caller_starts,
+};
 
 /// Starts a range on a worker, with the blocks lent for the call to read.
 pub(super) fn range_starts(lent: Option<Arc<crate::embed::table::Table>>) {

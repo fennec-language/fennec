@@ -75,17 +75,39 @@ thread_local! {
     /// the pool: it stops as the task does, and its own calls run their ranges here, as any
     /// range's do.
     static RANGE_OF_TASK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// For a range of a `parallel` call on the pool, what the code that made the call waits in as
+    /// one that launched tasks, if it has: the range is that code's, so a crash of one of those
+    /// tasks cuts the range's waits short too. Not the range's own, for the tasks it launches
+    /// itself, which is `LAUNCHER`.
+    static CALLER_S_LAUNCHER: std::cell::RefCell<Option<Arc<Launcher>>> =
+        const { std::cell::RefCell::new(None) };
 }
+
+/// The number the next wait said to a launcher gets.
+#[cfg(any(test, feature = "threads"))]
+static NEXT_WAIT: AtomicU64 = AtomicU64::new(1);
+
+/// How to wake a wait.
+#[cfg(any(test, feature = "threads"))]
+type Waking = Arc<dyn Fn() + Send + Sync>;
+
+/// A wait said to the launchers whose tasks' crashes cut it short, for `waited_here` to take back:
+/// its number, or 0 when there was no launcher to say it to.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) struct Waiting(u64);
 
 /// The code that launched tasks, as they see it: how many of them crashed or failed with their
 /// `with launch` block yet to say so, and how to wake what it's waiting in now. While any has, each
 /// wait it's in, or comes to, is cut short, as a stop cuts a task's short: it would otherwise wait
 /// for good on a task that's gone, never reaching the block's end, which says `Crashed`.
+///
+/// What it waits in may be a `parallel` call, whose ranges wait on other threads: they're its
+/// code, so their waits are cut short the same way, each one said here by its number.
 #[cfg(any(test, feature = "threads"))]
 #[derive(Default)]
 pub(in crate::embed) struct Launcher {
     crashed: std::sync::atomic::AtomicUsize,
-    waking: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    waking: Mutex<Vec<(u64, Waking)>>,
 }
 
 #[cfg(any(test, feature = "threads"))]
@@ -98,7 +120,15 @@ impl Launcher {
     /// Whether a task this thread or task launched has crashed or failed, unreported: what it
     /// waits in ends.
     pub(in crate::embed) fn cut_short_here() -> bool {
-        LAUNCHER.with_borrow(|launcher| launcher.as_ref().is_some_and(|launcher| launcher.cut_short()))
+        let cut_short = |launcher: &Option<Arc<Launcher>>| launcher.as_ref().is_some_and(|it| it.cut_short());
+        LAUNCHER.with_borrow(cut_short) || CALLER_S_LAUNCHER.with_borrow(cut_short)
+    }
+
+    /// Does `each` with this thread's or task's own, and with its call's caller's when it's a range
+    /// of a call on the pool: whichever there are.
+    fn each_here(mut each: impl FnMut(&Launcher)) {
+        LAUNCHER.with_borrow(|launcher| launcher.as_deref().map(&mut each));
+        CALLER_S_LAUNCHER.with_borrow(|launcher| launcher.as_deref().map(&mut each));
     }
 
     fn cut_short(&self) -> bool {
@@ -106,30 +136,36 @@ impl Launcher {
     }
 
     /// Says how to wake what this thread or task is about to wait in, for a crash to cut it short.
-    /// Said before the wait's last look, so a crash between the two is never missed. None when it
-    /// launched nothing.
-    pub(in crate::embed) fn waiting_here(waking: Box<dyn Fn() + Send + Sync>) {
-        LAUNCHER.with_borrow(|launcher| {
-            if let Some(launcher) = launcher {
-                *launcher.waking.lock().unwrap_or_else(PoisonError::into_inner) = Some(waking);
+    /// Said before the wait's last look, so a crash between the two is never missed. Nothing's said
+    /// when neither it nor the caller of the call it's a range of launched anything.
+    pub(in crate::embed) fn waiting_here(waking: impl Fn() + Send + Sync + 'static) -> Waiting {
+        let waking: Waking = Arc::new(waking);
+        let mut wait = 0;
+        Launcher::each_here(|launcher| {
+            if wait == 0 {
+                wait = NEXT_WAIT.fetch_add(1, Ordering::Relaxed);
             }
+            launcher.waking.lock().unwrap_or_else(PoisonError::into_inner).push((wait, Arc::clone(&waking)));
+        });
+        Waiting(wait)
+    }
+
+    /// The wait's over: it's not to be woken.
+    pub(in crate::embed) fn waited_here(Waiting(wait): Waiting) {
+        if wait == 0 {
+            return;
+        }
+        Launcher::each_here(|launcher| {
+            launcher.waking.lock().unwrap_or_else(PoisonError::into_inner).retain(|(said, _)| *said != wait);
         });
     }
 
-    /// The wait's over: nothing to wake.
-    pub(in crate::embed) fn waited_here() {
-        LAUNCHER.with_borrow(|launcher| {
-            if let Some(launcher) = launcher {
-                *launcher.waking.lock().unwrap_or_else(PoisonError::into_inner) = None;
-            }
-        });
-    }
-
-    /// A task it launched crashed or failed: its waits end from now on, and the one it's in wakes.
+    /// A task it launched crashed or failed: its waits end from now on, and each one it's in wakes,
+    /// its own and those of the ranges of a call it's waiting for, in the order they were said.
     pub(in crate::embed) fn task_crashed(&self) {
         self.crashed.fetch_add(1, Ordering::SeqCst);
-        let waking = self.waking.lock().unwrap_or_else(PoisonError::into_inner).take();
-        if let Some(wake) = waking {
+        let waking = std::mem::take(&mut *self.waking.lock().unwrap_or_else(PoisonError::into_inner));
+        for (_, wake) in waking {
             wake();
         }
     }
@@ -170,26 +206,64 @@ pub(crate) fn task_stop() -> Option<Arc<AtomicU8>> {
     STOP.with_borrow(Clone::clone)
 }
 
-/// What was running on a thread before a range of a launched task's call started there, for
-/// `range_of_task_ends` to put back.
+/// What the ranges of a `parallel` call on the pool take with them from the code that made it,
+/// whichever thread each runs on: they're that code's, so what cuts its waits short cuts theirs.
+#[cfg(any(test, feature = "threads"))]
+#[derive(Clone, Default)]
+pub(super) struct Calling {
+    /// A launched task's stop, when one made the call.
+    stop: Option<Arc<AtomicU8>>,
+    /// What the caller waits in as the code that launched tasks, if it has launched any.
+    launcher: Option<Arc<Launcher>>,
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Calling {
+    /// What a call made here, now, gives its ranges.
+    pub(super) fn here() -> Calling {
+        Calling { stop: None, launcher: LAUNCHER.with_borrow(Clone::clone) }
+    }
+
+    /// The same, for a call made by the launched task told to stop with `stop`.
+    pub(super) fn of_task(mut self, stop: Arc<AtomicU8>) -> Calling {
+        self.stop = Some(stop);
+        self
+    }
+
+    /// Whether a launched task made the call, for the pool.
+    pub(super) fn is_task_s(&self) -> bool {
+        self.stop.is_some()
+    }
+}
+
+/// What was running on a thread before a range of a call made elsewhere started there, for
+/// `range_off_its_caller_ends` to put back.
 #[cfg(any(test, feature = "threads"))]
 pub(super) struct BeforeRange {
-    stop: Option<Arc<AtomicU8>>,
-    range: bool,
+    /// The stop and whether a task's range ran, when the range is a launched task's.
+    task_s: Option<(Option<Arc<AtomicU8>>, bool)>,
+    caller_s_launcher: Option<Arc<Launcher>>,
 }
 
-/// Starts a range of a launched task's `parallel` call on this thread: it's the task's code, so
-/// it's told to stop with `stop`, as the task is, and each of its waits is cut short then.
+/// Starts a range on a thread other than its call's caller waits on, or as a task of its own: a
+/// crash of a task the caller launched cuts its waits short, and when the caller is a launched
+/// task it's told to stop with the task's stop, so a stop cuts them short too.
 #[cfg(any(test, feature = "threads"))]
-pub(super) fn range_of_task_starts(stop: Arc<AtomicU8>) -> BeforeRange {
-    BeforeRange { stop: STOP.replace(Some(stop)), range: RANGE_OF_TASK.replace(true) }
+pub(super) fn range_off_its_caller_starts(calling: &Calling) -> BeforeRange {
+    BeforeRange {
+        task_s: calling.stop.clone().map(|stop| (STOP.replace(Some(stop)), RANGE_OF_TASK.replace(true))),
+        caller_s_launcher: CALLER_S_LAUNCHER.replace(calling.launcher.clone()),
+    }
 }
 
-/// Ends a range of a launched task's call on this thread.
+/// Ends such a range on this thread.
 #[cfg(any(test, feature = "threads"))]
-pub(super) fn range_of_task_ends(BeforeRange { stop, range }: BeforeRange) {
-    STOP.set(stop);
-    RANGE_OF_TASK.set(range);
+pub(super) fn range_off_its_caller_ends(BeforeRange { task_s, caller_s_launcher }: BeforeRange) {
+    if let Some((stop, range)) = task_s {
+        STOP.set(stop);
+        RANGE_OF_TASK.set(range);
+    }
+    CALLER_S_LAUNCHER.set(caller_s_launcher);
 }
 
 /// Whether what's running on this thread is a range of a launched task's `parallel` call.
@@ -398,6 +472,8 @@ pub(crate) struct Accounts {
     capture: Option<Arc<crate::fakes::Capture>>,
     /// Whether it's a range of a launched task's `parallel` call.
     range_of_task: bool,
+    /// For a range of a call on the pool, what its caller waits in as the code that launched tasks.
+    caller_s_launcher: Option<Arc<Launcher>>,
 }
 
 #[cfg(any(test, feature = "threads"))]
@@ -470,6 +546,8 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         super::swap_capture(&mut accounts.capture);
         accounts.cleaning = CLEANING.replace(accounts.cleaning);
         accounts.range_of_task = RANGE_OF_TASK.replace(accounts.range_of_task);
+        CALLER_S_LAUNCHER
+            .with_borrow_mut(|launcher| std::mem::swap(launcher, &mut accounts.caller_s_launcher));
         crate::replay::swap(&mut accounts.replay);
         if !same {
             state.heap.texts.get_mut().clear();

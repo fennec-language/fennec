@@ -111,9 +111,9 @@ struct Run {
     /// pool: the task parks, and a range on any thread, its own worker's too, reads the copy the
     /// task lent and hands over what it makes.
     caller: Option<u16>,
-    /// A launched task's stop, when the call is one's on the pool: its ranges are its code, and
-    /// stop as it does.
-    task_stop: Option<Arc<AtomicU8>>,
+    /// What its ranges take with them from the code that made it, when they run elsewhere: they're
+    /// that code's, so what cuts its waits short cuts theirs.
+    calling: pool::Calling,
     /// Where the lowest range that failed so far starts. Ranges after it don't start, and
     /// ranges before it still run, since one of them failing is the failure passed up.
     stop: AtomicUsize,
@@ -201,7 +201,7 @@ struct Started {
     from: usize,
     /// The capture what was running before printed into, put back as the range ends.
     capture: Option<Arc<crate::fakes::Capture>>,
-    /// What ran on the thread before a range of a launched task's call, put back as it ends.
+    /// What ran on the thread before a range that runs off its caller's, put back as it ends.
     before: Option<pool::BeforeRange>,
 }
 
@@ -217,7 +217,7 @@ impl Run {
         Run {
             chunk,
             caller: Some(super::threads::index()),
-            task_stop: None,
+            calling: pool::Calling::here(),
             task: crate::replay::child(),
             capture: super::capture_here(),
             stop: AtomicUsize::new(usize::MAX),
@@ -244,7 +244,7 @@ impl Run {
     /// ranges read `lent`, the copy of what they capture that the task made for them.
     fn of_task(mut self, stop: Arc<AtomicU8>, lent: Arc<super::table::Table>) -> Run {
         self.caller = None;
-        self.task_stop = Some(stop);
+        self.calling = self.calling.of_task(stop);
         self.lent = RwLock::new(Some(lent));
         self
     }
@@ -286,10 +286,10 @@ impl Run {
     /// Starts the range at `from` on this thread, giving back where what it makes starts, and what
     /// was running before it, in a recording or a replay, for `keep_made` to put back.
     fn range_starts(&self, from: usize) -> Started {
-        if !self.on_caller() {
+        let before = (!self.on_caller()).then(|| {
             pool::range_starts(self.lent.read().unwrap_or_else(PoisonError::into_inner).clone());
-        }
-        let before = self.task_stop.clone().map(pool::range_of_task_starts);
+            pool::range_off_its_caller_starts(&self.calling)
+        });
         let mut was = crate::replay::range(self.task.as_ref(), from);
         crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();
@@ -309,7 +309,7 @@ impl Run {
         super::swap_capture(&mut capture);
         super::threads::made_scope_ends();
         if let Some(before) = before {
-            pool::range_of_task_ends(before);
+            pool::range_off_its_caller_ends(before);
         }
         if !self.on_caller() {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
@@ -334,7 +334,7 @@ impl Run {
     /// made: 1 if there was one, else 0.
     fn finish(self) -> i64 {
         let made = self.made.into_inner().unwrap_or_else(PoisonError::into_inner);
-        if self.task_stop.is_some() {
+        if self.calling.is_task_s() {
             // A task's own, as what it makes itself is: listed, for it to hand over when it ends.
             with(|state| state.heap.adopt_made(made));
         } else {
@@ -862,14 +862,33 @@ mod pool {
         0
     }
 
-    /// Without threads, there are no launched tasks, so no range is one's.
+    /// Without threads, there are no launched tasks, and every range runs on its caller's thread,
+    /// so a call gives its ranges nothing to take with them.
+    #[derive(Clone, Copy)]
+    pub(super) struct Calling;
+
+    impl Calling {
+        pub(super) fn here() -> Calling {
+            Calling
+        }
+
+        pub(super) fn of_task(self, _stop: std::sync::Arc<std::sync::atomic::AtomicU8>) -> Calling {
+            self
+        }
+
+        #[expect(clippy::unused_self, reason = "it stands in for the threads build's")]
+        pub(super) fn is_task_s(self) -> bool {
+            false
+        }
+    }
+
     pub(super) struct BeforeRange;
 
-    pub(super) fn range_of_task_starts(_stop: std::sync::Arc<std::sync::atomic::AtomicU8>) -> BeforeRange {
+    pub(super) fn range_off_its_caller_starts(_calling: &Calling) -> BeforeRange {
         BeforeRange
     }
 
-    pub(super) fn range_of_task_ends(_before: BeforeRange) {}
+    pub(super) fn range_off_its_caller_ends(_before: BeforeRange) {}
 
     /// Without threads, there are no launched tasks to hand ranges to a pool.
     pub(super) fn for_task() -> Option<((&'static Pool, usize), std::sync::Arc<std::sync::atomic::AtomicU8>)>

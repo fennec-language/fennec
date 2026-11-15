@@ -282,7 +282,7 @@ impl Run {
         }
         crate::replay::swap(&mut was);
         super::swap_capture(&mut capture);
-        super::threads::made_scope_ends();
+        super::threads::made_scope_ends(super::threads::index() == self.caller);
         if super::threads::index() != self.caller {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
             let made = super::threads::hand_over(since);

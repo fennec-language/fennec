@@ -619,9 +619,10 @@ pub fn made_scope_starts() -> usize {
     super::with(|state| state.heap.made_scope_starts())
 }
 
-/// A range or chunk that marked this thread's list has ended.
-pub fn made_scope_ends() {
-    super::with(|state| state.heap.made_scope_ends());
+/// A range or chunk that marked this thread's list has ended. With `kept`, it ran on the thread
+/// that called it, and nothing it made is handed over.
+pub fn made_scope_ends(kept: bool) {
+    super::with(|state| state.heap.made_scope_ends(kept));
 }
 
 /// What this thread's runtime made since `since` that outlives the task it ran, handed over

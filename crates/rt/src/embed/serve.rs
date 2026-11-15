@@ -1434,6 +1434,20 @@ pub(crate) fn park_on_copy(
     parked_as(woken)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// For tests: how many waits on this thread couldn't be registered, and parked a moment at a
+    /// time. A wait that looks again on a timer gets there in the end whatever's wrong with the
+    /// poll, so a test of waits that should be woken checks that none of them came this way.
+    static NOT_REGISTERED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// For tests: how many waits on this thread couldn't be registered.
+#[cfg(test)]
+pub(crate) fn waits_not_registered_here() -> u64 {
+    NOT_REGISTERED.get()
+}
+
 /// How long a wait that couldn't be registered parks before it looks again.
 const LOOKS_AGAIN_AFTER: Duration = Duration::from_millis(1);
 
@@ -1446,6 +1460,8 @@ const LOOKS_AGAIN_AFTER: Duration = Duration::from_millis(1);
 /// through the socket itself did, had its task look again and again without its worker ever
 /// polling, and a wait with a deadline never ran out of time.
 fn parked_a_moment(token: Token, deadline: Option<Instant>) -> Parked {
+    #[cfg(test)]
+    NOT_REGISTERED.set(NOT_REGISTERED.get() + 1);
     let now = Instant::now();
     if deadline.is_some_and(|deadline| deadline <= now) {
         return Parked::TimedOut;

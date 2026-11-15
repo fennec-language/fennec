@@ -276,6 +276,41 @@ fn sending_never_waits_and_a_listener_that_falls_behind_fails_loudly() {
     finish();
 }
 
+/// A plain receive from a channel to every listener fails, saying what to do, and takes nothing:
+/// there's no one next message, as each listener has a place of its own in what's kept. It used
+/// to take the oldest kept message out from under them, after which a listener that was caught
+/// up never saw the next message sent, and nothing said so.
+#[test]
+fn a_plain_receive_from_a_channel_to_every_listener_fails_and_takes_nothing() {
+    begin();
+    let channel = channel_new_every(8);
+    let listener = channel_listen(channel, 0);
+    assert_eq!(channel_send(channel, 1, 0, FOREVER), DONE);
+    assert_eq!(receive(listener, FOREVER), (DONE, 1), "the listener's caught up");
+    for timeout in [FOREVER, MILLISECOND] {
+        assert!(!crate::embed::failed());
+        assert_eq!(receive(channel, timeout), (DONE, 0));
+        assert!(crate::embed::failed());
+        let said = failure().unwrap_or_default();
+        assert!(said.contains("to every listener") && said.contains("`inbox()`"), "{said}");
+        crate::embed::clear_failure();
+    }
+    // Nothing was taken, so the listener hears what's sent next, which it used to miss.
+    for word in [2, 3] {
+        assert_eq!(channel_send(channel, word, 0, FOREVER), DONE);
+    }
+    assert_eq!(receive(listener, FOREVER), (DONE, 2));
+    assert_eq!(receive(listener, FOREVER), (DONE, 3));
+    // A work queue is received from as ever.
+    let queue = channel_new(2);
+    assert_eq!(channel_send(queue, 9, 0, FOREVER), DONE);
+    assert_eq!(receive(queue, FOREVER), (DONE, 9));
+    assert!(!crate::embed::failed());
+    channel_free(queue);
+    channel_free(channel);
+    finish();
+}
+
 #[test]
 fn a_listener_that_drops_the_oldest_goes_on_from_what_is_kept() {
     begin();

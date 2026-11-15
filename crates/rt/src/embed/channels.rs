@@ -51,6 +51,9 @@ struct Channel {
     /// Whether it's been freed, and is gone from `CHANNELS`: a thread that found it before, and kept
     /// it to find again, takes it for gone as `CHANNELS` would.
     freed: std::sync::atomic::AtomicBool,
+    /// Whether it gives every listener every message, as one made `to=.Every` does, rather than
+    /// each message to one receiver. Set as it's made, so it's read without the queue.
+    to_every: bool,
 }
 
 #[derive(Default)]
@@ -141,6 +144,7 @@ pub extern "C" fn channel_new(size: i64) -> i64 {
         queue: Mutex::new(Queue::default()),
         changed: Condvar::new(),
         freed: std::sync::atomic::AtomicBool::new(false),
+        to_every: false,
     };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));
@@ -235,6 +239,18 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
         return every::receive(&channel, listener, timeout_ns, value);
     }
     let Some(channel) = find(channel) else { return CLOSED };
+    // A channel to every listener has no one message to hand out: each listener has a place of its
+    // own in what's kept. Taking one here used to pull the oldest out from under them, and a
+    // listener that was caught up then never saw the message sent next, with nothing said.
+    // `std.concurrent` stops a program that asks, saying where; this is for whatever gets past it.
+    if channel.to_every {
+        super::fail_with(Diagnostic::new(
+            "this channel is to every listener, so it has no one next message to take: loop over it \
+             with `for message in channel`, or take an `inbox()` and receive from that",
+            Span::default(),
+        ));
+        return DONE;
+    }
     let timeout_ns = match replayed(&channel, "receive") {
         Turn::Live => timeout_ns,
         Turn::Goes => -1,

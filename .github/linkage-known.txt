@@ -1,0 +1,20 @@
+# What programs that don't use them link of SQLite, TLS and cryptography, by system, until each is
+# cut. `.github/scripts/linkage-check.sh` builds the programs, reads their symbols and fails when a
+# program links something not listed here, or no longer links something that is: the pull request
+# that cuts one takes its line out.
+#
+# system program what | why, and who's cutting it
+macos fs sqlite | the first capability call links the whole stdlib dispatch, SQLite's 569 KB of C with it: the runtime lane is cutting it
+macos fs ring-assembly | ring's assembly objects can't be split by function, so -dead_strip keeps about 39 KB of ChaCha20, AES-GCM and bignum code that nothing calls
+macos hello ring-assembly | the same 39 KB of ring's assembly, in every program
+linux fs sqlite | the first capability call links the whole stdlib dispatch, SQLite with it: the runtime lane is cutting it
+linux fs tls | the same stdlib dispatch, which holds rustls's client
+linux hello tls | two of rustls's functions a vtable holds: a TLS payload's drop and `StreamOwned`'s `is_write_vectored`
+#
+# A hello world built for release is held to these sizes, in bytes, as the gate builds it on a Mac
+# and CI on Linux and Windows. Each is what it was measured at, with room to spare: lower it when a
+# cut lands, and raise it only knowing what grew.
+# system size hello bytes | measured
+macos size hello 1300000 | 1,232,088 on 2026-11-14, from the gate's dev build of fennec on arm64
+linux size hello 1050000 | 942,288 on 2026-11-14 in CI on x86-64, and 1,004,464 on aarch64, each from a release build of fennec
+windows size hello 2000000 | not measured yet: CI's first run says, and this comes down to it

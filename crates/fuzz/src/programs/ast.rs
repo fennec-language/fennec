@@ -677,6 +677,69 @@ pub(crate) struct Waking {
     pub(crate) rounds: i64,
 }
 
+/// A `Swapped` statement: `swapped{id}(given, key, fresh)` keeps what a lookup of `key` in one of
+/// `given`'s dicts found, sets the struct whole to another, then stores `fresh` at `key` in the
+/// same field, and the value found under `"known"` when `kept`. The store has to go to the dict
+/// the struct holds now, never to the caller's, and never into a block let go of: the shape of
+/// finding 3 in the review of #1785, which main got wrong.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Swapping {
+    pub(crate) id: usize,
+    /// What the given struct's values are made from, and the other's.
+    pub(crate) base: i64,
+    pub(crate) other_base: i64,
+    /// The field looked in and stored to.
+    pub(crate) field: SwapField,
+    /// Which of `SWAP_KEYS` is looked up and stored at.
+    pub(crate) key: usize,
+    pub(crate) fresh: i64,
+    /// Whether the other struct comes from a call, holding `"a"` and `"b"`, rather than written
+    /// out where it's named, holding `"c"`.
+    pub(crate) called: bool,
+    pub(crate) kept: bool,
+    /// Whether the caller keeps the struct it gives and prints it after, rather than giving one
+    /// it made in the call, which nothing holds once the struct is set to the other.
+    pub(crate) owned: bool,
+    pub(crate) rounds: i64,
+}
+
+/// The field of a `Swapped`'s struct it looks in and stores to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SwapField {
+    /// `counts`, a `dict[str, int]`.
+    Counts,
+    /// `lists`, a `dict[str, list[int]]`.
+    Lists,
+}
+
+/// The keys a `Swapped` looks up: two both structs a call makes hold, and one neither does.
+pub(crate) const SWAP_KEYS: [&str; 3] = ["a", "b", "z"];
+
+/// A `Shelved` statement: a `shared` shelf holding one pouch in a dict or a list, and each step a
+/// task taking its lock to change that pouch by `how` with a value: past 1, it crashes reading
+/// `limits[value]` after the pouch has changed. A crash undoes everything done under the lock,
+/// so the shelf is as it was. The shape of finding 1 in the review of #1785, where a crash under
+/// a lock put back a freed block.
+#[derive(Clone, Debug)]
+pub(crate) struct Shelving {
+    pub(crate) id: usize,
+    pub(crate) in_list: bool,
+    pub(crate) seen: i64,
+    pub(crate) steps: Vec<(i64, Shelve)>,
+}
+
+/// How a `Shelved` step changes the pouch under the lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shelve {
+    /// `held.fill(value)`, a `ref self` method of the shelf calling the pouch's `ref self` `add`.
+    Fill,
+    /// `held.by_hand(value)`: the pouch copied out, changed and stored back.
+    ByHand,
+    /// `held.pouches[...].add(value)`, the pouch's `ref self` method called straight on the part
+    /// of what the lock holds.
+    Direct,
+}
+
 /// How a `Streamed` stream is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StreamRead {
@@ -967,6 +1030,10 @@ pub(crate) enum Stmt {
     Yielded(Yielding),
     /// `woken{id}(stdout)`: a task that crashes or fails while its launcher waits on a channel.
     Woken(Waking),
+    /// `swaps{id}(stdout)`: a lookup kept while its struct is set to another, then a store.
+    Swapped(Swapping),
+    /// `shelved{id}(stdout)`: crashes inside a `ref self` method on part of a lock's value.
+    Shelved(Shelving),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

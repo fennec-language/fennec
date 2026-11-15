@@ -5,7 +5,7 @@
 use fennec_check::Type;
 use fennec_syntax::{Arg, CompKind, Expr, ExprKind, Field, FnDef, Span};
 
-use super::{Binding, Flow, Interp, Place, Run, crash, unsupported};
+use super::{Binding, Flow, Interp, MOST_ITEMS, Place, Run, crash, unsupported};
 use crate::load::Kind;
 use crate::value::{Func, Value};
 
@@ -122,8 +122,40 @@ impl Interp {
         if let Some(counted) = self.length_in_place(callee, args, expr.span)? {
             return Ok(counted);
         }
-        let (target, given) = self.prepare(expr, callee, args)?;
-        self.invoke(target, given, expr)
+        self.call_direct(expr, callee, args)
+    }
+
+    /// A call worked out and made, with any part read through a type's own `def []` to be
+    /// changed written back once it's done.
+    pub(crate) fn call_direct(
+        &mut self,
+        expr: &'static Expr,
+        callee: &'static Expr,
+        args: &'static [Arg],
+    ) -> Run<Value> {
+        let mark = self.write_backs.len();
+        match self.prepare(expr, callee, args) {
+            Ok((target, given)) => self.invoke_settled(mark, target, given, expr),
+            Err(failed) => self.settled(mark, Err(failed), expr.span),
+        }
+    }
+
+    /// Makes a call worked out since `mark`, and writes back what it changed through a type's
+    /// own `def []=`. A call that can't change what it reached writes nothing back, however it
+    /// ended.
+    pub(crate) fn invoke_settled(
+        &mut self,
+        mark: usize,
+        target: Target,
+        given: Vec<ArgVal>,
+        expr: &'static Expr,
+    ) -> Run<Value> {
+        let changes = changes_what_it_reaches(&target, &given);
+        let called = self.invoke(target, given, expr);
+        if !changes {
+            self.settle_write_backs(mark, false, expr.span)?;
+        }
+        self.settled(mark, called, expr.span)
     }
 
     /// Works out what a call calls and its arguments, left to right, without calling it.
@@ -176,6 +208,14 @@ impl Interp {
                 }
                 ExprKind::Name(name) if self.program.types.contains_key(&*self.type_named(name)) => {
                     Target::Construct { ty: self.type_named(name).into_owned(), case: None }
+                }
+                // `array[T, N]()`: N items, each T's zero, as the checker typed it. An array is
+                // held as the list it prints as.
+                ExprKind::Name(name) if name == "array" && args.is_empty() && !self.is_bound(name) => {
+                    match self.program.type_at(expr.span).cloned() {
+                        Some(ty @ Type::Array(..)) => Target::Given(self.zero_of(&ty, expr.span)?),
+                        _ => return unsupported("`array[...]()` whose type isn't known"),
+                    }
                 }
                 ExprKind::Name(name) if name == "Table" && args.is_empty() && self.is_the_table() => {
                     Target::Given(Value::Table(Box::new(crate::value::Table::new(self.shared.new_tag()))))
@@ -231,7 +271,7 @@ impl Interp {
 
     pub(crate) fn arg_value(&mut self, arg: &'static Arg, lazy: bool) -> Run<ArgVal> {
         if arg.is_mut {
-            let Some(place) = self.place_of(&arg.value)? else {
+            let Some(place) = self.place_for_change(&arg.value)? else {
                 return unsupported("a `ref` argument that isn't a place");
             };
             return Ok(ArgVal::Ref(arg.name.clone(), place));
@@ -351,7 +391,8 @@ impl Interp {
         if name == "expect" {
             return self.expected(object, args, expr).map(Some);
         }
-        let receiver = match self.place_of(object)? {
+        // A part read through a type's plain `def []` is written back when the call changes it.
+        let receiver = match self.place_for_change(object)? {
             Some(place) => Receiver::Place(place),
             None => Receiver::Value(self.eval(object)?),
         };
@@ -389,10 +430,7 @@ impl Interp {
     /// `call().expect("reason")`: the call's value, or a stop with the reason if it fails.
     fn expected(&mut self, object: &'static Expr, args: &'static [Arg], expr: &'static Expr) -> Run<Target> {
         let ran = match &object.kind {
-            ExprKind::Call { callee, args } => {
-                let (target, given) = self.prepare(object, callee, args)?;
-                self.invoke(target, given, object)
-            }
+            ExprKind::Call { callee, args } => self.call_direct(object, callee, args),
             _ => self.eval(object),
         };
         match ran {
@@ -585,6 +623,30 @@ impl Interp {
         value
     }
 
+    /// The zero an `array[T, N]()` fills its items with: `0`, `0.0`, `False`, `""`, `None`, an
+    /// array of zeros, or a struct made from its defaults, as `docs/language.md` says.
+    fn zero_of(&mut self, ty: &Type, span: Span) -> Run<Value> {
+        Ok(match ty {
+            Type::Int => Value::Int(0),
+            Type::Float => Value::Float(0.0),
+            Type::Bool => Value::Bool(false),
+            Type::Str | Type::LiteralStr => Value::Str(String::new()),
+            Type::Optional(_) => Value::None,
+            Type::Array(item, size) => {
+                let size = usize::try_from(*size).unwrap_or(usize::MAX);
+                let mut items = Vec::with_capacity(size.min(MOST_ITEMS));
+                for _ in 0..size {
+                    items.push(self.zero_of(item, span)?);
+                }
+                Value::List(items)
+            }
+            Type::Named(name) if self.program.types.contains_key(name.as_str()) => {
+                self.construct(name, None, Vec::new(), span)?
+            }
+            other => return unsupported(format!("the zero of a {other:?} in an array")),
+        })
+    }
+
     /// Makes a struct, an error, or a case: values given by position go to the public fields in
     /// order, then the named ones, then each field left out takes its default. A struct with
     /// `where` rules is checked once it's made.
@@ -743,4 +805,17 @@ fn type_names(ty: &Type, names: &mut Vec<String>) {
 /// A type as a generator prints it, with the program's own type names as they're written.
 pub(crate) fn shown_type(ty: &Type) -> String {
     ty.to_string().replace(fennec_syntax::rename::RENAMED, "")
+}
+
+/// Whether a call can change what it reaches through places: a method that takes `self` as a
+/// `ref`, a built-in method that changes its value, or a `ref` argument.
+fn changes_what_it_reaches(target: &Target, given: &[ArgVal]) -> bool {
+    let receiver_changes = match target {
+        Target::Def { def, receiver: Some(Receiver::Place(_)), .. } => super::own_index::takes_ref_self(def),
+        Target::Method { receiver: Receiver::Place(_), name, .. } => {
+            super::methods::CHANGES.contains(&name.as_str())
+        }
+        _ => false,
+    };
+    receiver_changes || given.iter().any(|arg| matches!(arg, ArgVal::Ref(..)))
 }

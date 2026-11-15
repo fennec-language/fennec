@@ -26,24 +26,24 @@ Where a standard library module is written in Fennec, the oracle can run its own
 beneath it. These are run this way (`RUN_FROM_SOURCE` in `src/load.rs`): `std.math`,
 `std.collections`, `std.time`, `std.string`, `std.env`, `std.base64`, `std.random`, `std.uuid`,
 `std.cli`, `std.crypto`, `std.csv`, `std.html`, `std.log`, `std.url`, `std.concurrent`,
-`std.postgres`, `std.re`, `std.template` and `std.sql`. Each is loaded when the program imports
-from it, when a module loaded so imports from it, or, for `std.env` and `std.time`, when `main` takes the `Env` or the
-`Clock` whose types they declare. In `std.math`, the vectors, quaternions and matrices, `dot` and
-`lerp` are its Fennec code, and `sqrt`, `floor` and `ceil` are modeled here. In
-`std.collections`, `Deque`, `Heap`, `Counter`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Tree`
-and the rest are its Fennec code. Its `extend`s of `Table` and `Id`, which the oracle models on its
-own, are left out. `std.time`'s `Duration`, `Instant` and `Time` are its Fennec code, and a
-duration written out, as `30s`, is its `Duration`. The intrinsics their code calls that only read,
-like `text_byte`, `text_size`, `text_part` and `bytes_text`, are modeled here (`interp/library.rs`)
-from what `intrinsics.fen` says each does, and so is making a core error, like `InvalidValue`, by
-name. `std.random`'s draws, beneath its `Random`, are modeled here as `docs/language.md` pins them:
-SplitMix64, and a range by Lemire's method. The types of the modules' expressions are what
-the checker gave them as it checked the program. So
-the oracle still checks how the compiler and runtime run that code, but a mistake in the module's
-own Fennec would be the same on both sides. A module modeled on its own, like `std.json`, isn't
-run from source. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's
-`**` are computed with the `libm` crate, as `docs/language.md` says they are, at the version the
-workspace pins.
+`std.postgres`, `std.re`, `std.template`, `std.sql` and `std.io`. Each is loaded when the program
+imports from it, when a module loaded so imports from it, or, for `std.env` and `std.time`, when
+`main` takes the `Env` or the `Clock` whose types they declare. In `std.math`, the vectors,
+quaternions and matrices, `dot` and `lerp` are its Fennec code, and `sqrt`, `floor` and `ceil` are
+modeled here. In `std.collections`, `Deque`, `Heap`, `Counter`, `SortedMap`, `SortedSet`, `Grid`,
+`Packed`, `Tree` and the rest are its Fennec code. Its `extend`s of `Table` and `Id`, which the
+oracle models on its own, are left out. `std.time`'s `Duration`, `Instant` and `Time` are its Fennec
+code, and a duration written out, as `30s`, is its `Duration`. A template string, as `t"{name}"`,
+builds the core's own `Template`, whose `Template` and `Interpolation` are run from their source the
+same way. The intrinsics their code calls that only read, like `text_byte`, `text_size`, `text_part`
+and `bytes_text`, are modeled here (`interp/library.rs`) from what `intrinsics.fen` says each does,
+and so is making a core error, like `InvalidValue`, by name. `std.random`'s draws, beneath its
+`Random`, are modeled here as `docs/language.md` pins them: SplitMix64, and a range by Lemire's
+method. The types of the modules' expressions are what the checker gave them as it checked the
+program. So the oracle still checks how the compiler and runtime run that code, but a mistake in the
+module's own Fennec would be the same on both sides. A module modeled on its own, like `std.json`,
+isn't run from source. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's `**` are computed
+with the `libm` crate, as `docs/language.md` says they are, at the version the workspace pins.
 
 ## How it models a program
 
@@ -130,8 +130,10 @@ workspace pins.
   compiled program gets. What the program writes, makes and removes is held in memory, and the disk
   is never written. Where the folder isn't a fresh empty one, the oracle looks at the disk, a name
   at a time and never through a link, only for whether a file or a folder is there: reading a file
-  that was there before, its size, and what's in a folder that was there before are refused. A
-  path outside the folder is refused, but for the folders on the way to it, which are there.
+  that was there before, its size, and what's in a folder that was there before are refused.
+  Outside the folder the disk is looked at the same way, and only that way, so the compiled
+  program on the same machine sees the same: the root is there, a path through nothing fails as
+  not found, and reading, listing or changing anything that's there is refused.
 - Each of `Fs`'s methods fails as the runtime's does, with its case of `IoError` and its words, and
   a path goes through the folders on its way as the system goes, a `..` back up. An `Fs` narrowed
   with `only` reaches what's inside its folder, by the path's text with `.` and `..` worked out, and
@@ -144,6 +146,25 @@ workspace pins.
   folder's listing while a file is being made in it, under a hidden name holding the process's
   number, bytes, and on Windows what it reads its own way.
 - `std.path`'s `Path` is its text, and its methods only look at it, each written here on its own.
+- Places through a type's own `def []` are as `docs/decisions.md` sets them out
+  (`interp/own_index.rs`). Through the `ref` form, which the parser names `[]mut`, an int position
+  is a place inside the value: indexing, `=`, a `ref` argument, `for ref` and `parallel` reach it
+  where it is, and `for ref` and `parallel` skip the positions its `is_live` says are empty.
+  Through the plain form beside a `def []=`, a change reads the part with `[]`, changes that copy,
+  and writes it back with `[]=` once the change is done: once for `shelf[0].x += 1`, nested too,
+  and once for a call that takes it as `ref`, even one that changes it twice. A key that isn't an
+  int goes to the plain form, so a type can have both, as `Grid` does. A failure partway through
+  such a change writes the part back too, with what changed before it, since only
+  `lock ... as ref` rolls back. A `with` source given a `ref` through `[]=` is refused.
+- `value? from Context(...)` passes a failure up as the context, made only then. Native code
+  keeps what caused it with it, but nothing reads that yet.
+- An `array[T, N]` is held as the list it prints as, and `array[T, N]()` is `N` of `T`'s zero, as
+  the checker types it.
+- `std.crypto`'s `equal` compares two texts or two runs of bytes; its time, which depends only on
+  their lengths, isn't something a program can see. The intrinsics that write into a byte builder
+  through a `ref`, `bytes_push` and the rest, are modeled as `intrinsics.fen` says they work, and
+  `std.io`, run from its source, leaves out its `Stdout`, `Stdin` and `Stderr`, which the oracle
+  models as capabilities.
 - Anything it doesn't model it refuses, as `unsupported: <feature>`, rather than guess. A run has a
   budget of steps, items and nesting, and one that goes past it is unsupported too, as `ran too
   long`.

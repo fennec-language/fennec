@@ -355,7 +355,7 @@ impl Interp {
 }
 
 /// The methods that change a list, dict or set where it is.
-const CHANGES: &[&str] = &[
+pub(crate) const CHANGES: &[&str] = &[
     "append",
     "pop",
     "insert",

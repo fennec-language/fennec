@@ -176,6 +176,7 @@ const RUN_FROM_SOURCE: &[&str] = &[
     "re",
     "template",
     "sql",
+    "io",
 ];
 
 /// The capabilities `main` may take whose type a module run from its own source declares, which
@@ -184,10 +185,14 @@ const RUN_FROM_SOURCE: &[&str] = &[
 /// `std.time`'s `Instant` and `Time`.
 const CAPABILITY_MODULES: &[(&str, &str)] = &[("Env", "env"), ("Clock", "time")];
 
-/// The types the oracle models on its own, whose methods a module run from its source adds in an
-/// `extend` are left out: `std.collections` extends `Table` and `Id`, which `interp/tables.rs`
-/// models.
-const MODELED_HERE: &[&str] = &["Table", "Id"];
+/// The core's types run from their own source, as `core_types` takes them in.
+const FROM_CORE: &[&str] = &["Template", "Interpolation"];
+
+/// The types the oracle models on its own, which a module run from its source declares or adds
+/// methods to in an `extend`: those are left out. `std.collections` extends `Table` and `Id`,
+/// which `interp/tables.rs` models, and `std.io` declares the capabilities `main` is given and
+/// the writer and reader `Stdout` and `Stdin` hand out, which `Cap` models or refuses.
+const MODELED_HERE: &[&str] = &["Table", "Id", "Stdout", "Stdin", "Stderr", "StdoutWriter", "StdinReader"];
 
 /// What the tables are made from: the program's own declarations, and those of each standard
 /// library module it imports that's run from its own source.
@@ -212,6 +217,11 @@ impl Gathered {
                 self.functions.insert(def.name.clone(), def);
                 // A module's functions are named `module.function` when it's run.
                 std.zip(def.name.split_once('.')).map(|(module, (_, short))| (module, short, &def.name))
+            }
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def)
+                if std.is_some() && MODELED_HERE.contains(&def.name.as_str()) =>
+            {
+                None
             }
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
                 let kind = match item {
@@ -269,6 +279,23 @@ impl Gathered {
             }
             _ => Ok(()),
         }
+    }
+
+    /// Takes in the types of the standard library's core a program may make without an import
+    /// that the oracle runs from their own source: the `Template` a template string builds, and
+    /// its `Interpolation`. A program's own type of either name is its own.
+    fn core_types(&mut self) -> Result<(), Refused> {
+        let core =
+            fennec_syntax::core_to_run().map_err(|problem| Refused::Invalid(problem.message.clone()))?;
+        for item in core.iter().flat_map(|module| module.items.iter()) {
+            if let Item::Struct(def) = item
+                && FROM_CORE.contains(&def.name.as_str())
+                && !self.types.contains_key(&def.name)
+            {
+                self.types.insert(def.name.clone(), Declared { def, kind: Kind::Struct, ruled: ruled(def) });
+            }
+        }
+        Ok(())
     }
 
     /// Whether `main` takes a capability whose type `module` declares.
@@ -337,6 +364,7 @@ fn tables(
         gathered.take(item, None)?;
     }
     gathered.std_modules()?;
+    gathered.core_types()?;
     let Gathered { functions, types, extensions, constants, aliases, imported, from_std } = gathered;
     let mut owners = HashMap::new();
     for (name, declared) in &types {

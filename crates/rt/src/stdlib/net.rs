@@ -65,7 +65,18 @@ struct Stream {
     /// The tasks parked waiting on it, each with a number of its wait's own, for closing it to
     /// wake: on Windows a worker's poll isn't told that a connection was closed from this side.
     #[cfg(any(test, feature = "threads"))]
-    parked: Mutex<Vec<(u64, crate::embed::serve::ParkedTask)>>,
+    parked: Mutex<Vec<Wait>>,
+}
+
+/// A task parked waiting on a connection, as the connection notes it.
+#[cfg(any(test, feature = "threads"))]
+struct Wait {
+    /// A number of this wait's own, to take its note back by.
+    number: u64,
+    task: crate::embed::serve::ParkedTask,
+    /// Whether its worker's poll was told of the socket itself, and not of a copy of it. One wait
+    /// at a time is.
+    on_the_socket: bool,
 }
 
 /// What a connection reads through: the socket itself, or TLS over it, which writes through the
@@ -905,11 +916,9 @@ pub(crate) fn native_net(name: &str, args: &[Value], span: Span) -> Result<Value
         let (plain, last) = args.split_at(args.len().saturating_sub(named.len()));
         let given: Vec<(&str, &Value)> = named.iter().copied().zip(last).collect();
         let request = request_of(method, plain, &given, span)?;
-        // A task parks while its request waits, on a thread that may block, as `connect` does,
-        // rather than holding its worker: a server in the same program may need that worker to
-        // answer it.
-        let sent = if task_parks() { off_thread(move || http::send(&request)) } else { http::send(&request) };
-        return Ok(done_or_failed(sent.map(answer_value)));
+        // A task parks while its request waits, rather than holding its worker: a server in the
+        // same program may need that worker to answer it. `send` sees to that itself.
+        return Ok(done_or_failed(http::send(&request).map(answer_value)));
     }
     let (method, args, timeout) = timed(name, args, span)?;
     real_net(&method, &args, timeout, span)
@@ -1467,6 +1476,32 @@ pub(crate) fn shut(handle: i64) {
     close(handle);
 }
 
+/// A line from a kept connection, waiting no longer than `limit` for it.
+#[cfg(test)]
+pub(crate) fn line_from_within(handle: i64, limit: Duration) -> Result<Option<Vec<u8>>, Failure> {
+    read_line(handle, Some(limit))
+}
+
+/// Writes `data` to a kept connection, with the socket made not to block as a read parked on it
+/// makes it, waiting no longer than `limit` for room.
+#[cfg(test)]
+pub(crate) fn written_within(handle: i64, data: &[u8], limit: Duration) -> Result<(), Failure> {
+    if let Ok(stream) = stream(handle) {
+        let _ = blocks(&stream, false);
+    }
+    write_within(handle, data, Some(limit))
+}
+
+/// How many tasks are parked waiting on a kept connection, or about to be: those with the socket
+/// itself, and those with a copy of it.
+#[cfg(test)]
+pub(crate) fn waiting_on(handle: i64) -> (usize, usize) {
+    let Ok(stream) = stream(handle) else { return (0, 0) };
+    let parked = stream.parked.lock().unwrap_or_else(PoisonError::into_inner);
+    let on_the_socket = parked.iter().filter(|wait| wait.on_the_socket).count();
+    (on_the_socket, parked.len() - on_the_socket)
+}
+
 /// Writes `data` to a kept connection over and over, with the socket made not to block as a read
 /// parked on it makes it, until a write fails: how it failed.
 #[cfg(test)]
@@ -1494,7 +1529,7 @@ pub(crate) fn said_and_heard(host: &str, port: u16, line: &[u8]) -> Result<Vec<u
 
 /// Whether this call is in a task that can park while it waits for something to look up or connect
 /// to, on a thread that may block.
-fn task_parks() -> bool {
+pub(crate) fn task_parks() -> bool {
     #[cfg(any(test, feature = "threads"))]
     {
         crate::embed::serve::can_park()
@@ -1506,7 +1541,7 @@ fn task_parks() -> bool {
 }
 
 /// `work`, run on a thread that may block while this task parks, or here when it can't.
-fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     #[cfg(any(test, feature = "threads"))]
     {
         crate::embed::serve::off_thread(work)
@@ -1758,6 +1793,14 @@ static NEXT_WAIT: AtomicU64 = AtomicU64::new(0);
 /// connection is closed from here. On Unix the worker's poll is told of the socket itself, and on
 /// Windows of a copy of it.
 ///
+/// **One wait at a time has the socket itself.** A poll takes a descriptor once, and a connection
+/// can have two tasks waiting on it at once: one reading while another writes, as a chat's reader
+/// and the task that broadcasts to it do. Both used to hand their worker's poll the socket. On
+/// Linux the second was refused, and tried again at once for as long as it had to wait, its worker
+/// never polling. On macOS both were taken, and the first to finish took both off the poll, so the
+/// other was never woken. So a wait that finds another with the socket goes through a copy of it,
+/// which has a descriptor of its own.
+///
 /// The wait is noted on the connection first, so closing it wakes this task, and then it looks at
 /// whether it's closed already, as a close that came before the note woke nobody. A close either
 /// finds the note or is seen here.
@@ -1770,39 +1813,78 @@ fn park_on_socket(
     use crate::embed::serve::{Parked, ParkedTask};
     let token = crate::embed::serve::next_token();
     let wait = NEXT_WAIT.fetch_add(1, Ordering::Relaxed);
-    if let Some(task) = ParkedTask::here(token) {
-        stream.parked.lock().unwrap_or_else(PoisonError::into_inner).push((wait, task));
-    }
+    let on_the_socket = {
+        // Looked at and noted with the list held, so of two waits that come at once, one sees the
+        // other.
+        let mut parked = stream.parked.lock().unwrap_or_else(PoisonError::into_inner);
+        let on_the_socket = !parked.iter().any(|other| other.on_the_socket);
+        if let Some(task) = ParkedTask::here(token) {
+            parked.push(Wait { number: wait, task, on_the_socket });
+        }
+        on_the_socket
+    };
     let parked = if stream.closed.load(Ordering::SeqCst) {
         Parked::Ready
     } else {
-        park_on(token, &stream.socket, interest, deadline)
+        park_on(token, &stream.socket, (interest, deadline), on_the_socket)
     };
-    stream.parked.lock().unwrap_or_else(PoisonError::into_inner).retain(|(noted, _)| *noted != wait);
+    stream.parked.lock().unwrap_or_else(PoisonError::into_inner).retain(|noted| noted.number != wait);
     parked
 }
 
-/// `park_on_socket`'s wait itself, on `token`.
+/// `park_on_socket`'s wait itself, on `token`: through the socket's own descriptor if it's
+/// `on_the_socket`, on Unix, and otherwise through a copy.
 #[cfg(any(test, feature = "threads"))]
 fn park_on(
     token: mio::Token,
     socket: &TcpStream,
-    interest: mio::Interest,
-    deadline: Option<Instant>,
+    (interest, deadline): (mio::Interest, Option<Instant>),
+    on_the_socket: bool,
 ) -> crate::embed::serve::Parked {
     #[cfg(unix)]
     {
         #[cfg(test)]
-        if PARKING_ON_COPIES.load(Ordering::SeqCst) > 0 {
-            return crate::embed::serve::park_on_copy(token, socket, interest, deadline);
+        let on_the_socket = on_the_socket && PARKING_ON_COPIES.load(Ordering::SeqCst) == 0;
+        if on_the_socket {
+            let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
+            return crate::embed::serve::park_on_fd(token, fd, interest, deadline);
         }
-        let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-        crate::embed::serve::park_on_fd(token, fd, interest, deadline)
+        crate::embed::serve::park_on_copy(token, socket, interest, deadline)
     }
     #[cfg(not(unix))]
     {
+        let _ = on_the_socket;
         crate::embed::serve::park_on_copy(token, socket, interest, deadline)
     }
+}
+
+/// What a task waits for on a socket of its own.
+#[derive(Clone, Copy)]
+pub(crate) enum Wanted {
+    ToRead,
+    ToWrite,
+    /// To read, with something of its own to send first, as TLS can have.
+    Either,
+}
+
+/// Parks this task until a socket of its own may be ready for what's `wanted`, or `deadline`
+/// passes: for a socket that doesn't block and that no other task waits on, as a request's is.
+/// True once there's no more waiting to do: its time is up, or the task's been stopped.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn parked_out_on(socket: &TcpStream, wanted: Wanted, deadline: Instant) -> bool {
+    let interest = match wanted {
+        Wanted::ToRead => mio::Interest::READABLE,
+        Wanted::ToWrite => mio::Interest::WRITABLE,
+        Wanted::Either => mio::Interest::READABLE | mio::Interest::WRITABLE,
+    };
+    let token = crate::embed::serve::next_token();
+    park_on(token, socket, (interest, Some(deadline)), true) != crate::embed::serve::Parked::Ready
+}
+
+/// Without threads nothing parks, so nothing waits this way.
+#[cfg(not(any(test, feature = "threads")))]
+pub(crate) fn parked_out_on(_socket: &TcpStream, _wanted: Wanted, _deadline: Instant) -> bool {
+    true
 }
 
 /// Waits until `stream`'s socket may take more to write: parked in a task that can, and otherwise
@@ -2027,7 +2109,9 @@ fn close(handle: i64) {
         // A task parked waiting on it looks again, and finds it shut. Unix's poll would say so
         // itself; Windows' doesn't report a close made from this side, and the task would wait on.
         #[cfg(any(test, feature = "threads"))]
-        for (_, task) in std::mem::take(&mut *stream.parked.lock().unwrap_or_else(PoisonError::into_inner)) {
+        for Wait { task, .. } in
+            std::mem::take(&mut *stream.parked.lock().unwrap_or_else(PoisonError::into_inner))
+        {
             task.wake();
         }
     }
@@ -2547,6 +2631,66 @@ pub(crate) mod tests {
 
         fn connected_to(port: u16) -> TcpStream {
             TcpStream::connect(("127.0.0.1", port)).unwrap()
+        }
+
+        /// While what this gives back lives, the HTTP client trusts the tests' own certificate
+        /// authority, and nothing else: for a request to `https_echoing`.
+        pub(crate) fn trusting_the_tests() -> http::tls::TrustedByTests {
+            http::tls::TrustedByTests::begin(client_config())
+        }
+
+        /// An HTTPS server on a port of its own, with the tests' certificate for `localhost`, for
+        /// `count` requests. It waits a moment before it reads each one's body, so a long one has to
+        /// wait for room, and answers none until all have come whole, each with its own body back.
+        pub(crate) fn https_echoing(count: usize) -> u16 {
+            use std::io::Read as _;
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let chain: Vec<CertificateDer<'static>> =
+                CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+            let config = ServerConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(chain, PrivateKeyDer::from_pem_slice(KEY).unwrap())
+                .unwrap();
+            let config = Arc::new(config);
+            let all = Arc::new(std::sync::Barrier::new(count));
+            std::thread::spawn(move || {
+                for tcp in listener.incoming().flatten().take(count) {
+                    let (config, all) = (Arc::clone(&config), Arc::clone(&all));
+                    std::thread::spawn(move || {
+                        let connection = ServerConnection::new(config).unwrap();
+                        let mut reader = BufReader::new(StreamOwned::new(connection, tcp));
+                        let mut length = 0;
+                        loop {
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                return;
+                            }
+                            if line == "\r\n" {
+                                break;
+                            }
+                            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                                length = value.trim().parse().unwrap_or(0);
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                        let mut body = vec![0; length];
+                        if reader.read_exact(&mut body).is_err() {
+                            return;
+                        }
+                        all.wait();
+                        let secured = reader.get_mut();
+                        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\n\r\n");
+                        let _ = secured.write_all(head.as_bytes());
+                        let _ = secured.write_all(&body);
+                        secured.conn.send_close_notify();
+                        let _ = secured.flush();
+                    });
+                }
+            });
+            port
         }
 
         /// A TLS connection's handle, to a server that answers its one line only once `ready` is

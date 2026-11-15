@@ -210,15 +210,21 @@ fn run(args: &[&str]) -> Result<ExitCode, String> {
     let fennec_fuzz = std::env::current_exe().map_err(|err| err.to_string())?;
     let mut found_any = false;
     for target in chosen {
+        // Said before it starts, so a run stopped from outside, or ended by a crash of its own,
+        // still says which target it was in.
+        println!("{}: starting", target.name);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
         let stuck = options.stuck.map_or(target.stuck, Duration::from_secs);
         let run = supervise::Run { fennec_fuzz: &fennec_fuzz, target, seed: options.seed, stuck };
-        let outcome = run.until(options.seconds, options.inputs)?;
+        let outcome =
+            run.until(options.seconds, options.inputs).map_err(|err| format!("{}: {err}", target.name))?;
         println!("{}: {} inputs, {} failures", target.name, outcome.inputs, outcome.failures.len());
         for failed in outcome.failures {
             found_any = true;
             println!("{} {}: {}", target.name, failed.failure, how_many(&failed.inputs, outcome.inputs));
             if let Some(&first) = failed.inputs.first() {
-                keep(&fennec_fuzz, target, &options, failed.failure, first)?;
+                keep(&fennec_fuzz, target, &options, failed.failure, first)
+                    .map_err(|err| format!("{}: keeping what failed: {err}", target.name))?;
             }
         }
     }

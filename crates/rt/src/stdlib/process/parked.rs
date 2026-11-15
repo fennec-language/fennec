@@ -2,19 +2,20 @@
 //! than holding a blocking thread for as long as the program takes. Only starting the program,
 //! which can wait on the disk, goes to a blocking thread.
 //!
-//! The program's pipes, and on Linux its exit, are registered with a poll of their own. The task
-//! parks on that poll's descriptor, which its worker's poll says is ready once any of them is. So
-//! one wait covers writing the input, reading both outputs and the program's end, and none of them
-//! can hold up another: a program blocked writing to one output while the task waits on the other
-//! would never finish.
+//! The program's pipes, and what says it has ended, are registered with a poll of their own: a
+//! pidfd on Linux, and on macOS a kqueue of its own told of the program's exit, kqueue's
+//! `EVFILT_PROC`, through nix's safe `Kqueue`. The task parks on that poll's descriptor, which its
+//! worker's poll says is ready once any of them is. So one wait covers writing the input, reading
+//! both outputs and the program's end, and none of them can hold up another: a program blocked
+//! writing to one output while the task waits on the other would never finish.
 //!
-//! macOS has no way to be told of a program's end without `unsafe`, as kqueue's `EVFILT_PROC` is
-//! reached through an `unsafe` call. A program almost always ends as it closes its outputs, so
-//! once both are closed the task checks for its end after 1 ms, then at twice the wait each time,
-//! up to 50 ms. Only a program that closes its outputs and runs on is checked for long.
+//! Where nothing can say when the program ends, on a Linux older than pidfds or if making one
+//! fails, the task looks for its end once both outputs are closed: after 1 ms, then at twice the
+//! wait each time, up to 50 ms. A program almost always ends as it closes its outputs, so only one
+//! that closes them and runs on is looked at for long.
 
 use std::io::{ErrorKind, Read as _, Write as _};
-use std::os::fd::AsRawFd as _;
+use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -27,8 +28,40 @@ use crate::embed::serve::{Parked, next_token, park_on_fd};
 const STDOUT: Token = Token(0);
 const STDERR: Token = Token(1);
 const STDIN: Token = Token(2);
-#[cfg(target_os = "linux")]
 const EXITED: Token = Token(3);
+
+/// What's ready to read once a program has ended: a pidfd on Linux, and on macOS a kqueue of its
+/// own, told of the program's exit.
+#[cfg(not(target_os = "macos"))]
+type End = std::os::fd::OwnedFd;
+#[cfg(target_os = "macos")]
+type End = nix::sys::event::Kqueue;
+
+/// What says `child` has ended, or `None` where this system can't say, or saying failed. A
+/// program that has ended already has nothing to say it, and is found ended when it's looked for.
+#[cfg(target_os = "linux")]
+fn end_of(child: &Child) -> Option<End> {
+    let pid = rustix::process::Pid::from_child(child);
+    rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::NONBLOCK).ok()
+}
+
+/// As on Linux, through a kqueue holding `EVFILT_PROC` for the program, which is ready to read once
+/// the program has exited. It's added and nothing taken, so `kevent` doesn't wait.
+#[cfg(target_os = "macos")]
+fn end_of(child: &Child) -> Option<End> {
+    use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
+    let kqueue = Kqueue::new().ok()?;
+    let pid = usize::try_from(child.id()).ok()?;
+    let flags = EvFlags::EV_ADD | EvFlags::EV_ONESHOT;
+    let exited = KEvent::new(pid, EventFilter::EVFILT_PROC, flags, FilterFlag::NOTE_EXIT, 0, 0);
+    kqueue.kevent(&[exited], &mut [], None).ok()?;
+    Some(kqueue)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn end_of(_: &Child) -> Option<End> {
+    None
+}
 
 /// The first wait before looking again whether a program whose outputs have closed has ended, and
 /// the longest, where its end can't be watched for.
@@ -106,8 +139,8 @@ struct Running {
     /// The input, how much of it's written, and the pipe it goes to, until it's all written or the
     /// program stops reading.
     stdin: Option<(Sender, Vec<u8>, usize)>,
-    /// What says the program has ended: a pidfd on Linux, and nothing elsewhere.
-    end: Option<std::os::fd::OwnedFd>,
+    /// What says the program has ended, where something can.
+    end: Option<End>,
     out: Vec<u8>,
     err: Vec<u8>,
     /// Where a read lands before it's kept: on the heap, as a task's stack is small.
@@ -133,19 +166,14 @@ impl Running {
             registry.register(&mut pipe, STDIN, Interest::WRITABLE)?;
             stdin = Some((pipe, input, 0));
         }
-        #[cfg(not(target_os = "linux"))]
-        let end = None;
-        #[cfg(target_os = "linux")]
-        let end = {
-            let pid = rustix::process::Pid::from_child(child);
-            // A pidfd says the program has ended by being ready to read. An older kernel has none,
-            // and its end is looked for as on macOS.
-            let end = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::NONBLOCK).ok();
-            if let Some(end) = &end {
-                registry.register(&mut mio::unix::SourceFd(&end.as_raw_fd()), EXITED, Interest::READABLE)?;
-            }
-            end
-        };
+        let end = end_of(child);
+        if let Some(end) = &end {
+            registry.register(
+                &mut mio::unix::SourceFd(&end.as_fd().as_raw_fd()),
+                EXITED,
+                Interest::READABLE,
+            )?;
+        }
         Ok(Self {
             poll,
             events: Events::with_capacity(8),
@@ -231,5 +259,36 @@ fn read_while_ready(
             Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(false),
             Err(error) => return Err(error),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+    use std::time::Duration;
+
+    use mio::{Events, Interest, Poll, Token};
+
+    use super::end_of;
+
+    /// What says a program has ended is ready to read once it has, and not before: on Linux and
+    /// macOS a parked run is woken by its program's end, never looking for it.
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn a_programs_end_wakes_its_poll() {
+        use std::os::fd::{AsFd as _, AsRawFd as _};
+        let mut child = Command::new("sleep").arg("0.3").spawn().expect("sleep starts");
+        let end = end_of(&child).expect("this system says when a program ends");
+        let mut poll = Poll::new().expect("a poll");
+        let fd = end.as_fd().as_raw_fd();
+        poll.registry()
+            .register(&mut mio::unix::SourceFd(&fd), Token(7), Interest::READABLE)
+            .expect("registered");
+        let mut events = Events::with_capacity(4);
+        poll.poll(&mut events, Some(Duration::ZERO)).expect("polled");
+        assert!(events.is_empty(), "ready while the program still runs");
+        poll.poll(&mut events, Some(Duration::from_secs(20))).expect("polled");
+        assert!(events.iter().any(|event| event.token() == Token(7)), "never ready");
+        assert!(child.try_wait().expect("looked at").is_some(), "ready before the program ended");
     }
 }

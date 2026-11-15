@@ -455,7 +455,8 @@ impl Interp {
             | ("bool", Value::Bool(_))
             | ("list", Value::List(_))
             | ("dict", Value::Dict(_))
-            | ("set", Value::Set(_)) => true,
+            | ("set", Value::Set(_))
+            | ("bytes", Value::Bytes(_)) => true,
             (_, Value::Sized(num, _)) => num.name() == name,
             (_, Value::Instance(instance)) => {
                 if let Some(members) = self.program.aliases.get(name) {
@@ -468,7 +469,7 @@ impl Interp {
                     instance.ty == name
                 }
             }
-            ("int" | "float" | "str" | "bool" | "list" | "dict" | "set", _) => false,
+            ("int" | "float" | "str" | "bool" | "list" | "dict" | "set" | "bytes", _) => false,
             _ if self.program.types.contains_key(name) => false,
             _ => return unsupported(format!("`is {name}`")),
         })

@@ -11,6 +11,10 @@
 #   - when the gate fails;
 #   - when the push fails, or leaves the branch on origin anywhere but this commit.
 # Every pipe's own failure counts, so nothing after a step can hide it failing.
+#
+# The pull request's text starts by saying how it was gated, so a merge is decided knowing it:
+# "Gated in full", with every step `gate.sh` ran, or, when GATE names another command, "SHORT
+# gate", with that command, which is no reason to merge.
 # GATE and GH name other commands, for its test, `test-open-pr.sh`.
 set -euo pipefail
 title=${1:?give a title}
@@ -39,10 +43,24 @@ if git grep --quiet -E '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!*.md'; then
   git grep -n -E '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!*.md' >&2
   stop "conflict markers are left in these files"
 fi
-"$gate" || stop "the gate failed, so nothing's pushed"
+said=$(mktemp)
+trap 'rm -f "$said" "$said.md"' EXIT
+"$gate" | tee "$said" || stop "the gate failed, so nothing's pushed"
+if [ "$gate" = .github/scripts/gate.sh ]; then
+  # Every step it ran, as its summary lists them: it passes only when each one did, or failed only
+  # on what main is known to fail, which is said.
+  steps=$(sed -n '/^the gate.s steps:$/,/altogether$/p' "$said" \
+    | awk '/^  [a-z]/ { status = $1; sub(/^  [a-z]+ +/, ""); print (status == "known" ? $0 " (past main'"'"'s known failures)" : $0) }' \
+    | paste -sd ',' - | sed 's/,/, /g')
+  how="**Gated in full**: every step of \`gate.sh\` passed: ${steps:-its summary was not found}."
+else
+  how="**SHORT gate**: only \`$gate\` ran, not \`.github/scripts/gate.sh\` and its steps. Don't merge on it."
+  echo "open-pr: SHORT gate: only $gate ran" >&2
+fi
+{ echo "$how"; echo; cat "$body"; } > "$said.md"
 echo "What $branch changes against main:"
 git diff --stat origin/main...HEAD
 git push --quiet --set-upstream origin "$branch"
 pushed=$(git ls-remote origin "refs/heads/$branch" | cut -f1)
 [ "$pushed" = "$(git rev-parse HEAD)" ] || stop "origin's $branch is at '$pushed', not this commit"
-"$gh" pr create --base main --head "$branch" --title "$title" --body-file "$body"
+"$gh" pr create --base main --head "$branch" --title "$title" --body-file "$said.md"

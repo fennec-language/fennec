@@ -188,6 +188,7 @@ fn library_alone<'m>(
     // What a standard library module imports is its own: a program names it only by importing
     // it too.
     program.std_functions.clear();
+    program.std_constants.clear();
     program.imported_types.clear();
     program
 }
@@ -1084,7 +1085,10 @@ impl Checker {
     /// Every struct's fields and their types, in the order they're written.
     fn structs(&mut self, kind: TypeKind) -> BTreeMap<String, crate::Struct> {
         type Annotations = BTreeMap<String, Vec<fennec_syntax::Annotation>>;
-        let structs: Vec<(String, Vec<String>, (bool, Annotations))> = self
+        // Each struct's name, type parameters and fields' names, whether a field has a rule, and
+        // what's written above each field.
+        type Found = (String, Vec<String>, Vec<String>, (bool, Annotations));
+        let structs: Vec<Found> = self
             .program
             .types
             .values()
@@ -1099,12 +1103,13 @@ impl Checker {
                     .filter(|field| !field.annotations.is_empty())
                     .map(|field| (field.name.clone(), field.annotations.clone()))
                     .collect();
-                (info.def.name.clone(), names, (rules, annotations))
+                let generics = info.def.generics.iter().map(|generic| generic.name.clone()).collect();
+                (info.def.name.clone(), generics, names, (rules, annotations))
             })
             .collect();
         structs
             .into_iter()
-            .map(|(name, fields, (rules, annotations))| {
+            .map(|(name, generics, fields, (rules, annotations))| {
                 let fields = fields
                     .into_iter()
                     .map(|field| {
@@ -1112,7 +1117,7 @@ impl Checker {
                         (field, ty)
                     })
                     .collect();
-                (name, crate::Struct { fields, rules, annotations })
+                (name, crate::Struct { generics, fields, rules, annotations })
             })
             .collect()
     }
@@ -1141,7 +1146,8 @@ impl Checker {
                     .collect();
                 cases.push((case.name.clone(), fields));
             }
-            found.insert(def.name.clone(), crate::Enum { cases, rules });
+            let generics = def.generics.iter().map(|generic| generic.name.clone()).collect();
+            found.insert(def.name.clone(), crate::Enum { generics, cases, rules });
         }
         found
     }

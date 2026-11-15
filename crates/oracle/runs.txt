@@ -105,6 +105,7 @@ path_inside.fen
 path_inside_windows.fen
 postgres_auth.fen
 postgres_messages.fen
+postgres_query.fen
 projects/arena
 projects/cases
 projects/constants
@@ -131,6 +132,8 @@ std_fs.fen
 std_fs_hostile.fen
 std_functions.fen
 std_grid.fen
+std_html.fen
+std_html_hostile.fen
 std_io.fen
 std_json.fen
 std_long_input_errors.fen
@@ -159,6 +162,7 @@ strings.fen
 struct_keys_native.fen
 structs.fen
 sum.fen
+templates.fen
 test_capabilities.fen
 testing.fen
 text_contains.fen

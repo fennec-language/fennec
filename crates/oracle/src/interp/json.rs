@@ -7,14 +7,14 @@
 //! doesn't say which `Table` an `Id` is for, or whether it's held as an optional.
 
 mod parse;
-mod read;
-mod write;
+pub(crate) mod read;
+pub(crate) mod write;
 
 use fennec_check::Type;
 use fennec_syntax::{Expr, ExprKind, Field};
 
 use super::calls::ArgVal;
-use super::{Interp, Run, unsupported};
+use super::{Interp, Place, Run, unsupported};
 use crate::load::Kind;
 use crate::value::Value;
 
@@ -127,6 +127,43 @@ impl Interp {
         }
     }
 
+    /// A local no name in the program can reach, holding `value` in the running call, as a place
+    /// a `ref` can be given.
+    pub(crate) fn hidden_local(&mut self, value: Value) -> Run<Place> {
+        self.parts_read += 1;
+        let name = format!("\0held{}", self.parts_read);
+        self.bind(&name, value)?;
+        Ok(Place { frame: self.cur, name, path: Vec::new() })
+    }
+
+    /// Lets go of a local `hidden_local` made.
+    pub(crate) fn drop_hidden(&mut self, place: &Place) {
+        if let Some(frame) = self.frames.get_mut(place.frame) {
+            frame.vars.retain(|(name, _)| *name != place.name);
+        }
+    }
+
+    /// The method `method` a struct or enum writes for itself, if it does.
+    pub(crate) fn own_method(&self, name: &str, method: &str) -> Option<&'static fennec_syntax::FnDef> {
+        self.program.method(fennec_syntax::rename::shown_type_name(name), method)
+    }
+
+    /// What a type's own `def serialize` or `def deserialize` has its type's parameters stand for,
+    /// for a value of that type with `args`. Its own, which stand for the `Serializer` it's given
+    /// as the library's code is run, aren't needed: what's given is a value.
+    pub(crate) fn own_bound(
+        &self,
+        def: &fennec_syntax::FnDef,
+        name: &str,
+        args: &[Type],
+    ) -> Run<super::typed::Bound> {
+        let generics = self.program.owner_generics(def);
+        if generics.len() != args.len() {
+            return unsupported(format!("a {name} whose type parameters aren't known"));
+        }
+        Ok(generics.iter().cloned().zip(args.iter().cloned()).collect())
+    }
+
     /// A struct or enum the program declares, whose saving and loading are its fields': one with
     /// a `def serialize` or `def deserialize` of its own isn't modeled, nor is the standard
     /// library's.
@@ -200,7 +237,7 @@ fn renamed(field: &Field) -> Option<String> {
 }
 
 /// A type with each type parameter in `params` filled in.
-fn filled(ty: &Type, params: &[(String, Type)]) -> Type {
+pub(crate) fn filled(ty: &Type, params: &[(String, Type)]) -> Type {
     let each = |inner: &Type| Box::new(filled(inner, params));
     match ty {
         Type::Param(name) => params
@@ -212,7 +249,14 @@ fn filled(ty: &Type, params: &[(String, Type)]) -> Type {
         Type::Optional(inner) => Type::Optional(each(inner)),
         Type::Id(inner) => Type::Id(each(inner)),
         Type::Table(inner) => Type::Table(each(inner)),
+        Type::Buffer(inner) => Type::Buffer(each(inner)),
+        Type::Iterator(inner) => Type::Iterator(each(inner)),
+        Type::Array(inner, size) => Type::Array(each(inner), *size),
         Type::Dict(key, value) => Type::Dict(each(key), each(value)),
+        Type::Result(value, error) => Type::Result(each(value), each(error)),
+        Type::Arrow(taken, returned) => {
+            Type::Arrow(taken.iter().map(|param| filled(param, params)).collect(), each(returned))
+        }
         Type::Tuple(items) => Type::Tuple(items.iter().map(|item| filled(item, params)).collect()),
         Type::Union(members) => Type::Union(members.iter().map(|member| filled(member, params)).collect()),
         Type::Generic(name, args) => {

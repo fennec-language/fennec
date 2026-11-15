@@ -744,6 +744,176 @@ fn a_template_string_builds_the_cores_template() {
     );
 }
 
+/// The program of `a_format_of_its_own_is_told_what_each_value_saves`: a format that writes what
+/// it's told, and the values given it.
+const OWN_FORMAT: &str = "
+        from std.collections import Id
+
+        struct Shown:
+            parts = list[str]()
+
+            def int(ref self, value: int):
+                self.parts.append(str(value))
+
+            def float(ref self, value: float):
+                self.parts.append(str(value))
+
+            def bool(ref self, value: bool):
+                self.parts.append('yes' if value else 'no')
+
+            def text(ref self, value: str):
+                self.parts.append(f'<{value}>')
+
+            def bytes(ref self, value: bytes):
+                self.parts.append('bytes')
+
+            def none(ref self):
+                self.parts.append('nothing')
+
+            def value[T: Serializable](ref self, x: T):
+                x.serialize(ref self)
+
+            def sequence[T: Serializable](ref self, items: list[T]):
+                self.parts.append('(')
+                for item in items:
+                    item.serialize(ref self)
+                self.parts.append(')')
+
+            def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
+                for key, value in pairs:
+                    key.serialize(ref self)
+                    self.parts.append('=')
+                    value.serialize(ref self)
+
+            def record(ref self, name: str, count: int):
+                self.parts.append(f'{name}/{count}')
+
+            def field[T: Serializable](ref self, name: str, x: T):
+                self.parts.append(f'{name}:')
+                x.serialize(ref self)
+
+            def renamed[T: Serializable](ref self, name: str, x: T):
+                self.parts.append(f'as {name}:')
+                x.serialize(ref self)
+
+            def end(ref self):
+                self.parts.append('.')
+
+            def items(ref self, name: str, count: int):
+                self.parts.append('[')
+
+            def item[T: Serializable](ref self, x: T):
+                x.serialize(ref self)
+
+            def end_items(ref self):
+                self.parts.append(']')
+
+            def enum_case(ref self, name: str, case_name: str, at: int):
+                self.parts.append(f'{name}.{case_name}')
+
+            def case_record(ref self, name: str, case_name: str, at: int, count: int):
+                self.parts.append(f'{name}.{case_name}/{count}')
+
+            def member(ref self, name: str, at: int):
+                pass
+
+            def end_member(ref self):
+                pass
+
+            def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+                self.sequence(items)
+
+            def exact(self) -> bool:
+                return False
+
+            def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+                # Never asked for: `exact` says no.
+                pass
+
+            def id(ref self, kind: str, key: int, tag: int):
+                self.parts.append(f'Id[{kind}]')
+
+            def some[T: Serializable](ref self, x: T):
+                x.serialize(ref self)
+
+            def shown(self) -> str:
+                return ' '.join(self.parts)
+
+
+
+
+
+
+
+        enum Shape:
+            Dot
+            Box(width: int, height: int)
+
+        struct Pair[T]:
+            first: T
+            @serialize(name='other')
+            second: T
+            @skip
+            seen = 0
+
+        def shown[T: Serializable](x: T) -> str:
+            mut out = Shown()
+            out.value(x)
+            return out.shown()
+
+        def main(stdout: Stdout):
+            stdout.print(shown(Pair(first=Shape.Dot, second=.Box(width=2, height=3))))
+            maybes: list[int?] = [1, None]
+            stdout.print(shown(maybes), shown({'a': {2}}))
+            return
+        ";
+
+/// A format a program writes itself is told what each value saves, by the value's type: an
+/// optional's value through `some`, a list's items through `sequence`, a struct's fields between
+/// `record` and `end`, renamed or left out as their annotations say, and an enum's case through
+/// `enum_case` or `case_record`. A generic function's `T` is the type it's called with. What it
+/// prints is what the compiled program printed.
+#[test]
+fn a_format_of_its_own_is_told_what_each_value_saves() {
+    prints(
+        OWN_FORMAT,
+        "Pair/2 first: Shape.Dot as other: Shape.Box/2 width: 2 height: 3 . . .\n\
+         ( 1 nothing ) <a> = ( 2 )\n",
+    );
+}
+
+/// JSON saves and loads a standard library type through the `def serialize` and
+/// `def deserialize` it writes itself, run from its source: a `SortedMap` as an object, a
+/// `Grid` as its rows, and a failure the type's own code makes says where it is. What it prints is
+/// what the compiled program printed.
+#[test]
+fn json_runs_a_types_own_serialize_and_deserialize() {
+    prints(
+        "
+        from std import json
+        from std.collections import Grid, SortedMap
+
+        def failure[T](run: () -> T fails ParseError) -> str:
+            _ = run() except why:
+                return why.message
+            return 'loaded'
+
+        def main(stdout: Stdout):
+            mut ranks = SortedMap[int, str]()
+            ranks[10] = 'ten'
+            ranks[2] = 'two'
+            text = json.dumps(ranks)
+            stdout.print(text, json.loads[SortedMap[int, str]](text)?.items())
+            stdout.print(json.dumps(Grid.of([[1, 2], [3, 4]])))
+            stdout.print(failure(() => json.loads[Grid[int]]('[[1, 2], [3]]')?))
+            return
+        ",
+        "{\"2\": \"two\", \"10\": \"ten\"} [(2, \"two\"), (10, \"ten\")]\n\
+         [[1, 2], [3, 4]]\n\
+         `[1]` has 1 cell, but the first row has 2\n",
+    );
+}
+
 /// `main` may take `Env`, `Stderr`, `Signals` and a `Clock`. `Env` is `std.env`'s, run from its
 /// own source, with `get` reading the variables the oracle was started with and `secret`
 /// failing with `Missing`. Standard error is written and not compared, no signal ever comes, and

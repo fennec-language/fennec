@@ -103,18 +103,32 @@ with the `libm` crate, as `docs/language.md` says they are, at the version the w
   cuts its task short at once, a task that ends with messages left unread, which closes its inbox
   so that a send after that fails with `Closed` and one before it doesn't, and `stop_after=`.
 - `std.json`'s `dumps` and `loads[T]` are written here on their own, by the type the checker gave
-  the value, never by running the standard library's reader and writer. A struct is an object of
-  the fields it saves, under the names `@serialize(name=...)` and `names=` give them, and `@skip`
-  leaves a field out. A case is its name, or an object holding its fields under its name. A tuple
-  is an array, and a dict is an object when its first key is text or an int, and otherwise an
-  array of `[key, value]` pairs. A `Table` is a list of its items and an `Id` is where its item is
-  in it, so a load makes a new `Table`, with a tag of its own. `indent=` and `extra=` are modeled
-  too. Text is checked as JSON first, as `std.json` checks it, and a load that fails says what
-  `std.json` says: what's wrong with text that isn't JSON, by line and column, and otherwise where
-  in the value it doesn't fit, and how. A failure whose message the oracle can't be sure of is
-  refused, as `json.loads failing (...)`. A float JSON can't hold, or an `Id` that can't be saved,
-  stops the program. A union, bytes, the standard library's collections, a type with its own
-  `serialize` or `deserialize`, and `json.dump` and `json.load` are unsupported.
+  the value, never by running the standard library's reader and writer. A struct is an object of the
+  fields it saves, under the names `@serialize(name=...)` and `names=` give them, and `@skip` leaves
+  a field out. A case is its name, or an object holding its fields under its name. A tuple is an
+  array, and a dict is an object when its first key is text or an int, and otherwise an array of
+  `[key, value]` pairs. A `Table` is a list of its items and an `Id` is where its item is in it, so
+  a load makes a new `Table`, with a tag of its own. `indent=` and `extra=` are modeled too. Text is
+  checked as JSON first, as `std.json` checks it, and a load that fails says what `std.json` says:
+  what's wrong with text that isn't JSON, by line and column, and otherwise where in the value it
+  doesn't fit, and how. A failure whose message the oracle can't be sure of is refused, as
+  `json.loads failing (...)`. A float JSON can't hold, or an `Id` that can't be saved, stops the
+  program. A type that writes its own `def serialize` and `def deserialize`, as the standard
+  library's collections do, runs them from their source, given a `Serializer` that keeps the one
+  value it's told to save, and a `Deserializer` that reads the whole value as the type the checker
+  gave the call, or says where the read is for a failure the type's code makes. One that saves or
+  reads through `record` and its fields, or more than one value, is refused. A union, bytes, and
+  `json.dump` and `json.load` are unsupported.
+- A value saved through a format a program writes, a type with `Serializer`'s methods, is saved as
+  `std.serialize` sets the calls out (`interp/saving.rs`), by the type the checker gave it:
+  `out.int` and the like for a plain value, `none` or `some` for an optional, `sequence` for a list
+  or a set, `map` for a dict's pairs, `record`, then `field` or `renamed` for each field it saves,
+  then `end` for a struct, and `enum_case`, or `case_record`, its fields and two `end`s, for an
+  enum's case. A type's own `def serialize` runs instead. A generic function runs once here, where
+  the compiler builds it for each set of types, so each call notes what its type parameters stand
+  for there (`interp/typed.rs`): `x.serialize(ref out)` of a `T` saves an `int?` holding 1 through
+  `some`, as the compiled program does. A union, a tuple, a `Table` or an `Id` saved this way, and
+  loading through a format a program writes, are unsupported.
 - Standard output is real. `Args` and `Stdin` are empty. `Fs` is modeled, as below. Standard
   error is written as the program writes it, and never compared. `Env` reads the variables the
   oracle was started with, as the compiled program reads its own. No signal comes during a run, so

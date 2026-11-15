@@ -70,6 +70,8 @@ interface_params.fen
 interfaces.fen
 json.fen
 json_annotations.fen
+json_collections.fen
+json_enums.fen
 json_hostile.fen
 json_ids.fen
 json_names.fen
@@ -114,6 +116,7 @@ projects/shadowing
 robot.fen
 self_in_a_type.fen
 self_type.fen
+serialize_protocol.fen
 sets_native.fen
 shared_accounts.fen
 shared_bank.fen

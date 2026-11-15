@@ -89,6 +89,10 @@ pub(crate) struct Checker {
     pub(crate) generic_sources: BTreeSet<String>,
     /// Each call to a generic function, by its span, with the types its type parameters are there.
     pub(crate) generic_calls: BTreeMap<(u32, u32), crate::generic_copies::Call>,
+    /// What each generic function writes or reads with a format, by its type parameters: the
+    /// function, the type, the format and the interface it's written or read through. Each call's
+    /// own type is checked once every function is.
+    pub(crate) format_params: BTreeSet<(String, Type, String, String)>,
     /// Each `with` source called on a union, by the call's span, written in for each member.
     pub(crate) union_sources: BTreeMap<(u32, u32), crate::union_sources::Dispatch>,
     /// The `with`s that open several handles, by their values' span, which lowering nests one
@@ -141,6 +145,14 @@ pub(crate) struct Checker {
     /// What's followed through function values: which function parameters are called, what's
     /// passed for them, and what each arrow function waits on.
     pub(crate) values: crate::waits::Values,
+    /// What the program's code hands from kit to kit, which is held to what `kit.lock` says each
+    /// kit holds.
+    pub(crate) handovers: crate::holds::Handovers,
+    /// What `kit.lock` says each kit holds.
+    pub(crate) holds: fennec_syntax::Holds,
+    /// What each kit is handed, by kit and capability, where it's first handed over, when the
+    /// module asks only for that to be worked out.
+    pub(crate) worked_out: BTreeMap<String, BTreeMap<String, Span>>,
     /// Which types can cross to another task, once every function is checked.
     pub(crate) crossing: crate::Crossing,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -227,6 +239,7 @@ impl Checker {
             widened_values: BTreeMap::new(),
             generic_sources: BTreeSet::new(),
             generic_calls: BTreeMap::new(),
+            format_params: BTreeSet::new(),
             union_sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
             launches: BTreeMap::new(),
@@ -247,6 +260,9 @@ impl Checker {
             lock_calls: Vec::new(),
             lock_verdicts: BTreeMap::new(),
             values: crate::waits::Values::default(),
+            handovers: crate::holds::Handovers::default(),
+            holds: module.holds.clone(),
+            worked_out: BTreeMap::new(),
             crossing: crate::Crossing::default(),
             diagnostics,
         }
@@ -298,12 +314,18 @@ impl Checker {
         self.check_function_annotations();
         self.check_shared_types();
         self.check_dels();
+        crate::stdlib::formats::formats_at_calls(&mut self);
         self.settle_typed();
         if self.diagnostics.is_empty() {
             self.unknowns_left();
         }
         if self.diagnostics.is_empty() {
             self.body_rules(scope);
+        }
+        // What a program as lowering rewrote it hands over is what it handed as written.
+        if self.diagnostics.is_empty() && !self.again {
+            let refused = crate::holds::refused(&mut self);
+            self.diagnostics.extend(refused);
         }
         if self.diagnostics.is_empty() {
             self.crossing = crate::crossing::crossing(&mut self);
@@ -407,6 +429,7 @@ impl Checker {
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
             saved_types,
+            holds: self.worked_out,
         }
     }
 

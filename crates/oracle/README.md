@@ -13,12 +13,31 @@ program. Fennec has no interpreter, on purpose. A test in this crate fails if an
 
 ## What it shares with the compiler
 
-It depends only on `fennec-syntax` and `fennec-check`. It uses the compiler's parser to read a
+Of Fennec's crates, it depends only on `fennec-syntax` and `fennec-check`, and besides them only
+on `libm`, below. It uses the compiler's parser to read a
 program and its checker to accept it and to type its expressions, where the source alone can't
 say what a value is, as for a leading-dot case like `.Circle`. So a bug in the parser or the
 checker can hide from it: both sides would see the same wrong tree. Everything after the checker,
 how values are held, copied, compared and printed, is modeled here on its own, from
 `docs/language.md` and the examples.
+
+Where a standard library module is written in Fennec, the oracle can run its own source, as
+`fennec-syntax` gives it to the compiler, and model only the functions the runtime writes in Rust
+beneath it. `std.math`, `std.collections`, `std.time`, `std.string` and `std.env` are run this way
+(`RUN_FROM_SOURCE` in `src/load.rs`), each loaded when the program imports from it, when a module
+loaded so imports from it, or, for `std.env` and `std.time`, when `main` takes the `Env` or the
+`Clock` whose types they declare. In `std.math`, the vectors, quaternions and matrices, `dot` and
+`lerp` are its Fennec code, and `sqrt`, `floor` and `ceil` are modeled here. In
+`std.collections`, `Deque`, `Heap`, `Counter`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Tree`
+and the rest are its Fennec code. Its `extend`s of `Table` and `Id`, which the oracle models on its
+own, are left out. `std.time`'s `Duration`, `Instant` and `Time` are its Fennec code, and a
+duration written out, as `30s`, is its `Duration`. The types of the modules' expressions are what
+the checker gave them as it checked the program. So
+the oracle still checks how the compiler and runtime run that code, but a mistake in the module's
+own Fennec would be the same on both sides. A module modeled on its own, like `std.json`, isn't
+run from source. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's
+`**` are computed with the `libm` crate, as `docs/language.md` says they are, at the version the
+workspace pins.
 
 ## How it models a program
 
@@ -87,8 +106,13 @@ how values are held, copied, compared and printed, is modeled here on its own, f
   refused, as `json.loads failing (...)`. A float JSON can't hold, or an `Id` that can't be saved,
   stops the program. A union, bytes, the standard library's collections, a type with its own
   `serialize` or `deserialize`, and `json.dump` and `json.load` are unsupported.
-- Standard output is real. `Args` and `Stdin` are empty. `Fs` is modeled, as below. A program that
-  takes any other capability is skipped.
+- Standard output is real. `Args` and `Stdin` are empty. `Fs` is modeled, as below. Standard
+  error is written as the program writes it, and never compared. `Env` reads the variables the
+  oracle was started with, as the compiled program reads its own. No signal comes during a run, so
+  `Signals` never says to stop and waiting on one is refused. A `Clock` reads the system's clocks,
+  and its `sleep` moves them on without waiting, so a program sees the time it slept pass, and its
+  output can't depend on more than what comes before what. A program that takes any other
+  capability is skipped.
 - The file system an `Fs` reaches is modeled in memory, in `interp/disk.rs`. It starts as the
   folder the program runs in was: for `run` and `coverage`, the folder the oracle runs in, as the
   gate runs the examples from the checkout's root, and for `compare`, a fresh empty one, as the

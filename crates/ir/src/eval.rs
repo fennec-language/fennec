@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use fennec_syntax::{BinOp, Diagnostic, Span, UnaryOp};
 
+use crate::lengths::{Length, Lengths};
 use crate::{Function, InstKind, LocalId, Operand, Program, Terminator};
 
 pub use literal::{Written, literal};
@@ -51,10 +52,54 @@ pub fn work_out(program: &Program, steps: u64) -> Vec<(String, Worked)> {
             Err(Stop::TooLong) => Worked::TooLong,
             Err(Stop::NotHere(what)) => Worked::NotHere(what),
             Err(Stop::Failed(problem)) => Worked::Failed(problem),
+            Err(Stop::Broken(why)) => Worked::NotHere(why),
         };
         worked.push((constant.name.clone(), outcome));
     }
     worked
+}
+
+/// What running a program with what's known of its list lengths checked found.
+#[derive(Debug)]
+pub struct LengthsChecked {
+    /// How many times a fact was checked: on the way into a function, and on the way out.
+    pub checked: u64,
+    /// A fact that didn't hold, said plainly.
+    pub broken: Option<String>,
+    /// Why the run ended before `main` did: too many steps, a failure, or something this
+    /// evaluator doesn't do.
+    pub stopped: Option<String>,
+}
+
+/// Runs a program's `main` within `steps` steps, checking each fact `lengths` gives about a
+/// function's list parameters on the way into it and out of it, and about the list it gives
+/// back. What `main` is given is a stand-in, and printing does nothing, so the run goes as far
+/// as this evaluator can take it. It's a test of the facts, not of the program.
+pub fn check_lengths(program: &Program, lengths: &Lengths, steps: u64) -> LengthsChecked {
+    let mut machine = Machine::new(program);
+    machine.lengths = Some(lengths);
+    machine.quiet = true;
+    machine.steps_left = steps;
+    let ran = match machine.functions.get("main").copied() {
+        Some(main) => machine.call(main, vec![Value::Unit; main.params]).map(|_| ()),
+        None => not_here("a program with no `main`"),
+    };
+    let (broken, stopped) = match ran {
+        Ok(()) => (None, None),
+        Err(Stop::Broken(why)) => (Some(why), None),
+        Err(Stop::TooLong) => (None, Some("too many steps".to_owned())),
+        Err(Stop::NotHere(what)) => (None, Some(what)),
+        Err(Stop::Failed(problem)) => (None, Some(problem.message)),
+    };
+    LengthsChecked { checked: machine.checked, broken, stopped }
+}
+
+/// The length of a list.
+fn length_of(value: &Value) -> Option<usize> {
+    match value {
+        Value::List(items) => Some(items.len()),
+        _ => None,
+    }
 }
 
 /// Why working something out stopped.
@@ -63,6 +108,8 @@ pub(crate) enum Stop {
     TooLong,
     NotHere(String),
     Failed(Diagnostic),
+    /// A fact about a list's length didn't hold.
+    Broken(String),
 }
 
 pub(crate) type Ran<T> = Result<T, Stop>;
@@ -97,6 +144,12 @@ pub(crate) struct Machine<'p> {
     fields: HashMap<String, Vec<&'p str>>,
     steps_left: u64,
     depth: usize,
+    /// What's known of list lengths, checked as the program runs, when it's being checked.
+    lengths: Option<&'p Lengths>,
+    /// Whether printing does nothing, rather than stopping here.
+    quiet: bool,
+    /// How many times a length was checked.
+    checked: u64,
 }
 
 impl<'p> Machine<'p> {
@@ -119,7 +172,51 @@ impl<'p> Machine<'p> {
             fields,
             steps_left: 0,
             depth: 0,
+            lengths: None,
+            quiet: false,
+            checked: 0,
         }
+    }
+
+    /// Checks what's known of a function's list parameters against the values they hold.
+    fn check_params(&mut self, function: &Function, locals: &[Value], when: &str) -> Ran<()> {
+        let Some(lengths) = self.lengths else { return Ok(()) };
+        for at in 0..function.params {
+            let Some(known) = lengths.param(&function.name, at) else { continue };
+            self.checked += 1;
+            let length = locals.get(at).and_then(length_of);
+            let should = match known {
+                Length::Fixed(number) => usize::try_from(number).ok(),
+                Length::Same(other) => locals.get(other).and_then(length_of),
+            };
+            if length.is_none() || length != should {
+                return Err(Stop::Broken(format!(
+                    "{when} `{}`, parameter {at} is {length:?} long, where {known:?} says {should:?}",
+                    function.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks what's known of the length of the list a function gives back.
+    fn check_returned(&mut self, function: &Function, value: &Value, given: &[Option<usize>]) -> Ran<()> {
+        let Some(known) = self.lengths.and_then(|lengths| lengths.returned(&function.name)) else {
+            return Ok(());
+        };
+        self.checked += 1;
+        let length = length_of(value);
+        let should = match known {
+            Length::Fixed(number) => usize::try_from(number).ok(),
+            Length::Same(other) => given.get(other).copied().flatten(),
+        };
+        if length.is_none() || length != should {
+            return Err(Stop::Broken(format!(
+                "`{}` gave back a list {length:?} long, where {known:?} says {should:?}",
+                function.name
+            )));
+        }
+        Ok(())
     }
 
     /// Takes `count` steps from the budget.
@@ -184,6 +281,12 @@ impl<'p> Machine<'p> {
 
     fn run(&mut self, function: &'p Function, args: Vec<Value>) -> Ran<(Value, Vec<Value>)> {
         let mut locals = args;
+        let given: Vec<Option<usize>> = if self.lengths.is_some() {
+            self.check_params(function, &locals, "on the way into")?;
+            locals.iter().map(length_of).collect()
+        } else {
+            Vec::new()
+        };
         locals.resize(function.locals.len(), Value::Unit);
         let mut at = 0;
         loop {
@@ -204,6 +307,10 @@ impl<'p> Machine<'p> {
                 },
                 Terminator::Return(value) => {
                     let value = value.as_ref().map_or(Value::Unit, |value| read(&locals, value));
+                    if self.lengths.is_some() {
+                        self.check_params(function, &locals, "on the way out of")?;
+                        self.check_returned(function, &value, &given)?;
+                    }
                     return Ok((value, locals));
                 }
                 Terminator::NoMatch { value, span } => {
@@ -316,11 +423,32 @@ impl<'p> Machine<'p> {
                 self.charge(written.len() / 16)?;
                 Value::Str(Rc::from(written))
             }
+            InstKind::Builtin { dest, name, .. }
+                if self.quiet && (name.starts_with("Stdout.") || name.starts_with("Stderr.")) =>
+            {
+                if let Some(dest) = dest {
+                    *slot(locals, *dest)? = Value::Unit;
+                }
+                return Ok(());
+            }
             InstKind::Builtin { dest, name, args, changes } => {
-                let values = reads(locals, args);
-                let (result, changed) = builtins::call(self, name, &values, span)?;
-                if *changes && let (Some(Operand::Local(first)), Some(changed)) = (args.first(), changed) {
-                    *slot(locals, *first)? = changed;
+                let mut values = reads(locals, args);
+                let changed_local = match args.first() {
+                    Some(Operand::Local(first)) if *changes => Some(*first),
+                    _ => None,
+                };
+                // What a builtin changes is taken from its local rather than copied beside it, so
+                // appending to a list doesn't copy it whole. It's put back if it isn't changed.
+                if let (Some(first), Some(taken)) = (changed_local, values.first_mut()) {
+                    *taken = std::mem::replace(slot(locals, first)?, Value::Unit);
+                }
+                let (result, changed) = builtins::call(self, name, &mut values, span)?;
+                if let Some(first) = changed_local {
+                    let back = match changed {
+                        Some(changed) => changed,
+                        None => values.into_iter().next().unwrap_or(Value::Unit),
+                    };
+                    *slot(locals, first)? = back;
                 }
                 if let Some(dest) = dest {
                     *slot(locals, *dest)? = result;

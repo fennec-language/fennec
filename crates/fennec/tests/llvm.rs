@@ -12698,6 +12698,71 @@ fn a_trace_counts_what_a_plain_build_counts() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A trace counts what tasks and `parallel`'s workers cost too, where a server's or a worker
+/// pool's cost is, and says which kind of thread each place's cost was on.
+#[test]
+fn a_trace_counts_what_tasks_and_parallel_workers_cost_and_says_where() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "\
+from std.concurrent import Crashed
+
+struct Said:
+    total: int
+
+def built(n: int) -> int:
+    pair = [n, n + 1]
+    return pair[0]
+
+def summed(n: int) -> int:
+    mut total = 0
+    for i in range(3):
+        total += built(n + i)
+    return total
+
+def tasked(said: shared Said):
+    mut total = 0
+    for i in range(20):
+        total += built(i)
+    lock said as ref held:
+        held.total += total
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    shared said = Said(total=0)
+    # A loop in its body sends it to the pool, however few its items.
+    workers = sum([summed(n) for n in parallel(range(30))])
+    with launch(() => tasked(said))?:
+        pass
+    lock said as held:
+        stdout.print(workers, held.total)
+    return
+";
+    let dir = folder("trace_threads")?;
+    let program = dir.join("threads.fen");
+    std::fs::write(&program, source)?;
+    let path = program.to_string_lossy().into_owned();
+    let traced = fennec(&["dev", "trace", &path], &dir)?;
+    let (said, errors) = (String::from_utf8_lossy(&traced.stdout), String::from_utf8_lossy(&traced.stderr));
+    assert!(traced.status.success(), "{errors}");
+    // The list each call makes, counted where each call ran: none of them on the main thread.
+    let at = |on: &str| {
+        said.lines().find(|line| line.contains(".fen:7:") && line.contains(on)).unwrap_or_default()
+    };
+    assert!(at(", in a task:").contains("20 allocations"), "{said}");
+    assert!(at(", on a parallel worker:").contains("90 allocations"), "{said}");
+    assert!(at(", on main:").is_empty(), "{said}");
+    assert!(said.lines().any(|line| line.starts_with("  in a task: ")), "{said}");
+
+    let json = fennec(&["dev", "trace", "--json", &path], &dir)?;
+    let json = String::from_utf8_lossy(&json.stdout);
+    assert!(json.contains("\"ran_on\":\"task\"") && json.contains("\"ran_on\":\"parallel\""), "{json}");
+    assert!(json.contains("\"by_thread\":{"), "{json}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Result<()> {
     if !ready() {
@@ -12949,6 +13014,49 @@ fn json_dumps_grows_its_text_in_place() -> std::io::Result<()> {
     // item made it sixteen times.
     assert!(big_bytes < small_bytes * 6, "{small_bytes} bytes, then {big_bytes}");
     Ok(())
+}
+
+/// A generic function writes a `T: Serializable` as JSON, and reads a `T: Deserializable`, each
+/// copy natively as its own type: a struct, a struct holding a list, a list of ints, a list of
+/// structs, and a struct read back.
+const GENERIC_JSON: &str = r#"from std import json
+
+struct Account:
+    name: str
+
+struct Note:
+    title: str
+    tags: list[str]
+
+def answer[T: Serializable](status: int, value: T) -> str:
+    return f"{status} {json.dumps(value)}"
+
+def many[T: Serializable](values: list[T]) -> str:
+    return json.dumps(values)
+
+def back[T: Deserializable](text: str) -> T fails ParseError:
+    return json.loads[T](text)?
+
+def main(stdout: Stdout) fails ParseError:
+    stdout.print(answer(201, value=Account(name="ash")))
+    stdout.print(answer(200, value=Note(title="hi", tags=["a", "b"])))
+    stdout.print(answer(200, value=[1, 2, 3]))
+    stdout.print(many([Account(name="a"), Account(name="b")]))
+    note = back[Note]("{\"title\": \"x\", \"tags\": [\"t\"]}")?
+    stdout.print(note.title, len(note.tags))
+    return
+"#;
+
+#[test]
+fn a_type_parameter_bounded_to_be_saved_is_written_and_read_as_json_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generic_json",
+        GENERIC_JSON,
+        "201 {\"name\": \"ash\"}\n200 {\"title\": \"hi\", \"tags\": [\"a\", \"b\"]}\n200 [1, 2, 3]\n[{\"name\": \"a\"}, {\"name\": \"b\"}]\nx 1\n",
+    )
 }
 
 #[test]
@@ -17931,6 +18039,48 @@ def main(stdout: Stdout) fails Nope:
     )
 }
 
+/// A union with a function member, as a server's `Router | (Request) -> Response`: a struct, an
+/// arrow, a named function and an arrow given to a name of the union's type each go in, and the
+/// function is called once `case _:` or `is` leaves only it.
+#[test]
+fn a_union_with_a_function_member_calls_it_once_narrowed_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_function",
+        r#"struct Table:
+    rows: int
+
+type Answerer = Table | (int) -> str
+
+def twice(number: int) -> str:
+    return str(number * 2)
+
+def use(answer: Answerer) -> str:
+    match answer:
+        case Table(rows):
+            return str(rows)
+        case _:
+            return answer(3)
+
+def also(answer: Answerer) -> str:
+    if answer is Table:
+        return f"table {answer.rows}"
+    return answer(5)
+
+def main(stdout: Stdout):
+    stdout.print(use(Table(rows=2)))
+    stdout.print(use((number) => str(number * 2)))
+    stdout.print(use(twice))
+    held: Answerer = (number) => f"held {number}"
+    stdout.print(also(held), also(Table(rows=7)))
+    return
+"#,
+        "2\n6\n6\nheld 5 table 7\n",
+    )
+}
+
 /// What's left of a three-member union after `if store is Lite: return` is the other two, read
 /// natively as the union it was: its members told apart with `is` and `match`, each one's
 /// fields read once it's narrowed to it, a method all of them have called on it, and it given
@@ -18620,6 +18770,60 @@ fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
     let main_said = String::from_utf8_lossy(&ran.stderr).into_owned();
     assert!(main_said.contains("Refused.Denied(token=Secret(hidden))"), "{main_said}");
     assert!(!main_said.contains("hunter2"), "{main_said}");
+    Ok(())
+}
+
+/// What the next test builds: failed asserts, each with a `shared` value on a side.
+const SHARED_SHOWN: &str = r#"struct Account:
+    total = 0
+
+struct Bank:
+    name: str
+    first: shared Account
+
+test "the shared value itself"():
+    shared account = Account(total=1)
+    shared other = Account(total=2)
+    assert account == other
+
+test "in a list"():
+    shared account = Account(total=1)
+    assert [account] == []
+
+test "in a tuple"():
+    shared account = Account(total=1)
+    assert (1, account) == (2, account)
+
+test "in a struct"():
+    shared account = Account(total=1)
+    assert Bank(name="a", first=account) == Bank(name="b", first=account)
+"#;
+
+/// A failed `assert` shows a `shared` value on either side as what it holds, as printing it does:
+/// by itself, in a list, in a tuple and in a struct. It showed the cell lowering keeps it in,
+/// `Shared__Account(value=Account(total=1))`.
+#[test]
+fn a_failed_assert_shows_what_a_shared_value_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shared_shown")?;
+    let program = dir.join("shared_shown.fen");
+    std::fs::write(&program, SHARED_SHOWN)?;
+    let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    let said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    assert!(said.contains("0 passed, 4 failed"), "{said}");
+    assert!(!said.contains("Shared__"), "{said}");
+    for sides in [
+        "the left side is Account(total=1) and the right side is Account(total=2)",
+        "the left side is [Account(total=1)] and the right side is []",
+        "the left side is (1, Account(total=1)) and the right side is (2, Account(total=1))",
+        "the left side is Bank(name=\"a\", first=Account(total=1)) and the right side is Bank(name=\"b\", first=Account(total=1))",
+    ] {
+        assert!(said.contains(sides), "{sides}: {said}");
+    }
     Ok(())
 }
 

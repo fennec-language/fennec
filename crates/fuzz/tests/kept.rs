@@ -58,6 +58,7 @@ fn a_short_run_of_every_target_finds_nothing() {
         "parser",
         "formatter",
         "checker",
+        "lengths",
         "csv",
         "json",
         "json-rules",

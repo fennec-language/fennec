@@ -72,6 +72,9 @@ pub struct Layouts {
     /// is the number a dict's value word names one by here. The runtime's tables give each the
     /// kind of item that many after the types laid out through lists (see `Registry::numbered`).
     dict_values: std::cell::RefCell<Vec<u32>>,
+    /// The structs with no words at all: no fields, or only fields that are such structs. A dict
+    /// keeps a value of one in a block, as before, since an entry has nowhere to hold it.
+    wordless: BTreeSet<String>,
     /// The types decided to be blocks before anything was laid out, when they were (see
     /// [`boxed_types`]): no pass lays one of them out in place, and every other is.
     decided: Option<BTreeSet<String>>,
@@ -147,6 +150,7 @@ impl Layouts {
             one_word_optionals: true,
             native_buffers: true,
             in_place: InPlace { text_headers: true, counted_fields: true, results: results_in_place() },
+            wordless: wordless(definitions),
             ..Layouts::default()
         };
         for (name, def) in definitions {
@@ -180,6 +184,7 @@ impl Layouts {
             native_buffers: true,
             in_place: InPlace { text_headers: true, counted_fields: true, results: results_in_place() },
             decided: Some(boxed.clone()),
+            wordless: wordless(definitions),
             ..Layouts::default()
         };
         for (name, def) in definitions {
@@ -786,13 +791,17 @@ impl Layouts {
         u32::try_from(at).ok()
     }
 
-    /// How a dict holds a value of a kind that isn't one word already: in a block.
-    fn value_word(&self, value: Ty) -> Option<Word> {
+    /// How a dict holds a value of a kind that isn't one word already: in its entry, or in a
+    /// block. `written` is the value's type as written, which says whether it has any words: one
+    /// with none is kept in a block, as the runtime finds a value in an entry by its words.
+    fn value_word(&self, value: Ty, written: &Type) -> Option<Word> {
         if !self.native_buffers {
             return None;
         }
         match value {
-            Ty::Struct(id) if dict_values_in_place() => self.dict_value_number(id).map(Word::InPlace),
+            Ty::Struct(id) if dict_values_in_place() && !has_no_words(written, &self.wordless) => {
+                self.dict_value_number(id).map(Word::InPlace)
+            }
             Ty::Struct(id) => Some(Word::Plain(id)),
             // An optional string is three words, where strings are headers.
             Ty::Maybe(Block::Str) if self.text_headers() => None,
@@ -892,6 +901,37 @@ impl Layouts {
 #[must_use]
 pub fn types_in_place() -> bool {
     std::env::var("FENNEC_BOXED_TYPES").as_deref() != Ok("1")
+}
+
+/// Whether a type as written has no words: a struct known to have none, a tuple of such, or
+/// nothing at all.
+fn has_no_words(ty: &Type, wordless: &BTreeSet<String>) -> bool {
+    match ty {
+        Type::Named(name) => wordless.contains(name),
+        Type::Tuple(items) => items.iter().all(|item| has_no_words(item, wordless)),
+        Type::Unit => true,
+        _ => false,
+    }
+}
+
+/// The structs among `definitions` with no words: no fields, or only fields with none.
+fn wordless(definitions: &[(String, Written)]) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    loop {
+        let more: Vec<String> = definitions
+            .iter()
+            .filter(|(name, def)| {
+                !found.contains(name)
+                    && matches!(def, Written::Struct(fields)
+                        if fields.iter().all(|(_, ty, _)| has_no_words(ty, &found)))
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if more.is_empty() {
+            return found;
+        }
+        found.extend(more);
+    }
 }
 
 /// Whether a dict holds a struct that's held in place in its own entries, each entry as wide as
@@ -1052,7 +1092,7 @@ fn in_place_field_ty(
                 Type::Float => Some(Word::Float),
                 Type::Bool => Some(Word::Bool),
                 Type::Str => Some(Word::Str),
-                other => layouts.value_word(held(other)),
+                other => layouts.value_word(held(other), other),
             };
             match (key(key_ty), word) {
                 (Some(key), Some(value)) => Ty::Dict(key, value),
@@ -1347,7 +1387,7 @@ fn dict_ty(layouts: &Layouts, key: &Type, value: &Type, held: &dyn Fn(&Type) -> 
         Type::Float => Some(Word::Float),
         Type::Bool => Some(Word::Bool),
         Type::Str => Some(Word::Str),
-        other => layouts.value_word(held(other)),
+        other => layouts.value_word(held(other), other),
     };
     match (key_word(layouts, key), word) {
         (Some(key), Some(value)) => Ty::Dict(key, value),

@@ -16263,7 +16263,17 @@ fn a_block_a_round_leaves_is_found_wherever_the_server_runs() -> std::io::Result
                     Some(how) => command.env("FENNEC_AUDIT_SELFTEST", how),
                     None => command.env_remove("FENNEC_AUDIT_SELFTEST"),
                 };
-                let ended = command.output_within()?;
+                // Each takes under a second, and one that waits for something that never comes
+                // spends nothing: a minute by the clock says so, and which program it was. On
+                // Windows the second one's clients, in a task, blocked the one worker that had to
+                // answer them, and the test took its ten minutes to say only that something hung.
+                let ended = command
+                    .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(60))
+                    .map_err(|error| {
+                        let leaving = if selftest.is_some() { ", leaving a block a round" } else { "" };
+                        let said = format!("{shape} on {threads} threads{leaving}: {error}");
+                        std::io::Error::new(error.kind(), said)
+                    })?;
                 Ok((ended.status.code(), String::from_utf8_lossy(&ended.stderr).into_owned()))
             };
             let how = format!("{shape} on {threads} threads");

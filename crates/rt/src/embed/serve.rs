@@ -1356,6 +1356,51 @@ pub(crate) fn park_on_fd(fd: std::os::fd::RawFd, interest: Interest, deadline: O
     parked_as(woken)
 }
 
+/// For tests: how many waits have gone through a copy of their socket.
+#[cfg(test)]
+pub(crate) static PARKED_ON_COPIES: AtomicU64 = AtomicU64::new(0);
+
+/// Parks this task until `socket` may be ready for `interest`, or `deadline` passes, where a
+/// socket itself can't be handed to the worker's poll, as on Windows, where the poll takes only its
+/// own kind of socket: a copy of the socket is registered for the wait, under a token of its own,
+/// and closed after. A copy is the same connection, so the poll says when the socket's ready.
+/// Only for a task that `can_park`.
+///
+/// Without it a task's wait on a socket blocked its worker on Windows. A program that was its own
+/// client then waited for ever on one thread: the worker blocked reading an answer was the one
+/// that had to take the connection and give it.
+pub(crate) fn park_on_copy(
+    socket: &std::net::TcpStream,
+    interest: Interest,
+    deadline: Option<Instant>,
+) -> Parked {
+    if cut_short() {
+        return Parked::Cancelled;
+    }
+    #[cfg(test)]
+    PARKED_ON_COPIES.fetch_add(1, Ordering::Relaxed);
+    let token = next_token();
+    let copied = socket.try_clone().ok().map(TcpStream::from_std).and_then(|mut source| {
+        let registered = REGISTRY.with_borrow(|registry| {
+            registry.as_ref().is_some_and(|registry| registry.register(&mut source, token, interest).is_ok())
+        });
+        registered.then_some(source)
+    });
+    // With no copy to be had, or nowhere to register one, it looks again in a moment, parked
+    // meanwhile so its worker goes on with others.
+    let Some(mut source) = copied else {
+        let soon = Instant::now() + Duration::from_millis(1);
+        return match park_on_token(token, Some(soon), true) {
+            Parked::Cancelled => Parked::Cancelled,
+            Parked::Ready | Parked::TimedOut => Parked::Ready,
+        };
+    };
+    PARKING.set(Some((interest, deadline)));
+    let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
+    REGISTRY.with_borrow(|registry| registry.as_ref().map(|registry| registry.deregister(&mut source)));
+    parked_as(woken)
+}
+
 /// A token for a wait on this thread that no other has.
 pub(crate) fn next_token() -> Token {
     let token = Token(NEXT_TOKEN.get());

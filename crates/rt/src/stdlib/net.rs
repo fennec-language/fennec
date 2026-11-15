@@ -1412,7 +1412,7 @@ fn lock_parking<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
             Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {}
         }
-        if !socket_parks() || !yield_to_others() {
+        if !task_parks() || !yield_to_others() {
             return lock.lock().unwrap_or_else(PoisonError::into_inner);
         }
     }
@@ -1433,6 +1433,17 @@ pub(crate) fn fetch_line(host: &str, port: u16) -> Result<Vec<u8>, Failure> {
     line?.ok_or(Failure::Closed)
 }
 
+/// Connects to `host` on `port`, sends `line` and reads a line back, for tests of waits that park.
+#[cfg(test)]
+pub(crate) fn said_and_heard(host: &str, port: u16, line: &[u8]) -> Result<Vec<u8>, Failure> {
+    let host = host.to_owned();
+    let (stream, peer) = off_thread(move || connected(&host, port, Duration::from_secs(10)))?;
+    let handle = keep_stream(stream, peer, None)?;
+    let heard = write(handle, line).and_then(|()| read_line(handle, Some(Duration::from_secs(10))));
+    close(handle);
+    heard?.ok_or(Failure::Closed)
+}
+
 /// Whether this call is in a task that can park while it waits for something to look up or connect
 /// to, on a thread that may block.
 fn task_parks() -> bool {
@@ -1444,12 +1455,6 @@ fn task_parks() -> bool {
     {
         false
     }
-}
-
-/// Whether this call is in a task that can park on a socket itself: a task, on Unix, whose poll can
-/// be told of the socket. On Windows, a socket's wait blocks its thread.
-fn socket_parks() -> bool {
-    cfg!(unix) && task_parks()
 }
 
 /// `work`, run on a thread that may block while this task parks, or here when it can't.
@@ -1493,7 +1498,7 @@ fn reading<T>(
             Reading::Tls(secured) => read(&mut **secured),
         }
     };
-    if !socket_parks() {
+    if !task_parks() {
         let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
         // The reader reads through a copy of the socket, and on Windows a copy keeps its own
         // timeouts: one set on the connection's own socket leaves a read on the copy waiting.
@@ -1540,7 +1545,7 @@ fn reading<T>(
         return done.map_err(|error| Failure::of(&error, timeout));
     }
     let socket = &stream.socket;
-    socket.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
+    blocks(stream, false).map_err(|error| Failure::Other(error.to_string()))?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let done = loop {
         match attempt() {
@@ -1557,10 +1562,28 @@ fn reading<T>(
             Err(error) => break Err(Failure::of(&error, timeout)),
         }
     };
-    let blocking = socket.set_nonblocking(false);
+    let blocking = blocks(stream, true);
     let done = done?;
     blocking.map_err(|error| Failure::Other(error.to_string()))?;
     Ok(done)
+}
+
+/// Has a connection's reads and writes wait in the kernel, or come back at once to say they would,
+/// as a read that parks its task between tries needs.
+fn blocks(stream: &Stream, waiting: bool) -> std::io::Result<()> {
+    stream.socket.set_nonblocking(!waiting)?;
+    // The reader reads through a copy of the socket. On Unix a copy shares this; whether one on
+    // Windows does isn't said anywhere, so there it's told too.
+    #[cfg(windows)]
+    {
+        let reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+        let copy = match &*reader {
+            Reading::Plain(plain) => plain.get_ref(),
+            Reading::Tls(secured) => secured.socket(),
+        };
+        copy.set_nonblocking(!waiting)?;
+    }
+    Ok(())
 }
 
 /// Whether this is a launched task that's been stopped, which then fails as a stopped one does.
@@ -1575,8 +1598,9 @@ fn stopped_while_reading() -> bool {
     }
 }
 
-/// The connections launched tasks are blocked reading, each by its task's stop. On Windows a task's
-/// read blocks its thread, so nothing run there can end it: its stop shuts the socket instead.
+/// The connections launched tasks are blocked reading, each by its task's stop. A read by a task
+/// that can't park, one holding a lock say, blocks its thread, so nothing run there can end it:
+/// its stop shuts the socket instead.
 #[cfg(any(test, feature = "threads"))]
 static BLOCKED_READS: Mutex<Vec<(usize, Arc<Stream>)>> = Mutex::new(Vec::new());
 
@@ -1629,16 +1653,41 @@ pub(crate) fn cut_blocked_reads(stop: &Arc<std::sync::atomic::AtomicU8>) {
 
 /// Parks this task until `socket` may be readable or `deadline` passes: true if it passed, or the
 /// task was cancelled.
-#[cfg(all(unix, any(test, feature = "threads")))]
+#[cfg(any(test, feature = "threads"))]
 fn park_until_readable(socket: &TcpStream, deadline: Option<Instant>) -> bool {
-    use crate::embed::serve::Parked;
-    let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-    crate::embed::serve::park_on_fd(fd, mio::Interest::READABLE, deadline) != Parked::Ready
+    park_on_socket(socket, mio::Interest::READABLE, deadline) != crate::embed::serve::Parked::Ready
 }
 
-#[cfg(not(all(unix, any(test, feature = "threads"))))]
+#[cfg(not(any(test, feature = "threads")))]
 fn park_until_readable(_socket: &TcpStream, _deadline: Option<Instant>) -> bool {
     false
+}
+
+/// For tests: parks on a copy of the socket on every platform, as Windows always does.
+#[cfg(test)]
+pub(crate) static PARKS_ON_COPIES: AtomicBool = AtomicBool::new(false);
+
+/// Parks this task until `socket` may be ready for `interest` or `deadline` passes. On Unix the
+/// worker's poll is told of the socket itself, and on Windows of a copy of it.
+#[cfg(any(test, feature = "threads"))]
+fn park_on_socket(
+    socket: &TcpStream,
+    interest: mio::Interest,
+    deadline: Option<Instant>,
+) -> crate::embed::serve::Parked {
+    #[cfg(unix)]
+    {
+        #[cfg(test)]
+        if PARKS_ON_COPIES.load(Ordering::SeqCst) {
+            return crate::embed::serve::park_on_copy(socket, interest, deadline);
+        }
+        let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
+        crate::embed::serve::park_on_fd(fd, interest, deadline)
+    }
+    #[cfg(not(unix))]
+    {
+        crate::embed::serve::park_on_copy(socket, interest, deadline)
+    }
 }
 
 /// Waits until `socket` may take more to write: parked in a task that can, and otherwise a moment,
@@ -1648,10 +1697,9 @@ fn wait_to_write(socket: &TcpStream, deadline: Option<Instant>) -> bool {
     if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
         return true;
     }
-    #[cfg(all(unix, any(test, feature = "threads")))]
-    if socket_parks() {
-        let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-        let _ = crate::embed::serve::park_on_fd(fd, mio::Interest::WRITABLE, deadline);
+    #[cfg(any(test, feature = "threads"))]
+    if task_parks() {
+        let _ = park_on_socket(socket, mio::Interest::WRITABLE, deadline);
         return deadline.is_some_and(|deadline| deadline <= Instant::now());
     }
     let _ = socket;

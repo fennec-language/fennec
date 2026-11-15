@@ -1054,6 +1054,56 @@ mod tests {
         finish();
     }
 
+    /// A server that takes two connections and answers neither until both have sent a line.
+    fn answers_once_both_have_spoken() -> u16 {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let both: Vec<std::net::TcpStream> = listener.incoming().flatten().take(2).collect();
+            for stream in &both {
+                let mut line = String::new();
+                let _ = std::io::BufReader::new(stream).read_line(&mut line);
+            }
+            for mut stream in &both {
+                let _ = stream.write_all(b"pong\n");
+            }
+        });
+        port
+    }
+
+    static BOTH_HEARD: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// Sends the server on port `env` a line and reads its answer, as a parked task.
+    extern "C" fn says_and_hears(env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        let port = u16::try_from(env).unwrap();
+        let heard = crate::stdlib::net::said_and_heard("127.0.0.1", port, b"ping\n");
+        assert_eq!(heard, Ok(b"pong\n".to_vec()));
+        BOTH_HEARD.fetch_add(1, Ordering::Relaxed);
+        0
+    }
+
+    /// A task waiting to read from a socket through a copy of it, as on Windows, parks: on one
+    /// worker, a second task gets to send what the first one's answer waits for. A read there
+    /// blocked its worker, so the second never ran, and neither was ever answered.
+    #[test]
+    fn a_read_that_waits_through_a_copy_of_its_socket_lets_its_workers_other_task_run() {
+        use crate::stdlib::net::PARKS_ON_COPIES;
+        begin();
+        let port = answers_once_both_have_spoken();
+        let before = crate::embed::serve::PARKED_ON_COPIES.load(Ordering::Relaxed);
+        PARKS_ON_COPIES.store(true, Ordering::SeqCst);
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let run = super::each_on_pool(run, pool, 2, super::Leaf::For(says_and_hears, i64::from(port)));
+        let ended = run.finish();
+        PARKS_ON_COPIES.store(false, Ordering::SeqCst);
+        assert_eq!(ended, 0);
+        assert_eq!(BOTH_HEARD.load(Ordering::Relaxed), 2);
+        assert!(crate::embed::serve::PARKED_ON_COPIES.load(Ordering::Relaxed) > before);
+        finish();
+    }
+
     #[test]
     fn a_reduction_that_may_wait_comes_to_the_same_bits() {
         begin();

@@ -272,6 +272,61 @@ fn a_wait_that_cant_park_blocks_its_thread_and_is_counted() {
     client.join().unwrap();
 }
 
+/// A round sent "wait" waits on a socket of its own, a plain one connected to `to`, through a copy
+/// of it: first with 20 ms for something to read, then, having said it's waiting, with 30 s. It
+/// answers with what each wait came to and how many bytes it then read. Any other line is echoed.
+fn waits_on_a_copy_or_echoes(to: SocketAddr) -> Handler {
+    Arc::new(move |conn: Conn| {
+        let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
+        if line != b"wait" {
+            line.push(b'\n');
+            return i64::from(conn.write(&line).is_err());
+        }
+        let own = std::net::TcpStream::connect(to).unwrap();
+        own.set_nonblocking(true).unwrap();
+        let wait = |within: Duration| {
+            super::park_on_copy(&own, mio::Interest::READABLE, Some(std::time::Instant::now() + within))
+        };
+        let quiet = wait(Duration::from_millis(20));
+        if conn.write(b"waiting\n").is_err() {
+            return 1;
+        }
+        let sent = wait(Duration::from_secs(30));
+        let mut bytes = [0_u8; 16];
+        let read = std::io::Read::read(&mut &own, &mut bytes).unwrap_or(0);
+        i64::from(conn.write(format!("{quiet:?} {sent:?} {read}\n").as_bytes()).is_err())
+    })
+}
+
+/// A task's wait on a plain socket through a copy of it, which is how every such wait goes on
+/// Windows, parks the task: its worker, the only one, answers another connection meanwhile. The
+/// wait says when its time's up, and when the socket has something to read, and the socket is
+/// still open once its copy is closed. On Windows such a wait blocked its worker, so a program
+/// that was its own client waited for ever on one thread.
+#[test]
+fn a_wait_on_a_copy_of_a_socket_parks_its_task_and_says_when_the_socket_is_ready() {
+    let between = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let to = between.local_addr().unwrap();
+    let served = run(1, &waits_on_a_copy_or_echoes(to), move |address| {
+        let mut waiting = std::net::TcpStream::connect(address).unwrap();
+        waiting.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        let mut heard = BufReader::new(waiting.try_clone().unwrap());
+        waiting.write_all(b"wait\n").unwrap();
+        let (mut other_end, _) = between.accept().unwrap();
+        let mut said = String::new();
+        heard.read_line(&mut said).unwrap();
+        assert_eq!(said, "waiting\n");
+        // Its round goes from saying so straight into its wait, and only a round that's parked
+        // lets another run on the one worker.
+        assert_eq!(ask(address, "meanwhile").as_deref(), Some("meanwhile\n"));
+        other_end.write_all(b"now\n").unwrap();
+        said.clear();
+        heard.read_line(&mut said).unwrap();
+        assert_eq!(said, "TimedOut Ready 4\n");
+    });
+    assert_eq!((served.connections, served.failed), (2, 0));
+}
+
 /// A shell, started before the connections are opened, that reports the process's resident
 /// memory, in bytes, as `ps` does, each time it's asked: starting one with thousands of
 /// sockets open fails on macOS.

@@ -1371,6 +1371,79 @@ def main(stdout: Stdout):
     _ = sized
 "#;
 
+/// Three `with` blocks inside each other, over a source whose cleanup says it ran, left from the
+/// innermost every way it can be: falling out, `return`, `break`, a `?`, a `fail`, a `fail` in a
+/// loop of its own, `continue`, and a launched task's failure. Each cleanup runs once, innermost
+/// first, on every way out, as it did before a block's cleanup was written once and failures
+/// left it to that.
+const EVERY_WAY_OUT: &str = r#"from std.concurrent import Closed, Crashed
+
+error Shut:
+    name: str
+
+def guarded(name: str, stdout: Stdout) -> with str fails Shut:
+    stdout.print("open", name)
+    lend name except:
+        stdout.print("failed out of", name)
+    stdout.print("closed", name)
+
+def checked(n: int) -> int fails Shut:
+    if n == 3:
+        fail Shut(name="checked")
+    return n
+
+def task_fails() fails Shut:
+    fail Shut(name="task")
+
+def through(way: int, stdout: Stdout) -> int fails Shut | Closed | Crashed:
+    for round in range(2):
+        with guarded("a", stdout)? as a:
+            with guarded("b", stdout)? as b:
+                with guarded("c", stdout)? as c:
+                    if way == 1:
+                        return 1
+                    if way == 2:
+                        break
+                    if way == 3:
+                        got = checked(3)?
+                        stdout.print("not here", got)
+                    if way == 4:
+                        fail Shut(name="block")
+                    if way == 5:
+                        for k in range(3):
+                            if k == 1:
+                                fail Shut(name="loop")
+                    if way == 6 and round == 0:
+                        continue
+                    if way == 7:
+                        with launch(() => task_fails()?)?:
+                            stdout.print("in", a, b, c)
+                    stdout.print("end of block", round)
+        stdout.print("round", round)
+    return 0
+
+def main(stdout: Stdout):
+    for way in range(8):
+        stdout.print("way", way)
+        got = through(way, stdout) except why:
+            stdout.print("failed", why)
+            -1
+        stdout.print("gave", got)
+    return
+"#;
+
+#[test]
+fn every_way_out_of_nested_with_blocks_cleans_up_innermost_first() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "every_way_out",
+        EVERY_WAY_OUT,
+        "way 0\nopen a\nopen b\nopen c\nend of block 0\nclosed c\nclosed b\nclosed a\nround 0\nopen a\nopen b\nopen c\nend of block 1\nclosed c\nclosed b\nclosed a\nround 1\ngave 0\nway 1\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\ngave 1\nway 2\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\ngave 0\nway 3\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"checked\")\ngave -1\nway 4\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"block\")\ngave -1\nway 5\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"loop\")\ngave -1\nway 6\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\nopen a\nopen b\nopen c\nend of block 1\nclosed c\nclosed b\nclosed a\nround 1\ngave 0\nway 7\nopen a\nopen b\nopen c\nin a b c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"task\")\ngave -1\n",
+    )
+}
+
 /// Leaving a `with` block from a `case` arm under `except why:`, or from the one case of
 /// `except Case():`, runs its source's cleanup as leaving from anywhere else in the block does:
 /// `return`, `break` and `continue` from a named case, from `case _:` and from the one case, from

@@ -723,7 +723,10 @@ fn nested_with_blocks_grow_by_the_same_amount_each() {
                 _ => None,
             })
             .collect();
-        assert!(steps.windows(2).all(|pair| matches!(pair, [a, b] if a == b)), "launches {launches}: {sizes:?}");
+        assert!(
+            steps.windows(2).all(|pair| matches!(pair, [a, b] if a == b)),
+            "launches {launches}: {sizes:?}"
+        );
         // A few dozen locals a level, not thousands.
         assert!(sizes.last().is_some_and(|(locals, _, _)| *locals < 1_000), "launches {launches}: {sizes:?}");
     }

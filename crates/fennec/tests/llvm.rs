@@ -14936,6 +14936,7 @@ fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> 
                   4: status 0, out , 0 bytes on stderr\n\
                   5: timed out\n\
                   6: status 3, out , 5 bytes on stderr\n\
+                  7: status 0, out , 0 bytes on stderr\n\
                   70 waiters: status 0, out here, 0 bytes on stderr\n\
                   wrote\n";
     for threads in ["1", "4", "16"] {

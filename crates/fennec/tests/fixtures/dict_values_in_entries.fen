@@ -35,6 +35,13 @@ struct Chain:
     length: int
     rest: Chain?
 
+# No words at all, and one holding only that: nothing an entry could hold, so these stay blocks.
+struct Marker:
+    pass
+
+struct Holder:
+    mark: Marker
+
 struct Pair[A, B]:
     first: A
     second: B
@@ -295,6 +302,22 @@ def sliced(stdout: Stdout):
     stdout.print(seen, len(seen))
     return
 
+## A value with no words: put, counted, looked for, got, popped and printed like any other.
+def no_words(stdout: Stdout):
+    mut seen = dict[int, Marker]()
+    seen[1] = Marker()
+    stdout.print(len(seen), 1 in seen, 2 in seen)
+    for number in range(2, 20):
+        seen[number] = Marker()
+    found = seen.get(3)
+    gone = seen.pop(4)
+    stdout.print(len(seen), 19 in seen, 4 in seen, found is None, gone)
+    made = {7: Marker(), 8: Marker()}
+    mut held = dict[str, Holder]()
+    held["one"] = Holder(mark=Marker())
+    stdout.print(len(made), made, len(held), "one" in held, held)
+    return
+
 def main(stdout: Stdout):
     plain_words(stdout)
     sliced(stdout)
@@ -305,4 +328,5 @@ def main(stdout: Stdout):
     under_a_lock(stdout, world=world)
     dicts_in_dicts(stdout)
     blocks_and_copies(stdout)
+    no_words(stdout)
     return

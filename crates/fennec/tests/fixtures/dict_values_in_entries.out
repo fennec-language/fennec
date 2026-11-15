@@ -20,3 +20,6 @@ stopped at door 7
 3 2
 {"ground": {1: Visit(cost=11, came_from=0)}, "first": {2: Visit(cost=2, came_from=1)}} Visit(cost=3, came_from=2) 3
 5 Chain(length=3, rest=Chain(length=2, rest=Chain(length=1, rest=Chain(length=0, rest=None)))) Pair(first=1, second="second of 1") True 3
+1 True False
+18 True False False Marker()
+2 {7: Marker(), 8: Marker()} 1 True {"one": Holder(mark=Marker())}

@@ -918,21 +918,27 @@ impl Emit<'_, '_, '_> {
         self.store_field(&value_kind, held, &value_at, "");
         self.line(&format!("br label %{done}"));
         self.start_block(&slow);
-        let buffer = self.value_buffer();
-        self.store_field(&value_kind, held, &buffer, "");
-        self.retain_inline(&value_kind, &buffer);
+        // Nothing runs between the value's words going into the buffer and the call that takes
+        // them out: the key is worked out first, which may make a block for it, and the value's
+        // blocks are given their owners where the value is, before it's copied.
         let changed = self.temp();
         if key_word == Word::Text {
             // The key's header goes in as its words, with an owner of its block if it has one.
             self.retain_text(key);
             let [a, b, c] = [0, 1, 2].map(|at| self.header_word(key, at));
             self.declare("declare ptr @fennec_dict_set_words_header(ptr, i64, i64, i64) nounwind");
+            self.retain_inline(&value_kind, held);
+            let buffer = self.value_buffer();
+            self.store_field(&value_kind, held, &buffer, "");
             self.line(&format!(
                 "{changed} = call ptr @fennec_dict_set_words_header(ptr {dict}, i64 {a}, i64 {b}, i64 {c})"
             ));
         } else {
             let key_held = self.key_word(key_word, key)?;
             self.declare("declare ptr @fennec_dict_set_words(ptr, i64) nounwind");
+            self.retain_inline(&value_kind, held);
+            let buffer = self.value_buffer();
+            self.store_field(&value_kind, held, &buffer, "");
             self.line(&format!("{changed} = call ptr @fennec_dict_set_words(ptr {dict}, i64 {key_held})"));
         }
         self.line(&format!("store ptr {changed}, ptr {place}"));
@@ -1871,6 +1877,9 @@ found:
         let place = self.slot(dict);
         let (held, changed) = (self.temp(), self.temp());
         let (from, to) = self.place_in_source(span);
+        // Where the value's words come out, asked for before the pop, so nothing runs between
+        // the pop and reading them.
+        let buffer = self.value_buffer();
         self.line(&format!("{held} = load ptr, ptr {place}"));
         if key_word == Word::Text {
             // The key's owner stays here.
@@ -1886,13 +1895,17 @@ found:
                 "{changed} = call ptr @fennec_dict_pop_words(ptr {held}, i64 {key_held}, i64 {from}, i64 {to})"
             ));
         }
+        // The words go to a place of this function's own straight away: letting go of what the
+        // local held, or of the value itself, can run the program's code, which may use the buffer.
+        let (out, text, words) = (self.place_for(value_kind), self.text_of(value_kind), self.temp());
+        self.line(&format!("{words} = load {text}, ptr {buffer}"));
+        self.line(&format!("store {text} {words}, ptr {out}"));
         self.leave_if_failed();
         self.line(&format!("store ptr {changed}, ptr {place}"));
-        let buffer = self.value_buffer();
         if let Some(dest) = dest {
-            return self.assign_memory_owned(dest, &buffer);
+            return self.assign_memory_owned(dest, &out);
         }
-        self.release_inline(value_kind, &buffer);
+        self.release_inline(value_kind, &out);
         Ok(())
     }
 

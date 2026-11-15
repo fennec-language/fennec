@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # A real program run for a long time under its own scripted load, to see that what it holds levels
-# off: its resident memory and the runtime's count of live blocks are read every minute, and a line
-# fitted through them after a warm-up has to rise by less than a small part of where it started.
+# off: its resident memory and the runtime's count of live blocks are read every second, the lowest
+# of each minute kept, and a line fitted through those after a warm-up has to rise by less than a
+# small part of where it started. The lowest, because a reading in the middle of a round holds what
+# that round has in flight, which comes and goes: what a leak leaves is the floor between rounds
+# creeping up.
 #
 #   .github/scripts/soak.sh target/release/fennec bench/realworld/game_server.fen soak.md [minutes]
 #
@@ -14,7 +17,9 @@
 # It writes the curve's start, end and slope for each to `soak.md`, and exits 1 when either rises
 # past its budget after the warm-up, or the program stops before the time is up. SOAK_WARM is the
 # warm-up, 10 minutes unless set, and SOAK_RISE the most either may rise past its start over the
-# rest, as a percentage, 10 unless set.
+# rest, as a percentage, 10 unless set. Never less than 16 MB of memory or 64 blocks, though: the
+# floor of live blocks between rounds is near nothing, where a percentage is no budget at all, and
+# a leak of a block a round is thousands of blocks in an hour.
 set -u
 fennec=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 program=$2
@@ -50,15 +55,21 @@ pid=$!
 echo "minute rss_kb live_blocks" > "$work/samples"
 stopped=no
 for minute in $(seq 1 "$minutes"); do
-  sleep 60
+  rss='' live=''
+  for _ in $(seq 1 60); do
+    sleep 1
+    kill -0 "$pid" 2> /dev/null || break
+    now=$(ps -o rss= -p "$pid" | tr -d ' ')
+    [ -n "$now" ] && { [ -z "$rss" ] || [ "$now" -lt "$rss" ]; } && rss=$now
+    now=$(sed -n 's/^blocks //p' "$work/live" 2> /dev/null)
+    [ -n "$now" ] && { [ -z "$live" ] || [ "$now" -lt "$live" ]; } && live=$now
+  done
   if ! kill -0 "$pid" 2> /dev/null; then
     stopped=$minute
     break
   fi
-  rss=$(ps -o rss= -p "$pid" | tr -d ' ')
-  live=$(sed -n 's/^blocks //p' "$work/live" 2> /dev/null)
   echo "$minute ${rss:-0} ${live:-0}" >> "$work/samples"
-  echo "$name, minute $minute: ${rss:-?} KB resident, ${live:-?} live blocks"
+  echo "$name, minute $minute: at least ${rss:-?} KB resident and ${live:-?} live blocks"
 done
 kill "$pid" 2> /dev/null
 wait "$pid" 2> /dev/null
@@ -87,21 +98,25 @@ failed=0
     echo '```'
     failed=1
   fi
-  for what in "resident memory, KB:2" "live blocks:3"; do
+  # Each measure, its column and the least rise that counts against it.
+  for what in "resident memory, KB:2:16384" "live blocks:3:64"; do
+    least=${what##*:}
+    what=${what%:*}
     read -r start end slope <<< "$(fit "${what##*:}")"
     if [ "$start" = none ]; then
       echo "- ${what%:*}: too few samples after the $warm-minute warm-up to fit"
       failed=1
       continue
     fi
-    # Past the budget: a rise over the window of more than `rise` percent of where it started.
-    over=$(awk -v s="$start" -v e="$end" -v r="$rise" 'BEGIN { print (e - s > s * r / 100 && e - s > 0) ? 1 : 0 }')
-    verdict=$([ "$over" -eq 1 ] && echo "rising past the $rise% budget" || echo "level")
+    # Past the budget: a rise over the window of more than `rise` percent of where it started, and
+    # more than the least that counts.
+    over=$(awk -v s="$start" -v e="$end" -v r="$rise" -v l="$least" 'BEGIN { b = s * r / 100; if (b < l) b = l; print (e - s > b) ? 1 : 0 }')
+    verdict=$([ "$over" -eq 1 ] && echo "rising past its budget, $rise% or $least" || echo "level")
     echo "- ${what%:*}: $start at minute $((warm + 1)), $end at the end, $slope a minute: $verdict"
     [ "$over" -eq 1 ] && failed=1
   done
   echo
-  echo "Every minute's sample, resident memory in KB and live blocks:"
+  echo "Each minute's lowest reading, resident memory in KB and live blocks:"
   echo
   echo '```'
   cat "$work/samples"

@@ -156,7 +156,7 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
 /// The standard library's modules the oracle runs from their own Fennec source, as the compiler
 /// builds them. Only the functions the runtime writes in Rust beneath them are modeled here, in
 /// `interp/library.rs`, so a bug in one of these modules' own Fennec would show on both sides.
-const RUN_FROM_SOURCE: &[&str] = &["math", "collections", "env", "time", "string"];
+const RUN_FROM_SOURCE: &[&str] = &["math", "collections", "env", "time", "string", "base64"];
 
 /// The capabilities `main` may take whose type a module run from its own source declares, which
 /// that module is loaded for even when the program imports nothing from it: `Env` is

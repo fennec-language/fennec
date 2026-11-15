@@ -174,6 +174,9 @@ impl Interp {
             Value::Str(text) => {
                 text.chars().map(|c| Value::Str(c.to_string())).collect::<Vec<_>>().into_iter()
             }
+            Value::Bytes(data) => {
+                data.into_iter().map(|byte| Value::Int(i64::from(byte))).collect::<Vec<_>>().into_iter()
+            }
             Value::Table(table) => {
                 table.slots.into_iter().filter_map(|slot| slot.item).collect::<Vec<_>>().into_iter()
             }

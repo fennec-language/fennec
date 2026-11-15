@@ -116,6 +116,11 @@ impl Lowering<'_> {
                 self.emit(InstKind::MakeTuple { dest, items }, span);
                 Ok(Operand::Local(dest))
             }
+            // A function where one giving back something wider goes, as one giving an `Answer`
+            // where `(int) -> Answer?` goes.
+            Type::Arrow(wanted, _) if matches!(&from, Type::Arrow(held, _) if held.len() == wanted.len()) => {
+                self.fitted_closure(value, &from, to, span)
+            }
             _ => Err(format!("it gives {from} where {to} goes")),
         }
     }

@@ -82,6 +82,7 @@ impl Interp {
         match value {
             Value::Cap(Cap::Fs(reach)) => self.fs_method(&reach, name, &args, &named, span),
             Value::Str(text) => str_method(&text, name, &args, &named, span),
+            Value::Bytes(data) if named.is_empty() => bytes_method(&data, name, &args, span),
             Value::List(items) => self.list_method(receiver, items, name, (&args, named), expr),
             // The methods below take no named argument.
             _ if !named.is_empty() => unsupported(format!("the method `{name}` with a named argument")),
@@ -170,6 +171,10 @@ impl Interp {
             ("float", "parse", [Value::Str(text)]) => match text.trim().parse::<f64>() {
                 Ok(x) => Ok(Value::Float(x)),
                 Err(_) => Err(not_a_number(text, "a float", span)),
+            },
+            ("bytes", "fromhex", [Value::Str(text)]) => match from_hex(text) {
+                Ok(data) => Ok(Value::Bytes(data)),
+                Err(at) => Err(invalid(hex_problem(text, at), span)),
             },
             ("str", "from_code", [Value::Int(code)]) => {
                 match u32::try_from(*code).ok().and_then(char::from_u32) {
@@ -401,6 +406,7 @@ fn str_method(text: &str, name: &str, args: &[Value], named: &[(String, Value)],
     let chars = |text: &str| as_int(text.chars().count());
     Ok(match (name, args.len()) {
         ("upper", 0) => Value::Str(text.to_uppercase()),
+        ("encode", 0) => Value::Bytes(text.as_bytes().to_vec()),
         ("lower", 0) => Value::Str(text.to_lowercase()),
         ("strip", 0) => Value::Str(text.trim().to_owned()),
         ("lstrip", 0) => Value::Str(text.trim_start().to_owned()),
@@ -886,4 +892,54 @@ fn padding(fill: &str, count: i64, span: Span) -> Run<String> {
     }
     let Ok(count) = usize::try_from(count) else { return Ok(String::new()) };
     Ok(fill.chars().cycle().take(count).collect())
+}
+
+/// A method of `bytes`: `decode()`, its UTF-8 text or a failure saying why it isn't, and `hex()`
+/// or `hex(sep)`, two lowercase hex digits a byte, with `sep` between bytes.
+fn bytes_method(data: &[u8], name: &str, args: &[Value], span: Span) -> Run<Value> {
+    match (name, args) {
+        ("decode", []) => match std::str::from_utf8(data) {
+            Ok(text) => Ok(Value::Str(text.to_owned())),
+            Err(error) => Err(invalid(format!("these bytes aren't UTF-8 text: {error}"), span)),
+        },
+        ("hex", []) => Ok(Value::Str(hex(data, ""))),
+        ("hex", [Value::Str(sep)]) => Ok(Value::Str(hex(data, sep))),
+        _ => unsupported(format!("the bytes method `{name}`")),
+    }
+}
+
+/// Each byte as two lowercase hex digits, with `sep` between bytes.
+fn hex(data: &[u8], sep: &str) -> String {
+    let digits: Vec<String> = data.iter().map(|byte| format!("{byte:02x}")).collect();
+    digits.join(sep)
+}
+
+/// The bytes that pairs of hex digits spell, with ASCII whitespace allowed between pairs, or the
+/// place, in characters, of what doesn't fit.
+fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
+    let mut data = Vec::new();
+    let mut chars = text.chars().enumerate();
+    while let Some((at, c)) = chars.next() {
+        if c.is_ascii_whitespace() {
+            continue;
+        }
+        let high = c.to_digit(16).ok_or(at)?;
+        let Some((next, low)) = chars.next() else { return Err(at + 1) };
+        let low = low.to_digit(16).ok_or(next)?;
+        data.push(u8::try_from(high * 16 + low).map_err(|_| at)?);
+    }
+    Ok(data)
+}
+
+/// What `bytes.fromhex` fails with, stopped at `at`.
+fn hex_problem(text: &str, at: usize) -> String {
+    match text.chars().nth(at) {
+        Some(c) => format!(
+            "`fromhex` needs two hex digits for each byte, but found {} at {at}",
+            crate::text::quoted(&c.to_string())
+        ),
+        None => {
+            "`fromhex` needs two hex digits for each byte, but the text ends halfway through one".to_owned()
+        }
+    }
 }

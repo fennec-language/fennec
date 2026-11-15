@@ -1,0 +1,4 @@
+GET /notes/42: 200 note 42
+GET /notes/new: 200 a form for a new note
+GET /notes/abc: 404 there's nothing here
+PATCH /notes/42: 405 this takes DELETE, GET (allow: DELETE, GET)

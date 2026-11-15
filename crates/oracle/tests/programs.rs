@@ -550,19 +550,19 @@ fn main_takes_env_stderr_signals_and_a_clock() {
         from std.time import Clock, Duration
 
         def told(env: Env) -> str:
-            _ = env.secret('FENNEC_ORACLE_NO_SUCH_VARIABLE') except missing:
+            _ = env.secret('ORACLE_TEST_VARIABLE_NEVER_SET') except missing:
                 return f'{missing.name} is not set'
             return 'it is set'
 
         def main(stdout: Stdout, stderr: Stderr, env: Env, signals: Signals, clock: Clock) fails IoError:
-            stdout.print(env.get('FENNEC_ORACLE_NO_SUCH_VARIABLE') is None, signals.stopping(), told(env))
+            stdout.print(env.get('ORACLE_TEST_VARIABLE_NEVER_SET') is None, signals.stopping(), told(env))
             stderr.write_line('to standard error')?
             started = clock.now()
             clock.sleep(1500ms)
             stdout.print(not clock.now() - started < 1500ms, 90s, Duration.millis(16), clock.time().year() >= 2026)
             return
         ",
-        "True False FENNEC_ORACLE_NO_SUCH_VARIABLE is not set\nTrue 1min30s 16ms True\n",
+        "True False ORACLE_TEST_VARIABLE_NEVER_SET is not set\nTrue 1min30s 16ms True\n",
     );
 }
 

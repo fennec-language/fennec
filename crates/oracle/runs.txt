@@ -92,6 +92,8 @@ object_receivers.fen
 operators.fen
 own_equality.fen
 own_in.fen
+own_index_places.fen
+own_positions.fen
 own_std_names.fen
 own_str.fen
 packed_lists.fen
@@ -147,6 +149,7 @@ std_text.fen
 std_text_formats_hostile.fen
 std_time.fen
 std_time_hostile.fen
+std_tree.fen
 std_url.fen
 std_url_hostile.fen
 std_uuid.fen

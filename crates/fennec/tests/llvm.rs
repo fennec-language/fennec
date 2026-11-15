@@ -18327,6 +18327,44 @@ def main(stdout: Stdout):
     )
 }
 
+/// A function where a function type giving back something wider is written, held in a name of
+/// that type: an arrow giving back `str` where `(int) -> str?` and `(int) -> str | int` go, a named
+/// function where `(int) -> str | int` goes, an arrow giving back `None` given to a `mut` name of
+/// it later, and one where `(int) -> str | (str) -> str` goes, which gives back `str` or a function.
+/// Each is held as the type written, and reads and calls as that.
+#[test]
+fn a_function_held_where_a_wider_function_type_is_written_calls_as_that_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "wider_function_held",
+        r#"type Two = (int) -> str | (str) -> str
+
+def twice(number: int) -> str:
+    return f"{number}{number}"
+
+def keep(answer: Two) -> Two:
+    return answer
+
+def main(stdout: Stdout):
+    maybe: (int) -> str? = (number) => f"maybe {number}"
+    either: (int) -> str | int = (number) => f"either {number}"
+    named: (int) -> str | int = twice
+    mut later: (int) -> str? = twice
+    stdout.print(maybe(1) else "none", either(2), named(3), later(4) else "none")
+    later = (number) => None
+    stdout.print(later(5) else "none")
+    held = keep((number) => f"held {number}")
+    given = held(6)
+    if given is str:
+        stdout.print(given)
+    return
+"#,
+        "maybe 1 either 2 33 44\nnone\nheld 6\n",
+    )
+}
+
 /// What's left of a three-member union after `if store is Lite: return` is the other two, read
 /// natively as the union it was: its members told apart with `is` and `match`, each one's
 /// fields read once it's narrowed to it, a method all of them have called on it, and it given

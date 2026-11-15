@@ -288,6 +288,14 @@ impl Type {
         }
     }
 
+    /// The same type with each part that `change` gives another for replaced by it, innermost
+    /// first: how code outside the checker rewrites a type, as lowering writes a copy of a generic
+    /// type as the type given its arguments.
+    #[must_use]
+    pub fn replaced(&self, change: &mut dyn FnMut(&Type) -> Option<Type>) -> Type {
+        self.map(change)
+    }
+
     /// The same type with every part rewritten by `change`, innermost parts first. Parts
     /// `change` gives `None` for stay as they are.
     pub(crate) fn map(&self, change: &mut dyn FnMut(&Type) -> Option<Type>) -> Type {

@@ -21,6 +21,75 @@ fn module_functions_need_importing() {
     assert_eq!(with_imports("from std.json import loads", program), Vec::<String>::new());
 }
 
+/// The standard library's own helpers and constants are its own: a program reaches an exported
+/// constant by importing it, as it does a function, and can't name what std keeps to itself, as
+/// str.fen's `padding` or std.net's `MOST_ROUTE_PARAMETERS`. A program's own of either name is
+/// its own, and std's code still means std's.
+#[test]
+fn std_keeps_its_own_helpers_and_constants() {
+    let reached = "
+        stdout.print(padding('x', count=2), MOST_ROUTE_PARAMETERS)
+    "
+    .replace('\'', "\"");
+    assert_eq!(
+        with_imports("", &reached),
+        [
+            "`padding` is private to the standard library @ padding",
+            "`MOST_ROUTE_PARAMETERS` is private to `std.net` @ MOST_ROUTE_PARAMETERS"
+        ]
+    );
+    let imported = "
+        stdout.print(INFINITY > 1.0, math.NAN.is_nan(), DIGITS)
+    ";
+    let imports = "from std import math\nfrom std.math import INFINITY\nfrom std.string import DIGITS";
+    assert_eq!(with_imports(imports, imported), Vec::<String>::new());
+    let own = "
+        stdout.print(padding(2), MOST_ROUTE_PARAMETERS, 'ab'.ljust(4))
+    "
+    .replace('\'', "\"");
+    let defined = "def padding(count: int) -> int:\n    return count\n\nMOST_ROUTE_PARAMETERS = 1\n";
+    assert_eq!(with_imports(defined, &own), Vec::<String>::new());
+}
+
+/// Every top-level function and constant the standard library's own files have is out of a
+/// program's reach by its bare name: what std keeps to itself is said to be private, and what a
+/// module exports needs importing. Only what the language gives everywhere, like `failure_of`, is
+/// there without an import.
+#[test]
+fn no_name_std_keeps_is_reached_from_a_program() {
+    let mut names = std::collections::BTreeSet::new();
+    for (file, source) in fennec_syntax::prelude_files() {
+        let module =
+            fennec_syntax::parse_prelude(source).unwrap_or_else(|problem| panic!("{file}: {problem:?}"));
+        for item in module.items {
+            match item {
+                fennec_syntax::Item::Function(def) => names.insert(def.name),
+                fennec_syntax::Item::Const { name, .. } => names.insert(name),
+                _ => false,
+            };
+        }
+    }
+    let everywhere = |name: &String| {
+        fennec_check::provided_everywhere(name) || fennec_check::reserved_name(name) || name == "failure_of"
+    };
+    let names: Vec<String> =
+        names.into_iter().filter(|name| !name.starts_with('_') && !everywhere(name)).collect();
+    assert!(
+        names.iter().any(|name| name == "padding")
+            && names.iter().any(|name| name == "MOST_ROUTE_PARAMETERS")
+    );
+    let body: String = names.iter().flat_map(|name| ["    _ = ", name.as_str(), "\n"]).collect();
+    let problems = crate::problems_as_written(&format!("def main():\n{body}"));
+    let helps = crate::helps(&format!("def main():\n{body}"));
+    assert_eq!(problems.len(), names.len(), "{problems:#?}");
+    for ((name, problem), help) in names.iter().zip(&problems).zip(&helps) {
+        let private = problem.starts_with(&format!("`{name}` is private to "));
+        let imported =
+            problem.starts_with(&format!("`{name}` doesn't exist")) && help.starts_with("import it");
+        assert!(private || imported, "{name}: {problem} / {help}");
+    }
+}
+
 #[test]
 fn reading_gives_back_a_result_of_the_type_asked_for() {
     let program = "

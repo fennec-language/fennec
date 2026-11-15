@@ -218,7 +218,9 @@ export error PoolError:
 ## Given `first`, an open value, the pool starts with it rather than opening one. A borrower
 ## waits up to `wait` for one to come free, first come first served. A block that
 ## fails or crashes hands its value back to be `reset()`, and one that can't be reset is closed
-## and opened again when it's next needed, so the pool never shrinks.
+## and opened again when it's next needed, so the pool never shrinks. Values a task gives back are
+## lent again in the order it gave them back; which value a `take()` gets while other tasks are
+## giving theirs back depends on which of them comes first.
 export def pool[T: Pooled, E: Explained](
     open: () -> T fails E,
     size = 10,
@@ -267,26 +269,51 @@ export struct Pool[T]:
             if lent.failure != "": fail .Open(reason=lent.failure)
             value = lent.value else fail .Closed
             back = lent.back else fail .Closed
-            return Borrowed[T](value=value, _back=back)
+            return Borrowed[T](value=value, _back=back, _notes=self._notes, _keeper=lent.keeper)
         fail .Closed
 
 ## A value `Pool.borrowed()` gave, until it's given back.
 export struct Borrowed[T]:
     value: T
     _back: Sender[Given[T]]
+    _notes: Sender[PoolNote[T]]
+    _keeper: int
 
     ## Hands the value back to its keeper, saying whether the block that had it succeeded: one
-    ## that didn't has it reset, or replaced.
+    ## that didn't has it reset, or replaced. The pool hears its keeper's free before this returns,
+    ## so a `take()` after it is lent values in the order they were given back. Give a value back
+    ## once.
     def give_back(self, succeeded: bool):
-        told(self._back, Given[T](value=self.value, succeeded=succeeded))
+        handed_back[T](
+            self._back,
+            self._notes,
+            self._keeper,
+            Given[T](value=self.value, succeeded=succeeded),
+        )
 
-## What a borrower is lent: the value and where to give it back, or why it couldn't be opened, or
-## word that it's been dropped from the queue after it gave up waiting.
+## Gives a value back to keeper `keeper` on `back`, then tells the dispatcher on `notes` that the
+## keeper's free, from the task that gave it back. So the dispatcher hears of values given back
+## in the order a task gave them, before whatever the task asks it next. The keeper finishes with
+## what it was given back, resetting it after a block that failed, before it takes its next order,
+## so it can be told to lend again at once. After a failed block, its value may be closed and
+## need opening again, so it's told as one with none open.
+def handed_back[T](
+    back: Sender[Given[T]],
+    notes: Sender[PoolNote[T]],
+    keeper: int,
+    given: Given[T],
+):
+    if delivered(back, given):
+        told(notes, PoolNote[T](kind=FREE if given.succeeded else EMPTY, keeper=keeper))
+
+## What a borrower is lent: the value, where to give it back and the keeper it came from, or why
+## it couldn't be opened, or word that it's been dropped from the queue after it gave up waiting.
 struct Lent[T]:
     value: T?
     back: Sender[Given[T]]?
     failure: str
     dropped = False
+    keeper = 0
 
 ## Tells the dispatcher a borrower gave up waiting, then takes the one answer its `reply` still
 ## gets: word that it was dropped from the queue, or a value a keeper lent it meanwhile, which goes
@@ -299,7 +326,7 @@ def gave_up[T](notes: Sender[PoolNote[T]], reply: Channel[Lent[T]], wait: Durati
     late = answered else return
     back = late.back else return
     value = late.value else return
-    told(back, Given[T](value=value, succeeded=True))
+    handed_back[T](back, notes, late.keeper, Given[T](value=value, succeeded=True))
 
 ## A value given back to its keeper, and whether the block that had it succeeded.
 struct Given[T]:
@@ -483,14 +510,20 @@ def keep[T: Pooled, E: Explained](
                     told(notes, PoolNote[T](kind=EMPTY, keeper=number))
                     continue
             value = held else continue
-            # A borrower that stopped waiting takes nothing, so the value goes to the next.
-            if delivered(reply, Lent[T](value=value, back=given.sender(), failure="")):
-                back = given.receive() else Given[T](value=value, succeeded=False)
-                if back.succeeded or reset_safely(back.value):
-                    held = back.value
-                else:
-                    close_safely(back.value)
-                    held = None
-            told(notes, PoolNote[T](kind=FREE if held is not None else EMPTY, keeper=number))
+            # A borrower that stopped waiting takes nothing, so the keeper says it's free itself.
+            if not delivered(
+                reply,
+                Lent[T](value=value, back=given.sender(), failure="", keeper=number),
+            ):
+                told(notes, PoolNote[T](kind=FREE, keeper=number))
+                continue
+            # The borrower tells the dispatcher this keeper's free as it gives the value back, so
+            # the next order may already be waiting while this one's value is reset.
+            back = given.receive() else Given[T](value=value, succeeded=False)
+            if back.succeeded or reset_safely(back.value):
+                held = back.value
+            else:
+                close_safely(back.value)
+                held = None
     if held is not None:
         close_safely(held)

@@ -185,6 +185,9 @@ const RUN_FROM_SOURCE: &[&str] = &[
 /// `std.time`'s `Instant` and `Time`.
 const CAPABILITY_MODULES: &[(&str, &str)] = &[("Env", "env"), ("Clock", "time")];
 
+/// The core's types run from their own source, as `core_types` takes them in.
+const FROM_CORE: &[&str] = &["Template", "Interpolation"];
+
 /// The types the oracle models on its own, which a module run from its source declares or adds
 /// methods to in an `extend`: those are left out. `std.collections` extends `Table` and `Id`,
 /// which `interp/tables.rs` models, and `std.io` declares the capabilities `main` is given and
@@ -278,6 +281,23 @@ impl Gathered {
         }
     }
 
+    /// Takes in the types of the standard library's core a program may make without an import
+    /// that the oracle runs from their own source: the `Template` a template string builds, and
+    /// its `Interpolation`. A program's own type of either name is its own.
+    fn core_types(&mut self) -> Result<(), Refused> {
+        let core =
+            fennec_syntax::core_to_run().map_err(|problem| Refused::Invalid(problem.message.clone()))?;
+        for item in core.iter().flat_map(|module| module.items.iter()) {
+            if let Item::Struct(def) = item
+                && FROM_CORE.contains(&def.name.as_str())
+                && !self.types.contains_key(&def.name)
+            {
+                self.types.insert(def.name.clone(), Declared { def, kind: Kind::Struct, ruled: ruled(def) });
+            }
+        }
+        Ok(())
+    }
+
     /// Whether `main` takes a capability whose type `module` declares.
     fn main_takes(&self, module: &str) -> bool {
         let Some(main) = self.functions.get("main") else { return false };
@@ -344,6 +364,7 @@ fn tables(
         gathered.take(item, None)?;
     }
     gathered.std_modules()?;
+    gathered.core_types()?;
     let Gathered { functions, types, extensions, constants, aliases, imported, from_std } = gathered;
     let mut owners = HashMap::new();
     for (name, declared) in &types {

@@ -144,6 +144,23 @@ impl Context<'_> {
         self.instances.types.borrow().get(name).cloned()
     }
 
+    /// A type with each copy of a generic type in it written as that type given its arguments, as
+    /// the copy named `Pair[int]` is the generic `Pair` given `int`: what the checker's signatures
+    /// know, so a copy's shape is its fields' with the arguments filled in.
+    pub(super) fn as_written(&self, ty: &Type) -> Type {
+        ty.replaced(&mut |part| {
+            let Type::Named(name) = part else { return None };
+            let instance = self.type_instance(name)?;
+            let def = self.generic_types.get(instance.base.as_str())?;
+            let args: Option<Vec<Type>> = def
+                .generics
+                .iter()
+                .map(|generic| instance.subst.get(&generic.name).map(|arg| self.as_written(arg)))
+                .collect();
+            Some(Type::Generic(instance.base.clone(), args?))
+        })
+    }
+
     /// The key of a method in the typed tree: `Deque.len` for `Deque[int].len`.
     pub(super) fn base_key(&self, key: &str) -> String {
         match key.rsplit_once('.').and_then(|(owner, method)| Some((self.type_instance(owner)?, method))) {

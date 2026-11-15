@@ -113,6 +113,17 @@ impl Checker {
             }
             // A member goes where its union is wanted, and so does a union of some of its members.
             (Type::Union(members), Type::Union(others)) => others.iter().all(|other| members.contains(other)),
+            // A function goes where a union's one function member is wanted, if it fits that, as a
+            // named one does where `Router | (Request) -> Response` goes. With two, which one an
+            // arrow is can't be told.
+            (Type::Union(members), other @ (Type::Function(_) | Type::Arrow(..)))
+                if !members.contains(other) =>
+            {
+                match Type::Union(members.clone()).arrow_member() {
+                    Some(arrow) => self.fits(&arrow, other),
+                    None => false,
+                }
+            }
             (Type::Union(members), other) => members.contains(other),
             _ => false,
         }

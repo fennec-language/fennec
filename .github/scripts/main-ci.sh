@@ -22,9 +22,14 @@ if [ -z "$runs" ]; then
 fi
 read -r newest sha <<< "$(head -n 1 <<< "$runs")"
 # The jobs that failed in a run, a name a line, leaving out the one that only sums the others up.
+# Each run is asked once, however many jobs are looked for in it.
+asked=$(mktemp -d)
+trap 'rm -rf "$asked"' EXIT
 failed_in() {
-  gh run view "$1" --repo "$repository" --json jobs \
-    --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | select(.name != "CI passed") | .name'
+  [ -f "$asked/$1" ] || gh run view "$1" --repo "$repository" --json jobs \
+    --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | select(.name != "CI passed") | .name' \
+    > "$asked/$1"
+  cat "$asked/$1"
 }
 failed=$(failed_in "$newest")
 if [ -z "$failed" ]; then

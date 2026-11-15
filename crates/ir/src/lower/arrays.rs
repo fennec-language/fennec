@@ -3,7 +3,7 @@
 //! the engines take a list for is given an array's items as one.
 
 use fennec_check::Type;
-use fennec_syntax::{BinOp, Expr, Span, UnaryOp};
+use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Span, UnaryOp};
 
 use super::lists::Counting;
 use super::{Lowered, Lowering};
@@ -31,6 +31,38 @@ const TAKE_ITEMS: &[&str] = &[
 ];
 
 impl Lowering<'_> {
+    /// `array[T, N]()` as `array.new[T, N](zero)`, with the zero the checker writes into a
+    /// program's own code: 0, 0.0, False, "", None, an array of zeros, or a struct made with all
+    /// its defaults. A call still as written is the standard library's, which is lowered as it
+    /// was checked, as its `list[T]()` and `len(x)` are.
+    pub(super) fn filled_array(&self, expr: &Expr, callee: &Expr, args: &[Arg]) -> Option<Expr> {
+        let ExprKind::Index { object, index } = &callee.kind else { return None };
+        if !args.is_empty() || !matches!(&object.kind, ExprKind::Name(name) if name == "array") {
+            return None;
+        }
+        let Some(Type::Array(item, _)) = self.type_at(expr.span) else { return None };
+        // The item's type as written, which a zero that's an array or a struct is a call of.
+        let written = match &index.kind {
+            ExprKind::Tuple(parts) => parts.first()?,
+            _ => index.as_ref(),
+        };
+        let kind = match *item {
+            Type::Int => ExprKind::Int(0),
+            Type::Float => ExprKind::Float(0.0),
+            Type::Bool => ExprKind::Bool(false),
+            Type::Str => ExprKind::Str(String::new()),
+            Type::Optional(_) => ExprKind::None,
+            Type::Array(..) | Type::Named(_) => {
+                ExprKind::Call { callee: Box::new(written.clone()), args: Vec::new() }
+            }
+            _ => return None,
+        };
+        // The zero sits at the span of the array's type, where the checker put its type.
+        let mut filled = expr.clone();
+        fennec_syntax::visit::filled_array(&mut filled, &Expr { kind, span: callee.span });
+        Some(filled)
+    }
+
     /// `len(items)` or `items.len()` on an array: its size, known here.
     pub(super) fn array_len(&self, name: &str, values: &[Operand]) -> Option<i64> {
         let [items] = values else { return None };

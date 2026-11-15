@@ -6640,6 +6640,65 @@ def main(stdout: Stdout):
         stdout.print(lines)
 ";
 
+/// A function giving back something narrower fits where one giving the wider thing goes, as one
+/// giving an `Answer` where `(int) -> Answer?` goes, natively: an arrow written at the call, a
+/// function named there, a nested function, either of those kept in a struct's field, and a
+/// function taking an `Answer?` where `(Answer) -> int` goes. It wasn't lowered: "it gives
+/// (int) -> Answer where (int) -> Answer? goes".
+#[test]
+fn a_function_giving_something_narrower_fits_where_a_wider_one_goes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "arrow_fitted",
+        r#"struct Answer:
+    status: int
+    body: str
+
+struct Route:
+    name: str
+    respond: (int) -> Answer?
+
+def first(found: list[int], make: (int) -> Answer?) -> Answer?:
+    for number in found:
+        answer = make(number)
+        if answer is not None:
+            return answer
+    return None
+
+def plain(number: int) -> Answer:
+    return Answer(status=number, body="from a function named where the closure goes")
+
+def loose(answer: Answer?) -> int:
+    if answer is None:
+        return -1
+    return answer.status
+
+def statuses(answers: list[Answer], read: (Answer) -> int) -> list[int]:
+    return [read(answer) for answer in answers]
+
+def main(stdout: Stdout):
+    offset = 40
+    always = first([1, 2], (number) => Answer(status=number + offset, body="made"))
+    maybe = first([1, 2], (number) => Answer(status=number, body="even") if number % 2 == 0 else None)
+    named = first([3, 4], plain)
+    def nested(number: int) -> Answer:
+        return Answer(status=number + offset, body="nested")
+    kept = first([5, 6], nested)
+    route = Route(name="nested", respond=nested)
+    other = Route(name="named", respond=plain)
+    stdout.print(always, maybe, named, kept)
+    respond = route.respond
+    again = other.respond
+    stdout.print(respond(7), again(8), route.name, other.name)
+    stdout.print(statuses([Answer(status=9, body="a")], loose))
+    return
+"#,
+        "Answer(status=41, body=\"made\") Answer(status=2, body=\"even\") Answer(status=3, body=\"from a function named where the closure goes\") Answer(status=45, body=\"nested\")\nAnswer(status=47, body=\"nested\") Answer(status=8, body=\"from a function named where the closure goes\") nested named\n[9]\n",
+    )
+}
+
 /// An arrow failing fewer ways than the function type it's given for, as one failing with
 /// `Refused` where `() -> str fails Refused | Shut` goes, is made as failing all of them, natively:
 /// passed to a function, with a parameter, given to a name typed as one, and a function named as a

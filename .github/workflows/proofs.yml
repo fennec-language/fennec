@@ -219,16 +219,24 @@ jobs:
           gh issue create --title "ThreadSanitizer reported in the nightly run" --body-file issue.md --label "bug" --label "priority: now" --repo "$GITHUB_REPOSITORY"
 
   # The two real programs that serve, each run for an hour under its own scripted load, round after
-  # round in one process: what they hold has to level off after a warm-up. See `soak.sh`, whose
-  # curve for each, its start, end and slope, goes in the night's report.
+  # round in one process, once with every round in one long task and once on its own thread: what
+  # they hold has to level off after a warm-up, and a round has to finish every minute. See
+  # `soak.sh`, whose curve for each, its start, end and slope, goes in the night's report.
   soak:
-    name: Soak ${{ matrix.program }} for an hour
+    name: Soak ${{ matrix.program }} for an hour, in ${{ matrix.in }}
     runs-on: ubuntu-latest
     timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
         program: [game_server, web_backend]
+        in: [task, main]
+        include:
+          # A task waiting in `server.accept()` holds its worker, so the game server's clients never
+          # run beside it in a task: it fails until #1774 is fixed (#1796).
+          - program: game_server
+            in: task
+            waiting: "#1774"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -244,6 +252,8 @@ jobs:
       - name: Run it for an hour, reading what it holds every minute
         env:
           PROGRAM: ${{ matrix.program }}
+          SOAK_IN: ${{ matrix.in }}
+          SOAK_WAITING: ${{ matrix.waiting }}
         run: .github/scripts/soak.sh target/release/fennec "bench/realworld/$PROGRAM.fen" soak.md 60
       - name: Show the curve on the run's summary page
         if: always()
@@ -252,7 +262,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: soak-${{ matrix.program }}
+          name: soak-${{ matrix.program }}-${{ matrix.in }}
           path: soak.md
           if-no-files-found: ignore
 

@@ -29,6 +29,9 @@ use super::{State, attempt, guarded, heap, with};
 const DONE: i64 = 0;
 const CLOSED: i64 = 1;
 const TIMED_OUT: i64 = 2;
+/// What a send or receive a stop cut short came to, in a recording, which native code never sees:
+/// its task fails as stopped, and gets 0.
+const STOPPED: i64 = 3;
 
 /// One message waiting in a channel.
 enum Message {
@@ -250,7 +253,7 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
             }
             Waited::Stopped => {
                 let_go(message);
-                return DONE;
+                return stopped(&channel, "send");
             }
             Waited::CutShort => {
                 met(&channel, "send", CLOSED);
@@ -311,7 +314,7 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
                 met(&channel, "receive", TIMED_OUT);
                 return TIMED_OUT;
             }
-            Waited::Stopped => return DONE,
+            Waited::Stopped => return stopped(&channel, "receive"),
             Waited::CutShort => {
                 met(&channel, "receive", CLOSED);
                 return CLOSED;
@@ -336,6 +339,11 @@ fn replayed(channel: &Channel, what: &str) -> Turn {
     match crate::replay::turn(channel.replay.as_deref(), what) {
         Ok(None) => Turn::Live,
         Ok(Some(DONE)) => Turn::Goes,
+        Ok(Some(STOPPED)) => {
+            met(channel, what, STOPPED);
+            crate::replay::stopped_as_recorded();
+            Turn::Gives(DONE)
+        }
         Ok(Some(code)) => {
             // It changes nothing, so this is where its turn ends.
             met(channel, what, code);
@@ -346,6 +354,13 @@ fn replayed(channel: &Channel, what: &str) -> Turn {
             Turn::Gives(CLOSED)
         }
     }
+}
+
+/// A stop cut short the running task's wait to do `what` at `channel`, and it's failing: recorded,
+/// so a replay, which doesn't wait, stops it at the same wait.
+fn stopped(channel: &Channel, what: &str) -> i64 {
+    met(channel, what, STOPPED);
+    DONE
 }
 
 /// Says the running task did `what` at `channel`, coming to `outcome`: logged in a recording, and

@@ -221,7 +221,9 @@ impl Type {
             Type::Table(_) => "Table".to_owned(),
             Type::Function(_) | Type::Arrow(..) => "function".to_owned(),
             Type::Errors(_) => "error".to_owned(),
-            Type::Union(members) => members.iter().map(ToString::to_string).collect::<Vec<_>>().join(" | "),
+            Type::Union(members) => {
+                last_arrows(members).iter().map(ToString::to_string).collect::<Vec<_>>().join(" | ")
+            }
         }
     }
 
@@ -286,6 +288,14 @@ impl Type {
             Type::Arrow(params, ret) => params.iter().chain(std::iter::once(ret.as_ref())).collect(),
             _ => Vec::new(),
         }
+    }
+
+    /// The same type with each part that `change` gives another for replaced by it, innermost
+    /// first: how code outside the checker rewrites a type, as lowering writes a copy of a generic
+    /// type as the type given its arguments.
+    #[must_use]
+    pub fn replaced(&self, change: &mut dyn FnMut(&Type) -> Option<Type>) -> Type {
+        self.map(change)
     }
 
     /// The same type with every part rewritten by `change`, innermost parts first. Parts
@@ -482,9 +492,16 @@ impl Type {
             Type::Tuple(items) => format!("({})", all(items)?),
             Type::Optional(inner) if matches!(**inner, Type::Union(_)) => format!("({})?", inner.source()?),
             Type::Optional(inner) => format!("{}?", inner.source()?),
-            Type::Union(members) => members
+            // A function type's return runs on to the end, so one function member is written last,
+            // and a union of two has no written form.
+            Type::Union(members)
+                if members.iter().filter(|member| matches!(member, Type::Arrow(..))).count() > 1 =>
+            {
+                return None;
+            }
+            Type::Union(members) => last_arrows(members)
                 .iter()
-                .map(Type::source)
+                .map(|member| member.source())
                 .collect::<Option<Vec<_>>>()
                 .map(|members| members.join(" | "))?,
             Type::Result(value, error) => format!("Result[{}, {}]", value.source()?, error.source()?),
@@ -547,6 +564,15 @@ impl fmt::Display for Type {
             other => f.write_str(&other.kind()),
         }
     }
+}
+
+/// A union's members in the order they're shown, a function type after the rest: what a function
+/// type gives back runs on to the end, so `(Request) -> Response | Router` would read back as a
+/// function giving back `Response | Router`.
+fn last_arrows(members: &[Type]) -> Vec<&Type> {
+    let (arrows, rest): (Vec<&Type>, Vec<&Type>) =
+        members.iter().partition(|member| matches!(member, Type::Arrow(..)));
+    rest.into_iter().chain(arrows).collect()
 }
 
 /// "a list" or "an int": the type's short name with the right article.

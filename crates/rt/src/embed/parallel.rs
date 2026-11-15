@@ -1365,6 +1365,94 @@ mod tests {
         finish();
     }
 
+    /// More requests than there'll ever be blocking threads.
+    const ASKING: usize = 100;
+    static ANSWERED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// An HTTP server that takes `ASKING` requests and answers none until all have come.
+    fn answers_once_all_have_asked() -> u16 {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for stream in listener.incoming().flatten().take(ASKING) {
+                let mut head = std::io::BufReader::new(&stream);
+                let mut line = String::new();
+                while head.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                    line.clear();
+                }
+                asked.push(stream);
+            }
+            for mut stream in asked {
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\npong");
+            }
+        });
+        port
+    }
+
+    /// Makes a request of the server on port `env`, as a parked task.
+    extern "C" fn asks(env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        let url = format!("http://127.0.0.1:{env}/");
+        let got = crate::stdlib::http::asked("GET", &url, Vec::new(), std::time::Duration::from_secs(20));
+        assert_eq!(got, Ok((200, b"pong".to_vec())));
+        // Woken by the poll for its answer, not by looking again on a timer.
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        ANSWERED.fetch_add(1, Ordering::Relaxed);
+        0
+    }
+
+    /// A request made in a task holds a blocking thread only while its connection is opened, and
+    /// parks on its socket for the answer: a hundred of them on one worker all wait at once on a
+    /// server that answers none until every one has asked. Each used to hold a blocking thread
+    /// for its whole exchange, so no more could be asked at once than there were such threads,
+    /// and this many waited on each other until their time ran out.
+    #[test]
+    fn requests_made_in_tasks_wait_for_their_answers_without_a_blocking_thread_each() {
+        begin();
+        let port = answers_once_all_have_asked();
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let run = super::each_on_pool(run, pool, ASKING, super::Leaf::For(asks, i64::from(port)));
+        assert_eq!(run.finish(), 0);
+        assert_eq!(ANSWERED.load(Ordering::Relaxed), i64::try_from(ASKING).unwrap());
+        finish();
+    }
+
+    static ECHOED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// Posts 2 MB to the HTTPS server on port `env` and reads it back, as a parked task.
+    extern "C" fn posts_over_tls(env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        let sent: Vec<u8> = (0..2_000_000_usize).map(|at| u8::try_from(at % 251).unwrap()).collect();
+        let url = format!("https://localhost:{env}/");
+        let got = crate::stdlib::http::asked("POST", &url, sent.clone(), std::time::Duration::from_secs(20));
+        let got = got.map(|(status, body)| (status, body == sent));
+        assert_eq!(got, Ok((200, true)));
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        ECHOED.fetch_add(1, Ordering::Relaxed);
+        0
+    }
+
+    /// Two requests over TLS from tasks on one worker, each with a body longer than its socket
+    /// takes at once, to a server that's slow to read and answers neither until both have come
+    /// whole. Each task parks for room as it writes and for its answer as it reads, with TLS
+    /// between it and a socket that doesn't block, and gets back every byte it sent.
+    #[test]
+    fn requests_over_tls_made_in_tasks_park_for_room_and_for_their_answers() {
+        begin();
+        crate::stdlib::http::use_tls();
+        let trusting = crate::stdlib::net::tests::tls::trusting_the_tests();
+        let port = crate::stdlib::net::tests::tls::https_echoing(2);
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let run = super::each_on_pool(run, pool, 2, super::Leaf::For(posts_over_tls, i64::from(port)));
+        let ended = run.finish();
+        drop(trusting);
+        assert_eq!(ended, 0);
+        assert_eq!(ECHOED.load(Ordering::Relaxed), 2);
+        finish();
+    }
+
     /// A server that takes two connections and answers neither until both have sent a line.
     fn answers_once_both_have_spoken() -> u16 {
         use std::io::{BufRead as _, Write as _};

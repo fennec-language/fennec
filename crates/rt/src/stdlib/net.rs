@@ -916,11 +916,9 @@ pub(crate) fn native_net(name: &str, args: &[Value], span: Span) -> Result<Value
         let (plain, last) = args.split_at(args.len().saturating_sub(named.len()));
         let given: Vec<(&str, &Value)> = named.iter().copied().zip(last).collect();
         let request = request_of(method, plain, &given, span)?;
-        // A task parks while its request waits, on a thread that may block, as `connect` does,
-        // rather than holding its worker: a server in the same program may need that worker to
-        // answer it.
-        let sent = if task_parks() { off_thread(move || http::send(&request)) } else { http::send(&request) };
-        return Ok(done_or_failed(sent.map(answer_value)));
+        // A task parks while its request waits, rather than holding its worker: a server in the
+        // same program may need that worker to answer it. `send` sees to that itself.
+        return Ok(done_or_failed(http::send(&request).map(answer_value)));
     }
     let (method, args, timeout) = timed(name, args, span)?;
     real_net(&method, &args, timeout, span)
@@ -1531,7 +1529,7 @@ pub(crate) fn said_and_heard(host: &str, port: u16, line: &[u8]) -> Result<Vec<u
 
 /// Whether this call is in a task that can park while it waits for something to look up or connect
 /// to, on a thread that may block.
-fn task_parks() -> bool {
+pub(crate) fn task_parks() -> bool {
     #[cfg(any(test, feature = "threads"))]
     {
         crate::embed::serve::can_park()
@@ -1543,7 +1541,7 @@ fn task_parks() -> bool {
 }
 
 /// `work`, run on a thread that may block while this task parks, or here when it can't.
-fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     #[cfg(any(test, feature = "threads"))]
     {
         crate::embed::serve::off_thread(work)
@@ -1871,6 +1869,35 @@ fn park_on(
         let _ = on_the_socket;
         crate::embed::serve::park_on_copy(token, socket, interest, deadline)
     }
+}
+
+/// What a task waits for on a socket of its own.
+#[derive(Clone, Copy)]
+pub(crate) enum Wanted {
+    ToRead,
+    ToWrite,
+    /// To read, with something of its own to send first, as TLS can have.
+    Either,
+}
+
+/// Parks this task until a socket of its own may be ready for what's `wanted`, or `deadline`
+/// passes: for a socket that doesn't block and that no other task waits on, as a request's is.
+/// True once there's no more waiting to do: its time is up, or the task's been stopped.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn parked_out_on(socket: &TcpStream, wanted: Wanted, deadline: Instant) -> bool {
+    let interest = match wanted {
+        Wanted::ToRead => mio::Interest::READABLE,
+        Wanted::ToWrite => mio::Interest::WRITABLE,
+        Wanted::Either => mio::Interest::READABLE | mio::Interest::WRITABLE,
+    };
+    let token = crate::embed::serve::next_token();
+    park_on(token, socket, (interest, Some(deadline)), true) != crate::embed::serve::Parked::Ready
+}
+
+/// Without threads nothing parks, so nothing waits this way.
+#[cfg(not(any(test, feature = "threads")))]
+pub(crate) fn parked_out_on(_socket: &TcpStream, _wanted: Wanted, _deadline: Instant) -> bool {
+    true
 }
 
 /// Waits until `stream`'s socket may take more to write: parked in a task that can, and otherwise
@@ -2652,6 +2679,66 @@ pub(crate) mod tests {
 
         fn connected_to(port: u16) -> TcpStream {
             TcpStream::connect(("127.0.0.1", port)).unwrap()
+        }
+
+        /// While what this gives back lives, the HTTP client trusts the tests' own certificate
+        /// authority, and nothing else: for a request to `https_echoing`.
+        pub(crate) fn trusting_the_tests() -> http::tls::TrustedByTests {
+            http::tls::TrustedByTests::begin(client_config())
+        }
+
+        /// An HTTPS server on a port of its own, with the tests' certificate for `localhost`, for
+        /// `count` requests. It waits a moment before it reads each one's body, so a long one has to
+        /// wait for room, and answers none until all have come whole, each with its own body back.
+        pub(crate) fn https_echoing(count: usize) -> u16 {
+            use std::io::Read as _;
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let chain: Vec<CertificateDer<'static>> =
+                CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+            let config = ServerConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(chain, PrivateKeyDer::from_pem_slice(KEY).unwrap())
+                .unwrap();
+            let config = Arc::new(config);
+            let all = Arc::new(std::sync::Barrier::new(count));
+            std::thread::spawn(move || {
+                for tcp in listener.incoming().flatten().take(count) {
+                    let (config, all) = (Arc::clone(&config), Arc::clone(&all));
+                    std::thread::spawn(move || {
+                        let connection = ServerConnection::new(config).unwrap();
+                        let mut reader = BufReader::new(StreamOwned::new(connection, tcp));
+                        let mut length = 0;
+                        loop {
+                            let mut line = String::new();
+                            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                                return;
+                            }
+                            if line == "\r\n" {
+                                break;
+                            }
+                            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                                length = value.trim().parse().unwrap_or(0);
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                        let mut body = vec![0; length];
+                        if reader.read_exact(&mut body).is_err() {
+                            return;
+                        }
+                        all.wait();
+                        let secured = reader.get_mut();
+                        let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\n\r\n");
+                        let _ = secured.write_all(head.as_bytes());
+                        let _ = secured.write_all(&body);
+                        secured.conn.send_close_notify();
+                        let _ = secured.flush();
+                    });
+                }
+            });
+            port
         }
 
         /// A TLS connection's handle, to a server that answers its one line only once `ready` is

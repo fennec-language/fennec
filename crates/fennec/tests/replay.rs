@@ -626,6 +626,123 @@ fn a_wait_that_timed_out_or_not_replays_as_it_came_out() -> std::io::Result<()> 
     Ok(())
 }
 
+/// A task sleeps two hours, and its block's end stops it after 20 ms.
+const STOPPED_IN_A_SLEEP: &str = "from std.concurrent import Crashed
+
+def waits(clock: Clock, stdout: Stdout):
+    clock.sleep(2h)
+    stdout.print(\"never said\")
+
+def main(clock: Clock, stdout: Stdout) fails Crashed:
+    with launch(() => waits(clock, stdout=stdout), stop_after=20ms)?:
+        pass
+    stdout.print(\"the stopped one is over\")
+";
+
+/// A task stopped in a sleep is stopped there in its replay too. A replay doesn't sleep, so the
+/// task's sleep used to end at once, before its block's 20 ms were up, and it printed what the
+/// recorded run never did, with nothing said (#1805).
+#[test]
+fn a_task_stopped_in_a_sleep_is_stopped_there_in_its_replay() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_fifty_times_each("stopped-in-a-sleep", STOPPED_IN_A_SLEEP, |printed| {
+        printed == "the stopped one is over\n"
+    })
+}
+
+/// A task waits on a channel nothing is sent on until its block's end has stopped it, after 20 ms.
+const STOPPED_ON_A_CHANNEL: &str = "from std.concurrent import Channel, Closed, Crashed, channel
+
+def waits(numbers: Channel[int], stdout: Stdout):
+    got = numbers.receive() else -1
+    stdout.print(\"never said\", got)
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with channel[int](size=1) as numbers:
+        with launch(() => waits(numbers, stdout=stdout), stop_after=20ms)?:
+            pass
+        numbers.send(7)?
+        stdout.print(\"the stopped one is over\", numbers.receive() else -1)
+";
+
+/// A task stopped in a channel's wait is stopped there in its replay too. Its receive used to be
+/// in no recording, so its replay waited for a turn that never came, until it gave up after ten
+/// seconds, by when the block's end had stopped it again.
+#[test]
+fn a_task_stopped_waiting_on_a_channel_is_stopped_there_in_its_replay() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_fifty_times_each("stopped-on-a-channel", STOPPED_ON_A_CHANNEL, |printed| {
+        printed == "the stopped one is over 7\n"
+    })
+}
+
+/// A task reads a line from a connection of its own that nothing is ever written to, and its
+/// block's end stops it after 20 ms.
+const STOPPED_IN_A_READ: &str = "from std.concurrent import Crashed
+from std.net import Connection, NetError
+
+def waits(conn: Connection, stdout: Stdout) fails NetError:
+    line = conn.read_line()?
+    stdout.print(\"never said\", line)
+
+def main(net: Net, stdout: Stdout) fails Crashed | NetError:
+    with net.listen(0)? as server:
+        with net.connect(\"127.0.0.1\", server.port)? as first:
+            with server.accept()? as taken:
+                with launch(() => waits(first, stdout=stdout)?, stop_after=20ms)?:
+                    pass
+                stdout.print(\"the stopped one is over\", taken)
+";
+
+/// A task stopped in a socket's read is stopped there in its replay too. The read's result was
+/// recorded, a timeout, but not that a stop had cut it short, so the replay failed with the timeout.
+#[test]
+fn a_task_stopped_in_a_socket_read_is_stopped_there_in_its_replay() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_fifty_times_each("stopped-in-a-read", STOPPED_IN_A_READ, |printed| {
+        printed.starts_with("the stopped one is over ")
+    })
+}
+
+/// A block that fails stops its task at once, there in its two-hour sleep.
+const STOPPED_BY_A_FAILED_BLOCK: &str = "from std.concurrent import Crashed
+
+error Gave:
+    at: int
+
+def waits(clock: Clock, stdout: Stdout):
+    clock.sleep(2h)
+    stdout.print(\"never said\")
+
+def gives_up(clock: Clock, stdout: Stdout) fails Crashed | Gave:
+    with launch(() => waits(clock, stdout=stdout))?:
+        clock.sleep(5ms)
+        fail Gave(at=1)
+
+def main(clock: Clock, stdout: Stdout):
+    gives_up(clock, stdout=stdout) except why:
+        stdout.print(f\"the block gave up: {why}\")
+        return
+    stdout.print(\"not this\")
+";
+
+/// A task stopped at once by its block's failure is stopped at the same wait in its replay.
+#[test]
+fn a_task_its_failed_block_stopped_is_stopped_there_in_its_replay() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_fifty_times_each("stopped-by-a-failed-block", STOPPED_BY_A_FAILED_BLOCK, |printed| {
+        printed == "the block gave up: Gave(at=1)\n"
+    })
+}
+
 /// A program connecting to a server of its own and printing what it made.
 const NET_LABELS: &str = "from std.net import NetError
 

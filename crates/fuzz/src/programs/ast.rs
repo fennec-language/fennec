@@ -715,29 +715,80 @@ pub(crate) enum SwapField {
 /// The keys a `Swapped` looks up: two both structs a call makes hold, and one neither does.
 pub(crate) const SWAP_KEYS: [&str; 3] = ["a", "b", "z"];
 
-/// A `Shelved` statement: a `shared` shelf holding one pouch in a dict or a list, and each step a
-/// task taking its lock to change that pouch by `how` with a value: past 1, it crashes reading
-/// `limits[value]` after the pouch has changed. A crash undoes everything done under the lock,
-/// so the shelf is as it was. The shape of finding 1 in the review of #1785, where a crash under
-/// a lock put back a freed block.
+/// A `Shelved` statement: one pouch in a dict or a list, and each step a task changing that pouch
+/// by `how` with a value: past 1, it crashes reading `limits[value]` after the pouch has changed.
+/// Where the pouch is held is its `place`. Under a lock, a crash undoes everything done under it,
+/// so the shelf is as it was: the shape of finding 1 in the review of #1785, where a crash under a
+/// lock put back a freed block. Held by the task alone, a crash lets go of all of it, which main
+/// left live in the same review.
 #[derive(Clone, Debug)]
 pub(crate) struct Shelving {
     pub(crate) id: usize,
     pub(crate) in_list: bool,
     pub(crate) seen: i64,
+    pub(crate) place: ShelfPlace,
+    /// How many rounds of appending a change makes to the pouch's items, 1 to 6. Past a few, the
+    /// items grow out of the list's first block, and a crash with no lock has to let go of the
+    /// one they grew into, which main left live in the review of #1785.
+    pub(crate) rounds: i64,
     pub(crate) steps: Vec<(i64, Shelve)>,
 }
 
-/// How a `Shelved` step changes the pouch under the lock.
+/// Where a `Shelved` statement's pouch is held while a step changes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShelfPlace {
+    /// In a `shared` shelf, changed under its lock in each step's task, step after step.
+    Locked,
+    /// In a shelf each step's task makes for itself, with no lock anywhere, which it prints.
+    Owned,
+    /// In a list or dict each step's task makes for itself, with no struct around it, which it
+    /// prints.
+    Bare,
+}
+
+/// A `Listened` statement: a channel to every listener keeping `size` messages, with one sent
+/// before anything listens if `early`, then 1 to `sent` sent while nothing reads. Each of
+/// `inboxes` is an inbox made just before those sends and read afterwards in a task of its own,
+/// by `receive()` or in a `for` loop, falling behind loudly when `sent` is past `size`. With
+/// `dropping`, a task loops over `hits.listen(when_behind=.DropOldest)` from before the sends,
+/// saying so over a channel, and reads only once they're all sent, so it hears the last `size`
+/// of them however its task is timed.
+#[derive(Clone, Debug)]
+pub(crate) struct Listening {
+    pub(crate) id: usize,
+    pub(crate) size: i64,
+    pub(crate) early: bool,
+    pub(crate) sent: i64,
+    pub(crate) dropping: bool,
+    /// For each inbox, whether it's read in a `for` loop rather than by `receive()`.
+    pub(crate) inboxes: Vec<bool>,
+}
+
+/// How a `Shelved` step changes the pouch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Shelve {
     /// `held.fill(value)`, a `ref self` method of the shelf calling the pouch's `ref self` `add`.
+    /// With no shelf, the same as `Direct`.
     Fill,
-    /// `held.by_hand(value)`: the pouch copied out, changed and stored back.
+    /// `held.by_hand(value)`: the pouch copied out, changed and stored back. With no shelf, done
+    /// in the task's own function.
     ByHand,
     /// `held.pouches[...].add(value)`, the pouch's `ref self` method called straight on the part
-    /// of what the lock holds.
+    /// of what the shelf holds, or on the task's own list or dict.
     Direct,
+    /// `added{id}(ref held.pouches, value)`, a function handed the list or dict itself by `ref`,
+    /// which calls `add` on its part.
+    Handed,
+    /// `by_hand{id}(ref held.pouches, value)`: the same function changing the pouch by hand.
+    HandedByHand,
+}
+
+impl Shelve {
+    /// Whether it changes the pouch by hand, which appends one text, rather than with `add`,
+    /// which appends two.
+    pub(crate) fn by_hand(self) -> bool {
+        matches!(self, Shelve::ByHand | Shelve::HandedByHand)
+    }
 }
 
 /// How a `Streamed` stream is read.
@@ -1034,6 +1085,8 @@ pub(crate) enum Stmt {
     Swapped(Swapping),
     /// `shelved{id}(stdout)`: crashes inside a `ref self` method on part of a lock's value.
     Shelved(Shelving),
+    /// `listened{id}(stdout)`: listeners of a channel to every listener, some falling behind.
+    Listened(Listening),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

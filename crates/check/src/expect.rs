@@ -229,7 +229,7 @@ impl FnCx<'_> {
     /// The types for a generic struct's parameters, where `name` builds one and `expected` is
     /// one of the same struct, like `Box[int | str]` where `Box(value=1)` goes.
     fn expected_generics(&mut self, name: &str, expected: &Type) -> Option<Vec<Type>> {
-        if self.lookup(name).is_some() || self.checker.program.functions.contains_key(name) {
+        if self.lookup(name).is_some() || self.names_function(name) {
             return None;
         }
         let Type::Generic(wanted, types) = self.checker.settled(expected).without_none() else {

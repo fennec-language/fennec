@@ -33,16 +33,17 @@ quaternions and matrices, `dot` and `lerp` are its Fennec code, and `sqrt`, `flo
 modeled here. In `std.collections`, `Deque`, `Heap`, `Counter`, `SortedMap`, `SortedSet`, `Grid`,
 `Packed`, `Tree` and the rest are its Fennec code. Its `extend`s of `Table` and `Id`, which the
 oracle models on its own, are left out. `std.time`'s `Duration`, `Instant` and `Time` are its Fennec
-code, and a duration written out, as `30s`, is its `Duration`. The intrinsics their code calls that
-only read, like `text_byte`, `text_size`, `text_part` and `bytes_text`, are modeled here
-(`interp/library.rs`) from what `intrinsics.fen` says each does, and so is making a core error, like
-`InvalidValue`, by name. `std.random`'s draws, beneath its `Random`, are modeled here as
-`docs/language.md` pins them: SplitMix64, and a range by Lemire's method. The types of the modules'
-expressions are what the checker gave them as it checked the program. So the oracle still checks how
-the compiler and runtime run that code, but a mistake in the module's own Fennec would be the same
-on both sides. A module modeled on its own, like `std.json`, isn't run from source. `sin`, `cos`,
-`tan`, `acos`, `exp`, `log` and a float's `**` are computed with the `libm` crate, as
-`docs/language.md` says they are, at the version the workspace pins.
+code, and a duration written out, as `30s`, is its `Duration`. A template string, as `t"{name}"`,
+builds the core's own `Template`, whose `Template` and `Interpolation` are run from their source the
+same way. The intrinsics their code calls that only read, like `text_byte`, `text_size`, `text_part`
+and `bytes_text`, are modeled here (`interp/library.rs`) from what `intrinsics.fen` says each does,
+and so is making a core error, like `InvalidValue`, by name. `std.random`'s draws, beneath its
+`Random`, are modeled here as `docs/language.md` pins them: SplitMix64, and a range by Lemire's
+method. The types of the modules' expressions are what the checker gave them as it checked the
+program. So the oracle still checks how the compiler and runtime run that code, but a mistake in the
+module's own Fennec would be the same on both sides. A module modeled on its own, like `std.json`,
+isn't run from source. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's `**` are computed
+with the `libm` crate, as `docs/language.md` says they are, at the version the workspace pins.
 
 ## How it models a program
 
@@ -145,6 +146,16 @@ on both sides. A module modeled on its own, like `std.json`, isn't run from sour
   folder's listing while a file is being made in it, under a hidden name holding the process's
   number, bytes, and on Windows what it reads its own way.
 - `std.path`'s `Path` is its text, and its methods only look at it, each written here on its own.
+- Places through a type's own `def []` are as `docs/decisions.md` sets them out
+  (`interp/own_index.rs`). Through the `ref` form, which the parser names `[]mut`, an int position
+  is a place inside the value: indexing, `=`, a `ref` argument, `for ref` and `parallel` reach it
+  where it is, and `for ref` and `parallel` skip the positions its `is_live` says are empty.
+  Through the plain form beside a `def []=`, a change reads the part with `[]`, changes that copy,
+  and writes it back with `[]=` once the change is done: once for `shelf[0].x += 1`, nested too,
+  and once for a call that takes it as `ref`, even one that changes it twice. A key that isn't an
+  int goes to the plain form, so a type can have both, as `Grid` does. A failure partway through
+  such a change writes the part back too, with what changed before it, since only
+  `lock ... as ref` rolls back. A `with` source given a `ref` through `[]=` is refused.
 - `value? from Context(...)` passes a failure up as the context, made only then. Native code
   keeps what caused it with it, but nothing reads that yet.
 - An `array[T, N]` is held as the list it prints as, and `array[T, N]()` is `N` of `T`'s zero, as

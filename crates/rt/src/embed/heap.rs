@@ -959,11 +959,9 @@ impl Heap {
             mark_owner(&mut block, self.owner_bits);
             // What's made under a lock stays with what the lock guards, what's made for a copy
             // to lend stays in the copy, and a server's tasks hand nothing over.
-            let in_a_table_of_its_own = matches!(
-                self.owner_bits >> OWNER_SHIFT,
-                super::guarded::GUARDED_OWNER | super::guarded::LENT_OWNER
-            );
-            if super::threads::ON && !self.serving && !in_a_table_of_its_own {
+            // Those are the numbers no thread goes by, which are the highest.
+            let a_thread_s_own = self.owner_bits >> OWNER_SHIFT < super::guarded::LENT_OWNER;
+            if super::threads::ON && !self.serving && a_thread_s_own {
                 self.list_made(address);
             }
         }

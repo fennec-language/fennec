@@ -6,8 +6,7 @@
 # system program what | why, and who's cutting it
 macos fs ring-assembly | ring's assembly objects can't be split by function, so -dead_strip keeps about 39 KB of ChaCha20, AES-GCM and bignum code that nothing calls
 macos hello ring-assembly | the same 39 KB of ring's assembly, in every program
-linux fs sqlite | a name only, `RawVec<rusqlite::Connection>::grow_one`: the same code as another list's growing, kept under both names by a release build of the runtime; none of SQLite's own code is linked
-linux fs tls | the two functions of rustls's a hello world links too, below
+linux fs tls | the two functions of rustls's that a hello world links too, the next line's
 linux hello tls | two of rustls's functions a vtable holds: a TLS payload's drop and `StreamOwned`'s `is_write_vectored`
 #
 # A hello world built for release is held to these sizes, in bytes, as the gate builds it on a Mac

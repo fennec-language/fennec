@@ -333,6 +333,58 @@ fn a_wait_on_a_copy_of_a_socket_parks_its_task_and_says_when_the_socket_is_ready
     assert_eq!((served.connections, served.failed), (2, 0));
 }
 
+/// A round sent "wait" says it's waiting, then waits 50 ms on a descriptor the worker's poll won't
+/// take, as there's none with that number, looking again each time the wait says to. It says how
+/// the wait ended and how many times it looked. Any other line is echoed.
+#[cfg(unix)]
+fn waits_on_what_the_poll_wont_take() -> Handler {
+    Arc::new(|conn: Conn| {
+        let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
+        if line != b"wait" {
+            line.push(b'\n');
+            return i64::from(conn.write(&line).is_err());
+        }
+        if conn.write(b"waiting\n").is_err() {
+            return 1;
+        }
+        let by = Some(std::time::Instant::now() + Duration::from_millis(50));
+        let mut looks = 0;
+        let ended = loop {
+            match super::park_on_fd(super::next_token(), -1, mio::Interest::READABLE, by) {
+                super::Parked::Ready if looks < 100_000 => looks += 1,
+                ended => break ended,
+            }
+        };
+        i64::from(conn.write(format!("{ended:?} {looks}\n").as_bytes()).is_err())
+    })
+}
+
+/// A wait on a socket that the worker's poll refuses parks a moment and says to look again, until
+/// its time runs out, and its worker goes on with others meanwhile. It used to say "ready" at
+/// once: its task looked again and again without the worker ever polling, and a wait with a
+/// deadline never ran out of time. That's 100,000 looks here and no end, where it's now 50 at most.
+#[cfg(unix)]
+#[test]
+fn a_wait_the_poll_refuses_parks_a_moment_at_a_time_and_still_runs_out_of_time() {
+    let served = run(1, &waits_on_what_the_poll_wont_take(), |address| {
+        let mut waiting = std::net::TcpStream::connect(address).unwrap();
+        waiting.write_all(b"wait\n").unwrap();
+        let mut heard = BufReader::new(waiting.try_clone().unwrap());
+        let mut said = String::new();
+        heard.read_line(&mut said).unwrap();
+        assert_eq!(said, "waiting\n");
+        // Its round goes from saying so straight into its wait, and only a round that's parked
+        // lets another run on the one worker.
+        assert_eq!(ask(address, "meanwhile").as_deref(), Some("meanwhile\n"));
+        said.clear();
+        heard.read_line(&mut said).unwrap();
+        let (ended, looks) = said.trim_end().split_once(' ').unwrap();
+        assert_eq!(ended, "TimedOut", "after {looks} looks");
+        assert!(looks.parse::<usize>().unwrap() <= 60, "it looked {looks} times in 50 ms");
+    });
+    assert_eq!((served.connections, served.failed), (2, 0));
+}
+
 /// A round sent "wait" says it's waiting, then waits on a socket of its own, a plain one connected
 /// to `to`, through a copy of it, for as long as it takes. Whatever ends the wait, it writes on the
 /// socket and waits again, and notes in `came` what the two waits came to and whether it could

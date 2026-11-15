@@ -1388,7 +1388,7 @@ mod tests {
     /// How many pieces of work the connecting task's thread has on the blocking threads.
     fn connecting_task_s_blocking_work(test: usize) -> i64 {
         let from = *CONNECTING_FROM[test].lock().unwrap();
-        from.map_or(-1, crate::embed::serve::blocking_jobs_of)
+        from.map_or(-1, |from| crate::embed::serve::blocking_jobs_of(from).0)
     }
 
     fn plain_connector_s_blocking_work() -> i64 {
@@ -1404,18 +1404,24 @@ mod tests {
     extern "C" fn connects_and_talks(env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
         let (test, secure) = (usize::from(from != 0), from != 0);
         let port = u16::try_from(env).unwrap();
-        *CONNECTING_FROM[test].lock().unwrap() = Some(std::thread::current().id());
+        let here = std::thread::current().id();
+        *CONNECTING_FROM[test].lock().unwrap() = Some(here);
         let host = if secure { "localhost" } else { "127.0.0.1" };
+        let (_, handed_over_before) = crate::embed::serve::blocking_jobs_of(here);
         let heard = crate::stdlib::net::tests::tls::connected_and_pinged(host, port, secure);
         assert_eq!(heard, Ok(b"pong\n".to_vec()));
         assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        // By name, the lookup is the one piece of work handed to a blocking thread. By address
+        // there's none at all.
+        let (_, handed_over) = crate::embed::serve::blocking_jobs_of(here);
+        assert_eq!(handed_over - handed_over_before, i64::from(secure));
         CONNECTED_AND_HEARD.fetch_add(1, Ordering::SeqCst);
         0
     }
 
-    /// A task that connects holds no blocking thread while the connect is under way: its server,
-    /// as the connection comes, finds the task with no work on a blocking thread. The connect once
-    /// ran whole on one, for as long as the network took.
+    /// A task that connects by address hands nothing to a blocking thread: it starts the connect
+    /// and parks until the socket says how it went. The connect once ran whole on a blocking
+    /// thread, for as long as the network took.
     #[test]
     fn a_task_s_connect_holds_no_blocking_thread() {
         begin();

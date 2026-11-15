@@ -828,16 +828,19 @@ pub(crate) mod tls {
     /// For tests: what connections are made with in place of what the system trusts, so a test can
     /// make a request of a server of its own, whose certificate only the tests' authority signed.
     #[cfg(test)]
-    static TRUSTED_BY_TESTS: std::sync::Mutex<Option<Arc<ClientConfig>>> = std::sync::Mutex::new(None);
+    static TRUSTED_BY_TESTS: std::sync::Mutex<(Option<Arc<ClientConfig>>, usize)> =
+        std::sync::Mutex::new((None, 0));
 
-    /// For tests: while one of these lives, requests are made with the `ClientConfig` it was given.
+    /// For tests: while any of these lives, requests are made with the `ClientConfig` it was given.
+    /// Tests run side by side, so they're counted: one ending leaves the others theirs.
     #[cfg(test)]
     pub(crate) struct TrustedByTests;
 
     #[cfg(test)]
     impl TrustedByTests {
         pub(crate) fn begin(config: Arc<ClientConfig>) -> TrustedByTests {
-            *TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(config);
+            let mut trusted = TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            *trusted = (Some(config), trusted.1 + 1);
             TrustedByTests
         }
     }
@@ -845,7 +848,11 @@ pub(crate) mod tls {
     #[cfg(test)]
     impl Drop for TrustedByTests {
         fn drop(&mut self) {
-            *TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            let mut trusted = TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            trusted.1 = trusted.1.saturating_sub(1);
+            if trusted.1 == 0 {
+                trusted.0 = None;
+            }
         }
     }
 
@@ -856,7 +863,7 @@ pub(crate) mod tls {
         static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
         #[cfg(test)]
         if let Some(trusted) =
-            TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+            TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.clone()
         {
             return Ok(trusted);
         }

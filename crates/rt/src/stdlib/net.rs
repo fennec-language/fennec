@@ -62,6 +62,13 @@ struct Stream {
     /// Whether it's been closed from here. A task about to park on it looks first, as nothing
     /// would wake it after.
     closed: AtomicBool,
+    /// Whether its socket has been made not to block, which it then never does again: from the
+    /// first time a task that can park reads from it or writes to it. From then on every wait on
+    /// it is on a poll, a worker's for a task and a thread's own for anything else.
+    never_blocks: AtomicBool,
+    /// On Windows, whether the copy of the socket the reader reads through has been told too.
+    #[cfg(windows)]
+    reader_never_blocks: AtomicBool,
     /// The tasks parked waiting on it, each with a number of its wait's own, for closing it to
     /// wake: on Windows a worker's poll isn't told that a connection was closed from this side.
     #[cfg(any(test, feature = "threads"))]
@@ -73,10 +80,40 @@ struct Stream {
 struct Wait {
     /// A number of this wait's own, to take its note back by.
     number: u64,
-    task: crate::embed::serve::ParkedTask,
+    wake: Waking,
     /// Whether its worker's poll was told of the socket itself, and not of a copy of it. One wait
     /// at a time is.
     on_the_socket: bool,
+}
+
+/// How to have a wait on a connection look again from another thread.
+#[cfg(any(test, feature = "threads"))]
+enum Waking {
+    /// A task parked on its worker's poll.
+    Task(crate::embed::serve::ParkedTask),
+    /// A thread waiting in a poll of its own, by that poll's waker.
+    Thread(Arc<mio::Waker>),
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Waking {
+    fn wake(&self) {
+        match self {
+            Waking::Task(task) => task.wake(),
+            // A waker that can't wake leaves the wait to its deadline, as before there was one.
+            Waking::Thread(waker) => drop(waker.wake()),
+        }
+    }
+}
+
+/// Has every wait on a connection look again: after it's closed or shut from here, which a
+/// worker's poll isn't told of on every system.
+#[cfg(any(test, feature = "threads"))]
+fn wake_waits(stream: &Stream) {
+    let waits = std::mem::take(&mut *stream.parked.lock().unwrap_or_else(PoisonError::into_inner));
+    for Wait { wake, .. } in waits {
+        wake.wake();
+    }
 }
 
 /// What a connection reads through: the socket itself, or TLS over it, which writes through the
@@ -1242,6 +1279,9 @@ fn keep_stream_as(
         label: if served { next_label(0) } else { 0 },
         reads_by: Mutex::new(None),
         closed: AtomicBool::new(false),
+        never_blocks: AtomicBool::new(false),
+        #[cfg(windows)]
+        reader_never_blocks: AtomicBool::new(false),
         #[cfg(any(test, feature = "threads"))]
         parked: Mutex::new(Vec::new()),
     };
@@ -1347,6 +1387,11 @@ fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Resu
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     stream.read_since_write.store(false, Ordering::SeqCst);
     let _writing = lock_parking(&stream.writing);
+    // A task that can park never holds its worker in the kernel for room: the socket's made not
+    // to block, for good, and the write parks whenever it's full.
+    if task_parks() {
+        never_blocking(&stream).map_err(|error| Failure::Other(error.to_string()))?;
+    }
     if matches!(&*stream.reader.lock().unwrap_or_else(PoisonError::into_inner), Reading::Tls(_)) {
         return write_securely(&stream, data, (timeout, deadline));
     }
@@ -1383,22 +1428,26 @@ fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Resu
 /// all of `data` at once, and sends it as the socket has room.
 fn write_securely(
     stream: &Stream,
-    data: &[u8],
+    mut data: &[u8],
     (timeout, deadline): (Option<Duration>, Option<Instant>),
 ) -> Result<(), Failure> {
-    let mut given = false;
     loop {
         let sent = {
             let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+            #[cfg(windows)]
+            tell_the_reader(stream, &reader).map_err(|error| Failure::Other(error.to_string()))?;
             let Reading::Tls(secured) = &mut *reader else { return Err(Failure::Closed) };
-            if !given {
-                secured.write_all(data).map_err(|error| Failure::of(&error, timeout))?;
-                given = true;
-            }
-            secured.flush()
+            // TLS takes some of `data` to hold, up to a limit of its own, and sends what it holds
+            // as the socket has room. So it's handed what's left until it has it all, and then
+            // asked to send until it says it has. `write_all` gave up partway on a socket that
+            // doesn't block: with more than TLS holds at once, and no room, it said so with part
+            // taken and no way to tell how much.
+            if data.is_empty() { secured.flush().map(|()| None) } else { secured.write(data).map(Some) }
         };
         match sent {
-            Ok(()) => return Ok(()),
+            Ok(None) => return Ok(()),
+            Ok(Some(0)) => return Err(Failure::Closed),
+            Ok(Some(taken)) => data = data.get(taken..).unwrap_or_default(),
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                 if wait_to_write(stream, deadline)? {
                     return Err(Failure::TimedOut(timeout.unwrap_or_default()));
@@ -1482,13 +1531,9 @@ pub(crate) fn line_from_within(handle: i64, limit: Duration) -> Result<Option<Ve
     read_line(handle, Some(limit))
 }
 
-/// Writes `data` to a kept connection, with the socket made not to block as a read parked on it
-/// makes it, waiting no longer than `limit` for room.
+/// Writes `data` to a kept connection, waiting no longer than `limit` for room.
 #[cfg(test)]
 pub(crate) fn written_within(handle: i64, data: &[u8], limit: Duration) -> Result<(), Failure> {
-    if let Ok(stream) = stream(handle) {
-        let _ = blocks(&stream, false);
-    }
     write_within(handle, data, Some(limit))
 }
 
@@ -1502,13 +1547,9 @@ pub(crate) fn waiting_on(handle: i64) -> (usize, usize) {
     (on_the_socket, parked.len() - on_the_socket)
 }
 
-/// Writes `data` to a kept connection over and over, with the socket made not to block as a read
-/// parked on it makes it, until a write fails: how it failed.
+/// Writes `data` to a kept connection over and over until a write fails: how it failed.
 #[cfg(test)]
 pub(crate) fn written_until_it_fails(handle: i64, data: &[u8]) -> Failure {
-    if let Ok(stream) = stream(handle) {
-        let _ = blocks(&stream, false);
-    }
     loop {
         if let Err(failure) = write(handle, data) {
             return failure;
@@ -1576,12 +1617,16 @@ fn reading<T>(
     };
     let attempt = || {
         let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+        #[cfg(windows)]
+        tell_the_reader(stream, &reader)?;
         match &mut *reader {
             Reading::Plain(plain) => read(plain),
             Reading::Tls(secured) => read(&mut **secured),
         }
     };
-    if !task_parks() {
+    // A thread that can't park reads a socket that blocks as it always has, in the kernel. One a
+    // task has made not block is read as a task reads it, with the waits on a poll of its own.
+    if !task_parks() && !stream.never_blocks.load(Ordering::SeqCst) {
         let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
         // The reader reads through a copy of the socket, and on Windows a copy keeps its own
         // timeouts: one set on the connection's own socket leaves a read on the copy waiting.
@@ -1627,60 +1672,75 @@ fn reading<T>(
         }
         return done.map_err(|error| Failure::of(&error, timeout));
     }
-    read_parking(stream, timeout, attempt)
+    read_waiting(stream, timeout, attempt)
 }
 
-/// `reading`, for a task that can park: it tries with the socket made not to block, and between
-/// tries parks until the socket may be readable, its time's up, or the connection's closed.
-fn read_parking<T>(
-    stream: &Stream,
+/// `reading`, on a socket that doesn't block: it tries, and between tries waits on a poll until
+/// the socket may be readable, its time's up, or the connection's closed. A task that can park
+/// parks on its worker's poll. A thread that can't, `main` or a task holding a lock, waits in a
+/// poll of its own.
+fn read_waiting<T>(
+    stream: &Arc<Stream>,
     timeout: Option<Duration>,
     mut attempt: impl FnMut() -> std::io::Result<T>,
 ) -> Result<T, Failure> {
-    blocks(stream, false).map_err(|error| Failure::Other(error.to_string()))?;
+    never_blocking(stream).map_err(|error| Failure::Other(error.to_string()))?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     let mut closed = false;
-    let done = loop {
+    loop {
         match attempt() {
-            Ok(done) => break Ok(done),
+            Ok(done) => return Ok(done),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 // Closed from here while it waited, and there's still nothing: there never will be.
                 if closed {
-                    break Err(Failure::Closed);
+                    return Err(Failure::Closed);
                 }
                 if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
-                    break Err(Failure::TimedOut(timeout.unwrap_or_default()));
+                    return Err(Failure::TimedOut(timeout.unwrap_or_default()));
                 }
-                if park_until_readable(stream, deadline) {
-                    break Err(Failure::TimedOut(timeout.unwrap_or_default()));
+                if wait_until_readable(stream, deadline) {
+                    return Err(Failure::TimedOut(timeout.unwrap_or_default()));
                 }
                 closed = stream.closed.load(Ordering::SeqCst);
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
-            Err(error) => break Err(Failure::of(&error, timeout)),
+            Err(error) => return Err(Failure::of(&error, timeout)),
         }
-    };
-    let blocking = blocks(stream, true);
-    let done = done?;
-    blocking.map_err(|error| Failure::Other(error.to_string()))?;
-    Ok(done)
+    }
 }
 
-/// Has a connection's reads and writes wait in the kernel, or come back at once to say they would,
-/// as a read that parks its task between tries needs.
-fn blocks(stream: &Stream, waiting: bool) -> std::io::Result<()> {
-    stream.socket.set_nonblocking(!waiting)?;
-    // The reader reads through a copy of the socket. On Unix a copy shares this; whether one on
-    // Windows does isn't said anywhere, so there it's told too.
-    #[cfg(windows)]
-    {
-        let reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
-        let copy = match &*reader {
-            Reading::Plain(plain) => plain.get_ref(),
-            Reading::Tls(secured) => secured.socket(),
-        };
-        copy.set_nonblocking(!waiting)?;
+/// Makes a connection's socket not block, for good: its reads and writes come back at once to
+/// say they would wait, and whoever asked waits on a poll. Done the first time a task that can
+/// park reads or writes the connection, and never undone.
+///
+/// It used to be switched on for each parked read and off again after. A write found the socket
+/// as the last read left it, which was blocking unless a read was parked at that moment, so a
+/// task writing to a connection whose other side wasn't reading held its worker in the kernel.
+/// And a read that ended switched it back under a writer parked for room, whose next write then
+/// blocked too.
+fn never_blocking(stream: &Stream) -> std::io::Result<()> {
+    if !stream.never_blocks.load(Ordering::SeqCst) {
+        stream.socket.set_nonblocking(true)?;
+        stream.never_blocks.store(true, Ordering::SeqCst);
     }
+    Ok(())
+}
+
+/// On Windows, has the copy of the socket the reader reads through, and TLS writes through, not
+/// block either, once the socket's been made not to. A copy on Unix shares that with the socket;
+/// whether one on Windows does isn't said anywhere, so there it's told too. Called with the
+/// reader held, by whoever is about to use it.
+#[cfg(windows)]
+fn tell_the_reader(stream: &Stream, reader: &Reading) -> std::io::Result<()> {
+    if !stream.never_blocks.load(Ordering::SeqCst) || stream.reader_never_blocks.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    let copy = match reader {
+        Reading::Plain(plain) => plain.get_ref(),
+        Reading::Tls(secured) => secured.socket(),
+    };
+    copy.set_nonblocking(true)?;
+    stream.reader_never_blocks.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -1746,19 +1806,127 @@ pub(crate) fn cut_blocked_reads(stop: &Arc<std::sync::atomic::AtomicU8>) {
     let blocked = BLOCKED_READS.lock().unwrap_or_else(PoisonError::into_inner);
     for (_, stream) in blocked.iter().filter(|(task, _)| *task == stop) {
         let _ = stream.socket.shutdown(Shutdown::Both);
+        // A read waiting in a poll of its thread's own is told, as a poll isn't told of a
+        // shutdown from this side on every system.
+        wake_waits(stream);
     }
 }
 
-/// Parks this task until `socket` may be readable or `deadline` passes: true if it passed, or the
-/// task was cancelled.
+/// Waits until `stream`'s socket may be readable or `deadline` passes: true if it passed, or the
+/// task was stopped or cancelled. A task that can park parks. Anything else waits on its thread,
+/// in a poll of its own.
 #[cfg(any(test, feature = "threads"))]
-fn park_until_readable(stream: &Stream, deadline: Option<Instant>) -> bool {
-    park_on_socket(stream, mio::Interest::READABLE, deadline) != crate::embed::serve::Parked::Ready
+fn wait_until_readable(stream: &Arc<Stream>, deadline: Option<Instant>) -> bool {
+    if task_parks() {
+        return park_on_socket(stream, mio::Interest::READABLE, deadline)
+            != crate::embed::serve::Parked::Ready;
+    }
+    // A launched task that can't park holds its thread while it waits, so nothing run there can
+    // end the wait: its stop shuts the socket and wakes the wait, which then finds it stopped.
+    let blocked = BlockedRead::of(stream);
+    if stopped_while_reading() {
+        return true;
+    }
+    let over = wait_in_own_poll(stream, mio::Interest::READABLE, deadline);
+    drop(blocked);
+    over || stopped_while_reading()
 }
 
+/// Without threads no socket is made not to block, so nothing waits this way.
 #[cfg(not(any(test, feature = "threads")))]
-fn park_until_readable(_stream: &Stream, _deadline: Option<Instant>) -> bool {
+fn wait_until_readable(_stream: &Arc<Stream>, _deadline: Option<Instant>) -> bool {
     false
+}
+
+/// A poll of a thread's own, for its waits on sockets that don't block when it can't park.
+#[cfg(any(test, feature = "threads"))]
+struct OwnPoll {
+    poll: mio::Poll,
+    events: mio::Events,
+    /// Wakes the poll from another thread: closing a connection ends a wait on it this way.
+    waker: Arc<mio::Waker>,
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl OwnPoll {
+    /// What the socket waited on is registered as, and the waker.
+    const SOCKET: mio::Token = mio::Token(0);
+    const WAKER: mio::Token = mio::Token(1);
+
+    fn new() -> std::io::Result<OwnPoll> {
+        let poll = mio::Poll::new()?;
+        let waker = Arc::new(mio::Waker::new(poll.registry(), OwnPoll::WAKER)?);
+        Ok(OwnPoll { poll, events: mio::Events::with_capacity(4), waker })
+    }
+}
+
+#[cfg(any(test, feature = "threads"))]
+thread_local! {
+    /// This thread's own poll, made the first time it waits on a socket that doesn't block.
+    static OWN_POLL: std::cell::RefCell<Option<OwnPoll>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Waits on this thread until `stream`'s socket may be ready for `interest`, `deadline` passes,
+/// or the connection's closed or shut from here: for a thread that can't park, on a socket that
+/// doesn't block. True once `deadline` has passed. It may come back early with nothing ready,
+/// and whoever called tries again.
+///
+/// The poll is the thread's own and is told of a copy of the socket, which has a descriptor of
+/// its own, so it shares nothing with a task parked on the same connection on a worker's poll.
+/// The wait is noted on the connection, as a parked task's is, so a close wakes it.
+///
+/// With no poll or no copy to be had, it sleeps a millisecond and says to look again. **That's a
+/// retry**, and what's left when the system is out of descriptors, which nothing here can make.
+#[cfg(any(test, feature = "threads"))]
+fn wait_in_own_poll(stream: &Stream, interest: mio::Interest, deadline: Option<Instant>) -> bool {
+    own_poll_wait(&stream.socket, interest, deadline, Some(stream))
+}
+
+/// `wait_in_own_poll` on `socket`. With `noted`, the wait is noted on that connection, and is over
+/// at once if it's closed already. Without, nothing wakes it but the socket and its deadline, as
+/// for the last reads of a connection that's closing.
+#[cfg(any(test, feature = "threads"))]
+fn own_poll_wait(
+    socket: &TcpStream,
+    interest: mio::Interest,
+    deadline: Option<Instant>,
+    noted: Option<&Stream>,
+) -> bool {
+    let waited = OWN_POLL.with_borrow_mut(|own| {
+        if own.is_none() {
+            *own = OwnPoll::new().ok();
+        }
+        let own = own.as_mut()?;
+        let mut copy = socket.try_clone().ok().map(mio::net::TcpStream::from_std)?;
+        own.poll.registry().register(&mut copy, OwnPoll::SOCKET, interest).ok()?;
+        // Noted first, and then a look at whether it's closed already, as a close that came
+        // before the note woke nobody: a close either finds the note or is seen here.
+        let wait = NEXT_WAIT.fetch_add(1, Ordering::Relaxed);
+        if let Some(stream) = noted {
+            let wake = Waking::Thread(Arc::clone(&own.waker));
+            let note = Wait { number: wait, wake, on_the_socket: false };
+            stream.parked.lock().unwrap_or_else(PoisonError::into_inner).push(note);
+        }
+        if !noted.is_some_and(|stream| stream.closed.load(Ordering::SeqCst)) {
+            let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+            // Interrupted, or woken for a wait that's over: either way whoever called looks again.
+            let _ = own.poll.poll(&mut own.events, left);
+        }
+        if let Some(stream) = noted {
+            let mut parked = stream.parked.lock().unwrap_or_else(PoisonError::into_inner);
+            parked.retain(|noted| noted.number != wait);
+        }
+        let _ = own.poll.registry().deregister(&mut copy);
+        Some(())
+    });
+    if waited.is_none() {
+        #[cfg(test)]
+        crate::embed::serve::a_wait_wasnt_registered();
+        let moment = Duration::from_millis(1);
+        let left = deadline.map_or(moment, |deadline| deadline.saturating_duration_since(Instant::now()));
+        std::thread::sleep(left.min(moment));
+    }
+    deadline.is_some_and(|deadline| deadline <= Instant::now())
 }
 
 /// For tests: how many of them are having sockets park on a copy on every platform, as Windows
@@ -1819,7 +1987,7 @@ fn park_on_socket(
         let mut parked = stream.parked.lock().unwrap_or_else(PoisonError::into_inner);
         let on_the_socket = !parked.iter().any(|other| other.on_the_socket);
         if let Some(task) = ParkedTask::here(token) {
-            parked.push(Wait { number: wait, task, on_the_socket });
+            parked.push(Wait { number: wait, wake: Waking::Task(task), on_the_socket });
         }
         on_the_socket
     };
@@ -1888,10 +2056,10 @@ pub(crate) fn parked_out_on(_socket: &TcpStream, _wanted: Wanted, _deadline: Ins
 }
 
 /// Waits until `stream`'s socket may take more to write: parked in a task that can, and otherwise
-/// a moment, as only a socket another task made not block gets here. Gives true once `deadline`
-/// has passed, or the task's been stopped or cancelled, which ends its write as it does a read:
-/// thrown away, that left a stopped task writing for ever, never waiting and never done. A
-/// connection closed from here has no room coming, and fails as closed.
+/// in a poll of the thread's own, when the socket is one a task has made not block. Gives true
+/// once `deadline` has passed, or the task's been stopped or cancelled, which ends its write as
+/// it does a read: thrown away, that left a stopped task writing for ever, never waiting and
+/// never done. A connection closed from here has no room coming, and fails as closed.
 fn wait_to_write(stream: &Stream, deadline: Option<Instant>) -> Result<bool, Failure> {
     if stream.closed.load(Ordering::SeqCst) {
         return Err(Failure::Closed);
@@ -1907,6 +2075,12 @@ fn wait_to_write(stream: &Stream, deadline: Option<Instant>) -> Result<bool, Fai
         }
         return Ok(deadline.is_some_and(|deadline| deadline <= Instant::now()));
     }
+    #[cfg(any(test, feature = "threads"))]
+    if stream.never_blocks.load(Ordering::SeqCst) {
+        return Ok(wait_in_own_poll(stream, mio::Interest::WRITABLE, deadline));
+    }
+    // A socket that blocks, whose own timeout ran out a moment before the deadline: it's asked
+    // again, and waits in the kernel for what's left.
     std::thread::sleep(Duration::from_millis(1));
     Ok(false)
 }
@@ -2098,22 +2272,21 @@ fn close(handle: i64) {
     let closed = open(|open| open.remove(&handle));
     if let Some(Socket::Stream(stream)) = &closed {
         stream.closed.store(true, Ordering::SeqCst);
-        if stream.served && task_parks() {
-            let lingering = Arc::clone(stream);
-            off_thread(move || linger(&lingering.socket));
-        } else if stream.served {
-            linger(&stream.socket);
+        if stream.served {
+            // A task that can park lingers parked, on a socket that doesn't block, as it reads
+            // and writes. It used to hand the wait to a blocking thread, for up to `LINGER` a
+            // close, so a few closes at once held every one of them.
+            if task_parks() {
+                let _ = never_blocking(stream);
+            }
+            linger(stream);
         }
         // It may be closed already from the other side, which is what closing wanted.
         let _ = stream.socket.shutdown(Shutdown::Both);
         // A task parked waiting on it looks again, and finds it shut. Unix's poll would say so
         // itself; Windows' doesn't report a close made from this side, and the task would wait on.
         #[cfg(any(test, feature = "threads"))]
-        for Wait { task, .. } in
-            std::mem::take(&mut *stream.parked.lock().unwrap_or_else(PoisonError::into_inner))
-        {
-            task.wake();
-        }
+        wake_waits(stream);
     }
     // A server that's being served isn't among the open sockets: its workers have its listener.
     #[cfg(any(test, feature = "threads"))]
@@ -2135,23 +2308,59 @@ pub(crate) const LINGER_QUIET: Duration = Duration::from_millis(200);
 /// would reset the connection, which throws away what it hadn't read yet: a server's refusal of
 /// a request still being sent, and the answers before it. A client's connection doesn't linger,
 /// as the server it talks to may keep it open, and closing would then always wait.
-fn linger(socket: &TcpStream) {
+///
+/// A socket that doesn't block is read the same, with each wait for more on a poll: a task parks,
+/// where it used to take a blocking thread for as long as this lasted, and anything else waits in
+/// a poll of its thread's own.
+fn linger(stream: &Stream) {
+    let socket = &stream.socket;
     let _ = socket.shutdown(Shutdown::Write);
     let until = Instant::now() + LINGER;
+    let on_a_poll = stream.never_blocks.load(Ordering::SeqCst);
     let mut sink = [0_u8; 16 * 1024];
     loop {
         let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() || socket.set_read_timeout(Some(LINGER_QUIET.min(left))).is_err() {
+        if left.is_zero() {
+            return;
+        }
+        let quiet = LINGER_QUIET.min(left);
+        if !on_a_poll && socket.set_read_timeout(Some(quiet)).is_err() {
             return;
         }
         match (&*socket).read(&mut sink) {
             Ok(0) => return,
             Ok(_) => {}
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            // Nothing yet, on a socket that doesn't block: more may come, until it's gone quiet.
+            Err(error) if on_a_poll && error.kind() == ErrorKind::WouldBlock => {
+                if !more_comes_by(socket, Instant::now() + quiet) {
+                    return;
+                }
+            }
             // Gone quiet, timed out or reset: nothing more is coming that closing would lose.
             Err(_) => return,
         }
     }
+}
+
+/// Waits on a poll until a closing connection's socket may have more to read, or `by` passes:
+/// whether it's worth another read. The connection's closed already, so the wait isn't noted on
+/// it, and a task parks through a copy of the socket: a task the close is about to wake may still
+/// have the socket itself with its worker's poll.
+#[cfg(any(test, feature = "threads"))]
+fn more_comes_by(socket: &TcpStream, by: Instant) -> bool {
+    if task_parks() {
+        let token = crate::embed::serve::next_token();
+        let parked = park_on(token, socket, (mio::Interest::READABLE, Some(by)), false);
+        return parked == crate::embed::serve::Parked::Ready;
+    }
+    !own_poll_wait(socket, mio::Interest::READABLE, Some(by), None)
+}
+
+/// Without threads no socket is made not to block, so nothing waits this way.
+#[cfg(not(any(test, feature = "threads")))]
+fn more_comes_by(_socket: &TcpStream, _by: Instant) -> bool {
+    false
 }
 
 /// Has the server `handle` drain when the program's asked to stop, its rounds given `grace`.
@@ -2380,6 +2589,107 @@ pub(crate) mod tests {
             assert!(stream.socket.nodelay().unwrap(), "served: {served}");
             close(handle);
         }
+    }
+
+    /// A thread that can't park, `main` say, uses a connection a task has made not block as it
+    /// would one that blocks: a read waits for what comes or runs out of time, a write waits for
+    /// room, and a close from another thread ends a wait. Each wait is in a poll of the thread's
+    /// own. The read used to come back at once saying it timed out, as a socket that doesn't
+    /// block says "nothing yet" where one that blocks waits.
+    #[test]
+    fn a_thread_that_cant_park_waits_in_a_poll_of_its_own_on_a_socket_that_doesnt_block() {
+        use std::io::{Read as _, Write as _};
+        use std::time::{Duration, Instant};
+        const MUCH: usize = 8 << 20;
+        let patient = Some(Duration::from_secs(10));
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream(client, "server".to_owned(), None) else { panic!("no stream") };
+        let Ok(stream) = super::stream(handle) else { panic!("not kept") };
+        super::never_blocking(&stream).unwrap();
+        // Nothing comes: the read runs out of time, and not before.
+        let started = Instant::now();
+        let read = super::read_line(handle, Some(Duration::from_millis(50)));
+        assert!(matches!(read, Err(Failure::TimedOut(_))), "{read:?}");
+        assert!(started.elapsed() >= Duration::from_millis(50), "{:?}", started.elapsed());
+        // A line comes while it waits.
+        let sending = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            server.write_all(b"hello\n").unwrap();
+            server
+        });
+        assert_eq!(super::read_line(handle, patient), Ok(Some(b"hello\n".to_vec())));
+        let mut server = sending.join().unwrap();
+        // More than the buffers hold, to a server that reads only after a moment: the write waits
+        // for room, and all of it arrives.
+        let reading = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            let mut got = vec![0; MUCH];
+            let whole = server.read_exact(&mut got).is_ok() && got.iter().all(|byte| *byte == b'x');
+            (server, whole)
+        });
+        assert_eq!(super::write_within(handle, &vec![b'x'; MUCH], patient), Ok(()));
+        let (server, whole) = reading.join().unwrap();
+        assert!(whole, "what was written didn't all arrive");
+        // Closed from another thread while it waits to read: the wait ends, long before its time.
+        let closing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            close(handle);
+        });
+        let started = Instant::now();
+        let read = super::read_line(handle, patient);
+        assert!(matches!(read, Ok(None) | Err(Failure::Closed)), "{read:?}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        closing.join().unwrap();
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0, "a wait slept and looked again");
+        drop(server);
+    }
+
+    /// What a client still sending does while the server's end closes: after a moment it sends a
+    /// megabyte in pieces, each a moment apart, and closes. Gives back whether every piece went.
+    pub(crate) fn still_sending(mut client: std::net::TcpStream) -> std::thread::JoinHandle<bool> {
+        use std::io::Write as _;
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let piece = vec![b'z'; 1 << 16];
+            (0..16).all(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                client.write_all(&piece).is_ok()
+            })
+        })
+    }
+
+    /// A connection a server took, kept as one, to a client that's `still_sending`.
+    pub(crate) fn served_while_the_client_sends() -> (i64, std::thread::JoinHandle<bool>) {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let Ok(handle) = super::keep_stream_as(server, "client".to_owned(), None, true) else {
+            panic!("no stream")
+        };
+        (handle, still_sending(client))
+    }
+
+    /// A server's connection whose socket doesn't block still reads what the other side is
+    /// sending as it closes, until that side is done, with its waits in a poll. Closing with that
+    /// unread resets the connection, and the client's sends then fail. The reads that do this
+    /// were written for a socket that blocks: on one that doesn't they found nothing yet, took
+    /// that for the end, and closed at once.
+    #[test]
+    fn a_servers_connection_that_doesnt_block_still_reads_what_is_sent_as_it_closes() {
+        let (handle, sending) = served_while_the_client_sends();
+        let Ok(stream) = super::stream(handle) else { panic!("not kept") };
+        super::never_blocking(&stream).unwrap();
+        let started = std::time::Instant::now();
+        close(handle);
+        let lasted = started.elapsed();
+        assert!(sending.join().unwrap(), "a piece the client sent was refused");
+        assert!(lasted >= std::time::Duration::from_millis(100), "it closed after {lasted:?}");
+        assert!(lasted < super::LINGER, "it closed after {lasted:?}");
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0, "a wait slept and looked again");
     }
 
     /// A write to a server that never reads gives up once its `timeout=` passes.
@@ -2631,6 +2941,47 @@ pub(crate) mod tests {
 
         fn connected_to(port: u16) -> TcpStream {
             TcpStream::connect(("127.0.0.1", port)).unwrap()
+        }
+
+        /// A TLS connection's handle, to a server that's slow to read: once the handshake's done it
+        /// waits a moment, reads `count` bytes, and answers a line. What its thread gives back is
+        /// whether every byte it read was a `y`.
+        pub(crate) fn connected_to_a_slow_reader(count: usize) -> (i64, std::thread::JoinHandle<bool>) {
+            use std::io::Read as _;
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let chain: Vec<CertificateDer<'static>> =
+                    CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+                let config = ServerConfig::builder_with_provider(provider())
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_single_cert(chain, PrivateKeyDer::from_pem_slice(KEY).unwrap())
+                    .unwrap();
+                let (tcp, _) = listener.accept().unwrap();
+                let connection = ServerConnection::new(Arc::new(config)).unwrap();
+                let mut secured = StreamOwned::new(connection, tcp);
+                // The handshake's done by the first read, which waits for the client to write.
+                let mut first = [0; 1];
+                let _ = secured.read(&mut first);
+                std::thread::sleep(Duration::from_millis(50));
+                let mut got = vec![0; count];
+                let whole = secured.read_exact(&mut got).is_ok() && got.iter().all(|byte| *byte == b'y');
+                let _ = secured.write_all(b"done\n");
+                let _ = secured.flush();
+                std::thread::sleep(Duration::from_millis(200));
+                whole
+            });
+            let tcp = connected_to(port);
+            let Ok(secured) =
+                handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config())
+            else {
+                panic!("the handshake failed");
+            };
+            let handle = keep_stream(tcp, "server".to_owned(), Some(secured)).ok().unwrap();
+            assert!(write(handle, b"x").is_ok());
+            (handle, server)
         }
 
         /// While what this gives back lives, the HTTP client trusts the tests' own certificate

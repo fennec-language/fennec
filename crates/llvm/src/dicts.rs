@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use fennec_ir::{LocalId, Operand};
+use fennec_ir::{InstKind, LocalId, Operand};
 use fennec_layout::Ty;
 use fennec_rt::embed::dicts::{DICT_HEADER_WORDS, ENTRY_WORDS, LONGEST_PROBE, Word};
 use fennec_rt::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
@@ -907,7 +907,112 @@ impl Emit<'_, '_, '_> {
             }
             self.value_place(&value_kind, &value_at)
         };
+        // What goes back is the local the value's changed in, which `mut bag = bags[key]` copies
+        // it to straight away.
+        let holder = self.holder_of(dest);
+        if taking && self.left_out_at(self.at, holder) {
+            self.note_taken_out(holder, (&value_at, &value_kind, ""));
+        }
         self.read_into(dest, &value_kind, &value_at, "")
+    }
+
+    /// The local a value taken into `taken` is changed in and put back from: the `mut` local it
+    /// was copied out for, when there is one, and `taken` itself otherwise.
+    pub(crate) fn holder_of(&self, taken: LocalId) -> LocalId {
+        (0..self.function.locals.len())
+            .map(LocalId)
+            .find(|held| self.known.put_back_read(*held) == Some(taken))
+            .unwrap_or(taken)
+    }
+
+    /// Notes that `value` is out of the dict or list it was taken from, where it goes back to and
+    /// as what, for a crash that leaves the function before it's put back to put it back: what it
+    /// came out of still holds what was there when it was taken, which may have been changed,
+    /// moved or let go of since. Nothing can touch a dict or a list while a value's out of it, so
+    /// the address holds.
+    pub(crate) fn note_taken_out(
+        &mut self,
+        value: LocalId,
+        (home, kind, access): (&str, &Kind, &'static str),
+    ) {
+        if !self.lets_go_after_crash() || !self.holds_a_block(kind) {
+            return;
+        }
+        self.place_homes.insert(value.0, (home.to_owned(), kind.clone(), access));
+        self.out_of_dicts.insert(value.0);
+        self.note_place_out(value, home);
+    }
+
+    /// Whether a value of this kind holds a block anywhere. One that doesn't, a struct of numbers,
+    /// has nothing a crash could leak or leave dangling by finding it out: what it came out of
+    /// still holds words that are good, only older, and nothing reads them but a lock's rollback,
+    /// which puts back the ones from before the lock.
+    pub(crate) fn holds_a_block(&self, kind: &Kind) -> bool {
+        kind.counted()
+            || matches!(kind, Kind::Struct(id) | Kind::Enum(id) if self.module.layouts.holds_counted(*id))
+    }
+
+    /// A value that was out is back where it came from, or inside what goes back in its turn, so
+    /// a crash from here on has nothing of it to put back.
+    pub(crate) fn taken_is_back(&mut self, value: &Operand) {
+        if let Operand::Local(local) = value
+            && let Some(slot) = self.places_out.get(&local.0).cloned()
+        {
+            self.line(&format!("store ptr null, ptr {slot}"));
+        }
+    }
+
+    /// Whether anything between a take at `at` and the store that puts `taken` back could fail,
+    /// so the function could be left with it out. A take whose value is changed and put straight
+    /// back, as `counts[key].seen += 1` is, can't be, and keeps no note of where it goes.
+    pub(crate) fn left_out_at(&self, at: (usize, usize), taken: LocalId) -> bool {
+        let Some(block) = self.function.blocks.get(at.0) else { return true };
+        for inst in block.insts.iter().skip(at.1 + 1) {
+            match &inst.kind {
+                InstKind::SetIndex { value: Operand::Local(back), .. }
+                | InstKind::SetField { value: Operand::Local(back), .. }
+                    if *back == taken =>
+                {
+                    return false;
+                }
+                InstKind::SetField { .. } | InstKind::GetField { .. } | InstKind::Copy { .. } => {}
+                InstKind::Builtin { name, args, .. }
+                    if !crate::analysis::builtin_fails(self.function, name, args) => {}
+                _ => return true,
+            }
+        }
+        true
+    }
+
+    /// The locals a crash could find a value out of, and those values: each whole value or field
+    /// of one that holds a block, taken out of a dict or a list with something between that and
+    /// its going back that could fail.
+    pub(crate) fn values_left_out(&self) -> Vec<usize> {
+        let mut found = Vec::new();
+        for (at, block) in self.function.blocks.iter().enumerate() {
+            for (index, inst) in block.insts.iter().enumerate() {
+                let (dest, root, path) = match &inst.kind {
+                    InstKind::GetIndex { dest, .. } if self.known.is_taken(*dest) => {
+                        let Some((root, path)) = self.known.item_home(*dest) else { continue };
+                        (self.holder_of(*dest), *root, path)
+                    }
+                    InstKind::GetField { dest, .. } => {
+                        let Some((root, path, _)) = self.known.path_home(*dest) else { continue };
+                        (*dest, *root, path)
+                    }
+                    _ => continue,
+                };
+                let held_in = self.place_kind(root, path);
+                let holds = self.kind_of(dest).is_ok_and(|kind| self.holds_a_block(kind));
+                if matches!(held_in, Ok(Kind::Dict(..) | Kind::List(_)))
+                    && holds
+                    && self.left_out_at((at, index), dest)
+                {
+                    found.extend([root.0, dest.0]);
+                }
+            }
+        }
+        found
     }
 
     /// A value taken out of a dict to change, going back under the key it came from: the dict
@@ -950,6 +1055,7 @@ impl Emit<'_, '_, '_> {
         } else if value_kind != Kind::Unit {
             self.store_field(&value_kind, &held, &value_at, "");
         }
+        self.taken_is_back(value);
         Ok(())
     }
 
@@ -1002,6 +1108,9 @@ impl Emit<'_, '_, '_> {
         let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
         let (offset, inner) = self.field(&value_kind, field)?;
         let at = self.offset(&fields, offset);
+        if self.left_out_at(self.at, dest) {
+            self.note_taken_out(dest, (&at, &inner, ""));
+        }
         let value = self.load_field(&inner, &at, "");
         self.assign(dest, &value)
     }

@@ -2771,6 +2771,54 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
     )
 }
 
+/// A value that's out of the list or dict holding it goes back when a crash leaves the function,
+/// before anything looks at what it came out of. Taken out by a method on it or by hand, in the
+/// function that made the list or dict, in one handed it by `ref`, in a struct through `ref self`,
+/// and in a function handed part of what a lock holds, a task then crashing partway:
+/// - **Under a lock** the value is as it was before the lock. The rollback found the list or dict
+///   still holding what was there when the value came out, let go of that a second time, and left
+///   the lock's value holding a block that was gone.
+/// - **With no lock** nothing the task made outlives it. What the value had come to hold was never
+///   let go of.
+///
+/// It prints what the reference evaluator prints, on one thread and on four, with nothing left.
+#[test]
+fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("taken_out_when_a_task_crashes")?;
+    let program = dir.join("taken_out_when_a_task_crashes.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/taken_out_when_a_task_crashes.fen"))?;
+    let (program, executable) =
+        (program.to_string_lossy().into_owned(), dir.join("taken_out_when_a_task_crashes"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .output_within()?;
+            let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+            let wanted = include_str!("fixtures/workers/taken_out_when_a_task_crashes.out");
+            let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(printed, wanted, "{how:?}, {threads} threads: {errors}");
+            assert!(ran.status.success(), "{how:?}, {threads} threads: {errors}");
+            let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+            assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads: {counts}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A struct's field defaulting to an empty list, dict or set reads one made once, so a value
 /// nothing writes to makes no block: a thousand more values built and only read make exactly as
 /// many blocks as ten, on one thread and on four. Each default made a block of its own for every

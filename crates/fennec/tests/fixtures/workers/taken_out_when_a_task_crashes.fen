@@ -1,0 +1,155 @@
+# A task crashes while a value is out of the list or dict that holds it: taken out by a method on
+# it or by hand, in the function that made the list or dict, in one handed it to change, and in
+# one handed part of what a lock holds. The value goes back before anything looks at what it came
+# out of, so a lock's value is as it was before the lock, and nothing a task made outlives it.
+from std.concurrent import Crashed
+
+struct Bag:
+    items: list[str]
+    seen: int
+
+    ## Grows the list past several blocks, then fails when `value` is outside `limits`.
+    def add(ref self, value: int, limits: list[int]):
+        for turn in range(40):
+            self.items.append(f"added {value} in turn {turn}, a text long enough for a block")
+        self.seen += limits[value]
+        return
+
+struct Shelf:
+    bags: list[Bag]
+    named: dict[str, Bag]
+    total: int
+
+    def fill_list(ref self, value: int, limits: list[int]):
+        self.bags[0].add(value, limits=limits)
+        return
+
+    def list_by_hand(ref self, value: int, limits: list[int]):
+        mut bag = self.bags[0]
+        for turn in range(40):
+            bag.items.append(f"by hand {value} in turn {turn}, a text long enough for a block")
+        bag.seen += limits[value]
+        self.bags[0] = bag
+        return
+
+    def fill_dict(ref self, value: int, limits: list[int]):
+        self.named["one"].add(value, limits=limits)
+        return
+
+    def dict_by_hand(ref self, value: int, limits: list[int]):
+        mut bag = self.named["one"]
+        for turn in range(40):
+            bag.items.append(f"by hand {value} in turn {turn}, a text long enough for a block")
+        bag.seen += limits[value]
+        self.named["one"] = bag
+        return
+
+def first_bag() -> Bag:
+    return Bag(items=["first, a text long enough for a block of its own"], seen=0)
+
+def new_shelf() -> Shelf:
+    return Shelf(
+        bags=[first_bag(), first_bag()],
+        named={"one": first_bag(), "two": first_bag()},
+        total=0,
+    )
+
+## The list and the dict are this function's own.
+def its_own(value: int, limits: list[int], hand: bool) -> int:
+    mut bags = [first_bag(), first_bag()]
+    mut named = {"one": first_bag(), "two": first_bag()}
+    if hand:
+        mut bag = bags[0]
+        bag.items.append(f"by hand {value}, a text long enough for a block of its own")
+        bag.seen += limits[value]
+        bags[0] = bag
+        mut other = named["one"]
+        other.items.append(f"by hand {value}, a text long enough for a block of its own")
+        other.seen += limits[value]
+        named["one"] = other
+    else:
+        bags[0].add(value, limits=limits)
+        named["one"].add(value, limits=limits)
+    return len(bags[0].items) + bags[0].seen + len(named["one"].items) + named["one"].seen
+
+def list_filled(ref bags: list[Bag], value: int, limits: list[int]):
+    bags[0].add(value, limits=limits)
+    return
+
+def dict_filled(ref named: dict[str, Bag], value: int, limits: list[int]):
+    named["one"].add(value, limits=limits)
+    return
+
+## They're handed to another function to change.
+def handed(value: int, limits: list[int], by_name: bool) -> int:
+    mut bags = [first_bag(), first_bag()]
+    mut named = {"one": first_bag(), "two": first_bag()}
+    if by_name:
+        dict_filled(ref named, value=value, limits=limits)
+    else:
+        list_filled(ref bags, value=value, limits=limits)
+    return len(bags[0].items) + len(named["one"].items)
+
+## They're in a struct, changed through `ref self`.
+def in_a_struct(value: int, limits: list[int], way: int) -> int:
+    mut shelf = new_shelf()
+    changed(ref shelf, value=value, limits=limits, way=way)
+    return len(shelf.bags[0].items) + len(shelf.named["one"].items)
+
+def changed(ref shelf: Shelf, value: int, limits: list[int], way: int):
+    match way:
+        case 0:
+            shelf.fill_list(value, limits=limits)
+        case 1:
+            shelf.list_by_hand(value, limits=limits)
+        case 2:
+            shelf.fill_dict(value, limits=limits)
+        case _:
+            shelf.dict_by_hand(value, limits=limits)
+    return
+
+## The struct is what a lock holds: a crash puts back what was there before the lock.
+def locked(shelf: shared Shelf, value: int, limits: list[int], way: int):
+    lock shelf as ref held:
+        changed(ref held, value=value, limits=limits, way=way)
+    return
+
+## One task's work. What it worked out goes into the lock's value, so it's used.
+def went(which: int, value: int, limits: list[int], shelf: shared Shelf):
+    mut got = 0
+    if which < 2:
+        got = its_own(value, limits=limits, hand=which == 1)
+    elif which < 4:
+        got = handed(value, limits=limits, by_name=which == 3)
+    elif which < 8:
+        got = in_a_struct(value, limits=limits, way=which - 4)
+    else:
+        locked(shelf, value=value, limits=limits, way=which - 8)
+    lock shelf as ref held:
+        held.total += got
+    return
+
+def ran(which: int, value: int, shelf: shared Shelf) fails Crashed:
+    limits = [1, 2]
+    with launch(() => went(which, value=value, limits=limits, shelf=shelf)) as task:
+        pass
+    return
+
+def held_now(shelf: shared Shelf) -> str:
+    lock shelf as held:
+        listed = held.bags[0]
+        named = held.named["one"]
+        return (
+            f"{held.total}: {len(listed.items)} {listed.seen} {listed.items[-1]}"
+            + f" | {len(named.items)} {named.seen} {named.items[-1]}"
+        )
+
+def main(stdout: Stdout):
+    shared shelf = new_shelf()
+    for which in range(12):
+        for value in [0, 7, 1]:
+            ran(which, value=value, shelf=shelf) except Crashed():
+                stdout.print("crashed", which, value, held_now(shelf))
+                continue
+            stdout.print("went", which, value, held_now(shelf))
+    return

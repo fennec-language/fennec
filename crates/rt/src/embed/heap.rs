@@ -424,12 +424,31 @@ pub(crate) fn shape_word(block: &[u64]) -> Option<u64> {
     block.get(1).map(|word| word & SHAPE_BITS)
 }
 
-/// A task's mark for the blocks it makes, from its number on its thread, never 0, which is what a
-/// thread makes outside any task. Two tasks alive together could only share one after one of them
-/// has seen 16 million others start on its thread.
+/// A task's mark for the blocks it makes, from a number on its thread, never 0, which is what a
+/// thread makes outside any task. There are 16 million marks, so a number's mark comes round
+/// again once that many tasks have started on the thread: `number_to_mark` sees that no two
+/// tasks alive there share one.
 #[cfg(any(test, feature = "threads"))]
 pub(super) fn task_mark(task: u64) -> u64 {
-    ((task % (TASK_BITS >> TASK_SHIFT)) + 1) << TASK_SHIFT
+    ((task % TASK_MARKS) + 1) << TASK_SHIFT
+}
+
+/// How many marks there are for a thread's tasks.
+#[cfg(any(test, feature = "threads"))]
+const TASK_MARKS: u64 = TASK_BITS >> TASK_SHIFT;
+
+/// The number whose mark a task starting as number `task` on its thread takes: its own, unless
+/// marks have come round and a task still alive there has that mark, which `taken` says of a
+/// number, when it's the next number whose mark is free. A task that has run since the marks
+/// last came round, as a long one can, would otherwise share its mark with a new one: and a long
+/// task's end finds its blocks by its mark, so it would take the new task's blocks with its own.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn number_to_mark(task: u64, taken: impl Fn(u64) -> bool) -> u64 {
+    if task < TASK_MARKS {
+        return task;
+    }
+    // Every mark there is, from its own: with all of them held there's none to take.
+    (task..task.saturating_add(TASK_MARKS)).find(|number| !taken(*number)).unwrap_or(task)
 }
 
 /// The owner in the shape word of a block that's never freed, like a string literal's or a

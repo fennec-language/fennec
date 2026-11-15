@@ -388,6 +388,11 @@ impl Accounts {
         self.task = super::heap::task_mark(task);
     }
 
+    /// Whether its mark is the one the task numbered `task` on this thread would have.
+    pub(in crate::embed) fn marked_as(&self, task: u64) -> bool {
+        self.task == super::heap::task_mark(task)
+    }
+
     /// Which task it is, in a recording or a replay, for something else to say from here on.
     pub(in crate::embed) fn take_replay(&mut self) -> Option<crate::replay::Task> {
         self.replay.take()

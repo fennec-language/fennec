@@ -778,7 +778,12 @@ impl Io {
                 None => Err(Deferred { run: Box::new(|| 0), accounts: Box::new(accounts), started }),
             };
         };
-        accounts.set_task(task);
+        // Its mark is its number's, or the next free one's if a task still alive here has that
+        // mark from the last time the marks came round.
+        let alive = &self.accounts;
+        let number =
+            super::heap::number_to_mark(task, |number| alive.values().any(|other| other.marked_as(number)));
+        accounts.set_task(number);
         // Named as a server's round is: a task's temporaries are swapped last, so they say who it is.
         if let Some(named) = accounts.take_replay() {
             self.temporaries.insert(task, super::Temporaries::of_task(named));

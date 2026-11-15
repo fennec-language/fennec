@@ -153,11 +153,18 @@ const PACKED: [&str; 10] = [
 
 const ANYTHING: [&str; 4] = ["\0", "\u{7f}", "é", "🦊"];
 
-pub(crate) const TARGETS: [Target; 17] = [
+pub(crate) const TARGETS: [Target; 18] = [
     Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer, stuck: STUCK },
     Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser, stuck: STUCK },
     Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter, stuck: STUCK },
     Target { name: "checker", corpus: &PROGRAMS, tokens: &SYNTAX, run: checker, stuck: STUCK },
+    Target {
+        name: "lengths",
+        corpus: &["crates/fuzz/seeds/programs", "crates/fuzz/seeds/llvm"],
+        tokens: &ANYTHING,
+        run: lengths,
+        stuck: STUCK,
+    },
     Target { name: "json", corpus: &["crates/fuzz/seeds/json"], tokens: &JSON, run: json, stuck: STUCK },
     Target {
         name: "json-rules",
@@ -370,6 +377,33 @@ fn checker(input: &[u8]) -> Result<(), String> {
     let _ = fennec_build::test_keys(&module);
     Ok(())
 }
+
+/// What's known of list lengths across calls holds while a program runs in the IR's evaluator:
+/// each fact is checked on the way into each function and out of it. The program is one of the
+/// two kinds the bytes can write, by their length: a random well-typed one, or one the `llvm`
+/// target builds.
+fn lengths(input: &[u8]) -> Result<(), String> {
+    let source = if input.len().is_multiple_of(2) {
+        crate::programs::written(input)
+    } else {
+        crate::generate::program(input)
+    };
+    let Ok(module) = fennec_syntax::parse(&source) else { return Ok(()) };
+    let Ok(signatures) = fennec_check::check(&module) else { return Ok(()) };
+    let program = fennec_ir::lower(&module, &signatures);
+    let lengths = fennec_ir::lengths::Lengths::of(&program);
+    if lengths.params().next().is_none() {
+        return Ok(());
+    }
+    let ran = fennec_ir::eval::check_lengths(&program, &lengths, LENGTH_STEPS);
+    match ran.broken {
+        Some(broken) => Err(format!("{broken}\n--- program\n{source}")),
+        None => Ok(()),
+    }
+}
+
+/// How far the `lengths` target runs each program.
+const LENGTH_STEPS: u64 = 100_000;
 
 /// The standard library's JSON reader, built natively, on any text.
 fn json(input: &[u8]) -> Result<(), String> {

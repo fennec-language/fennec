@@ -198,6 +198,8 @@ oracle_agrees() {
 # - The ratchet of unchecked runtime calls, `crates/llvm/unchecked_runtime_calls.txt`, holds.
 # - Each benchmark kernel makes exactly the copies `bench/copies.txt` says.
 # - The ThreadSanitizer suppressions keep to their rules, and the known failures' file to its form.
+# - A hello world and a program using only `fs` link no SQLite, TLS or cryptography beyond what
+#   `.github/linkage-known.txt` lists.
 # - The workflows pass actionlint and zizmor, where they're installed.
 quick() {
   local failed=0 program said="$logs/quick.txt"
@@ -230,6 +232,7 @@ quick() {
   fi
   .github/scripts/tsan-suppressions-check.sh || { echo "tsan-suppressions-check" >> "$names"; failed=1; }
   .github/scripts/test-known-failures.sh > /dev/null || { echo "test-known-failures" >> "$names"; failed=1; }
+  .github/scripts/linkage-check.sh target/debug/fennec || { echo "linkage-check" >> "$names"; failed=1; }
   if command -v actionlint > /dev/null && ! actionlint; then
     echo "actionlint" >> "$names"
     failed=1

@@ -4,8 +4,8 @@
 //!
 //! Each test has a pool of its own: its task counts the blocks its worker holds.
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -185,6 +185,51 @@ fn a_task_s_heavy_comprehension_shares_its_ranges_among_the_workers() {
     assert!(first > 0, "no other range ran while the first held its thread");
     assert_ne!(first, another, "the ranges ran on one thread");
     assert_eq!(HEAVY_LEFT.load(Ordering::SeqCst), 1, "the list is the task's and nothing else is left");
+    finish();
+}
+
+static CUTTING_POOL: OnceLock<&'static Pool> = OnceLock::new();
+/// The ranges a heavy comprehension over 200 items was cut into, made by a task and made by the
+/// test's own thread.
+static CUT_FOR_A_TASK: Mutex<Vec<(i64, i64)>> = Mutex::new(Vec::new());
+static CUT_FOR_A_THREAD: Mutex<Vec<(i64, i64)>> = Mutex::new(Vec::new());
+
+extern "C" fn notes_a_task_s_range(_env: i64, from: i64, to: i64, _thread: i64, _out: i64) -> i64 {
+    CUT_FOR_A_TASK.lock().unwrap_or_else(PoisonError::into_inner).push((from, to));
+    0
+}
+
+extern "C" fn notes_a_thread_s_range(_env: i64, from: i64, to: i64, _thread: i64, _out: i64) -> i64 {
+    CUT_FOR_A_THREAD.lock().unwrap_or_else(PoisonError::into_inner).push((from, to));
+    0
+}
+
+extern "C" fn maps_two_hundred(_env: i64, _thread: i64) -> i64 {
+    let items = lists::new(LINES, 200);
+    heap::free(parallel_map_heavy(items, notes_a_task_s_range, 0, LINES));
+    heap::free(items);
+    ENDED
+}
+
+/// How a call's list is cut depends on the list and the body alone, so the same call is cut into
+/// the same ranges whether a task makes it, for the pool, or a thread does.
+#[test]
+fn a_task_s_call_is_cut_into_the_ranges_a_thread_s_is() {
+    begin();
+    let task = launch_on(own_pool(&CUTTING_POOL, 2), maps_two_hundred, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    let items = lists::new(LINES, 200);
+    heap::free(parallel_map_heavy(items, notes_a_thread_s_range, 0, LINES));
+    heap::free(items);
+    let sorted = |cut: &Mutex<Vec<(i64, i64)>>| {
+        let mut ranges = std::mem::take(&mut *cut.lock().unwrap_or_else(PoisonError::into_inner));
+        ranges.sort_unstable();
+        ranges
+    };
+    let (for_a_task, for_a_thread) = (sorted(&CUT_FOR_A_TASK), sorted(&CUT_FOR_A_THREAD));
+    assert_eq!(for_a_task.len(), 64, "a heavy body's 200 items are cut into 64 ranges: {for_a_task:?}");
+    assert_eq!(for_a_task, for_a_thread);
     finish();
 }
 

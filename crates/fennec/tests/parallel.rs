@@ -940,7 +940,19 @@ fn ranges_that_wait_for_tasks_they_launched_all_end() -> std::io::Result<()> {
 }
 
 /// What `task_comprehensions.fen` prints for each place it makes its calls from, less the place.
-const TASK_COMPREHENSIONS: &str = "PINNED";
+const TASK_COMPREHENSIONS: &str = "\
+[7, 0]\n\
+[\"a: 8 longer\", \"list: 2 longer\", \"of: 7 longer\", \"words: 1 longer\", \"that: 2 longer\", \"the: 5 longer\", \"pieces: 0 longer\", \"all: 5 longer\", \"read: 2 longer\"]\n\
+12 a greeting long enough to need a block of its own, name 11 12\n\
+8.583749889959188\n\
+TooFar(at=4)\n\
+piece 0\n\
+piece 1\n\
+piece 2\n\
+piece 3\n\
+piece 4\n\
+piece 5\n\
+[0, 1, 4, 9, 16, 25] [\"a\", \"list\", \"of\", \"words\", \"that\", \"the\", \"pieces\", \"all\", \"read\"] a greeting long enough to need a block of its own name 0\n";
 
 /// A launched task's comprehensions and waiting sums hand their pieces to the workers, as `main`'s
 /// do, while the task parks: the program makes the same calls on `main` and in a task, and prints
@@ -962,7 +974,9 @@ fn a_task_s_comprehensions_run_their_pieces_at_once_as_main_s_do() -> std::io::R
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/task_comprehensions.fen");
     let built = build_on_threads(&dir, source, "task_comprehensions")?;
-    for (threads, stressed) in [("1", false), ("4", false), ("16", false), ("1", true), ("4", true), ("16", true)] {
+    for (threads, stressed) in
+        [("1", false), ("4", false), ("16", false), ("1", true), ("4", true), ("16", true)]
+    {
         let mut run = Command::new(&built);
         run.env("FENNEC_THREADS", threads);
         if stressed {
@@ -1006,7 +1020,12 @@ fn a_stop_reaches_the_pieces_a_task_s_comprehension_waits_for() -> std::io::Resu
     let built = build_on_threads(&dir, source, "task_comprehension_stopped")?;
     for threads in ["1", "4", "16"] {
         let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
-        assert_eq!(ran.status.code(), Some(0), "on {threads} threads: {}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(
+            ran.status.code(),
+            Some(0),
+            "on {threads} threads: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
         assert_eq!(String::from_utf8_lossy(&ran.stdout), "the stopped one is over\n", "on {threads} threads");
     }
     std::fs::remove_dir_all(&dir)?;
@@ -1033,7 +1052,12 @@ fn a_crash_of_a_launched_task_cuts_short_the_pieces_its_launcher_waits_for() -> 
                   pieces gave [-1, -2]\ntask: Crashed(why=\"the task crashed\")\ndone\n";
     for threads in ["1", "4", "16"] {
         let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
-        assert_eq!(ran.status.code(), Some(0), "on {threads} threads: {}", String::from_utf8_lossy(&ran.stderr));
+        assert_eq!(
+            ran.status.code(),
+            Some(0),
+            "on {threads} threads: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
         assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "on {threads} threads");
     }
     std::fs::remove_dir_all(&dir)?;

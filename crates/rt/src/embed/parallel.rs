@@ -884,6 +884,7 @@ mod pool {
 
     pub(super) struct BeforeRange;
 
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "it stands in for the threads build's")]
     pub(super) fn range_off_its_caller_starts(_calling: &Calling) -> BeforeRange {
         BeforeRange
     }

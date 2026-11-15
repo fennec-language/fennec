@@ -208,6 +208,73 @@ fn a_parallel_call_whose_ranges_take_inputs_replays_identically() -> std::io::Re
     Ok(())
 }
 
+const DRAWN_IN_A_TASK: &str = "from std.concurrent import Crashed
+
+def drawn(clock: Clock, entropy: Entropy) -> int:
+    clock.sleep(1ms)
+    return entropy.seed() % 1000
+
+def some(item: int, clock: Clock, entropy: Entropy) -> int:
+    if item % 400 != 0:
+        return item
+    clock.sleep(1ms)
+    return entropy.seed() % 1000
+
+def draws(place: str, stdout: Stdout, clock: Clock, entropy: Entropy):
+    stdout.print(place, [drawn(clock, entropy=entropy) + item for item in parallel(range(24))])
+    stdout.print(place, sum(some(item, clock=clock, entropy=entropy) for item in parallel(range(3000))))
+
+def main(stdout: Stdout, clock: Clock, entropy: Entropy) fails Crashed:
+    draws(\"main\", stdout=stdout, clock=clock, entropy=entropy)
+    with launch(() => draws(\"task\", stdout=stdout, clock=clock, entropy=entropy))?:
+        pass
+";
+
+/// A launched task's comprehension and waiting sum hand their pieces to the workers, as `main`'s
+/// do, with the pieces reading a copy of what they capture. Each piece still replays its own
+/// inputs, by its place in its call, so the recorded run comes out again, `main`'s calls and the
+/// task's alike: recorded on 1, 4 and 16 threads, with the lists cut as they come and cut down to an
+/// item each, and replayed on other numbers of threads than it was recorded with.
+///
+/// No piece here fails and no task is stopped: neither replays yet, from `main` either (#1804,
+/// #1805).
+#[test]
+fn a_task_s_parallel_calls_whose_pieces_take_inputs_replay_identically() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("drawn-in-a-task")?;
+    let program = dir.join("drawn_in_a_task.fen");
+    std::fs::write(&program, DRAWN_IN_A_TASK)?;
+    for (recorded_on, stressed) in [("1", false), ("4", false), ("16", false), ("4", true), ("16", true)] {
+        let log = dir.join(format!("drawn-{recorded_on}-{stressed}.log"));
+        let on = |threads: &str| {
+            let mut command = fennec_command();
+            command.env("FENNEC_THREADS", threads).current_dir(&dir);
+            if stressed {
+                command.env("FENNEC_PARALLEL_STRESS", "1");
+            }
+            command
+        };
+        let how = format!("recorded with FENNEC_THREADS={recorded_on}, stressed: {stressed}");
+        let recorded = outcome(
+            &on(recorded_on)
+                .args(["run", "--record", &log.to_string_lossy()])
+                .arg(&program)
+                .output_before(DEADLINE)?,
+        );
+        assert_eq!(recorded.2, Some(0), "{how}: {}", recorded.1);
+        assert_eq!(recorded.0.lines().count(), 4, "{how}: {}", recorded.0);
+        for threads in ["1", "4", "7", "16", "1", "4"] {
+            let replayed =
+                outcome(&on(threads).args(["replay", &log.to_string_lossy()]).output_before(DEADLINE)?);
+            assert_eq!(replayed, recorded, "{how}, replayed with {threads}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 const SERVER: &str = "from std.net import NetError
 
 struct Total:

@@ -75,6 +75,8 @@ pub(crate) struct FnCx<'c> {
     /// The `match`es written as statements of their own, which may change what they're over
     /// through a `ref` case.
     pub(crate) statement_matches: Vec<(u32, u32)>,
+    /// The routes written with a method so far, for one that clashes with one before it.
+    pub(crate) routes_here: Vec<crate::routes::Routed>,
     /// Whether it can fail, so it can give back a result it gets unhandled.
     pub(crate) fallible: bool,
     pub(crate) returns: Vec<Type>,
@@ -163,6 +165,7 @@ impl<'c> FnCx<'c> {
             lent: 0,
             with_values: Vec::new(),
             statement_matches: Vec::new(),
+            routes_here: Vec::new(),
             fallible: false,
             returns: Vec::new(),
             errors: Vec::new(),

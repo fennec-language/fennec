@@ -44,6 +44,11 @@ impl Interp {
         if name.starts_with("std.json.") {
             return self.json_call(name, given, expr);
         }
+        if let Some(intrinsic) = name.strip_prefix("std.intrinsics.")
+            && WRITES_BYTES.contains(&intrinsic)
+        {
+            return self.write_bytes(intrinsic, given, span);
+        }
         if name.starts_with("std.") {
             let mut args = Vec::with_capacity(given.len());
             for arg in given {
@@ -228,6 +233,47 @@ impl Interp {
                     _ => unsupported("`round` of something that isn't a float"),
                 }
             }
+            // A core error, its one field its message.
+            "InvalidValue" | "ParseError" => {
+                let message = match given.take_named("message") {
+                    Some(arg) => arg,
+                    None => Self::first(&mut given, name)?,
+                };
+                match self.arg_as_value(message)? {
+                    Value::Str(message) => {
+                        Ok(Value::instance(name, None, vec![("message".to_owned(), Value::Str(message))]))
+                    }
+                    other => unsupported(format!("`{name}` with a message that's a {}", other.kind())),
+                }
+            }
+            // `bytes()`, empty, or `bytes(items)`: each item an int from 0 to 255, and any other
+            // stops the program, as the runtime's does.
+            "bytes" => match given.positional.pop() {
+                None => Ok(Value::Bytes(Vec::new())),
+                Some(arg) => match self.arg_as_value(arg)? {
+                    Value::List(items) => {
+                        let mut data = Vec::with_capacity(items.len());
+                        for item in items {
+                            match item {
+                                Value::Int(n) => match u8::try_from(n) {
+                                    Ok(byte) => data.push(byte),
+                                    Err(_) => {
+                                        return crash(
+                                            format!("a byte is an int from 0 to 255, not {n}"),
+                                            span,
+                                        );
+                                    }
+                                },
+                                other => {
+                                    return unsupported(format!("`bytes` of a list of {}", other.kind()));
+                                }
+                            }
+                        }
+                        Ok(Value::Bytes(data))
+                    }
+                    other => unsupported(format!("`bytes` of a {}", other.kind())),
+                },
+            },
             other => unsupported(format!("the builtin `{other}`")),
         }
     }
@@ -257,6 +303,7 @@ impl Interp {
     pub(crate) fn length(&mut self, value: Value, span: Span) -> Run<i64> {
         Ok(as_int(match value {
             Value::Str(text) => text.chars().count(),
+            Value::Bytes(data) => data.len(),
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.len(),
             Value::Dict(pairs) => pairs.len(),
             Value::Table(table) => table.len(),
@@ -612,4 +659,59 @@ fn round_places(x: f64, places: i64) -> f64 {
     }
     let digits = usize::try_from(places).unwrap_or(0);
     format!("{x:.digits$}").parse().unwrap_or(x)
+}
+
+/// The intrinsics that write into a byte builder the standard library's own code holds, through
+/// a `ref`: each as `intrinsics.fen` says it works.
+const WRITES_BYTES: [&str; 5] =
+    ["bytes_push", "bytes_push_word", "bytes_push_text", "bytes_push_bytes", "bytes_set"];
+
+impl Interp {
+    /// One of `WRITES_BYTES`, on the builder its first argument is the place of.
+    fn write_bytes(&mut self, intrinsic: &str, given: Vec<ArgVal>, span: Span) -> Run<Value> {
+        let mut given = given.into_iter();
+        let Some(ArgVal::Ref(_, place)) = given.next() else {
+            return unsupported(format!("`{intrinsic}` on something that isn't a place"));
+        };
+        let mut args = Vec::new();
+        for arg in given {
+            args.push(self.arg_as_value(arg)?);
+        }
+        // What's written, worked out before the builder is reached.
+        let byte = |value: &Value| match value {
+            Value::Int(n) => u8::try_from(*n).ok(),
+            _ => None,
+        };
+        let more: Vec<u8> = match (intrinsic, args.as_slice()) {
+            ("bytes_push", [value]) => match byte(value) {
+                Some(byte) => vec![byte],
+                None => return unsupported("`bytes_push` of something other than a byte"),
+            },
+            ("bytes_push_word", [Value::Int(bits)]) => bits.to_le_bytes().to_vec(),
+            ("bytes_push_text", [Value::Str(text)]) => text.as_bytes().to_vec(),
+            ("bytes_push_bytes", [Value::Bytes(data)]) => data.clone(),
+            ("bytes_set", [Value::Int(at), value]) => {
+                let (Ok(at), Some(byte)) = (usize::try_from(*at), byte(value)) else {
+                    return unsupported("`bytes_set` of a place or a byte out of range");
+                };
+                return self.change_place(&place, span, false, |held| match held {
+                    Value::Bytes(data) if at < data.len() => {
+                        if let Some(slot) = data.get_mut(at) {
+                            *slot = byte;
+                        }
+                        Ok(Value::Unit)
+                    }
+                    _ => unsupported("`bytes_set` past a builder's end"),
+                });
+            }
+            _ => return unsupported(format!("`{intrinsic}` given what it doesn't take")),
+        };
+        self.change_place(&place, span, false, |held| match held {
+            Value::Bytes(data) => {
+                data.extend(more);
+                Ok(Value::Unit)
+            }
+            other => unsupported(format!("`{intrinsic}` on a {}", other.kind())),
+        })
+    }
 }

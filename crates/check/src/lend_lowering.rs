@@ -5,9 +5,11 @@
 //!
 //! - The block's `return`, `break` and `continue` leave a loop that runs it once, and are taken
 //!   again after the source's cleanup, so cleanup below the `lend` always runs on success.
-//! - Each `fail` and `?` in the block runs the `lend`'s `else:` first, so it runs whenever the
+//! - Each `fail` and `?` in the block leaves the same loop with the failure held, and the
+//!   `lend`'s `else:` runs once after it, before the failure passes up, so it runs whenever the
 //!   caller's block fails. A `?` is taken out to its own `match` on the result before its
-//!   statement.
+//!   statement. Written once, the `else:` of a `with` inside another is one failure for the outer
+//!   one to clean up after, so what's written grows with how deep they nest, not doubling.
 //!
 //! It's the only place that knows how a source runs, so a native one can replace it alone.
 
@@ -63,6 +65,7 @@ pub(crate) fn lower(
         made,
         returns: Vec::new(),
         failing: Vec::new(),
+        fails: Vec::new(),
         instead: None,
     };
     for item in &mut module.items {
@@ -74,7 +77,9 @@ pub(crate) fn lower(
             Item::Extend(extension) => extension.methods.iter_mut().for_each(|def| lowering.function(def)),
             Item::Test(test) => {
                 lowering.returns.push(None);
+                lowering.fails.push(None);
                 lowering.stmts(&mut test.body);
+                lowering.fails.pop();
                 lowering.returns.pop();
             }
             _ => {}
@@ -183,6 +188,8 @@ struct Lowering<'s> {
     returns: Vec<Option<TypeExpr>>,
     /// Whether each function being walked says it fails, innermost last.
     failing: Vec<bool>,
+    /// What each function being walked says it fails with, innermost last.
+    fails: Vec<Option<TypeExpr>>,
     /// What the source being written in does in place of failing, for `with src else fail E:`.
     instead: Option<Expr>,
 }
@@ -313,12 +320,63 @@ impl Lowering<'_> {
     fn function(&mut self, def: &mut FnDef) {
         self.returns.push(def.ret.clone());
         self.failing.push(def.fails.is_some());
+        self.fails.push(def.fails.clone());
         if def.ret.is_some() {
             self.tail_returned(&mut def.body);
         }
         self.stmts(&mut def.body);
+        self.fails.pop();
         self.failing.pop();
         self.returns.pop();
+    }
+
+    /// Readies a block's failures for its cleanup. With somewhere to hold one, each `?` becomes a
+    /// `match` that fails, and each failure is to leave the loop the block runs in, to the cleanup
+    /// written once after it. Otherwise the cleanup is written in before each. Says which.
+    fn ready_failures(&self, block: &mut Vec<Stmt>, cleanup: &[Stmt]) -> bool {
+        let funneled = !cleanup.is_empty() && self.held_failure().is_some();
+        if funneled {
+            fail_through(block, &[]);
+        } else if !cleanup.is_empty() {
+            fail_through(block, cleanup);
+        }
+        funneled
+    }
+
+    /// The names a block's ways out are kept in, set before it: which way it left, what it
+    /// returns, and what it fails with.
+    fn ways_kept(
+        &self,
+        ways: Ways,
+        (exit, returned, failed): (&str, &str, &str),
+        at: Span,
+    ) -> Option<Vec<Stmt>> {
+        let mut kept = Vec::new();
+        // A failure is held in `failed` alone, so `exit` is only for the other ways out.
+        if ways.returned.is_some() || ways.broke || ways.continued {
+            kept.push(assign(exit, int(0, at), true, None));
+        }
+        if ways.returned == Some(true) {
+            let mut optional = self.returns.last().cloned().flatten()?;
+            optional.optional = true;
+            kept.push(assign(returned, Expr { kind: ExprKind::None, span: here(at) }, true, Some(optional)));
+        }
+        if ways.failed {
+            let held = self.held_failure()?;
+            kept.push(assign(failed, Expr { kind: ExprKind::None, span: here(at) }, true, Some(held)));
+        }
+        Some(kept)
+    }
+
+    /// The type a failure leaving a block is held in, until its cleanup has run: what the
+    /// function it's in fails with, or `None`.
+    fn held_failure(&self) -> Option<TypeExpr> {
+        if self.failing.last() != Some(&true) {
+            return None;
+        }
+        let mut held = self.fails.last().cloned().flatten()?;
+        held.optional = true;
+        Some(held)
     }
 
     /// A function's last line that's a `with` over a source, whose block's last line is a value:
@@ -366,7 +424,12 @@ impl Lowering<'_> {
             return block;
         }
         let held = format!("failed__within{}", here(at).start);
-        let cleanup = failing_with(name(&held, at), cleanup, at);
+        let mut cleanup = failing_with(name(&held, at), cleanup, at);
+        // Each way the cleanup fails leaves it at one `fail`, where the `with` around it, if any,
+        // cleans up after it: it's written once, however many ways this one fails.
+        if let Some(failure) = self.held_failure() {
+            cleanup = funneled(cleanup, failure, at);
+        }
         vec![stmt(StmtKind::OnFailure { name: held, cleanup, body: block }, at)]
     }
 
@@ -516,26 +579,27 @@ impl Lowering<'_> {
         // A case whose body always returns returns after the case is put back, every time, so
         // what's written in ends the function as the body did.
         let always = always_returns(&block);
-        fail_through(&mut block, std::slice::from_ref(&put_back));
+        // Each failure leaves the loop the case runs in, and the case is put back once after it,
+        // as for a `with`'s block.
+        let funneled = self.ready_failures(&mut block, std::slice::from_ref(&put_back));
         let (exit, returned) = (format!("exit__ref{made}"), format!("returned__ref{made}"));
-        let mut caller = Caller { exit: &exit, returned: &returned, ways: Ways::default(), span: at };
+        let failed = format!("failed__ref{made}");
+        let mut caller = Caller::new(&exit, &returned, at);
+        caller.failed = funneled.then_some(failed.as_str());
         exits(&mut block, &mut caller, false);
         let ways = caller.ways;
         let mut block = self.on_failure(std::slice::from_ref(&put_back), block, at);
         let mut body = copies;
+        body.extend(self.ways_kept(ways, (&exit, &returned, &failed), at)?);
         if ways.any() {
-            body.push(assign(&exit, int(0, at), true, None));
-            if ways.returned == Some(true) {
-                let mut optional = self.returns.last().cloned().flatten()?;
-                optional.optional = true;
-                let none = Expr { kind: ExprKind::None, span: here(at) };
-                body.push(assign(&returned, none, true, Some(optional)));
-            }
             block.push(stmt(StmtKind::Break, at));
             let always = Expr { kind: ExprKind::Bool(true), span: here(at) };
             body.push(stmt(StmtKind::While { cond: always, body: block }, at));
         } else {
             body.extend(block);
+        }
+        if ways.failed {
+            body.push(failing_if_held(&failed, std::slice::from_ref(&put_back), at));
         }
         body.push(put_back);
         if always && ways.returned == Some(true) {
@@ -593,8 +657,8 @@ impl Lowering<'_> {
         let lent_as = format!("{}__lent{}", held.name, self.made);
         let exit = hidden("exit");
         let returned = hidden("returned");
-        let caller_ret = self.returns.last().cloned().flatten();
-        let mut caller = Caller { exit: &exit, returned: &returned, ways: Ways::default(), span: at };
+        let failed = hidden("failed");
+        let mut caller = Caller::new(&exit, &returned, at);
         if !replace_lend(&mut body, &mut |value, otherwise| {
             let mut block = block.to_vec();
             let (place, binding) = match &value.kind {
@@ -609,10 +673,9 @@ impl Lowering<'_> {
             // starts and unmarked wherever the block ends or fails, before any cleanup runs.
             let crash = on_crash(otherwise, at);
             let unmarked = unmarked_first(crash.as_ref(), otherwise);
-            if !otherwise.is_empty() {
-                fail_through(&mut block, &unmarked);
-            }
+            let funneled = self.ready_failures(&mut block, &unmarked);
             caller.ways = Ways::default();
+            caller.failed = funneled.then_some(failed.as_str());
             exits(&mut block, &mut caller, false);
             let mut block = self.on_failure(&unmarked, block, at);
             let mut lent: Vec<Stmt> = binding.into_iter().collect();
@@ -630,6 +693,9 @@ impl Lowering<'_> {
             if let Some((_, _, done)) = crash {
                 lent.push(done);
             }
+            if caller.ways.failed {
+                lent.push(failing_if_held(&failed, otherwise, at));
+            }
             Some(lent)
         }) {
             return None;
@@ -637,15 +703,7 @@ impl Lowering<'_> {
         // The block's way out, kept in names set before the source's body, so they're in sight
         // after it, and taken again once its cleanup has run.
         let ways = caller.ways;
-        if ways.any() {
-            written.push(assign(&exit, int(0, at), true, None));
-        }
-        if ways.returned == Some(true) {
-            let mut optional = caller_ret?;
-            optional.optional = true;
-            let none = Expr { kind: ExprKind::None, span: here(at) };
-            written.push(assign(&returned, none, true, Some(optional)));
-        }
+        written.extend(self.ways_kept(ways, (&exit, &returned, &failed), at)?);
         written.extend(body);
         if always_returns && ways.returned == Some(true) && !ways.broke && !ways.continued {
             written.extend(returned_always(&returned, at));
@@ -933,11 +991,13 @@ struct Ways {
     returned: Option<bool>,
     broke: bool,
     continued: bool,
+    /// Whether it fails, held in the caller's `failed`.
+    failed: bool,
 }
 
 impl Ways {
     fn any(self) -> bool {
-        self.returned.is_some() || self.broke || self.continued
+        self.returned.is_some() || self.broke || self.continued || self.failed
     }
 }
 
@@ -950,8 +1010,18 @@ type LentAs<'a> = dyn FnMut(Expr, &[Stmt]) -> Option<Vec<Stmt>> + 'a;
 struct Caller<'n> {
     exit: &'n str,
     returned: &'n str,
+    /// Where a failure is held as it leaves the block, when its cleanup runs once after it.
+    failed: Option<&'n str>,
+    /// How many `fail`s have been written as leaving, to tell which loops hold one.
+    fails_made: usize,
     ways: Ways,
     span: Span,
+}
+
+impl<'n> Caller<'n> {
+    fn new(exit: &'n str, returned: &'n str, span: Span) -> Self {
+        Caller { exit, returned, failed: None, fails_made: 0, ways: Ways::default(), span }
+    }
 }
 
 /// Replaces the `lend` in a body with what `with_block` makes of its value and `else:` block,
@@ -1001,6 +1071,7 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
         // A loop's condition and what it goes through are its own, as its body is: a `break` there
         // is the loop's, not the block's.
         let own_loop = in_loop || matches!(stmt.kind, StmtKind::While { .. } | StmtKind::For { .. });
+        let round = matches!(&stmt.kind, StmtKind::For { iter, .. } if crate::parallel::parallel_items(iter).is_some());
         for value in stmt_exprs(stmt) {
             outer_cases(value, &mut |cases| exits(cases, caller, own_loop));
         }
@@ -1016,6 +1087,11 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
                 written.push(stmt_break(span));
                 Some(written)
             }
+            StmtKind::Fail(failure) if let Some(failed) = caller.failed => {
+                caller.ways.failed = true;
+                caller.fails_made += 1;
+                Some(vec![assign(failed, failure.clone(), false, None), stmt_break(span)])
+            }
             StmtKind::Break if !in_loop => {
                 caller.ways.broke = true;
                 Some(vec![set(BROKE), stmt_break(span)])
@@ -1026,12 +1102,24 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
             }
             StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
                 let before = caller.ways.returned.is_some();
+                let fails_before = caller.fails_made;
+                // A round's failure leaves where the loop ends: it isn't the block's to write.
+                let failed = if round { caller.failed.take() } else { None };
                 exits(body, caller, true);
-                // A `return` inside it leaves this loop too.
-                (caller.ways.returned.is_some() && !before).then(|| {
-                    let leave = dispatch(exit, RETURNED, StmtKind::Break, span);
-                    vec![stmt.clone(), leave]
-                })
+                if round {
+                    caller.failed = failed;
+                }
+                // A `return` or a failure inside it leaves this loop too.
+                let mut leaves = Vec::new();
+                if caller.ways.returned.is_some() && !before {
+                    leaves.push(dispatch(exit, RETURNED, StmtKind::Break, span));
+                }
+                if caller.fails_made > fails_before
+                    && let Some(failed) = caller.failed
+                {
+                    leaves.push(leave_if_held(failed, span));
+                }
+                (!leaves.is_empty()).then(|| std::iter::once(stmt.clone()).chain(leaves).collect())
             }
             StmtKind::If { branches, otherwise } => {
                 for (_, body) in branches {
@@ -1440,6 +1528,112 @@ fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
         stmt(StmtKind::While { cond: always, body: cleanup }, span),
         stmt(StmtKind::Fail(name(&held, span)), span),
     ]
+}
+
+/// `if failed is not None:` the `lend`'s `else:`, then failing with what's held, which a block's
+/// failures leave their loop holding.
+fn failing_if_held(failed: &str, otherwise: &[Stmt], span: Span) -> Stmt {
+    let failing = failing_with(name(failed, span), otherwise, span);
+    stmt(StmtKind::If { branches: vec![(is_held(failed, span), failing)], otherwise: None }, span)
+}
+
+/// `if failed is not None: break`: a loop inside a block leaving the block's once a failure in
+/// it is held.
+fn leave_if_held(failed: &str, span: Span) -> Stmt {
+    stmt(
+        StmtKind::If { branches: vec![(is_held(failed, span), vec![stmt_break(span)])], otherwise: None },
+        span,
+    )
+}
+
+/// `failed is not None`: whether a failure is held there.
+fn is_held(failed: &str, span: Span) -> Expr {
+    let none = Box::new(Expr { kind: ExprKind::None, span: here(span) });
+    Expr {
+        kind: ExprKind::Binary {
+            op: fennec_syntax::BinOp::IsNot,
+            lhs: Box::new(name(failed, span)),
+            rhs: none,
+        },
+        span: here(span),
+    }
+}
+
+/// A cleanup that ends by failing, with each of its `fail`s leaving a loop it runs in once, and
+/// one `fail` after: whatever cleans up after it is then written in once, not before each.
+fn funneled(cleanup: Vec<Stmt>, failure: TypeExpr, span: Span) -> Vec<Stmt> {
+    let failed = format!("failed__cleanup{}", here(span).start);
+    let mut body = cleanup;
+    funnel_fails(&mut body, &failed, span);
+    body.push(stmt(StmtKind::Break, span));
+    let none = Expr { kind: ExprKind::None, span: here(span) };
+    let always = Expr { kind: ExprKind::Bool(true), span: here(span) };
+    vec![
+        assign(&failed, none, true, Some(failure)),
+        stmt(StmtKind::While { cond: always, body }, span),
+        stmt(StmtKind::Assert(is_held(&failed, span)), span),
+        stmt(StmtKind::Fail(name(&failed, span)), span),
+    ]
+}
+
+/// Each `fail` in a cleanup as holding its failure in `failed` and leaving the loop it runs in,
+/// and each loop inside holding one as leaving that one too. Says how many there were.
+fn funnel_fails(body: &mut Vec<Stmt>, failed: &str, span: Span) -> usize {
+    let mut made = 0;
+    let mut at = 0;
+    while at < body.len() {
+        let Some(each) = body.get_mut(at) else { break };
+        // A function written inside fails by itself, not the cleanup.
+        if matches!(each.kind, StmtKind::Def(_)) {
+            at += 1;
+            continue;
+        }
+        for value in stmt_exprs(each) {
+            outer_cases(value, &mut |cases| made += funnel_fails(cases, failed, span));
+        }
+        let replaced = match &mut each.kind {
+            StmtKind::Fail(failure) => {
+                made += 1;
+                Some(vec![assign(failed, failure.clone(), false, None), stmt_break(span)])
+            }
+            StmtKind::If { branches, otherwise } => {
+                for (_, branch) in branches {
+                    made += funnel_fails(branch, failed, span);
+                }
+                if let Some(branch) = otherwise {
+                    made += funnel_fails(branch, failed, span);
+                }
+                None
+            }
+            StmtKind::For { iter, .. } if crate::parallel::parallel_items(iter).is_some() => None,
+            StmtKind::While { body: inner, .. } | StmtKind::For { body: inner, .. } => {
+                let inside = funnel_fails(inner, failed, span);
+                made += inside;
+                (inside > 0).then(|| {
+                    let leave = vec![stmt_break(span)];
+                    let leave = stmt(
+                        StmtKind::If { branches: vec![(is_held(failed, span), leave)], otherwise: None },
+                        span,
+                    );
+                    vec![each.clone(), leave]
+                })
+            }
+            StmtKind::With { body: inner, .. } | StmtKind::OnFailure { body: inner, .. } => {
+                made += funnel_fails(inner, failed, span);
+                None
+            }
+            _ => None,
+        };
+        match replaced {
+            Some(written) => {
+                let count = written.len();
+                body.splice(at..=at, written);
+                at += count;
+            }
+            None => at += 1,
+        }
+    }
+    made
 }
 
 /// Whether a cleanup statement can fail: a `fail`, or a whole line that's a `?`, here or in an

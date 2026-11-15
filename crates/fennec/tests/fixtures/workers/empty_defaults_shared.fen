@@ -1,0 +1,133 @@
+# A struct whose fields default to an empty list, dict or set, made many times over. Each value
+# built with a default reads one empty collection made once, so a value nothing writes to makes no
+# block. One that's written to gets a block of its own at the first write, and what's written shows
+# in no other value and never in a default.
+#
+# Run as `prog <made>`: `made` values are built and only read, then the same checks run whatever
+# `made` is. The test runs it with two counts and wants the same blocks made by both.
+from std.concurrent import Crashed
+
+struct Answer:
+    status: int
+    headers = dict[str, str]()
+    cookies = list[str]()
+    seen = set[int]()
+
+# A default that's a struct with defaults of its own.
+struct Exchange:
+    answer = Answer(status=200)
+    notes = list[str]()
+
+struct Shelf[T]:
+    label: str
+    items = list[T]()
+
+enum Step:
+    Stay
+    Move(through = list[int]())
+
+error Stop:
+    reasons = list[str]()
+
+## Values only read: nothing here writes to a default.
+def only_read(made: int) -> int:
+    mut total = 0
+    for number in range(made):
+        answer = Answer(status=number % 7)
+        exchange = Exchange()
+        shelf = Shelf[int](label="a")
+        total += answer.status + len(answer.headers) + len(answer.cookies) + len(answer.seen)
+        total += len(exchange.answer.cookies) + len(exchange.notes) + len(shelf.items)
+    return total
+
+## Each kind of default written in one value, with the values beside it left as they were.
+def written(stdout: Stdout):
+    before = Answer(status=1)
+    mut changed = Answer(status=2)
+    changed.headers["host"] = "example.com"
+    changed.cookies.append("a cookie long enough for a block of its own")
+    changed.seen.add(7)
+    after = Answer(status=3)
+    stdout.print(changed.headers, changed.cookies, changed.seen)
+    stdout.print(
+        before.headers,
+        before.cookies,
+        before.seen,
+        after.headers,
+        after.cookies,
+        after.seen,
+    )
+    # A second holder of a value still at its default, then written: the first stays empty.
+    mut second = before
+    second.cookies.append("only in the copy")
+    stdout.print(before.cookies, second.cookies, before == Answer(status=1), before == second)
+    mut exchange = Exchange()
+    exchange.answer.headers["a"] = "b"
+    exchange.notes.append("noted")
+    other = Exchange()
+    stdout.print(exchange.answer.headers, exchange.notes, other.answer.headers, other.notes)
+    mut numbers = Shelf[int](label="numbers")
+    mut words = Shelf[str](label="words")
+    numbers.items.append(4)
+    words.items.append("four")
+    stdout.print(
+        numbers.items,
+        words.items,
+        Shelf[int](label="more").items,
+        Shelf[str](label="more").items,
+    )
+    step = Step.Move()
+    match step:
+        case .Move(through):
+            mut longer = through
+            longer.append(5)
+            stdout.print(through, longer)
+        case .Stay:
+            stdout.print("stayed")
+    return
+
+def stopped(count: int) fails Stop:
+    mut why = Stop()
+    for number in range(count):
+        why.reasons.append(f"reason {number}")
+    fail why
+
+## Changed under a lock that fails, which leaves the default as it was, and one that ends.
+def locked(lobby: shared Exchange, cookie: str, stop: bool) fails Stop:
+    lock lobby as ref current:
+        current.answer.cookies.append(cookie)
+        current.answer.headers[cookie] = "set"
+        current.notes.append(cookie)
+        if stop: fail Stop()
+
+## Values built and written on a task while `main` builds and writes its own.
+def on_a_task(made: int) -> int:
+    mut total = 0
+    for number in range(made):
+        mut answer = Answer(status=number)
+        if number % 2 == 0:
+            answer.cookies.append("from the task")
+            answer.headers["task"] = "yes"
+        total += len(answer.cookies) + len(answer.headers) + len(answer.seen)
+    return total
+
+def main(args: Args, stdout: Stdout) fails Crashed:
+    made = int.parse(args[0]) except InvalidValue(): 10
+    stdout.print(only_read(made) - only_read(made))
+    written(stdout)
+    stopped(2) except why:
+        stdout.print(why.reasons, Stop().reasons)
+    shared lobby = Exchange()
+    locked(lobby, cookie="first", stop=True) except Stop():
+        stdout.print("stopped")
+    lock lobby as held:
+        stdout.print(held.answer.cookies, held.answer.headers, held.notes)
+    locked(lobby, cookie="second", stop=False) except Stop():
+        stdout.print("stopped")
+    lock lobby as held:
+        stdout.print(held.answer.cookies, held.answer.headers, held.notes)
+    mut here = 0
+    with launch(() => on_a_task(100)) as task:
+        here = on_a_task(100)
+    stdout.print(here, Answer(status=0), Exchange())
+    return

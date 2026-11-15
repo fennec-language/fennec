@@ -670,6 +670,24 @@ fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::R
     Ok(())
 }
 
+/// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
+/// `mine.visits`, `mine = other` and then `mine.visits[key] = fresh` wrote where the lookup had
+/// found the key: in the dict `mine` held before, which the caller still had, so the caller's
+/// value changed and the new dict never got the key. For a struct's value and a plain word, and
+/// where nothing else held the first dict, so the entry written was in a block already let go of.
+/// It prints what the reference evaluator prints, and what's left at the end is nothing.
+#[test]
+fn a_store_after_its_struct_is_replaced_goes_into_the_dict_there_now() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_in_place_and_boxed(
+        "store_after_dict_replaced",
+        include_str!("fixtures/store_after_dict_replaced.fen"),
+        include_str!("fixtures/store_after_dict_replaced.out"),
+    )
+}
+
 /// A struct holding a `u64`, an `f32`, `bytes`, a set, a text, a `str?` and a dict is held in place,
 /// as are a program's own types named `Option`, `Match`, `Table` and `Id`: each compared with `==`,
 /// printed, copied and changed, its copy unchanged, and used as a dict's value, after other values
@@ -1370,6 +1388,79 @@ def main(stdout: Stdout):
         stdout.print(why.why)
     _ = sized
 "#;
+
+/// Three `with` blocks inside each other, over a source whose cleanup says it ran, left from the
+/// innermost every way it can be: falling out, `return`, `break`, a `?`, a `fail`, a `fail` in a
+/// loop of its own, `continue`, and a launched task's failure. Each cleanup runs once, innermost
+/// first, on every way out, as it did before a block's cleanup was written once and failures
+/// left it to that.
+const EVERY_WAY_OUT: &str = r#"from std.concurrent import Closed, Crashed
+
+error Shut:
+    name: str
+
+def guarded(name: str, stdout: Stdout) -> with str fails Shut:
+    stdout.print("open", name)
+    lend name except:
+        stdout.print("failed out of", name)
+    stdout.print("closed", name)
+
+def checked(n: int) -> int fails Shut:
+    if n == 3:
+        fail Shut(name="checked")
+    return n
+
+def task_fails() fails Shut:
+    fail Shut(name="task")
+
+def through(way: int, stdout: Stdout) -> int fails Shut | Closed | Crashed:
+    for round in range(2):
+        with guarded("a", stdout)? as a:
+            with guarded("b", stdout)? as b:
+                with guarded("c", stdout)? as c:
+                    if way == 1:
+                        return 1
+                    if way == 2:
+                        break
+                    if way == 3:
+                        got = checked(3)?
+                        stdout.print("not here", got)
+                    if way == 4:
+                        fail Shut(name="block")
+                    if way == 5:
+                        for k in range(3):
+                            if k == 1:
+                                fail Shut(name="loop")
+                    if way == 6 and round == 0:
+                        continue
+                    if way == 7:
+                        with launch(() => task_fails()?)?:
+                            stdout.print("in", a, b, c)
+                    stdout.print("end of block", round)
+        stdout.print("round", round)
+    return 0
+
+def main(stdout: Stdout):
+    for way in range(8):
+        stdout.print("way", way)
+        got = through(way, stdout) except why:
+            stdout.print("failed", why)
+            -1
+        stdout.print("gave", got)
+    return
+"#;
+
+#[test]
+fn every_way_out_of_nested_with_blocks_cleans_up_innermost_first() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "every_way_out",
+        EVERY_WAY_OUT,
+        "way 0\nopen a\nopen b\nopen c\nend of block 0\nclosed c\nclosed b\nclosed a\nround 0\nopen a\nopen b\nopen c\nend of block 1\nclosed c\nclosed b\nclosed a\nround 1\ngave 0\nway 1\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\ngave 1\nway 2\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\ngave 0\nway 3\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"checked\")\ngave -1\nway 4\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"block\")\ngave -1\nway 5\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"loop\")\ngave -1\nway 6\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\nopen a\nopen b\nopen c\nend of block 1\nclosed c\nclosed b\nclosed a\nround 1\ngave 0\nway 7\nopen a\nopen b\nopen c\nin a b c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"task\")\ngave -1\n",
+    )
+}
 
 /// Leaving a `with` block from a `case` arm under `except why:`, or from the one case of
 /// `except Case():`, runs its source's cleanup as leaving from anywhere else in the block does:
@@ -2678,6 +2769,62 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
         include_str!("fixtures/workers/lock_undo_by_crash.fen"),
         "wrong 0 crashed True kept True\n",
     )
+}
+
+/// A struct's field defaulting to an empty list, dict or set reads one made once, so a value
+/// nothing writes to makes no block: a thousand more values built and only read make exactly as
+/// many blocks as ten, on one thread and on four. Each default made a block of its own for every
+/// value, two for every HTTP response.
+///
+/// What's written goes nowhere else. A value written to gets a block of its own at the first
+/// write, with the values built before and after it still empty, as are a second holder of the
+/// same value, a default that's a struct with defaults of its own, each copy of a generic struct,
+/// an enum case's and an error's, a value changed under a lock that fails, and values built and
+/// written on a task while `main` writes its own. Nothing is left at the end.
+#[test]
+fn a_field_defaulting_to_an_empty_collection_makes_nothing_until_written() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("empty_defaults_shared")?;
+    let program = dir.join("empty_defaults_shared.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/empty_defaults_shared.fen"))?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("empty_defaults_shared"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let mut made_by = Vec::new();
+            for made in ["10", "1010"] {
+                let ran = Command::new(&executable)
+                    .arg(made)
+                    .env("FENNEC_COUNTS", "1")
+                    .env("FENNEC_THREADS", threads)
+                    .output_within()?;
+                let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+                let wanted = include_str!("fixtures/workers/empty_defaults_shared.out");
+                assert_eq!(printed, wanted, "{how:?}, {threads} threads, {made} made");
+                let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads, {made} made: {counts}");
+                made_by.push((count(counts, "allocations"), count(counts, "copies")));
+            }
+            assert!(made_by.iter().all(|(blocks, _)| blocks.is_some()), "{how:?}: {made_by:?}");
+            assert_eq!(
+                made_by.first(),
+                made_by.last(),
+                "{how:?}, {threads} threads: the blocks made and the copies, with 10 values only read and with 1010"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 /// One write to one entry of a `Table`, a dict or a list that a `shared` value holds, under
@@ -6474,8 +6621,9 @@ fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()
     same_as_expected_in_both_builds("shared_map_walked", include_str!("fixtures/shared_map_walked.fen"))
 }
 
-/// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
-/// comparing what two hold would take a second lock while one is held.
+/// `==` on `shared` values, alone and inside other values: a struct, a list, `in`, `index`, an
+/// enum's case and an optional. They're equal when what they hold is, as decided on 2026-11-14.
+/// Until then they were the same only if they were one value, which is what this pinned.
 const SHARED_SAME: &str = "struct Account:
     total = 0
 
@@ -6503,12 +6651,14 @@ def main(stdout: Stdout):
 ";
 
 #[test]
-fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()> {
+fn shared_values_inside_other_values_are_equal_when_what_they_hold_is() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
+    // What the reference evaluator prints for it too.
     let (printed, ..) = pinned_outcome("shared_same_said", SHARED_SAME)?;
-    let wanted = "True True False False True\nTrue False\nTrue False False True 1\nTrue False\nTrue False\nTrue False\n";
+    let wanted =
+        "True True True False False\nTrue True\nTrue True True True 0\nTrue True\nTrue True\nTrue False\n";
     assert_eq!(printed, wanted);
     same_as_expected_in_both_builds("shared_same", SHARED_SAME)?;
     // A type's own `def ==` still decides, wherever it's written.
@@ -6639,6 +6789,65 @@ def main(stdout: Stdout):
     lock log as lines:
         stdout.print(lines)
 ";
+
+/// A function giving back something narrower fits where one giving the wider thing goes, as one
+/// giving an `Answer` where `(int) -> Answer?` goes, natively: an arrow written at the call, a
+/// function named there, a nested function, either of those kept in a struct's field, and a
+/// function taking an `Answer?` where `(Answer) -> int` goes. It wasn't lowered: "it gives
+/// (int) -> Answer where (int) -> Answer? goes".
+#[test]
+fn a_function_giving_something_narrower_fits_where_a_wider_one_goes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "arrow_fitted",
+        r#"struct Answer:
+    status: int
+    body: str
+
+struct Route:
+    name: str
+    respond: (int) -> Answer?
+
+def first(found: list[int], make: (int) -> Answer?) -> Answer?:
+    for number in found:
+        answer = make(number)
+        if answer is not None:
+            return answer
+    return None
+
+def plain(number: int) -> Answer:
+    return Answer(status=number, body="from a function named where the closure goes")
+
+def loose(answer: Answer?) -> int:
+    if answer is None:
+        return -1
+    return answer.status
+
+def statuses(answers: list[Answer], read: (Answer) -> int) -> list[int]:
+    return [read(answer) for answer in answers]
+
+def main(stdout: Stdout):
+    offset = 40
+    always = first([1, 2], (number) => Answer(status=number + offset, body="made"))
+    maybe = first([1, 2], (number) => Answer(status=number, body="even") if number % 2 == 0 else None)
+    named = first([3, 4], plain)
+    def nested(number: int) -> Answer:
+        return Answer(status=number + offset, body="nested")
+    kept = first([5, 6], nested)
+    route = Route(name="nested", respond=nested)
+    other = Route(name="named", respond=plain)
+    stdout.print(always, maybe, named, kept)
+    respond = route.respond
+    again = other.respond
+    stdout.print(respond(7), again(8), route.name, other.name)
+    stdout.print(statuses([Answer(status=9, body="a")], loose))
+    return
+"#,
+        "Answer(status=41, body=\"made\") Answer(status=2, body=\"even\") Answer(status=3, body=\"from a function named where the closure goes\") Answer(status=45, body=\"nested\")\nAnswer(status=47, body=\"nested\") Answer(status=8, body=\"from a function named where the closure goes\") nested named\n[9]\n",
+    )
+}
 
 /// An arrow failing fewer ways than the function type it's given for, as one failing with
 /// `Refused` where `() -> str fails Refused | Shut` goes, is made as failing all of them, natively:
@@ -9624,14 +9833,17 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
             Ok(_) if not_native_yet(path) => now_native.push(path),
             Err(_) if not_native_yet(path) => {}
             Err(why) => failed.push(format!("{}: {why}", path.display())),
-            Ok(printed) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
-                wrong.push(path);
+            Ok(printed) => {
+                // What it printed is shown, since a platform only CI runs on can't be asked.
+                let should = std::fs::read_to_string(path.with_extension("out"))?;
+                if printed != should {
+                    wrong.push(format!("{}: printed {printed:?}, not {should:?}", path.display()));
+                }
             }
-            Ok(_) => {}
         }
     }
     assert!(now_native.is_empty(), "these build natively now: take them off NOT_NATIVE_YET: {now_native:?}");
-    assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
+    assert!(wrong.is_empty(), "printed the wrong thing:\n{}", wrong.join("\n"));
     assert!(failed.is_empty(), "these didn't build through LLVM, or failed:\n{}", failed.join("\n"));
     Ok(())
 }
@@ -14686,6 +14898,64 @@ fn process_options_called_natively_match_what_was_pinned() -> std::io::Result<()
     Ok(())
 }
 
+/// `process.run` in a task parks while its program runs, holding no thread: each of its cases
+/// runs in a `parallel` round as `run` promises, and 70 programs wait at once, past the blocking
+/// threads there are, for a file another round writes. Held on a blocking thread each, as they
+/// were, the waiters took every one, the write waited behind them, and they waited for it until
+/// their 20-second timeouts (#1791).
+///
+/// It's built for a heap audit and run under it on 1, 4 and 16 threads, each run cut off at two
+/// minutes: it ends with what it should have printed, nothing live and nothing said.
+#[test]
+#[cfg(unix)]
+fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("process-runs-parked")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "process_runs_parked_in_tasks";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    let wanted = "0: status 0, out a b|*|, 0 bytes on stderr\n\
+                  1: status 0, out 1048576, 0 bytes on stderr\n\
+                  2: timed out\n\
+                  3: too much output, past 1000\n\
+                  4: status 0, out , 0 bytes on stderr\n\
+                  5: timed out\n\
+                  6: status 3, out , 5 bytes on stderr\n\
+                  70 waiters: status 0, out here, 0 bytes on stderr\n\
+                  wrote\n";
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("TMPDIR", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, wanted, "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
 /// listed and not gone into, and through an `Fs` narrowed to one folder.
 #[cfg(unix)]
@@ -16263,7 +16533,17 @@ fn a_block_a_round_leaves_is_found_wherever_the_server_runs() -> std::io::Result
                     Some(how) => command.env("FENNEC_AUDIT_SELFTEST", how),
                     None => command.env_remove("FENNEC_AUDIT_SELFTEST"),
                 };
-                let ended = command.output_within()?;
+                // Each takes under a second, and one that waits for something that never comes
+                // spends nothing: a minute by the clock says so, and which program it was. On
+                // Windows the second one's clients, in a task, blocked the one worker that had to
+                // answer them, and the test took its ten minutes to say only that something hung.
+                let ended = command
+                    .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(60))
+                    .map_err(|error| {
+                        let leaving = if selftest.is_some() { ", leaving a block a round" } else { "" };
+                        let said = format!("{shape} on {threads} threads{leaving}: {error}");
+                        std::io::Error::new(error.kind(), said)
+                    })?;
                 Ok((ended.status.code(), String::from_utf8_lossy(&ended.stderr).into_owned()))
             };
             let how = format!("{shape} on {threads} threads");
@@ -18081,6 +18361,96 @@ def main(stdout: Stdout):
     )
 }
 
+/// Routes added with `router.get` and the other methods, written in as calls to `handle`, answer
+/// natively: a handler taking its parameters in another order than the path's, a sized int that
+/// doesn't hold what's in the path answering 404, as text that isn't a number does, an arrow
+/// taking its parameter as text, and routes added through a field and a `ref` parameter.
+#[test]
+fn routes_added_with_their_methods_answer_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "checked_routes",
+        r#"from std.net import Router, Request, Response
+
+struct App:
+    router: Router
+    greeting: str
+
+    def add(ref self):
+        self.router.get("/hello/{who}", (request, who) => Response(status=200, body=f"{self.greeting} {who}".encode()))
+
+def home(request: Request) -> Response:
+    return Response(status=200, body="home".encode())
+
+def show(request: Request, id: int) -> Response:
+    return Response(status=200, body=f"note {id + 1}".encode())
+
+def pair(request: Request, name: str, id: u8) -> Response:
+    return Response(status=200, body=f"{name} {id}".encode())
+
+def more(ref router: Router, prefix: str):
+    router.delete("/tags/{tag}", (request, tag) => Response(status=204, body=f"{prefix}{tag}".encode()))
+
+def main(stdout: Stdout):
+    mut app = App(router=Router(), greeting="hi")
+    app.router.get("/", home)
+    app.router.get("/notes/{id}", show)
+    app.router.post("/pairs/{id}/{name}", pair)
+    app.add()
+    more(ref app.router, "tag ")
+    asked = [("GET", "/"), ("GET", "/notes/41"), ("GET", "/notes/abc"), ("POST", "/pairs/7/ann"), ("POST", "/pairs/300/ann"), ("GET", "/hello/bo"), ("DELETE", "/tags/x"), ("GET", "/tags/x")]
+    for method, path in asked:
+        response = app.router.respond(Request(method=method, path=path))
+        text = response.body.decode() except InvalidValue(): "?"
+        stdout.print(f"{method} {path} {response.status} {text}")
+    return
+"#,
+        "GET / 200 home\nGET /notes/41 200 note 42\nGET /notes/abc 404 there's nothing here\n\
+         POST /pairs/7/ann 200 ann 7\nPOST /pairs/300/ann 404 there's nothing here\nGET /hello/bo 200 hi bo\n\
+         DELETE /tags/x 204 tag x\nGET /tags/x 405 this takes DELETE\n",
+    )
+}
+
+/// A function where a function type giving back something wider is written, held in a name of
+/// that type: an arrow giving back `str` where `(int) -> str?` and `(int) -> str | int` go, a named
+/// function where `(int) -> str | int` goes, an arrow giving back `None` given to a `mut` name of
+/// it later, and one where `(int) -> str | (str) -> str` goes, which gives back `str` or a function.
+/// Each is held as the type written, and reads and calls as that.
+#[test]
+fn a_function_held_where_a_wider_function_type_is_written_calls_as_that_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "wider_function_held",
+        r#"type Two = (int) -> str | (str) -> str
+
+def twice(number: int) -> str:
+    return f"{number}{number}"
+
+def keep(answer: Two) -> Two:
+    return answer
+
+def main(stdout: Stdout):
+    maybe: (int) -> str? = (number) => f"maybe {number}"
+    either: (int) -> str | int = (number) => f"either {number}"
+    named: (int) -> str | int = twice
+    mut later: (int) -> str? = twice
+    stdout.print(maybe(1) else "none", either(2), named(3), later(4) else "none")
+    later = (number) => None
+    stdout.print(later(5) else "none")
+    held = keep((number) => f"held {number}")
+    given = held(6)
+    if given is str:
+        stdout.print(given)
+    return
+"#,
+        "maybe 1 either 2 33 44\nnone\nheld 6\n",
+    )
+}
+
 /// What's left of a three-member union after `if store is Lite: return` is the other two, read
 /// natively as the union it was: its members told apart with `is` and `match`, each one's
 /// fields read once it's narrowed to it, a method all of them have called on it, and it given
@@ -18773,6 +19143,122 @@ fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the next test builds: `shared` values compared every way.
+const SHARED_EQUAL: &str = r#"from std.concurrent import Crashed
+
+struct Account:
+    total = 0
+
+struct Bank:
+    accounts: list[shared Account]
+
+struct Money:
+    cents: int
+    note: str
+
+    def ==(self, other: Money) -> bool:
+        return self.cents == other.cents
+
+# A type that holds itself, compared through a type's own `==` however deep.
+struct Tree:
+    cost: Money
+    kids: list[Tree]
+
+struct Branch:
+    name: str
+    account: shared Account
+
+def compare_many(first: shared Account, second: shared Account) -> int:
+    mut equal = 0
+    for _ in range(2000):
+        if first == second:
+            equal += 1
+    return equal
+
+def found(accounts: list[shared Account], at: int) -> shared Account?:
+    if at < len(accounts): return accounts[at]
+    return None
+
+def main(stdout: Stdout) fails Crashed:
+    shared ana = Account(total=1)
+    shared ben = Account(total=1)
+    shared cora = Account(total=2)
+    stdout.print(ana == ana, ana == ben, ana == cora, Bank(accounts=[ana]) == Bank(accounts=[ben]))
+    stdout.print(ana != ben, ana != cora, [ana, ben] == [ben, ana], [ana, ben] == [ana, cora], [ana] == [ana, ben])
+    stdout.print((1, ana) == (1, ben), (1, ana) == (1, cora), (2, ana) == (1, ana))
+    everyone = [ana, ben, cora]
+    stdout.print(
+        found(everyone, 0) == found(everyone, 1),
+        found(everyone, 0) == found(everyone, 2),
+        found(everyone, 0) == found(everyone, 9),
+        found(everyone, 9) == found(everyone, 8),
+    )
+    lock cora as ref changed:
+        changed.total = 1
+    stdout.print(ana == cora, Bank(accounts=[ana, ben]) == Bank(accounts=[cora, cora]))
+    one = [Money(cents=1, note="first")]
+    stdout.print(
+        one == [Money(cents=1, note="second")],
+        one == [Money(cents=2, note="first")],
+        one != [Money(cents=1, note="other")],
+    )
+    leaf = Tree(cost=Money(cents=1, note="leaf"), kids=[])
+    grown = Tree(cost=Money(cents=2, note="grown"), kids=[leaf, leaf])
+    stdout.print(grown == Tree(cost=Money(cents=2, note="other"), kids=[leaf, leaf]), grown == leaf, grown.kids == [leaf])
+    # One value on both sides takes its lock once, alone, in a list and inside another `shared` value.
+    shared north = Branch(name="north", account=ana)
+    shared south = Branch(name="north", account=ana)
+    stdout.print(ana in [ana], [ana] == [ana], [ana, ana] == [ana, ben], north == north, north == south, north in [south])
+    # `ana == ben` on one task and `ben == ana` on another, many times over: never ana deadlock.
+    mut here = 0
+    with launch(() => compare_many(ana, second=ben)) as task:
+        here = compare_many(ben, second=ana)
+    stdout.print(here, "done")
+    return
+"#;
+
+/// `==` on two `shared` values compares what they hold, as printing one shows what it holds, and
+/// not which cell each is: equal when what they hold is, one equal to itself, and a change made
+/// under a lock seen by the next comparison. So are a struct, a list, a tuple and an optional
+/// holding one compared, part by part, and a list of a type with its own `==`, which wasn't
+/// lowered, and a type that holds itself, which is compared through a function of its own. Both
+/// locks are held to read while two are compared, taken in the order of their cells: one task
+/// comparing `ana == ben` 2,000 times while `main` compares `ben == ana` ends, on one thread and
+/// on eight. One value on both sides takes its lock once: alone, in a list, and inside another
+/// `shared` value. Native code compared the cells.
+#[test]
+fn shared_values_are_equal_when_what_they_hold_is() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("shared_equal")?;
+    let program = dir.join("shared_equal.fen");
+    std::fs::write(&program, SHARED_EQUAL)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("shared_equal"));
+    let output = executable.to_string_lossy().into_owned();
+    let wanted = "True True False True\nFalse True True False False\nTrue False False\nTrue False False True\nTrue True\nTrue False False\nTrue False False\nTrue True True True True True\n2000 done\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "8"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_COUNTS", "1")
+                .output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{how:?}, {threads} threads: {said}");
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "{how:?}, {threads} threads: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What the next test builds: failed asserts, each with a `shared` value on a side.
 const SHARED_SHOWN: &str = r#"struct Account:
     total = 0
@@ -18807,8 +19293,8 @@ fn a_failed_assert_shows_what_a_shared_value_holds() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let dir = folder("shared_shown")?;
-    let program = dir.join("shared_shown.fen");
+    let dir = folder("shared_shown_in_asserts")?;
+    let program = dir.join("shared_shown_in_asserts.fen");
     std::fs::write(&program, SHARED_SHOWN)?;
     let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
     std::fs::remove_dir_all(&dir)?;

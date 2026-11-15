@@ -5,7 +5,7 @@
 use fennec_check::Type;
 use fennec_syntax::{Arg, CompKind, Expr, ExprKind, Field, FnDef, Span};
 
-use super::{Binding, Flow, Interp, Place, Run, crash, unsupported};
+use super::{Binding, Flow, Interp, MOST_ITEMS, Place, Run, crash, unsupported};
 use crate::load::Kind;
 use crate::value::{Func, Value};
 
@@ -67,8 +67,8 @@ pub(crate) enum Target {
 
 /// The built-in types' names, as `int.parse` names one.
 const BUILT_IN_TYPES: &[&str] = &[
-    "int", "float", "str", "bool", "list", "dict", "set", "i8", "i16", "i32", "i64", "u8", "u16", "u32",
-    "u64", "f32", "f64",
+    "int", "float", "str", "bool", "bytes", "list", "dict", "set", "i8", "i16", "i32", "i64", "u8", "u16",
+    "u32", "u64", "f32", "f64",
 ];
 
 /// The builtin functions the oracle models, and the ones it knows it doesn't.
@@ -177,6 +177,14 @@ impl Interp {
                 ExprKind::Name(name) if self.program.types.contains_key(&*self.type_named(name)) => {
                     Target::Construct { ty: self.type_named(name).into_owned(), case: None }
                 }
+                // `array[T, N]()`: N items, each T's zero, as the checker typed it. An array is
+                // held as the list it prints as.
+                ExprKind::Name(name) if name == "array" && args.is_empty() && !self.is_bound(name) => {
+                    match self.program.type_at(expr.span).cloned() {
+                        Some(ty @ Type::Array(..)) => Target::Given(self.zero_of(&ty, expr.span)?),
+                        _ => return unsupported("`array[...]()` whose type isn't known"),
+                    }
+                }
                 ExprKind::Name(name) if name == "Table" && args.is_empty() && self.is_the_table() => {
                     Target::Given(Value::Table(Box::new(crate::value::Table::new(self.shared.new_tag()))))
                 }
@@ -258,6 +266,18 @@ impl Interp {
         }
         if BUILTINS.contains(&name) {
             return Ok(Target::Builtin(name.to_owned()));
+        }
+        // A core error made by name, as the standard library's own code makes `InvalidValue`s.
+        if matches!(name, "InvalidValue" | "ParseError") {
+            return Ok(Target::Builtin(name.to_owned()));
+        }
+        // An intrinsic the standard library's own code calls, which the oracle models in
+        // `library.rs`: a module run from its source names it `intrinsics.name`.
+        if let Some(intrinsic) = name.strip_prefix("intrinsics.") {
+            let path = format!("std.intrinsics.{intrinsic}");
+            if super::library::has_function(&path) {
+                return Ok(Target::Builtin(path));
+            }
         }
         // An empty `StrWriter`, as the standard library's own code makes one to write into.
         if name == "StrWriter" {
@@ -571,6 +591,30 @@ impl Interp {
         let value = self.eval(expr);
         self.pop_frame(previous);
         value
+    }
+
+    /// The zero an `array[T, N]()` fills its items with: `0`, `0.0`, `False`, `""`, `None`, an
+    /// array of zeros, or a struct made from its defaults, as `docs/language.md` says.
+    fn zero_of(&mut self, ty: &Type, span: Span) -> Run<Value> {
+        Ok(match ty {
+            Type::Int => Value::Int(0),
+            Type::Float => Value::Float(0.0),
+            Type::Bool => Value::Bool(false),
+            Type::Str | Type::LiteralStr => Value::Str(String::new()),
+            Type::Optional(_) => Value::None,
+            Type::Array(item, size) => {
+                let size = usize::try_from(*size).unwrap_or(usize::MAX);
+                let mut items = Vec::with_capacity(size.min(MOST_ITEMS));
+                for _ in 0..size {
+                    items.push(self.zero_of(item, span)?);
+                }
+                Value::List(items)
+            }
+            Type::Named(name) if self.program.types.contains_key(name.as_str()) => {
+                self.construct(name, None, Vec::new(), span)?
+            }
+            other => return unsupported(format!("the zero of a {other:?} in an array")),
+        })
     }
 
     /// Makes a struct, an error, or a case: values given by position go to the public fields in

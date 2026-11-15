@@ -136,7 +136,15 @@ impl Interp {
             }
             ExprKind::Else { value, default, except } => self.else_expr(value, default, *except),
             ExprKind::Try { value, context: None } => self.eval(value),
-            ExprKind::Try { context: Some(_), .. } => unsupported("`? from`"),
+            // `value? from Context(...)`: a failure is passed up as the context, made only then. What
+            // caused it is kept with it in native code, but nothing reads that yet.
+            ExprKind::Try { value, context: Some(context) } => match self.eval(value) {
+                Err(Flow::Fail(_, _)) => {
+                    let wrapper = self.eval(context)?;
+                    Err(Flow::Fail(wrapper, expr.span))
+                }
+                other => other,
+            },
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Attr { object, name, optional } => {
                 if *optional {
@@ -384,6 +392,10 @@ impl Interp {
             }
             (Value::Float(a), Value::Float(b)) => float_arithmetic(op, a, b, span),
             (Value::Str(a), Value::Str(b)) if op == BinOp::Add => Ok(Value::Str(a + &b)),
+            (Value::Bytes(mut a), Value::Bytes(b)) if op == BinOp::Add => {
+                a.extend(b);
+                Ok(Value::Bytes(a))
+            }
             (Value::Str(a), Value::Int(times)) if op == BinOp::Mul => {
                 let times = usize::try_from(times).unwrap_or(0);
                 if a.len().saturating_mul(times) > MOST_ITEMS {
@@ -482,6 +494,11 @@ impl Interp {
                 Value::Str(part) => Ok(text.contains(part.as_str())),
                 other => unsupported(format!("looking for a {} in a str", other.kind())),
             },
+            // A byte: an int, which is in `bytes` when one of its bytes is that number.
+            Value::Bytes(data) => match item {
+                Value::Int(byte) => Ok(data.iter().any(|held| i64::from(*held) == *byte)),
+                other => unsupported(format!("looking for a {} in bytes", other.kind())),
+            },
             Value::Instance(instance) => match self.program.method(&instance.ty, "in") {
                 Some(def) => {
                     let receiver = super::calls::Receiver::Value(container.clone());
@@ -555,6 +572,14 @@ impl Interp {
                 let count = text.chars().count();
                 let at = position(at, count, span)?;
                 Ok(Value::Str(text.chars().nth(at).map(String::from).unwrap_or_default()))
+            }
+            // A byte of `bytes` is an int, 0 to 255.
+            (Value::Bytes(data), Value::Int(at)) => {
+                let at = position(at, data.len(), span)?;
+                data.get(at).map_or_else(
+                    || crash("index out of range", span),
+                    |byte| Ok(Value::Int(i64::from(*byte))),
+                )
             }
             (Value::Dict(pairs), key) => match super::find_key(&pairs, &key)? {
                 Some(at) => pairs
@@ -999,6 +1024,11 @@ fn slice(object: Value, start: Option<Value>, end: Option<Value>) -> Run<Value> 
             let to = bound(end, count, count)?;
             Ok(Value::Str(text.chars().skip(from).take(to.saturating_sub(from)).collect()))
         }
+        Value::Bytes(data) => {
+            let from = bound(start, data.len(), 0)?;
+            let to = bound(end, data.len(), data.len())?;
+            Ok(Value::Bytes(data.into_iter().skip(from).take(to.saturating_sub(from)).collect()))
+        }
         other => unsupported(format!("slicing a {}", other.kind())),
     }
 }
@@ -1009,6 +1039,7 @@ fn plain_contains(container: &Value, item: &Value) -> Run<Option<bool>> {
         (Value::Dict(pairs), key) => super::find_key(pairs, key)?.is_some(),
         (Value::Table(table), Value::Id(id)) => table.find(*id).is_some(),
         (Value::Str(text), Value::Str(part)) => text.contains(part.as_str()),
+        (Value::Bytes(data), Value::Int(byte)) => data.iter().any(|held| i64::from(*held) == *byte),
         (Value::List(items) | Value::Tuple(items) | Value::Set(items), item) => {
             let mut found = false;
             for held in items {

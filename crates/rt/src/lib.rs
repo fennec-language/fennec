@@ -6,6 +6,7 @@ mod builtins;
 mod collections;
 mod compress;
 pub mod embed;
+mod entries;
 mod entropy;
 mod env;
 mod fakes;
@@ -30,3 +31,5 @@ pub use format::float as format_float;
 pub use inputs::Inputs;
 pub use stdlib::http::use_tls;
 pub use testing::{PROPERTY_CASES, TestOutcome, property_seed};
+
+pub use entries::{MODULE_ENTRIES, module_entry};

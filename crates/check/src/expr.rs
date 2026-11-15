@@ -27,6 +27,7 @@ impl FnCx<'_> {
         // `name = literal`, it's a `str`.
         let literal = expected.as_ref().is_some_and(|expected| self.checker.settled(expected).has_literal());
         let ty = match expected {
+            Some(expected) if self.arrow_of_several(expr, &expected) => Type::Unknown,
             Some(expected) => self.expected_kind(expr, &expected),
             None => self.expr_kind(expr),
         };

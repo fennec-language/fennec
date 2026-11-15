@@ -3191,9 +3191,9 @@ fn a_result_passed_on_fails_every_way_its_function_can() {
 }
 
 /// A `with` source's `else:` runs when its block crashes as well as when it fails: it's a closure
-/// marked to run on a crash where the block starts, and unmarked where the block ends, before the
-/// cleanup a failure runs, and before the one written in at a `?`. One that would pass a failure
-/// up some other way isn't marked.
+/// marked to run on a crash where the block starts, and unmarked where the block ends, which every
+/// way out of it passes, a `?` included, before the cleanup a failure runs. One that would pass a
+/// failure up some other way isn't marked.
 #[test]
 fn a_with_blocks_else_is_marked_to_run_on_a_crash() {
     let source = "error Boom:\n    pass\n\n\
@@ -3203,7 +3203,10 @@ fn a_with_blocks_else_is_marked_to_run_on_a_crash() {
         def main(stdout: Stdout):\n    used(stdout) except Boom():\n        return\n";
     let function = printed(source, "used").unwrap();
     assert_eq!(function.matches("on crash run ").count(), 1, "{function}");
-    assert!(function.matches("on crash no longer run ").count() >= 2, "{function}");
+    assert_eq!(function.matches("on crash no longer run ").count(), 1, "{function}");
+    let unmarked = function.find("on crash no longer run ").unwrap_or(usize::MAX);
+    let cleanup = function.find("\"cleanup\"").unwrap_or(0);
+    assert!(unmarked < cleanup, "{function}");
 }
 
 /// A standard library function rewritten for a program, as one holding a `with` source is,

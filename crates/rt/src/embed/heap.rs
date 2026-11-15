@@ -392,17 +392,17 @@ pub const OWNER_SHIFT: u32 = 48;
 /// keeps its own, with its list.
 #[derive(Default)]
 pub(super) struct Listing {
-    /// Whether the task let its list go when it passed `MADE_LISTED` blocks. What it made and
-    /// still holds is then found at its end by its mark in each block (`hand_over_all`).
+    /// Whether the task let its list go, once it was longer than a look through its thread's
+    /// table would be. What it made and still holds is then found at its end by its mark in each
+    /// block (`hand_over_all`).
     let_go: bool,
     /// How many ranges or chunks running on this thread have marked where the list was as they
     /// started, to hand over what comes after. The list isn't let go of under them.
     scopes: usize,
 }
 
-/// How many blocks a task lists as made before it lets the list go, and finds what it still holds
-/// at its end by its mark instead. A list this long is 32 KB. A task that makes fewer, which is
-/// most of them, hands over by its list as before, without looking through the thread's table.
+/// How many blocks a task lists as made between looks at whether to let the list go, and the
+/// fewest it lets go of. A list this long is 32 KB.
 pub(crate) const MADE_LISTED: usize = 4096;
 
 /// Where a block's shape word holds which task on its thread made it, in the bits below the thread.
@@ -966,22 +966,47 @@ impl Heap {
     ///
     /// A task that ran for long listed every block it ever made, freed or not. The list was only
     /// emptied when the task ended, so the task's memory grew by a word a block for as long as it
-    /// ran: 191 MB after eight million strings, each let go of at once. So past `MADE_LISTED`
-    /// blocks a task lets the list go and lists no more, and what it still holds when it ends is
-    /// found by its mark in each block. A range or chunk hands over by where the list was when it
-    /// started, so while one is running the list is kept whole.
+    /// ran: 191 MB after eight million strings, each let go of at once. So a task lets its list
+    /// go and lists no more, and what it still holds when it ends is found by its mark in each
+    /// block, by looking through its thread's table.
+    ///
+    /// It lets the list go once it's longer than that look would be: as many entries as the
+    /// table has places to read. Until then the list is the cheaper way to find its blocks, and
+    /// it's kept: a task that makes a few thousand blocks and ends would otherwise pay for a
+    /// look through the whole table, which is far longer than its list. So the list is never
+    /// longer than the table's own pages, whatever the task has made, and a task's end never
+    /// costs more than its list would have. It's looked at every `MADE_LISTED` blocks.
+    ///
+    /// A range or chunk hands over by where the list was when it started, so while one is running
+    /// the list is kept whole.
     fn list_made(&mut self, address: usize) {
         if self.made_listing.scopes == 0 {
             if self.made_listing.let_go {
                 return;
             }
-            if self.made.len() >= MADE_LISTED {
+            let listed = self.made.len();
+            if listed != 0
+                && listed.is_multiple_of(MADE_LISTED)
+                && listed >= self.blocks.places_to_look_through()
+            {
                 self.made = Vec::new();
                 self.made_listing.let_go = true;
                 return;
             }
         }
         self.made.push(u64::try_from(address).unwrap_or(0));
+    }
+
+    /// Whether the task running here has let its list of what it made go.
+    #[cfg(test)]
+    pub(crate) fn made_let_go(&self) -> bool {
+        self.made_listing.let_go
+    }
+
+    /// The most blocks a task running here lists before it lets its list go, as things stand.
+    #[cfg(test)]
+    pub(crate) fn most_listed(&self) -> usize {
+        self.blocks.places_to_look_through() + MADE_LISTED
     }
 
     /// How many blocks this heap has listed as made since it last handed them over.
@@ -1045,7 +1070,7 @@ impl Heap {
 
     /// Takes every block the task running here made and still holds, as it ends, for the thread
     /// that launched it to adopt. What it listed is taken from the list. A task that let its list
-    /// go, having made more than `MADE_LISTED` blocks, has the rest found by its mark: every block
+    /// go, once it was longer than this look, has the rest found by its mark: every block
     /// in this heap's table that the task made has the task's mark in its shape word, and no other
     /// task alive on this thread has that mark.
     #[cfg(any(test, feature = "threads"))]

@@ -150,6 +150,12 @@ impl Table {
         self.len
     }
 
+    /// How many places looking through all of it reads (`all`): each page a region can have, and
+    /// each place on every page it has. Kept as it goes, so asking costs nothing.
+    pub(super) fn places_to_look_through(&self) -> usize {
+        self.regions.len() * PAGES + (self.kept + self.made) * PLACES
+    }
+
     /// How many pages it holds, for counting what's live.
     #[cfg(any(test, feature = "threads"))]
     pub(super) fn pages(&self) -> usize {

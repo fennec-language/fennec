@@ -99,20 +99,33 @@ fn a_task_gets_its_own_copy_and_its_failure_comes_out_where_its_block_ends() {
 /// one from after.
 static KEPT_EARLY: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
 static KEPT_LATE: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
-/// The longest its list of what it had made was, each time it looked.
+/// The longest its list of what it had made was, each time it looked, and the longest its heap
+/// said the list could get, then: as long as a look through its thread's table.
 static MOST_LISTED: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
-/// How many times it makes a list and lets it go: each is two blocks.
-const CHURNED: usize = 200_000;
+static MOST_ALLOWED: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+/// Whether it had let its list go by the time it had made them all.
+static LET_GO: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+/// How many times it makes a list and lets it go, at most: each is two blocks. It stops once its
+/// list has been let go and it's made as many again.
+const CHURNED: usize = 2_000_000;
 
 /// Makes a list and lets it go, `CHURNED` times over, as a task that runs for long does. It keeps
 /// one from the start and one from the end, and fails with a third.
 fn makes_and_frees_many(test: usize) -> i64 {
     KEPT_EARLY[test].store(list(&["kept from the start"]), Ordering::SeqCst);
+    let mut after_letting_go = 0;
     for round in 0..CHURNED {
         heap::free(list(&["made and let go of"]));
         if round % 1000 == 0 {
-            let listed = with(|state| state.heap.made_so_far());
+            let (listed, allowed, let_go) =
+                with(|state| (state.heap.made_so_far(), state.heap.most_listed(), state.heap.made_let_go()));
             MOST_LISTED[test].fetch_max(i64::try_from(listed).unwrap_or(i64::MAX), Ordering::SeqCst);
+            MOST_ALLOWED[test].fetch_max(i64::try_from(allowed).unwrap_or(i64::MAX), Ordering::SeqCst);
+            LET_GO[test].store(let_go, Ordering::SeqCst);
+            after_letting_go += usize::from(let_go);
+        }
+        if after_letting_go > 100 {
+            break;
         }
     }
     KEPT_LATE[test].store(list(&["kept from the end"]), Ordering::SeqCst);
@@ -129,19 +142,20 @@ extern "C" fn runs_long_beside_another(_env: i64, _thread: i64) -> i64 {
 }
 
 /// A task that makes blocks for a long time keeps no list of them all. It used to list every
-/// block it made, freed or not, until it ended: 400,000 here, a word each, and without end in a
-/// task that runs as long as its program. Now its list stays short all the while it runs, and
-/// what it still holds when it ends is found by its mark and handed to its launcher all the same:
-/// what it made before it let the list go, what it made after, and its failure.
+/// block it made, freed or not, until it ended: a word each, without end in a task that runs as
+/// long as its program. Now its list is never longer than a look through its thread's table would
+/// be, however many it makes: past that it lets the list go. What it still holds when it ends is
+/// found by its mark and handed to its launcher all the same: what it made before it let the list
+/// go, what it made after, and its failure.
 #[test]
 fn a_task_that_makes_blocks_for_a_long_time_keeps_a_short_list_and_hands_over_what_it_holds() {
     begin();
     let task = launch(runs_long_alone, 0);
     let mut failure = 0;
     assert_eq!(launch_end(task, -1, 0, &mut failure), FAILED);
-    let most = MOST_LISTED[0].load(Ordering::SeqCst);
-    let allowed = i64::try_from(heap::MADE_LISTED).unwrap();
-    assert!(most <= allowed, "its list reached {most} blocks while it ran");
+    let (most, allowed) = (MOST_LISTED[0].load(Ordering::SeqCst), MOST_ALLOWED[0].load(Ordering::SeqCst));
+    assert!(most <= allowed, "its list reached {most} blocks while it ran, past the {allowed} it may");
+    assert!(LET_GO[0].load(Ordering::SeqCst), "it never let its list go, having listed {most}");
     for (kept, text) in [(&KEPT_EARLY[0], "kept from the start"), (&KEPT_LATE[0], "kept from the end")] {
         let kept = kept.load(Ordering::SeqCst);
         assert_eq!(lines(kept), [text]);

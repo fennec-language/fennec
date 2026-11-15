@@ -16312,6 +16312,76 @@ fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::
     std::fs::remove_dir_all(&dir)
 }
 
+/// A server's blocking work isn't starved by clients waiting on that same server. Clients in
+/// `parallel` rounds `net.post` to a server served from a task, whose handler writes to SQLite.
+/// Each client's exchange holds a blocking thread while it waits for its answer (#1790), and the
+/// handler's SQLite call needs one too. With a fixed eight, eight clients took every thread, the
+/// handlers queued behind them, and the clients failed at their 30-second timeout. The pool now
+/// grows while every thread is busy, so the handlers get theirs.
+///
+/// Each run is built for a heap audit and run under it, on 1, 4 and 16 threads: it ends with
+/// what it should have printed, nothing live and nothing said.
+#[test]
+fn a_servers_blocking_work_isnt_starved_by_its_own_clients() -> std::io::Result<()> {
+    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32])
+}
+
+/// Past the pool's 64 threads, a server's own clients still starve it: 64 of them hold every
+/// blocking thread waiting on answers whose SQLite calls wait behind them, until their timeouts
+/// fail them, in waves. An exchange that parks on its socket instead of holding a thread ends it.
+#[test]
+#[ignore = "waits on #1790: past the blocking pool's most, clients waiting on their answers hold every thread"]
+fn a_servers_blocking_work_isnt_starved_by_more_clients_than_the_pool_has_threads() -> std::io::Result<()> {
+    served_while_its_clients_post("blocking-pool-past-the-most", &[300])
+}
+
+/// Builds `served_handler_blocks_while_clients_post.fen` for a heap audit, and runs it with each
+/// number of `clients` on 1, 4 and 16 threads. Every client's answer has to be saved.
+fn served_while_its_clients_post(name: &str, clients: &[usize]) -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder(name)?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "served_handler_blocks_while_clients_post";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for &count in clients {
+        for threads in ["1", "4", "16"] {
+            let how = format!("{count} clients on {threads} threads");
+            // A starved server fails its clients at their 30-second timeout, in waves: two minutes
+            // by the clock says so, where these take under a second.
+            let ended = Command::new(&executable)
+                .env("CLIENTS", count.to_string())
+                .env("TMPDIR", &dir)
+                .env("FENNEC_AUDIT", "1")
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .env_remove("FENNEC_AUDIT_SELFTEST")
+                .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+            let (printed, said) =
+                (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+            assert_eq!(ended.status.code(), Some(0), "{how}: {printed}{said}");
+            assert_eq!(printed, format!("{count} of {count} saved\n{count} rows kept\n"), "{how}: {said}");
+            assert!(said.contains(" live 0"), "{how}: {said}");
+            assert!(!said.contains("heap audit"), "{how}: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// Runs the echo server at `executable` under a heap audit on two workers, has it serve five
 /// lines and a stop, six rounds, and gives how it ended and what it said. `selftest` is what
 /// `FENNEC_AUDIT_SELFTEST` is set to, if anything.

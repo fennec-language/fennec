@@ -1663,9 +1663,10 @@ fn park_until_readable(_socket: &TcpStream, _deadline: Option<Instant>) -> bool 
     false
 }
 
-/// For tests: parks on a copy of the socket on every platform, as Windows always does.
+/// For tests: how many of them are having sockets park on a copy on every platform, as Windows
+/// always does. A count, so one that's done doesn't turn it off under another.
 #[cfg(test)]
-pub(crate) static PARKS_ON_COPIES: AtomicBool = AtomicBool::new(false);
+pub(crate) static PARKING_ON_COPIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Parks this task until `socket` may be ready for `interest` or `deadline` passes. On Unix the
 /// worker's poll is told of the socket itself, and on Windows of a copy of it.
@@ -1678,7 +1679,7 @@ fn park_on_socket(
     #[cfg(unix)]
     {
         #[cfg(test)]
-        if PARKS_ON_COPIES.load(Ordering::SeqCst) {
+        if PARKING_ON_COPIES.load(Ordering::SeqCst) > 0 {
             return crate::embed::serve::park_on_copy(socket, interest, deadline);
         }
         let fd = std::os::fd::AsRawFd::as_raw_fd(socket);

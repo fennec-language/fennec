@@ -1088,16 +1088,16 @@ mod tests {
     /// blocked its worker, so the second never ran, and neither was ever answered.
     #[test]
     fn a_read_that_waits_through_a_copy_of_its_socket_lets_its_workers_other_task_run() {
-        use crate::stdlib::net::PARKS_ON_COPIES;
+        use crate::stdlib::net::PARKING_ON_COPIES;
         begin();
         let port = answers_once_both_have_spoken();
         let before = crate::embed::serve::PARKED_ON_COPIES.load(Ordering::Relaxed);
-        PARKS_ON_COPIES.store(true, Ordering::SeqCst);
+        PARKING_ON_COPIES.fetch_add(1, Ordering::SeqCst);
         let pool = super::pool::with_threads(1);
         let run = super::Run::new(1).waiting(true);
         let run = super::each_on_pool(run, pool, 2, super::Leaf::For(says_and_hears, i64::from(port)));
         let ended = run.finish();
-        PARKS_ON_COPIES.store(false, Ordering::SeqCst);
+        PARKING_ON_COPIES.fetch_sub(1, Ordering::SeqCst);
         assert_eq!(ended, 0);
         assert_eq!(BOTH_HEARD.load(Ordering::Relaxed), 2);
         assert!(crate::embed::serve::PARKED_ON_COPIES.load(Ordering::Relaxed) > before);

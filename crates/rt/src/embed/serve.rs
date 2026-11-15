@@ -1366,9 +1366,19 @@ pub(crate) static PARKED_ON_COPIES: AtomicU64 = AtomicU64::new(0);
 /// and closed after. A copy is the same connection, so the poll says when the socket's ready.
 /// Only for a task that `can_park`.
 ///
+/// **The copy is this call's, and nobody else's.** It's made here, lives in this call on the
+/// task's own stack, and is taken off the poll and closed before the call gives anything back,
+/// whichever way the wait ends: ready, out of time, stopped or cancelled. Each of those resumes
+/// the task, and a task is never dropped while it's parked (`fennec_parked`), so there's no way
+/// out that skips it. The socket stays its owner's throughout: closing a copy doesn't close the
+/// connection, and once the owner closes the socket nothing is left holding it open.
+///
 /// Without it a task's wait on a socket blocked its worker on Windows. A program that was its own
 /// client then waited for ever on one thread: the worker blocked reading an answer was the one
 /// that had to take the connection and give it.
+///
+/// Unix hands the poll the socket itself (`park_on_fd`), so there only tests come this way.
+#[cfg(any(test, not(unix)))]
 pub(crate) fn park_on_copy(
     socket: &std::net::TcpStream,
     interest: Interest,

@@ -193,6 +193,49 @@ fn a_stop_cuts_a_socket_read_short() {
     finish();
 }
 
+static READ_THROUGH_A_COPY: AtomicI64 = AtomicI64::new(0);
+static SILENT_TO_A_COPY: AtomicI64 = AtomicI64::new(0);
+
+/// Reads a line from a server that never sends one, for the test that waits through a copy.
+extern "C" fn reads_silence_through_a_copy(_env: i64, _thread: i64) -> i64 {
+    let port = u16::try_from(SILENT_TO_A_COPY.load(Ordering::SeqCst)).unwrap_or(0);
+    let read = crate::stdlib::net::fetch_line("127.0.0.1", port);
+    let how = if read.is_err() && super::super::super::failed() { 1 } else { 2 };
+    READ_THROUGH_A_COPY.store(how, Ordering::SeqCst);
+    ENDED
+}
+
+/// A stop cuts short a read that waits through a copy of its socket, as every task's does on
+/// Windows: the task fails as stopped, and goes on to close its connection, whose other side hears
+/// the end. That a wait's copy is closed is the serve tests' to show, since closing a connection
+/// shuts it down whatever copies are left.
+#[test]
+fn a_stop_cuts_short_a_socket_read_that_waits_through_a_copy() {
+    use crate::stdlib::net::PARKING_ON_COPIES;
+    begin();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    SILENT_TO_A_COPY.store(i64::from(listener.local_addr().unwrap().port()), Ordering::SeqCst);
+    let before = crate::embed::serve::PARKED_ON_COPIES.load(Ordering::Relaxed);
+    PARKING_ON_COPIES.fetch_add(1, Ordering::SeqCst);
+    let task = launch(reads_silence_through_a_copy, 0);
+    assert_ne!(task, 0);
+    let mut failure = 0;
+    let ended = launch_end(task, SECONDS / 20, 0, &mut failure);
+    PARKING_ON_COPIES.fetch_sub(1, Ordering::SeqCst);
+    assert_eq!(ended, ENDED);
+    assert_eq!(READ_THROUGH_A_COPY.load(Ordering::SeqCst), 1, "the read was cut short");
+    assert!(
+        crate::embed::serve::PARKED_ON_COPIES.load(Ordering::Relaxed) > before,
+        "it waited through a copy"
+    );
+    let (mut made, _) = listener.accept().unwrap();
+    made.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut rest = Vec::new();
+    assert_eq!(std::io::Read::read_to_end(&mut made, &mut rest).ok(), Some(0), "{rest:?}");
+    drop(listener);
+    finish();
+}
+
 static INNER: AtomicI64 = AtomicI64::new(0);
 
 extern "C" fn notes_it_ran(_env: i64, _thread: i64) -> i64 {

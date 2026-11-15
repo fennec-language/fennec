@@ -192,7 +192,12 @@ def routes(app: App, clock: Clock, entropy: Entropy) -> Router:
     router.handle("POST /signin", (request, found) => or_500(() => sign_in(app, clock, request)?))
     router.handle(
         "POST /notes",
-        (request, found) => as_owner(app, clock, request, (owner) => add_note(app, owner, request)?),
+        (request, found) => as_owner(
+            app,
+            clock,
+            request,
+            (owner) => add_note(app, owner, request)?,
+        ),
     )
     router.handle(
         "GET /notes",

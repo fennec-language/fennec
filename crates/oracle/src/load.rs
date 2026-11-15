@@ -156,7 +156,8 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
 /// The standard library's modules the oracle runs from their own Fennec source, as the compiler
 /// builds them. Only the functions the runtime writes in Rust beneath them are modeled here, in
 /// `interp/library.rs`, so a bug in one of these modules' own Fennec would show on both sides.
-const RUN_FROM_SOURCE: &[&str] = &["math", "collections", "env", "time", "string"];
+const RUN_FROM_SOURCE: &[&str] =
+    &["math", "collections", "env", "time", "string", "base64", "random", "uuid"];
 
 /// The capabilities `main` may take whose type a module run from its own source declares, which
 /// that module is loaded for even when the program imports nothing from it: `Env` is
@@ -391,7 +392,10 @@ fn typed_fields(
 fn given_to_main(main: &FnDef) -> Result<(), Refused> {
     for param in &main.params {
         let ty = param.ty.as_ref().map_or("", |ty| ty.name.as_str());
-        if !matches!(ty, "Stdout" | "Args" | "Stdin" | "Fs" | "Stderr" | "Signals" | "Env" | "Clock") {
+        if !matches!(
+            ty,
+            "Stdout" | "Args" | "Stdin" | "Fs" | "Stderr" | "Signals" | "Env" | "Clock" | "Entropy"
+        ) {
             return Err(Refused::Unsupported(format!("the capability {ty}")));
         }
     }

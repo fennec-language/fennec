@@ -1,0 +1,12 @@
+0
+{"host": "example.com"} ["a cookie long enough for a block of its own"] {7}
+{} [] set() {} [] set()
+[] ["only in the copy"] True False
+{"a": "b"} ["noted"] {} []
+[4] ["four"] [] []
+[] [5]
+["reason 0", "reason 1"] []
+stopped
+[] {} []
+["second"] {"second": "set"} ["second"]
+100 Answer(status=0, headers={}, cookies=[], seen=set()) Exchange(answer=Answer(status=200, headers={}, cookies=[], seen=set()), notes=[])

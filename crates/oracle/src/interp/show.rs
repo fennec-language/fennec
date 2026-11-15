@@ -29,6 +29,10 @@ impl Interp {
             Value::Sized(_, n) => n.to_string(),
             Value::Float(x) => text::float(*x),
             Value::Str(text) => text::quoted(text),
+            Value::Bytes(data) => {
+                let shown: Vec<String> = data.iter().map(u8::to_string).collect();
+                format!("bytes([{}])", shown.join(", "))
+            }
             Value::List(items) => format!("[{}]", self.joined(items)?),
             Value::Tuple(items) if items.len() == 1 => format!("({},)", self.joined(items)?),
             Value::Tuple(items) => format!("({})", self.joined(items)?),
@@ -194,17 +198,18 @@ impl Interp {
                 Ok(true)
             }
             (Value::Shared(a), Value::Shared(b)) => self.shared_equal(a, b),
+            // An optional `shared` value that's there is never equal to one that's missing.
+            (Value::Shared(_), Value::None) | (Value::None, Value::Shared(_)) => Ok(false),
             _ => plain_equal(left, right),
         }
     }
 
     /// Two `shared` values compare by what they hold, as `==` takes both their locks in a fixed
-    /// order and compares the values (decided 2026-11-14), so a cell is equal to itself. A cell a
-    /// `lock` holds now is refused, since `==` would wait there for that lock.
+    /// order and compares the values (decided 2026-11-14), with the type's own `def ==` where it
+    /// has one. That holds for a cell compared with itself too: there's no shortcut, so a `def ==`
+    /// that says no is what `a == a` gives, as native code gives. A cell a `lock` holds now is
+    /// refused, since `==` would wait there for that lock.
     fn shared_equal(&mut self, a: &Cell, b: &Cell) -> Run<bool> {
-        if a.id == b.id {
-            return Ok(true);
-        }
         let locked = std::sync::atomic::Ordering::SeqCst;
         if a.locked.load(locked) || b.locked.load(locked) {
             return unsupported("comparing a `shared` value a `lock` holds");
@@ -222,6 +227,7 @@ impl Interp {
             (Value::Sized(_, a), Value::Sized(_, b)) => Ok(a.cmp(b)),
             (Value::Float(a), Value::Float(b)) => Ok(float_order(*a, *b)),
             (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
+            (Value::Bytes(a), Value::Bytes(b)) => Ok(a.cmp(b)),
             (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
             (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b)) => {
                 for (x, y) in a.iter().zip(b) {
@@ -286,6 +292,7 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
         (Value::Sized(x, a), Value::Sized(y, b)) => x == y && a == b,
         (Value::Float(a), Value::Float(b)) => float_order(*a, *b) == Ordering::Equal,
         (Value::Str(a), Value::Str(b)) => a == b,
+        (Value::Bytes(a), Value::Bytes(b)) => a == b,
         (Value::List(a), Value::List(b))
         | (Value::Tuple(a), Value::Tuple(b))
         | (Value::Set(a), Value::Set(b)) => {

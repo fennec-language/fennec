@@ -27,6 +27,8 @@ pub(crate) struct Binding {
     pub(crate) origin: Origin,
     /// Where `mut ` would go to make it changeable: before the name in `name = value`.
     pub(crate) mut_at: Option<u32>,
+    /// Whether it's a channel to `.Every` a `with` lends, which has no one next message to take.
+    pub(crate) to_every: bool,
 }
 
 /// Where a name came from, for explaining how to make it changeable.
@@ -681,7 +683,15 @@ impl<'c> FnCx<'c> {
 
     pub(crate) fn declare_as(&mut self, name: &str, ty: Type, is_mut: bool, origin: Origin, at: Span) {
         self.declare_with(
-            Binding { name: name.to_owned(), ty: ty.clone(), declared: ty, is_mut, origin, mut_at: None },
+            Binding {
+                name: name.to_owned(),
+                ty: ty.clone(),
+                declared: ty,
+                is_mut,
+                origin,
+                mut_at: None,
+                to_every: false,
+            },
             at,
         );
     }
@@ -700,6 +710,7 @@ impl<'c> FnCx<'c> {
             is_mut,
             origin: Origin::Local,
             mut_at: Some(at.start),
+            to_every: false,
         };
         self.declare_with(binding, at);
     }

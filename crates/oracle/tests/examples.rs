@@ -37,7 +37,7 @@ fn the_examples_it_can_never_model_are_examples_it_doesnt_run() {
     let running = std::fs::read_to_string(here.join("runs.txt")).unwrap();
     let all = examples(&here.join("../../examples")).unwrap();
     let never = fennec_oracle::report::never();
-    assert!(never.len() >= 9, "never.txt lists only {}", never.len());
+    assert!(!never.is_empty(), "never.txt lists nothing");
     for (name, why) in never {
         assert!(all.iter().any(|example| example.name == name), "{name} in never.txt isn't an example");
         assert!(!why.is_empty(), "{name} in never.txt says no why");

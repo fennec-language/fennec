@@ -129,7 +129,20 @@ impl Emit<'_, '_, '_> {
             self.line("call void @fennec_use_tls()");
         }
         let (word, _) = self.operand(receiver)?;
-        self.crossing(dest, ("fennec_native_capability", "ptr", &word), method, rest, span)
+        let runtime = self.entry_for(name, "fennec_native_capability");
+        self.crossing(dest, (runtime, "ptr", &word), method, rest, span)
+    }
+
+    /// The runtime's export for the method or function called `name`: its module's own, so a
+    /// program links only the modules it calls into (`fennec_rt::MODULE_ENTRIES`). `every` is the
+    /// export that runs every module's, which a name with no export of its own goes to, and
+    /// every name in a program with tests built into it: a test's capabilities are fakes, which
+    /// only that export asks. `fennec run` builds a program's tests into it, so it's one of those.
+    fn entry_for(&self, name: &str, every: &'static str) -> &'static str {
+        if self.module.whole.tested {
+            return every;
+        }
+        fennec_rt::module_entry(name).unwrap_or(every)
     }
 
     /// A method of a `Connection`, `Server` or `UdpSocket`, which the runtime does by the handle it holds.
@@ -170,7 +183,8 @@ impl Emit<'_, '_, '_> {
             self.declare("declare void @fennec_use_tls() nounwind");
             self.line("call void @fennec_use_tls()");
         }
-        self.crossing(dest, ("fennec_net_call", "i64", handle), name, rest, span)
+        let runtime = self.entry_for(name, "fennec_net_call");
+        self.crossing(dest, (runtime, "i64", handle), name, rest, span)
     }
 
     /// `response.text()`: its body as text, with what isn't text replaced.
@@ -222,10 +236,11 @@ impl Emit<'_, '_, '_> {
         let (from, to) = self.place_in_source(span);
         let (mark, crossed) = self.cross_arguments(args)?;
         let named = self.literal(name);
-        self.declare("declare i64 @fennec_crypto_call(ptr, i64, i64, i64) nounwind");
+        let runtime = self.entry_for(name, "fennec_crypto_call");
+        self.declare(&format!("declare i64 @{runtime}(ptr, i64, i64, i64) nounwind"));
         let handle = self.temp();
         self.line(&format!(
-            "{handle} = call i64 @fennec_crypto_call(ptr {named}, i64 {}, i64 {from}, i64 {to})",
+            "{handle} = call i64 @{runtime}(ptr {named}, i64 {}, i64 {from}, i64 {to})",
             args.len()
         ));
         self.let_go_of_crossed(crossed);

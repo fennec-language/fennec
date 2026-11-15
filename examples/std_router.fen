@@ -86,12 +86,14 @@ test "a parameter is matched as it was sent, then decoded":
 # A test's `Net` works in memory: the request waits at the server, which answers it through the
 # router and stops once nothing more is waiting.
 test "a server answers through its router"(net: Net):
-    router = made()
     with net.listen(0)? as server:
         with net.connect("localhost", server.port)? as client:
-            client.write("GET /notes/42 HTTP/1.1\r\nconnection: close\r\n\r\n")?
-            server.serve(request => router.respond(request))
-            assert list(client.lines()?)[-1] == "note 42"
+            client.write("GET /notes/42 HTTP/1.1\r\n\r\n")?
+            client.write("PATCH /notes/42 HTTP/1.1\r\nconnection: close\r\n\r\n")?
+            server.serve(made())
+            answers = "\n".join(list(client.lines()?))
+            assert "note 42HTTP/1.1 405" in answers
+            assert "allow: DELETE, GET" in answers
 
 def main(stdout: Stdout):
     router = made()

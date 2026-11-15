@@ -671,7 +671,7 @@ mod tests {
     /// evaluator prints what the oracle prints.
     #[test]
     fn the_review_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
-        use super::ast::{Program, SWAP_KEYS, Shelve, Shelving, Stmt, SwapField, Swapping};
+        use super::ast::{Program, SWAP_KEYS, ShelfPlace, Shelve, Shelving, Stmt, SwapField, Swapping};
         let mut body = Vec::new();
         let mut id = 0;
         for field in [SwapField::Counts, SwapField::Lists] {
@@ -693,17 +693,23 @@ mod tests {
                 }
             }
         }
-        for in_list in [false, true] {
-            id += 1;
-            let steps = vec![
-                (9, Shelve::Fill),
-                (0, Shelve::Fill),
-                (1, Shelve::ByHand),
-                (7, Shelve::ByHand),
-                (0, Shelve::Direct),
-                (8, Shelve::Direct),
-            ];
-            body.push(Stmt::Shelved(Shelving { id, in_list, seen: 2, steps }));
+        for (place, rounds) in [(ShelfPlace::Locked, 1), (ShelfPlace::Owned, 4), (ShelfPlace::Bare, 6)] {
+            for in_list in [false, true] {
+                id += 1;
+                let steps = vec![
+                    (9, Shelve::Fill),
+                    (0, Shelve::Fill),
+                    (1, Shelve::ByHand),
+                    (7, Shelve::ByHand),
+                    (0, Shelve::Direct),
+                    (8, Shelve::Direct),
+                    (1, Shelve::Handed),
+                    (4, Shelve::Handed),
+                    (0, Shelve::HandedByHand),
+                    (6, Shelve::HandedByHand),
+                ];
+                body.push(Stmt::Shelved(Shelving { id, in_list, seen: 2, place, rounds, steps }));
+            }
         }
         let program = Program { body, threadless: false };
         let source = source::source(&program);
@@ -717,6 +723,37 @@ mod tests {
         let oracle = fennec_oracle::run_source(&source, "programs.fen");
         assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
+    /// Every way of writing a `Listened` statement checks, and the evaluator is sure what it
+    /// prints: inboxes kept up or behind, read one at a time or in a loop, and a loop dropping
+    /// the oldest, with a message sent before any of them listens or not.
+    #[test]
+    fn listeners_of_a_channel_to_every_listener_check_and_the_evaluator_is_sure() {
+        use super::ast::{Listening, Program, Stmt};
+        let mut body = Vec::new();
+        let mut id = 0;
+        for size in 1..=4 {
+            for sent in [1, size, size + 1, 6] {
+                for ways in 0..4_u8 {
+                    id += 1;
+                    let (early, dropping) = (ways & 1 != 0, ways & 2 != 0);
+                    let inboxes = if dropping { vec![true] } else { vec![false, true] };
+                    body.push(Stmt::Listened(Listening { id, size, early, sent, dropping, inboxes }));
+                }
+            }
+        }
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert!(printed.contains("listened [3, 4, 5, 6]\n"), "{printed}");
+        assert!(printed.contains("behind\nbehind\n"), "{printed}");
     }
 
     #[test]

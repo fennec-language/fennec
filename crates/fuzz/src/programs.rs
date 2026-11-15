@@ -666,8 +666,8 @@ mod tests {
         assert!(found >= 3, "{found} programs plan and apply");
     }
 
-    /// The two shapes the review of #1785 found main wrong on, in random programs since the fixes
-    /// landed (`LOOKUPS_SWAPPED`, `PART_CRASHES`): every way of writing them checks, and the
+    /// The two shapes the review of #1785 found main wrong on, off in random programs until the
+    /// fixes land (`LOOKUPS_SWAPPED`, `PART_CRASHES`): every way of writing them checks, and the
     /// evaluator prints what the oracle prints.
     #[test]
     fn the_review_shapes_check_and_the_evaluator_agrees_with_the_oracle() {

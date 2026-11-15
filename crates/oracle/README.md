@@ -33,16 +33,17 @@ quaternions and matrices, `dot` and `lerp` are its Fennec code, and `sqrt`, `flo
 modeled here. In `std.collections`, `Deque`, `Heap`, `Counter`, `SortedMap`, `SortedSet`, `Grid`,
 `Packed`, `Tree` and the rest are its Fennec code. Its `extend`s of `Table` and `Id`, which the
 oracle models on its own, are left out. `std.time`'s `Duration`, `Instant` and `Time` are its Fennec
-code, and a duration written out, as `30s`, is its `Duration`. The intrinsics their code calls that
-only read, like `text_byte`, `text_size`, `text_part` and `bytes_text`, are modeled here
-(`interp/library.rs`) from what `intrinsics.fen` says each does, and so is making a core error, like
-`InvalidValue`, by name. `std.random`'s draws, beneath its `Random`, are modeled here as
-`docs/language.md` pins them: SplitMix64, and a range by Lemire's method. The types of the modules'
-expressions are what the checker gave them as it checked the program. So the oracle still checks how
-the compiler and runtime run that code, but a mistake in the module's own Fennec would be the same
-on both sides. A module modeled on its own, like `std.json`, isn't run from source. `sin`, `cos`,
-`tan`, `acos`, `exp`, `log` and a float's `**` are computed with the `libm` crate, as
-`docs/language.md` says they are, at the version the workspace pins.
+code, and a duration written out, as `30s`, is its `Duration`. A template string, as `t"{name}"`,
+builds the core's own `Template`, whose `Template` and `Interpolation` are run from their source the
+same way. The intrinsics their code calls that only read, like `text_byte`, `text_size`, `text_part`
+and `bytes_text`, are modeled here (`interp/library.rs`) from what `intrinsics.fen` says each does,
+and so is making a core error, like `InvalidValue`, by name. `std.random`'s draws, beneath its
+`Random`, are modeled here as `docs/language.md` pins them: SplitMix64, and a range by Lemire's
+method. The types of the modules' expressions are what the checker gave them as it checked the
+program. So the oracle still checks how the compiler and runtime run that code, but a mistake in the
+module's own Fennec would be the same on both sides. A module modeled on its own, like `std.json`,
+isn't run from source. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's `**` are computed
+with the `libm` crate, as `docs/language.md` says they are, at the version the workspace pins.
 
 ## How it models a program
 

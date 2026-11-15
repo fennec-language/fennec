@@ -1,0 +1,95 @@
+# A web app's routes, shaped as a REST API's are, and two million requests through `std.net`'s
+# `Router`: hits, paths nothing's at, and methods a path doesn't take. Each request gets its
+# handler's response, and the summary adds up what came back. Its twin routes with `matchit`.
+
+from std.net import Captured, Request, Response, Router
+
+RESOURCES = ["users", "notes", "teams", "files", "orders", "items", "posts", "tags"]
+REQUESTS = 2_000_000
+KINDS = 1_024
+
+# The next state of a small linear congruential generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+# A number from 0 up to `top` taken from a generator's state.
+def below(seed: int, top: int) -> int:
+    return seed // 65_536 % top
+
+def said(status: int, text: str) -> Response:
+    return Response(status=status, body=text.encode())
+
+# The handler of a route with an id, which a segment that isn't a number doesn't reach.
+def one(resource: str, found: Captured, status: int) -> Response:
+    id = int.parse(found.text_at(0)) except InvalidValue(): return Response.not_found()
+    return said(status, text=f"{resource} {id}")
+
+def comment(resource: str, found: Captured) -> Response:
+    id = int.parse(found.text_at(0)) except InvalidValue(): return Response.not_found()
+    return said(200, text=f"{resource} {id} comment {found.text_at(1)}")
+
+# Eight routes for each resource: 64 in all.
+def routed() -> Router:
+    mut router = Router()
+    for resource in RESOURCES:
+        router.handle(f"GET /{resource}", (request, found) => said(200, text=resource))
+        router.handle(f"POST /{resource}", (request, found) => said(201, text=resource))
+        router.handle(f"GET /{resource}/search", (request, found) => said(200, text="search"))
+        router.handle(
+            f"GET /{resource}/{{id}}",
+            (request, found) => one(resource, found, status=200),
+        )
+        router.handle(
+            f"PUT /{resource}/{{id}}",
+            (request, found) => one(resource, found, status=200),
+        )
+        router.handle(
+            f"DELETE /{resource}/{{id}}",
+            (request, found) => one(resource, found, status=204),
+        )
+        router.handle(
+            f"GET /{resource}/{{id}}/comments",
+            (request, found) => one(resource, found, status=200),
+        )
+        router.handle(
+            f"GET /{resource}/{{id}}/comments/{{name}}",
+            (request, found) => comment(resource, found),
+        )
+    return router
+
+# One kind of request: seven in ten reach a handler, the rest a 404 or a 405.
+def request_of(seed: int) -> Request:
+    resource = RESOURCES[below(seed, top=len(RESOURCES))]
+    id = below(next(seed), top=100_000)
+    roll = below(next(next(seed)), top=100)
+    if roll < 15: return Request(method="GET", path=f"/{resource}")
+    if roll < 20: return Request(method="POST", path=f"/{resource}")
+    if roll < 25: return Request(method="GET", path=f"/{resource}/search")
+    if roll < 45: return Request(method="GET", path=f"/{resource}/{id}")
+    if roll < 52: return Request(method="PUT", path=f"/{resource}/{id}")
+    if roll < 57: return Request(method="DELETE", path=f"/{resource}/{id}")
+    if roll < 62: return Request(method="GET", path=f"/{resource}/{id}/comments")
+    if roll < 70: return Request(method="GET", path=f"/{resource}/{id}/comments/c{roll}")
+    if roll < 75: return Request(method="GET", path=f"/widgets/{id}")
+    if roll < 80: return Request(method="GET", path=f"/{resource}/x{id}")
+    if roll < 85: return Request(method="GET", path=f"/{resource}/{id}/comments/c{roll}/more")
+    if roll < 90: return Request(method="PATCH", path=f"/{resource}")
+    if roll < 95: return Request(method="POST", path=f"/{resource}/{id}")
+    return Request(method="DELETE", path=f"/{resource}/{id}/comments")
+
+def main(stdout: Stdout):
+    router = routed()
+    mut requests = list[Request]()
+    mut seed = 2026
+    for _ in range(KINDS):
+        seed = next(seed)
+        requests.append(request_of(seed))
+    mut statuses = dict[int, int]()
+    mut bytes_back = 0
+    for number in range(REQUESTS):
+        response = router.respond(requests[number % KINDS])
+        statuses[response.status] = (statuses.get(response.status) else 0) + 1
+        bytes_back += len(response.body)
+    for status in sorted(statuses.keys()):
+        stdout.print(f"{status}: {statuses[status]}")
+    stdout.print(f"bytes back: {bytes_back}")

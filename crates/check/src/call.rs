@@ -689,6 +689,11 @@ impl FnCx<'_> {
                     None if matches!(method, "notes" | "add_note") && self.checker.is_error_type(ty) => {
                         self.note_method(object, method, args, span)
                     }
+                    // A route written with a method, as `router.get(...)`, checked against its
+                    // handler here and written in as a call to `handle`.
+                    None if crate::routes::is_route(self.checker, name, method) => {
+                        self.route_call(object, method, args, span)
+                    }
                     // Methods written in Rust, like `Regex`'s.
                     None => self.builtin_method(object, ty, method, args, span),
                 }

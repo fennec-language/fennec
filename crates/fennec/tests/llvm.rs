@@ -18081,6 +18081,58 @@ def main(stdout: Stdout):
     )
 }
 
+/// Routes added with `router.get` and the other methods, written in as calls to `handle`, answer
+/// natively: a handler taking its parameters in another order than the path's, a sized int that
+/// doesn't hold what's in the path answering 404, as text that isn't a number does, an arrow
+/// taking its parameter as text, and routes added through a field and a `ref` parameter.
+#[test]
+fn routes_added_with_their_methods_answer_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "checked_routes",
+        r#"from std.net import Router, Request, Response
+
+struct App:
+    router: Router
+    greeting: str
+
+    def add(ref self):
+        self.router.get("/hello/{who}", (request, who) => Response(status=200, body=f"{self.greeting} {who}".encode()))
+
+def home(request: Request) -> Response:
+    return Response(status=200, body="home".encode())
+
+def show(request: Request, id: int) -> Response:
+    return Response(status=200, body=f"note {id + 1}".encode())
+
+def pair(request: Request, name: str, id: u8) -> Response:
+    return Response(status=200, body=f"{name} {id}".encode())
+
+def more(ref router: Router, prefix: str):
+    router.delete("/tags/{tag}", (request, tag) => Response(status=204, body=f"{prefix}{tag}".encode()))
+
+def main(stdout: Stdout):
+    mut app = App(router=Router(), greeting="hi")
+    app.router.get("/", home)
+    app.router.get("/notes/{id}", show)
+    app.router.post("/pairs/{id}/{name}", pair)
+    app.add()
+    more(ref app.router, "tag ")
+    asked = [("GET", "/"), ("GET", "/notes/41"), ("GET", "/notes/abc"), ("POST", "/pairs/7/ann"), ("POST", "/pairs/300/ann"), ("GET", "/hello/bo"), ("DELETE", "/tags/x"), ("GET", "/tags/x")]
+    for method, path in asked:
+        response = app.router.respond(Request(method=method, path=path))
+        text = response.body.decode() except InvalidValue(): "?"
+        stdout.print(f"{method} {path} {response.status} {text}")
+    return
+"#,
+        "GET / 200 home\nGET /notes/41 200 note 42\nGET /notes/abc 404 there's nothing here\n\
+         POST /pairs/7/ann 200 ann 7\nPOST /pairs/300/ann 404 there's nothing here\nGET /hello/bo 200 hi bo\n\
+         DELETE /tags/x 204 tag x\nGET /tags/x 405 this takes DELETE\n",
+    )
+}
+
 /// What's left of a three-member union after `if store is Lite: return` is the other two, read
 /// natively as the union it was: its members told apart with `is` and `match`, each one's
 /// fields read once it's narrowed to it, a method all of them have called on it, and it given

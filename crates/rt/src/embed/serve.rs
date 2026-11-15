@@ -856,6 +856,8 @@ impl Io {
                 + self.waiting.len()
                 + self.ready.len()
                 + self.owners.len();
+            counts.task_held =
+                self.accounts.values().map(super::threads::Accounts::listed).max().unwrap_or(0);
             counts.connections = calls::connections();
             counts
         });

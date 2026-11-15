@@ -388,6 +388,11 @@ impl Accounts {
         self.task = super::heap::task_mark(task);
     }
 
+    /// How many blocks it has listed as made, to hand over when it ends.
+    pub(in crate::embed) fn listed(&self) -> usize {
+        self.made.len()
+    }
+
     /// Whether its mark is the one the task numbered `task` on this thread would have.
     pub(in crate::embed) fn marked_as(&self, task: u64) -> bool {
         self.task == super::heap::task_mark(task)

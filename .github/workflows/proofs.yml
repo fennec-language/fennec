@@ -232,11 +232,11 @@ jobs:
         program: [game_server, web_backend]
         in: [task, main]
         include:
-          # A task waiting in `server.accept()` holds its worker, so the game server's clients never
-          # run beside it in a task: it fails until #1774 is fixed (#1796).
+          # A `parallel` loop inside a task runs its pieces one after another, so the game server's
+          # 48 clients, which wait for one another, never all start in a task: it fails until #1796.
           - program: game_server
             in: task
-            waiting: "#1774"
+            waiting: "#1796"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

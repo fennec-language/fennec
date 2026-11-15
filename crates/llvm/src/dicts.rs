@@ -1853,13 +1853,11 @@ found:
         self.leave_if_failed();
         self.line(&format!("store ptr {changed}, ptr {place}"));
         let buffer = self.value_buffer();
-        match dest {
-            Some(dest) => self.assign_memory_owned(dest, &buffer),
-            None => {
-                self.release_inline(value_kind, &buffer);
-                Ok(())
-            }
+        if let Some(dest) = dest {
+            return self.assign_memory_owned(dest, &buffer);
         }
+        self.release_inline(value_kind, &buffer);
+        Ok(())
     }
 
     pub(crate) fn dict_pop(

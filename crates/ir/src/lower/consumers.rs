@@ -48,7 +48,7 @@ impl Lowering<'_> {
     /// `sum`, `any` or `all` of a generator written in place, if this is one.
     pub(super) fn consumer(&mut self, expr: &Expr, callee: &Expr, args: &[Arg]) -> Lowered<Option<Operand>> {
         let ExprKind::Name(name) = &callee.kind else { return Ok(None) };
-        if self.lookup(name).is_some() || self.context.functions.contains(name.as_str()) {
+        if self.lookup(name).is_some() || self.own_function(name) {
             return Ok(None);
         }
         let Some(Arg { name: None, is_mut: false, value }) = args.first() else { return Ok(None) };
@@ -135,7 +135,7 @@ impl Lowering<'_> {
         let takes_all = match &callee.kind {
             ExprKind::Name(name) => {
                 self.lookup(name).is_none()
-                    && !self.context.functions.contains(name.as_str())
+                    && !self.own_function(name)
                     && matches!(
                         name.as_str(),
                         "min" | "max" | "sorted" | "list" | "set" | "dict" | "reversed"

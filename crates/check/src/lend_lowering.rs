@@ -265,6 +265,12 @@ pub(crate) fn written_in(span: Span) -> bool {
     (WRITTEN_FROM..Span::PRELUDE).contains(&span.start)
 }
 
+/// Whether what's at `span` is anything but a program's own text: the standard library's, or what
+/// lowering wrote in, from text parsed as std's is or not.
+pub(crate) fn not_written_by_hand(span: Span) -> bool {
+    span.start >= WRITTEN_FROM
+}
+
 /// The number a name written in by an earlier pass ends with, like `3` in `conn__lend3`, or 0.
 fn made_in(name: &str) -> usize {
     ["__lend", "__ref"]

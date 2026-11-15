@@ -19,7 +19,8 @@ use super::ast::{
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
 use super::ast::{
-    Calling, Field, FieldCall, FieldCalls, SWAP_KEYS, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
+    Calling, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping,
+    Waking, Yielding,
 };
 use super::source::LONG_PIECE;
 
@@ -1638,6 +1639,7 @@ impl Machine {
             Stmt::Woken(waking) => self.woken(waking),
             Stmt::Swapped(swapping) => self.swapped(swapping),
             Stmt::Shelved(shelving) => self.shelved(shelving),
+            Stmt::Listened(listening) => self.listened(listening),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -2061,33 +2063,67 @@ impl Machine {
         }
     }
 
-    /// What `shelved{id}` prints: after each step, `crashed` for a value past 1, whose lock is
-    /// undone whole, and the shelf.
+    /// What `shelved{id}` prints: for each step, `crashed` for a value past 1, and the pouches.
+    /// Under a lock, the shelf as it is after each step, with a crash's lock undone whole. Held
+    /// by the task alone, what the task made of them, printed by the task when it doesn't crash.
     fn shelved(&mut self, shelving: &Shelving) {
-        let Shelving { id, in_list, seen, ref steps } = *shelving;
-        let mut items = vec![format!("first, {LONG_PIECE}")];
-        let mut seen = seen;
+        let Shelving { id, in_list, seen, place, rounds, ref steps } = *shelving;
+        let first = (vec![format!("first, {LONG_PIECE}")], seen);
+        let mut kept = first.clone();
         let limits = [1, 2];
         for (value, how) in steps {
-            match usize::try_from(*value).ok().and_then(|at| limits.get(at)) {
-                Some(limit) => {
-                    if *how == Shelve::ByHand {
-                        items.push(format!("by hand {value}, {LONG_PIECE}"));
-                    } else {
-                        items.push(format!("added {value}, {LONG_PIECE}"));
-                        items.push(format!("again {value}, {LONG_PIECE}"));
-                    }
-                    seen += limit;
+            let Some(limit) = usize::try_from(*value).ok().and_then(|at| limits.get(at)) else {
+                self.out.push_str("crashed\n");
+                if place == ShelfPlace::Locked {
+                    self.pouches_shown(id, in_list, &kept);
                 }
-                None => self.out.push_str("crashed\n"),
+                continue;
+            };
+            let mut pouch = if place == ShelfPlace::Locked { kept.clone() } else { first.clone() };
+            for turn in 0..rounds {
+                if how.by_hand() {
+                    pouch.0.push(format!("by hand {value} {turn}, {LONG_PIECE}"));
+                } else {
+                    pouch.0.push(format!("added {value} {turn}, {LONG_PIECE}"));
+                    pouch.0.push(format!("again {value} {turn}, {LONG_PIECE}"));
+                }
             }
-            let texts: Vec<String> = items.iter().map(|text| format!("\"{text}\"")).collect();
-            let pouch = format!("Pouch{id}(items=[{}], seen={seen})", texts.join(", "));
-            if in_list {
-                let _ = writeln!(self.out, "[{pouch}]");
+            pouch.1 += limit;
+            self.pouches_shown(id, in_list, &pouch);
+            if place == ShelfPlace::Locked {
+                kept = pouch;
+            }
+        }
+    }
+
+    /// What `listened{id}` prints: what the loop dropping the oldest heard, the last `size` sent,
+    /// then each inbox's messages, or `behind` for one that fell behind.
+    fn listened(&mut self, listening: &Listening) {
+        let Listening { size, sent, dropping, ref inboxes, .. } = *listening;
+        let shown = |from: i64| -> String {
+            let heard: Vec<String> = (from..=sent).map(|hit| hit.to_string()).collect();
+            format!("[{}]", heard.join(", "))
+        };
+        if dropping {
+            let _ = writeln!(self.out, "listened {}", shown((sent - size + 1).max(1)));
+        }
+        for looping in inboxes {
+            if sent > size {
+                self.out.push_str("behind\n");
             } else {
-                let _ = writeln!(self.out, "{{\"one\": {pouch}}}");
+                let _ = writeln!(self.out, "{} {}", if *looping { "looped" } else { "took" }, shown(1));
             }
+        }
+    }
+
+    /// A `Shelved` statement's list or dict holding its one pouch, as Fennec prints it.
+    fn pouches_shown(&mut self, id: usize, in_list: bool, (items, seen): &(Vec<String>, i64)) {
+        let texts: Vec<String> = items.iter().map(|text| format!("\"{text}\"")).collect();
+        let pouch = format!("Pouch{id}(items=[{}], seen={seen})", texts.join(", "));
+        if in_list {
+            let _ = writeln!(self.out, "[{pouch}]");
+        } else {
+            let _ = writeln!(self.out, "{{\"one\": {pouch}}}");
         }
     }
 

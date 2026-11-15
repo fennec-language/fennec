@@ -1054,6 +1054,112 @@ mod tests {
         finish();
     }
 
+    /// A server that takes two connections and answers neither until both have sent a line.
+    fn answers_once_both_have_spoken() -> u16 {
+        use std::io::{BufRead as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let both: Vec<std::net::TcpStream> = listener.incoming().flatten().take(2).collect();
+            for stream in &both {
+                let mut line = String::new();
+                let _ = std::io::BufReader::new(stream).read_line(&mut line);
+            }
+            for mut stream in &both {
+                let _ = stream.write_all(b"pong\n");
+            }
+        });
+        port
+    }
+
+    static BOTH_HEARD: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// Sends the server on port `env` a line and reads its answer, as a parked task.
+    extern "C" fn says_and_hears(env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        let port = u16::try_from(env).unwrap();
+        let heard = crate::stdlib::net::said_and_heard("127.0.0.1", port, b"ping\n");
+        assert_eq!(heard, Ok(b"pong\n".to_vec()));
+        BOTH_HEARD.fetch_add(1, Ordering::Relaxed);
+        0
+    }
+
+    /// A task waiting to read from a socket through a copy of it, as on Windows, parks: on one
+    /// worker, a second task gets to send what the first one's answer waits for. A read there
+    /// blocked its worker, so the second never ran, and neither was ever answered.
+    #[test]
+    fn a_read_that_waits_through_a_copy_of_its_socket_lets_its_workers_other_task_run() {
+        begin();
+        let port = answers_once_both_have_spoken();
+        let before = crate::embed::serve::PARKED_ON_COPIES.load(Ordering::Relaxed);
+        let on_copies = crate::stdlib::net::OnCopies::begin();
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let run = super::each_on_pool(run, pool, 2, super::Leaf::For(says_and_hears, i64::from(port)));
+        let ended = run.finish();
+        drop(on_copies);
+        assert_eq!(ended, 0);
+        assert_eq!(BOTH_HEARD.load(Ordering::Relaxed), 2);
+        assert!(crate::embed::serve::PARKED_ON_COPIES.load(Ordering::Relaxed) > before);
+        finish();
+    }
+
+    /// A server that takes connections and keeps them open, sending nothing.
+    fn silent_server() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let _kept: Vec<std::net::TcpStream> = listener.incoming().flatten().collect();
+        });
+        port
+    }
+
+    static KEPT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static ENDED_BY_A_CLOSE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// The first of two tasks keeps a connection to the silent server on port `env` and reads a
+    /// line from it, which never comes. The second closes that connection once the first waits.
+    extern "C" fn reads_or_closes(env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        use crate::stdlib::net::{Failure, kept, line_from, shut};
+        if from == 0 {
+            let handle = kept("127.0.0.1", u16::try_from(env).unwrap()).unwrap();
+            KEPT.store(handle, Ordering::SeqCst);
+            let read = line_from(handle);
+            let ended = matches!(read, Ok(None) | Err(Failure::Closed));
+            ENDED_BY_A_CLOSE.store(if ended { 1 } else { 2 }, Ordering::SeqCst);
+        } else {
+            // On the one worker this runs only while the other task is parked, and once the
+            // connection's kept the next place that parks is its read.
+            while KEPT.load(Ordering::SeqCst) == 0 {
+                crate::embed::serve::yield_now();
+            }
+            shut(KEPT.load(Ordering::SeqCst));
+        }
+        0
+    }
+
+    /// Closing a connection from one task ends a read another task is parked in, when the other
+    /// side neither sends nor closes: the socket's own way on Unix, and through a copy of it, as
+    /// on Windows. There a worker's poll isn't told of a close made from this side, so the close
+    /// wakes the parked task itself. Nothing tested this on any system.
+    #[test]
+    fn a_close_from_another_task_ends_a_read_parked_on_the_connection() {
+        begin();
+        let port = silent_server();
+        for through_a_copy in [false, true] {
+            KEPT.store(0, Ordering::SeqCst);
+            ENDED_BY_A_CLOSE.store(0, Ordering::SeqCst);
+            let on_copies = through_a_copy.then(crate::stdlib::net::OnCopies::begin);
+            let pool = super::pool::with_threads(1);
+            let run = super::Run::new(1).waiting(true);
+            let run = super::each_on_pool(run, pool, 2, super::Leaf::For(reads_or_closes, i64::from(port)));
+            let ended = run.finish();
+            drop(on_copies);
+            assert_eq!(ended, 0);
+            assert_eq!(ENDED_BY_A_CLOSE.load(Ordering::SeqCst), 1, "through a copy: {through_a_copy}");
+        }
+        finish();
+    }
+
     #[test]
     fn a_reduction_that_may_wait_comes_to_the_same_bits() {
         begin();

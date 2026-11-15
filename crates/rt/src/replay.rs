@@ -83,8 +83,8 @@ struct Player {
     /// Whether the recording logged standard output's bursts, so a replay writes them in that
     /// order: not one made before that was recorded, nor one of a run that printed nothing.
     orders_output: bool,
-    /// Bursts tasks have written that aren't due yet, each task's in order, by its name.
-    held: HashMap<String, VecDeque<Vec<u8>>>,
+    /// What tasks have written that isn't due yet, each task's bytes in order, by its name.
+    held: HashMap<String, VecDeque<u8>>,
     /// Whether the log ends with the mark its run wrote as it ended, so a replay that runs out of
     /// it is the program's doing, not the log's.
     whole: bool,
@@ -276,11 +276,17 @@ const OUTPUT: &str = "out";
 static WRITING: Mutex<()> = Mutex::new(());
 
 /// Writes a burst of standard output with `write`. In a recording, it's logged under the task that
-/// wrote it, so the log has how tasks' output interleaved. How tasks' output interleaves is an
-/// outside input, as the clock is, and a replay repeats it: a burst is held until every burst
-/// recorded before it has gone out, and whichever task's burst comes in writes all that are then
-/// due. No task waits for another to write, so one whose turn is behind work queued on its own
-/// thread doesn't hold that work up.
+/// wrote it, with how long it was, so the log has how tasks' output interleaved. How tasks' output
+/// interleaves is an outside input, as the clock is, and a replay repeats it: what a task writes
+/// is held until every burst recorded before it has gone out, and whichever task writes next
+/// writes all that are then due. No task waits for another to write, so one whose turn is behind
+/// work queued on its own thread doesn't hold that work up.
+///
+/// **A replay goes by each task's bytes, not by how many times it wrote.** Where a task's output
+/// is cut into bursts depends on when it happened to wait: a thread writes what it has printed
+/// before it sleeps on a channel, and in a replay it waits for its turn there instead, without
+/// sleeping. So the same output can come in fewer bursts than were recorded, or in more. The
+/// recorded lengths say where each burst ended, and a replay cuts what a task writes at those.
 pub(crate) fn writing(bytes: &[u8], write: impl Fn(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
     match mode() {
         Mode::Off => write(bytes),
@@ -296,18 +302,40 @@ pub(crate) fn writing(bytes: &[u8], write: impl Fn(&[u8]) -> std::io::Result<()>
             if !player.orders_output {
                 return write(bytes);
             }
-            player.held.entry(running().to_string()).or_default().push_back(bytes.to_vec());
-            loop {
-                let next = player.streams.get(OUTPUT).and_then(VecDeque::front).map(|(call, _)| call.clone());
-                let Some(task) = next.as_deref().and_then(|call| call.strip_suffix(" write")) else { break };
-                let Some(burst) = player.held.get_mut(task).and_then(VecDeque::pop_front) else { break };
-                write(&burst)?;
-                if let Some(stream) = player.streams.get_mut(OUTPUT) {
-                    stream.pop_front();
-                }
-            }
-            Ok(())
+            player.takes_output(&running(), bytes, write)
         }
+    }
+}
+
+impl Player {
+    /// Takes what `task` has written, and writes with `write` every recorded burst that's now
+    /// due, in the order they were recorded: each as long as it was then, from its task's bytes,
+    /// once that task has written that many.
+    fn takes_output(
+        &mut self,
+        task: &str,
+        bytes: &[u8],
+        write: impl Fn(&[u8]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.held.entry(task.to_owned()).or_default().extend(bytes);
+        loop {
+            let next = self.streams.get(OUTPUT).and_then(VecDeque::front).and_then(|(call, payload)| {
+                let task = call.strip_suffix(" write")?;
+                let length = <[u8; 8]>::try_from(payload.as_slice()).ok().map(u64::from_le_bytes)?;
+                Some((task.to_owned(), usize::try_from(length).ok()?))
+            });
+            let Some((next, length)) = next else { break };
+            let held = self.held.entry(next).or_default();
+            if held.len() < length {
+                break;
+            }
+            let burst: Vec<u8> = held.drain(..length).collect();
+            write(&burst)?;
+            if let Some(stream) = self.streams.get_mut(OUTPUT) {
+                stream.pop_front();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -502,7 +530,7 @@ pub fn unfinished() -> Option<String> {
     let Mode::Replay(player) = mode() else { return None };
     let player = player.lock().unwrap_or_else(PoisonError::into_inner);
     let mut held: Vec<&String> =
-        player.held.iter().filter(|(_, bursts)| !bursts.is_empty()).map(|(task, _)| task).collect();
+        player.held.iter().filter(|(_, bytes)| !bytes.is_empty()).map(|(task, _)| task).collect();
     held.sort();
     if let Some(task) = held.first() {
         return Some(format!(

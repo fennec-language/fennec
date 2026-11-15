@@ -23,7 +23,7 @@ check() {
 # shellcheck disable=SC2016
 printf '#!/usr/bin/env bash\n[ -z "${GATE_FAILS:-}" ] || { echo "FAILED: tests"; exit 1; }\necho gate passed\n' > "$GATE"
 # shellcheck disable=SC2016
-printf '#!/usr/bin/env bash\necho "$*" >> "$OPENED"\n' > "$GH"
+printf '#!/usr/bin/env bash\necho "$*" >> "$OPENED"\nwhile [ $# -gt 0 ]; do [ "$1" = --body-file ] && cat "$2" > "$OPENED.body"; shift; done\n' > "$GH"
 chmod +x "$GATE" "$GH"
 echo "What it does." > "$work/body.md"
 
@@ -101,7 +101,12 @@ check "no pull request was opened for any of those" "" "$(cat "$OPENED" 2> /dev/
 check "a clean branch is pushed at its own commit" "0 $(git rev-parse HEAD)" "$? $(pushed clean)"
 git merge-base --is-ancestor origin/main HEAD
 check "with main merged in" 0 "$?"
-check "and its pull request opened" "pr create --base main --head clean --title Clean --body-file $work/body.md" "$(cat "$OPENED")"
+check "and its pull request opened" "pr create --base main --head clean --title Clean --body-file" "$(sed 's/ [^ ]*$//' "$OPENED")"
+# A gate other than gate.sh is a short one, and the text says so first, then what was written.
+check "saying it had a SHORT gate, then its text" "**SHORT gate**: only \`$GATE\` ran, not \`.github/scripts/gate.sh\` and its steps. Don't merge on it.|What it does." \
+  "$(sed -n '1p;3p' "$OPENED.body" | paste -sd '|' -)"
+grep -q "SHORT gate: only $GATE ran" "$work/said"
+check "and saying it where it ran" 0 "$?"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures failed"

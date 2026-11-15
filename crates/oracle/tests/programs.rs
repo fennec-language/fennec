@@ -715,6 +715,35 @@ fn bytes_are_made_read_joined_and_decoded() {
     );
 }
 
+/// A template string builds the core's own `Template`, run from its source: its texts, values and
+/// expressions, and each `Interpolation` with its format spec. `is bytes` tells bytes from the
+/// other members of a union. What it prints is what the compiled program printed.
+#[test]
+fn a_template_string_builds_the_cores_template() {
+    prints(
+        "
+        type Field = int | bytes
+
+        def kind(value: Field) -> str:
+            if value is bytes:
+                return 'bytes ' + value.hex()
+            return 'int'
+
+        def main(stdout: Stdout):
+            row = 7
+            blob = bytes([1, 255])
+            query: Template[Field] = t'row = {row} and blob = {blob:x}'
+            stdout.print(query.strings, len(query.values), query.expressions)
+            for part in query.interpolations():
+                stdout.print(part.expression, part.format_spec, kind(part.value))
+            return
+        ",
+        "[\"row = \", \" and blob = \", \"\"] 2 [\"row\", \"blob\"]\n\
+         row  int\n\
+         blob x bytes 01ff\n",
+    );
+}
+
 /// `main` may take `Env`, `Stderr`, `Signals` and a `Clock`. `Env` is `std.env`'s, run from its
 /// own source, with `get` reading the variables the oracle was started with and `secret`
 /// failing with `Missing`. Standard error is written and not compared, no signal ever comes, and

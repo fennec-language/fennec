@@ -172,7 +172,7 @@ pub(super) fn receive(channel: &Arc<Channel>, listener: i64, timeout_ns: i64, va
                 super::met(channel, "receive", TIMED_OUT);
                 return TIMED_OUT;
             }
-            Waited::Stopped => return DONE,
+            Waited::Stopped => return super::stopped(channel, "receive"),
             Waited::CutShort => {
                 super::met(channel, "receive", CLOSED);
                 return CLOSED;

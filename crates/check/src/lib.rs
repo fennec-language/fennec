@@ -1163,6 +1163,8 @@ pub struct Signatures {
 /// A struct's fields, with their types, in the order they're written.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Struct {
+    /// Its type parameters' names, in order: `T` for `Pair[T]`, which its fields' types name.
+    pub generics: Vec<String>,
     pub fields: Vec<(String, Type)>,
     /// Whether any field has a `where` rule, checked whenever a value is made.
     pub rules: bool,
@@ -1174,6 +1176,8 @@ pub struct Struct {
 /// An enum's cases, in the order they're written, each with its fields and their types.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Enum {
+    /// Its type parameters' names, in order, which its cases' fields' types name.
+    pub generics: Vec<String>,
     pub cases: Vec<(String, Vec<(String, Type)>)>,
     /// Whether any field has a `where` rule, checked whenever a value is made.
     pub rules: bool,

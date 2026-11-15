@@ -1352,7 +1352,7 @@ pub(crate) fn park_on_fd(
         registry.as_ref().is_some_and(|registry| registry.register(&mut source, token, interest).is_ok())
     });
     if !registered {
-        return Parked::Ready;
+        return parked_a_moment(token, deadline);
     }
     PARKING.set(Some((interest, deadline)));
     let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
@@ -1405,8 +1405,9 @@ pub(crate) static PARKED_ON_COPIES: AtomicU64 = AtomicU64::new(0);
 /// client then waited for ever on one thread: the worker blocked reading an answer was the one
 /// that had to take the connection and give it.
 ///
-/// Unix hands the poll the socket itself (`park_on_fd`), so there only tests come this way.
-#[cfg(any(test, not(unix)))]
+/// Unix hands the poll the socket itself (`park_on_fd`) for one wait at a time. A second wait on
+/// the same connection, as when one task reads it while another writes to it, comes this way: a
+/// poll takes a descriptor once, and a copy has one of its own.
 pub(crate) fn park_on_copy(
     token: Token,
     socket: &std::net::TcpStream,
@@ -1422,14 +1423,8 @@ pub(crate) fn park_on_copy(
         });
         registered.then_some(source)
     });
-    // With no copy to be had, or nowhere to register one, it looks again in a moment, parked
-    // meanwhile so its worker goes on with others.
     let Some(mut source) = copied else {
-        let soon = Instant::now() + Duration::from_millis(1);
-        return match park_on_token(token, Some(soon), true) {
-            Parked::Cancelled => Parked::Cancelled,
-            Parked::Ready | Parked::TimedOut => Parked::Ready,
-        };
+        return parked_a_moment(token, deadline);
     };
     #[cfg(test)]
     PARKED_ON_COPIES.fetch_add(1, Ordering::Relaxed);
@@ -1437,6 +1432,29 @@ pub(crate) fn park_on_copy(
     let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
     REGISTRY.with_borrow(|registry| registry.as_ref().map(|registry| registry.deregister(&mut source)));
     parked_as(woken)
+}
+
+/// How long a wait that couldn't be registered parks before it looks again.
+const LOOKS_AGAIN_AFTER: Duration = Duration::from_millis(1);
+
+/// What a wait on a socket does when the worker's poll wouldn't take the socket, or no copy of it
+/// could be made: it parks a moment on `token` alone, so its worker goes on with others and polls,
+/// and then says to look again, or that `deadline` has passed.
+///
+/// This is a retry, and it's what's left when the system is out of something: descriptors for a
+/// copy, or room in the poll. Nothing here can make more. Saying "ready" at once, as a wait
+/// through the socket itself did, had its task look again and again without its worker ever
+/// polling, and a wait with a deadline never ran out of time.
+fn parked_a_moment(token: Token, deadline: Option<Instant>) -> Parked {
+    let now = Instant::now();
+    if deadline.is_some_and(|deadline| deadline <= now) {
+        return Parked::TimedOut;
+    }
+    let soon = now + LOOKS_AGAIN_AFTER;
+    match park_on_token(token, Some(deadline.map_or(soon, |deadline| deadline.min(soon))), true) {
+        Parked::Cancelled => Parked::Cancelled,
+        Parked::Ready | Parked::TimedOut => Parked::Ready,
+    }
 }
 
 /// A token for a wait on this thread that no other has.

@@ -1160,6 +1160,120 @@ mod tests {
         finish();
     }
 
+    /// The connection the two tasks below share, and how each one's wait on it ended: 1 for as it
+    /// should have.
+    static SHARED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static READ_IT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static WROTE_IT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    /// Whether the first of the two tasks to wait is the one that writes.
+    static WRITER_FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    /// More than a socket's buffers hold, so writing it waits for the other side to read.
+    const MUCH: usize = 8 << 20;
+    /// How long each wait has, so a wake that's lost fails the test rather than hang it.
+    const WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// The first of two tasks keeps a connection to the server on port `env`, and the second uses
+    /// the same one. One reads a line from it and the other writes `MUCH` to it, each waiting on
+    /// the connection for the server, which serves neither until both wait.
+    extern "C" fn reads_while_another_writes(env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        use crate::stdlib::net::{kept, line_from_within, written_within};
+        let first = from == 0;
+        if first {
+            SHARED.store(kept("127.0.0.1", u16::try_from(env).unwrap()).unwrap(), Ordering::SeqCst);
+        }
+        // On the one worker the second task runs only while the first is parked, and once the
+        // connection's kept the next place the first parks is its wait on it.
+        while SHARED.load(Ordering::SeqCst) == 0 {
+            crate::embed::serve::yield_now();
+        }
+        let handle = SHARED.load(Ordering::SeqCst);
+        if first == WRITER_FIRST.load(Ordering::SeqCst) {
+            let wrote = written_within(handle, &vec![b'x'; MUCH], WITHIN);
+            WROTE_IT.store(if wrote.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+        } else {
+            let read = line_from_within(handle, WITHIN);
+            READ_IT.store(if read == Ok(Some(b"done\n".to_vec())) { 1 } else { 2 }, Ordering::SeqCst);
+        }
+        0
+    }
+
+    /// A server for one connection. It does nothing until two tasks wait on the other end, and
+    /// gives back how many of them had the socket itself and how many a copy. Then it serves the
+    /// one that came second first, sending the reader its line and reading all the writer wrote:
+    /// so the wait that ends first is the one with the copy, and ending must leave the other's
+    /// place in its worker's poll alone.
+    fn serves_the_second_wait_first(writer_first: bool) -> (u16, std::thread::JoinHandle<(usize, usize)>) {
+        use std::io::{Read as _, Write as _};
+        fn read_all_of_it(mut from: &std::net::TcpStream) {
+            let mut left = MUCH;
+            let mut some = vec![0_u8; 1 << 16];
+            while left > 0 {
+                match from.read(&mut some) {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => left = left.saturating_sub(read),
+                }
+            }
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(WITHIN)).unwrap();
+            let started = std::time::Instant::now();
+            let mut waiting = (0, 0);
+            while waiting.0 + waiting.1 < 2 && started.elapsed() < WITHIN {
+                std::thread::yield_now();
+                waiting = crate::stdlib::net::waiting_on(SHARED.load(Ordering::SeqCst));
+            }
+            if writer_first {
+                let _ = (&stream).write_all(b"done\n");
+                read_all_of_it(&stream);
+            } else {
+                read_all_of_it(&stream);
+                let _ = (&stream).write_all(b"done\n");
+            }
+            // The connection stays open until both tasks are done with it.
+            let done = || READ_IT.load(Ordering::SeqCst) != 0 && WROTE_IT.load(Ordering::SeqCst) != 0;
+            while !done() && started.elapsed() < 3 * WITHIN {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            waiting
+        });
+        (port, server)
+    }
+
+    /// Two tasks on one worker wait on one connection at once, one to read from it and one for
+    /// room to write to it, as a chat's reader and the task that broadcasts to it do. Each is
+    /// woken by what it waits for, whichever came first.
+    ///
+    /// Both used to hand the worker's poll the socket's own descriptor, which a poll takes once.
+    /// On macOS the first wait to end took both off the poll and the other was never woken: this
+    /// test then fails when that one's ten seconds run out. On Linux the second was refused and
+    /// tried again at once for as long as it waited, its worker never polling: there it fails on
+    /// the count, as nothing went through a copy.
+    #[test]
+    fn a_reader_and_a_writer_parked_on_one_connection_are_each_woken() {
+        begin();
+        for writer_first in [false, true] {
+            for slot in [&SHARED, &READ_IT, &WROTE_IT] {
+                slot.store(0, Ordering::SeqCst);
+            }
+            WRITER_FIRST.store(writer_first, Ordering::SeqCst);
+            let (port, server) = serves_the_second_wait_first(writer_first);
+            let pool = super::pool::with_threads(1);
+            let run = super::Run::new(1).waiting(true);
+            let leaf = super::Leaf::For(reads_while_another_writes, i64::from(port));
+            let ended = super::each_on_pool(run, pool, 2, leaf).finish();
+            let waiting = server.join().unwrap();
+            crate::stdlib::net::shut(SHARED.load(Ordering::SeqCst));
+            assert_eq!(ended, 0);
+            assert_eq!(WROTE_IT.load(Ordering::SeqCst), 1, "the write; writer first: {writer_first}");
+            assert_eq!(READ_IT.load(Ordering::SeqCst), 1, "the read; writer first: {writer_first}");
+            assert_eq!(waiting, (1, 1), "one has the socket and one a copy; writer first: {writer_first}");
+        }
+        finish();
+    }
+
     #[test]
     fn a_reduction_that_may_wait_comes_to_the_same_bits() {
         begin();

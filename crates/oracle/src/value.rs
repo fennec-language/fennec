@@ -103,6 +103,8 @@ pub(crate) enum Cap {
     Signals,
     /// The system's clock, which `sleep` moves on without waiting.
     Clock,
+    /// Random bytes and seeds, which differ every run, as the compiled program's do.
+    Entropy,
 }
 
 /// What an `Fs` reaches: everything, as the one `main` is given does, or less, once `only` or

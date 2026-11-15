@@ -825,35 +825,50 @@ pub(crate) mod tls {
         }
     }
 
-    /// For tests: what connections are made with in place of what the system trusts, so a test can
-    /// make a request of a server of its own, whose certificate only the tests' authority signed.
+    /// For tests: what connections to a test's own server are made with in place of what the
+    /// system trusts, as its certificate is one only the tests' authority signed. Each is for one
+    /// port, the test's server's: tests run side by side, and a connection of another test's, to
+    /// another port, goes by what the system trusts, as that test may be there to see.
     #[cfg(test)]
-    static TRUSTED_BY_TESTS: std::sync::Mutex<(Option<Arc<ClientConfig>>, usize)> =
-        std::sync::Mutex::new((None, 0));
+    static TRUSTED_BY_TESTS: std::sync::Mutex<Vec<(u16, Arc<ClientConfig>)>> =
+        std::sync::Mutex::new(Vec::new());
 
-    /// For tests: while any of these lives, requests are made with the `ClientConfig` it was given.
-    /// Tests run side by side, so they're counted: one ending leaves the others theirs.
+    /// For tests: while one of these lives, connections to its port are made with the
+    /// `ClientConfig` it was given.
     #[cfg(test)]
-    pub(crate) struct TrustedByTests;
+    pub(crate) struct TrustedByTests(u16);
 
     #[cfg(test)]
     impl TrustedByTests {
-        pub(crate) fn begin(config: Arc<ClientConfig>) -> TrustedByTests {
-            let mut trusted = TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            *trusted = (Some(config), trusted.1 + 1);
-            TrustedByTests
+        pub(crate) fn begin(port: u16, config: Arc<ClientConfig>) -> TrustedByTests {
+            TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((port, config));
+            TrustedByTests(port)
         }
     }
 
     #[cfg(test)]
     impl Drop for TrustedByTests {
         fn drop(&mut self) {
-            let mut trusted = TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            trusted.1 = trusted.1.saturating_sub(1);
-            if trusted.1 == 0 {
-                trusted.0 = None;
+            TRUSTED_BY_TESTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(port, _)| *port != self.0);
+        }
+    }
+
+    /// How a connection over `tcp` is made: `config`, but for a test's connection to a port it
+    /// has said what to trust for.
+    fn config_over(tcp: &TcpStream) -> Result<Arc<ClientConfig>, Failure> {
+        #[cfg(test)]
+        if let Ok(peer) = tcp.peer_addr() {
+            let trusted = TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((_, config)) = trusted.iter().find(|(port, _)| *port == peer.port()) {
+                return Ok(Arc::clone(config));
             }
         }
+        #[cfg(not(test))]
+        let _: &TcpStream = tcp;
+        config()
     }
 
     /// How connections are made, worked out once: loading what's trusted takes a while. Every
@@ -861,12 +876,6 @@ pub(crate) mod tls {
     /// that turns it off; rustls speaks TLS 1.2 and 1.3 only; and the host's name is sent (SNI).
     pub(super) fn config() -> Result<Arc<ClientConfig>, Failure> {
         static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
-        #[cfg(test)]
-        if let Some(trusted) =
-            TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0.clone()
-        {
-            return Ok(trusted);
-        }
         CONFIG
             .get_or_init(|| {
                 let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -946,7 +955,8 @@ pub(crate) mod tls {
         timeout: Duration,
         waits: Option<Waits<'_>>,
     ) -> Result<Box<dyn SecureStream>, Failure> {
-        handshake(tcp, host, timeout, config()?, waits)
+        let config = config_over(&tcp)?;
+        handshake(tcp, host, timeout, config, waits)
     }
 
     /// The server's TLS: what it'll prove itself with, for each connection it takes.
@@ -995,7 +1005,7 @@ pub(crate) mod tls {
                 .map_err(|error| Failure::Tls(error.to_string()))?;
             let mut tcp = tcp;
             match waits {
-                Some(waits) => shake_hands_waiting(&mut connection, &mut tcp, timeout, waits)?,
+                Some(waits) => connection = shake_hands_waiting(connection, &mut tcp, timeout, waits)?,
                 None => shake_hands(&mut connection, &mut tcp, timeout)?,
             }
             Ok(Box::new(Buffered(BufReader::new(StreamOwned::new(connection, tcp)))))
@@ -1090,23 +1100,45 @@ pub(crate) mod tls {
 
     /// Drives a handshake on a socket that doesn't block. Wherever it can't go on, `waits` waits
     /// until the socket can take what the handshake has to send, or has more of the other side's
-    /// to read, and says true when there's no more waiting to do. Nothing here blocks, so a
+    /// to read, and says true when there's no more waiting to do. No wait here blocks, so a
     /// handshake holds no thread however long the other side takes over it.
+    ///
+    /// What the other side sent is worked through on a blocking thread, while the task parks.
+    /// That's the handshake's arithmetic: a signature made, or a certificate checked against what
+    /// the system trusts, which can take the system a while. Done here it would hold the task's
+    /// worker, and every task on it. It takes as long as the processor does, whatever the other
+    /// side does, so it's no wait a stranger can stretch.
     fn shake_hands_waiting<C>(
-        connection: &mut C,
+        connection: C,
         tcp: &mut TcpStream,
         timeout: Duration,
         waits: Waits<'_>,
-    ) -> Result<(), Failure>
+    ) -> Result<C, Failure>
     where
-        C: std::ops::DerefMut<Target = rustls::ConnectionCommon<<C as Handshaking>::Data>> + Handshaking,
+        C: std::ops::DerefMut<Target = rustls::ConnectionCommon<<C as Handshaking>::Data>>
+            + Handshaking
+            + Send
+            + 'static,
     {
+        let mut connection = connection;
         // The handshake, and then whatever of it is still to send: the last of it is the server's.
         while connection.is_handshaking() || connection.wants_write() {
-            let stepped = if connection.is_handshaking() {
-                connection.complete_io(tcp).map(drop)
-            } else {
+            let stepped = if connection.wants_write() {
                 connection.write_tls(tcp).map(drop)
+            } else {
+                match connection.read_tls(tcp) {
+                    Ok(0) => Err(ErrorKind::UnexpectedEof.into()),
+                    Ok(_) => {
+                        let (back, worked) = worked_through(connection);
+                        connection = back;
+                        if worked.is_err() {
+                            // The alert that says why goes too, if the socket takes it now.
+                            drop(connection.write_tls(tcp));
+                        }
+                        worked
+                    }
+                    Err(error) => Err(error),
+                }
             };
             match stepped {
                 Ok(()) => {}
@@ -1120,7 +1152,26 @@ pub(crate) mod tls {
                 Err(error) => return Err(handshake_failure(&error, timeout)),
             }
         }
-        Ok(())
+        Ok(connection)
+    }
+
+    /// `connection` with what it's just read worked through, on a blocking thread while this task
+    /// parks.
+    fn worked_through<C>(connection: C) -> (C, std::io::Result<()>)
+    where
+        C: std::ops::DerefMut<Target = rustls::ConnectionCommon<<C as Handshaking>::Data>>
+            + Handshaking
+            + Send
+            + 'static,
+    {
+        super::super::net::off_thread(move || {
+            let mut connection = connection;
+            let worked = connection
+                .process_new_packets()
+                .map(drop)
+                .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error));
+            (connection, worked)
+        })
     }
 
     /// A handshake's failure, with a certificate the other side's refused for said in words a
@@ -1182,7 +1233,7 @@ pub(crate) mod tls {
             ClientConnection::new(config, name).map_err(|error| Failure::Tls(error.to_string()))?;
         let mut tcp = tcp;
         match waits {
-            Some(waits) => shake_hands_waiting(&mut connection, &mut tcp, timeout, waits)?,
+            Some(waits) => connection = shake_hands_waiting(connection, &mut tcp, timeout, waits)?,
             None => shake_hands(&mut connection, &mut tcp, timeout)?,
         }
         Ok(Box::new(Buffered(BufReader::new(StreamOwned::new(connection, tcp)))))
@@ -1198,11 +1249,11 @@ pub(crate) mod tls {
     ) -> Result<Box<dyn Secure>, Failure> {
         let name = ServerName::try_from(host.to_owned())
             .map_err(|_| Failure::Tls(format!("`{host}` can't be checked against a certificate")))?;
-        let mut connection =
-            ClientConnection::new(config()?, name).map_err(|error| Failure::Tls(error.to_string()))?;
+        let mut connection = ClientConnection::new(config_over(&tcp)?, name)
+            .map_err(|error| Failure::Tls(error.to_string()))?;
         let mut tcp = tcp;
         if let Some(waits) = waits {
-            shake_hands_waiting(&mut connection, &mut tcp, timeout, waits)?;
+            let connection = shake_hands_waiting(connection, &mut tcp, timeout, waits)?;
             return Ok(Box::new(StreamOwned::new(connection, tcp)));
         }
         let left = deadline.saturating_duration_since(Instant::now());

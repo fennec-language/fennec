@@ -1704,11 +1704,17 @@ pub(crate) fn task_parks() -> bool {
     }
 }
 
-/// `work`, run on a thread that may block while this task parks, or here when it can't. Only a
-/// name's lookup comes this way now: every wait on a socket parks on the socket.
-#[cfg(any(test, feature = "threads"))]
+/// `work`, run on a thread that may block while this task parks, or here when it can't. A name's
+/// lookup comes this way, and a handshake's arithmetic: every wait on a socket parks on the socket.
 pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
-    crate::embed::serve::off_thread(work)
+    #[cfg(any(test, feature = "threads"))]
+    {
+        crate::embed::serve::off_thread(work)
+    }
+    #[cfg(not(any(test, feature = "threads")))]
+    {
+        work()
+    }
 }
 
 /// Runs `read` on a connection, plain or through TLS: parked if it has to wait in a task, and
@@ -3235,10 +3241,11 @@ pub(crate) mod tests {
             }
         }
 
-        /// While what this gives back lives, the HTTP client trusts the tests' own certificate
-        /// authority, and nothing else: for a request to `https_echoing`.
-        pub(crate) fn trusting_the_tests() -> http::tls::TrustedByTests {
-            http::tls::TrustedByTests::begin(client_config())
+        /// While what this gives back lives, a connection made to `port` trusts the tests' own
+        /// certificate authority, and nothing else: for a test's own server there. Every other
+        /// connection goes by what the system trusts.
+        pub(crate) fn trusting_the_tests(port: u16) -> http::tls::TrustedByTests {
+            http::tls::TrustedByTests::begin(port, client_config())
         }
 
         /// An HTTPS server on a port of its own, with the tests' certificate for `localhost`, for

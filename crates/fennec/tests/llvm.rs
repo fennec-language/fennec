@@ -16389,26 +16389,17 @@ fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::
 }
 
 /// A server's blocking work isn't starved by clients waiting on that same server. Clients in
-/// `parallel` rounds `net.post` to a server served from a task, whose handler writes to SQLite.
-/// Each client's exchange holds a blocking thread while it waits for its answer (#1790), and the
-/// handler's SQLite call needs one too. With a fixed eight, eight clients took every thread, the
-/// handlers queued behind them, and the clients failed at their 30-second timeout. The pool now
-/// grows while every thread is busy, so the handlers get theirs.
+/// `parallel` rounds `net.post` to a server served from a task, whose handler writes to SQLite on
+/// a blocking thread. When each client's exchange held a blocking thread while it waited for its
+/// answer, eight clients took all of a fixed eight, the handlers queued behind them, and the
+/// clients failed at their 30-second timeout. Exchanges park on their sockets now (#1823), and the
+/// pool grows while every thread is busy, so the handlers get theirs at 300 clients too.
 ///
 /// Each run is built for a heap audit and run under it, on 1, 4 and 16 threads: it ends with
 /// what it should have printed, nothing live and nothing said.
 #[test]
 fn a_servers_blocking_work_isnt_starved_by_its_own_clients() -> std::io::Result<()> {
-    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32])
-}
-
-/// Past the pool's 64 threads, a server's own clients still starve it: 64 of them hold every
-/// blocking thread waiting on answers whose SQLite calls wait behind them, until their timeouts
-/// fail them, in waves. An exchange that parks on its socket instead of holding a thread ends it.
-#[test]
-#[ignore = "waits on #1790: past the blocking pool's most, clients waiting on their answers hold every thread"]
-fn a_servers_blocking_work_isnt_starved_by_more_clients_than_the_pool_has_threads() -> std::io::Result<()> {
-    served_while_its_clients_post("blocking-pool-past-the-most", &[300])
+    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32, 300])
 }
 
 /// Builds `served_handler_blocks_while_clients_post.fen` for a heap audit, and runs it with each

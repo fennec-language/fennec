@@ -269,7 +269,7 @@ impl Run {
         crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();
         super::swap_capture(&mut capture);
-        Started { since: super::threads::made_so_far(), was, from, capture }
+        Started { since: super::threads::made_scope_starts(), was, from, capture }
     }
 
     /// Keeps what the range just run on this thread made since `since`, and how it changed the
@@ -282,6 +282,7 @@ impl Run {
         }
         crate::replay::swap(&mut was);
         super::swap_capture(&mut capture);
+        super::threads::made_scope_ends();
         if super::threads::index() != self.caller {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
             let made = super::threads::hand_over(since);

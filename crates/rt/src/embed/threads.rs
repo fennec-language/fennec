@@ -341,6 +341,8 @@ pub(super) fn job_ends(serving: Option<Serving>) {
 #[derive(Default)]
 pub(crate) struct Accounts {
     made: Vec<u64>,
+    /// Whether it let its list of what it made go, and how many ranges or chunks have it marked.
+    made_listing: super::heap::Listing,
     lent: Option<Arc<Table>>,
     lent_owners: HashMap<u64, i64, std::hash::BuildHasherDefault<super::heap::AddressHasher>>,
     printed: Vec<u8>,
@@ -403,7 +405,7 @@ impl Accounts {
 #[cfg(any(test, feature = "threads"))]
 pub(crate) fn swap_accounts(accounts: &mut Accounts) {
     super::with(|state| {
-        state.heap.swap_made(&mut accounts.made, &mut accounts.task);
+        state.heap.swap_made(&mut accounts.made, &mut accounts.made_listing, &mut accounts.task);
         let same = match (&state.heap.lent, &accounts.lent) {
             (Some(here), Some(there)) => Arc::ptr_eq(here, there),
             (None, None) => true,
@@ -594,11 +596,22 @@ pub(super) fn waiting() -> Vec<u64> {
     remote(|queues| queues.remove(&own_queue()).unwrap_or_default())
 }
 
-/// How many blocks this thread's runtime has made since it last handed them over: where a
-/// task starts, so it hands over only what it made. Work a worker steals while the task waits
-/// starts and ends inside it, and hands its own over first.
+/// How many blocks this thread's runtime has listed as made since it last handed them over.
 pub fn made_so_far() -> usize {
     super::with(|state| state.heap.made_so_far())
+}
+
+/// Where this thread's list of what it's made is, as a range or chunk starts here: it hands over
+/// only what's listed after, with `hand_over`, and says `made_scope_ends` when it's done, handing
+/// over or not. Work a worker steals while a range waits starts and ends inside it, and hands its
+/// own over first.
+pub fn made_scope_starts() -> usize {
+    super::with(|state| state.heap.made_scope_starts())
+}
+
+/// A range or chunk that marked this thread's list has ended.
+pub fn made_scope_ends() {
+    super::with(|state| state.heap.made_scope_ends());
 }
 
 /// What this thread's runtime made since `since` that outlives the task it ran, handed over

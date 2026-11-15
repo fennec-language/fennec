@@ -657,7 +657,9 @@ fn map_of_task(
     element: i64,
     weight: Weight,
 ) -> Option<i64> {
-    if weight == Weight::Light || length < 2 {
+    // A light body stays here, as copying what it captures costs about what running it does: but
+    // not under `FENNEC_PARALLEL_STRESS`, which sends every call to the pool, a task's too.
+    if (weight == Weight::Light && !pool::stressed()) || length < 2 {
         return None;
     }
     let (here, stop) = pool::for_task()?;
@@ -747,7 +749,9 @@ fn run_reduce(
     }
     // A reduction's leaves depend on the length alone, not on its items' sizes, so it combines
     // in the same order whatever the items are.
-    if waiting && let Some(code) = reduce_of_task(length, (body, combine, env), result) {
+    if (waiting || pool::stressed())
+        && let Some(code) = reduce_of_task(length, (body, combine, env), result, waiting)
+    {
         return code;
     }
     let run = Run::new(crate::builtins::REDUCE_LEAF).waiting(waiting);
@@ -768,11 +772,13 @@ fn run_reduce(
 
 /// A reduction a launched task makes, whose body may wait, over two items or more: on the task's
 /// pool, as `map_of_task` runs a comprehension, lending a copy of what the body captures. `None`
-/// anywhere else, and the ranges then run here.
+/// anywhere else, and the ranges then run here. Under `FENNEC_PARALLEL_STRESS` it's every
+/// reduction a task makes, `waiting` or not.
 fn reduce_of_task(
     length: usize,
     (body, combine, env): (ReduceBody, Combine, i64),
     result: &mut i64,
+    waiting: bool,
 ) -> Option<i64> {
     if length < 2 {
         return None;
@@ -781,7 +787,7 @@ fn reduce_of_task(
     let (copy, table) = copied_to_lend(env)?;
     let lent = Arc::new(*table);
     let run =
-        Run::new(crate::builtins::REDUCE_LEAF).waiting(true).of_task(Arc::clone(&stop), Arc::clone(&lent));
+        Run::new(crate::builtins::REDUCE_LEAF).waiting(waiting).of_task(Arc::clone(&stop), Arc::clone(&lent));
     let run = Arc::new(run);
     let start = || {
         let (pool, started) = (here.0, Arc::clone(&run));
@@ -820,6 +826,31 @@ pub extern "C" fn parallel_reduce_waiting(
     result: &mut i64,
 ) -> i64 {
     run_reduce(list, (body, combine, env), result, true)
+}
+
+// The `_in_place` entry points are for `for mut x in parallel(list)`, which writes each item back
+// into its list where it is. The compiler makes the list the loop's alone first (`parallel.own`).
+// A plain `for` gives nothing back through what it captures, so its ranges could read a copy of
+// it, as a launched task's comprehension's do; a `for mut`'s can't, and the two are told apart by
+// which entry is called. Until the compiler calls these for `for mut`, both loops still come
+// through `fennec_parallel_for`, so neither is given a copy yet: a launched task runs a loop's
+// ranges itself, one after another, under either name (#1802).
+
+/// `fennec_parallel_for_in_place(list, body, env)`: `for mut x in parallel(list)`. Gives back 0,
+/// or 1 when the body failed.
+pub extern "C" fn parallel_for_in_place(list: i64, body: Body, env: i64) -> i64 {
+    run_for(list, body, env, Weight::Light)
+}
+
+/// `fennec_parallel_for_in_place_heavy`: `parallel_for_in_place`, for a body with a loop or a call
+/// in it.
+pub extern "C" fn parallel_for_in_place_heavy(list: i64, body: Body, env: i64) -> i64 {
+    run_for(list, body, env, Weight::Heavy)
+}
+
+/// `fennec_parallel_for_in_place_waiting`: `parallel_for_in_place`, for a body that may wait.
+pub extern "C" fn parallel_for_in_place_waiting(list: i64, body: Body, env: i64) -> i64 {
+    run_for(list, body, env, Weight::Waiting)
 }
 
 /// `fennec_parallel_stream_waiting`: `parallel_stream`, for a body that may wait.
@@ -1196,6 +1227,35 @@ mod tests {
             heap::free(joined);
         }
         assert_eq!(with(|state| state.heap.live()), before);
+        finish();
+    }
+
+    /// How many positions the ranges of each `for mut` entry's loop covered.
+    static IN_PLACE: [AtomicUsize; 3] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)];
+
+    extern "C" fn counts_positions(env: i64, from: i64, to: i64, _thread: i64) -> i64 {
+        let covered = usize::try_from(to - from).unwrap_or(0);
+        if let Some(count) = usize::try_from(env).ok().and_then(|entry| IN_PLACE.get(entry)) {
+            count.fetch_add(covered, Ordering::SeqCst);
+        }
+        0
+    }
+
+    /// `for mut` has entries of its own, which run a loop as the plain ones do: every position
+    /// once, whatever the body's weight.
+    #[test]
+    fn the_entries_for_a_loop_that_writes_back_cover_every_position_once() {
+        begin();
+        let list = lists::new(0, ITEMS);
+        assert_eq!(super::parallel_for_in_place(list, counts_positions, 0), 0);
+        assert_eq!(super::parallel_for_in_place_heavy(list, counts_positions, 1), 0);
+        heap::free(list);
+        let few = lists::new(0, 48);
+        assert_eq!(super::parallel_for_in_place_waiting(few, counts_positions, 2), 0);
+        heap::free(few);
+        let covered: Vec<usize> = IN_PLACE.iter().map(|count| count.load(Ordering::SeqCst)).collect();
+        let items = usize::try_from(ITEMS).unwrap();
+        assert_eq!(covered, [items, items, 48]);
         finish();
     }
 

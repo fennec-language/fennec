@@ -442,3 +442,167 @@ fn a_channel_freed_while_another_thread_keeps_it_is_closed_to_that_thread() {
     channel_free(go);
     finish();
 }
+
+/// How many threads are asleep on `channel`, waiting for room and for a message, and how many
+/// times it's told them to look again.
+fn asleep(channel: i64) -> (usize, usize, i64) {
+    let found = find(channel).unwrap();
+    let queue = found.queue();
+    (queue.asleep.for_room, queue.asleep.for_a_message, found.told.load(Ordering::Relaxed))
+}
+
+/// Waits until `channel` has `room` threads asleep for room and `message` for a message, however
+/// long the machine takes to get there. A count that never comes fails the test after a minute.
+fn until_asleep(channel: i64, room: usize, message: usize) {
+    let started = Instant::now();
+    while asleep(channel).0 != room || asleep(channel).1 != message {
+        let waited = started.elapsed() < Duration::from_secs(60);
+        assert!(waited, "waited a minute for {room} and {message} asleep: {:?}", asleep(channel));
+        std::thread::yield_now();
+    }
+}
+
+/// A thread of its own with a runtime, as a thread that isn't a task has: its waits on a channel
+/// block it.
+fn thread<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> std::thread::JoinHandle<T> {
+    std::thread::spawn(move || {
+        begin();
+        let done = body();
+        finish();
+        done
+    })
+}
+
+/// A channel tells the threads asleep on it to look again only when there are some. It told them
+/// at every send and every receive, asleep or not, which on Linux is a system call each time. The
+/// count of who's asleep is kept under the queue's lock by the wait itself, so a thread that's
+/// about to sleep is counted before the queue can change, and a change never finds the count
+/// behind.
+#[test]
+fn a_channel_tells_the_threads_asleep_on_it_and_nobody_when_there_are_none() {
+    begin();
+    let channel = channel_new(8);
+    for round in 0..1_000 {
+        assert_eq!(channel_send(channel, round, 0, PATIENCE), DONE);
+        assert_eq!(receive(channel, PATIENCE), (DONE, round));
+    }
+    assert_eq!(asleep(channel), (0, 0, 0), "nobody was asleep, so nobody was told");
+    // A receive with nothing to take sleeps, and the send that comes tells it, once.
+    let waiting = thread(move || receive(channel, PATIENCE));
+    until_asleep(channel, 0, 1);
+    assert_eq!(channel_send(channel, 7, 0, PATIENCE), DONE);
+    assert_eq!(waiting.join().unwrap(), (DONE, 7));
+    assert_eq!(asleep(channel), (0, 0, 1));
+    // A wait that runs out of time is no longer counted, and the send after it tells nobody.
+    assert_eq!(receive(channel, MILLISECOND), (TIMED_OUT, 0));
+    assert_eq!(channel_send(channel, 8, 0, PATIENCE), DONE);
+    assert_eq!(asleep(channel), (0, 0, 1));
+    channel_free(channel);
+    finish();
+}
+
+/// Eight threads send through a channel with room for one message, so nearly every send sleeps
+/// until there's room, and every one is woken: all 4,000 messages arrive, each once. A wake that's
+/// lost shows as a send or a receive that runs out of time, not as a test that hangs.
+#[test]
+fn many_threads_sending_through_a_channel_of_one_are_each_woken_for_room() {
+    const SENDERS: i64 = 8;
+    const EACH: i64 = 500;
+    begin();
+    let channel = channel_new(1);
+    let senders: Vec<_> = (0..SENDERS)
+        .map(|sender| {
+            thread(move || (0..EACH).all(|at| channel_send(channel, sender * EACH + at, 0, PATIENCE) == DONE))
+        })
+        .collect();
+    let mut seen = vec![false; usize::try_from(SENDERS * EACH).unwrap()];
+    for _ in 0..SENDERS * EACH {
+        let (got, value) = receive(channel, PATIENCE);
+        assert_eq!(got, DONE, "a message never came: {:?}", asleep(channel));
+        let at = usize::try_from(value).unwrap();
+        assert!(!std::mem::replace(&mut seen[at], true), "{value} came twice");
+    }
+    assert!(senders.into_iter().all(|sender| sender.join().unwrap()), "every send went");
+    assert_eq!(receive(channel, MILLISECOND), (TIMED_OUT, 0), "and nothing more");
+    assert_eq!((asleep(channel).0, asleep(channel).1), (0, 0));
+    channel_free(channel);
+    finish();
+}
+
+/// Closing a channel wakes a thread asleep sending to it, and one asleep receiving from it: each
+/// is told it's closed, rather than left asleep.
+#[test]
+fn closing_a_channel_wakes_the_threads_asleep_sending_to_it_and_receiving_from_it() {
+    begin();
+    let full = channel_new(1);
+    assert_eq!(channel_send(full, 1, 0, PATIENCE), DONE);
+    let sending = thread(move || channel_send(full, 2, 0, PATIENCE));
+    until_asleep(full, 1, 0);
+    channel_close(full);
+    assert_eq!(sending.join().unwrap(), CLOSED);
+    assert_eq!(receive(full, PATIENCE), (DONE, 1), "what was sent before is still taken");
+    assert_eq!(receive(full, PATIENCE), (CLOSED, 0));
+    let empty = channel_new(1);
+    let receiving = thread(move || receive(empty, PATIENCE));
+    until_asleep(empty, 0, 1);
+    channel_close(empty);
+    assert_eq!(receiving.join().unwrap(), (CLOSED, 0));
+    channel_free(full);
+    channel_free(empty);
+    finish();
+}
+
+/// Four threads send and four receive through a channel of one, with some of the sends and
+/// receives giving up after a millisecond and trying again, so sleeping, being told, running out
+/// of time and closing all cross each other. Every message sent arrives once, every thread ends,
+/// and nobody's left counted asleep. Nothing waits for ever: a thread left asleep runs out of its
+/// patience and fails the test.
+#[test]
+fn senders_and_receivers_crossing_on_a_channel_of_one_all_finish() {
+    const SENDERS: i64 = 4;
+    const EACH: i64 = 5_000;
+    begin();
+    let channel = channel_new(1);
+    let senders: Vec<_> = (0..SENDERS)
+        .map(|sender| {
+            thread(move || {
+                (0..EACH).all(|at| {
+                    let value = sender * EACH + at;
+                    // Every third send tries with a millisecond first, and goes on if it has to.
+                    let quick =
+                        if at % 3 == 0 { channel_send(channel, value, 0, MILLISECOND) } else { TIMED_OUT };
+                    quick == DONE || channel_send(channel, value, 0, PATIENCE) == DONE
+                })
+            })
+        })
+        .collect();
+    let receivers: Vec<_> = (0..4)
+        .map(|receiver| {
+            thread(move || {
+                let (mut count, mut sum) = (0_i64, 0_i64);
+                loop {
+                    let patience = if (count + receiver) % 5 == 0 { MILLISECOND } else { PATIENCE };
+                    match receive(channel, patience) {
+                        (DONE, value) => {
+                            count += 1;
+                            sum += value;
+                        }
+                        (TIMED_OUT, _) if patience == MILLISECOND => {}
+                        (how, _) => return (count, sum, how),
+                    }
+                }
+            })
+        })
+        .collect();
+    assert!(senders.into_iter().all(|sender| sender.join().unwrap()), "every send went");
+    channel_close(channel);
+    let ended: Vec<(i64, i64, i64)> =
+        receivers.into_iter().map(|receiver| receiver.join().unwrap()).collect();
+    let all = SENDERS * EACH;
+    assert!(ended.iter().all(|(_, _, how)| *how == CLOSED), "each receiver ended at the close: {ended:?}");
+    assert_eq!(ended.iter().map(|(count, _, _)| count).sum::<i64>(), all);
+    assert_eq!(ended.iter().map(|(_, sum, _)| sum).sum::<i64>(), all * (all - 1) / 2);
+    assert_eq!((asleep(channel).0, asleep(channel).1), (0, 0));
+    channel_free(channel);
+    finish();
+}

@@ -46,11 +46,14 @@ struct Channel {
     /// Its name, in a recording or a replay, where what's done to it is logged and replayed in turn.
     replay: Option<Arc<str>>,
     queue: Mutex<Queue>,
-    /// For waits that block their thread.
+    /// For waits that block their thread: `Queue::asleep` says how many are in one.
     changed: Condvar,
     /// Whether it's been freed, and is gone from `CHANNELS`: a thread that found it before, and kept
     /// it to find again, takes it for gone as `CHANNELS` would.
     freed: std::sync::atomic::AtomicBool,
+    /// For tests: how many times it's told the threads asleep on it to look again.
+    #[cfg(test)]
+    told: AtomicI64,
 }
 
 #[derive(Default)]
@@ -60,8 +63,33 @@ struct Queue {
     /// Parked tasks waiting for room, and for a message, to wake when there may be one.
     senders: Vec<Waiter>,
     receivers: Vec<Waiter>,
+    /// How many threads are asleep on `changed`, waiting for room and for a message: a thread that
+    /// isn't a task can't park. Counted under this lock, by the wait itself as it starts and ends,
+    /// so whoever changes the queue knows whether there's anyone to tell, and tells nobody when
+    /// there isn't: on Linux telling is a system call, made or not.
+    asleep: Asleep,
     /// For a channel to `.Every`: where each listener's up to.
     every: Option<every::Listeners>,
+}
+
+/// The threads asleep on a channel, by what each waits for.
+#[derive(Clone, Copy, Default)]
+struct Asleep {
+    for_room: usize,
+    for_a_message: usize,
+}
+
+impl Channel {
+    /// Tells the threads asleep on it to look again, when `anyone` are: what a change to its queue
+    /// does once the queue's let go of, with what `asleep` said while it was held.
+    fn tell(&self, anyone: usize) {
+        if anyone == 0 {
+            return;
+        }
+        #[cfg(test)]
+        self.told.fetch_add(1, Ordering::Relaxed);
+        self.changed.notify_all();
+    }
 }
 
 /// A parked task to wake: the pool's worker it's on, and the token it's parked on.
@@ -141,6 +169,8 @@ pub extern "C" fn channel_new(size: i64) -> i64 {
         queue: Mutex::new(Queue::default()),
         changed: Condvar::new(),
         freed: std::sync::atomic::AtomicBool::new(false),
+        #[cfg(test)]
+        told: AtomicI64::new(0),
     };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));
@@ -190,19 +220,21 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
             met(&channel, "send", DONE);
             let dropped = every::push(&mut queue, message.take(), channel.size);
             let waiting = std::mem::take(&mut queue.receivers);
+            let asleep = queue.asleep.for_a_message;
             drop(queue);
             let_go(dropped);
             wake(waiting);
-            channel.changed.notify_all();
+            channel.tell(asleep);
             return DONE;
         }
         if queue.messages.len() < channel.size {
             met(&channel, "send", DONE);
             queue.messages.extend(message.take());
             let waiting = std::mem::take(&mut queue.receivers);
+            let asleep = queue.asleep.for_a_message;
             drop(queue);
             wake(waiting);
-            channel.changed.notify_all();
+            channel.tell(asleep);
             return DONE;
         }
         match wait(&channel, queue, deadline, Side::Sending) {
@@ -246,9 +278,10 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
         if let Some(message) = queue.messages.pop_front() {
             met(&channel, "receive", DONE);
             let waiting = std::mem::take(&mut queue.senders);
+            let asleep = queue.asleep.for_room;
             drop(queue);
             wake(waiting);
-            channel.changed.notify_all();
+            channel.tell(asleep);
             *value = i64::from_ne_bytes(taken(message).to_ne_bytes());
             return DONE;
         }
@@ -437,7 +470,7 @@ fn wait(
             super::serve::Parked::Ready => Waited::Again,
         };
     }
-    let _ = side;
+    let mut queue = queue;
     // A crash of a task this code launched wakes it: told with the queue held, so the crash can't
     // come between this last look and the wait.
     #[cfg(any(test, feature = "threads"))]
@@ -457,7 +490,15 @@ fn wait(
     // What this thread printed comes out first, as before anything else that waits. The queue stays
     // held, so no change is missed before the wait.
     super::write_kept_output();
-    let (_queue, timed_out) = match deadline {
+    // Counted as asleep from here to when it wakes, with the queue held at both ends. The wait
+    // lets go of the queue only as it goes to sleep, so whoever changes the queue next takes it
+    // after that, sees there's someone to tell, and tells them. Whoever changed it before had let
+    // go of it before this thread's last look, which saw the change.
+    match side {
+        Side::Sending => queue.asleep.for_room += 1,
+        Side::Receiving => queue.asleep.for_a_message += 1,
+    }
+    let (mut queue, timed_out) = match deadline {
         Some(deadline) => {
             let left = deadline.saturating_duration_since(Instant::now());
             let (queue, waited) =
@@ -466,6 +507,12 @@ fn wait(
         }
         None => (channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), false),
     };
+    // Awake again, however it was woken, with the queue held once more.
+    match side {
+        Side::Sending => queue.asleep.for_room = queue.asleep.for_room.saturating_sub(1),
+        Side::Receiving => queue.asleep.for_a_message = queue.asleep.for_a_message.saturating_sub(1),
+    }
+    drop(queue);
     #[cfg(any(test, feature = "threads"))]
     super::threads::Launcher::waited_here();
     if timed_out { Waited::TimedOut } else { Waited::Again }

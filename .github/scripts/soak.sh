@@ -16,7 +16,7 @@
 # SOAK_IN=main, the rounds run on the program's own thread. A round that fails ends the soak,
 # saying why. It's built for release, as it ships.
 #
-# SOAK_WAITING names the issue a soak is known to fail on, like `#1774`: its failure is then
+# SOAK_WAITING names the issue a soak is known to fail on, like `#1796`: its failure is then
 # reported as waiting on that issue rather than failing the night, and its passing fails it, so the
 # name comes out as soon as the fix lands.
 #

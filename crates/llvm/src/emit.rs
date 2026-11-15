@@ -4388,6 +4388,33 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A capability's method is called through its module's own export, so a program that reads
+    /// a file links no SQLite and no sockets. A program with a test built into it calls the export
+    /// that runs every module's, as a test's capabilities are fakes only that one asks.
+    #[test]
+    fn a_capability_method_goes_to_its_modules_export_unless_tests_are_built_in() -> Result<(), String> {
+        let source = "def adds() -> int:\n    return 1 + 1\n\ndef main(fs: Fs, stdout: Stdout):\n    text = fs.read_text(\"notes.txt\") except why:\n        f\"none: {why}\"\n    stdout.print(text, adds())\n    return\n";
+        let emitted = |program: &Program| -> Result<String, String> {
+            let (units, _, _) = emit(program)?;
+            Ok(units.iter().map(|unit| unit.text.as_str()).collect())
+        };
+        let mut program = lowered(source)?;
+        let plain = emitted(&program)?;
+        assert!(plain.contains("@fennec_fs_capability("), "{plain}");
+        assert!(!plain.contains("@fennec_native_capability("), "{plain}");
+        // A test is a function named `test:` and its number, as `fennec test` and `fennec run`
+        // build one in.
+        let mut test = program.functions.iter().find(|function| function.name == "adds").cloned();
+        if let Some(test) = test.as_mut() {
+            "test:0".clone_into(&mut test.name);
+        }
+        program.functions.extend(test);
+        let tested = emitted(&program)?;
+        assert!(tested.contains("@fennec_native_capability("), "{tested}");
+        assert!(!tested.contains("@fennec_fs_capability("), "{tested}");
+        Ok(())
+    }
+
     /// A build that checks proofs writes the checks they left out, each saying which proof broke:
     /// a loop's count can't overflow, and its index is inside the list it goes through.
     #[test]
@@ -4763,7 +4790,7 @@ out:
 
 ";
 
-fn is_test(name: &str) -> bool {
+pub(crate) fn is_test(name: &str) -> bool {
     name.strip_prefix("test:")
         .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
         || is_attempt(name)

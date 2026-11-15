@@ -110,6 +110,7 @@ fn lower_from(
         instances: generics::Instances::default(),
         generator_defs: std::cell::RefCell::default(),
         own_texts: std::cell::RefCell::default(),
+        equals: std::cell::RefCell::default(),
         layouts: std::cell::RefCell::default(),
         layout_problems: std::cell::RefCell::default(),
         // A library's yield methods too, which a loop over one can copy in.
@@ -316,6 +317,9 @@ struct Context<'a> {
     generator_defs: std::cell::RefCell<Vec<crate::GeneratorDef>>,
     /// The types whose own text is asked for by printing something that holds them.
     own_texts: std::cell::RefCell<Vec<crate::OwnText>>,
+    /// The structs and enums a function comparing two of them part by part is made for, or is
+    /// being made for: by its name, `Tree.equal`.
+    equals: std::cell::RefCell<HashSet<String>>,
     /// The layout of each type `std.pack` saves, as `layout[T]()` gives them.
     layouts: std::cell::RefCell<Vec<crate::SavedLayout>>,
     /// Why a type can't load a layout its kit's `pack.lock` holds for it.

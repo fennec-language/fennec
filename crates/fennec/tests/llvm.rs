@@ -18792,6 +18792,15 @@ struct Money:
     def ==(self, other: Money) -> bool:
         return self.cents == other.cents
 
+# A type that holds itself, compared through a type's own `==` however deep.
+struct Tree:
+    cost: Money
+    kids: list[Tree]
+
+struct Branch:
+    name: str
+    account: shared Account
+
 def compare_many(first: shared Account, second: shared Account) -> int:
     mut equal = 0
     for _ in range(2000):
@@ -18826,6 +18835,13 @@ def main(stdout: Stdout) fails Crashed:
         one == [Money(cents=2, note="first")],
         one != [Money(cents=1, note="other")],
     )
+    leaf = Tree(cost=Money(cents=1, note="leaf"), kids=[])
+    grown = Tree(cost=Money(cents=2, note="grown"), kids=[leaf, leaf])
+    stdout.print(grown == Tree(cost=Money(cents=2, note="other"), kids=[leaf, leaf]), grown == leaf, grown.kids == [leaf])
+    # One value on both sides takes its lock once, alone, in a list and inside another `shared` value.
+    shared north = Branch(name="north", account=ana)
+    shared south = Branch(name="north", account=ana)
+    stdout.print(ana in [ana], [ana] == [ana], [ana, ana] == [ana, ben], north == north, north == south, north in [south])
     # `ana == ben` on one task and `ben == ana` on another, many times over: never ana deadlock.
     mut here = 0
     with launch(() => compare_many(ana, second=ben)) as task:
@@ -18838,9 +18854,11 @@ def main(stdout: Stdout) fails Crashed:
 /// not which cell each is: equal when what they hold is, one equal to itself, and a change made
 /// under a lock seen by the next comparison. So are a struct, a list, a tuple and an optional
 /// holding one compared, part by part, and a list of a type with its own `==`, which wasn't
-/// lowered. Both locks are held to read while two are compared, taken in the order of their
-/// cells: one task comparing `ana == ben` 2,000 times while `main` compares `ben == ana` ends,
-/// on one thread and on eight. Native code compared the cells.
+/// lowered, and a type that holds itself, which is compared through a function of its own. Both
+/// locks are held to read while two are compared, taken in the order of their cells: one task
+/// comparing `ana == ben` 2,000 times while `main` compares `ben == ana` ends, on one thread and
+/// on eight. One value on both sides takes its lock once: alone, in a list, and inside another
+/// `shared` value. Native code compared the cells.
 #[test]
 fn shared_values_are_equal_when_what_they_hold_is() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -18851,7 +18869,7 @@ fn shared_values_are_equal_when_what_they_hold_is() -> std::io::Result<()> {
     std::fs::write(&program, SHARED_EQUAL)?;
     let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("shared_equal"));
     let output = executable.to_string_lossy().into_owned();
-    let wanted = "True True False True\nFalse True True False False\nTrue False False\nTrue False False True\nTrue True\nTrue False False\n2000 done\n";
+    let wanted = "True True False True\nFalse True True False False\nTrue False False\nTrue False False True\nTrue True\nTrue False False\nTrue False False\nTrue True True True True True\n2000 done\n";
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let args: Vec<&str> = ["build"]
             .into_iter()

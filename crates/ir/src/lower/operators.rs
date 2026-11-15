@@ -4,6 +4,7 @@ use fennec_check::Type;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
 use super::calls::owner_name;
+use super::generics::FunctionInstance;
 use super::{Lowered, Lowering};
 use crate::validate::{fits, plainly_ordered};
 use crate::{BlockId, InstKind, LocalId, Operand, Terminator, type_in};
@@ -58,10 +59,15 @@ impl Lowering<'_> {
         let (first, second) = (self.in_local(lhs, ty, span), self.in_local(rhs, ty, span));
         let same = match ty {
             held if self.context.is_handle(held) => self.shared_equal((first, second), held, span)?,
-            Type::Named(owner) => match self.case_names(owner) {
-                Some(cases) => self.cases_equal((first, second), owner, &cases, span)?,
-                None => self.fields_equal((first, second), owner, span)?,
-            },
+            // A struct or an enum through a function of its own, since a type can hold itself, as
+            // a tree holds trees: written out where it's compared, that would never end.
+            Type::Named(_) => {
+                let function = self.equal_function(ty, span)?;
+                let same = self.temporary(Type::Bool);
+                let args = vec![Operand::Local(first), Operand::Local(second)];
+                self.emit(InstKind::Call { dest: Some(same), function, args }, span);
+                same
+            }
             Type::List(item) => self.lists_equal((first, second), item, span)?,
             Type::Optional(inner) => self.optionals_equal((first, second), inner, span)?,
             Type::Tuple(items) => self.tuples_equal((first, second), items, span)?,
@@ -73,6 +79,39 @@ impl Lowering<'_> {
         let flipped = self.temporary(Type::Bool);
         self.emit(InstKind::Unary { dest: flipped, op: UnaryOp::Not, value: Operand::Local(same) }, span);
         Ok(Operand::Local(flipped))
+    }
+
+    /// The function that compares two values of a struct or an enum part by part, made the first
+    /// time one is compared. It's named before its body is lowered, so a type that holds itself
+    /// calls it from inside it.
+    fn equal_function(&mut self, ty: &Type, span: Span) -> Lowered<String> {
+        let Type::Named(owner) = ty else { return Err(OWN_EQUALITY.to_owned()) };
+        let key = format!("{ty}.equal");
+        let before = self.context.equals.borrow().clone();
+        if !self.context.equals.borrow_mut().insert(key.clone()) {
+            return Ok(key);
+        }
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let mut made = Lowering::new(&instance, self.context, self.body, Type::Bool);
+        // No names a program can write.
+        let pair = (made.declare("\0first", ty.clone()), made.declare("\0second", ty.clone()));
+        made.scopes.push(std::collections::HashMap::new());
+        let same = match made.case_names(owner) {
+            Some(cases) => made.cases_equal(pair, owner, &cases, span),
+            None => made.fields_equal(pair, owner, span),
+        };
+        let same = match same {
+            Ok(same) => same,
+            Err(why) => {
+                // Not made after all, nor any it asked for on the way: nothing else is told they are.
+                *self.context.equals.borrow_mut() = before;
+                return Err(why);
+            }
+        };
+        made.finish(Terminator::Return(Some(Operand::Local(same))));
+        self.lifted.extend(made.finished(2, Vec::new()));
+        Ok(key)
     }
 
     /// A value in a local of its own, for reading parts of.

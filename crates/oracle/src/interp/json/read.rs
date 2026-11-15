@@ -10,20 +10,21 @@
 use std::collections::HashMap;
 
 use fennec_check::Type;
-use fennec_syntax::Span;
+use fennec_syntax::{Expr, Span};
 
 use super::parse::{self, Entry, Node, cut_input, holds_too_big, is_float_text};
 use super::{Names, Options, SavedField, article, parse_error, spelled_as, type_name};
+use crate::interp::calls::ArgVal;
 use crate::interp::{Flow, Interp, Run, unsupported};
 use crate::load::Kind;
-use crate::value::{Id, Instance, Table, Value};
+use crate::value::{Cap, Id, Instance, Table, Value};
 
 /// How many fields a struct may have for the oracle to read it: past this, the standard library
 /// stops telling a field given twice.
 const MOST_FIELDS: usize = 62;
 
 /// What a read keeps track of as it goes.
-struct Reading {
+pub(crate) struct Reading {
     options: Options,
     /// Where the read is, as a failure says it.
     path: Vec<String>,
@@ -35,7 +36,19 @@ struct Reading {
     tags: HashMap<String, u64>,
 }
 
+/// A type's own `def deserialize` reading a value as `json.loads` gives it the value: the value,
+/// where the read is, and whether the value has been read yet.
+pub(crate) struct Loading {
+    node: Node,
+    reading: Reading,
+    read: bool,
+}
+
 impl Reading {
+    fn new(options: Options) -> Reading {
+        Reading { options, path: Vec::new(), ids: Vec::new(), tables: Vec::new(), tags: HashMap::new() }
+    }
+
     fn joined(&self) -> String {
         let mut out = String::new();
         for part in &self.path {
@@ -122,8 +135,7 @@ impl Interp {
             Ok(parsed) => parsed,
             Err(bad) => return Err(Flow::Fail(parse_error(bad.message, bad.line, bad.column), span)),
         };
-        let mut reading =
-            Reading { options, path: Vec::new(), ids: Vec::new(), tables: Vec::new(), tags: HashMap::new() };
+        let mut reading = Reading::new(options);
         let read =
             self.read(&parsed.node, ty, &mut reading, false).and_then(|value| match reading.problem() {
                 Some(problem) => Err(says(problem)),
@@ -223,24 +235,7 @@ impl Interp {
         (key_ty, value_ty): (&Type, &Type),
         reading: &mut Reading,
     ) -> Run<Value> {
-        let pairs = match node {
-            Node::Array(items) => self.read_pairs(items, (key_ty, value_ty), reading)?,
-            Node::Object(entries) => {
-                let mut pairs = Vec::with_capacity(entries.len());
-                for entry in entries {
-                    let key = self.read(&Node::Str(entry.key.clone()), key_ty, reading, true)?;
-                    reading.path.push(format!("[{}]", cut_input(&entry.written)));
-                    let value = self.read(&entry.value, value_ty, reading, false)?;
-                    reading.path.pop();
-                    pairs.push((key, value));
-                }
-                pairs
-            }
-            _ => {
-                let wanted = format!("dict[{}, {}]", type_name(key_ty), type_name(value_ty));
-                return Err(reading.misfit(&wanted, node));
-            }
-        };
+        let pairs = self.read_entries(node, (key_ty, value_ty), reading)?;
         let mut dict: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
         for (key, value) in pairs {
             if crate::interp::find_key(&dict, &key)?.is_some() {
@@ -250,6 +245,34 @@ impl Interp {
             dict.push((key, value));
         }
         Ok(Value::Dict(dict))
+    }
+
+    /// A dict's pairs, in the order the text gives them: an object's, or an array's of
+    /// `[key, value]` pairs.
+    fn read_entries(
+        &mut self,
+        node: &Node,
+        (key_ty, value_ty): (&Type, &Type),
+        reading: &mut Reading,
+    ) -> Run<Vec<(Value, Value)>> {
+        match node {
+            Node::Array(items) => self.read_pairs(items, (key_ty, value_ty), reading),
+            Node::Object(entries) => {
+                let mut pairs = Vec::with_capacity(entries.len());
+                for entry in entries {
+                    let key = self.read(&Node::Str(entry.key.clone()), key_ty, reading, true)?;
+                    reading.path.push(format!("[{}]", cut_input(&entry.written)));
+                    let value = self.read(&entry.value, value_ty, reading, false)?;
+                    reading.path.pop();
+                    pairs.push((key, value));
+                }
+                Ok(pairs)
+            }
+            _ => {
+                let wanted = format!("dict[{}, {}]", type_name(key_ty), type_name(value_ty));
+                Err(reading.misfit(&wanted, node))
+            }
+        }
     }
 
     fn read_pairs(
@@ -309,6 +332,9 @@ impl Interp {
     /// A struct or enum the program declares.
     fn read_declared(&mut self, node: &Node, name: &str, args: &[Type], reading: &mut Reading) -> Run<Value> {
         let name = fennec_syntax::rename::shown_type_name(name);
+        if let Some(def) = self.program.method(name, "deserialize") {
+            return self.read_through_own(node, def, (name, args), reading);
+        }
         match self.saved_type(name)? {
             Kind::Struct => {
                 let Node::Object(entries) = node else { return Err(reading.misfit(name, node)) };
@@ -326,6 +352,107 @@ impl Interp {
             Kind::Enum => self.read_case(node, name, args, reading),
             Kind::Error => unsupported(format!("loading a {name} from JSON")),
         }
+    }
+
+    /// A value of a type that writes its own `def deserialize`, which runs given a `Deserializer`
+    /// over `node`, as `loader_method` reads it.
+    fn read_through_own(
+        &mut self,
+        node: &Node,
+        def: &'static fennec_syntax::FnDef,
+        (name, args): (&str, &[Type]),
+        reading: &mut Reading,
+    ) -> Run<Value> {
+        if def.takes_self() {
+            return unsupported(format!("a {name} whose `deserialize` takes `self`"));
+        }
+        let bound = self.own_bound(def, name, args)?;
+        let src = self.hidden_local(Value::Cap(Cap::Loader))?;
+        let options = reading.options;
+        let held = std::mem::replace(reading, Reading::new(options));
+        self.loadings.push(Loading { node: node.clone(), reading: held, read: false });
+        let given = vec![ArgVal::Ref(None, src.clone())];
+        let ran = self.call_def_bound((def, bound), None, None, given, Span::default());
+        self.drop_hidden(&src);
+        if let Some(done) = self.loadings.pop() {
+            *reading = done.reading;
+        }
+        ran
+    }
+
+    /// A method of the `Deserializer` a type's own `def deserialize` is given by `json.loads`:
+    /// one that reads takes the whole value, as the type the checker gave the call, and one
+    /// that makes a failure says where the read is. Reading through `record` and its fields, or
+    /// more than one value, isn't modeled.
+    pub(crate) fn loader_method(&mut self, name: &str, args: &[Value], expr: &'static Expr) -> Run<Value> {
+        let Some(mut loading) = self.loadings.pop() else {
+            return unsupported("JSON's `Deserializer` used outside `json.loads`");
+        };
+        let done = self.loader_call(&mut loading, name, args, expr);
+        self.loadings.push(loading);
+        done
+    }
+
+    fn loader_call(
+        &mut self,
+        loading: &mut Loading,
+        name: &str,
+        args: &[Value],
+        expr: &'static Expr,
+    ) -> Run<Value> {
+        let reading = &mut loading.reading;
+        match (name, args) {
+            ("exact", []) => return Ok(Value::Bool(false)),
+            ("none_next", []) => return Ok(Value::Bool(matches!(loading.node, Node::Null))),
+            ("at_item", [Value::Int(at), Value::Str(message)]) => {
+                reading.path.push(format!("[{at}]"));
+                let here = reading.here();
+                reading.path.pop();
+                return Ok(parse_error(format!("{here} {message}"), 0, 0));
+            }
+            ("here", [Value::Str(message)]) => {
+                return Ok(parse_error(format!("{} {message}", reading.here()), 0, 0));
+            }
+            ("int" | "float" | "bool" | "text" | "value" | "sequence" | "map" | "none", []) => {}
+            _ => return unsupported(format!("a type's own `deserialize` calling `{name}` as JSON is read")),
+        }
+        if loading.read {
+            return unsupported("a type's own `deserialize` that reads more than one value");
+        }
+        if name == "none" {
+            // Only a missing value is taken; anything else is left for the read that follows.
+            if matches!(loading.node, Node::Null) {
+                loading.read = true;
+                return Ok(Value::Bool(true));
+            }
+            return Ok(Value::Bool(false));
+        }
+        loading.read = true;
+        let ty = match self.static_type(expr.span) {
+            Some(Type::Result(value, _)) => *value,
+            Some(ty) => ty,
+            None => return unsupported(format!("`{name}` read as a type that isn't known")),
+        };
+        if name != "map" {
+            return self.read(&loading.node, &ty, &mut loading.reading, false);
+        }
+        let Type::List(pair) = &ty else { return unsupported("`map` read as what isn't a list of pairs") };
+        let Type::Tuple(types) = pair.as_ref() else {
+            return unsupported("`map` read as what isn't a list of pairs");
+        };
+        let [key_ty, value_ty] = types.as_slice() else {
+            return unsupported("`map` read as what isn't a list of pairs");
+        };
+        if !matches!(loading.node, Node::Object(_) | Node::Array(_)) {
+            return unsupported("a map read from what's neither an object nor an array");
+        }
+        let pairs = self.read_entries(&loading.node, (key_ty, value_ty), &mut loading.reading)?;
+        for (at, (key, _)) in pairs.iter().enumerate() {
+            if crate::interp::find_key(pairs.get(..at).unwrap_or_default(), key)?.is_some() {
+                return unsupported("a map read with a key given twice");
+            }
+        }
+        Ok(Value::List(pairs.into_iter().map(|(key, value)| Value::Tuple(vec![key, value])).collect()))
     }
 
     /// An enum's case: its name in quotes when it has no fields, or an object holding its fields
@@ -570,7 +697,7 @@ fn missing(shown: &str, listed: &[(String, String)], reading: &Reading) -> Strin
 
 /// A key given twice, as a message names it: as it prints, in backticks, cut to its first 20
 /// characters past 40, with its control characters written as escapes.
-fn twice_key(shown: &str) -> String {
+pub(crate) fn twice_key(shown: &str) -> String {
     let cut = if shown.chars().count() <= 40 {
         shown.to_owned()
     } else {

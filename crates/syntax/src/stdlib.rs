@@ -202,6 +202,7 @@ pub fn core_to_run() -> Result<&'static [crate::Module], crate::Diagnostic> {
         for (name, source) in CORE {
             let mut module = parse_module(name, source)?;
             qualify_core_imports(&mut module)?;
+            qualify_core_own(name, source, &mut module);
             core.push(module);
         }
         let interfaces = crate::visit::interface_names(&core);
@@ -302,6 +303,7 @@ fn parse_prelude() -> Result<Vec<crate::Module>, crate::Diagnostic> {
     for (name, source) in CORE {
         let mut module = parse_module(name, source)?;
         qualify_core_imports(&mut module)?;
+        qualify_core_own(name, source, &mut module);
         parsed.push(module);
     }
     let mut modules = Vec::new();
@@ -333,17 +335,17 @@ fn parse_module(name: &str, source: &str) -> Result<crate::Module, crate::Diagno
     Ok(module)
 }
 
-/// Gives each module's top-level functions the name `module.function`, which no one can write
-/// by accident, so two modules or a program can use the same name. A program reaches one by
-/// importing it, and a module's own calls are written in here. A local in a module can't share
-/// a name with one of the module's functions.
+/// Gives each module's top-level functions and constants the name `module.name`, which no one can
+/// write by accident, so two modules or a program can use the same name. A program reaches one by
+/// importing it, and a module's own uses are written in here. A local in a module can't share a
+/// name with one of the module's functions or constants.
 fn qualify_functions(modules: &mut [(&'static str, crate::Module)]) {
     let mut all = HashSet::new();
     for (name, module) in modules.iter_mut() {
         for item in &mut module.items {
-            if let Item::Function(def) = item {
-                def.name = format!("{name}.{}", def.name);
-                all.insert(def.name.clone());
+            if let Some(own) = top_level_name(item) {
+                *own = format!("{name}.{own}");
+                all.insert(own.clone());
             }
         }
     }
@@ -400,11 +402,43 @@ fn name_functions(
     });
 }
 
+/// The name a top-level function or constant is declared under, for qualifying it.
+fn top_level_name(item: &mut Item) -> Option<&mut String> {
+    match item {
+        Item::Function(def) => Some(&mut def.name),
+        Item::Const { name, .. } => Some(name),
+        _ => None,
+    }
+}
+
+/// A core file's own functions that only the standard library calls, like str.fen's `padding`,
+/// given the name `core.file.function`, which no one can write, and its calls written with it:
+/// a program's function of the same name is its own, and std's code still means std's. What a
+/// core file exports, like `failure_of`, keeps its name, as a program calls it by that.
+fn qualify_core_own(name: &str, source: &str, module: &mut crate::Module) {
+    let exported = |function: &str| {
+        source.contains(&format!("export def {function}("))
+            || source.contains(&format!("export def {function}["))
+    };
+    let mut names = HashMap::new();
+    for item in &mut module.items {
+        if let Item::Function(def) = item
+            && !exported(&def.name)
+        {
+            let qualified = format!("core.{name}.{}", def.name);
+            names.insert(def.name.clone(), qualified.clone());
+            def.name = qualified;
+        }
+    }
+    if !names.is_empty() {
+        name_functions(module, (&names, &HashMap::new()), &|_| false);
+    }
+}
+
 /// A core file's imports from the standard library's modules, as str.fen's
 /// `from std.intrinsics import stop`, named as `qualify_functions` names them in a module that
-/// imports them: `intrinsics.stop`. A core file's own functions keep their names, since nothing
-/// shares them, so only what it imports is named. The modules it imports from are parsed for
-/// their functions' names.
+/// imports them: `intrinsics.stop`. The modules it imports from are parsed for their functions'
+/// and constants' names.
 fn qualify_core_imports(module: &mut crate::Module) -> Result<(), crate::Diagnostic> {
     let imported = imported_modules(module);
     if imported.is_empty() {
@@ -415,9 +449,9 @@ fn qualify_core_imports(module: &mut crate::Module) -> Result<(), crate::Diagnos
         let Some(from) = MODULES.iter().find(|from| from.name == name && !from.source.is_empty()) else {
             continue;
         };
-        for item in parse_module(from.name, from.source)?.items {
-            if let Item::Function(def) = item {
-                functions.insert(format!("{}.{}", from.name, def.name));
+        for mut item in parse_module(from.name, from.source)?.items {
+            if let Some(own) = top_level_name(&mut item) {
+                functions.insert(format!("{}.{own}", from.name));
             }
         }
     }

@@ -3,6 +3,7 @@
 use std::rc::Rc;
 
 use super::super::{Tables, finish, heap, start, strings, with};
+use super::{TASK_MARKS, number_to_mark, task_mark};
 use crate::packed::Element;
 use crate::value::Value;
 
@@ -143,4 +144,25 @@ fn strings_have_their_methods() {
     assert_eq!(strings::split(fox, string(""), 0, 0), 0);
     let (_, failure, _) = finish();
     assert!(failure.is_some());
+}
+
+/// A task's mark is its own number's until the marks have come round, which is 16 million tasks on
+/// one thread. After that a task whose number's mark is held by one still alive takes the next
+/// that's free, so two tasks alive on a thread never share a mark: a long task's end finds its
+/// blocks by its mark, and would take the other's with them.
+#[test]
+fn a_task_never_takes_the_mark_of_one_still_alive_on_its_thread() {
+    // Before the marks come round nothing's asked, as no number's mark has been given twice.
+    assert_eq!(number_to_mark(7, |_| panic!("asked before the marks came round")), 7);
+    let round = TASK_MARKS;
+    // A task alive since number 7 has the mark that number 7 a round later would get.
+    assert_eq!(task_mark(7), task_mark(round + 7));
+    let alive = |number: u64| task_mark(number) == task_mark(7);
+    assert_eq!(number_to_mark(round + 7, alive), round + 8);
+    assert_ne!(task_mark(number_to_mark(round + 7, alive)), task_mark(7));
+    // With the next two held as well, it takes the one after.
+    let three = |number: u64| [7, 8, 9].iter().any(|held| task_mark(number) == task_mark(*held));
+    assert_eq!(number_to_mark(round + 7, three), round + 10);
+    // One whose own mark is free keeps it.
+    assert_eq!(number_to_mark(round + 20, alive), round + 20);
 }

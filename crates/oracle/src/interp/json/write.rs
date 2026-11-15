@@ -6,16 +6,17 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use fennec_check::Type;
-use fennec_syntax::Span;
+use fennec_syntax::{Expr, ExprKind, Span};
 
 use super::{Names, Options, SavedField, spelled_as, type_name};
+use crate::interp::calls::{ArgVal, Receiver};
 use crate::interp::{Interp, Run, crash, unsupported};
 use crate::load::Kind;
-use crate::value::{Id, Value};
+use crate::value::{Cap, Id, Value};
 
 /// What a value saves, as the calls its `serialize` makes.
 #[derive(Debug)]
-enum Saved {
+pub(crate) enum Saved {
     Int(i64),
     Float(f64),
     Bool(bool),
@@ -48,7 +49,7 @@ enum Saved {
 /// A field's name as it's saved: its own, which `names=` may spell another way, or the one
 /// `@serialize(name=...)` gave it, written just so.
 #[derive(Debug)]
-enum FieldName {
+pub(crate) enum FieldName {
     Own(String),
     Renamed(String),
 }
@@ -120,12 +121,91 @@ impl Interp {
                 Saved::Table { kind: type_name(inner), tag: table.tag, ids, items }
             }
             (Type::Id(inner), Value::Id(id)) => Saved::Id { kind: type_name(inner), id: *id },
+            (Type::Named(name), Value::Instance(_)) if self.own_method(name, "serialize").is_some() => {
+                self.saved_through_own(value, name, &[])?
+            }
+            (Type::Generic(name, args), Value::Instance(_))
+                if self.own_method(name, "serialize").is_some() =>
+            {
+                self.saved_through_own(value, name, args)?
+            }
             (Type::Named(name), Value::Instance(_)) => self.saved_instance(value, name, &[])?,
             (Type::Generic(name, args), Value::Instance(_)) => self.saved_instance(value, name, args)?,
             (Type::Union(_), _) => return unsupported("saving a union as JSON"),
             (Type::Bytes, _) => return unsupported("saving bytes as JSON"),
             (ty, held) => return unsupported(format!("saving a {} as a {}", held.kind(), type_name(ty))),
         })
+    }
+
+    /// What a value of a type that writes its own `def serialize` saves: what that tells the
+    /// `Serializer` it's given, which `saver_method` keeps.
+    fn saved_through_own(&mut self, value: &Value, name: &str, args: &[Type]) -> Run<Saved> {
+        let name = fennec_syntax::rename::shown_type_name(name);
+        let Some(def) = self.program.method(name, "serialize") else {
+            return unsupported(format!("the `serialize` of a {name}"));
+        };
+        let bound = self.own_bound(def, name, args)?;
+        let out = self.hidden_local(Value::Cap(Cap::Saver))?;
+        self.recordings.push(None);
+        let given = vec![ArgVal::Ref(None, out.clone())];
+        let receiver = Some(Receiver::Value(value.clone()));
+        let ran = self.call_def_bound((def, bound), None, receiver, given, Span::default());
+        self.drop_hidden(&out);
+        let recorded = self.recordings.pop().flatten();
+        ran?;
+        match recorded {
+            Some(saved) => Ok(saved),
+            None => unsupported(format!("a {name} whose own `serialize` saves nothing")),
+        }
+    }
+
+    /// A method of the `Serializer` a type's own `def serialize` is given by `json.dumps`: the
+    /// value it's told to save is what the type saves, typed as the checker typed what's given
+    /// where the call is written. One that saves through `record` and `field`, or saves more
+    /// than one value, isn't modeled.
+    pub(crate) fn saver_method(&mut self, name: &str, args: &[Value], expr: &'static Expr) -> Run<Value> {
+        if name == "exact" && args.is_empty() {
+            return Ok(Value::Bool(false));
+        }
+        let types: Vec<Option<Type>> = match &expr.kind {
+            ExprKind::Call { args, .. } => args.iter().map(|arg| self.static_type(arg.value.span)).collect(),
+            _ => Vec::new(),
+        };
+        let saved = match (name, args, types.as_slice()) {
+            ("int", [held], _) => self.saved(held, &Type::Int)?,
+            ("float", [held], _) => self.saved(held, &Type::Float)?,
+            ("bool", [held], _) => self.saved(held, &Type::Bool)?,
+            ("text", [held], _) => self.saved(held, &Type::Str)?,
+            ("none", [], _) => Saved::None,
+            ("value", [held], [Some(ty)]) | ("sequence", [held], [Some(ty @ Type::List(_))]) => {
+                self.saved(held, ty)?
+            }
+            ("some", [held], [Some(ty)]) => Saved::Some(Box::new(self.saved(held, ty)?)),
+            ("map", [Value::List(pairs)], [Some(Type::List(pair))]) => {
+                let Type::Tuple(types) = pair.as_ref() else {
+                    return unsupported("`map` given what isn't a list of pairs");
+                };
+                let [key_ty, value_ty] = types.as_slice() else {
+                    return unsupported("`map` given what isn't a list of pairs");
+                };
+                let mut saved = Vec::with_capacity(pairs.len());
+                for pair in pairs {
+                    let Value::Tuple(both) = pair else { return unsupported("a pair that isn't one") };
+                    let [key, held] = both.as_slice() else { return unsupported("a pair that isn't one") };
+                    saved.push((self.saved(key, key_ty)?, self.saved(held, value_ty)?));
+                }
+                Saved::Map(saved)
+            }
+            _ => return unsupported(format!("a type's own `serialize` calling `{name}` as JSON is written")),
+        };
+        match self.recordings.last_mut() {
+            Some(slot @ None) => {
+                *slot = Some(saved);
+                Ok(Value::Unit)
+            }
+            Some(Some(_)) => unsupported("a type's own `serialize` that saves more than one value"),
+            None => unsupported("JSON's `Serializer` used outside `json.dumps`"),
+        }
     }
 
     /// What a struct or an enum's case saves: its fields, but those `@skip` leaves out.

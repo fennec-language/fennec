@@ -26,6 +26,13 @@
 //!   with what it came to, and a replay makes each task wait for its turn. So messages go to the
 //!   same receivers, and a receive that timed out times out again, without waiting.
 //!
+//! - **Stops:** a stop cuts short the wait its task is in, and the task fails as stopped. When it
+//!   comes depends on time, which a replay doesn't spend: its sleeps are over at once. So a wait a
+//!   stop cut short says so in the recording. A capability's call, like a sleep or a socket's read,
+//!   has a `cut short` entry right after its own, and a channel's send or receive comes to
+//!   "stopped" there. A replay stops the task at that wait, as the recorded run did. A log from
+//!   before this has no such entries, and replays as it did then.
+//!
 //! - **Locks:** a `shared` value is a place too, named as a channel is, as `0:s2`. Each time a task
 //!   takes its lock, to read or to write, it's logged once the lock is held, and a replay makes
 //!   each task wait its turn before it tries to take it. Native code takes a free lock without a
@@ -68,6 +75,10 @@ const MAGIC_UNNAMED: &[u8; 8] = b"FENREPL1";
 
 /// The entry that says how many workers the recorded run had, logged first, under no task.
 const WORKERS: &str = "workers";
+
+/// The entry that says a stop cut short the call logged just before it, in the same task: the
+/// task failed as stopped in it.
+const CUT_SHORT: &str = "cut short";
 
 enum Mode {
     Off,
@@ -372,6 +383,25 @@ pub(crate) fn swap(task: &mut Option<Task>) {
     TASK.with_borrow_mut(|running| std::mem::swap(running, task));
 }
 
+/// In a replay, at a wait its recording says a stop cut short: the running task is stopped here, as
+/// it was then, and fails as stopped. A replay doesn't wait, so the stop that cut the wait short
+/// hasn't come yet, and may never: without this the task would go on past the wait, doing what the
+/// recorded run never did. Its stop is set as well as its failure, so it ends quietly, as a stopped
+/// task does, and its `with launch` block ends as it did.
+pub(crate) fn stopped_as_recorded() {
+    #[cfg(any(test, feature = "threads"))]
+    {
+        if let Some(stop) = crate::embed::threads::task_stop() {
+            stop.fetch_max(crate::embed::threads::STOPPING, Ordering::AcqRel);
+        }
+        crate::embed::serve::fail_as_stopped();
+    }
+    // Without threads there are no tasks to stop, so no recording a runtime like this one made says
+    // a wait was cut short. One made with them that does still fails here, as it did.
+    #[cfg(not(any(test, feature = "threads")))]
+    crate::embed::fail_with(Diagnostic::new("this task was stopped", Span::default()));
+}
+
 /// Whether this run is a replay, whose outside inputs all come from its recording.
 pub(crate) fn replaying() -> bool {
     matches!(mode(), Mode::Replay(_))
@@ -581,18 +611,23 @@ pub(crate) fn value(
     match mode() {
         Mode::Off => live(),
         Mode::Record(file) => {
+            let failing = crate::embed::failed();
             let result = live();
             let mut payload = Vec::new();
             encode_result(&result, &mut payload);
-            log(file, &running(), &call.to_string(), &payload);
+            let task = running();
+            log(file, &task, &call.to_string(), &payload);
+            note_cut_short(file, &task, failing);
             result
         }
         Mode::Replay(player) => {
             let call = call.to_string();
             let payload = replayed(player, &call).map_err(|why| Diagnostic::new(why, span))?;
-            decode_result(&payload, span).ok_or_else(|| {
+            let result = decode_result(&payload, span).ok_or_else(|| {
                 Diagnostic::new(format!("this replay's recording of `{call}` couldn't be read back"), span)
-            })?
+            })?;
+            stopped_if_cut_short(player);
+            result
         }
     }
 }
@@ -615,16 +650,50 @@ pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String
     match mode() {
         Mode::Off => Ok(live()),
         Mode::Record(file) => {
+            let failing = crate::embed::failed();
             let word = live();
-            log(file, &running(), call, &word.to_le_bytes());
+            let task = running();
+            log(file, &task, call, &word.to_le_bytes());
+            note_cut_short(file, &task, failing);
             Ok(word)
         }
         Mode::Replay(player) => {
             let payload = replayed(player, call)?;
             let bytes: [u8; 8] =
                 payload.try_into().map_err(|_| format!("this replay's recording of `{call}` is damaged"))?;
+            stopped_if_cut_short(player);
             Ok(i64::from_le_bytes(bytes))
         }
+    }
+}
+
+/// In a recording, after a call `task` made, which it made `failing` or not: if a stop cut the
+/// call short, and so it's failing now as a stopped task, logs that, for a replay to stop it there.
+fn note_cut_short(file: &Mutex<std::fs::File>, task: &str, failing: bool) {
+    #[cfg(any(test, feature = "threads"))]
+    if !failing && crate::embed::failed() && crate::embed::threads::stopped() {
+        log(file, task, CUT_SHORT, &[]);
+    }
+    #[cfg(not(any(test, feature = "threads")))]
+    let _ = (file, task, failing);
+}
+
+/// In a replay, after a call the running task made: if a stop cut it short in the recording, the
+/// task is stopped there now.
+fn stopped_if_cut_short(player: &Mutex<Player>) {
+    let task = running();
+    let cut = {
+        let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+        let stream = player.streams.get_mut(&*task);
+        let cut =
+            stream.as_ref().and_then(|stream| stream.front()).is_some_and(|(next, _)| next == CUT_SHORT);
+        if cut {
+            stream.and_then(VecDeque::pop_front);
+        }
+        cut
+    };
+    if cut {
+        stopped_as_recorded();
     }
 }
 

@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::net::SecureStream;
-use super::net::{Failure, TlsServer, Wanted, parked_out_on};
+use super::net::{Failure, TlsServer, Waits, Wanted, parked_out_on};
 
 /// How many redirects a request follows.
 const MOST_REDIRECTS: usize = 10;
@@ -264,15 +264,12 @@ fn once<'h>(
     // it. Run whole on a blocking thread, as it was, a few slow requests held every one of them,
     // and whatever else needed one waited behind.
     let parks = super::net::task_parks();
-    let to = url.clone();
-    let open = move || {
-        let tcp = connect(&to, deadline, timeout)?;
-        if to.secure { secured(tcp, &to.host, deadline, timeout) } else { Ok(Stream::Plain(tcp)) }
+    let mut stream = if parks {
+        opened_parked(url, deadline, timeout)?
+    } else {
+        let tcp = connect(url, deadline, timeout)?;
+        if url.secure { secured(tcp, &url.host, deadline, timeout, None)? } else { Stream::Plain(tcp) }
     };
-    let mut stream = if parks { super::net::off_thread(open)? } else { open()? };
-    if parks {
-        stream.tcp().set_nonblocking(true).map_err(|error| Failure::of(&error, Some(timeout)))?;
-    }
     let host = if matches!((url.secure, url.port), (false, 80) | (true, 443)) {
         url.host.clone()
     } else {
@@ -313,6 +310,21 @@ fn is_token(text: &str) -> bool {
 /// either of which would end the line or the part of it, and start something a server would read.
 fn fits_on_a_line(text: &str) -> bool {
     text.bytes().all(|byte| byte > 32 && byte != 127)
+}
+
+/// A request's connection opened by a task that can park, on a socket that doesn't block: the task
+/// parks while it connects and through the TLS handshake, as it does for the exchange after. Only
+/// looking a host's name up holds a blocking thread. The whole of it once did, for as long as the
+/// network and the server took.
+fn opened_parked(url: &Url, deadline: Instant, timeout: Duration) -> Result<Stream, Failure> {
+    let (tcp, _) = super::net::connected_parked(&url.host, url.port, timeout, Some(deadline))?;
+    // A request is its head and then its body, two writes, and each goes out at once: see `connect`.
+    let _ = tcp.set_nodelay(true);
+    if !url.secure {
+        return Ok(Stream::Plain(tcp));
+    }
+    let mut waits = |socket: &TcpStream, wanted: Wanted| parked_out_on(socket, wanted, deadline);
+    secured(tcp, &url.host, deadline, timeout, Some(&mut waits))
 }
 
 fn connect(url: &Url, deadline: Instant, timeout: Duration) -> Result<TcpStream, Failure> {
@@ -359,7 +371,8 @@ trait Secure: Read + Write + Send {
 /// Puts TLS over a connection, once something has said it's wanted. A program that makes no
 /// requests links nothing of TLS, or of what the system checks certificates with: a pointer here
 /// is all that reaches them, and only `use_tls` sets it.
-type WithTls = fn(TcpStream, &str, Instant, Duration) -> Result<Box<dyn Secure>, Failure>;
+/// With something to wait by, the socket doesn't block and the handshake waits that way.
+type WithTls = fn(TcpStream, &str, Instant, Duration, Option<Waits<'_>>) -> Result<Box<dyn Secure>, Failure>;
 
 static WITH_TLS: OnceLock<WithTls> = OnceLock::new();
 
@@ -372,8 +385,10 @@ pub fn use_tls() {
 }
 
 /// A raw connection with TLS over it, as `net.connect(host, port, tls=True)` makes: the TCP
-/// connection, its host's name, and how long the handshake may take.
-pub(crate) type RawTls = fn(TcpStream, &str, Duration) -> Result<Box<dyn SecureStream>, Failure>;
+/// connection, its host's name, and how long the handshake may take. With something to wait by,
+/// the socket doesn't block and the handshake waits that way.
+pub(crate) type RawTls =
+    fn(TcpStream, &str, Duration, Option<Waits<'_>>) -> Result<Box<dyn SecureStream>, Failure>;
 
 static RAW_TLS: OnceLock<RawTls> = OnceLock::new();
 
@@ -383,11 +398,12 @@ pub(crate) fn raw_secured(
     tcp: TcpStream,
     host: &str,
     timeout: Duration,
+    waits: Option<Waits<'_>>,
 ) -> Result<Box<dyn SecureStream>, Failure> {
     let Some(raw) = RAW_TLS.get() else {
         return Err(Failure::Tls("this program was built without TLS: build it with LLVM".to_owned()));
     };
-    raw(tcp, host, timeout)
+    raw(tcp, host, timeout, waits)
 }
 
 /// What a server's certificate chain and private key, as PEM text, make: `net.listen`'s TLS.
@@ -404,11 +420,17 @@ pub(crate) fn server_tls(chain: &str, key: &str) -> Result<Arc<dyn TlsServer>, F
 }
 
 /// Puts TLS over a connection, or says why it can't be.
-fn secured(tcp: TcpStream, host: &str, deadline: Instant, timeout: Duration) -> Result<Stream, Failure> {
+fn secured(
+    tcp: TcpStream,
+    host: &str,
+    deadline: Instant,
+    timeout: Duration,
+    waits: Option<Waits<'_>>,
+) -> Result<Stream, Failure> {
     let Some(wrap) = WITH_TLS.get() else {
         return Err(Failure::Tls("this program was built without TLS: build it with LLVM".to_owned()));
     };
-    Ok(Stream::Secure(wrap(tcp, host, deadline, timeout)?))
+    Ok(Stream::Secure(wrap(tcp, host, deadline, timeout, waits)?))
 }
 
 /// A connection a request goes over.
@@ -915,8 +937,9 @@ pub(crate) mod tls {
         tcp: TcpStream,
         host: &str,
         timeout: Duration,
+        waits: Option<Waits<'_>>,
     ) -> Result<Box<dyn SecureStream>, Failure> {
-        handshake(tcp, host, timeout, config()?)
+        handshake(tcp, host, timeout, config()?, waits)
     }
 
     /// The server's TLS: what it'll prove itself with, for each connection it takes.
@@ -1144,13 +1167,17 @@ pub(crate) mod tls {
         host: &str,
         timeout: Duration,
         config: Arc<ClientConfig>,
+        waits: Option<Waits<'_>>,
     ) -> Result<Box<dyn SecureStream>, Failure> {
         let name = ServerName::try_from(host.to_owned())
             .map_err(|_| Failure::Tls(format!("`{host}` can't be checked against a certificate")))?;
         let mut connection =
             ClientConnection::new(config, name).map_err(|error| Failure::Tls(error.to_string()))?;
         let mut tcp = tcp;
-        shake_hands(&mut connection, &mut tcp, timeout)?;
+        match waits {
+            Some(waits) => shake_hands_waiting(&mut connection, &mut tcp, timeout, waits)?,
+            None => shake_hands(&mut connection, &mut tcp, timeout)?,
+        }
         Ok(Box::new(Buffered(BufReader::new(StreamOwned::new(connection, tcp)))))
     }
 
@@ -1160,12 +1187,17 @@ pub(crate) mod tls {
         host: &str,
         deadline: Instant,
         timeout: Duration,
+        waits: Option<Waits<'_>>,
     ) -> Result<Box<dyn Secure>, Failure> {
         let name = ServerName::try_from(host.to_owned())
             .map_err(|_| Failure::Tls(format!("`{host}` can't be checked against a certificate")))?;
         let mut connection =
             ClientConnection::new(config()?, name).map_err(|error| Failure::Tls(error.to_string()))?;
         let mut tcp = tcp;
+        if let Some(waits) = waits {
+            shake_hands_waiting(&mut connection, &mut tcp, timeout, waits)?;
+            return Ok(Box::new(StreamOwned::new(connection, tcp)));
+        }
         let left = deadline.saturating_duration_since(Instant::now());
         tcp.set_read_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
         tcp.set_write_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
@@ -1463,7 +1495,8 @@ mod tests {
         });
         let tcp = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         let timeout = Duration::from_secs(10);
-        let got = super::tls::wrap(tcp, "fennec.localhost", std::time::Instant::now() + timeout, timeout);
+        let got =
+            super::tls::wrap(tcp, "fennec.localhost", std::time::Instant::now() + timeout, timeout, None);
         assert!(got.is_err(), "a server that hung up let the handshake through");
         let hello = heard.join().unwrap();
         assert!(hello.windows(16).any(|part| part == b"fennec.localhost"), "the hello didn't name the host");

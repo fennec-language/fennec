@@ -1130,8 +1130,8 @@ mod tests {
     fn requests_over_tls_made_in_tasks_park_for_room_and_for_their_answers() {
         begin();
         crate::stdlib::http::use_tls();
-        let trusting = crate::stdlib::net::tests::tls::trusting_the_tests();
         let port = crate::stdlib::net::tests::tls::https_echoing(2);
+        let trusting = crate::stdlib::net::tests::tls::trusting_the_tests(port);
         let pool = super::pool::with_threads(1);
         let run = super::Run::new(1).waiting(true);
         let run = super::each_on_pool(run, pool, 2, super::Leaf::For(posts_over_tls, i64::from(port)));

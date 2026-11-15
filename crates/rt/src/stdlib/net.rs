@@ -2633,10 +2633,11 @@ pub(crate) mod tests {
             TcpStream::connect(("127.0.0.1", port)).unwrap()
         }
 
-        /// While what this gives back lives, the HTTP client trusts the tests' own certificate
-        /// authority, and nothing else: for a request to `https_echoing`.
-        pub(crate) fn trusting_the_tests() -> http::tls::TrustedByTests {
-            http::tls::TrustedByTests::begin(client_config())
+        /// While what this gives back lives, a connection made to `port` trusts the tests' own
+        /// certificate authority, and nothing else: for a test's own server there. Every other
+        /// connection goes by what the system trusts.
+        pub(crate) fn trusting_the_tests(port: u16) -> http::tls::TrustedByTests {
+            http::tls::TrustedByTests::begin(port, client_config())
         }
 
         /// An HTTPS server on a port of its own, with the tests' certificate for `localhost`, for

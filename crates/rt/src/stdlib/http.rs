@@ -803,28 +803,50 @@ pub(crate) mod tls {
         }
     }
 
-    /// For tests: what connections are made with in place of what the system trusts, so a test can
-    /// make a request of a server of its own, whose certificate only the tests' authority signed.
+    /// For tests: what connections to a test's own server are made with in place of what the
+    /// system trusts, as its certificate is one only the tests' authority signed. Each is for one
+    /// port, the test's server's: tests run side by side, and a connection of another test's, to
+    /// another port, goes by what the system trusts, as that test may be there to see.
     #[cfg(test)]
-    static TRUSTED_BY_TESTS: std::sync::Mutex<Option<Arc<ClientConfig>>> = std::sync::Mutex::new(None);
+    static TRUSTED_BY_TESTS: std::sync::Mutex<Vec<(u16, Arc<ClientConfig>)>> =
+        std::sync::Mutex::new(Vec::new());
 
-    /// For tests: while one of these lives, requests are made with the `ClientConfig` it was given.
+    /// For tests: while one of these lives, connections to its port are made with the
+    /// `ClientConfig` it was given.
     #[cfg(test)]
-    pub(crate) struct TrustedByTests;
+    pub(crate) struct TrustedByTests(u16);
 
     #[cfg(test)]
     impl TrustedByTests {
-        pub(crate) fn begin(config: Arc<ClientConfig>) -> TrustedByTests {
-            *TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(config);
-            TrustedByTests
+        pub(crate) fn begin(port: u16, config: Arc<ClientConfig>) -> TrustedByTests {
+            TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((port, config));
+            TrustedByTests(port)
         }
     }
 
     #[cfg(test)]
     impl Drop for TrustedByTests {
         fn drop(&mut self) {
-            *TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            TRUSTED_BY_TESTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(port, _)| *port != self.0);
         }
+    }
+
+    /// How a connection over `tcp` is made: `config`, but for a test's connection to a port it
+    /// has said what to trust for.
+    fn config_over(tcp: &TcpStream) -> Result<Arc<ClientConfig>, Failure> {
+        #[cfg(test)]
+        if let Ok(peer) = tcp.peer_addr() {
+            let trusted = TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((_, config)) = trusted.iter().find(|(port, _)| *port == peer.port()) {
+                return Ok(Arc::clone(config));
+            }
+        }
+        #[cfg(not(test))]
+        let _: &TcpStream = tcp;
+        config()
     }
 
     /// How connections are made, worked out once: loading what's trusted takes a while. Every
@@ -832,12 +854,6 @@ pub(crate) mod tls {
     /// that turns it off; rustls speaks TLS 1.2 and 1.3 only; and the host's name is sent (SNI).
     pub(super) fn config() -> Result<Arc<ClientConfig>, Failure> {
         static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
-        #[cfg(test)]
-        if let Some(trusted) =
-            TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
-        {
-            return Ok(trusted);
-        }
         CONFIG
             .get_or_init(|| {
                 let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -916,7 +932,8 @@ pub(crate) mod tls {
         host: &str,
         timeout: Duration,
     ) -> Result<Box<dyn SecureStream>, Failure> {
-        handshake(tcp, host, timeout, config()?)
+        let config = config_over(&tcp)?;
+        handshake(tcp, host, timeout, config)
     }
 
     /// The server's TLS: what it'll prove itself with, for each connection it takes.
@@ -1120,8 +1137,8 @@ pub(crate) mod tls {
     ) -> Result<Box<dyn Secure>, Failure> {
         let name = ServerName::try_from(host.to_owned())
             .map_err(|_| Failure::Tls(format!("`{host}` can't be checked against a certificate")))?;
-        let mut connection =
-            ClientConnection::new(config()?, name).map_err(|error| Failure::Tls(error.to_string()))?;
+        let mut connection = ClientConnection::new(config_over(&tcp)?, name)
+            .map_err(|error| Failure::Tls(error.to_string()))?;
         let mut tcp = tcp;
         let left = deadline.saturating_duration_since(Instant::now());
         tcp.set_read_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;

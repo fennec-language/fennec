@@ -44,7 +44,9 @@ pub(super) fn lower_all(context: &Context<'_>, program: &mut Program, wanted: &d
     waiting.extend(read_by(&program.functions));
     while let Some(name) = waiting.pop() {
         let done = |function: &Function| function.name == name;
+        // An empty collection a field defaults to is made as it's first read, in `field_default`.
         if program.constants.iter().any(done)
+            || context.empties.borrow().iter().any(done)
             || program.not_lowered.iter().any(|skipped| skipped.function == name)
         {
             continue;

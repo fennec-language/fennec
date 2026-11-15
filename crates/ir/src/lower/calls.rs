@@ -826,7 +826,8 @@ impl Lowering<'_> {
                 let place = self.place(&arg.value, (index_changes, takes_optional), write_backs, span)?;
                 reads.add_place(place);
             } else {
-                let lowered = self.expr(&arg.value)?;
+                let lowered =
+                    if own { self.expr_where(&arg.value, &param.ty)? } else { self.expr(&arg.value)? };
                 let value = if own { self.coerce(lowered, &param.ty, arg.value.span)? } else { lowered };
                 reads.add(self, value);
             }

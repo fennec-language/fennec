@@ -1,4 +1,4 @@
 true, given a MB it never reads: ran
-$(id)|a;b|`id`|*|~|
+$(id)|a;b|`id`|*|~|{--upload-pack=x,y}|{a,b}|
 a program that never ends: timed out
 a program that writes without end: too much output, past 1000

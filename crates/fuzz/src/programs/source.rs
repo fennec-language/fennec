@@ -9,7 +9,9 @@ use super::ast::{
     KEYS, Kept, LEDGER, Leave, Nested, Op, Place, Program, ROOMS, Reading, RefPlace, STARTING, Stmt,
     StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
-use super::ast::{Calling, Field, FieldCall, FieldCalls, Waking, Yielding};
+use super::ast::{
+    Calling, Field, FieldCall, FieldCalls, SWAP_KEYS, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
+};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -619,6 +621,98 @@ fn woken_written(waking: &Waking) -> String {
          with launch((inbox) => answering{id}(inbox, back, at={at})?)? as sends:\n            \
          for number in range({count}):\n                sends.send(number)?\n                \
          got = replies.receive() else break\n                stdout.print(\"got\", got)\n    return\n\n"
+    )
+}
+
+/// `swaps{id}`, the function a `Swapped` calls, after the struct and the functions it uses.
+fn swapped_written(swapping: &Swapping) -> String {
+    let Swapping { id, base, other_base, field, key, fresh, called, kept, owned, rounds } = *swapping;
+    let lists = field == SwapField::Lists;
+    let field = if lists { "lists" } else { "counts" };
+    let key = SWAP_KEYS.get(key).copied().unwrap_or("a");
+    let other = if called {
+        format!("desk{id}({other_base})")
+    } else {
+        format!("Desk{id}(counts={{\"c\": {other_base}}}, lists={{\"c\": [{other_base}]}})")
+    };
+    let stored = if lists { "[fresh]" } else { "fresh" };
+    let after_store = if kept {
+        format!("    if known is not None:\n        mine.{field}[\"known\"] = known\n")
+    } else if lists {
+        format!("    mine.{field}[\"found\"] = [1] if known is not None else [0]\n")
+    } else {
+        format!("    mine.{field}[\"found\"] = 1 if known is not None else 0\n")
+    };
+    let call = if owned {
+        format!(
+            "        given = desk{id}({base} + turn)\n        after = swapped{id}(given, key=\"{key}\", fresh={fresh})\n        \
+             stdout.print(given, after)\n"
+        )
+    } else {
+        format!(
+            "        after = swapped{id}(desk{id}({base} + turn), key=\"{key}\", fresh={fresh})\n        stdout.print(after)\n"
+        )
+    };
+    format!(
+        "struct Desk{id}:\n    counts: dict[str, int]\n    lists: dict[str, list[int]]\n\n\
+         def desk{id}(base: int) -> Desk{id}:\n    \
+         return Desk{id}(counts={{\"a\": base, \"b\": base + 1}}, lists={{\"a\": [base, 1], \"b\": [base + 2]}})\n\n\
+         def swapped{id}(given: Desk{id}, key: str, fresh: int) -> Desk{id}:\n    mut mine = given\n    \
+         other = {other}\n    known = mine.{field}.get(key)\n    mine = other\n    mine.{field}[key] = {stored}\n\
+         {after_store}    return mine\n\n\
+         def swaps{id}(stdout: Stdout):\n    for turn in range({rounds}):\n{call}    return\n\n"
+    )
+}
+
+/// `shelved{id}`, the function a `Shelved` calls, after the types and the functions it uses.
+fn shelved_written(shelving: &Shelving) -> String {
+    let Shelving { id, in_list, seen, ref steps } = *shelving;
+    let (held, at, made) = if in_list {
+        (
+            format!("list[Pouch{id}]"),
+            "0",
+            format!("[Pouch{id}(items=[\"first, {LONG_PIECE}\"], seen={seen})]"),
+        )
+    } else {
+        (
+            format!("dict[str, Pouch{id}]"),
+            "\"one\"",
+            format!("{{\"one\": Pouch{id}(items=[\"first, {LONG_PIECE}\"], seen={seen})}}"),
+        )
+    };
+    let steps: Vec<String> = steps
+        .iter()
+        .map(|(value, how)| {
+            let how = match how {
+                Shelve::Fill => 0,
+                Shelve::ByHand => 1,
+                Shelve::Direct => 2,
+            };
+            format!("({value}, {how})")
+        })
+        .collect();
+    format!(
+        "struct Pouch{id}:\n    items: list[str]\n    seen: int\n\n    \
+         def add(ref self, value: int, limits: list[int]):\n        \
+         self.items.append(f\"added {{value}}, {LONG_PIECE}\")\n        \
+         self.items.append(f\"again {{value}}, {LONG_PIECE}\")\n        self.seen += limits[value]\n\n\
+         struct Shelf{id}:\n    pouches: {held}\n\n    \
+         def fill(ref self, value: int, limits: list[int]):\n        self.pouches[{at}].add(value, limits=limits)\n\n    \
+         def by_hand(ref self, value: int, limits: list[int]):\n        mut pouch = self.pouches[{at}]\n        \
+         pouch.items.append(f\"by hand {{value}}, {LONG_PIECE}\")\n        pouch.seen += limits[value]\n        \
+         self.pouches[{at}] = pouch\n\n\
+         def filled{id}(shelf: shared Shelf{id}, value: int, limits: list[int], how: int):\n    \
+         lock shelf as ref held:\n        if how == 0:\n            held.fill(value, limits=limits)\n        \
+         if how == 1:\n            held.by_hand(value, limits=limits)\n        \
+         if how == 2:\n            held.pouches[{at}].add(value, limits=limits)\n\n\
+         def tried{id}(shelf: shared Shelf{id}, value: int, how: int) fails Crashed:\n    limits = [1, 2]\n    \
+         with launch(() => filled{id}(shelf, value, limits=limits, how=how)) as task:\n        pass\n\n\
+         def shelf_shown{id}(shelf: shared Shelf{id}) -> str:\n    lock shelf as held:\n        \
+         return f\"{{held.pouches}}\"\n\n\
+         def shelved{id}(stdout: Stdout):\n    shared shelf = Shelf{id}(pouches={made})\n    \
+         for value, how in [{steps}]:\n        tried{id}(shelf, value=value, how=how) except Crashed():\n            \
+         stdout.print(\"crashed\")\n        stdout.print(shelf_shown{id}(shelf))\n    return\n\n",
+        steps = steps.join(", ")
     )
 }
 
@@ -1889,6 +1983,14 @@ impl Writer {
                     self.line(indent + 1, &format!("case {case}:"));
                     self.line(indent + 2, then);
                 }
+            }
+            Stmt::Swapped(swapping) => {
+                let _ = write!(self.helpers, "{}", swapped_written(swapping));
+                self.line(indent, &format!("swaps{}(stdout)", swapping.id));
+            }
+            Stmt::Shelved(shelving) => {
+                let _ = write!(self.helpers, "{}", shelved_written(shelving));
+                self.line(indent, &format!("shelved{}(stdout)", shelving.id));
             }
             Stmt::Yielded(yielding) => {
                 let _ = write!(self.helpers, "{}", yielded_written(yielding));

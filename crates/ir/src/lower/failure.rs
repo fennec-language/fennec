@@ -65,6 +65,11 @@ impl Lowering<'_> {
     /// be. The checker has shown it fits, so anything else isn't lowered yet.
     pub(super) fn coerce(&mut self, value: Operand, to: &Type, span: Span) -> Lowered<Operand> {
         let from = type_in(&self.locals, &value).ok_or("a value has no type")?;
+        // What an arrow giving back `None` gives holds nothing, so where an optional goes it's the
+        // `None` written there, which is laid out as the optional is. A local of type `None` isn't.
+        if from == Type::None && matches!(to, Type::Optional(_)) {
+            return Ok(Operand::None);
+        }
         if fits(to, &from) {
             return Ok(value);
         }

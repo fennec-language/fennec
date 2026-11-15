@@ -1,0 +1,6 @@
+from std.concurrent import Closed, channel
+
+def main(stdout: Stdout) fails Closed:
+    with channel[int](size=4, to=.Every) as hits:
+        hits.send(1)?
+        stdout.print(hits.receive() else 0)

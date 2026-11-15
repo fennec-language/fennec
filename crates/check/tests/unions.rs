@@ -88,11 +88,32 @@ fn a_union_with_a_function_member_takes_a_function_and_calls_it_once_narrowed() 
     let wrong = "struct Table:\n    rows: int\n\ndef shown(text: str) -> str:\n    return text\n\n\
         def use(answer: Table | (int) -> str) -> int:\n    return 1\n\n\
         def main(stdout: Stdout):\n    stdout.print(use(shown))\n    return\n";
-    assert_eq!(problems(left), ["a (int) -> str | Chart can't be called @ answer"]);
+    assert_eq!(problems(left), ["a Chart | (int) -> str can't be called @ answer"]);
     assert_eq!(
         problems(wrong),
-        ["`answer` should be a (int) -> str | Table, but this is a function @ shown"]
+        ["`answer` should be a Table | (int) -> str, but this is a function @ shown"]
     );
+}
+
+/// What a function type gives back runs on to the end of it, so `(int) -> str | (str) -> str` is
+/// one function giving back `str | (str) -> str`, and a union's function member is shown last, as
+/// it reads back. A union of two function types, made of two names for them, has no written form:
+/// an arrow where one goes could be either, so it's refused naming both, given to a parameter or a
+/// name, with nothing else said about it.
+#[test]
+fn an_arrow_where_a_union_of_two_function_types_goes_names_both() {
+    let one = "type Two = (int) -> str | (str) -> str\n\ndef main(stdout: Stdout):\n    held: Two = 5\n    stdout.print(held(1))\n";
+    assert_eq!(problems(one), ["`held` should be a (int) -> str | (str) -> str, but this is an int @ 5"]);
+    let names = "type Shown = (int) -> str\ntype Measured = (str) -> str\ntype Two = Shown | Measured\n\n\
+        def keep(answer: Two) -> Two:\n    return answer\n\n";
+    let said = "this arrow could be either `(int) -> str` or `(str) -> str`, so what its parameters are can't be told";
+    let passed = format!("{names}def main(stdout: Stdout):\n    _ = keep((number) => f\"{{number}}\")\n");
+    assert_eq!(problems(&passed), [format!("{said} @ (number) => f\"{{number}}\"")]);
+    assert_eq!(helps(&passed), ["write a nested `def` with its parameters' types, and pass it by its name"]);
+    let held = format!(
+        "{names}def main(stdout: Stdout):\n    held: Two = (number) => f\"{{number}}\"\n    _ = keep(held)\n"
+    );
+    assert_eq!(problems(&held), [format!("{said} @ (number) => f\"{{number}}\"")]);
 }
 
 #[test]

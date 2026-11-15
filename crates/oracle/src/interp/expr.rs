@@ -136,7 +136,15 @@ impl Interp {
             }
             ExprKind::Else { value, default, except } => self.else_expr(value, default, *except),
             ExprKind::Try { value, context: None } => self.eval(value),
-            ExprKind::Try { context: Some(_), .. } => unsupported("`? from`"),
+            // `value? from Context(...)`: a failure is passed up as the context, made only then. What
+            // caused it is kept with it in native code, but nothing reads that yet.
+            ExprKind::Try { value, context: Some(context) } => match self.eval(value) {
+                Err(Flow::Fail(_, _)) => {
+                    let wrapper = self.eval(context)?;
+                    Err(Flow::Fail(wrapper, expr.span))
+                }
+                other => other,
+            },
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Attr { object, name, optional } => {
                 if *optional {

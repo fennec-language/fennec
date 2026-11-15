@@ -347,6 +347,82 @@ fn a_stopped_task_s_sum_ends_every_range_it_started() {
     finish();
 }
 
+static UNBEGUN_POOL: OnceLock<&'static Pool> = OnceLock::new();
+/// How many ranges' bodies ran, for a body that may wait and for one that never does.
+static BEGAN: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+static FIRST_HOLDS_ITS_THREAD: [AtomicBool; 2] = [AtomicBool::new(false), AtomicBool::new(false)];
+/// What each call gave back once its task had been stopped, plus one.
+static STOPPED_EARLY_GAVE: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+
+/// Counts itself, and the first holds the pool's one thread for a while, so the rest haven't begun
+/// when their task is stopped.
+fn begins(kind: usize, from: i64) -> i64 {
+    BEGAN[kind].fetch_add(1, Ordering::SeqCst);
+    if from == 0 {
+        FIRST_HOLDS_ITS_THREAD[kind].store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    0
+}
+
+extern "C" fn begins_and_may_wait(_env: i64, from: i64, _to: i64, _thread: i64, _out: i64) -> i64 {
+    begins(0, from)
+}
+
+extern "C" fn begins_and_never_waits(_env: i64, from: i64, _to: i64, _thread: i64, _out: i64) -> i64 {
+    begins(1, from)
+}
+
+fn maps_sixteen(kind: usize) -> i64 {
+    let items = lists::new(LINES, 16);
+    let made = if kind == 0 {
+        parallel_map_waiting(items, begins_and_may_wait, 0, LINES)
+    } else {
+        parallel_map_heavy(items, begins_and_never_waits, 0, LINES)
+    };
+    STOPPED_EARLY_GAVE[kind].store(made.min(1) + 1, Ordering::SeqCst);
+    heap::free(made);
+    heap::free(items);
+    if made == 0 { CRASHED } else { ENDED }
+}
+
+extern "C" fn maps_a_body_that_may_wait_until_stopped(_env: i64, _thread: i64) -> i64 {
+    maps_sixteen(0)
+}
+
+extern "C" fn maps_a_body_that_never_waits_through_a_stop(_env: i64, _thread: i64) -> i64 {
+    maps_sixteen(1)
+}
+
+/// A task stopped while it's parked in a comprehension whose body may wait is in a wait, and the
+/// stop cuts it short: the ranges that haven't begun don't, and the call fails as stopped. A
+/// comprehension whose body never waits is no wait: every range runs and the call gives its list,
+/// as the task's own code would have run on to its next wait.
+#[test]
+fn a_stop_ends_a_waiting_call_before_its_other_ranges_begin_and_lets_a_heavy_one_finish() {
+    begin();
+    let pool = own_pool(&UNBEGUN_POOL, 1);
+    let bodies: [TaskBody; 2] =
+        [maps_a_body_that_may_wait_until_stopped, maps_a_body_that_never_waits_through_a_stop];
+    for (kind, body) in bodies.into_iter().enumerate() {
+        let task = launch_on(pool, body, 0);
+        let started = Instant::now();
+        while !FIRST_HOLDS_ITS_THREAD[kind].load(Ordering::SeqCst) && started.elapsed() < GIVES_UP {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(FIRST_HOLDS_ITS_THREAD[kind].load(Ordering::SeqCst), "the first range didn't start");
+        let mut failure = 0;
+        // The block failed, so its task is stopped while the first range holds the only thread.
+        assert_eq!(launch_end(task, 10 * SECONDS, 1, &mut failure), ENDED);
+    }
+    let began: Vec<i64> = BEGAN.iter().map(|began| began.load(Ordering::SeqCst)).collect();
+    assert_eq!(began, [1, 16], "ranges begun: of the body that may wait, and of the one that never does");
+    let gave: Vec<i64> = STOPPED_EARLY_GAVE.iter().map(|gave| gave.load(Ordering::SeqCst)).collect();
+    assert_eq!(gave, [1, 2], "the waiting call failed, and the heavy one gave its list");
+    assert!(!super::super::super::super::failed(), "the launcher hasn't failed");
+    finish();
+}
+
 static CUTTING_POOL: OnceLock<&'static Pool> = OnceLock::new();
 /// The ranges a heavy comprehension over 200 items was cut into, made by a task and made by the
 /// test's own thread.

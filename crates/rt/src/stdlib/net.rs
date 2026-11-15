@@ -2232,7 +2232,7 @@ pub(crate) mod tests {
         drop(second_read);
         assert_eq!(under_stop(), [std::sync::Arc::as_ptr(&first).addr()]);
         drop(first_read);
-        assert!(under_stop().is_empty());
+        assert_eq!(under_stop(), Vec::<usize>::new());
         close(first_handle);
         close(second_handle);
     }

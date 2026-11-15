@@ -980,13 +980,17 @@ fn a_task_s_comprehensions_run_their_pieces_at_once_as_main_s_do() -> std::io::R
         [("1", false), ("4", false), ("16", false), ("1", true), ("4", true), ("16", true)]
     {
         let mut run = Command::new(&built);
-        run.env("FENNEC_THREADS", threads);
+        run.env("FENNEC_THREADS", threads).env("FENNEC_COUNTS", "1");
         if stressed {
             run.env("FENNEC_PARALLEL_STRESS", "1");
         }
         let ran = run.output_within()?;
         let how = format!("on {threads} threads, stressed: {stressed}");
-        assert_eq!(ran.status.code(), Some(0), "{how}: {}", String::from_utf8_lossy(&ran.stderr));
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(ran.status.code(), Some(0), "{how}: {said}");
+        // Nothing's left live: not the copies its pieces read, what failing pieces had made, nor
+        // the captured strings some pieces gave back.
+        assert!(said.contains(" live 0"), "{how} left blocks live: {said}");
         let printed = String::from_utf8_lossy(&ran.stdout);
         // What its pieces print comes out in any order, so each place's lines are compared sorted.
         let from = |place: &str| {

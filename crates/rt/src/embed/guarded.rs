@@ -148,7 +148,7 @@ fn lost(address: u64) -> Diagnostic {
 /// Anything reached twice is one block in the copy too. By a list of what's left to do, as a value
 /// can be deeper than a task's stack.
 fn copied(state: &mut State, address: u64) -> Result<u64, Diagnostic> {
-    copied_as(state, address, Copying::ForReaders)
+    copied_as(state, address, Copying::ForReaders, &mut Vec::new())
 }
 
 /// Which never-freed blocks a copy keeps as they are, rather than copy.
@@ -166,24 +166,38 @@ enum Copying {
 /// literals every thread can read. Gives back the copy's address and the table.
 pub(super) fn copied_for_task(state: &mut State, address: u64) -> Result<(u64, Box<Table>), Diagnostic> {
     state.heap.enter_table(Box::new(Table::hashed()), LENT_OWNER << OWNER_SHIFT);
-    let copy = copied_as(state, address, Copying::ForTask);
+    let mut counted = Vec::new();
+    let copy = copied_as(state, address, Copying::ForTask, &mut counted);
     let table = state.heap.leave_table();
     match copy {
         Ok(copy) => Ok((copy, table)),
-        // What was copied before it failed goes, with the count of each handle it had taken.
+        // What was copied before it failed goes with its table, and each handle it had counted is
+        // given back. Only those: a block copied but not yet walked holds the words of handles
+        // nobody has counted, so giving back one for every handle in the table would take counts
+        // that were never added, and a `shared` value could go while it's held.
         Err(failure) => {
-            let_table_go(state, *table);
+            drop(table);
+            for handle in counted {
+                release_handle(state, handle);
+            }
             Err(failure)
         }
     }
 }
 
-fn copied_as(state: &mut State, address: u64, how: Copying) -> Result<u64, Diagnostic> {
+/// The copy of `address` in the current table, `how` it's wanted. Each handle it counts on the
+/// way is added to `counted`, for a copy that fails part-way to give back.
+fn copied_as(
+    state: &mut State,
+    address: u64,
+    how: Copying,
+    counted: &mut Vec<u64>,
+) -> Result<u64, Diagnostic> {
     let mut copies: HashMap<u64, u64> = HashMap::new();
     let mut left = Vec::new();
-    let root = copy_of(state, address, &mut copies, &mut left, how)?;
+    let root = copy_of(state, address, (&mut copies, &mut left, &mut *counted), how)?;
     if root == address && how == Copying::ForReaders {
-        copy_read_in(state, address, &mut copies, &mut left)?;
+        copy_read_in(state, address, (&mut copies, &mut left, &mut *counted))?;
     }
     while let Some(new) = left.pop() {
         for place in places_in(state, new)? {
@@ -192,7 +206,7 @@ fn copied_as(state: &mut State, address: u64, how: Copying) -> Result<u64, Diagn
             if old == 0 {
                 continue;
             }
-            let held = copy_of(state, old, &mut copies, &mut left, how)?;
+            let held = copy_of(state, old, (&mut copies, &mut left, &mut *counted), how)?;
             if let Some(word) = state.heap.block_mut(new).and_then(|block| block.get_mut(place)) {
                 *word = held;
             }
@@ -209,8 +223,7 @@ fn copied_as(state: &mut State, address: u64, how: Copying) -> Result<u64, Diagn
 fn copy_read_in(
     state: &mut State,
     address: u64,
-    copies: &mut HashMap<u64, u64>,
-    left: &mut Vec<u64>,
+    (copies, left, counted): Copy<'_>,
 ) -> Result<(), Diagnostic> {
     if state.heap.reading.is_empty() {
         return Ok(());
@@ -234,7 +247,7 @@ fn copy_read_in(
             if !state.heap.reading.iter().any(|table| table.get(at).is_some()) {
                 continue;
             }
-            let copy = copy_of(state, held, copies, left, Copying::ForReaders)?;
+            let copy = copy_of(state, held, (&mut *copies, &mut *left, &mut *counted), Copying::ForReaders)?;
             if let Some(word) = state.heap.block_mut(here).and_then(|block| block.get_mut(place)) {
                 *word = copy;
             }
@@ -243,16 +256,20 @@ fn copy_read_in(
     Ok(())
 }
 
+/// A copy under way: what's been copied, by where it was, what's left to walk, and the handles
+/// counted so far.
+type Copy<'a> = (&'a mut HashMap<u64, u64>, &'a mut Vec<u64>, &'a mut Vec<u64>);
+
 /// The block in the copy for what's at `address`, added to `left` if it's new.
 fn copy_of(
     state: &mut State,
     address: u64,
-    copies: &mut HashMap<u64, u64>,
-    left: &mut Vec<u64>,
+    (copies, left, counted): Copy<'_>,
     how: Copying,
 ) -> Result<u64, Diagnostic> {
     if is_handle(address) {
         count_handle(address);
+        counted.push(address);
         return Ok(address);
     }
     if let Some(copy) = copies.get(&address).copied() {
@@ -561,11 +578,6 @@ pub(super) fn free_table(state: &mut State, cell: u64) {
         },
         Held::Taken => return,
     };
-    let_table_go(state, table);
-}
-
-/// Lets go of a table nothing reads any more: its blocks, and a count of each handle inside them.
-fn let_table_go(state: &mut State, table: Table) {
     let mut handles = Vec::new();
     for block in table.into_blocks() {
         let mut places = Vec::new();

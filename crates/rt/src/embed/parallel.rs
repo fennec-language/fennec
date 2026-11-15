@@ -332,8 +332,12 @@ impl Run {
 
     /// Runs a range's `body` on this thread, between its start and its end, and gives back how the
     /// body ended. On a thread other than the one its caller waits on:
-    /// - A range of a launched task's call that hasn't begun when the task is stopped doesn't
-    ///   begin: it fails as stopped, as its first wait would have made it.
+    /// - A range of a launched task's call whose body may wait, that hasn't begun when the task is
+    ///   stopped, doesn't begin: it fails as stopped. The task is parked in that call, waiting for
+    ///   what its ranges wait for, and a stop cuts short the wait a task is in. So the call fails
+    ///   as stopped even if a higher range has failed with a value of its own, and the task ends
+    ///   quietly, as a stopped task does. A call whose body never waits is no wait: its ranges
+    ///   all run, as the task's own code would have run on to its next wait.
     /// - A body that failed may have left the runtime holding temporaries of the call it was in,
     ///   as one stopped while it waited does, and one may hold an owner of a block the range
     ///   made. They're let go of here, while the block is still this thread's to count: once
@@ -341,7 +345,7 @@ impl Run {
     fn ran(&self, from: usize, body: impl FnOnce() -> i64) -> i64 {
         let started = self.range_starts(from);
         let off_its_caller = started.before.is_some();
-        let code = if off_its_caller && pool::cut_short() { 1 } else { body() };
+        let code = if off_its_caller && self.waiting && pool::cut_short() { 1 } else { body() };
         if code != 0 && off_its_caller {
             with(|state| {
                 state.temps.clear();

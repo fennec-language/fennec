@@ -391,9 +391,15 @@ pub extern "C" fn with_room(element: i64, room: i64) -> i64 {
 /// native code to fill: the same block when it had one owner and room, or else a copy
 /// with room to double.
 pub extern "C" fn grow(list: i64) -> i64 {
-    super::made_with("fennec_list_grow", |state| {
-        marked_append(state, list, 1).or_else(|| grow_in(state, list, 1)).unwrap_or(list)
-    })
+    super::made_with("fennec_list_grow", |state| with_one_more(state, list).unwrap_or(list))
+}
+
+/// What `fennec_list_grow` does, for a list the runtime adds to itself: takes over the list's
+/// owner and gives back one with a zeroed item more on the end. That's the same block when it had
+/// one owner and room, a list a lock's log marked changed where it is with the append noted for a
+/// crash to undo, and otherwise a copy with room to double.
+pub(super) fn with_one_more(state: &mut State, list: i64) -> Option<i64> {
+    marked_append(state, list, 1).or_else(|| grow_in(state, list, 1))
 }
 
 /// Takes over a list's owner and gives back a block only that owner holds, copying the

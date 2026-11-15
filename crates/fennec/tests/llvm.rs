@@ -24494,6 +24494,81 @@ fn a_failure_says_its_call_chain() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An error's call chain is kept as it leaves each call and made into text only when it's shown,
+/// which changes nothing in what's said. A place left over and over by a recursion is said once;
+/// two functions failing through each other keep both ends of the chain with the calls between
+/// counted; and a `main` that gives back a value says its failure where it was raised, with the
+/// chain under it and no note that isn't the program's, as a `main` that gives nothing back does.
+/// A thousand failures caught, their chains never read, say nothing.
+#[test]
+fn a_failure_passed_up_says_its_chain_however_long() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let again = "error Deep:\n    left: int\n\ndef down(left: int) -> int fails Deep:\n    \
+                 if left == 0: fail Deep(left=left)\n    return down(left - 1)? + 1\n\n\
+                 def main(stdout: Stdout) fails Deep:\n    stdout.print(down(50)?)\n";
+    let turns = "error Deep:\n    left: int\n\ndef ping(left: int) -> int fails Deep:\n    \
+                 if left == 0: fail Deep(left=left)\n    return pong(left - 1)? + 1\n\n\
+                 def pong(left: int) -> int fails Deep:\n    if left == 0: fail Deep(left=left)\n    \
+                 return ping(left - 1)? + 1\n\ndef main(stdout: Stdout) fails Deep:\n    \
+                 stdout.print(ping(81)?)\n";
+    let given = "error Missing:\n    name: str\n\ndef find(name: str) -> int fails Missing:\n    \
+                 if name == \"\": fail Missing(name=\"nobody\")\n    return len(name)\n\n\
+                 def look(name: str) -> int fails Missing:\n    return find(name)? + 1\n\n\
+                 def main(stdout: Stdout) -> int fails Missing:\n    got = look(\"\")?\n    \
+                 stdout.print(got)\n    return 3\n";
+    let caught = "error Bad:\n    code: int\n\ndef inner(code: int) -> int fails Bad:\n    \
+                  if code % 3 == 0: fail Bad(code=code)\n    return code\n\n\
+                  def middle(code: int) -> int fails Bad:\n    return inner(code)? + 1\n\n\
+                  def outer(code: int) -> int fails Bad:\n    return middle(code)? + 1\n\n\
+                  def main(stdout: Stdout):\n    mut total = 0\n    mut failed = 0\n    \
+                  for code in range(3000):\n        got = outer(code) except Bad(): -1\n        \
+                  if got < 0:\n            failed += 1\n        else:\n            total += got\n    \
+                  stdout.print(total, failed)\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        // A release names its files from where it was built, never the builder's folders.
+        let at = if how.contains(&"--release") { "" } else { "<dir>/" };
+        let (_, said, code) = both_built_unpinned("again_chain", again, how)?;
+        assert_eq!(code, Some(1));
+        assert!(
+            said.ends_with(&format!(
+                " --> {at}again_chain.fen:5:19\n  |\n5 |     if left == 0: fail Deep(left=left)\n  \
+                 |                   ^^^^^^^^^^^^^^^^^^^^\n  = in `down`\n  \
+                 = called from `down` at {at}again_chain.fen:6:12, more than once\n  \
+                 = called from `main` at {at}again_chain.fen:9:18\n"
+            )),
+            "{how:?}: {said}"
+        );
+        let (_, said, code) = both_built_unpinned("turns_chain", turns, how)?;
+        assert_eq!(code, Some(1));
+        let calls: Vec<&str> = said.lines().filter(|line| line.contains("called from")).collect();
+        assert_eq!(calls.len(), 2 * 16, "{how:?}: {said}");
+        assert_eq!(said.lines().filter(|line| *line == "  = ... more calls").count(), 1, "{how:?}: {said}");
+        assert!(said.contains("  = in `pong`\n  = called from `ping` at "), "{how:?}: {said}");
+        assert!(
+            said.ends_with(&format!("  = called from `main` at {at}turns_chain.fen:13:18\n")),
+            "{how:?}: {said}"
+        );
+        let (printed, said, code) = both_built_unpinned("given_chain", given, how)?;
+        assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
+        assert_eq!(
+            said,
+            format!(
+                "error: `main` failed: Missing(name=\"nobody\")\n --> {at}given_chain.fen:5:20\n  |\n\
+                 5 |     if name == \"\": fail Missing(name=\"nobody\")\n  \
+                 |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  = in `find`\n  \
+                 = called from `look` at {at}given_chain.fen:9:12\n  \
+                 = called from `main` at {at}given_chain.fen:12:11\n"
+            ),
+            "{how:?}"
+        );
+        let (printed, said, code) = both_built_unpinned("caught_chain", caught, how)?;
+        assert_eq!((printed.as_str(), said.as_str(), code), ("3004000 1000\n", "", Some(0)), "{how:?}");
+    }
+    Ok(())
+}
+
 /// What a program built with these options printed, said and gave back, with its folder written as
 /// `<dir>`, held to nothing pinned.
 fn both_built_unpinned(name: &str, source: &str, how: &[&str]) -> std::io::Result<Outcome> {

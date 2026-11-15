@@ -12,13 +12,14 @@ pub(crate) fn display(value: &Value) -> String {
 }
 
 /// A failure as it's shown when nothing handled it: the error, then each of its notes on a
-/// line of its own under it, as `note: ...`, a note's later lines indented under its first.
+/// line of its own under it, as `note: ...`, a note's later lines indented under its first. The
+/// places of its call chain, which native code keeps among its notes, aren't notes to show.
 pub(crate) fn failure(error: &Value) -> String {
     let mut text = repr(error);
     if let Value::Instance(instance) = error
         && let Some(notes) = &instance.notes
     {
-        for note in notes.iter() {
+        for note in notes.iter().filter(|note| !crate::embed::notes::is_place(note)) {
             text.push_str("\nnote: ");
             text.push_str(&note.replace('\n', "\n  "));
         }

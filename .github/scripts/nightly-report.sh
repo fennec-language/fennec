@@ -53,5 +53,7 @@ if ! gh run download "$run" --repo "$repository" --name nightly-report --dir "$w
 fi
 day=${created%%T*}
 cp "$work/nightly.md" "$folder/nightly-proofs-$day.md"
-echo "Proofs on $day: $conclusion, report in $folder/nightly-proofs-$day.md"
+# The tests that failed, by name, so a failed night reads in one line.
+failed=$(sed -n 's/^Failed tests: //p' "$work/nightly.md" | head -n 1)
+echo "Proofs on $day: $conclusion${failed:+, failed tests: $failed}, report in $folder/nightly-proofs-$day.md"
 [ "$conclusion" = success ]

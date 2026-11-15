@@ -31,8 +31,20 @@ pub(super) fn definitions(modules: &[&Module], signatures: &Signatures) -> Vec<E
 }
 
 impl Lowering<'_> {
+    /// The names of an enum's cases, in the order they're written, if `owner` is an enum the IR
+    /// holds.
+    pub(super) fn case_names(&self, owner: &str) -> Option<Vec<String>> {
+        let context = self.context;
+        if let Some(copy) = context.type_instance(owner) {
+            let found = context.signatures.enumeration(&copy.base)?;
+            return Some(found.cases.iter().map(|(name, _)| name.clone()).collect());
+        }
+        let def = context.enums.get(owner)?;
+        Some(def.cases.iter().map(|written| written.name.clone()).collect())
+    }
+
     /// The fields of a case of an enum the IR holds.
-    fn case_fields(&self, owner: &str, case: &str) -> Option<Vec<(String, Type)>> {
+    pub(super) fn case_fields(&self, owner: &str, case: &str) -> Option<Vec<(String, Type)>> {
         let context = self.context;
         if let Some(copy) = context.type_instance(owner) {
             let found = context.signatures.enumeration(&copy.base)?;

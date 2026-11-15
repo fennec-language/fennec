@@ -1085,6 +1085,8 @@ mod tests {
         let url = format!("http://127.0.0.1:{env}/");
         let got = crate::stdlib::http::asked("GET", &url, Vec::new(), std::time::Duration::from_secs(20));
         assert_eq!(got, Ok((200, b"pong".to_vec())));
+        // Woken by the poll for its answer, not by looking again on a timer.
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
         ANSWERED.fetch_add(1, Ordering::Relaxed);
         0
     }
@@ -1115,6 +1117,7 @@ mod tests {
         let got = crate::stdlib::http::asked("POST", &url, sent.clone(), std::time::Duration::from_secs(20));
         let got = got.map(|(status, body)| (status, body == sent));
         assert_eq!(got, Ok((200, true)));
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
         ECHOED.fetch_add(1, Ordering::Relaxed);
         0
     }

@@ -188,6 +188,165 @@ fn a_task_s_heavy_comprehension_shares_its_ranges_among_the_workers() {
     finish();
 }
 
+static CROWDED_POOL: OnceLock<&'static Pool> = OnceLock::new();
+/// As many launched tasks as a worker runs ranges at once, all alive on the one worker.
+const CROWD: i64 = 1024;
+static CROWD_STARTED: AtomicI64 = AtomicI64::new(0);
+static CROWD_ENDED: AtomicI64 = AtomicI64::new(0);
+static CROWDED: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+/// How many of the crowd had ended when the comprehension among them had.
+static ENDED_BY_THEN: AtomicI64 = AtomicI64::new(-1);
+
+/// One of the crowd: parked for as long as its test lets it be.
+extern "C" fn sleeps_in_a_crowd(_env: i64, _thread: i64) -> i64 {
+    CROWD_STARTED.fetch_add(1, Ordering::SeqCst);
+    clock_sleep(60 * SECONDS);
+    CROWD_ENDED.fetch_add(1, Ordering::SeqCst);
+    ENDED
+}
+
+extern "C" fn first_waits_in_a_crowd(_env: i64, from: i64, _to: i64, _thread: i64, _out: i64) -> i64 {
+    if from != 0 {
+        CROWDED[1].store(1, Ordering::SeqCst);
+        return 0;
+    }
+    let started = Instant::now();
+    while CROWDED[1].load(Ordering::SeqCst) == 0 && started.elapsed() < GIVES_UP {
+        clock_sleep(SECONDS / 1000);
+    }
+    CROWDED[0].store(CROWDED[1].load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+    0
+}
+
+extern "C" fn maps_in_a_crowd(_env: i64, _thread: i64) -> i64 {
+    let items = list(&["one", "two"]);
+    heap::free(parallel_map_waiting(items, first_waits_in_a_crowd, 0, LINES));
+    heap::free(items);
+    ENDED_BY_THEN.store(CROWD_ENDED.load(Ordering::SeqCst), Ordering::SeqCst);
+    ENDED
+}
+
+/// A worker runs only so many ranges at once, each on a stack of its own. Launched tasks are on
+/// such stacks too, and once counted against that: a worker holding that many long-lived tasks
+/// never started a range, so a task there that handed its comprehension's ranges to it waited
+/// until enough of the others had ended, which may be never. Only ranges count now.
+#[test]
+fn a_task_s_ranges_start_on_a_worker_crowded_with_long_lived_tasks() {
+    begin();
+    let pool = own_pool(&CROWDED_POOL, 1);
+    let crowd: Vec<i64> = (0..CROWD).map(|_| launch_on(pool, sleeps_in_a_crowd, 0)).collect();
+    let started = Instant::now();
+    while CROWD_STARTED.load(Ordering::SeqCst) < CROWD && started.elapsed() < GIVES_UP {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(CROWD_STARTED.load(Ordering::SeqCst), CROWD, "the crowd didn't all start");
+    let task = launch_on(pool, maps_in_a_crowd, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    assert_eq!(CROWDED[0].load(Ordering::SeqCst), 2, "the first range waited for the second in vain");
+    assert_eq!(ENDED_BY_THEN.load(Ordering::SeqCst), 0, "the ranges only started once others had ended");
+    // Each of the crowd is stopped, as a block that failed stops its task.
+    for sleeper in crowd {
+        assert_eq!(launch_end(sleeper, -1, 1, &mut failure), ENDED);
+    }
+    finish();
+}
+
+static CLEANING_POOL: OnceLock<&'static Pool> = OnceLock::new();
+static CLEANERS_SLEEPING: AtomicI64 = AtomicI64::new(0);
+/// How many of a cleanup's ranges slept their sleep out, though their task had been stopped.
+static CLEANERS_SLEPT: AtomicI64 = AtomicI64::new(0);
+
+/// A range of a comprehension a crash's cleanup makes: it waits a moment, as a rollback over the
+/// network would.
+extern "C" fn waits_in_a_cleanup(_env: i64, _from: i64, _to: i64, _thread: i64, _out: i64) -> i64 {
+    CLEANERS_SLEEPING.fetch_add(1, Ordering::SeqCst);
+    clock_sleep(SECONDS / 5);
+    if super::super::super::super::failed() {
+        return CRASHED;
+    }
+    CLEANERS_SLEPT.fetch_add(1, Ordering::SeqCst);
+    0
+}
+
+extern "C" fn cleans_up_with_a_comprehension(_env: i64, _thread: i64) -> i64 {
+    threads::cleaning(true);
+    let items = list(&["one", "two"]);
+    let made = parallel_map_waiting(items, waits_in_a_cleanup, 0, LINES);
+    heap::free(made);
+    heap::free(items);
+    threads::cleaning(false);
+    ENDED
+}
+
+/// A stopped task's cleanup after a crash may still wait, until it's stopped hard a second later.
+/// The ranges of a comprehension it makes are the cleanup's code, so they have that grace too:
+/// they once ran in the task and had it, and on other threads would have lost it.
+#[test]
+fn a_cleanup_s_ranges_may_wait_as_the_cleanup_may_after_a_stop() {
+    begin();
+    let task = launch_on(own_pool(&CLEANING_POOL, 2), cleans_up_with_a_comprehension, 0);
+    let started = Instant::now();
+    while CLEANERS_SLEEPING.load(Ordering::SeqCst) < 2 && started.elapsed() < GIVES_UP {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(CLEANERS_SLEEPING.load(Ordering::SeqCst), 2, "the ranges didn't both start");
+    let mut failure = 0;
+    // The block failed, so its task is stopped at once, while its ranges sleep.
+    assert_eq!(launch_end(task, 10 * SECONDS, 1, &mut failure), ENDED);
+    assert_eq!(CLEANERS_SLEPT.load(Ordering::SeqCst), 2, "a cleanup's range was cut short by the stop");
+    finish();
+}
+
+static STOPPED_SUM_POOL: OnceLock<&'static Pool> = OnceLock::new();
+static SUMMING: AtomicI64 = AtomicI64::new(0);
+/// What the stopped task's sum gave back, plus one.
+static STOPPED_SUM_GAVE: AtomicI64 = AtomicI64::new(0);
+
+/// A leaf of a sum whose body may wait: it sleeps for a minute unless its task is stopped.
+extern "C" fn sums_until_stopped(_env: i64, from: i64, to: i64, _thread: i64, partial: &mut i64) -> i64 {
+    SUMMING.fetch_add(1, Ordering::SeqCst);
+    clock_sleep(60 * SECONDS);
+    if super::super::super::super::failed() {
+        return CRASHED;
+    }
+    *partial = (from..to).sum();
+    0
+}
+
+extern "C" fn sums_until_it_s_stopped(_env: i64, _thread: i64) -> i64 {
+    let before = live();
+    let items = lists::new(LINES, SUMMED);
+    let mut sum = 0;
+    let how = parallel_reduce_waiting(items, sums_until_stopped, adds, 0, &mut sum);
+    heap::free(items);
+    // Its worker has every block back that the call lent, and nothing more.
+    STOPPED_SUM_GAVE.store(if live() == before { how + 1 } else { -1 }, Ordering::SeqCst);
+    if how == 0 { ENDED } else { CRASHED }
+}
+
+/// A stopped task's sum: each leaf's sleep is cut short, so every leaf fails, and nothing's left to
+/// combine. Each range still ends where it started. A combining range once started and then left,
+/// unended, when a half had failed, keeping what was lent for the call on its thread.
+#[test]
+fn a_stopped_task_s_sum_ends_every_range_it_started() {
+    begin();
+    let task = launch_on(own_pool(&STOPPED_SUM_POOL, 2), sums_until_it_s_stopped, 0);
+    let started = Instant::now();
+    while SUMMING.load(Ordering::SeqCst) < 4 && started.elapsed() < GIVES_UP {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(SUMMING.load(Ordering::SeqCst), 4, "the leaves didn't all start");
+    let mut failure = 0;
+    assert_eq!(launch_end(task, 10 * SECONDS, 1, &mut failure), ENDED);
+    assert_eq!(
+        STOPPED_SUM_GAVE.load(Ordering::SeqCst),
+        2,
+        "the sum failed, and left its worker as it found it"
+    );
+    finish();
+}
+
 static CUTTING_POOL: OnceLock<&'static Pool> = OnceLock::new();
 /// The ranges a heavy comprehension over 200 items was cut into, made by a task and made by the
 /// test's own thread.

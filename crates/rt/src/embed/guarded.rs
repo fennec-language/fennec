@@ -37,6 +37,14 @@ pub const GUARDED_OWNER: u64 = 0xFFFF;
 /// The owner number of a `shared` value's own block, which no thread ever is.
 pub const HANDLE_OWNER: u64 = 0xFFFE;
 
+/// The owner number of a block in a copy made for other threads to read: what a launched task is
+/// given until it takes it as its own, and what a task lends the rounds it serves or the ranges
+/// of its `parallel` call. No thread ever is this, and neither is the holder of a write lock, so
+/// whoever reads such a block leaves its count to the runtime, which notes the change for the
+/// copy's owner. It isn't [`GUARDED_OWNER`]: a thread holding a write lock goes by that number, and
+/// would count a lent block in place, as its own, while another thread did the same.
+pub const LENT_OWNER: u64 = 0xFFFC;
+
 /// Where a `shared` value's table is.
 enum Held {
     /// With nobody holding it. Boxed, so taking it moves a pointer.
@@ -157,10 +165,17 @@ enum Copying {
 /// value crossing a lock's edge, keeping nothing of this thread's but `shared` handles and the string
 /// literals every thread can read. Gives back the copy's address and the table.
 pub(super) fn copied_for_task(state: &mut State, address: u64) -> Result<(u64, Box<Table>), Diagnostic> {
-    state.heap.enter_table(Box::new(Table::hashed()), GUARDED_OWNER << OWNER_SHIFT);
+    state.heap.enter_table(Box::new(Table::hashed()), LENT_OWNER << OWNER_SHIFT);
     let copy = copied_as(state, address, Copying::ForTask);
     let table = state.heap.leave_table();
-    Ok((copy?, table))
+    match copy {
+        Ok(copy) => Ok((copy, table)),
+        // What was copied before it failed goes, with the count of each handle it had taken.
+        Err(failure) => {
+            let_table_go(state, *table);
+            Err(failure)
+        }
+    }
 }
 
 fn copied_as(state: &mut State, address: u64, how: Copying) -> Result<u64, Diagnostic> {
@@ -546,6 +561,11 @@ pub(super) fn free_table(state: &mut State, cell: u64) {
         },
         Held::Taken => return,
     };
+    let_table_go(state, table);
+}
+
+/// Lets go of a table nothing reads any more: its blocks, and a count of each handle inside them.
+fn let_table_go(state: &mut State, table: Table) {
     let mut handles = Vec::new();
     for block in table.into_blocks() {
         let mut places = Vec::new();

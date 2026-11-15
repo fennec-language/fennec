@@ -1580,10 +1580,12 @@ fn stopped_while_reading() -> bool {
 #[cfg(any(test, feature = "threads"))]
 static BLOCKED_READS: Mutex<Vec<(usize, Arc<Stream>)>> = Mutex::new(Vec::new());
 
-/// A launched task's read blocking its thread, noted while it lasts.
+/// A launched task's read blocking its thread, noted while it lasts: by its task's stop and its
+/// connection. The ranges of a task's `parallel` call share the task's stop, so several reads can
+/// be noted under one stop at once, and each takes back its own.
 struct BlockedRead {
     #[cfg(any(test, feature = "threads"))]
-    stop: Option<usize>,
+    noted: Option<(usize, usize)>,
 }
 
 impl BlockedRead {
@@ -1591,10 +1593,7 @@ impl BlockedRead {
         #[cfg(any(test, feature = "threads"))]
         {
             let stop = crate::embed::threads::task_stop().map(|stop| Arc::as_ptr(&stop).addr());
-            if let Some(stop) = stop {
-                BLOCKED_READS.lock().unwrap_or_else(PoisonError::into_inner).push((stop, Arc::clone(stream)));
-            }
-            BlockedRead { stop }
+            BlockedRead::noted(stop, stream)
         }
         #[cfg(not(any(test, feature = "threads")))]
         {
@@ -1604,12 +1603,26 @@ impl BlockedRead {
     }
 }
 
+#[cfg(any(test, feature = "threads"))]
+impl BlockedRead {
+    /// Notes a read of `stream` blocking the thread of the task stopped by `stop`, if a task's is.
+    fn noted(stop: Option<usize>, stream: &Arc<Stream>) -> BlockedRead {
+        if let Some(stop) = stop {
+            BLOCKED_READS.lock().unwrap_or_else(PoisonError::into_inner).push((stop, Arc::clone(stream)));
+        }
+        BlockedRead { noted: stop.map(|stop| (stop, Arc::as_ptr(stream).addr())) }
+    }
+}
+
 impl Drop for BlockedRead {
     fn drop(&mut self) {
         #[cfg(any(test, feature = "threads"))]
-        if let Some(stop) = self.stop {
+        if let Some((stop, connection)) = self.noted {
             let mut blocked = BLOCKED_READS.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(at) = blocked.iter().position(|(task, _)| *task == stop) {
+            let own = |(task, stream): &(usize, Arc<Stream>)| {
+                *task == stop && Arc::as_ptr(stream).addr() == connection
+            };
+            if let Some(at) = blocked.iter().position(own) {
                 blocked.swap_remove(at);
             }
         }
@@ -1954,6 +1967,41 @@ pub(crate) mod tests {
 
     use super::{Failure, Fake, MOST_LINE_BYTES, Made, close, receive, udp};
     use crate::value::Value;
+
+    /// The ranges of a task's `parallel` call share the task's stop, so reads blocking their
+    /// threads can be noted under one stop at once: one that ends takes back its own note, and
+    /// leaves the other's for the stop to find. It once took back the first note under its stop,
+    /// whichever read's that was.
+    #[test]
+    fn a_blocked_read_takes_back_its_own_note_among_others_under_its_stop() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let opened = || {
+            let Ok((stream, peer)) = super::connected("127.0.0.1", port, std::time::Duration::from_secs(10))
+            else {
+                panic!("couldn't connect to the test's own listener")
+            };
+            let Ok(handle) = super::keep_stream(stream, peer, None) else { panic!("no handle") };
+            let Ok(stream) = super::stream(handle) else { panic!("no stream") };
+            (handle, stream)
+        };
+        let ((first_handle, first), (second_handle, second)) = (opened(), opened());
+        // A stop's address no task has.
+        let stop = usize::MAX - 7;
+        let under_stop = || -> Vec<usize> {
+            let blocked = super::BLOCKED_READS.lock().unwrap();
+            let own = blocked.iter().filter(|(task, _)| *task == stop);
+            own.map(|(_, stream)| std::sync::Arc::as_ptr(stream).addr()).collect()
+        };
+        let first_read = super::BlockedRead::noted(Some(stop), &first);
+        let second_read = super::BlockedRead::noted(Some(stop), &second);
+        drop(second_read);
+        assert_eq!(under_stop(), [std::sync::Arc::as_ptr(&first).addr()]);
+        drop(first_read);
+        assert!(under_stop().is_empty());
+        close(first_handle);
+        close(second_handle);
+    }
 
     /// A response's headers become a dict with each name once, a name sent again joined to the
     /// first with `, `, in the order the names first came, however many there are.

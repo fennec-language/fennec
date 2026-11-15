@@ -589,6 +589,12 @@ pub(super) use super::super::threads::{
     BeforeRange, Calling, range_off_its_caller_ends, range_off_its_caller_starts,
 };
 
+/// Whether what's running here is a range of a launched task that's been stopped: if so it fails,
+/// as stopped, as any wait it came to would make it.
+pub(super) fn cut_short() -> bool {
+    super::super::serve::cut_short()
+}
+
 /// Starts a range on a worker, with the blocks lent for the call to read.
 pub(super) fn range_starts(lent: Option<Arc<crate::embed::table::Table>>) {
     super::super::threads::range_starts(lent);

@@ -949,12 +949,13 @@ impl Heap {
             mark_never_freed(&mut block);
         } else if self.owner_bits >> OWNER_SHIFT != 0 {
             mark_owner(&mut block, self.owner_bits);
-            // What's made under a lock stays with what the lock guards, and a server's tasks hand
-            // nothing over.
-            if super::threads::ON
-                && !self.serving
-                && self.owner_bits >> OWNER_SHIFT != super::guarded::GUARDED_OWNER
-            {
+            // What's made under a lock stays with what the lock guards, what's made for a copy
+            // to lend stays in the copy, and a server's tasks hand nothing over.
+            let in_a_table_of_its_own = matches!(
+                self.owner_bits >> OWNER_SHIFT,
+                super::guarded::GUARDED_OWNER | super::guarded::LENT_OWNER
+            );
+            if super::threads::ON && !self.serving && !in_a_table_of_its_own {
                 self.list_made(address);
             }
         }

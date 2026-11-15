@@ -330,6 +330,28 @@ impl Run {
         }
     }
 
+    /// Runs a range's `body` on this thread, between its start and its end, and gives back how the
+    /// body ended. On a thread other than the one its caller waits on:
+    /// - A range of a launched task's call that hasn't begun when the task is stopped doesn't
+    ///   begin: it fails as stopped, as its first wait would have made it.
+    /// - A body that failed may have left the runtime holding temporaries of the call it was in,
+    ///   as one stopped while it waited does, and one may hold an owner of a block the range
+    ///   made. They're let go of here, while the block is still this thread's to count: once
+    ///   it's handed over, letting go of it would reach nothing, and the block would never go.
+    fn ran(&self, from: usize, body: impl FnOnce() -> i64) -> i64 {
+        let started = self.range_starts(from);
+        let off_its_caller = started.before.is_some();
+        let code = if off_its_caller && pool::cut_short() { 1 } else { body() };
+        if code != 0 && off_its_caller {
+            with(|state| {
+                state.temps.clear();
+                state.let_go();
+            });
+        }
+        self.keep_made(started);
+        code
+    }
+
     /// Passes the failure up, in the calling thread's runtime, after adopting what the ranges
     /// made: 1 if there was one, else 0.
     fn finish(self) -> i64 {
@@ -372,9 +394,7 @@ impl Run {
             return;
         }
         if to - from <= self.chunk {
-            let since = self.range_starts(from);
-            let code = leaf(from, to, i64::from(super::threads::index()));
-            self.keep_made(since);
+            let code = self.ran(from, || leaf(from, to, i64::from(super::threads::index())));
             if code != 0 {
                 self.failed(from, code);
             }
@@ -418,9 +438,7 @@ impl Run {
     /// Runs one range of a loop or a comprehension on this thread, as it was split.
     fn leaf_on(&self, (from, to): (usize, usize), leaf: Leaf) {
         if from <= self.stop.load(Ordering::Relaxed) && from < to {
-            let since = self.range_starts(from);
-            let code = leaf.run(from, to, i64::from(super::threads::index()));
-            self.keep_made(since);
+            let code = self.ran(from, || leaf.run(from, to, i64::from(super::threads::index())));
             if code != 0 {
                 self.failed(from, code);
             }
@@ -496,10 +514,11 @@ impl Run {
         steps: (ReduceBody, Combine, i64),
     ) -> Option<i64> {
         let (_, combine, env) = steps;
+        // A half that failed leaves nothing to combine, and no range is started for it: one
+        // started and left unended would keep what was lent for the call on its thread.
+        let (left, right) = (left?, right?);
         let mut combined = 0;
-        let since = self.range_starts(from);
-        let code = combine(env, left?, right?, &mut combined);
-        self.keep_made(since);
+        let code = self.ran(from, || combine(env, left, right, &mut combined));
         if code != 0 {
             self.failed(from, code);
             return None;
@@ -516,9 +535,7 @@ impl Run {
         let thread = i64::from(super::threads::index());
         if to - from <= self.chunk {
             let mut partial = 0;
-            let since = self.range_starts(from);
-            let code = body(env, number(from), number(to), thread, &mut partial);
-            self.keep_made(since);
+            let code = self.ran(from, || body(env, number(from), number(to), thread, &mut partial));
             if code != 0 {
                 self.failed(from, code);
                 return None;
@@ -664,7 +681,7 @@ fn map_of_task(
     }
     let (here, stop) = pool::for_task()?;
     let (copy, table) = copied_to_lend(env)?;
-    with(|state| state.heap.enter_table(table, super::guarded::GUARDED_OWNER << super::heap::OWNER_SHIFT));
+    with(|state| state.heap.enter_table(table, super::guarded::LENT_OWNER << super::heap::OWNER_SHIFT));
     let out = super::lists::new(element, number(length));
     let lent = Arc::new(*with(|state| state.heap.leave_table()));
     let run = Run::new(weight.chunk(length, words))
@@ -770,17 +787,19 @@ fn run_reduce(
     run.finish()
 }
 
-/// A reduction a launched task makes, whose body may wait, over two items or more: on the task's
+/// A reduction a launched task makes, whose body may wait, of more than one leaf: on the task's
 /// pool, as `map_of_task` runs a comprehension, lending a copy of what the body captures. `None`
 /// anywhere else, and the ranges then run here. Under `FENNEC_PARALLEL_STRESS` it's every
-/// reduction a task makes, `waiting` or not.
+/// reduction of more than one leaf that a task makes, `waiting` or not.
 fn reduce_of_task(
     length: usize,
     (body, combine, env): (ReduceBody, Combine, i64),
     result: &mut i64,
     waiting: bool,
 ) -> Option<i64> {
-    if length < 2 {
+    // A reduction of one leaf runs on one thread wherever it is, so there's nothing to gain from
+    // copying what it captures.
+    if length <= crate::builtins::REDUCE_LEAF {
         return None;
     }
     let (here, stop) = pool::for_task()?;
@@ -921,6 +940,11 @@ mod pool {
     }
 
     pub(super) fn range_off_its_caller_ends(_before: BeforeRange) {}
+
+    /// Without threads, there are no launched tasks, so no range is a stopped one's.
+    pub(super) fn cut_short() -> bool {
+        false
+    }
 
     /// Without threads, there are no launched tasks to hand ranges to a pool.
     pub(super) fn for_task() -> Option<((&'static Pool, usize), std::sync::Arc<std::sync::atomic::AtomicU8>)>
@@ -1228,6 +1252,36 @@ mod tests {
         }
         assert_eq!(with(|state| state.heap.live()), before);
         finish();
+    }
+
+    /// A reduction's leaf that fails where it holds position 70,000, and counts its positions
+    /// anywhere else.
+    extern "C" fn fails_in_a_leaf(_env: i64, from: i64, to: i64, _thread: i64, partial: &mut i64) -> i64 {
+        if (from..to).contains(&70_000) {
+            attempt(|_: &mut State| -> Result<i64, Diagnostic> {
+                Err(Diagnostic::new("a leaf failed", Span::default()))
+            });
+            return 1;
+        }
+        *partial = to - from;
+        0
+    }
+
+    /// A reduction on the pool in which a leaf fails still ends every range it started, so the
+    /// calling thread has its blocks back, whole, when the call's over. The range that combines
+    /// two halves once started and was left unended when a half had failed: its worker went on
+    /// holding what was lent, and the calling thread could no longer take it back as its own.
+    #[test]
+    fn a_reduction_in_which_a_leaf_fails_gives_the_calling_thread_its_blocks_back() {
+        begin();
+        let list = lists::new(0, ITEMS);
+        let mut sum = 0;
+        assert_eq!(super::parallel_reduce(list, fails_in_a_leaf, add, 0, &mut sum), 1);
+        let own = with(|state| state.heap.holds_block(usize::try_from(list).unwrap()));
+        assert!(own, "the list isn't in its thread's own table after the call");
+        heap::free(list);
+        let (_, failure, _) = finish();
+        assert!(failure.is_some_and(|failure| failure.message == "a leaf failed"));
     }
 
     /// How many positions the ranges of each `for mut` entry's loop covered.

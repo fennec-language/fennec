@@ -192,9 +192,11 @@ pub(crate) fn stopped() -> bool {
 }
 
 /// Whether a launched task is what's running on this thread, rather than `main` or a range's job.
+/// A range of a launched task's own call is a range like any other here: it only stops as its task
+/// does.
 pub(crate) fn in_a_task() -> bool {
     #[cfg(any(test, feature = "threads"))]
-    return STOP.with_borrow(Option::is_some);
+    return STOP.with_borrow(Option::is_some) && !RANGE_OF_TASK.get();
     #[cfg(not(any(test, feature = "threads")))]
     false
 }
@@ -213,6 +215,9 @@ pub(crate) fn task_stop() -> Option<Arc<AtomicU8>> {
 pub(super) struct Calling {
     /// A launched task's stop, when one made the call.
     stop: Option<Arc<AtomicU8>>,
+    /// How many crashes' cleanups that task was in as it made the call: a cleanup may still wait
+    /// after a stop, until it's stopped hard, and so may the ranges of a call it makes.
+    cleaning: usize,
     /// What the caller waits in as the code that launched tasks, if it has launched any.
     launcher: Option<Arc<Launcher>>,
 }
@@ -221,12 +226,13 @@ pub(super) struct Calling {
 impl Calling {
     /// What a call made here, now, gives its ranges.
     pub(super) fn here() -> Calling {
-        Calling { stop: None, launcher: LAUNCHER.with_borrow(Clone::clone) }
+        Calling { stop: None, cleaning: 0, launcher: LAUNCHER.with_borrow(Clone::clone) }
     }
 
     /// The same, for a call made by the launched task told to stop with `stop`.
     pub(super) fn of_task(mut self, stop: Arc<AtomicU8>) -> Calling {
         self.stop = Some(stop);
+        self.cleaning = CLEANING.get();
         self
     }
 
@@ -240,18 +246,22 @@ impl Calling {
 /// `range_off_its_caller_ends` to put back.
 #[cfg(any(test, feature = "threads"))]
 pub(super) struct BeforeRange {
-    /// The stop and whether a task's range ran, when the range is a launched task's.
-    task_s: Option<(Option<Arc<AtomicU8>>, bool)>,
+    /// The stop, whether a task's range ran, and the cleanups it was in, when the range is a
+    /// launched task's.
+    task_s: Option<(Option<Arc<AtomicU8>>, bool, usize)>,
     caller_s_launcher: Option<Arc<Launcher>>,
 }
 
 /// Starts a range on a thread other than its call's caller waits on, or as a task of its own: a
 /// crash of a task the caller launched cuts its waits short, and when the caller is a launched
-/// task it's told to stop with the task's stop, so a stop cuts them short too.
+/// task it's told to stop with the task's stop, so a stop cuts them short too, as late as it would
+/// cut the task's own: a cleanup's ranges have the cleanup's grace.
 #[cfg(any(test, feature = "threads"))]
 pub(super) fn range_off_its_caller_starts(calling: &Calling) -> BeforeRange {
     BeforeRange {
-        task_s: calling.stop.clone().map(|stop| (STOP.replace(Some(stop)), RANGE_OF_TASK.replace(true))),
+        task_s: calling.stop.clone().map(|stop| {
+            (STOP.replace(Some(stop)), RANGE_OF_TASK.replace(true), CLEANING.replace(calling.cleaning))
+        }),
         caller_s_launcher: CALLER_S_LAUNCHER.replace(calling.launcher.clone()),
     }
 }
@@ -259,9 +269,10 @@ pub(super) fn range_off_its_caller_starts(calling: &Calling) -> BeforeRange {
 /// Ends such a range on this thread.
 #[cfg(any(test, feature = "threads"))]
 pub(super) fn range_off_its_caller_ends(BeforeRange { task_s, caller_s_launcher }: BeforeRange) {
-    if let Some((stop, range)) = task_s {
+    if let Some((stop, range, cleaning)) = task_s {
         STOP.set(stop);
         RANGE_OF_TASK.set(range);
+        CLEANING.set(cleaning);
     }
     CALLER_S_LAUNCHER.set(caller_s_launcher);
 }
@@ -316,9 +327,10 @@ pub fn index() -> u16 {
     INDEX.get()
 }
 
-/// The last number a thread can take: those above it mark blocks that are never freed, a `shared`
-/// value's own block, and blocks in a `shared` value's table, and 0 is the main thread's.
-const LAST_INDEX: u16 = 0xFFFC;
+/// The last number a thread can take: those above it mark blocks in a copy lent to other threads,
+/// blocks that are never freed, a `shared` value's own block, and blocks in a `shared` value's
+/// table, and 0 is the main thread's.
+const LAST_INDEX: u16 = 0xFFFB;
 
 /// The next number from `next`, or `None` once they're all taken: it never comes round again to
 /// 0 or to the numbers that mark blocks.
@@ -470,14 +482,37 @@ pub(crate) struct Accounts {
     task: u64,
     /// The capture of the test that launched it, if a test did, for what it prints.
     capture: Option<Arc<crate::fakes::Capture>>,
+    /// Whose it is.
+    of: Of,
     /// Whether it's a range of a launched task's `parallel` call.
     range_of_task: bool,
     /// For a range of a call on the pool, what its caller waits in as the code that launched tasks.
     caller_s_launcher: Option<Arc<Launcher>>,
 }
 
+/// Whose accounts they are: a launched task's, or those of a range of a `parallel` call whose body
+/// may wait.
+#[cfg(any(test, feature = "threads"))]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Of {
+    #[default]
+    Task,
+    Range,
+}
+
 #[cfg(any(test, feature = "threads"))]
 impl Accounts {
+    /// A range's, of a `parallel` call whose body may wait: it has nothing until its call gives it
+    /// what to read.
+    pub(in crate::embed) fn for_range() -> Accounts {
+        Accounts { of: Of::Range, ..Accounts::default() }
+    }
+
+    /// Whether it's a range's, rather than a launched task's.
+    pub(in crate::embed) fn is_range_s(&self) -> bool {
+        self.of == Of::Range
+    }
+
     /// A launched task's, reading what's `lent` to the code that launched it, if anything, and
     /// stopping when `stop` is set.
     pub(in crate::embed) fn for_task(lent: Option<Arc<Table>>, stop: Arc<AtomicU8>) -> Accounts {
@@ -894,6 +929,7 @@ mod tests {
         assert_eq!(super::next_index(&next), None);
         assert_eq!(super::next_index(&next), None);
         let reserved = [
+            super::super::guarded::LENT_OWNER,
             heap::NEVER_FREED_OWNER,
             super::super::guarded::HANDLE_OWNER,
             super::super::guarded::GUARDED_OWNER,

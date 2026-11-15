@@ -65,7 +65,14 @@ impl Interp {
             let names = handles.get(level).map_or(&[][..], |(_, names)| *names);
             return self.launch(call, names, body);
         }
+        let mark = self.write_backs.len();
         let (target, given) = self.prepare(call, callee, args)?;
+        // A part read through a type's own `def []` would be held across the whole block, and
+        // when it's written back isn't promised.
+        if self.write_backs.len() > mark {
+            self.settle_write_backs(mark, false, call.span)?;
+            return unsupported("a `with` source given a `ref` through a type's own `def []=`");
+        }
         if let Some(reach) = self.is_file_source(&target, call.span)? {
             let create = matches!(&target, Target::Method { name, .. } if name == "create");
             let handle = self.file_source(&reach, create, given, call.span)?;

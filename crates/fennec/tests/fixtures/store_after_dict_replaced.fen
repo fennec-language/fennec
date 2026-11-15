@@ -1,0 +1,90 @@
+# A lookup in a struct's dict, the struct then set whole to another, and a store under the same
+# key: the store goes into the dict the struct holds now, not the one the lookup found the key
+# in, which the caller may still hold or which may be gone.
+
+struct Visit:
+    cost: int
+    label: str
+
+struct World:
+    visits: dict[str, Visit]
+    counts: dict[str, int]
+
+def made(size: int, base: int) -> World:
+    mut visits = dict[str, Visit]()
+    mut counts = dict[str, int]()
+    for number in range(size):
+        visits[f"key {number}"] = Visit(
+            cost=base + number,
+            label=f"a label long enough for a block {base + number}",
+        )
+        counts[f"key {number}"] = base + number
+    return World(visits=visits, counts=counts)
+
+## A struct's value: the caller still holds the dict the lookup searched.
+def swapped_visits(world: World, key: str, fresh: Visit) -> World:
+    mut mine = world
+    other = made(3, base=500)
+    known = mine.visits.get(key)
+    mine = other
+    mine.visits[key] = fresh
+    if known is not None:
+        mine.visits["known"] = known
+    return mine
+
+## The same for a plain word.
+def swapped_counts(world: World, key: str, fresh: int) -> World:
+    mut mine = world
+    other = made(3, base=500)
+    known = mine.counts.get(key)
+    mine = other
+    mine.counts[key] = fresh
+    if known is not None:
+        mine.counts["known"] = known
+    return mine
+
+## A key that's a slice of a text, counted the way words are.
+def swapped_slice(world: World, text: str, fresh: int) -> World:
+    mut mine = world
+    other = made(3, base=500)
+    known = mine.counts.get(text[0:5])
+    mine = other
+    mine.counts[text[0:5]] = fresh
+    if known is not None:
+        mine.counts["known"] = known
+    return mine
+
+## Nothing else holds the dict the lookup searched, so it's let go of before the store.
+def lost(key: str, fresh: Visit) -> World:
+    mut mine = made(40, base=0)
+    other = made(3, base=500)
+    known = mine.visits.get(key)
+    mine = other
+    mine.visits[key] = fresh
+    if known is not None:
+        mine.visits["known"] = known
+    return mine
+
+def main(stdout: Stdout):
+    world = made(6, base=0)
+    fresh = Visit(cost=77, label="fresh, with a label long enough for a block")
+    after = swapped_visits(world, key="key 5", fresh=fresh)
+    stdout.print(world.visits["key 5"], len(world.visits))
+    stdout.print(after.visits.get("key 5"), len(after.visits), after.visits["known"])
+    counted = swapped_counts(world, key="key 5", fresh=77)
+    stdout.print(world.counts["key 5"], len(world.counts))
+    stdout.print(counted.counts.get("key 5"), len(counted.counts), counted.counts["known"])
+    sliced = swapped_slice(world, text="key 4 and more", fresh=88)
+    stdout.print(world.counts["key 4"], len(world.counts))
+    stdout.print(sliced.counts.get("key 4"), len(sliced.counts), sliced.counts["known"])
+    mut total = 0
+    for turn in range(20):
+        gone = lost(key=f"key {turn + 5}", fresh=fresh)
+        again = made(40, base=turn)
+        total += len(gone.visits) + len(again.visits)
+        for held in again.visits.values():
+            total += held.cost + len(held.label)
+        for held in gone.visits.values():
+            total += held.cost + len(held.label)
+    stdout.print(total)
+    return

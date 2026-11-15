@@ -136,7 +136,15 @@ impl Interp {
             }
             ExprKind::Else { value, default, except } => self.else_expr(value, default, *except),
             ExprKind::Try { value, context: None } => self.eval(value),
-            ExprKind::Try { context: Some(_), .. } => unsupported("`? from`"),
+            // `value? from Context(...)`: a failure is passed up as the context, made only then. What
+            // caused it is kept with it in native code, but nothing reads that yet.
+            ExprKind::Try { value, context: Some(context) } => match self.eval(value) {
+                Err(Flow::Fail(_, _)) => {
+                    let wrapper = self.eval(context)?;
+                    Err(Flow::Fail(wrapper, expr.span))
+                }
+                other => other,
+            },
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Attr { object, name, optional } => {
                 if *optional {
@@ -284,10 +292,7 @@ impl Interp {
             };
         }
         let ran = match &value.kind {
-            ExprKind::Call { callee, args } => {
-                let (target, given) = self.prepare(value, callee, args)?;
-                self.invoke(target, given, value)
-            }
+            ExprKind::Call { callee, args } => self.call_direct(value, callee, args),
             _ => self.eval(value),
         };
         match ran {
@@ -324,17 +329,20 @@ impl Interp {
                     let Some(target) = self.method_target(receiver, name, object.span)? else {
                         return Ok(None);
                     };
+                    let mark = self.write_backs.len();
                     let mut given = Vec::with_capacity(args.len());
                     for arg in args {
-                        given.push(self.arg_value(arg, false)?);
+                        match self.arg_value(arg, false) {
+                            Ok(given_one) => given.push(given_one),
+                            Err(failed) => return self.settled(mark, Err(failed), expr.span),
+                        }
                     }
-                    return match self.invoke(target, given, expr) {
+                    return match self.invoke_settled(mark, target, given, expr) {
                         Err(Flow::Fail(..)) => Ok(None),
                         other => other.map(Some),
                     };
                 }
-                let (target, given) = self.prepare(expr, callee, args)?;
-                match self.invoke(target, given, expr) {
+                match self.call_direct(expr, callee, args) {
                     Err(Flow::Fail(..)) => Ok(None),
                     other => other.map(Some),
                 }
@@ -581,7 +589,13 @@ impl Interp {
                     .map_or_else(|| crash("no key", span), Ok),
                 None => crash(format!("{} isn't a key here", self.repr(&key)?), span),
             },
-            (Value::Instance(instance), key) => match self.program.method(&instance.ty, "[]") {
+            // A type's own `def []`, read for its value: the `ref` form for an int position where
+            // it has one, and otherwise the plain form, which may take another kind of key.
+            (Value::Instance(instance), key) => match (matches!(key, Value::Int(_))
+                .then(|| self.program.method(&instance.ty, "[]mut"))
+                .flatten())
+            .or_else(|| self.program.method(&instance.ty, "[]"))
+            {
                 Some(def) => {
                     let receiver = super::calls::Receiver::Value(Value::Instance(instance));
                     self.call_def(

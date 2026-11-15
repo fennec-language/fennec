@@ -133,6 +133,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_native_live",
     // Bytes made from bytes. Each runs under `with`, which sets no flag, and none has a wrong
     // argument to refuse:
+    // bytes written out in hex, with the separator given, if any, between them, give a text always;
+    "fennec_bytes_hex",
     // a slice holds both bounds to what's there, as a list's slice does, down to nothing;
     "fennec_bytes_slice",
     // a part read as text holds its places to what's there too, and bytes that aren't UTF-8 give

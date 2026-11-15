@@ -147,9 +147,10 @@ impl Lowering<'_> {
     /// The type of a callee that's a value rather than a function by name.
     pub(super) fn closure_callee(&self, callee: &Expr) -> Option<Type> {
         let ty = match &callee.kind {
-            // An optional closure known not to be `None` here is read as the closure.
+            // An optional closure known not to be `None` here is read as the closure, and so is a
+            // union a `match` or an `is` narrowed to its function member.
             ExprKind::Name(name) => match self.local_type(self.lookup(name)?) {
-                Type::Optional(_) => self.type_at(callee.span)?,
+                Type::Optional(_) | Type::Union(_) => self.type_at(callee.span)?,
                 held => held,
             },
             _ => self.type_at(callee.span)?,

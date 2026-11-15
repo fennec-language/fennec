@@ -145,6 +145,16 @@ on both sides. A module modeled on its own, like `std.json`, isn't run from sour
   folder's listing while a file is being made in it, under a hidden name holding the process's
   number, bytes, and on Windows what it reads its own way.
 - `std.path`'s `Path` is its text, and its methods only look at it, each written here on its own.
+- Places through a type's own `def []` are as `docs/decisions.md` sets them out
+  (`interp/own_index.rs`). Through the `ref` form, which the parser names `[]mut`, an int position
+  is a place inside the value: indexing, `=`, a `ref` argument, `for ref` and `parallel` reach it
+  where it is, and `for ref` and `parallel` skip the positions its `is_live` says are empty.
+  Through the plain form beside a `def []=`, a change reads the part with `[]`, changes that copy,
+  and writes it back with `[]=` once the change is done: once for `shelf[0].x += 1`, nested too,
+  and once for a call that takes it as `ref`, even one that changes it twice. A key that isn't an
+  int goes to the plain form, so a type can have both, as `Grid` does. A failure partway through
+  such a change is refused, since whether what changed before it is written back isn't promised,
+  and so is a `with` source given a `ref` through `[]=`.
 - `value? from Context(...)` passes a failure up as the context, made only then. Native code
   keeps what caused it with it, but nothing reads that yet.
 - An `array[T, N]` is held as the list it prints as, and `array[T, N]()` is `N` of `T`'s zero, as

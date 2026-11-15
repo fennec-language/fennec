@@ -392,10 +392,13 @@ pub const OWNER_SHIFT: u32 = 48;
 /// keeps its own, with its list.
 #[derive(Default)]
 pub(super) struct Listing {
-    /// Whether the task let its list go, once it was longer than a look through its thread's
-    /// table would be. What it made and still holds is then found at its end by its mark in each
-    /// block (`hand_over_all`).
+    /// Whether the task let its list go, once handing it over would cost what a look through its
+    /// thread's table does. What it made and still holds is then found at its end by its mark in
+    /// each block (`hand_over_all`).
     let_go: bool,
+    /// How long the list is when it's next looked at: until then a block made is only added to
+    /// it. 0 once it's let go, so every block made after comes by the look, which adds none.
+    look_at: usize,
     /// How many ranges or chunks running on this thread have marked where the list was as they
     /// started, to hand over what comes after. The list isn't let go of under them.
     scopes: usize,
@@ -404,6 +407,11 @@ pub(super) struct Listing {
 /// How many blocks a task lists as made between looks at whether to let the list go, and the
 /// fewest it lets go of. A list this long is 32 KB.
 pub(crate) const MADE_LISTED: usize = 4096;
+
+/// How many of a table's places a look through it reads in about the time handing one listed
+/// block over takes: the look reads a place and moves on, where a listed block is found in the
+/// table, checked, taken out, and forgotten by what remembers strings.
+const PLACES_A_LISTED_BLOCK: usize = 16;
 
 /// Where a block's shape word holds which task on its thread made it, in the bits below the thread.
 const TASK_SHIFT: u32 = 24;
@@ -970,31 +978,49 @@ impl Heap {
     /// go and lists no more, and what it still holds when it ends is found by its mark in each
     /// block, by looking through its thread's table.
     ///
-    /// It lets the list go once it's longer than that look would be: as many entries as the
-    /// table has places to read. Until then the list is the cheaper way to find its blocks, and
-    /// it's kept: a task that makes a few thousand blocks and ends would otherwise pay for a
-    /// look through the whole table, which is far longer than its list. So the list is never
-    /// longer than the table's own pages, whatever the task has made, and a task's end never
-    /// costs more than its list would have. It's looked at every `MADE_LISTED` blocks.
+    /// It lets the list go once handing the list over would cost about what that look does: when
+    /// the list is a sixteenth as long as the table has places to read (`PLACES_A_LISTED_BLOCK`).
+    /// Until then the list is the cheaper way to find its blocks, and it's kept: a task that
+    /// makes a few thousand blocks and ends would otherwise pay for a look through the whole
+    /// table, which costs far more than its list. So a task's end costs about what its list would
+    /// have at most, and the list is never longer than a sixteenth of the table's own places,
+    /// whatever the task has made.
+    ///
+    /// The list is looked at every `MADE_LISTED` blocks. Between looks a block made costs one
+    /// comparison more than adding it to the list, and once the list is let go it costs the look
+    /// alone, which adds nothing.
     ///
     /// A range or chunk hands over by where the list was when it started, so while one is running
     /// the list is kept whole.
+    #[inline]
     fn list_made(&mut self, address: usize) {
+        if self.made.len() < self.made_listing.look_at {
+            self.made.push(u64::try_from(address).unwrap_or(0));
+            return;
+        }
+        self.list_made_after_a_look(address);
+    }
+
+    /// `list_made`, when it's time to look at the list, or the list's been let go.
+    #[cold]
+    #[inline(never)]
+    fn list_made_after_a_look(&mut self, address: usize) {
         if self.made_listing.scopes == 0 {
             if self.made_listing.let_go {
                 return;
             }
             let listed = self.made.len();
-            if listed != 0
-                && listed.is_multiple_of(MADE_LISTED)
-                && listed >= self.blocks.places_to_look_through()
-            {
+            let as_a_look = self.blocks.places_to_look_through() / PLACES_A_LISTED_BLOCK;
+            if listed >= MADE_LISTED.max(as_a_look) {
                 self.made = Vec::new();
                 self.made_listing.let_go = true;
+                self.made_listing.look_at = 0;
                 return;
             }
         }
         self.made.push(u64::try_from(address).unwrap_or(0));
+        // A list that's been let go, kept again for a range, is looked at with every block.
+        self.made_listing.look_at = if self.made_listing.let_go { 0 } else { self.made.len() + MADE_LISTED };
     }
 
     /// Whether the task running here has let its list of what it made go.
@@ -1006,7 +1032,7 @@ impl Heap {
     /// The most blocks a task running here lists before it lets its list go, as things stand.
     #[cfg(test)]
     pub(crate) fn most_listed(&self) -> usize {
-        self.blocks.places_to_look_through() + MADE_LISTED
+        MADE_LISTED.max(self.blocks.places_to_look_through() / PLACES_A_LISTED_BLOCK) + MADE_LISTED
     }
 
     /// How many blocks this heap has listed as made since it last handed them over.
@@ -1070,7 +1096,7 @@ impl Heap {
 
     /// Takes every block the task running here made and still holds, as it ends, for the thread
     /// that launched it to adopt. What it listed is taken from the list. A task that let its list
-    /// go, once it was longer than this look, has the rest found by its mark: every block
+    /// go, once handing it over would have cost what this look does, has the rest found by its mark: every block
     /// in this heap's table that the task made has the task's mark in its shape word, and no other
     /// task alive on this thread has that mark.
     #[cfg(any(test, feature = "threads"))]

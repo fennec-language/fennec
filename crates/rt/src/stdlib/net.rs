@@ -3140,13 +3140,15 @@ pub(crate) mod tests {
         /// when `secure`, answers its one line with `pong`, and gives back what `looks` said each
         /// time it looked: as the connection came, and, with TLS, once the handshake was done. So
         /// a test sees, from the server's end, what its client was doing while it connected and
-        /// while it shook hands.
+        /// while it shook hands. Connections to its port trust the tests' authority while the
+        /// third thing it gives lives.
         pub(crate) fn answering_and_looking(
             secure: bool,
             looks: fn() -> i64,
-        ) -> (u16, std::thread::JoinHandle<Vec<i64>>) {
+        ) -> (u16, std::thread::JoinHandle<Vec<i64>>, http::tls::TrustedByTests) {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let port = listener.local_addr().unwrap().port();
+            let trusting = trusting_the_tests(&listener);
             let server = std::thread::spawn(move || {
                 let (mut tcp, _) = listener.accept().unwrap();
                 let mut seen = vec![looks()];
@@ -3177,7 +3179,7 @@ pub(crate) mod tests {
                 let _ = reader.get_mut().flush();
                 seen
             });
-            (port, server)
+            (port, server, trusting)
         }
 
         /// Connects as `net.connect(host, port, tls=...)` does, says `ping`, and gives back the
@@ -3241,20 +3243,23 @@ pub(crate) mod tests {
             }
         }
 
-        /// While what this gives back lives, a connection made to `port` trusts the tests' own
-        /// certificate authority, and nothing else: for a test's own server there. Every other
-        /// connection goes by what the system trusts.
-        pub(crate) fn trusting_the_tests(port: u16) -> http::tls::TrustedByTests {
-            http::tls::TrustedByTests::begin(port, client_config())
+        /// While what this gives back lives, a connection made to the port `listener` is on trusts
+        /// the tests' own certificate authority, and nothing else: for a test's own server there.
+        /// Every other connection goes by what the system trusts. It holds a copy of the listener,
+        /// so the port is the server's for as long.
+        fn trusting_the_tests(listener: &TcpListener) -> http::tls::TrustedByTests {
+            http::tls::TrustedByTests::begin(listener.try_clone().unwrap(), client_config())
         }
 
         /// An HTTPS server on a port of its own, with the tests' certificate for `localhost`, for
         /// `count` requests. It waits a moment before it reads each one's body, so a long one has to
         /// wait for room, and answers none until all have come whole, each with its own body back.
-        pub(crate) fn https_echoing(count: usize) -> u16 {
+        /// Requests to that port trust the tests' authority while the second thing it gives lives.
+        pub(crate) fn https_echoing(count: usize) -> (u16, http::tls::TrustedByTests) {
             use std::io::Read as _;
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let port = listener.local_addr().unwrap().port();
+            let trusting = trusting_the_tests(&listener);
             let chain: Vec<CertificateDer<'static>> =
                 CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
             let config = ServerConfig::builder_with_provider(provider())
@@ -3299,7 +3304,7 @@ pub(crate) mod tests {
                     });
                 }
             });
-            port
+            (port, trusting)
         }
 
         /// A TLS connection's handle, to a server that answers its one line only once `ready` is

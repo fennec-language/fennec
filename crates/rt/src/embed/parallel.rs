@@ -1290,8 +1290,7 @@ mod tests {
     fn requests_over_tls_made_in_tasks_park_for_room_and_for_their_answers() {
         begin();
         crate::stdlib::http::use_tls();
-        let port = crate::stdlib::net::tests::tls::https_echoing(2);
-        let trusting = crate::stdlib::net::tests::tls::trusting_the_tests(port);
+        let (port, trusting) = crate::stdlib::net::tests::tls::https_echoing(2);
         let pool = super::pool::with_threads(1);
         let run = super::Run::new(1).waiting(true);
         let run = super::each_on_pool(run, pool, 2, super::Leaf::For(posts_over_tls, i64::from(port)));
@@ -1434,7 +1433,7 @@ mod tests {
     #[test]
     fn a_task_s_connect_holds_no_blocking_thread() {
         begin();
-        let (port, server) =
+        let (port, server, _trusting) =
             crate::stdlib::net::tests::tls::answering_and_looking(false, plain_connector_s_blocking_work);
         let pool = super::pool::with_threads(1);
         let run = super::Run::new(1).waiting(true);
@@ -1456,9 +1455,8 @@ mod tests {
     fn a_task_s_handshake_as_a_client_holds_no_blocking_thread() {
         begin();
         crate::stdlib::http::use_tls();
-        let (port, server) =
+        let (port, server, trusting) =
             crate::stdlib::net::tests::tls::answering_and_looking(true, secure_connector_s_blocking_work);
-        let trusting = crate::stdlib::net::tests::tls::trusting_the_tests(port);
         let pool = super::pool::with_threads(1);
         // A list of two with its ranges an item each, of which only the second is run here: the
         // range from 1 connects by name, with TLS.

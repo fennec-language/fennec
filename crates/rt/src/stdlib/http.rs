@@ -833,16 +833,25 @@ pub(crate) mod tls {
     static TRUSTED_BY_TESTS: std::sync::Mutex<Vec<(u16, Arc<ClientConfig>)>> =
         std::sync::Mutex::new(Vec::new());
 
-    /// For tests: while one of these lives, connections to its port are made with the
-    /// `ClientConfig` it was given.
+    /// For tests: while one of these lives, connections to its server's port are made with the
+    /// `ClientConfig` it was given. It keeps the server's listener open for as long, so the port
+    /// can't be given to another test's server while it's trusted.
     #[cfg(test)]
-    pub(crate) struct TrustedByTests(u16);
+    pub(crate) struct TrustedByTests {
+        port: u16,
+        #[expect(dead_code, reason = "held, not read: the port stays the server's while it's trusted")]
+        listener: std::net::TcpListener,
+    }
 
     #[cfg(test)]
     impl TrustedByTests {
-        pub(crate) fn begin(port: u16, config: Arc<ClientConfig>) -> TrustedByTests {
+        /// Trusts `config` for connections to the port `listener` is on, which is a copy of the
+        /// test's server's own.
+        pub(crate) fn begin(listener: std::net::TcpListener, config: Arc<ClientConfig>) -> TrustedByTests {
+            // A listener that can't say where it is trusts nothing: no connection is to port 0.
+            let port = listener.local_addr().map_or(0, |at| at.port());
             TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((port, config));
-            TrustedByTests(port)
+            TrustedByTests { port, listener }
         }
     }
 
@@ -852,7 +861,7 @@ pub(crate) mod tls {
             TRUSTED_BY_TESTS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retain(|(port, _)| *port != self.0);
+                .retain(|(port, _)| *port != self.port);
         }
     }
 

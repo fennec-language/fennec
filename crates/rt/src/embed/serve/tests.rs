@@ -285,7 +285,8 @@ fn waits_on_a_copy_or_echoes(to: SocketAddr) -> Handler {
         let own = std::net::TcpStream::connect(to).unwrap();
         own.set_nonblocking(true).unwrap();
         let wait = |within: Duration| {
-            super::park_on_copy(&own, mio::Interest::READABLE, Some(std::time::Instant::now() + within))
+            let by = Some(std::time::Instant::now() + within);
+            super::park_on_copy(super::next_token(), &own, mio::Interest::READABLE, by)
         };
         let quiet = wait(Duration::from_millis(20));
         if conn.write(b"waiting\n").is_err() {
@@ -349,9 +350,9 @@ fn waits_on_a_copy_until_its_ended(to: SocketAddr, came: &Arc<std::sync::Mutex<V
         if conn.write(b"waiting\n").is_err() {
             return 1;
         }
-        let first = super::park_on_copy(&own, mio::Interest::READABLE, None);
+        let first = super::park_on_copy(super::next_token(), &own, mio::Interest::READABLE, None);
         let wrote = (&own).write_all(b"still here\n").is_ok();
-        let again = super::park_on_copy(&own, mio::Interest::READABLE, None);
+        let again = super::park_on_copy(super::next_token(), &own, mio::Interest::READABLE, None);
         came.lock().unwrap().push(format!("{first:?} {again:?} {wrote}"));
         0
     })
@@ -388,6 +389,72 @@ fn a_wait_on_a_copy_thats_cancelled_partway_closes_its_copy_and_leaves_the_socke
     let read = std::io::Read::read_to_end(&mut other_end, &mut heard).ok();
     assert_eq!((read, heard.as_slice()), (Some(11), b"still here\n".as_slice()));
     assert_eq!(served.connections, 2);
+}
+
+/// A round sent "fill" writes on a socket of its own, a plain one connected to `to` and made not
+/// to block, until a write would block, and says how much went. Then it waits for room through a
+/// copy of the socket, writes a last line, and says what the wait came to and whether the line
+/// went. Any other line is echoed.
+fn fills_then_waits_for_room_on_a_copy(to: SocketAddr) -> Handler {
+    Arc::new(move |conn: Conn| {
+        let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
+        if line != b"fill" {
+            line.push(b'\n');
+            return i64::from(conn.write(&line).is_err());
+        }
+        let own = std::net::TcpStream::connect(to).unwrap();
+        own.set_nonblocking(true).unwrap();
+        let piece = vec![7_u8; 64 * 1024];
+        let mut sent = 0;
+        loop {
+            match (&own).write(&piece) {
+                Ok(wrote) => sent += wrote,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => return 1,
+            }
+        }
+        if conn.write(format!("{sent}\n").as_bytes()).is_err() {
+            return 1;
+        }
+        let by = Some(std::time::Instant::now() + Duration::from_secs(30));
+        let room = super::park_on_copy(super::next_token(), &own, mio::Interest::WRITABLE, by);
+        own.set_nonblocking(false).unwrap();
+        let last = (&own).write_all(b"last\n").is_ok();
+        i64::from(conn.write(format!("{room:?} {last}\n").as_bytes()).is_err())
+    })
+}
+
+/// A task's wait for room to write, through a copy of its socket, parks too, and ends when the
+/// other side has read enough: the first time a write can wait this way on Windows, where a
+/// task's socket used to block. The round fills its socket until a write would block, waits while
+/// its worker answers another connection, and is woken once the other end reads what was sent.
+#[test]
+fn a_wait_for_room_on_a_copy_of_a_socket_parks_and_ends_when_the_other_side_reads() {
+    let between = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let to = between.local_addr().unwrap();
+    let served = run(1, &fills_then_waits_for_room_on_a_copy(to), move |address| {
+        let mut filling = std::net::TcpStream::connect(address).unwrap();
+        filling.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        let mut heard = BufReader::new(filling.try_clone().unwrap());
+        filling.write_all(b"fill\n").unwrap();
+        let (mut other_end, _) = between.accept().unwrap();
+        other_end.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        let mut said = String::new();
+        heard.read_line(&mut said).unwrap();
+        let sent: usize = said.trim().parse().unwrap();
+        assert!(sent > 0, "{said:?}");
+        // Nothing's been read, so there's no room: the round is parked, and its worker is free.
+        assert_eq!(ask(address, "meanwhile").as_deref(), Some("meanwhile\n"));
+        let mut taken = vec![0_u8; sent];
+        std::io::Read::read_exact(&mut other_end, &mut taken).unwrap();
+        said.clear();
+        heard.read_line(&mut said).unwrap();
+        assert_eq!(said, "Ready true\n");
+        let mut rest = Vec::new();
+        assert_eq!(std::io::Read::read_to_end(&mut other_end, &mut rest).ok(), Some(5));
+        assert_eq!(rest, b"last\n");
+    });
+    assert_eq!((served.connections, served.failed), (2, 0));
 }
 
 /// A shell, started before the connections are opened, that reports the process's resident

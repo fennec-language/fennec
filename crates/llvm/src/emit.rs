@@ -729,7 +729,10 @@ impl<'p> Module<'_, 'p> {
         // out for a call, owning nothing or not: it goes back first, for whatever holds it to find
         // it whole.
         let left_out = emit.values_left_out();
-        let out_for_calls = !function.places.is_empty();
+        let out_for_calls = function
+            .places
+            .iter()
+            .any(|place| emit.kind_of(place.value).is_ok_and(|kind| emit.holds_a_block(kind)));
         let leave_after_crash =
             ((!emit.on_crash.is_empty() || owns_any || !left_out.is_empty() || out_for_calls)
                 && emit.failed != "unreachable")

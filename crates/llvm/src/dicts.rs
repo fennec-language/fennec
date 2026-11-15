@@ -894,12 +894,21 @@ impl Emit<'_, '_, '_> {
         value: LocalId,
         (home, kind, access): (&str, &Kind, &'static str),
     ) {
-        if !self.lets_go_after_crash() {
+        if !self.lets_go_after_crash() || !self.holds_a_block(kind) {
             return;
         }
         self.place_homes.insert(value.0, (home.to_owned(), kind.clone(), access));
         self.out_of_dicts.insert(value.0);
         self.note_place_out(value, home);
+    }
+
+    /// Whether a value of this kind holds a block anywhere. One that doesn't, a struct of numbers,
+    /// has nothing a crash could leak or leave dangling by finding it out: what it came out of
+    /// still holds words that are good, only older, and nothing reads them but a lock's rollback,
+    /// which puts back the ones from before the lock.
+    pub(crate) fn holds_a_block(&self, kind: &Kind) -> bool {
+        kind.counted()
+            || matches!(kind, Kind::Struct(id) | Kind::Enum(id) if self.module.layouts.holds_counted(*id))
     }
 
     /// A value that was out is back where it came from, or inside what goes back in its turn, so
@@ -935,8 +944,8 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The locals a crash could find a value out of, and those values: each whole value or field
-    /// of one taken out of a dict or a list with something between that and its going back that
-    /// could fail.
+    /// of one that holds a block, taken out of a dict or a list with something between that and
+    /// its going back that could fail.
     pub(crate) fn values_left_out(&self) -> Vec<usize> {
         let mut found = Vec::new();
         for (at, block) in self.function.blocks.iter().enumerate() {
@@ -953,7 +962,9 @@ impl Emit<'_, '_, '_> {
                     _ => continue,
                 };
                 let held_in = self.place_kind(root, path);
+                let holds = self.kind_of(dest).is_ok_and(|kind| self.holds_a_block(kind));
                 if matches!(held_in, Ok(Kind::Dict(..) | Kind::List(_)))
+                    && holds
                     && self.left_out_at((at, index), dest)
                 {
                     found.extend([root.0, dest.0]);

@@ -3515,9 +3515,29 @@ impl Emit<'_, '_, '_> {
             self.found_entries.clear();
             return;
         }
-        self.found_entries.retain(|(dict, key, _)| {
-            !written.contains(dict) && !matches!(key, Operand::Local(local) if written.contains(local))
-        });
+        // A dict read out of a field, however deep, isn't the one that field holds once what it
+        // was read from is written.
+        let from_written = |dict: LocalId| {
+            let mut read_from = self.known.field_of(dict);
+            while let Some((from, _)) = read_from {
+                if written.contains(from) {
+                    return true;
+                }
+                read_from = self.known.field_of(*from);
+            }
+            false
+        };
+        let kept: Vec<bool> = self
+            .found_entries
+            .iter()
+            .map(|(dict, key, _)| {
+                !written.contains(dict)
+                    && !from_written(*dict)
+                    && !matches!(key, Operand::Local(local) if written.contains(local))
+            })
+            .collect();
+        let mut kept = kept.into_iter();
+        self.found_entries.retain(|_| kept.next().unwrap_or(false));
     }
 
     /// A local read once lets go of its value right after that, rather than when the function

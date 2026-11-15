@@ -3,6 +3,7 @@
 # new ones here.
 args_and_stdin.fen
 arithmetic.fen
+arrays.fen
 assignment_order.fen
 baked_constants.fen
 bench_blocks.fen
@@ -39,6 +40,7 @@ errors_and_none.fen
 extend.fen
 fails.fen
 fails_several.fen
+fallible_blocks.fen
 field_annotations.fen
 fields_native.fen
 fields_of_any_type.fen
@@ -51,6 +53,7 @@ formatting.fen
 fs.fen
 functions.fen
 functions_as_values.fen
+functions_more.fen
 functions_passed.fen
 game.fen
 game_math.fen
@@ -95,9 +98,11 @@ packed_lists.fen
 parallel_put_back.fen
 parallel_streams.fen
 particles.fen
+path.fen
 path_inside.fen
 path_inside_windows.fen
 postgres_auth.fen
+postgres_messages.fen
 projects/arena
 projects/cases
 projects/constants
@@ -117,18 +122,21 @@ std_base64_hostile.fen
 std_cli.fen
 std_cli_env_hostile.fen
 std_collections.fen
+std_crypto_hostile.fen
 std_csv.fen
 std_csv_hostile.fen
 std_fs.fen
 std_fs_hostile.fen
 std_functions.fen
 std_grid.fen
+std_io.fen
 std_json.fen
 std_long_input_errors.fen
 std_net_hostile.fen
 std_odds.fen
 std_packed.fen
 std_parse.fen
+std_postgres_hostile.fen
 std_random.fen
 std_sorted_map.fen
 std_sorted_set.fen

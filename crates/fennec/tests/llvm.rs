@@ -670,6 +670,24 @@ fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::R
     Ok(())
 }
 
+/// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
+/// `mine.visits`, `mine = other` and then `mine.visits[key] = fresh` wrote where the lookup had
+/// found the key: in the dict `mine` held before, which the caller still had, so the caller's
+/// value changed and the new dict never got the key. For a struct's value and a plain word, and
+/// where nothing else held the first dict, so the entry written was in a block already let go of.
+/// It prints what the reference evaluator prints, and what's left at the end is nothing.
+#[test]
+fn a_store_after_its_struct_is_replaced_goes_into_the_dict_there_now() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_in_place_and_boxed(
+        "store_after_dict_replaced",
+        include_str!("fixtures/store_after_dict_replaced.fen"),
+        include_str!("fixtures/store_after_dict_replaced.out"),
+    )
+}
+
 /// A struct holding a `u64`, an `f32`, `bytes`, a set, a text, a `str?` and a dict is held in place,
 /// as are a program's own types named `Option`, `Match`, `Table` and `Id`: each compared with `==`,
 /// printed, copied and changed, its copy unchanged, and used as a dict's value, after other values
@@ -16505,7 +16523,17 @@ fn a_block_a_round_leaves_is_found_wherever_the_server_runs() -> std::io::Result
                     Some(how) => command.env("FENNEC_AUDIT_SELFTEST", how),
                     None => command.env_remove("FENNEC_AUDIT_SELFTEST"),
                 };
-                let ended = command.output_within()?;
+                // Each takes under a second, and one that waits for something that never comes
+                // spends nothing: a minute by the clock says so, and which program it was. On
+                // Windows the second one's clients, in a task, blocked the one worker that had to
+                // answer them, and the test took its ten minutes to say only that something hung.
+                let ended = command
+                    .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(60))
+                    .map_err(|error| {
+                        let leaving = if selftest.is_some() { ", leaving a block a round" } else { "" };
+                        let said = format!("{shape} on {threads} threads{leaving}: {error}");
+                        std::io::Error::new(error.kind(), said)
+                    })?;
                 Ok((ended.status.code(), String::from_utf8_lossy(&ended.stderr).into_owned()))
             };
             let how = format!("{shape} on {threads} threads");

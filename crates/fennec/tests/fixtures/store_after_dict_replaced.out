@@ -1,0 +1,7 @@
+Visit(cost=5, label="a label long enough for a block 5") 6
+Visit(cost=77, label="fresh, with a label long enough for a block") 5 Visit(cost=5, label="a label long enough for a block 5")
+5 6
+77 5 5
+4 6
+88 5 4
+86770

@@ -2158,10 +2158,13 @@ impl Emit<'_, '_, '_> {
                 .rev()
                 .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
                 .map(|(_, _, entry)| entry.clone());
+            // In the store's own local the dict is the one the lookup searched; a field may hold
+            // another by now, so there the store looks first.
+            let for_store = found.clone().map(|entry| crate::dicts::Found { entry, sure: path.is_empty() });
             if let Operand::Local(sliced) = index
                 && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
             {
-                return self.slice_set(&place, (key, value_word), (&slice, found), value);
+                return self.slice_set(&place, (key, value_word), (&slice, for_store), value);
             }
             // In a function whose locks keep what they change ready to put back, where a dict the
             // lock marked is changed in place: a lookup on a local read from this place however
@@ -2181,7 +2184,7 @@ impl Emit<'_, '_, '_> {
                         .map(|(_, _, entry)| entry.clone())
                 })
             };
-            return self.dict_store_checked(&place, (key, value_word), index, value, (found, checked));
+            return self.dict_store_checked(&place, (key, value_word), index, value, (for_store, checked));
         }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;

@@ -67,8 +67,8 @@ pub(crate) enum Target {
 
 /// The built-in types' names, as `int.parse` names one.
 const BUILT_IN_TYPES: &[&str] = &[
-    "int", "float", "str", "bool", "list", "dict", "set", "i8", "i16", "i32", "i64", "u8", "u16", "u32",
-    "u64", "f32", "f64",
+    "int", "float", "str", "bool", "bytes", "list", "dict", "set", "i8", "i16", "i32", "i64", "u8", "u16",
+    "u32", "u64", "f32", "f64",
 ];
 
 /// The builtin functions the oracle models, and the ones it knows it doesn't.
@@ -258,6 +258,18 @@ impl Interp {
         }
         if BUILTINS.contains(&name) {
             return Ok(Target::Builtin(name.to_owned()));
+        }
+        // A core error made by name, as the standard library's own code makes `InvalidValue`s.
+        if matches!(name, "InvalidValue" | "ParseError") {
+            return Ok(Target::Builtin(name.to_owned()));
+        }
+        // An intrinsic the standard library's own code calls, which the oracle models in
+        // `library.rs`: a module run from its source names it `intrinsics.name`.
+        if let Some(intrinsic) = name.strip_prefix("intrinsics.") {
+            let path = format!("std.intrinsics.{intrinsic}");
+            if super::library::has_function(&path) {
+                return Ok(Target::Builtin(path));
+            }
         }
         // An empty `StrWriter`, as the standard library's own code makes one to write into.
         if name == "StrWriter" {

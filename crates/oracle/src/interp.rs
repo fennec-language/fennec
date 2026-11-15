@@ -991,6 +991,10 @@ fn step_into<'v>(value: &'v Value, step: &Step, span: Span) -> Run<Reached<'v>> 
             let at = position(*at, count, span)?;
             Ok(Reached::Made(Value::Str(text.chars().nth(at).map(String::from).unwrap_or_default())))
         }
+        (Value::Bytes(data), Step::At(Value::Int(at))) => {
+            let at = position(*at, data.len(), span)?;
+            Ok(Reached::Made(Value::Int(data.get(at).map_or(0, |byte| i64::from(*byte)))))
+        }
         (Value::Dict(pairs), Step::At(key)) => match find_key(pairs, key)? {
             Some(at) => pairs
                 .get(at)

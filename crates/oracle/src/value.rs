@@ -24,6 +24,8 @@ pub(crate) enum Value {
     /// A `float`, which is an `f64`.
     Float(f64),
     Str(String),
+    /// `bytes`: a byte string, printed as `bytes([104, 105])`.
+    Bytes(Vec<u8>),
     List(Vec<Value>),
     Tuple(Vec<Value>),
     /// A set's items, in the order they went in.
@@ -133,6 +135,7 @@ impl Value {
             Value::Sized(..) => "sized number",
             Value::Float(_) => "float",
             Value::Str(_) => "str",
+            Value::Bytes(_) => "bytes",
             Value::List(_) => "list",
             Value::Tuple(_) => "tuple",
             Value::Set(_) => "set",

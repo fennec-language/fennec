@@ -437,8 +437,8 @@ export struct Router:
         path = request.raw_path if request.raw_path != "" else request.path
         size = text_size(path)
         mut node = 0
-        mut starts: array[int, 8] = [0, 0, 0, 0, 0, 0, 0, 0]
-        mut ends: array[int, 8] = [0, 0, 0, 0, 0, 0, 0, 0]
+        mut starts = array[int, 8]()
+        mut ends = array[int, 8]()
         mut found = 0
         mut at = 0
         while at < size:

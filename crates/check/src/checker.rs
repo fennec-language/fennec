@@ -100,6 +100,9 @@ pub(crate) struct Checker {
     pub(crate) opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, by the call's span, which lowering writes in as a source.
     pub(crate) launches: BTreeMap<(u32, u32), crate::launch::Launch>,
+    /// Each route written with a method, as `router.get(...)`, by the call's span, which lowering
+    /// writes in as a call to `handle`.
+    pub(crate) routes: BTreeMap<(u32, u32), crate::routes::Route>,
     /// Each `match` with a `ref` case, by its span: for each of its cases, the fields of the case
     /// it matches when it has a `ref`, which lowering puts back where the case ends.
     pub(crate) ref_matches: BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
@@ -243,6 +246,7 @@ impl Checker {
             union_sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
             launches: BTreeMap::new(),
+            routes: BTreeMap::new(),
             ref_matches: BTreeMap::new(),
             live_refs: BTreeMap::new(),
             ref_items: BTreeMap::new(),
@@ -423,6 +427,7 @@ impl Checker {
             union_sources: self.union_sources,
             opened_apart: self.opened_apart,
             launches,
+            routes: self.routes,
             ref_matches: self.ref_matches,
             live_refs: self.live_refs,
             ref_items: self.ref_items,

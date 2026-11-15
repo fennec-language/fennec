@@ -14898,6 +14898,64 @@ fn process_options_called_natively_match_what_was_pinned() -> std::io::Result<()
     Ok(())
 }
 
+/// `process.run` in a task parks while its program runs, holding no thread: each of its cases
+/// runs in a `parallel` round as `run` promises, and 70 programs wait at once, past the blocking
+/// threads there are, for a file another round writes. Held on a blocking thread each, as they
+/// were, the waiters took every one, the write waited behind them, and they waited for it until
+/// their 20-second timeouts (#1791).
+///
+/// It's built for a heap audit and run under it on 1, 4 and 16 threads, each run cut off at two
+/// minutes: it ends with what it should have printed, nothing live and nothing said.
+#[test]
+#[cfg(unix)]
+fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("process-runs-parked")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "process_runs_parked_in_tasks";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    let wanted = "0: status 0, out a b|*|, 0 bytes on stderr\n\
+                  1: status 0, out 1048576, 0 bytes on stderr\n\
+                  2: timed out\n\
+                  3: too much output, past 1000\n\
+                  4: status 0, out , 0 bytes on stderr\n\
+                  5: timed out\n\
+                  6: status 3, out , 5 bytes on stderr\n\
+                  70 waiters: status 0, out here, 0 bytes on stderr\n\
+                  wrote\n";
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("TMPDIR", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, wanted, "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
 /// listed and not gone into, and through an `Fs` narrowed to one folder.
 #[cfg(unix)]

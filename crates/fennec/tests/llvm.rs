@@ -678,7 +678,7 @@ fn same_with_and_without(switch: &str, name: &str, source: &str, wanted: &str) -
 }
 
 /// A dict of structs used every way a dict is prints the same with each value held in the dict's
-/// entry (`FENNEC_DICT_VALUES_IN_PLACE=1`) and as a block of its own, and ends with nothing held:
+/// entry and, with `FENNEC_BOXED_DICT_VALUES=1`, as a block of its own, and ends with nothing held:
 /// values of two plain words, of one word, owning a text, a list and a dict, and holding another
 /// struct, an optional and narrow numbers, under int, text and float keys. Each is set new and
 /// again, read, got, changed where it is, popped, walked, cleared, copied and compared; changed
@@ -690,7 +690,7 @@ fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result
         return Ok(());
     }
     same_with_and_without(
-        "FENNEC_DICT_VALUES_IN_PLACE",
+        "FENNEC_BOXED_DICT_VALUES",
         "dict_values_in_entries",
         include_str!("fixtures/dict_values_in_entries.fen"),
         include_str!("fixtures/dict_values_in_entries.out"),
@@ -5893,7 +5893,7 @@ fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -
     prints_in_both_builds("moved_in_place", MOVED_IN_PLACE, MOVED_IN_PLACE_PRINTS)?;
     assert_eq!(
         counts_of("moved_in_place_counts", MOVED_IN_PLACE)?,
-        "copies 1 copied_bytes 672 largest_copy 672 allocations 114 allocated_bytes 11840 live 0"
+        "copies 1 copied_bytes 672 largest_copy 672 allocations 111 allocated_bytes 12032 live 0"
     );
     Ok(())
 }

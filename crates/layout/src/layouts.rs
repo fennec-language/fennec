@@ -894,13 +894,13 @@ pub fn types_in_place() -> bool {
     std::env::var("FENNEC_BOXED_TYPES").as_deref() != Ok("1")
 }
 
-/// Whether a dict holds a plain struct, enum or tuple in its entries, where it holds the address of
-/// a block made for each one. Only with `FENNEC_DICT_VALUES_IN_PLACE=1` while it's being built: the
-/// backend doesn't take every use of such a dict yet. It changes what a build makes, so a build's
-/// cache key says it.
+/// Whether a dict holds a struct that's held in place in its own entries, each entry as wide as
+/// its key and its value, as it does unless `FENNEC_BOXED_DICT_VALUES=1` has it hold the address
+/// of a block made for each value, as before. It changes what a build makes, so a build's cache
+/// key says it.
 #[must_use]
 pub fn dict_values_in_place() -> bool {
-    std::env::var("FENNEC_DICT_VALUES_IN_PLACE").as_deref() == Ok("1")
+    std::env::var("FENNEC_BOXED_DICT_VALUES").as_deref() != Ok("1")
 }
 
 /// Whether a result is kept in place, as it is unless `FENNEC_BOXED_RESULTS=1` keeps each a block of

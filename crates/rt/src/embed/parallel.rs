@@ -1322,8 +1322,9 @@ mod tests {
         match crate::stdlib::net::tests::tls::taken_by(tls, stream) {
             Ok(handle) => {
                 assert_eq!(crate::embed::serve::off_thread(|| 7), 7);
-                assert!(crate::stdlib::net::tests::tls::answered(handle));
+                // Read before it answers: its client lets the slow ones go once it has its answer.
                 FAILED_WHEN_ANSWERED.store(HANDSHAKES_FAILED.load(Ordering::SeqCst), Ordering::SeqCst);
+                assert!(crate::stdlib::net::tests::tls::answered(handle));
             }
             Err(_) => {
                 HANDSHAKES_FAILED.fetch_add(1, Ordering::SeqCst);

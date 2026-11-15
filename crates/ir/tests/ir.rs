@@ -2756,8 +2756,10 @@ def same(one: Pair, two: Pair) -> bool:
     assert_eq!(text.matches("Pair.==").count(), 2, "{text}");
 }
 
+/// `==` on a struct holding a type with its own `def ==` compares each field with it, and `in`
+/// on a list of one asks item by item with it. The second wasn't lowered at first.
 #[test]
-fn equality_through_a_type_with_its_own_def_eq_compares_each_field_or_isnt_lowered_yet() {
+fn equality_through_a_type_with_its_own_def_eq_compares_each_field_and_each_item() {
     let source = "\
 struct Pair:
     a: int
@@ -2776,8 +2778,8 @@ def found(pair: Pair, pairs: list[Pair]) -> bool:
 ";
     let same = printed(source, "same").unwrap();
     assert!(same.contains(".pair") && same.contains("Pair.=="), "{same}");
-    let problem = printed(source, "found").unwrap_err();
-    assert!(problem.contains("its own `==`"), "{problem}");
+    let found = printed(source, "found").unwrap();
+    assert!(found.contains("list.len") && found.contains("call Pair.=="), "{found}");
 }
 
 /// Every lowered function whose name starts with `name`, printed.

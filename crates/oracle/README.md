@@ -23,8 +23,8 @@ how values are held, copied, compared and printed, is modeled here on its own, f
 
 Where a standard library module is written in Fennec, the oracle can run its own source, as
 `fennec-syntax` gives it to the compiler, and model only the functions the runtime writes in Rust
-beneath it. `std.math`, `std.collections`, `std.time`, `std.string`, `std.env` and `std.base64` are
-run this way
+beneath it. `std.math`, `std.collections`, `std.time`, `std.string`, `std.env`, `std.base64`, `std.random`
+and `std.uuid` are run this way
 (`RUN_FROM_SOURCE` in `src/load.rs`), each loaded when the program imports from it, when a module
 loaded so imports from it, or, for `std.env` and `std.time`, when `main` takes the `Env` or the
 `Clock` whose types they declare. In `std.math`, the vectors, quaternions and matrices, `dot` and
@@ -35,7 +35,8 @@ own, are left out. `std.time`'s `Duration`, `Instant` and `Time` are its Fennec 
 duration written out, as `30s`, is its `Duration`. The intrinsics their code calls that only read,
 like `text_byte`, `text_size`, `text_part` and `bytes_text`, are modeled here (`interp/library.rs`)
 from what `intrinsics.fen` says each does, and so is making a core error, like `InvalidValue`, by
-name. The types of the modules' expressions are what
+name. `std.random`'s draws, beneath its `Random`, are modeled here as `docs/language.md` pins them:
+SplitMix64, and a range by Lemire's method. The types of the modules' expressions are what
 the checker gave them as it checked the program. So
 the oracle still checks how the compiler and runtime run that code, but a mistake in the module's
 own Fennec would be the same on both sides. A module modeled on its own, like `std.json`, isn't
@@ -118,8 +119,9 @@ workspace pins.
   oracle was started with, as the compiled program reads its own. No signal comes during a run, so
   `Signals` never says to stop and waiting on one is refused. A `Clock` reads the system's clocks,
   and its `sleep` moves them on without waiting, so a program sees the time it slept pass, and its
-  output can't depend on more than what comes before what. A program that takes any other
-  capability is skipped.
+  output can't depend on more than what comes before what. An `Entropy`'s bytes and seeds differ every
+  run, as the compiled program's do, so a program's output can't depend on them. A program that takes
+  any other capability is skipped.
 - The file system an `Fs` reaches is modeled in memory, in `interp/disk.rs`. It starts as the
   folder the program runs in was: for `run` and `coverage`, the folder the oracle runs in, as the
   gate runs the examples from the checkout's root, and for `compare`, a fresh empty one, as the

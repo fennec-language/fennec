@@ -220,7 +220,7 @@ pub(crate) fn run_program(program: &str, arguments: &[String], options: &Options
         return process_error(program, &format!("there's no folder `{folder}` to run it in"));
     }
     let mut command = std::process::Command::new(program);
-    command.args(arguments);
+    give(&mut command, program, arguments);
     if let Some(folder) = &options.cwd {
         command.current_dir(folder);
     }
@@ -250,6 +250,57 @@ pub(crate) fn run_program(program: &str, arguments: &[String], options: &Options
         ),
         Err(error) => process_error(program, &error.to_string()),
     }
+}
+
+/// Gives `command` its arguments, each as it's written.
+#[cfg(not(windows))]
+fn give(command: &mut std::process::Command, _program: &str, arguments: &[String]) {
+    command.args(arguments);
+}
+
+/// Gives `command` its arguments, each as it's written. On Windows a program splits its own
+/// command line, and one built for Cygwin or MSYS2, as Git for Windows' `printf` is, expands `*`,
+/// `~` and `{a,b}` in an argument that isn't in quotes, as a shell would. So each argument goes in
+/// quotes, which a program built with Microsoft's runtime reads the same as one left bare. A batch
+/// file is read by `cmd.exe`, whose quoting is its own, so its arguments are left to Rust's, which
+/// refuses what it can't pass on safely. Windows passes over a name's trailing dots and spaces,
+/// so `x.bat. ` is a batch file too.
+#[cfg(windows)]
+fn give(command: &mut std::process::Command, program: &str, arguments: &[String]) {
+    let name = std::path::Path::new(program.trim_end_matches(['.', ' ']));
+    if name
+        .extension()
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("bat") || kind.eq_ignore_ascii_case("cmd"))
+    {
+        command.args(arguments);
+        return;
+    }
+    for argument in arguments {
+        std::os::windows::process::CommandExt::raw_arg(command, quoted(argument));
+    }
+}
+
+/// `argument` in double quotes, as a program built with Microsoft's runtime reads it back: a `"`
+/// is escaped with a `\`, and so are the backslashes just before a `"` or the closing quote.
+#[cfg(any(windows, test))]
+fn quoted(argument: &str) -> String {
+    let mut out = String::with_capacity(argument.len() + 2);
+    out.push('"');
+    let mut backslashes = 0;
+    for character in argument.chars() {
+        if character == '\\' {
+            backslashes += 1;
+        } else {
+            if character == '"' {
+                out.extend(std::iter::repeat_n('\\', backslashes + 1));
+            }
+            backslashes = 0;
+        }
+        out.push(character);
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes));
+    out.push('"');
+    out
 }
 
 /// How a program run within its limits ended.
@@ -509,5 +560,26 @@ mod tests {
         };
         let shown = said(&run_program("cat", &[], &options));
         assert!(shown.contains("status=0") && shown.contains("stdout=\"typed\""), "{shown}");
+    }
+}
+
+#[cfg(test)]
+mod quoting {
+    use super::quoted;
+
+    #[test]
+    fn an_argument_in_quotes_reads_back_as_it_was() {
+        for (argument, given) in [
+            ("", r#""""#),
+            ("*", r#""*""#),
+            ("a b", r#""a b""#),
+            (r#"a"b"#, r#""a\"b""#),
+            (r"a\b", r#""a\b""#),
+            (r#"a\"b"#, r#""a\\\"b""#),
+            (r"a\", r#""a\\""#),
+            (r"a\\", r#""a\\\\""#),
+        ] {
+            assert_eq!(quoted(argument), given, "{argument:?}");
+        }
     }
 }

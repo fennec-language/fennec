@@ -1398,6 +1398,79 @@ def main(stdout: Stdout):
     _ = sized
 "#;
 
+/// Three `with` blocks inside each other, over a source whose cleanup says it ran, left from the
+/// innermost every way it can be: falling out, `return`, `break`, a `?`, a `fail`, a `fail` in a
+/// loop of its own, `continue`, and a launched task's failure. Each cleanup runs once, innermost
+/// first, on every way out, as it did before a block's cleanup was written once and failures
+/// left it to that.
+const EVERY_WAY_OUT: &str = r#"from std.concurrent import Closed, Crashed
+
+error Shut:
+    name: str
+
+def guarded(name: str, stdout: Stdout) -> with str fails Shut:
+    stdout.print("open", name)
+    lend name except:
+        stdout.print("failed out of", name)
+    stdout.print("closed", name)
+
+def checked(n: int) -> int fails Shut:
+    if n == 3:
+        fail Shut(name="checked")
+    return n
+
+def task_fails() fails Shut:
+    fail Shut(name="task")
+
+def through(way: int, stdout: Stdout) -> int fails Shut | Closed | Crashed:
+    for round in range(2):
+        with guarded("a", stdout)? as a:
+            with guarded("b", stdout)? as b:
+                with guarded("c", stdout)? as c:
+                    if way == 1:
+                        return 1
+                    if way == 2:
+                        break
+                    if way == 3:
+                        got = checked(3)?
+                        stdout.print("not here", got)
+                    if way == 4:
+                        fail Shut(name="block")
+                    if way == 5:
+                        for k in range(3):
+                            if k == 1:
+                                fail Shut(name="loop")
+                    if way == 6 and round == 0:
+                        continue
+                    if way == 7:
+                        with launch(() => task_fails()?)?:
+                            stdout.print("in", a, b, c)
+                    stdout.print("end of block", round)
+        stdout.print("round", round)
+    return 0
+
+def main(stdout: Stdout):
+    for way in range(8):
+        stdout.print("way", way)
+        got = through(way, stdout) except why:
+            stdout.print("failed", why)
+            -1
+        stdout.print("gave", got)
+    return
+"#;
+
+#[test]
+fn every_way_out_of_nested_with_blocks_cleans_up_innermost_first() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "every_way_out",
+        EVERY_WAY_OUT,
+        "way 0\nopen a\nopen b\nopen c\nend of block 0\nclosed c\nclosed b\nclosed a\nround 0\nopen a\nopen b\nopen c\nend of block 1\nclosed c\nclosed b\nclosed a\nround 1\ngave 0\nway 1\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\ngave 1\nway 2\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\ngave 0\nway 3\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"checked\")\ngave -1\nway 4\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"block\")\ngave -1\nway 5\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"loop\")\ngave -1\nway 6\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\nopen a\nopen b\nopen c\nend of block 1\nclosed c\nclosed b\nclosed a\nround 1\ngave 0\nway 7\nopen a\nopen b\nopen c\nin a b c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"task\")\ngave -1\n",
+    )
+}
+
 /// Leaving a `with` block from a `case` arm under `except why:`, or from the one case of
 /// `except Case():`, runs its source's cleanup as leaving from anywhere else in the block does:
 /// `return`, `break` and `continue` from a named case, from `case _:` and from the one case, from
@@ -2705,6 +2778,62 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
         include_str!("fixtures/workers/lock_undo_by_crash.fen"),
         "wrong 0 crashed True kept True\n",
     )
+}
+
+/// A struct's field defaulting to an empty list, dict or set reads one made once, so a value
+/// nothing writes to makes no block: a thousand more values built and only read make exactly as
+/// many blocks as ten, on one thread and on four. Each default made a block of its own for every
+/// value, two for every HTTP response.
+///
+/// What's written goes nowhere else. A value written to gets a block of its own at the first
+/// write, with the values built before and after it still empty, as are a second holder of the
+/// same value, a default that's a struct with defaults of its own, each copy of a generic struct,
+/// an enum case's and an error's, a value changed under a lock that fails, and values built and
+/// written on a task while `main` writes its own. Nothing is left at the end.
+#[test]
+fn a_field_defaulting_to_an_empty_collection_makes_nothing_until_written() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("empty_defaults_shared")?;
+    let program = dir.join("empty_defaults_shared.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/empty_defaults_shared.fen"))?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("empty_defaults_shared"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let mut made_by = Vec::new();
+            for made in ["10", "1010"] {
+                let ran = Command::new(&executable)
+                    .arg(made)
+                    .env("FENNEC_COUNTS", "1")
+                    .env("FENNEC_THREADS", threads)
+                    .output_within()?;
+                let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+                let wanted = include_str!("fixtures/workers/empty_defaults_shared.out");
+                assert_eq!(printed, wanted, "{how:?}, {threads} threads, {made} made");
+                let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads, {made} made: {counts}");
+                made_by.push((count(counts, "allocations"), count(counts, "copies")));
+            }
+            assert!(made_by.iter().all(|(blocks, _)| blocks.is_some()), "{how:?}: {made_by:?}");
+            assert_eq!(
+                made_by.first(),
+                made_by.last(),
+                "{how:?}, {threads} threads: the blocks made and the copies, with 10 values only read and with 1010"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 /// One write to one entry of a `Table`, a dict or a list that a `shared` value holds, under
@@ -6667,6 +6796,65 @@ def main(stdout: Stdout):
         stdout.print(lines)
 ";
 
+/// A function giving back something narrower fits where one giving the wider thing goes, as one
+/// giving an `Answer` where `(int) -> Answer?` goes, natively: an arrow written at the call, a
+/// function named there, a nested function, either of those kept in a struct's field, and a
+/// function taking an `Answer?` where `(Answer) -> int` goes. It wasn't lowered: "it gives
+/// (int) -> Answer where (int) -> Answer? goes".
+#[test]
+fn a_function_giving_something_narrower_fits_where_a_wider_one_goes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "arrow_fitted",
+        r#"struct Answer:
+    status: int
+    body: str
+
+struct Route:
+    name: str
+    respond: (int) -> Answer?
+
+def first(found: list[int], make: (int) -> Answer?) -> Answer?:
+    for number in found:
+        answer = make(number)
+        if answer is not None:
+            return answer
+    return None
+
+def plain(number: int) -> Answer:
+    return Answer(status=number, body="from a function named where the closure goes")
+
+def loose(answer: Answer?) -> int:
+    if answer is None:
+        return -1
+    return answer.status
+
+def statuses(answers: list[Answer], read: (Answer) -> int) -> list[int]:
+    return [read(answer) for answer in answers]
+
+def main(stdout: Stdout):
+    offset = 40
+    always = first([1, 2], (number) => Answer(status=number + offset, body="made"))
+    maybe = first([1, 2], (number) => Answer(status=number, body="even") if number % 2 == 0 else None)
+    named = first([3, 4], plain)
+    def nested(number: int) -> Answer:
+        return Answer(status=number + offset, body="nested")
+    kept = first([5, 6], nested)
+    route = Route(name="nested", respond=nested)
+    other = Route(name="named", respond=plain)
+    stdout.print(always, maybe, named, kept)
+    respond = route.respond
+    again = other.respond
+    stdout.print(respond(7), again(8), route.name, other.name)
+    stdout.print(statuses([Answer(status=9, body="a")], loose))
+    return
+"#,
+        "Answer(status=41, body=\"made\") Answer(status=2, body=\"even\") Answer(status=3, body=\"from a function named where the closure goes\") Answer(status=45, body=\"nested\")\nAnswer(status=47, body=\"nested\") Answer(status=8, body=\"from a function named where the closure goes\") nested named\n[9]\n",
+    )
+}
+
 /// An arrow failing fewer ways than the function type it's given for, as one failing with
 /// `Refused` where `() -> str fails Refused | Shut` goes, is made as failing all of them, natively:
 /// passed to a function, with a parameter, given to a name typed as one, and a function named as a
@@ -9651,14 +9839,17 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
             Ok(_) if not_native_yet(path) => now_native.push(path),
             Err(_) if not_native_yet(path) => {}
             Err(why) => failed.push(format!("{}: {why}", path.display())),
-            Ok(printed) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
-                wrong.push(path);
+            Ok(printed) => {
+                // What it printed is shown, since a platform only CI runs on can't be asked.
+                let should = std::fs::read_to_string(path.with_extension("out"))?;
+                if printed != should {
+                    wrong.push(format!("{}: printed {printed:?}, not {should:?}", path.display()));
+                }
             }
-            Ok(_) => {}
         }
     }
     assert!(now_native.is_empty(), "these build natively now: take them off NOT_NATIVE_YET: {now_native:?}");
-    assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
+    assert!(wrong.is_empty(), "printed the wrong thing:\n{}", wrong.join("\n"));
     assert!(failed.is_empty(), "these didn't build through LLVM, or failed:\n{}", failed.join("\n"));
     Ok(())
 }

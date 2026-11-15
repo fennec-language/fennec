@@ -602,6 +602,30 @@ fn main_takes_env_stderr_signals_and_a_clock() {
     );
 }
 
+/// `std.random`'s `Random` runs from its own source, its draws as `docs/language.md` pins them, so
+/// a seed gives the compiled program's numbers exactly. An `Entropy`'s bytes and seeds differ
+/// every run, so only what holds for any of them is printed. What it prints is what the compiled
+/// program printed.
+#[test]
+fn a_seeded_random_draws_the_compiled_numbers_and_entropy_seeds_one() {
+    prints(
+        "
+        from std.random import Random
+
+        def main(stdout: Stdout, entropy: Entropy):
+            mut dice = Random(seed=7)
+            rolls = [dice.randint(1, high=6) for _ in range(6)]
+            stdout.print(rolls, dice.choice(['fox', 'den', 'kit']), dice.random(), dice.uniform(2.0, high=4.0))
+            stdout.print(len(entropy.bytes(16)), entropy.bytes(0) == bytes())
+            mut drawn = Random(seed=entropy.seed())
+            roll = drawn.randint(1, high=6)
+            stdout.print(1 <= roll <= 6)
+            return
+        ",
+        "[3, 1, 6, 4, 3, 2] den 0.3280767391525029 2.2685165976168973\n16 True\nTrue\n",
+    );
+}
+
 #[test]
 fn a_json_load_that_fails_says_what_and_where_as_std_json_does() {
     prints(
@@ -1047,6 +1071,51 @@ fn two_shared_values_are_equal_when_they_hold_equal_values() {
             stdout.print(first == second, first != second)
         ",
         "True True True\nFalse True\n",
+    );
+}
+
+/// An optional `shared` value that's there is equal to the cell it holds and never to one that's
+/// missing, either way round.
+#[test]
+fn an_optional_shared_value_is_never_equal_to_a_missing_one() {
+    prints(
+        "
+        struct Account:
+            total = 0
+
+        def picked(account: shared Account, there: bool) -> (shared Account)?:
+            if there:
+                return account
+            return None
+
+        def main(stdout: Stdout):
+            shared account = Account(total=1)
+            held = picked(account, there=True)
+            missing = picked(account, there=False)
+            stdout.print(held == missing, missing == held, held == account, missing == None)
+        ",
+        "False False True True\n",
+    );
+}
+
+/// A type's own `def ==` decides `==` on `shared` values even for a cell compared with itself:
+/// there's no shortcut for one cell, as native code has none (#597).
+#[test]
+fn a_shared_value_is_unequal_to_itself_when_its_def_eq_says_so() {
+    prints(
+        "
+        struct Never:
+            n = 0
+
+            def ==(self, other: Never) -> bool:
+                return False
+
+        def main(stdout: Stdout):
+            shared never = Never(n=1)
+            copy = never
+            stdout.print(never == never, never == copy, never != never)
+        ",
+        "False False True\n",
     );
 }
 

@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Deletes the build files in each worktree's `target/` that nothing has read or written for two
-# days, so the worktrees under `.claude/worktrees` don't fill the disk. Cargo builds again what a
-# build needs and finds missing, so this only ever costs time.
+# Deletes the `target/` of each worktree that nothing has built in for two days, so the worktrees
+# under `.claude/worktrees` don't fill the disk. Cargo builds it all again the next time it's
+# needed, so this only ever costs time.
+#
+# Whole folders, by when anything in them was last written, never single files by when they were
+# last read: a Mac doesn't keep a file's last-read time up to date, so a library every build reads,
+# built two days ago, looks unused by it, and deleting one from under a gate failed the gate
+# (`-p fennec-rt --doc`, 2026-11-14). A worktree built in since is left whole.
 #
 # A worktree with anything running in it is left alone: a gate, cargo, or any program whose folder
-# is inside it, holds a build's lock there, or names it on its command line.
+# is inside it, holds a build's lock there, or names it on its command line. That's looked at again
+# just before each worktree's `target/` goes, which is first renamed, in one step, so a build that
+# starts a moment later finds no half-deleted folder: it builds from nothing.
 #
 #   sweep-builds.sh                    deletes them, and says how much it freed
 #   sweep-builds.sh --dry-run          says what it would delete, deleting nothing
@@ -53,19 +60,23 @@ fi
 worktrees="$(cd "$worktrees" && pwd -P)"
 minutes=$((days * 24 * 60))
 
-# Every running program's folder, and every command line, read once.
 folders="$(mktemp)"
 commands="$(mktemp)"
 listed="$(mktemp)"
 trap 'rm -f "$folders" "$commands" "$listed"' EXIT
-lsof -a -d cwd -Fn 2> /dev/null | sed -n 's/^n//p' > "$folders" || true
-[ -s "$folders" ] || {
-  echo "sweep-builds: couldn't list what's running, so it can't tell which worktrees are busy" >&2
-  exit 1
-}
-ps -axww -o command= > "$commands"
 
-# Whether anything is running in a worktree.
+# Every running program's folder and command line, as they are now.
+running() {
+  lsof -a -d cwd -Fn 2> /dev/null | sed -n 's/^n//p' > "$folders" || true
+  [ -s "$folders" ] || {
+    echo "sweep-builds: couldn't list what's running, so it can't tell which worktrees are busy" >&2
+    exit 1
+  }
+  ps -axww -o command= > "$commands"
+}
+running
+
+# Whether anything is running in a worktree, by what was running when `running` last looked.
 busy() {
   local tree="$1"
   if grep -qxF "$tree" "$folders" || grep -qF "$tree/" "$folders" || grep -qF "$tree/" "$commands"; then
@@ -101,20 +112,27 @@ for tree in "$worktrees"/*/; do
     echo "$name: skipped, something is running in it"
     continue
   fi
-  # Neither read nor written in the time given. A file read since is one a build still uses.
-  find "$tree/target" -type f -amin "+$minutes" -mmin "+$minutes" -print0 > "$listed"
-  [ -s "$listed" ] || {
-    echo "$name: nothing unused for $days days"
+  # Anything written in the time given is a build that's still in use, and all of it stays.
+  if [ -n "$(find "$tree/target" -type f -mmin "-$minutes" -print -quit)" ]; then
+    echo "$name: built in the last $days days, so left alone"
     continue
-  }
+  fi
+  find "$tree/target" -type f -print0 > "$listed"
   count="$(tr -cd '\0' < "$listed" | wc -c | tr -d ' ')"
-  freed="$(bytes "$listed")"
+  freed=0
+  [ "$count" -eq 0 ] || freed="$(bytes "$listed")"
   if $dry_run; then
     echo "$name: would delete $count files, $(shown "$freed")"
   else
-    # A batch that fails stops the rest: xargs stops at a command that exits 255.
-    xargs -0 -n 1000 sh -c 'rm -f -- "$@" || exit 255' sh < "$listed"
-    find "$tree/target" -mindepth 1 -type d -empty -delete
+    # Looked at again, then renamed out of the way in one step, then deleted.
+    running
+    if busy "$tree"; then
+      echo "$name: skipped, something started running in it"
+      continue
+    fi
+    swept="$tree/target.swept.$$"
+    mv "$tree/target" "$swept"
+    rm -rf "$swept"
     echo "$name: deleted $count files, $(shown "$freed")"
   fi
   total=$((total + freed))

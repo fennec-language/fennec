@@ -231,12 +231,6 @@ jobs:
       matrix:
         program: [game_server, web_backend]
         in: [task, main]
-        include:
-          # A `parallel` loop inside a task runs its pieces one after another, so the game server's
-          # 48 clients, which wait for one another, never all start in a task: it fails until #1796.
-          - program: game_server
-            in: task
-            waiting: "#1796"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -253,7 +247,6 @@ jobs:
         env:
           PROGRAM: ${{ matrix.program }}
           SOAK_IN: ${{ matrix.in }}
-          SOAK_WAITING: ${{ matrix.waiting }}
         run: .github/scripts/soak.sh target/release/fennec "bench/realworld/$PROGRAM.fen" soak.md 60
       - name: Show the curve on the run's summary page
         if: always()

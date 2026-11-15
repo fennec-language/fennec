@@ -280,18 +280,8 @@ impl<'c> FnCx<'c> {
             }
             cx.declare_as(&param.name, param.ty.clone(), param.is_mut, Origin::Param, written.span);
         }
-        // A `shared` type's method holds its lock for the whole call.
-        if def.params.first().is_some_and(|param| param.is_self)
-            && params.first().is_some_and(|param| cx.checker.program.takes_lock(&param.ty))
-        {
-            cx.lock = Some("while `self` is locked".to_owned());
-            cx.locked_types = params
-                .first()
-                .and_then(|param| param.ty.type_name())
-                .map(str::to_owned)
-                .into_iter()
-                .collect();
-        }
+        cx.main_is_given_capabilities(params, def);
+        cx.self_locked(params, def);
         cx.tail = if cx.generator || cx.lends.is_some() { None } else { cx.declared.clone() };
         let flow = cx.stmts(&def.body, cx.lends.is_none());
         if cx.lends.is_some() {
@@ -525,6 +515,41 @@ impl<'c> FnCx<'c> {
                     self.error(problem);
                 }
             }
+        }
+    }
+
+    /// A `shared` type's method, which holds its lock for the whole call.
+    fn self_locked(&mut self, params: &[ParamType], def: &FnDef) {
+        if def.params.first().is_some_and(|param| param.is_self)
+            && params.first().is_some_and(|param| self.checker.program.takes_lock(&param.ty))
+        {
+            self.lock = Some("while `self` is locked".to_owned());
+            self.locked_types = params
+                .first()
+                .and_then(|param| param.ty.type_name())
+                .map(str::to_owned)
+                .into_iter()
+                .collect();
+        }
+    }
+
+    /// Refuses a parameter of a program's `main` that isn't a capability, as `args: list[str]`: a
+    /// program is started with its capabilities, and with nothing else to hand `main`.
+    fn main_is_given_capabilities(&mut self, params: &[ParamType], def: &FnDef) {
+        if self.key != "main" {
+            return;
+        }
+        for (param, written) in params.iter().zip(&def.params) {
+            let ty = self.checker.settled(&param.ty);
+            if crate::shared::is_capability_type(&ty) && written.default.is_none() {
+                continue;
+            }
+            let message = format!(
+                "`main` can't be given `{}`: a program is started with its capabilities, and nothing else",
+                param.name
+            );
+            let help = "`main` can take `stdout: Stdout`, `stderr: Stderr`, `stdin: Stdin`, `args: Args`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net`, `env: Env` and `signals: Signals`, in any order";
+            self.error(Diagnostic::new(message, written.span).with_help(help));
         }
     }
 

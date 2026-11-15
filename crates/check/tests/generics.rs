@@ -428,6 +428,36 @@ fn a_programs_type_replaces_a_standard_library_type_of_the_same_name() {
     assert_eq!(problems(wrong), ["`Tree` has no method `len` @ len(Tree(size=1))"]);
 }
 
+/// A program's `main` is given its capabilities and nothing else, since that's all a program is
+/// started with. A parameter of any other type, as `args: list[str]`, is refused, naming what
+/// `main` can take, where before it checked, built, and was handed nothing, which crashed. Every
+/// capability the program's entry hands out is one `main` can take.
+#[test]
+fn main_is_given_capabilities_and_nothing_else() {
+    let every = "def main(stdout: Stdout, stderr: Stderr, stdin: Stdin, args: Args, fs: Fs, clock: Clock, \
+        process: Process, entropy: Entropy, net: Net, env: Env, signals: Signals):\n    pass\n";
+    assert_eq!(problems(every), Vec::<String>::new());
+    let fix = "`main` can take `stdout: Stdout`, `stderr: Stderr`, `stdin: Stdin`, `args: Args`, `fs: Fs`, \
+        `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net`, `env: Env` and `signals: Signals`, in any order";
+    for (written, name) in [
+        ("args: list[str]", "args"),
+        ("count: int", "count"),
+        ("name = \"x\"", "name"),
+        ("stdout: Stdout, rest: list[str]", "rest"),
+    ] {
+        let program = format!("def main({written}):\n    pass\n");
+        let said = format!(
+            "`main` can't be given `{name}`: a program is started with its capabilities, and nothing else"
+        );
+        let at = written.rsplit(", ").next().unwrap_or(written);
+        assert_eq!(problems(&program), [format!("{said} @ {at}")], "{program}");
+        assert_eq!(helps(&program), [fix], "{program}");
+    }
+    let elsewhere = "def total(numbers: list[int]) -> int:\n    return sum(numbers)\n\n\
+        def main(stdout: Stdout):\n    stdout.print(total([1, 2]))\n";
+    assert_eq!(problems(elsewhere), Vec::<String>::new());
+}
+
 #[test]
 fn a_test_receives_capabilities_by_type() {
     let fine = "

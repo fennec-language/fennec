@@ -150,7 +150,9 @@ impl Interp {
     /// Calls a function held as a value, written or an arrow function, with these arguments.
     fn call_at(&mut self, func: &Value, given: Vec<ArgVal>, span: Span) -> Run<Value> {
         match self.func_target(func.clone())? {
-            Target::Def { def, parent, receiver } => self.call_def(def, parent, receiver, given, span),
+            Target::Def { def, parent, receiver, types } => {
+                self.call_def_bound((def, types), parent, receiver, given, span)
+            }
             Target::Lambda { params, body, captured } => self.call_lambda(&params, body, captured, given),
             _ => unsupported("passing a builtin to a Table method"),
         }

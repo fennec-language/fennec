@@ -26,6 +26,9 @@ rusqlite.workspace = true
 rustix.workspace = true
 signal-hook.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+nix.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 ctrlc.workspace = true
 same-file.workspace = true

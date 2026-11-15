@@ -1,0 +1,92 @@
+# What's appended to a list inside a dict's value is worked out after the value is looked up and
+# before the list is changed. A key that isn't there fails before the argument is made; an
+# argument that crashes leaves the list as it was, with a lock and with none; an argument can read
+# the list it's about to go on.
+from std.concurrent import Crashed
+
+struct Bag:
+    items: list[str]
+    seen: int
+
+struct Shelf:
+    named: dict[str, Bag]
+    made: int
+
+    def note(ref self, key: str, limits: list[int], at: int):
+        self.named[key].items.append(labelled(limits, at=at, after=len(self.named[key].items)))
+        self.made += 1
+        return
+
+def labelled(limits: list[int], at: int, after: int) -> str:
+    return f"limit {limits[at]} after {after} items, long enough for a block of its own"
+
+def loud(stdout: Stdout, text: str) -> str:
+    stdout.print("the argument was made:", text)
+    return text
+
+def first_bag() -> Bag:
+    return Bag(items=["first, a text long enough for a block of its own"], seen=0)
+
+def new_shelf() -> Shelf:
+    return Shelf(named={"one": first_bag(), "two": first_bag()}, made=0)
+
+## The shelf is this function's own: a crash in the argument must leave nothing behind.
+def its_own(limits: list[int], at: int) -> int:
+    mut shelf = new_shelf()
+    for turn in range(40):
+        shelf.named["one"].items.append(f"turn {turn}, a text long enough for a block of its own")
+    shelf.note("one", limits=limits, at=at)
+    return len(shelf.named["one"].items) + shelf.made
+
+## The shelf is what a lock holds: a crash in the argument puts back what was there before it.
+def locked(shelf: shared Shelf, limits: list[int], at: int):
+    lock shelf as ref held:
+        for turn in range(40):
+            held.named["one"].items.append(
+                f"locked turn {turn}, long enough for a block of its own",
+            )
+        held.note("one", limits=limits, at=at)
+    return
+
+def went(which: int, at: int, shelf: shared Shelf):
+    limits = [10, 20]
+    if which == 0:
+        got = its_own(limits, at=at)
+        lock shelf as ref held:
+            held.made += got
+    else:
+        locked(shelf, limits=limits, at=at)
+    return
+
+def ran(which: int, at: int, shelf: shared Shelf) fails Crashed:
+    with launch(() => went(which, at=at, shelf=shelf)) as task:
+        pass
+    return
+
+def held_now(shelf: shared Shelf) -> str:
+    lock shelf as held:
+        bag = held.named["one"]
+        return f"{held.made}: {len(bag.items)} {bag.items[-1]}"
+
+def missing(stdout: Stdout, shelf: shared Shelf):
+    lock shelf as ref held:
+        held.named["nobody"].items.append(loud(stdout, text="never"))
+    return
+
+def asked(stdout: Stdout, shelf: shared Shelf) fails Crashed:
+    with launch(() => missing(stdout, shelf=shelf)) as task:
+        pass
+    return
+
+def main(stdout: Stdout):
+    shared shelf = new_shelf()
+    for which in range(2):
+        for at in [0, 7, 1]:
+            ran(which, at=at, shelf=shelf) except Crashed():
+                stdout.print("crashed", which, at, held_now(shelf))
+                continue
+            stdout.print("went", which, at, held_now(shelf))
+    asked(stdout, shelf=shelf) except Crashed():
+        stdout.print("a key that isn't there crashed before the argument was made")
+    stdout.print(held_now(shelf))
+    return

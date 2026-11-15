@@ -2819,6 +2819,91 @@ fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::R
     Ok(())
 }
 
+/// What's appended to a list inside a dict's value can be made in the call, a string, a call's
+/// result, a struct, something read from the list itself, and the list is still changed where it
+/// is: it's taken out when the append comes, not when it's read, so nothing is out of the dict
+/// while the argument is made. Each of those appended to a copy before, and copied the whole list
+/// every time: this program made 1,198 copies and copied 11 MB, and now makes none.
+#[test]
+fn what_is_appended_through_a_dict_is_made_with_no_copy_of_the_list() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("appended_through_a_dict", APPENDED_THROUGH_A_DICT, "900 300 after 899 others\n")?;
+    assert_eq!(
+        counts_of("appended_through_a_dict_counts", APPENDED_THROUGH_A_DICT)?,
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 620 allocated_bytes 142688 live 0"
+    );
+    Ok(())
+}
+
+const APPENDED_THROUGH_A_DICT: &str = r#"struct Mark:
+    turn: int
+    name: str
+
+struct Bag:
+    items: list[str]
+    marks: list[Mark]
+
+struct Shelf:
+    named: dict[str, Bag]
+
+def made(turn: int) -> str:
+    return f"made by a call in turn {turn}, long enough for a block"
+
+def main(stdout: Stdout):
+    mut shelf = Shelf(named={"one": Bag(items=[], marks=[])})
+    key = "one"
+    for turn in range(300):
+        shelf.named[key].items.append(f"an f-string in turn {turn}, long enough for a block")
+        shelf.named[key].items.append(made(turn))
+        shelf.named[key].marks.append(Mark(turn=turn, name="a name long enough for a block of its own"))
+        shelf.named[key].items.append(f"after {len(shelf.named[key].items)} others")
+    bag = shelf.named[key]
+    stdout.print(len(bag.items), len(bag.marks), bag.items[-1])
+"#;
+
+/// The order things happen in stays as it's written when the list is taken at its append: a key
+/// that isn't there fails before the argument is made, and an argument that crashes leaves the
+/// list as it was, in a function that owns the dict, where nothing may be left behind, and under
+/// a lock, where the rollback puts back what was there. It prints what the reference evaluator
+/// prints, on one thread and on four, with nothing left.
+#[test]
+fn an_argument_that_crashes_leaves_the_list_it_was_for_as_it_was() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("appended_through_a_dict_crashes")?;
+    let program = dir.join("appended_through_a_dict.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/appended_through_a_dict.fen"))?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("appended_through_a_dict"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .output_within()?;
+            let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+            let wanted = include_str!("fixtures/workers/appended_through_a_dict.out");
+            let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(printed, wanted, "{how:?}, {threads} threads: {errors}");
+            assert!(ran.status.success(), "{how:?}, {threads} threads: {errors}");
+            let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+            assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads: {counts}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A struct's field defaulting to an empty list, dict or set reads one made once, so a value
 /// nothing writes to makes no block: a thousand more values built and only read make exactly as
 /// many blocks as ten, on one thread and on four. Each default made a block of its own for every

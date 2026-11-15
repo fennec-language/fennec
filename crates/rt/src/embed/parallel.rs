@@ -22,7 +22,7 @@
 //! a test's does, the ranges' text is handed to it whole, by where each range starts.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use fennec_syntax::Diagnostic;
@@ -106,8 +106,14 @@ fn extent(state: &State, list: i64) -> Option<(usize, usize)> {
 /// One `parallel` call's ranges: where they stop, and the lowest failure.
 struct Run {
     chunk: usize,
-    /// The thread that started the call, whose runtime adopts what the ranges make.
-    caller: u16,
+    /// The thread that started the call, whose runtime adopts what the ranges make, when it waits
+    /// for them as a thread does, lending its own blocks. `None` for a launched task's call on the
+    /// pool: the task parks, and a range on any thread, its own worker's too, reads the copy the
+    /// task lent and hands over what it makes.
+    caller: Option<u16>,
+    /// A launched task's stop, when the call is one's on the pool: its ranges are its code, and
+    /// stop as it does.
+    task_stop: Option<Arc<AtomicU8>>,
     /// Where the lowest range that failed so far starts. Ranges after it don't start, and
     /// ranges before it still run, since one of them failing is the failure passed up.
     stop: AtomicUsize,
@@ -195,6 +201,8 @@ struct Started {
     from: usize,
     /// The capture what was running before printed into, put back as the range ends.
     capture: Option<Arc<crate::fakes::Capture>>,
+    /// What ran on the thread before a range of a launched task's call, put back as it ends.
+    before: Option<pool::BeforeRange>,
 }
 
 #[derive(Clone, Copy)]
@@ -208,7 +216,8 @@ impl Run {
     fn new(chunk: usize) -> Run {
         Run {
             chunk,
-            caller: super::threads::index(),
+            caller: Some(super::threads::index()),
+            task_stop: None,
             task: crate::replay::child(),
             capture: super::capture_here(),
             stop: AtomicUsize::new(usize::MAX),
@@ -229,6 +238,21 @@ impl Run {
     fn waiting(mut self, waiting: bool) -> Run {
         self.waiting = waiting;
         self
+    }
+
+    /// The same call, made by the launched task told to stop with `stop`, for the pool: its
+    /// ranges read `lent`, the copy of what they capture that the task made for them.
+    fn of_task(mut self, stop: Arc<AtomicU8>, lent: Arc<super::table::Table>) -> Run {
+        self.caller = None;
+        self.task_stop = Some(stop);
+        self.lent = RwLock::new(Some(lent));
+        self
+    }
+
+    /// Whether this thread is the one that made the call and waits for it, whose own blocks the
+    /// ranges read: a range it runs itself has nothing lent and hands nothing over.
+    fn on_caller(&self) -> bool {
+        self.caller == Some(super::threads::index())
     }
 
     /// Notes that the range starting at `from` failed, as its body's `code` says: with a value
@@ -262,19 +286,20 @@ impl Run {
     /// Starts the range at `from` on this thread, giving back where what it makes starts, and what
     /// was running before it, in a recording or a replay, for `keep_made` to put back.
     fn range_starts(&self, from: usize) -> Started {
-        if super::threads::index() != self.caller {
+        if !self.on_caller() {
             pool::range_starts(self.lent.read().unwrap_or_else(PoisonError::into_inner).clone());
         }
+        let before = self.task_stop.clone().map(pool::range_of_task_starts);
         let mut was = crate::replay::range(self.task.as_ref(), from);
         crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();
         super::swap_capture(&mut capture);
-        Started { since: super::threads::made_scope_starts(), was, from, capture }
+        Started { since: super::threads::made_scope_starts(), was, from, capture, before }
     }
 
     /// Keeps what the range just run on this thread made since `since`, and how it changed the
     /// owners of the calling thread's blocks, when this thread is a worker.
-    fn keep_made(&self, Started { since, mut was, from, mut capture }: Started) {
+    fn keep_made(&self, Started { since, mut was, from, mut capture, before }: Started) {
         // In a recording or a replay, what the range printed goes out as its own, under its name,
         // before what was running is put back.
         if crate::replay::active() {
@@ -283,7 +308,10 @@ impl Run {
         crate::replay::swap(&mut was);
         super::swap_capture(&mut capture);
         super::threads::made_scope_ends();
-        if super::threads::index() != self.caller {
+        if let Some(before) = before {
+            pool::range_of_task_ends(before);
+        }
+        if !self.on_caller() {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
             let made = super::threads::hand_over(since);
             if !made.is_empty() {
@@ -305,7 +333,13 @@ impl Run {
     /// Passes the failure up, in the calling thread's runtime, after adopting what the ranges
     /// made: 1 if there was one, else 0.
     fn finish(self) -> i64 {
-        super::threads::adopt(self.made.into_inner().unwrap_or_else(PoisonError::into_inner));
+        let made = self.made.into_inner().unwrap_or_else(PoisonError::into_inner);
+        if self.task_stop.is_some() {
+            // A task's own, as what it makes itself is: listed, for it to hand over when it ends.
+            with(|state| state.heap.adopt_made(made));
+        } else {
+            super::threads::adopt(made);
+        }
         pool::settle(self.owners.into_inner().unwrap_or_else(PoisonError::into_inner));
         let mut printed = self.printed.into_inner().unwrap_or_else(PoisonError::into_inner);
         printed.sort_by_key(|(from, _)| *from);
@@ -595,6 +629,9 @@ pub extern "C" fn parallel_map_heavy(list: i64, body: MapBody, env: i64, element
 fn run_map(list: i64, body: MapBody, env: i64, element: i64, weight: Weight) -> i64 {
     counted();
     let Some((length, words)) = with(|state| extent(state, list)) else { return 0 };
+    if let Some(made) = map_of_task((length, words), body, env, element, weight) {
+        return made;
+    }
     let out = super::lists::new(element, number(length));
     let run = Run::new(weight.chunk(length, words)).waiting(weight == Weight::Waiting);
     if run_each(run, length, words, Leaf::Map(body, env, out), weight) != 0 {
@@ -602,6 +639,85 @@ fn run_map(list: i64, body: MapBody, env: i64, element: i64, weight: Weight) -> 
         return 0;
     }
     out
+}
+
+/// A comprehension a launched task makes, whose body is heavy or may wait, of two items or more:
+/// its ranges go to the task's pool, as they do from the program's own thread, and the task parks
+/// until they've finished. `None` anywhere else, and where what the body captures can't be copied:
+/// the ranges then run here, one after another.
+///
+/// A thread that waits lends its ranges all its blocks. A task can't: the other tasks on its
+/// worker go on using them. So the ranges get a copy of what the body captures, in a table of its
+/// own, with the list they write into made in it too. When they've finished, the table's blocks
+/// are the task's, the list among them, and the copy is let go.
+fn map_of_task(
+    (length, words): (usize, usize),
+    body: MapBody,
+    env: i64,
+    element: i64,
+    weight: Weight,
+) -> Option<i64> {
+    if weight == Weight::Light || length < 2 {
+        return None;
+    }
+    let (here, stop) = pool::for_task()?;
+    let (copy, table) = copied_to_lend(env)?;
+    with(|state| state.heap.enter_table(table, super::guarded::GUARDED_OWNER << super::heap::OWNER_SHIFT));
+    let out = super::lists::new(element, number(length));
+    let lent = Arc::new(*with(|state| state.heap.leave_table()));
+    let run = Run::new(weight.chunk(length, words))
+        .waiting(weight == Weight::Waiting)
+        .of_task(Arc::clone(&stop), Arc::clone(&lent));
+    let run = Arc::new(run);
+    pool::install_for_task(
+        here,
+        || run.each_on_start(here.0, length, Leaf::Map(body, copy, out)),
+        &run.done,
+        &stop,
+    );
+    if taken_back(alone(run), lent, copy) != 0 {
+        super::heap::free(out);
+        return Some(0);
+    }
+    Some(out)
+}
+
+/// A copy of the closure `env`, with all it captures, for a launched task's call to lend its
+/// ranges: its address, and the table it's in. An `env` of 0 captures nothing, and gets a table
+/// with nothing in it. `None` when something it captures can't be copied, as a generator can't.
+fn copied_to_lend(env: i64) -> Option<(i64, Box<super::table::Table>)> {
+    if env == 0 {
+        return Some((0, Box::new(super::table::Table::hashed())));
+    }
+    let (copy, table) = with(|state| super::guarded::copied_for_task(state, env.cast_unsigned()).ok())?;
+    Some((copy.cast_signed(), table))
+}
+
+/// Ends a launched task's call on the pool, its ranges all finished: what it lent them is the
+/// task's own now, with what they made and how they changed its owners, and the copy of what they
+/// captured is let go. Gives back what `Run::finish` does.
+fn taken_back(run: Run, lent: Arc<super::table::Table>, copy: i64) -> i64 {
+    run.lent.write().unwrap_or_else(PoisonError::into_inner).take();
+    let table = sole(lent);
+    with(|state| state.heap.adopt_made(table.into_blocks()));
+    let code = run.finish();
+    if copy != 0 {
+        with(|state| super::heap::release(state, copy.cast_unsigned()));
+    }
+    code
+}
+
+/// What a call lent, once the last range has let go of it, as `alone` waits for the call itself.
+fn sole(mut lent: Arc<super::table::Table>) -> super::table::Table {
+    loop {
+        match Arc::try_unwrap(lent) {
+            Ok(table) => return table,
+            Err(shared) => {
+                lent = shared;
+                std::thread::yield_now();
+            }
+        }
+    }
 }
 
 /// `fennec_parallel_reduce(list, body, combine, env, result) -> i64`: a reduction like
@@ -631,6 +747,9 @@ fn run_reduce(
     }
     // A reduction's leaves depend on the length alone, not on its items' sizes, so it combines
     // in the same order whatever the items are.
+    if waiting && let Some(code) = reduce_of_task(length, (body, combine, env), result) {
+        return code;
+    }
     let run = Run::new(crate::builtins::REDUCE_LEAF).waiting(waiting);
     let steps = (body, combine, env);
     let pool = if waiting { pool::for_waiting() } else { pool::for_call(length * words) };
@@ -645,6 +764,35 @@ fn run_reduce(
         *result = reduced;
     }
     run.finish()
+}
+
+/// A reduction a launched task makes, whose body may wait, over two items or more: on the task's
+/// pool, as `map_of_task` runs a comprehension, lending a copy of what the body captures. `None`
+/// anywhere else, and the ranges then run here.
+fn reduce_of_task(
+    length: usize,
+    (body, combine, env): (ReduceBody, Combine, i64),
+    result: &mut i64,
+) -> Option<i64> {
+    if length < 2 {
+        return None;
+    }
+    let (here, stop) = pool::for_task()?;
+    let (copy, table) = copied_to_lend(env)?;
+    let lent = Arc::new(*table);
+    let run =
+        Run::new(crate::builtins::REDUCE_LEAF).waiting(true).of_task(Arc::clone(&stop), Arc::clone(&lent));
+    let run = Arc::new(run);
+    let start = || {
+        let (pool, started) = (here.0, Arc::clone(&run));
+        pool.push(Box::new(move || started.reduce_on(pool, (0, length), None, (body, combine, copy))));
+    };
+    pool::install_for_task(here, start, &run.done, &stop);
+    let run = alone(run);
+    if let Some(reduced) = run.reduced.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        *result = reduced;
+    }
+    Some(taken_back(run, lent, copy))
 }
 
 // The `_waiting` entry points are for a body that may wait: a network call, a lock, a sleep, a
@@ -712,6 +860,30 @@ mod pool {
     /// Without threads, native code only runs on the program's thread, whose limit it has.
     pub fn stack_limit() -> usize {
         0
+    }
+
+    /// Without threads, there are no launched tasks, so no range is one's.
+    pub(super) struct BeforeRange;
+
+    pub(super) fn range_of_task_starts(_stop: std::sync::Arc<std::sync::atomic::AtomicU8>) -> BeforeRange {
+        BeforeRange
+    }
+
+    pub(super) fn range_of_task_ends(_before: BeforeRange) {}
+
+    /// Without threads, there are no launched tasks to hand ranges to a pool.
+    pub(super) fn for_task() -> Option<((&'static Pool, usize), std::sync::Arc<std::sync::atomic::AtomicU8>)>
+    {
+        None
+    }
+
+    pub(super) fn install_for_task(
+        _here: (&'static Pool, usize),
+        start: impl FnOnce(),
+        _done: &Latch,
+        _stop: &std::sync::Arc<std::sync::atomic::AtomicU8>,
+    ) {
+        start();
     }
 
     /// Without threads, nothing is lent, so ranges have nothing to read or hand back.

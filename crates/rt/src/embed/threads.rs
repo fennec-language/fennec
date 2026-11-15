@@ -71,6 +71,10 @@ thread_local! {
     /// task of its that crashes can cut those waits short (see [`Launcher`]). Made the first time
     /// it launches one.
     static LAUNCHER: std::cell::RefCell<Option<Arc<Launcher>>> = const { std::cell::RefCell::new(None) };
+    /// Whether what's running on this thread is a range of a launched task's `parallel` call, on
+    /// the pool: it stops as the task does, and its own calls run their ranges here, as any
+    /// range's do.
+    static RANGE_OF_TASK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The code that launched tasks, as they see it: how many of them crashed or failed with their
@@ -164,6 +168,34 @@ pub(crate) fn in_a_task() -> bool {
 #[cfg(any(test, feature = "threads"))]
 pub(crate) fn task_stop() -> Option<Arc<AtomicU8>> {
     STOP.with_borrow(Clone::clone)
+}
+
+/// What was running on a thread before a range of a launched task's call started there, for
+/// `range_of_task_ends` to put back.
+#[cfg(any(test, feature = "threads"))]
+pub(super) struct BeforeRange {
+    stop: Option<Arc<AtomicU8>>,
+    range: bool,
+}
+
+/// Starts a range of a launched task's `parallel` call on this thread: it's the task's code, so
+/// it's told to stop with `stop`, as the task is, and each of its waits is cut short then.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn range_of_task_starts(stop: Arc<AtomicU8>) -> BeforeRange {
+    BeforeRange { stop: STOP.replace(Some(stop)), range: RANGE_OF_TASK.replace(true) }
+}
+
+/// Ends a range of a launched task's call on this thread.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn range_of_task_ends(BeforeRange { stop, range }: BeforeRange) {
+    STOP.set(stop);
+    RANGE_OF_TASK.set(range);
+}
+
+/// Whether what's running on this thread is a range of a launched task's `parallel` call.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn in_range_of_task() -> bool {
+    RANGE_OF_TASK.get()
 }
 
 /// The task running on this thread starts cleaning up after a crash, or ends doing so.
@@ -364,6 +396,8 @@ pub(crate) struct Accounts {
     task: u64,
     /// The capture of the test that launched it, if a test did, for what it prints.
     capture: Option<Arc<crate::fakes::Capture>>,
+    /// Whether it's a range of a launched task's `parallel` call.
+    range_of_task: bool,
 }
 
 #[cfg(any(test, feature = "threads"))]
@@ -403,6 +437,11 @@ impl Accounts {
         self.replay.take()
     }
 
+    /// Whether it's a range of the call of the task told to stop with `stop`.
+    pub(in crate::embed) fn is_range_stopped_with(&self, stop: &Arc<AtomicU8>) -> bool {
+        self.range_of_task && self.stop.as_ref().is_some_and(|own| Arc::ptr_eq(own, stop))
+    }
+
     /// Whether nothing's left in them: a range that ended has handed everything over.
     pub(crate) fn is_empty(&self) -> bool {
         self.made.is_empty() && self.lent.is_none() && self.lent_owners.is_empty() && self.printed.is_empty()
@@ -430,6 +469,7 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         accounts.writes = super::swap_task_writes(accounts.writes);
         super::swap_capture(&mut accounts.capture);
         accounts.cleaning = CLEANING.replace(accounts.cleaning);
+        accounts.range_of_task = RANGE_OF_TASK.replace(accounts.range_of_task);
         crate::replay::swap(&mut accounts.replay);
         if !same {
             state.heap.texts.get_mut().clear();

@@ -24,7 +24,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -840,6 +840,22 @@ impl Io {
         }
     }
 
+    /// Cuts short the waits of the ranges parked here that are the task's told to stop with `stop`:
+    /// the ranges of a `parallel` call it made, which stop as it does. In the order they started,
+    /// so they're woken the same way each time.
+    pub(in crate::embed) fn cancel_ranges_of(&mut self, stop: &Arc<AtomicU8>) {
+        let mut ranges: Vec<TaskId> = self
+            .accounts
+            .iter()
+            .filter(|(_, accounts)| accounts.is_range_stopped_with(stop))
+            .map(|(task, _)| *task)
+            .collect();
+        ranges.sort_unstable();
+        for range in ranges {
+            self.cancel(range);
+        }
+    }
+
     /// Whether it serves anything or has tasks waiting, so its poll has to be looked at between
     /// jobs, for a socket that's ready or a wait whose time is up.
     pub(in crate::embed) fn active(&self) -> bool {
@@ -1375,6 +1391,13 @@ pub(crate) fn next_token() -> Token {
 /// Only for a task that `can_park`.
 pub(crate) fn park_on(token: Token, deadline: Option<Instant>) -> Parked {
     park_on_token(token, deadline, true)
+}
+
+/// Parks this task on `token` until `wake_token` is sent it, whatever it's told meanwhile: a stop
+/// wakes it, as cancelled, without failing it. For a task waiting for work it handed to other
+/// threads, which read what it lent them until they've finished.
+pub(in crate::embed) fn park_through_a_stop(token: Token) -> Parked {
+    park_on_token(token, None, false)
 }
 
 /// `park_on`, which a stop cuts short only if `stoppable`. When it isn't, a stop wakes it, as

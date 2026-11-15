@@ -1,0 +1,347 @@
+//! A launched task's `parallel` calls. Their ranges go to the task's pool, as they do from the
+//! program's own thread, while the task parks. A task can't lend its worker's blocks, which the
+//! other tasks there go on using, so its ranges read a copy of what the body captures.
+//!
+//! Each test has a pool of its own: its task counts the blocks its worker holds.
+
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::time::{Duration, Instant};
+
+use super::*;
+use crate::embed::parallel::{parallel_map_heavy, parallel_map_waiting, parallel_reduce_waiting};
+use crate::embed::threads;
+
+/// A pool of `workers` of its own, for one test.
+fn own_pool(made: &'static OnceLock<&'static Pool>, workers: usize) -> &'static Pool {
+    made.get_or_init(|| {
+        let setup: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {
+            start(tables(), crate::Inputs::default());
+        });
+        crate::embed::parallel::with_setup(workers, &setup)
+    })
+}
+
+/// How long a range waits for another before it gives up, so a test fails rather than hangs.
+const GIVES_UP: Duration = Duration::from_secs(20);
+
+fn live() -> usize {
+    with(|state| state.heap.live())
+}
+
+/// Whether a block is this thread's own, in its own table.
+fn is_own(block: i64) -> bool {
+    let here = with(|state| state.heap.owner_number()).cast_unsigned();
+    block > 0
+        && with(|state| state.heap.holds_block(usize::try_from(block).unwrap_or(0)))
+        && owner_of(block) == here
+}
+
+static WAITING_POOL: OnceLock<&'static Pool> = OnceLock::new();
+/// The address of what the task was given, which its ranges mustn't be given.
+static TASK_S_OWN: AtomicI64 = AtomicI64::new(0);
+static SECOND_RAN: AtomicBool = AtomicBool::new(false);
+/// 1 once the first range saw the second had run while it waited, and 2 if it gave up.
+static FIRST_WAITED: AtomicI64 = AtomicI64::new(0);
+/// How many ranges read a copy of what the body captures, and not the task's own.
+static READ_A_COPY: AtomicI64 = AtomicI64::new(0);
+/// How many ranges were noted as a task's ranges, stopped as it is.
+static WERE_THE_TASK_S: AtomicI64 = AtomicI64::new(0);
+/// What the task found once its call was over: 1 for each thing as it should be.
+static CALL_LEFT: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+
+/// A range of a comprehension whose body may wait. The first waits, parked, until the second has
+/// run: run one after another, as they were before, it would wait for good.
+extern "C" fn first_waits_for_second(env: i64, from: i64, _to: i64, _thread: i64, _out: i64) -> i64 {
+    if env != TASK_S_OWN.load(Ordering::SeqCst) && lines(env) == ["captured", "by the body"] {
+        READ_A_COPY.fetch_add(1, Ordering::SeqCst);
+    }
+    if threads::in_range_of_task() && threads::task_stop().is_some() {
+        WERE_THE_TASK_S.fetch_add(1, Ordering::SeqCst);
+    }
+    if from != 0 {
+        SECOND_RAN.store(true, Ordering::SeqCst);
+        return 0;
+    }
+    let started = Instant::now();
+    while !SECOND_RAN.load(Ordering::SeqCst) && started.elapsed() < GIVES_UP {
+        clock_sleep(SECONDS / 1000);
+    }
+    FIRST_WAITED.store(if SECOND_RAN.load(Ordering::SeqCst) { 1 } else { 2 }, Ordering::SeqCst);
+    0
+}
+
+/// A task that makes a comprehension of two items, whose body may wait and captures what the task
+/// was given.
+extern "C" fn maps_while_it_waits(env: i64, _thread: i64) -> i64 {
+    TASK_S_OWN.store(env, Ordering::SeqCst);
+    let before = live();
+    let items = list(&["one", "two"]);
+    let made = parallel_map_waiting(items, first_waits_for_second, env, LINES);
+    // The list the ranges wrote into is the task's own block now, in its worker's table.
+    CALL_LEFT[0].store(i64::from(is_own(made)), Ordering::SeqCst);
+    // What it captured is still its own, as it was: nothing was written back.
+    CALL_LEFT[1].store(i64::from(lines(env) == ["captured", "by the body"]), Ordering::SeqCst);
+    heap::free(made);
+    heap::free(items);
+    // The copy lent to the ranges has gone, with nothing of it left.
+    CALL_LEFT[2].store(i64::from(live() == before), Ordering::SeqCst);
+    ENDED
+}
+
+#[test]
+fn a_task_s_comprehension_runs_its_ranges_at_once_on_a_copy_of_what_they_capture() {
+    begin();
+    let given = list(&["captured", "by the body"]);
+    let task = launch_on(own_pool(&WAITING_POOL, 2), maps_while_it_waits, given);
+    heap::free(given);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    assert_eq!(FIRST_WAITED.load(Ordering::SeqCst), 1, "the first range waited for the second in vain");
+    assert_eq!(READ_A_COPY.load(Ordering::SeqCst), 2, "each range reads a copy of what's captured");
+    assert_eq!(WERE_THE_TASK_S.load(Ordering::SeqCst), 2, "each range is noted as its task's");
+    let left: Vec<i64> = CALL_LEFT.iter().map(|left| left.load(Ordering::SeqCst)).collect();
+    assert_eq!(left, [1, 1, 1], "the list is the task's, what it captured is as it was, the copy has gone");
+    finish();
+}
+
+static ONE_WORKER_POOL: OnceLock<&'static Pool> = OnceLock::new();
+static ON_ONE_WORKER: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+
+/// The same two ranges on a pool of one worker, with marks of their own to note in.
+extern "C" fn first_waits_on_one_worker(_env: i64, from: i64, _to: i64, _thread: i64, _out: i64) -> i64 {
+    if from != 0 {
+        ON_ONE_WORKER[1].store(1, Ordering::SeqCst);
+        return 0;
+    }
+    let started = Instant::now();
+    while ON_ONE_WORKER[1].load(Ordering::SeqCst) == 0 && started.elapsed() < GIVES_UP {
+        clock_sleep(SECONDS / 1000);
+    }
+    ON_ONE_WORKER[0].store(ON_ONE_WORKER[1].load(Ordering::SeqCst) + 1, Ordering::SeqCst);
+    0
+}
+
+extern "C" fn maps_on_one_worker(_env: i64, _thread: i64) -> i64 {
+    let items = list(&["one", "two"]);
+    heap::free(parallel_map_waiting(items, first_waits_on_one_worker, 0, LINES));
+    heap::free(items);
+    ENDED
+}
+
+/// The task's worker is the pool's only one: it runs the ranges itself while the task is parked,
+/// each a task that parks too, so the first can still wait for the second.
+#[test]
+fn a_task_s_ranges_run_on_its_own_worker_while_it_s_parked_when_that_s_the_only_one() {
+    begin();
+    let task = launch_on(own_pool(&ONE_WORKER_POOL, 1), maps_on_one_worker, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    assert_eq!(ON_ONE_WORKER[0].load(Ordering::SeqCst), 2, "the first range waited for the second in vain");
+    finish();
+}
+
+static HEAVY_POOL: OnceLock<&'static Pool> = OnceLock::new();
+/// The thread another range than the first ran on, plus one.
+static ANOTHER_RAN_ON: AtomicI64 = AtomicI64::new(0);
+/// The thread the first range ran on, plus one, once another had run elsewhere: -1 if none did.
+static FIRST_RAN_ON: AtomicI64 = AtomicI64::new(0);
+static HEAVY_LEFT: AtomicI64 = AtomicI64::new(0);
+
+/// A range of a comprehension whose body is heavy, which holds its thread. The first waits for
+/// any other to have run, which only another worker can do meanwhile.
+extern "C" fn first_waits_for_another_thread(_env: i64, from: i64, _to: i64, thread: i64, _out: i64) -> i64 {
+    if from != 0 {
+        ANOTHER_RAN_ON.store(thread + 1, Ordering::SeqCst);
+        return 0;
+    }
+    let started = Instant::now();
+    while ANOTHER_RAN_ON.load(Ordering::SeqCst) == 0 && started.elapsed() < GIVES_UP {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let another = ANOTHER_RAN_ON.load(Ordering::SeqCst);
+    FIRST_RAN_ON.store(if another == 0 { -1 } else { thread + 1 }, Ordering::SeqCst);
+    0
+}
+
+extern "C" fn maps_a_heavy_body(_env: i64, _thread: i64) -> i64 {
+    let before = live();
+    let items = list(&["one", "two", "three", "four", "five", "six", "seven", "eight"]);
+    let made = parallel_map_heavy(items, first_waits_for_another_thread, 0, LINES);
+    let own = is_own(made);
+    heap::free(made);
+    heap::free(items);
+    HEAVY_LEFT.store(i64::from(own && live() == before), Ordering::SeqCst);
+    ENDED
+}
+
+#[test]
+fn a_task_s_heavy_comprehension_shares_its_ranges_among_the_workers() {
+    begin();
+    let task = launch_on(own_pool(&HEAVY_POOL, 2), maps_a_heavy_body, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    let (first, another) = (FIRST_RAN_ON.load(Ordering::SeqCst), ANOTHER_RAN_ON.load(Ordering::SeqCst));
+    assert!(first > 0, "no other range ran while the first held its thread");
+    assert_ne!(first, another, "the ranges ran on one thread");
+    assert_eq!(HEAVY_LEFT.load(Ordering::SeqCst), 1, "the list is the task's and nothing else is left");
+    finish();
+}
+
+static MAKING_POOL: OnceLock<&'static Pool> = OnceLock::new();
+/// The string each range made.
+static MADE: [AtomicI64; 4] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+/// How many of them the task could read as its own once the call was over.
+static READ_AS_ITS_OWN: AtomicI64 = AtomicI64::new(0);
+/// The one the task kept until it ended.
+static KEPT: AtomicI64 = AtomicI64::new(0);
+
+/// Makes a string on whichever worker it runs on, and waits a moment, so the ranges take turns.
+extern "C" fn makes_a_string(_env: i64, from: i64, _to: i64, _thread: i64, _out: i64) -> i64 {
+    let made = with(|state| heap::text_address(state, &format!("made by range {from}")));
+    clock_sleep(SECONDS / 1000);
+    if let Some(slot) = usize::try_from(from).ok().and_then(|from| MADE.get(from)) {
+        slot.store(made, Ordering::SeqCst);
+    }
+    0
+}
+
+fn text(block: i64) -> Option<String> {
+    let address = u64::try_from(block).ok()?;
+    with(|state| state.heap.block(address).is_some().then(|| heap::read_block(state, address))).and_then(
+        |read| match read {
+            crate::value::Value::Str(text) => Some(text.to_string()),
+            _ => None,
+        },
+    )
+}
+
+extern "C" fn maps_a_body_that_makes_blocks(_env: i64, _thread: i64) -> i64 {
+    let items = list(&["one", "two", "three", "four"]);
+    heap::free(parallel_map_waiting(items, makes_a_string, 0, LINES));
+    heap::free(items);
+    for (from, made) in MADE.iter().enumerate() {
+        let made = made.load(Ordering::SeqCst);
+        if is_own(made) && text(made) == Some(format!("made by range {from}")) {
+            READ_AS_ITS_OWN.fetch_add(1, Ordering::SeqCst);
+        }
+        // The last is kept: the task's own, it goes to the launcher when the task ends.
+        if from == 3 {
+            KEPT.store(made, Ordering::SeqCst);
+        } else {
+            heap::free(made);
+        }
+    }
+    ENDED
+}
+
+#[test]
+fn what_a_task_s_ranges_make_is_the_task_s_own_and_goes_on_with_it_when_it_ends() {
+    begin();
+    let before = live();
+    let task = launch_on(own_pool(&MAKING_POOL, 2), maps_a_body_that_makes_blocks, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    assert_eq!(READ_AS_ITS_OWN.load(Ordering::SeqCst), 4, "the task reads what each range made as its own");
+    let kept = KEPT.load(Ordering::SeqCst);
+    assert_eq!(text(kept).as_deref(), Some("made by range 3"), "what the task kept came with it");
+    assert_eq!(owner_of(kept), 0, "and is the launcher's own now");
+    heap::free(kept);
+    assert_eq!(live(), before);
+    finish();
+}
+
+static STOPPING_POOL: OnceLock<&'static Pool> = OnceLock::new();
+static SLEEPING: AtomicI64 = AtomicI64::new(0);
+static CUT_SHORT: AtomicI64 = AtomicI64::new(0);
+/// What the stopped task's call gave back, plus one.
+static STOPPED_CALL_GAVE: AtomicI64 = AtomicI64::new(0);
+
+/// Sleeps for a minute, on any worker, unless its task is stopped.
+extern "C" fn sleeps_until_its_task_is_stopped(
+    _env: i64,
+    _from: i64,
+    _to: i64,
+    _thread: i64,
+    _out: i64,
+) -> i64 {
+    SLEEPING.fetch_add(1, Ordering::SeqCst);
+    clock_sleep(60 * SECONDS);
+    if !super::super::super::super::failed() {
+        return 0;
+    }
+    CUT_SHORT.fetch_add(1, Ordering::SeqCst);
+    CRASHED
+}
+
+extern "C" fn maps_until_it_s_stopped(_env: i64, _thread: i64) -> i64 {
+    let items = list(&["one", "two", "three", "four"]);
+    let made = parallel_map_waiting(items, sleeps_until_its_task_is_stopped, 0, LINES);
+    STOPPED_CALL_GAVE.store(made + 1, Ordering::SeqCst);
+    heap::free(items);
+    if made == 0 { CRASHED } else { ENDED }
+}
+
+/// The task is parked waiting for its ranges, which sleep on both workers. Its stop wakes it, it
+/// passes the stop on, and each range's sleep is cut short, so the call ends and the task with it.
+/// A stop that only reached the task would leave it waiting out the ranges' minute.
+#[test]
+fn a_stop_reaches_the_ranges_a_parked_task_waits_for() {
+    begin();
+    let task = launch_on(own_pool(&STOPPING_POOL, 2), maps_until_it_s_stopped, 0);
+    let started = Instant::now();
+    while SLEEPING.load(Ordering::SeqCst) < 4 && started.elapsed() < GIVES_UP {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(SLEEPING.load(Ordering::SeqCst), 4, "the ranges didn't all start");
+    let mut failure = 0;
+    // The block failed, so its task is stopped at once.
+    assert_eq!(launch_end(task, 10 * SECONDS, 1, &mut failure), ENDED);
+    assert_eq!(CUT_SHORT.load(Ordering::SeqCst), 4, "each range's sleep was cut short");
+    assert_eq!(STOPPED_CALL_GAVE.load(Ordering::SeqCst), 1, "the call failed, as its ranges did");
+    assert!(!super::super::super::super::failed(), "the launcher hasn't failed");
+    finish();
+}
+
+static REDUCING_POOL: OnceLock<&'static Pool> = OnceLock::new();
+/// How many positions the reduction is over: four leaves.
+const SUMMED: i64 = 4096;
+static SUM: AtomicI64 = AtomicI64::new(0);
+static LEAVES_AT_ONCE: AtomicI64 = AtomicI64::new(0);
+static LEAVES_RUNNING: AtomicI64 = AtomicI64::new(0);
+
+/// The sum of a range's positions, after a wait in which the other leaves get their turns.
+extern "C" fn sums_positions(_env: i64, from: i64, to: i64, _thread: i64, partial: &mut i64) -> i64 {
+    let running = LEAVES_RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
+    LEAVES_AT_ONCE.fetch_max(running, Ordering::SeqCst);
+    clock_sleep(SECONDS / 100);
+    LEAVES_RUNNING.fetch_sub(1, Ordering::SeqCst);
+    *partial = (from..to).sum();
+    0
+}
+
+extern "C" fn adds(_env: i64, a: i64, b: i64, out: &mut i64) -> i64 {
+    *out = a + b;
+    0
+}
+
+extern "C" fn reduces_while_it_waits(_env: i64, _thread: i64) -> i64 {
+    let items = lists::new(LINES, SUMMED);
+    let mut sum = 0;
+    let how = parallel_reduce_waiting(items, sums_positions, adds, 0, &mut sum);
+    heap::free(items);
+    SUM.store(if how == 0 { sum } else { -1 }, Ordering::SeqCst);
+    ENDED
+}
+
+#[test]
+fn a_task_s_reduction_whose_body_may_wait_runs_its_leaves_at_once() {
+    begin();
+    let task = launch_on(own_pool(&REDUCING_POOL, 2), reduces_while_it_waits, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    assert_eq!(SUM.load(Ordering::SeqCst), (0..SUMMED).sum::<i64>());
+    // Each leaf is a task that parks while it waits, so they all wait at once, on two workers.
+    assert_eq!(LEAVES_AT_ONCE.load(Ordering::SeqCst), 4, "the leaves waited one after another");
+    finish();
+}

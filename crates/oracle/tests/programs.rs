@@ -538,6 +538,147 @@ fn std_collections_runs_from_its_own_source() {
     );
 }
 
+/// Places through a type's own `def []`, as `docs/decisions.md` sets them out. Through the plain
+/// form beside a `def []=`, a change reads the part, changes the copy and writes it back once,
+/// nested too, and once for a method that changes it twice. Through the `ref` form a position is
+/// a place, which `for ref`, `parallel`, a `ref` argument and `=` reach, its empty positions
+/// skipped. What it prints is what the compiled program printed.
+#[test]
+fn a_types_own_index_reads_writes_back_and_gives_positions() {
+    prints(
+        "
+        struct Part:
+            name: str
+            x = 0
+
+            def moved(ref self, by: int):
+                self.x += by
+                self.x += by
+
+        struct Shelf:
+            parts: list[Part]
+            writes = 0
+
+            def [](self, at: int) -> Part:
+                return self.parts[at]
+
+            def []=(ref self, at: int, part: Part):
+                self.parts[at] = part
+                self.writes += 1
+
+        struct Room:
+            shelf: Shelf
+
+            def [](self, name: str) -> Shelf:
+                return self.shelf
+
+            def []=(ref self, name: str, shelf: Shelf):
+                self.shelf = shelf
+
+        struct Slots:
+            items = list[int]()
+            alive = list[bool]()
+
+            def len(self) -> int:
+                return len(self.items)
+
+            def is_live(self, at: int) -> bool:
+                return self.alive[at]
+
+            def [](ref self, at: int) -> int:
+                return self.items[at]
+
+        def bumped(ref value: int):
+            value += 100
+
+        def main(stdout: Stdout):
+            mut shelf = Shelf(parts=[Part(name='bolt'), Part(name='nut')])
+            shelf[0].x += 3
+            shelf[1].moved(2)
+            stdout.print(shelf[0].name, shelf.parts, shelf.writes)
+            mut room = Room(shelf=shelf)
+            room['back'][1].x = 9
+            stdout.print(room.shelf.parts, room.shelf.writes, shelf.writes)
+            mut slots = Slots(items=[1, 2, 3], alive=[True, False, True])
+            for ref slot in slots:
+                slot *= 10
+            for ref slot in parallel(slots):
+                slot += 1
+            bumped(ref slots[1])
+            slots[0] = 7
+            stdout.print(slots.items, len(slots))
+            return
+        ",
+        "bolt [Part(name=\"bolt\", x=3), Part(name=\"nut\", x=4)] 2\n\
+         [Part(name=\"bolt\", x=3), Part(name=\"nut\", x=9)] 3 2\n\
+         [7, 102, 31] 3\n",
+    );
+}
+
+/// A change through a type's own `def []=` that fails partway keeps what it changed before the
+/// failure: the part is written back, since only `lock ... as ref` rolls back. What it prints is
+/// what the compiled program printed, built for dev and with `--release`.
+#[test]
+fn a_change_through_its_own_index_that_fails_partway_is_written_back() {
+    prints(
+        "
+        error Nope:
+            code: int
+
+        struct Part:
+            name: str
+            x: int
+            marks: list[int]
+
+            def shift(ref self, by: int) fails Nope:
+                self.x += by
+                self.marks.append(by)
+                if by > 5:
+                    fail Nope(code=by)
+                self.x += 100
+
+        struct Shelf:
+            parts: dict[str, Part]
+
+            def [](self, key: str) -> Part:
+                return self.parts[key]
+
+            def []=(ref self, key: str, part: Part):
+                self.parts[key] = part
+
+        struct Rack:
+            counts: list[int]
+
+            def [](self, at: int) -> int:
+                return self.counts[at]
+
+            def []=(ref self, at: int, count: int):
+                self.counts[at] = count
+
+        def failing(ref value: int, by: int) fails Nope:
+            value += by
+            fail Nope(code=by)
+
+        def main(stdout: Stdout):
+            mut shelf = Shelf(parts={'bolt': Part(name='bolt', x=1, marks=[])})
+            shelf['bolt'].shift(2) except why:
+                stdout.print('failed', why.code)
+            stdout.print(shelf['bolt'])
+            shelf['bolt'].shift(9) except why:
+                stdout.print('failed', why.code)
+            stdout.print(shelf['bolt'])
+            mut rack = Rack(counts=[1, 2])
+            failing(ref rack[1], by=40) except Nope():
+                stdout.print('failed', rack.counts)
+            return
+        ",
+        "Part(name=\"bolt\", x=103, marks=[2])\n\
+         failed 9\n\
+         Part(name=\"bolt\", x=112, marks=[2, 9])\n\
+         failed [1, 42]\n",
+    );
+}
+
 /// `bytes`: made by `encode` and `bytes(items)`, read by place and by slice, gone through, joined,
 /// compared, written as hex and read back from it, and decoded, with the words the runtime fails
 /// with. `std.base64` runs from its own source over them, with the intrinsics it calls modeled

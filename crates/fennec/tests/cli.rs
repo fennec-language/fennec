@@ -1706,12 +1706,18 @@ fn a_kits_kept_image_is_passed_over_when_its_manifest_or_a_dependency_changes() 
 fn a_run_with_another_output_switch_never_gets_the_program_built_without_it() {
     let dir = scratch("run_switches").unwrap();
     std::fs::write(dir.join("main.fen"), "def main(stdout: Stdout):\n    stdout.print(42)\n").unwrap();
-    // The programs the store holds: a file named for each root, beside its `.sum` and `.functions`.
+    // The programs the store holds, one a root: one written as bytes is a file named for the root,
+    // and one kept as the file that ran is named by the root's `.sum` file, beside the program.
     let stored = || {
         let mut found = 0;
         for version in std::fs::read_dir(dir.join("home/cache")).into_iter().flatten().flatten() {
             let programs = std::fs::read_dir(version.path().join("programs")).into_iter().flatten().flatten();
-            found += programs.filter(|entry| !entry.file_name().to_string_lossy().contains('.')).count();
+            found += programs
+                .filter(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    !name.contains('.') || name.ends_with(".sum")
+                })
+                .count();
         }
         found
     };
@@ -5131,12 +5137,11 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
             .flatten()
             .filter_map(|build| std::fs::read_dir(build.path().join("programs")).ok())
             .flat_map(Iterator::flatten)
-            // A program's hash and its list of functions are kept beside it, under its key.
+            // One a key: one written as bytes is a file named for the key, and one kept as the file
+            // that ran is named by the key's `.sum` file, beside the program.
             .filter(|entry| {
-                let path = entry.path();
-                !path.extension().is_some_and(|ext| {
-                    ext.eq_ignore_ascii_case("sum") || ext.eq_ignore_ascii_case("functions")
-                })
+                let name = entry.file_name().to_string_lossy().into_owned();
+                !name.contains('.') || name.ends_with(".sum")
             })
             .count()
     };

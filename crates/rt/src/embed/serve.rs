@@ -1338,11 +1338,15 @@ pub(crate) enum Parked {
 /// registered with the worker's poll for the wait, under a token of its own, and taken off after.
 /// Only for a task that `can_park`.
 #[cfg(unix)]
-pub(crate) fn park_on_fd(fd: std::os::fd::RawFd, interest: Interest, deadline: Option<Instant>) -> Parked {
+pub(crate) fn park_on_fd(
+    token: Token,
+    fd: std::os::fd::RawFd,
+    interest: Interest,
+    deadline: Option<Instant>,
+) -> Parked {
     if cut_short() {
         return Parked::Cancelled;
     }
-    let token = next_token();
     let mut source = mio::unix::SourceFd(&fd);
     let registered = REGISTRY.with_borrow(|registry| {
         registry.as_ref().is_some_and(|registry| registry.register(&mut source, token, interest).is_ok())
@@ -1350,6 +1354,85 @@ pub(crate) fn park_on_fd(fd: std::os::fd::RawFd, interest: Interest, deadline: O
     if !registered {
         return Parked::Ready;
     }
+    PARKING.set(Some((interest, deadline)));
+    let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
+    REGISTRY.with_borrow(|registry| registry.as_ref().map(|registry| registry.deregister(&mut source)));
+    parked_as(woken)
+}
+
+/// A task about to park on this worker under a token, for whatever ends its wait from another
+/// thread to wake: closing a connection wakes the tasks waiting on it this way, as a worker's poll
+/// isn't told of a close made from this side on every system.
+pub(crate) struct ParkedTask {
+    pool: &'static Pool,
+    at: usize,
+    token: Token,
+}
+
+impl ParkedTask {
+    /// The task running here, which is about to park on `token`. Off a worker there's none.
+    pub(crate) fn here(token: Token) -> Option<ParkedTask> {
+        let (pool, at) = super::parallel::here()?;
+        Some(ParkedTask { pool, at, token })
+    }
+
+    /// Has it look again, if it's still parked on its token. One that's gone on isn't touched: a
+    /// worker's tokens are given out in turn, so no other wait of its has this one.
+    pub(crate) fn wake(&self) {
+        let token = self.token;
+        self.pool.run_on(self.at, Box::new(move |io: &mut Io| io.wake_token(token)));
+    }
+}
+
+/// For tests: how many waits have parked with a copy of their socket registered.
+#[cfg(test)]
+pub(crate) static PARKED_ON_COPIES: AtomicU64 = AtomicU64::new(0);
+
+/// Parks this task until `socket` may be ready for `interest`, or `deadline` passes, where a
+/// socket itself can't be handed to the worker's poll, as on Windows, where the poll takes only its
+/// own kind of socket: a copy of the socket is registered for the wait, under `token`, which
+/// nothing else on this worker waits on, and closed after. A copy is the same connection, so the
+/// poll says when the socket's ready. Only for a task that `can_park`.
+///
+/// **The copy is this call's, and nobody else's.** It's made here, lives in this call on the
+/// task's own stack, and is taken off the poll and closed before the call gives anything back,
+/// whichever way the wait ends: ready, out of time, stopped or cancelled. Each of those resumes
+/// the task, and a task is never dropped while it's parked (`fennec_parked`), so there's no way
+/// out that skips it. The socket stays its owner's throughout: closing a copy doesn't close the
+/// connection, and once the owner closes the socket nothing is left holding it open.
+///
+/// Without it a task's wait on a socket blocked its worker on Windows. A program that was its own
+/// client then waited for ever on one thread: the worker blocked reading an answer was the one
+/// that had to take the connection and give it.
+///
+/// Unix hands the poll the socket itself (`park_on_fd`), so there only tests come this way.
+#[cfg(any(test, not(unix)))]
+pub(crate) fn park_on_copy(
+    token: Token,
+    socket: &std::net::TcpStream,
+    interest: Interest,
+    deadline: Option<Instant>,
+) -> Parked {
+    if cut_short() {
+        return Parked::Cancelled;
+    }
+    let copied = socket.try_clone().ok().map(TcpStream::from_std).and_then(|mut source| {
+        let registered = REGISTRY.with_borrow(|registry| {
+            registry.as_ref().is_some_and(|registry| registry.register(&mut source, token, interest).is_ok())
+        });
+        registered.then_some(source)
+    });
+    // With no copy to be had, or nowhere to register one, it looks again in a moment, parked
+    // meanwhile so its worker goes on with others.
+    let Some(mut source) = copied else {
+        let soon = Instant::now() + Duration::from_millis(1);
+        return match park_on_token(token, Some(soon), true) {
+            Parked::Cancelled => Parked::Cancelled,
+            Parked::Ready | Parked::TimedOut => Parked::Ready,
+        };
+    };
+    #[cfg(test)]
+    PARKED_ON_COPIES.fetch_add(1, Ordering::Relaxed);
     PARKING.set(Some((interest, deadline)));
     let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
     REGISTRY.with_borrow(|registry| registry.as_ref().map(|registry| registry.deregister(&mut source)));

@@ -84,7 +84,7 @@ impl Place {
             b's' => Left::Skipped,
             _ => return None,
         };
-        let mut read = numbers.chunks_exact(NUMBER_BYTES).map(|sevens| {
+        let mut read = numbers.as_chunks::<NUMBER_BYTES>().0.iter().map(|sevens| {
             sevens
                 .iter()
                 .rev()
@@ -107,8 +107,8 @@ impl Place {
     /// The place a string's header says, when it holds one's note.
     fn of_header(words: &[u64]) -> Option<Place> {
         let mut bytes = [0_u8; 8 * HEADER];
-        for (eight, word) in bytes.chunks_exact_mut(8).zip(words) {
-            eight.copy_from_slice(&word.to_le_bytes());
+        for (eight, word) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words) {
+            *eight = word.to_le_bytes();
         }
         let (tag, text) = bytes.split_last()?;
         (words.len() == HEADER && usize::from(*tag) == (usize::from(INLINE) | INLINE_BYTES))
@@ -227,10 +227,8 @@ struct Change {
 fn change_for(items: &[u64], place: Place) -> Option<Change> {
     let count = items.len() / HEADER;
     let places = || {
-        items
-            .chunks_exact(HEADER)
-            .enumerate()
-            .filter_map(|(at, header)| Some((at, Place::of_header(header)?)))
+        let headers = items.as_chunks::<HEADER>().0.iter().enumerate();
+        headers.filter_map(|(at, header)| Some((at, Place::of_header(header)?)))
     };
     let last = items.rchunks_exact(HEADER).next().and_then(Place::of_header);
     if let Some(last) = last.filter(|last| last.is_where(place)) {
@@ -290,8 +288,8 @@ fn noted_in_place(state: &mut State, notes: i64, place: Place) -> Option<i64> {
     // One more on the end is what can move the list, so it comes before anything is written.
     let grows = change.on_the_end && change.taken_out.is_none();
     let list = if grows { super::lists::with_one_more(state, notes)? } else { notes };
-    let last = if grows { count } else { count.checked_sub(1)? };
-    if !grows && item(last).end > room {
+    let at_end = if grows { count } else { count.checked_sub(1)? };
+    if !grows && item(at_end).end > room {
         return None;
     }
     let Some(block) = u64::try_from(list).ok().and_then(|address| state.heap.block_mut(address)) else {
@@ -304,10 +302,10 @@ fn noted_in_place(state: &mut State, notes: i64, place: Place) -> Option<i64> {
     }
     if let Some(gone) = change.taken_out {
         // The places after the one taken out move down one, and the new one takes the last's.
-        block.copy_within(item(gone).end..item(last).end, item(gone).start);
+        block.copy_within(item(gone).end..item(at_end).end, item(gone).start);
     }
     if change.on_the_end
-        && let Some(header) = block.get_mut(item(last))
+        && let Some(header) = block.get_mut(item(at_end))
     {
         header.copy_from_slice(&place.header());
     }
@@ -342,8 +340,8 @@ fn noted_anew(state: &mut State, notes: i64, place: Place) -> i64 {
         }
     }
     let element = super::text::string_element(state);
-    let list = Value::list(all.into_iter().map(Value::Str).collect());
-    let made = super::lists::write_list(state, &element, &list).unwrap_or(notes);
+    let anew = Value::list(all.into_iter().map(Value::Str).collect());
+    let made = super::lists::write_list(state, &element, &anew).unwrap_or(notes);
     if let Ok(address) = u64::try_from(notes)
         && address != 0
         && made != notes
@@ -548,7 +546,8 @@ mod tests {
     fn kept(places: &[(u32, u64)], note_every: usize) -> Vec<(Option<u32>, u64)> {
         // A place is how it was left and where it starts, or `None` for the count; a note of the
         // program's is `None` altogether.
-        let mut all: Vec<Option<(Option<(bool, u32)>, u64)>> = Vec::new();
+        type Noted = Option<(Option<(bool, u32)>, u64)>;
+        let mut all: Vec<Noted> = Vec::new();
         for (number, (start, times)) in places.iter().enumerate() {
             for _ in 0..*times {
                 let here = Some((number == 0, *start));
@@ -595,7 +594,7 @@ mod tests {
                     assert_eq!(held, kept(&places, note_every), "{headers} {note_every} {places:?}");
                     let own: Vec<String> =
                         with(|state| texts(state, notes)).iter().map(ToString::to_string).collect();
-                    let added = if note_every == 0 { 0 } else { places.len() / note_every };
+                    let added = places.len().checked_div(note_every).unwrap_or(0);
                     assert_eq!(own.len(), added, "{own:?}");
                     assert!(own.iter().all(|note| note.starts_with("a note after place ")), "{own:?}");
                     read.push(with(|state| every_text(state, notes)));

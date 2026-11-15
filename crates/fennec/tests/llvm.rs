@@ -670,6 +670,24 @@ fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::R
     Ok(())
 }
 
+/// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
+/// `mine.visits`, `mine = other` and then `mine.visits[key] = fresh` wrote where the lookup had
+/// found the key: in the dict `mine` held before, which the caller still had, so the caller's
+/// value changed and the new dict never got the key. For a struct's value and a plain word, and
+/// where nothing else held the first dict, so the entry written was in a block already let go of.
+/// It prints what the reference evaluator prints, and what's left at the end is nothing.
+#[test]
+fn a_store_after_its_struct_is_replaced_goes_into_the_dict_there_now() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_in_place_and_boxed(
+        "store_after_dict_replaced",
+        include_str!("fixtures/store_after_dict_replaced.fen"),
+        include_str!("fixtures/store_after_dict_replaced.out"),
+    )
+}
+
 /// A struct holding a `u64`, an `f32`, `bytes`, a set, a text, a `str?` and a dict is held in place,
 /// as are a program's own types named `Option`, `Match`, `Table` and `Id`: each compared with `==`,
 /// printed, copied and changed, its copy unchanged, and used as a dict's value, after other values

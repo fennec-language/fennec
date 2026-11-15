@@ -152,9 +152,7 @@ fn lower_from(
     let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
     structs::add_copies(&context, &mut defs, &mut enums);
     take_what_was_found(&mut program, &context);
-    program.structs = defs;
-    program.enums = enums;
-    program.errors = errors;
+    (program.structs, program.enums, program.errors) = (defs, enums, errors);
     crate::arrays::spill_big_arrays(&mut program);
     program
 }

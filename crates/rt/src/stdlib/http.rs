@@ -790,7 +790,7 @@ pub(crate) mod tls {
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
     use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection, StreamOwned};
 
-    use super::super::net::{Failure, SecureStream, ServerSession, TlsServer, Transport};
+    use super::super::net::{Failure, SecureStream, ServerSession, TlsServer, Transport, Waits, Wanted};
     use super::{Secure, failure_of};
 
     impl Secure for StreamOwned<ClientConnection, TcpStream> {
@@ -955,11 +955,19 @@ pub(crate) mod tls {
             Ok(Box::new(Session(connection)))
         }
 
-        fn accepted(&self, tcp: TcpStream, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure> {
+        fn accepted(
+            &self,
+            tcp: TcpStream,
+            timeout: Duration,
+            waits: Option<Waits<'_>>,
+        ) -> Result<Box<dyn SecureStream>, Failure> {
             let mut connection = ServerConnection::new(Arc::clone(&self.0))
                 .map_err(|error| Failure::Tls(error.to_string()))?;
             let mut tcp = tcp;
-            shake_hands(&mut connection, &mut tcp, timeout)?;
+            match waits {
+                Some(waits) => shake_hands_waiting(&mut connection, &mut tcp, timeout, waits)?,
+                None => shake_hands(&mut connection, &mut tcp, timeout)?,
+            }
             Ok(Box::new(Buffered(BufReader::new(StreamOwned::new(connection, tcp)))))
         }
     }
@@ -1047,6 +1055,41 @@ pub(crate) mod tls {
         }
         tcp.set_read_timeout(None).map_err(|error| Failure::of(&error, None))?;
         tcp.set_write_timeout(None).map_err(|error| Failure::of(&error, None))?;
+        Ok(())
+    }
+
+    /// Drives a handshake on a socket that doesn't block. Wherever it can't go on, `waits` waits
+    /// until the socket can take what the handshake has to send, or has more of the other side's
+    /// to read, and says true when there's no more waiting to do. Nothing here blocks, so a
+    /// handshake holds no thread however long the other side takes over it.
+    fn shake_hands_waiting<C>(
+        connection: &mut C,
+        tcp: &mut TcpStream,
+        timeout: Duration,
+        waits: Waits<'_>,
+    ) -> Result<(), Failure>
+    where
+        C: std::ops::DerefMut<Target = rustls::ConnectionCommon<<C as Handshaking>::Data>> + Handshaking,
+    {
+        // The handshake, and then whatever of it is still to send: the last of it is the server's.
+        while connection.is_handshaking() || connection.wants_write() {
+            let stepped = if connection.is_handshaking() {
+                connection.complete_io(tcp).map(drop)
+            } else {
+                connection.write_tls(tcp).map(drop)
+            };
+            match stepped {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    let wanted = if connection.wants_write() { Wanted::ToWrite } else { Wanted::ToRead };
+                    if waits(tcp, wanted) {
+                        return Err(Failure::TimedOut(timeout));
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => return Err(handshake_failure(&error, timeout)),
+            }
+        }
         Ok(())
     }
 

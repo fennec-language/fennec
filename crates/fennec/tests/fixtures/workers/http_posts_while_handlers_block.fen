@@ -1,0 +1,34 @@
+# Many clients in `parallel` rounds post to a server served from a task in the same program, whose
+# handler asks the disk something, which takes one of the runtime's blocking threads for a moment.
+# A request holds a blocking thread only while its connection opens, and parks for its answer, so
+# the handlers always find one. A request once held a blocking thread until it was answered: as
+# many clients as there were such threads held them all, no handler could run, and every request
+# timed out. Each gives up after 20 seconds, so that fails rather than hangs.
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response
+
+CLIENTS = 300
+
+# Answers a request once the disk has said whether this folder is there.
+def looked(fs: Fs, request: Request) -> Response:
+    there = fs.exists(".") except why:
+        return Response(status=500, body=f"{why}".encode())
+    return Response(status=201, body=f"looked for {request.path}: {there}".encode())
+
+# What the server answered post number `number`, or why it failed.
+def asked(net: Net, port: int, number: int) -> str:
+    got = net.post(f"http://127.0.0.1:{port}/n{number}", body="x", timeout=20s) except why:
+        return f"failed: {why}"
+    return got.text()
+
+def main(net: Net, fs: Fs, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => server.serve((request) => looked(fs, request)))?:
+            answers = [asked(net, port=port, number=number) for number in parallel(range(CLIENTS))]
+            wrong = [answer for answer in answers if not answer.startswith("looked for /n")]
+            stdout.print(CLIENTS - len(wrong), "of", CLIENTS, "answered")
+            if len(wrong) > 0:
+                stdout.print(wrong)
+            server.close()
+    stdout.print("stopped")

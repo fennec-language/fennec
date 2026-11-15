@@ -676,6 +676,59 @@ fn fail_and_success_are_written_out() {
     );
 }
 
+/// A function nesting `depth` `with` blocks, each a task's launch or a channel, with a `?` at the
+/// bottom.
+fn nested_withs(depth: usize, launches: bool) -> String {
+    let mut lines = vec![
+        "from std.concurrent import Closed, Crashed, Inbox, channel\n\n\
+         def worker(inbox: Inbox[int]) fails Closed:\n    mut total = 0\n    for n in inbox:\n        total += n\n    \
+         assert total >= 0\n    return\n\n\
+         def main(stdout: Stdout) fails Closed | Crashed:"
+            .to_owned(),
+    ];
+    for at in 0..depth {
+        let pad = "    ".repeat(at + 1);
+        if launches {
+            lines.push(format!("{pad}with launch((inbox) => worker(inbox)?, inbox_size=4)? as w{at}:"));
+        } else {
+            lines.push(format!("{pad}with channel[int](size=1) as w{at}:"));
+        }
+    }
+    let pad = "    ".repeat(depth + 1);
+    lines.push(if launches { format!("{pad}w0.send(1)?") } else { format!("{pad}w0.sender().send(1)?") });
+    lines.push("    stdout.print(1)\n    return\n".to_owned());
+    lines.join("\n")
+}
+
+/// A `with` block's cleanup is written once, however many ways what's inside it fails, and one
+/// inside another is one failure for the outer one to clean up after. So `main` grows by the same
+/// amount for each `with` it nests, one to ten deep: with seven `with launch`es it was 174,893
+/// locals, each doubling twice what's inside it.
+#[test]
+fn nested_with_blocks_grow_by_the_same_amount_each() {
+    for launches in [true, false] {
+        let mut sizes = Vec::new();
+        for depth in 1..=10 {
+            let program = lowered(&nested_withs(depth, launches)).unwrap();
+            let main = program.functions.iter().find(|function| function.name == "main").unwrap();
+            let insts: usize = main.blocks.iter().map(|block| block.insts.len()).sum();
+            sizes.push((main.locals.len(), main.blocks.len(), insts));
+        }
+        let steps: Vec<(usize, usize, usize)> = sizes
+            .windows(2)
+            .filter_map(|pair| match pair {
+                [(locals, blocks, insts), (more_locals, more_blocks, more_insts)] => {
+                    Some((more_locals - locals, more_blocks - blocks, more_insts - insts))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(steps.windows(2).all(|pair| matches!(pair, [a, b] if a == b)), "launches {launches}: {sizes:?}");
+        // A few dozen locals a level, not thousands.
+        assert!(sizes.last().is_some_and(|(locals, _, _)| *locals < 1_000), "launches {launches}: {sizes:?}");
+    }
+}
+
 #[test]
 fn question_mark_leaves_with_the_error() {
     let source = format!(

@@ -222,14 +222,14 @@ fn an_else_ends_a_chain_at_a_missing_or_failed_step() {
 #[test]
 fn what_it_doesnt_model_is_refused_by_name() {
     let (printed, ended) = ran("
-        from std import toml
+        from std import compress
 
         def main(stdout: Stdout):
             stdout.print('before')
-            stdout.print(toml.dumps({'a': 1}))
+            stdout.print(compress.gzip(bytes([1, 2])))
         ");
     assert_eq!(printed, "");
-    assert_eq!(ended, Ended::Unsupported("std.toml.dumps".to_owned()));
+    assert_eq!(ended, Ended::Unsupported("std.compress.gzip".to_owned()));
     let (_, ended) = ran("
         def main(stdout: Stdout, process: Process):
             stdout.print('hi')
@@ -911,6 +911,61 @@ fn json_runs_a_types_own_serialize_and_deserialize() {
         "{\"2\": \"two\", \"10\": \"ten\"} [(2, \"two\"), (10, \"ten\")]\n\
          [[1, 2], [3, 4]]\n\
          `[1]` has 1 cell, but the first row has 2\n",
+    );
+}
+
+/// `toml.dumps` is the runtime's, written in Rust, and the oracle runs `std.toml`'s own writer,
+/// written in Fennec, in its place, through each value's `serialize`: so the two are held to each
+/// other. Floats are written by `std.json`'s helper, run from its source. What it prints is what
+/// the compiled program printed.
+#[test]
+fn toml_dumps_runs_std_tomls_own_writer() {
+    prints(
+        "
+        from std import toml
+
+        struct Limit:
+            name: str
+            most: float
+
+        struct Server:
+            name: str
+            port: int
+            tags: list[str]
+            limits: dict[str, float]
+            rules: list[Limit]
+            owner: Limit
+
+        def main(stdout: Stdout):
+            rules = [Limit(name='cpu', most=0.5), Limit(name='mem \\'hot\\'', most=2.0)]
+            server = Server(name='den', port=8080, tags=['a', 'b c'], limits={'cpu': 0.5, 'mem': 2.0}, rules=rules, owner=Limit(name='kit', most=1.0))
+            stdout.write(toml.dumps(server))
+            stdout.print('---')
+            stdout.write(toml.dumps({'title': 'fox \\'kit\\'', 'count': '3'}))
+            return
+        ",
+        "name = \"den\"\n\
+         port = 8080\n\
+         tags = [\"a\", \"b c\"]\n\
+         \n\
+         [limits]\n\
+         cpu = 0.5\n\
+         mem = 2.0\n\
+         \n\
+         [[rules]]\n\
+         name = \"cpu\"\n\
+         most = 0.5\n\
+         \n\
+         [[rules]]\n\
+         name = \"mem \\\"hot\\\"\"\n\
+         most = 2.0\n\
+         \n\
+         [owner]\n\
+         name = \"kit\"\n\
+         most = 1.0\n\
+         ---\n\
+         title = \"fox \\\"kit\\\"\"\n\
+         count = \"3\"\n",
     );
 }
 

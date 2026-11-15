@@ -139,6 +139,7 @@ std_html.fen
 std_html_hostile.fen
 std_io.fen
 std_json.fen
+std_log.fen
 std_long_input_errors.fen
 std_net_hostile.fen
 std_odds.fen
@@ -172,6 +173,7 @@ text_contains.fen
 text_native.fen
 times.fen
 tokenizer.fen
+toml_hostile.fen
 tree_values.fen
 trees.fen
 unions.fen

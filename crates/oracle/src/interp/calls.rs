@@ -80,6 +80,11 @@ const BUILT_IN_TYPES: &[&str] = &[
     "u32", "u64", "f32", "f64",
 ];
 
+/// The standard library's readers and writers the runtime has in Rust, each with the one
+/// written in Fennec beside it that the oracle runs in its place.
+const NATIVE_FORMATS: &[(&str, &str)] =
+    &[("std.toml.dumps", "std.toml.native_dumps"), ("std.toml.loads", "std.toml.native_loads")];
+
 /// The builtin functions the oracle models, and the ones it knows it doesn't.
 const BUILTINS: &[&str] = &[
     "len",
@@ -233,6 +238,10 @@ impl Interp {
                     Some(from) if !self.is_bound(name) && super::library::has_function(from) => {
                         Target::Builtin(from.clone())
                     }
+                    Some(from) if !self.is_bound(name) => match self.native_format(from) {
+                        Some(found) => self.named_target(&found, callee.span)?,
+                        None => return unsupported(from.clone()),
+                    },
                     Some(from) => return unsupported(from.clone()),
                     None => return unsupported(format!("`{name}[...]()`")),
                 },
@@ -329,10 +338,11 @@ impl Interp {
         if matches!(name, "InvalidValue" | "ParseError") {
             return Ok(Target::Builtin(name.to_owned()));
         }
-        // An intrinsic the standard library's own code calls, which the oracle models in
-        // `library.rs`: a module run from its source names it `intrinsics.name`.
-        if let Some(intrinsic) = name.strip_prefix("intrinsics.") {
-            let path = format!("std.intrinsics.{intrinsic}");
+        // A function the standard library's own code calls that the oracle models in
+        // `library.rs`, an intrinsic or one of a module modeled on its own: a module run from its
+        // source names it `module.name`, as `intrinsics.text_byte` or `json.quoted`.
+        if let Some((module, function)) = name.split_once('.') {
+            let path = format!("std.{module}.{function}");
             if super::library::has_function(&path) {
                 return Ok(Target::Builtin(path));
             }
@@ -350,9 +360,20 @@ impl Interp {
             if super::library::has_function(from) {
                 return Ok(Target::Builtin(from.clone()));
             }
+            // `toml.loads` imported by name, run as `std.toml`'s own reader, as `attr_target` says.
+            if let Some(found) = self.native_format(from) {
+                return self.named_target(&found, span);
+            }
             return unsupported(from.clone());
         }
         unsupported(format!("calling `{name}`"))
+    }
+
+    /// What the tables call the reader or writer written in Fennec the oracle runs in place of
+    /// the runtime's `path`, as `NATIVE_FORMATS` pairs them, when its module is run from source.
+    fn native_format(&self, path: &str) -> Option<String> {
+        let (_, native) = NATIVE_FORMATS.iter().find(|(called, _)| *called == path)?;
+        self.program.from_std.get(*native).cloned()
     }
 
     pub(crate) fn func_target(&self, value: Value) -> Run<Target> {
@@ -408,6 +429,13 @@ impl Interp {
                 // `math.dot(...)`, of a module run from its own source.
                 if let Some(found) = self.program.from_std.get(&path) {
                     return self.named_target(&found.clone(), expr.span).map(Some);
+                }
+                // `toml.dumps` and `toml.loads` are the runtime's, written in Rust; `std.toml`'s
+                // own reader and writer, written in Fennec, which the compiler uses for a type
+                // with its own `def serialize`, are run in their place, so the two are held to
+                // each other.
+                if let Some(found) = self.native_format(&path) {
+                    return self.named_target(&found, expr.span).map(Some);
                 }
                 if super::library::has_function(&path) {
                     return Ok(Some(Target::Builtin(path)));

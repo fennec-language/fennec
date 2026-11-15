@@ -46,6 +46,9 @@ pub(crate) fn has_function(path: &str) -> bool {
             | "std.intrinsics.text_part"
             | "std.intrinsics.text_of_code"
             | "std.intrinsics.bytes_text"
+            | "std.intrinsics.text_plain_end"
+            | "std.intrinsics.text_escape_at"
+            | "std.intrinsics.text_same_at"
             | "std.intrinsics.stop"
             | "std.intrinsics.bytes_builder"
             | "std.intrinsics.bytes_push"
@@ -155,6 +158,28 @@ fn intrinsic(name: &str, args: &[Value], span: Span) -> Run<Value> {
                 None => unsupported("`bytes_text` at places outside the bytes"),
             }
         }
+        // From byte `at` on, the first byte a JSON reader looks closer at, `"`, `\` or a control
+        // character, or the first JSON writes escaped or that starts a character it might, which
+        // adds DEL and 194, the first byte of U+0080 to U+00BF. Or the text's size.
+        ("text_plain_end" | "text_escape_at", [Value::Str(text), Value::Int(at)]) => {
+            let Some(rest) = usize::try_from(*at).ok().and_then(|at| text.as_bytes().get(at..)) else {
+                return unsupported(format!("`{name}` from past the text's end"));
+            };
+            let escaped = |byte: u8| byte == b'"' || byte == b'\\' || byte < 0x20;
+            let found = rest.iter().position(|&byte| {
+                escaped(byte) || (name == "text_escape_at" && (byte == 0x7f || byte == 194))
+            });
+            let size = text.len();
+            Ok(Value::Int(super::as_int(found.map_or(size, |found| size - rest.len() + found))))
+        }
+        // Whether the text's bytes from `start` begin with all of `word`'s: false from a negative
+        // start, or where `word` would run past the end.
+        ("text_same_at", [Value::Str(text), Value::Int(start), Value::Str(word)]) => Ok(Value::Bool(
+            usize::try_from(*start)
+                .ok()
+                .and_then(|start| text.as_bytes().get(start..))
+                .is_some_and(|rest| rest.starts_with(word.as_bytes())),
+        )),
         ("stop", [Value::Str(message)]) => crash(message.clone(), span),
         // An empty byte builder, which the writing intrinsics, in `builtins.rs`, write into.
         ("bytes_builder", []) => Ok(Value::Bytes(Vec::new())),

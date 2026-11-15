@@ -185,6 +185,8 @@ const RUN_FROM_SOURCE: &[&str] = &[
     "template",
     "sql",
     "io",
+    "toml",
+    "json",
 ];
 
 /// The capabilities `main` may take whose type a module run from its own source declares, which

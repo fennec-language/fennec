@@ -83,7 +83,13 @@ pub(crate) fn option_case_typed(ty: Option<&Type>, case: &str) -> Option<Value> 
 impl Interp {
     /// `json.dumps(value)` and `json.loads[T](text)`, with their named arguments.
     pub(crate) fn json_call(&mut self, name: &str, given: Vec<ArgVal>, expr: &'static Expr) -> Run<Value> {
-        if OPTION_ENUMS.iter().any(|(own, _)| self.program.types.contains_key(*own)) {
+        // `std.json`'s own option enums are in the tables when it's run from its source, for the
+        // helpers other modules call; a program's own type of their name isn't.
+        let own_type = |name: &str| {
+            self.program.types.contains_key(name)
+                && self.program.from_std.get(&format!("std.json.{name}")).map(String::as_str) != Some(name)
+        };
+        if OPTION_ENUMS.iter().any(|(own, _)| own_type(own)) {
             return unsupported("a program's own type named as one of std.json's");
         }
         let ExprKind::Call { args, .. } = &expr.kind else { return unsupported(name.to_owned()) };

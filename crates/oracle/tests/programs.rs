@@ -231,10 +231,10 @@ fn what_it_doesnt_model_is_refused_by_name() {
     assert_eq!(printed, "");
     assert_eq!(ended, Ended::Unsupported("std.toml.dumps".to_owned()));
     let (_, ended) = ran("
-        def main(stdout: Stdout, net: Net):
+        def main(stdout: Stdout, process: Process):
             stdout.print('hi')
         ");
-    assert_eq!(ended, Ended::Unsupported("the capability Net".to_owned()));
+    assert_eq!(ended, Ended::Unsupported("the capability Process".to_owned()));
 }
 
 #[test]

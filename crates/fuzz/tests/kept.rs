@@ -1,8 +1,9 @@
 //! A failure stays fixed: every input the fuzzer has kept runs clean. A short fixed run of each
 //! target checks the fuzzer itself still works, and that nothing it would soon find has crept in.
 
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Whether a file beside the inputs is an output pinned for one.
 fn pinned_output(path: &Path) -> bool {
@@ -11,6 +12,25 @@ fn pinned_output(path: &Path) -> bool {
 
 fn fuzz() -> Command {
     Command::new(env!("CARGO_BIN_EXE_fennec-fuzz"))
+}
+
+/// How a `fennec-fuzz run` ended, for a failing test to say: its exit code, or the signal that
+/// stopped it from outside, the target it was in then, and all it wrote, standard error too.
+fn ended(output: &std::process::Output) -> String {
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let said = String::from_utf8_lossy(&output.stderr);
+    // Each target says it's starting, and then what it ran: the last to start with nothing
+    // after it is the one the run ended in.
+    let last = printed.lines().rev().find_map(|line| line.strip_suffix(": starting"));
+    let finished = |target: &str| {
+        printed.lines().any(|line| line.starts_with(&format!("{target}: ")) && line.contains(" inputs, "))
+    };
+    let when = match last {
+        Some(target) if !finished(target) => format!("while {target} was running"),
+        Some(target) => format!("after {target} finished"),
+        None => "before any target started".to_owned(),
+    };
+    format!("`fennec-fuzz run` ended with {} {when}\n--- printed\n{printed}--- said\n{said}", output.status)
 }
 
 #[test]
@@ -52,7 +72,7 @@ fn a_short_run_of_every_target_finds_nothing() {
         .unwrap();
     let printed = String::from_utf8_lossy(&output.stdout).into_owned();
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(output.status.success(), "{printed}");
+    assert!(output.status.success(), "{}", ended(&output));
     let targets = [
         "lexer",
         "parser",
@@ -118,6 +138,32 @@ fn every_program_to_start_from_prints_what_is_pinned() {
             String::from_utf8_lossy(&output.stderr),
         );
     }
+}
+
+/// A run stopped from outside says so, with the signal and the target it was in, so a failure of
+/// the test above shows whether the run crashed or was killed.
+#[test]
+fn a_run_stopped_from_outside_says_where() {
+    let mut child = fuzz()
+        .args(["run", "--seed", "1", "--inputs", "300", "lexer"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut printed = BufReader::new(child.stdout.take().unwrap());
+    let mut first = String::new();
+    printed.read_line(&mut first).unwrap();
+    assert_eq!(first, "lexer: starting\n");
+    child.kill().unwrap();
+    let mut rest = Vec::new();
+    printed.read_to_end(&mut rest).unwrap();
+    let mut said = Vec::new();
+    child.stderr.take().unwrap().read_to_end(&mut said).unwrap();
+    let status = child.wait().unwrap();
+    let stdout = [first.into_bytes(), rest].concat();
+    let shown = ended(&std::process::Output { status, stdout, stderr: said });
+    assert!(shown.contains("signal: 9 (SIGKILL)"), "{shown}");
+    assert!(shown.contains("while lexer was running") || shown.contains("after lexer finished"), "{shown}");
 }
 
 #[test]

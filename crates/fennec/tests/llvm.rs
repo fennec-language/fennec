@@ -6630,8 +6630,9 @@ fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()
     same_as_expected_in_both_builds("shared_map_walked", include_str!("fixtures/shared_map_walked.fen"))
 }
 
-/// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
-/// comparing what two hold would take a second lock while one is held.
+/// `==` on `shared` values, alone and inside other values: a struct, a list, `in`, `index`, an
+/// enum's case and an optional. They're equal when what they hold is, as decided on 2026-11-14.
+/// Until then they were the same only if they were one value, which is what this pinned.
 const SHARED_SAME: &str = "struct Account:
     total = 0
 
@@ -6659,12 +6660,14 @@ def main(stdout: Stdout):
 ";
 
 #[test]
-fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()> {
+fn shared_values_inside_other_values_are_equal_when_what_they_hold_is() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
+    // What the reference evaluator prints for it too.
     let (printed, ..) = pinned_outcome("shared_same_said", SHARED_SAME)?;
-    let wanted = "True True False False True\nTrue False\nTrue False False True 1\nTrue False\nTrue False\nTrue False\n";
+    let wanted =
+        "True True True False False\nTrue True\nTrue True True True 0\nTrue True\nTrue True\nTrue False\n";
     assert_eq!(printed, wanted);
     same_as_expected_in_both_builds("shared_same", SHARED_SAME)?;
     // A type's own `def ==` still decides, wherever it's written.
@@ -18991,6 +18994,122 @@ fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the next test builds: `shared` values compared every way.
+const SHARED_EQUAL: &str = r#"from std.concurrent import Crashed
+
+struct Account:
+    total = 0
+
+struct Bank:
+    accounts: list[shared Account]
+
+struct Money:
+    cents: int
+    note: str
+
+    def ==(self, other: Money) -> bool:
+        return self.cents == other.cents
+
+# A type that holds itself, compared through a type's own `==` however deep.
+struct Tree:
+    cost: Money
+    kids: list[Tree]
+
+struct Branch:
+    name: str
+    account: shared Account
+
+def compare_many(first: shared Account, second: shared Account) -> int:
+    mut equal = 0
+    for _ in range(2000):
+        if first == second:
+            equal += 1
+    return equal
+
+def found(accounts: list[shared Account], at: int) -> shared Account?:
+    if at < len(accounts): return accounts[at]
+    return None
+
+def main(stdout: Stdout) fails Crashed:
+    shared ana = Account(total=1)
+    shared ben = Account(total=1)
+    shared cora = Account(total=2)
+    stdout.print(ana == ana, ana == ben, ana == cora, Bank(accounts=[ana]) == Bank(accounts=[ben]))
+    stdout.print(ana != ben, ana != cora, [ana, ben] == [ben, ana], [ana, ben] == [ana, cora], [ana] == [ana, ben])
+    stdout.print((1, ana) == (1, ben), (1, ana) == (1, cora), (2, ana) == (1, ana))
+    everyone = [ana, ben, cora]
+    stdout.print(
+        found(everyone, 0) == found(everyone, 1),
+        found(everyone, 0) == found(everyone, 2),
+        found(everyone, 0) == found(everyone, 9),
+        found(everyone, 9) == found(everyone, 8),
+    )
+    lock cora as ref changed:
+        changed.total = 1
+    stdout.print(ana == cora, Bank(accounts=[ana, ben]) == Bank(accounts=[cora, cora]))
+    one = [Money(cents=1, note="first")]
+    stdout.print(
+        one == [Money(cents=1, note="second")],
+        one == [Money(cents=2, note="first")],
+        one != [Money(cents=1, note="other")],
+    )
+    leaf = Tree(cost=Money(cents=1, note="leaf"), kids=[])
+    grown = Tree(cost=Money(cents=2, note="grown"), kids=[leaf, leaf])
+    stdout.print(grown == Tree(cost=Money(cents=2, note="other"), kids=[leaf, leaf]), grown == leaf, grown.kids == [leaf])
+    # One value on both sides takes its lock once, alone, in a list and inside another `shared` value.
+    shared north = Branch(name="north", account=ana)
+    shared south = Branch(name="north", account=ana)
+    stdout.print(ana in [ana], [ana] == [ana], [ana, ana] == [ana, ben], north == north, north == south, north in [south])
+    # `ana == ben` on one task and `ben == ana` on another, many times over: never ana deadlock.
+    mut here = 0
+    with launch(() => compare_many(ana, second=ben)) as task:
+        here = compare_many(ben, second=ana)
+    stdout.print(here, "done")
+    return
+"#;
+
+/// `==` on two `shared` values compares what they hold, as printing one shows what it holds, and
+/// not which cell each is: equal when what they hold is, one equal to itself, and a change made
+/// under a lock seen by the next comparison. So are a struct, a list, a tuple and an optional
+/// holding one compared, part by part, and a list of a type with its own `==`, which wasn't
+/// lowered, and a type that holds itself, which is compared through a function of its own. Both
+/// locks are held to read while two are compared, taken in the order of their cells: one task
+/// comparing `ana == ben` 2,000 times while `main` compares `ben == ana` ends, on one thread and
+/// on eight. One value on both sides takes its lock once: alone, in a list, and inside another
+/// `shared` value. Native code compared the cells.
+#[test]
+fn shared_values_are_equal_when_what_they_hold_is() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("shared_equal")?;
+    let program = dir.join("shared_equal.fen");
+    std::fs::write(&program, SHARED_EQUAL)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("shared_equal"));
+    let output = executable.to_string_lossy().into_owned();
+    let wanted = "True True False True\nFalse True True False False\nTrue False False\nTrue False False True\nTrue True\nTrue False False\nTrue False False\nTrue True True True True True\n2000 done\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "8"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_COUNTS", "1")
+                .output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{how:?}, {threads} threads: {said}");
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "{how:?}, {threads} threads: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// What the next test builds: failed asserts, each with a `shared` value on a side.
 const SHARED_SHOWN: &str = r#"struct Account:
     total = 0
@@ -19025,8 +19144,8 @@ fn a_failed_assert_shows_what_a_shared_value_holds() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let dir = folder("shared_shown")?;
-    let program = dir.join("shared_shown.fen");
+    let dir = folder("shared_shown_in_asserts")?;
+    let program = dir.join("shared_shown_in_asserts.fen");
     std::fs::write(&program, SHARED_SHOWN)?;
     let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
     std::fs::remove_dir_all(&dir)?;

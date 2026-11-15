@@ -110,6 +110,7 @@ fn lower_from(
         instances: generics::Instances::default(),
         generator_defs: std::cell::RefCell::default(),
         own_texts: std::cell::RefCell::default(),
+        equals: std::cell::RefCell::default(),
         empties: std::cell::RefCell::default(),
         layouts: std::cell::RefCell::default(),
         layout_problems: std::cell::RefCell::default(),
@@ -317,6 +318,9 @@ struct Context<'a> {
     generator_defs: std::cell::RefCell<Vec<crate::GeneratorDef>>,
     /// The types whose own text is asked for by printing something that holds them.
     own_texts: std::cell::RefCell<Vec<crate::OwnText>>,
+    /// The structs and enums a function comparing two of them part by part is made for, or is
+    /// being made for: by its name, `Tree.equal`.
+    equals: std::cell::RefCell<HashSet<String>>,
     /// The empty lists, dicts and sets that fields default to, each a constant: the function
     /// giving it, which a value built with the default reads rather than make one of its own.
     empties: std::cell::RefCell<Vec<Function>>,

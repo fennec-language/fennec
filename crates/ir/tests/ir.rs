@@ -2838,8 +2838,39 @@ def same(one: Pair, two: Pair) -> bool:
     assert_eq!(text.matches("Pair.==").count(), 2, "{text}");
 }
 
+/// A struct compared part by part goes through a function of its own, so one that holds itself,
+/// as a limb holds limbs, calls it from inside it. Written out where it's compared, lowering it
+/// never ended: the compiler overflowed its stack.
 #[test]
-fn equality_through_a_type_with_its_own_def_eq_compares_each_field_or_isnt_lowered_yet() {
+fn a_type_that_holds_itself_is_compared_through_a_function_of_its_own() {
+    let source = "\
+struct Money:
+    cents: int
+
+    def ==(self, other: Money) -> bool:
+        return self.cents == other.cents
+
+struct Limb:
+    cost: Money
+    kids: list[Limb]
+
+def same(one: Limb, two: Limb) -> bool:
+    return one == two
+";
+    let program = lowered(source).unwrap();
+    assert!(program.not_lowered.is_empty(), "{:?}", program.not_lowered);
+    let text =
+        |name: &str| program.functions.iter().find(|function| function.name == name).map(ToString::to_string);
+    assert!(text("same").is_some_and(|same| same.contains("call Limb.equal")), "{:?}", text("same"));
+    let equal = text("Limb.equal").unwrap_or_default();
+    let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
+    assert!(equal.contains("call Money.==") && equal.contains("call Limb.equal"), "{equal}\n{names:?}");
+}
+
+/// `==` on a struct holding a type with its own `def ==` compares each field with it, and `in`
+/// on a list of one asks item by item with it. The second wasn't lowered at first.
+#[test]
+fn equality_through_a_type_with_its_own_def_eq_compares_each_field_and_each_item() {
     let source = "\
 struct Pair:
     a: int
@@ -2856,10 +2887,13 @@ def same(one: Held, two: Held) -> bool:
 def found(pair: Pair, pairs: list[Pair]) -> bool:
     return pair in pairs
 ";
+    // A struct is compared by a function of its own, which compares each field.
     let same = printed(source, "same").unwrap();
-    assert!(same.contains(".pair") && same.contains("Pair.=="), "{same}");
-    let problem = printed(source, "found").unwrap_err();
-    assert!(problem.contains("its own `==`"), "{problem}");
+    assert!(same.contains("call Held.equal"), "{same}");
+    let equal = printed(source, "Held.equal").unwrap();
+    assert!(equal.contains(".pair") && equal.contains("call Pair.=="), "{equal}");
+    let found = printed(source, "found").unwrap();
+    assert!(found.contains("list.len") && found.contains("call Pair.=="), "{found}");
 }
 
 /// Every lowered function whose name starts with `name`, printed.

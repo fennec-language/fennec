@@ -304,6 +304,82 @@ fn a_stop_cuts_a_socket_read_short() {
     finish();
 }
 
+static READ_THROUGH_A_COPY: AtomicI64 = AtomicI64::new(0);
+static SILENT_TO_A_COPY: AtomicI64 = AtomicI64::new(0);
+
+/// Reads a line from a server that never sends one, for the test that waits through a copy.
+extern "C" fn reads_silence_through_a_copy(_env: i64, _thread: i64) -> i64 {
+    let port = u16::try_from(SILENT_TO_A_COPY.load(Ordering::SeqCst)).unwrap_or(0);
+    let read = crate::stdlib::net::fetch_line("127.0.0.1", port);
+    let how = if read.is_err() && super::super::super::failed() { 1 } else { 2 };
+    READ_THROUGH_A_COPY.store(how, Ordering::SeqCst);
+    ENDED
+}
+
+/// A stop cuts short a read that waits through a copy of its socket, as every task's does on
+/// Windows: the task fails as stopped, and goes on to close its connection, whose other side hears
+/// the end. That a wait's copy is closed is the serve tests' to show, since closing a connection
+/// shuts it down whatever copies are left.
+#[test]
+fn a_stop_cuts_short_a_socket_read_that_waits_through_a_copy() {
+    use crate::embed::serve::PARKED_ON_COPIES;
+    begin();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    SILENT_TO_A_COPY.store(i64::from(listener.local_addr().unwrap().port()), Ordering::SeqCst);
+    let before = PARKED_ON_COPIES.load(Ordering::Relaxed);
+    let on_copies = crate::stdlib::net::OnCopies::begin();
+    let task = launch(reads_silence_through_a_copy, 0);
+    // The stop comes once a wait has parked through a copy, so it lands in the wait and not
+    // before it, however long the task takes to get there. Another test's wait can let it by
+    // early: the stop is then tried before the wait, which ends the read the same way.
+    let started = Instant::now();
+    while PARKED_ON_COPIES.load(Ordering::Relaxed) == before && started.elapsed() < Duration::from_secs(30) {
+        std::thread::yield_now();
+    }
+    let mut failure = 0;
+    let ended = if task == 0 { 0 } else { launch_end(task, SECONDS / 20, 0, &mut failure) };
+    drop(on_copies);
+    assert_eq!(ended, ENDED);
+    assert_eq!(READ_THROUGH_A_COPY.load(Ordering::SeqCst), 1, "the read was cut short");
+    let (mut made, _) = listener.accept().unwrap();
+    made.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut rest = Vec::new();
+    assert_eq!(std::io::Read::read_to_end(&mut made, &mut rest).ok(), Some(0), "{rest:?}");
+    drop(listener);
+    finish();
+}
+
+static WRITE_ENDED: AtomicI64 = AtomicI64::new(0);
+static NEVER_READ: AtomicI64 = AtomicI64::new(0);
+
+/// Writes to a server that never reads, on a connection made not to block, until a write fails.
+extern "C" fn writes_to_nobody(_env: i64, _thread: i64) -> i64 {
+    use crate::stdlib::net::{Failure, kept, shut, written_until_it_fails};
+    let port = u16::try_from(NEVER_READ.load(Ordering::SeqCst)).unwrap_or(0);
+    let Ok(handle) = kept("127.0.0.1", port) else { return ENDED };
+    let failed = written_until_it_fails(handle, &vec![7_u8; 64 * 1024]);
+    WRITE_ENDED.store(if matches!(failed, Failure::TimedOut(_)) { 1 } else { 2 }, Ordering::SeqCst);
+    shut(handle);
+    ENDED
+}
+
+/// A stop ends a write that's waiting for room, as it ends a read. The wait for room threw away
+/// what its park came to, so a stopped task's write tried again at once, for ever: it never
+/// waited and never ended, and its block's end never came back.
+#[test]
+fn a_stop_ends_a_write_thats_waiting_for_room() {
+    begin();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    NEVER_READ.store(i64::from(listener.local_addr().unwrap().port()), Ordering::SeqCst);
+    let task = launch(writes_to_nobody, 0);
+    assert_ne!(task, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, SECONDS / 20, 0, &mut failure), ENDED);
+    assert_eq!(WRITE_ENDED.load(Ordering::SeqCst), 1, "the write gave up as a stopped read does");
+    drop(listener);
+    finish();
+}
+
 static INNER: AtomicI64 = AtomicI64::new(0);
 
 extern "C" fn notes_it_ran(_env: i64, _thread: i64) -> i64 {

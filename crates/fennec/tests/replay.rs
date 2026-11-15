@@ -777,6 +777,117 @@ fn served_connections_are_numbered_in_the_order_they_came_every_run_and_in_a_rep
     Ok(())
 }
 
+/// The first thread prints, waits on a channel for a task that's slow to send, and prints what
+/// came. It writes what it's printed before it sleeps on the channel, so its output goes out in
+/// two bursts.
+const PRINTS_BETWEEN_WAITS: &str = "from std.concurrent import Closed, Crashed, Sender, channel
+from std.time import Duration
+
+def late(clock: Clock, to: Sender[int]) fails Closed:
+    clock.sleep(Duration.millis(20))
+    to.send(7)?
+
+def main(stdout: Stdout, clock: Clock) fails Closed | Crashed:
+    with channel[int](size=1) as numbers:
+        with launch(() => late(clock, to=numbers.sender())?)?:
+            stdout.print(\"before\")
+            stdout.print(numbers.receive() else -1)
+";
+
+/// Records `source` once at each of 1 and 4 threads, and replays each recording 25 times at 1
+/// thread and 25 at 4: every replay is the recorded run, output and all. `whole` says whether
+/// what a recording printed is all there.
+fn replays_fifty_times_each(name: &str, source: &str, whole: impl Fn(&str) -> bool) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, source)?;
+    for recorded_threads in ["1", "4"] {
+        let log = dir.join(format!("recorded-{recorded_threads}.log"));
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", recorded_threads);
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = outcome(&record.output_before(DEADLINE)?);
+        assert_eq!(recorded.2, Some(0), "recorded with FENNEC_THREADS={recorded_threads}: {}", recorded.1);
+        assert!(whole(&recorded.0), "recorded with FENNEC_THREADS={recorded_threads}: {}", recorded.0);
+        for round in 0..25 {
+            for threads in ["1", "4"] {
+                let replayed = outcome(
+                    &fennec_command()
+                        .env("FENNEC_THREADS", threads)
+                        .args(["replay", &log.to_string_lossy()])
+                        .current_dir(&dir)
+                        .output_before(DEADLINE)?,
+                );
+                assert_eq!(
+                    replayed, recorded,
+                    "recorded with FENNEC_THREADS={recorded_threads}, replay {round} with {threads}"
+                );
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A thread that printed and then slept on a channel wrote what it had printed first, as its own
+/// burst. In a replay it waits there for its turn instead, without sleeping, and writes it all at
+/// the end as one. The output is the same, so the replay is: it goes by each task's bytes, where
+/// it went by how many times the task wrote, and said the recording had a write it never made.
+/// Fifty replays of each recording, as how a replay's output is cut changes from one to the next.
+#[test]
+fn a_thread_that_printed_before_it_slept_on_a_channel_replays_as_it_ran() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_fifty_times_each("prints-between-waits", PRINTS_BETWEEN_WAITS, |printed| printed == "before\n7\n")
+}
+
+/// Two tasks take turns: each prints a line, sends the other its go, and waits for the other's.
+/// A task writes what it's printed whenever it has to wait, so their bursts interleave, differently
+/// from run to run, and each task's lines are its own.
+const TASKS_TAKING_TURNS: &str = "from std.concurrent import Channel, Closed, Crashed, channel
+
+def turns(stdout: Stdout, name: str, mine: Channel[int], theirs: Channel[int], count: int) fails Closed:
+    mut seen = 0
+    for at in range(count):
+        stdout.print(name, at)
+        theirs.send(at)?
+        seen += mine.receive() else 0
+    stdout.print(name, \"saw\", seen)
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with channel[int](size=1) as to_first:
+        with channel[int](size=1) as to_second:
+            with launch(() => turns(stdout, \"first\", mine=to_first, theirs=to_second, count=200)?)?:
+                with launch(() => turns(stdout, \"second\", mine=to_second, theirs=to_first, count=200)?)?:
+                    pass
+    stdout.print(\"done\")
+";
+
+/// Two tasks whose output interleaves replay byte for byte, fifty times each recording: a replay
+/// cuts each task's bytes at the lengths that task's bursts were recorded with, so one task's
+/// bytes never come out in another's burst, however the replay's tasks happened to cut theirs.
+#[test]
+fn two_tasks_whose_output_interleaves_replay_byte_for_byte() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_fifty_times_each("tasks-taking-turns", TASKS_TAKING_TURNS, |printed| {
+        let lines: Vec<&str> = printed.lines().collect();
+        let of = |name: &str| lines.iter().filter(|line| line.starts_with(name)).count();
+        // Each task's own lines are all there and in its own order, whatever came between them.
+        let in_order = |name: &str| {
+            let mine = lines.iter().filter_map(|line| line.strip_prefix(name)?.trim().parse::<usize>().ok());
+            mine.eq(0..200)
+        };
+        lines.len() == 403
+            && of("first") == 201
+            && of("second") == 201
+            && in_order("first")
+            && in_order("second")
+    })
+}
+
 /// Ranges of a `parallel` call and launched tasks all printing, enough that each task's output
 /// goes out in several bursts, which interleave differently from run to run.
 const TASKS_PRINTING: &str = "from std.concurrent import Crashed

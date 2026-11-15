@@ -666,6 +666,59 @@ mod tests {
         assert!(found >= 3, "{found} programs plan and apply");
     }
 
+    /// The two shapes the review of #1785 found main wrong on, off in random programs until the
+    /// fixes land (`LOOKUPS_SWAPPED`, `PART_CRASHES`): every way of writing them checks, and the
+    /// evaluator prints what the oracle prints.
+    #[test]
+    fn the_review_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, SWAP_KEYS, Shelve, Shelving, Stmt, SwapField, Swapping};
+        let mut body = Vec::new();
+        let mut id = 0;
+        for field in [SwapField::Counts, SwapField::Lists] {
+            for key in 0..SWAP_KEYS.len() {
+                for ways in 0..8_u8 {
+                    id += 1;
+                    body.push(Stmt::Swapped(Swapping {
+                        id,
+                        base: 3,
+                        other_base: 101,
+                        field,
+                        key,
+                        fresh: 40,
+                        called: ways & 1 != 0,
+                        kept: ways & 2 != 0,
+                        owned: ways & 4 != 0,
+                        rounds: 2,
+                    }));
+                }
+            }
+        }
+        for in_list in [false, true] {
+            id += 1;
+            let steps = vec![
+                (9, Shelve::Fill),
+                (0, Shelve::Fill),
+                (1, Shelve::ByHand),
+                (7, Shelve::ByHand),
+                (0, Shelve::Direct),
+                (8, Shelve::Direct),
+            ];
+            body.push(Stmt::Shelved(Shelving { id, in_list, seen: 2, steps }));
+        }
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
     #[test]
     fn what_it_writes_is_a_program_that_builds() {
         for seed in 0_u8..=255 {

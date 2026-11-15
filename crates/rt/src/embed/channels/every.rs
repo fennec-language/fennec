@@ -59,6 +59,7 @@ pub extern "C" fn channel_new_every(size: i64) -> i64 {
         freed: std::sync::atomic::AtomicBool::new(false),
         #[cfg(test)]
         told: std::sync::atomic::AtomicI64::new(0),
+        to_every: true,
     };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));

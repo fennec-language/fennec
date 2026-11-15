@@ -17,6 +17,12 @@
 # What it looks for, in the symbols' demangled names: `sqlite3_` or `rusqlite::` (sqlite), `rustls::`
 # (tls), `ring::` (crypto), and ring's assembly, `ring_core_..._` (ring-assembly), which has no
 # Rust names.
+#
+# A name that's only a second name for other code isn't counted. A release build of the runtime
+# keeps one body for functions that come out the same and every one's name for it, so the code
+# that grows a list of anything two words wide is also named `RawVec<rusqlite::Connection>::grow_one`
+# in a program with nothing of SQLite's in it. What's counted is a name at an address that no name
+# outside what's looked for has too.
 set -u
 fennec=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 known=.github/linkage-known.txt
@@ -34,6 +40,15 @@ trap 'rm -rf "$work"' EXIT
 found() {
   local symbols
   symbols=$(nm -C "$2" 2> /dev/null) || { echo "::error::couldn't read the symbols of $1" >&2; return 1; }
+  symbols=$(awk -v wanted='sqlite3_|rusqlite::|(^|[^A-Za-z0-9_])rustls::|(^|[^A-Za-z0-9_])ring::|ring_core_[0-9_]+_' '
+    { line[NR] = $0 }
+    $1 ~ /^[0-9a-fA-F]+$/ && NF >= 3 {
+      name = $0
+      sub(/^[0-9a-fA-F]+ +[A-Za-z] +/, "", name)
+      if (name ~ wanted) at[NR] = $1; else other[$1] = 1
+    }
+    END { for (n = 1; n <= NR; n++) if (!(n in at) || !(at[n] in other)) print line[n] }
+  ' <<< "$symbols")
   grep -qE 'sqlite3_|rusqlite::' <<< "$symbols" && echo "$1 sqlite"
   grep -qE '(^|[^A-Za-z0-9_])rustls::' <<< "$symbols" && echo "$1 tls"
   grep -qE '(^|[^A-Za-z0-9_])ring::' <<< "$symbols" && echo "$1 crypto"

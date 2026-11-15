@@ -1164,6 +1164,8 @@ mod tests {
         let port = u16::try_from(env).unwrap();
         let heard = crate::stdlib::net::said_and_heard("127.0.0.1", port, b"ping\n");
         assert_eq!(heard, Ok(b"pong\n".to_vec()));
+        // Woken by the poll, not by looking again on a timer, which a wait the poll won't take does.
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
         BOTH_HEARD.fetch_add(1, Ordering::Relaxed);
         0
     }
@@ -1252,6 +1254,9 @@ mod tests {
     static WROTE_IT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
     /// Whether the first of the two tasks to wait is the one that writes.
     static WRITER_FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    /// How many of the two tasks' waits their worker's poll didn't take, which then look again on
+    /// a timer: none, or the test would pass without either being woken by what it waits for.
+    static ON_A_TIMER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     /// More than a socket's buffers hold, so writing it waits for the other side to read.
     const MUCH: usize = 8 << 20;
     /// How long each wait has, so a wake that's lost fails the test rather than hang it.
@@ -1279,6 +1284,7 @@ mod tests {
             let read = line_from_within(handle, WITHIN);
             READ_IT.store(if read == Ok(Some(b"done\n".to_vec())) { 1 } else { 2 }, Ordering::SeqCst);
         }
+        ON_A_TIMER.fetch_max(crate::embed::serve::waits_not_registered_here(), Ordering::SeqCst);
         0
     }
 
@@ -1343,6 +1349,7 @@ mod tests {
             for slot in [&SHARED, &READ_IT, &WROTE_IT] {
                 slot.store(0, Ordering::SeqCst);
             }
+            ON_A_TIMER.store(0, Ordering::SeqCst);
             WRITER_FIRST.store(writer_first, Ordering::SeqCst);
             let (port, server) = serves_the_second_wait_first(writer_first);
             let pool = super::pool::with_threads(1);
@@ -1355,6 +1362,11 @@ mod tests {
             assert_eq!(WROTE_IT.load(Ordering::SeqCst), 1, "the write; writer first: {writer_first}");
             assert_eq!(READ_IT.load(Ordering::SeqCst), 1, "the read; writer first: {writer_first}");
             assert_eq!(waiting, (1, 1), "one has the socket and one a copy; writer first: {writer_first}");
+            assert_eq!(
+                ON_A_TIMER.load(Ordering::SeqCst),
+                0,
+                "a wait the poll didn't take; writer first: {writer_first}"
+            );
         }
         finish();
     }

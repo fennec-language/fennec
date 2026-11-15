@@ -6474,8 +6474,9 @@ fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()
     same_as_expected_in_both_builds("shared_map_walked", include_str!("fixtures/shared_map_walked.fen"))
 }
 
-/// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
-/// comparing what two hold would take a second lock while one is held.
+/// `==` on `shared` values, alone and inside other values: a struct, a list, `in`, `index`, an
+/// enum's case and an optional. They're equal when what they hold is, as decided on 2026-11-14.
+/// Until then they were the same only if they were one value, which is what this pinned.
 const SHARED_SAME: &str = "struct Account:
     total = 0
 
@@ -6503,12 +6504,14 @@ def main(stdout: Stdout):
 ";
 
 #[test]
-fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()> {
+fn shared_values_inside_other_values_are_equal_when_what_they_hold_is() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
+    // What the reference evaluator prints for it too.
     let (printed, ..) = pinned_outcome("shared_same_said", SHARED_SAME)?;
-    let wanted = "True True False False True\nTrue False\nTrue False False True 1\nTrue False\nTrue False\nTrue False\n";
+    let wanted =
+        "True True True False False\nTrue True\nTrue True True True 0\nTrue True\nTrue True\nTrue False\n";
     assert_eq!(printed, wanted);
     same_as_expected_in_both_builds("shared_same", SHARED_SAME)?;
     // A type's own `def ==` still decides, wherever it's written.
@@ -18863,8 +18866,8 @@ fn a_failed_assert_shows_what_a_shared_value_holds() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    let dir = folder("shared_shown")?;
-    let program = dir.join("shared_shown.fen");
+    let dir = folder("shared_shown_in_asserts")?;
+    let program = dir.join("shared_shown_in_asserts.fen");
     std::fs::write(&program, SHARED_SHOWN)?;
     let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
     std::fs::remove_dir_all(&dir)?;

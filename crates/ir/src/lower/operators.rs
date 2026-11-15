@@ -30,7 +30,10 @@ impl Lowering<'_> {
             && let Some(left) =
                 left.filter(|left| self.context.signatures.own_equality(left) || self.holds_shared(left))
         {
-            return self.parts_equal(op, (lhs, rhs), &left, span);
+            // Both sides as one type first, as a value beside an optional of it is an optional.
+            let (lhs, rhs) = self.one_type(lhs, rhs, span)?;
+            let both = type_in(&self.locals, &lhs).unwrap_or(left);
+            return self.parts_equal(op, (lhs, rhs), &both, span);
         }
         let (lhs, rhs) =
             if matches!(op, BinOp::Eq | BinOp::NotEq) { self.one_type(lhs, rhs, span)? } else { (lhs, rhs) };
@@ -42,9 +45,9 @@ impl Lowering<'_> {
 
     /// `==` or `!=` on values holding a `shared` value or a type with its own `def ==`, compared
     /// part by part: a `shared` value by what it holds, a struct by its fields, a list by its
-    /// items, an optional and a tuple by what's in them. Each part is compared with
-    /// [`Self::operate`], so a type's own `==` is called where it has one. A dict, a set or an
-    /// enum holding one isn't lowered yet.
+    /// items, an enum by its case and that case's fields, an optional and a tuple by what's in
+    /// them. Each part is compared with [`Self::operate`], so a type's own `==` is called where
+    /// it has one. A dict or a set holding one isn't lowered yet.
     fn parts_equal(
         &mut self,
         op: BinOp,
@@ -55,7 +58,10 @@ impl Lowering<'_> {
         let (first, second) = (self.in_local(lhs, ty, span), self.in_local(rhs, ty, span));
         let same = match ty {
             held if self.context.is_handle(held) => self.shared_equal((first, second), held, span)?,
-            Type::Named(owner) => self.fields_equal((first, second), owner, span)?,
+            Type::Named(owner) => match self.case_names(owner) {
+                Some(cases) => self.cases_equal((first, second), owner, &cases, span)?,
+                None => self.fields_equal((first, second), owner, span)?,
+            },
             Type::List(item) => self.lists_equal((first, second), item, span)?,
             Type::Optional(inner) => self.optionals_equal((first, second), inner, span)?,
             Type::Tuple(items) => self.tuples_equal((first, second), items, span)?,
@@ -187,6 +193,104 @@ impl Lowering<'_> {
         self.finish(Terminator::Jump(done));
         self.current = done;
         Ok(same)
+    }
+
+    /// Two values of an enum: the same case, and each of that case's fields equal, up to the first
+    /// that differs.
+    fn cases_equal(
+        &mut self,
+        (first, second): (LocalId, LocalId),
+        owner: &str,
+        cases: &[String],
+        span: Span,
+    ) -> Lowered<LocalId> {
+        let same = self.temporary(Type::Bool);
+        self.emit(InstKind::Copy { dest: same, value: Operand::Bool(false) }, span);
+        let done = self.new_block();
+        for case in cases {
+            let fields = self.case_fields(owner, case).ok_or(OWN_EQUALITY)?;
+            let is_case = |lowering: &mut Self, value: LocalId| {
+                let dest = lowering.temporary(Type::Bool);
+                lowering
+                    .emit(InstKind::IsCase { dest, value: Operand::Local(value), case: case.clone() }, span);
+                Operand::Local(dest)
+            };
+            let mine = is_case(self, first);
+            let (this, next) = (self.new_block(), self.new_block());
+            self.finish(Terminator::Branch { cond: mine, then: this, otherwise: next });
+            self.current = this;
+            // The other in another case: they differ, and nothing more is read.
+            let theirs = is_case(self, second);
+            let both = self.new_block();
+            self.finish(Terminator::Branch { cond: theirs, then: both, otherwise: done });
+            self.current = both;
+            self.emit(InstKind::Copy { dest: same, value: Operand::Bool(true) }, span);
+            for (field, held) in fields {
+                let (held_mine, held_theirs) = (self.temporary(held.clone()), self.temporary(held));
+                let read = |value: LocalId, dest: LocalId| InstKind::GetCaseField {
+                    dest,
+                    value: Operand::Local(value),
+                    case: case.clone(),
+                    field: field.clone(),
+                };
+                self.emit(read(first, held_mine), span);
+                self.emit(read(second, held_theirs), span);
+                self.and_equal(same, (Operand::Local(held_mine), Operand::Local(held_theirs)), done, span)?;
+            }
+            self.finish(Terminator::Jump(done));
+            self.current = next;
+        }
+        self.finish(Terminator::Jump(done));
+        self.current = done;
+        Ok(same)
+    }
+
+    /// Whether a list holds an item equal to `sought`, compared part by part: for a list of
+    /// `shared` values, or of a type with its own `==`, which `in` asks about. The first item
+    /// that's equal ends the search.
+    pub(super) fn list_holds(
+        &mut self,
+        list: Operand,
+        sought: Operand,
+        held: &Type,
+        span: Span,
+    ) -> Lowered<LocalId> {
+        let list_type = Type::List(Box::new(held.clone()));
+        let (list, sought) = (self.in_local(list, &list_type, span), self.in_local(sought, held, span));
+        let length = self.temporary(Type::Int);
+        let (name, args) = ("list.len".to_owned(), vec![Operand::Local(list)]);
+        self.emit(InstKind::Builtin { dest: Some(length), name, args, changes: false }, span);
+        let found = self.temporary(Type::Bool);
+        self.emit(InstKind::Copy { dest: found, value: Operand::Bool(false) }, span);
+        // No name a program can write.
+        let names = ["\0sought".to_owned()];
+        let counting = super::lists::Counting {
+            names: &names,
+            first: Operand::Int(0),
+            limit: Operand::Local(length),
+            down: false,
+            items: None,
+            back: None,
+        };
+        self.counting(counting, span, |lowering| {
+            let at = lowering.lookup("\0sought").ok_or("a place in a list has no name")?;
+            let each = lowering.temporary(held.clone());
+            lowering.emit(
+                InstKind::GetIndex { dest: each, object: Operand::Local(list), index: Operand::Local(at) },
+                span,
+            );
+            let pair = (Operand::Local(each), Operand::Local(sought));
+            let equal = lowering.operate(BinOp::Eq, pair, &Type::Bool, span)?;
+            let out = lowering.loops.last().map(|within| within.exit).ok_or("a loop went missing")?;
+            let (yes, next) = (lowering.new_block(), lowering.new_block());
+            lowering.finish(Terminator::Branch { cond: equal, then: yes, otherwise: next });
+            lowering.current = yes;
+            lowering.emit(InstKind::Copy { dest: found, value: Operand::Bool(true) }, span);
+            lowering.finish(Terminator::Jump(out));
+            lowering.current = next;
+            Ok(())
+        })?;
+        Ok(found)
     }
 
     /// Two lists: as long as each other, and each item equal to the one at its place, up to the

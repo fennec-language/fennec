@@ -251,10 +251,10 @@ fn a_replay_writes_the_recorded_bursts_however_its_tasks_cut_their_output() {
     // Both of a task's bursts written as one: the first goes out, and the second waits for the
     // other task's, which was recorded between them.
     let mut at_once = player_of(&log_of(recorded)).unwrap();
-    at_once.takes_output("0", b"aaabbb", &write).unwrap();
+    at_once.takes_output("0", b"aaabbb", write).unwrap();
     assert_eq!(*written.borrow(), [b"aaa".to_vec()]);
     assert!(!whole(&at_once));
-    at_once.takes_output("0.1", b"cc", &write).unwrap();
+    at_once.takes_output("0.1", b"cc", write).unwrap();
     assert_eq!(*written.borrow(), [b"aaa".to_vec(), b"cc".to_vec(), b"bbb".to_vec()]);
     assert!(whole(&at_once));
 
@@ -262,15 +262,15 @@ fn a_replay_writes_the_recorded_bursts_however_its_tasks_cut_their_output() {
     written.borrow_mut().clear();
     let mut in_bytes = player_of(&log_of(recorded)).unwrap();
     for (task, byte) in [("0", b'a'), ("0.1", b'c'), ("0", b'a'), ("0", b'a'), ("0", b'b'), ("0.1", b'c')] {
-        in_bytes.takes_output(task, &[byte], &write).unwrap();
+        in_bytes.takes_output(task, &[byte], write).unwrap();
     }
     assert_eq!(*written.borrow(), [b"aaa".to_vec(), b"cc".to_vec()]);
-    in_bytes.takes_output("0", b"bb", &write).unwrap();
+    in_bytes.takes_output("0", b"bb", write).unwrap();
     assert_eq!(*written.borrow(), [b"aaa".to_vec(), b"cc".to_vec(), b"bbb".to_vec()]);
     assert!(whole(&in_bytes));
 
     // More than was recorded is kept back, for the replay's end to say.
-    in_bytes.takes_output("0", b"x", &write).unwrap();
+    in_bytes.takes_output("0", b"x", write).unwrap();
     assert_eq!(written.borrow().len(), 3);
     assert!(!whole(&in_bytes));
 }

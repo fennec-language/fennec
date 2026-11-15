@@ -23,10 +23,11 @@ how values are held, copied, compared and printed, is modeled here on its own, f
 
 Where a standard library module is written in Fennec, the oracle can run its own source, as
 `fennec-syntax` gives it to the compiler, and model only the functions the runtime writes in Rust
-beneath it. `std.math`, `std.collections`, `std.time`, `std.string`, `std.env`, `std.base64`, `std.random`
-and `std.uuid` are run this way
-(`RUN_FROM_SOURCE` in `src/load.rs`), each loaded when the program imports from it, when a module
-loaded so imports from it, or, for `std.env` and `std.time`, when `main` takes the `Env` or the
+beneath it. These are run this way (`RUN_FROM_SOURCE` in `src/load.rs`): `std.math`,
+`std.collections`, `std.time`, `std.string`, `std.env`, `std.base64`, `std.random`, `std.uuid`,
+`std.cli`, `std.crypto`, `std.csv`, `std.html`, `std.log`, `std.url`, `std.concurrent`,
+`std.postgres`, `std.re`, `std.template` and `std.sql`. Each is loaded when the program imports
+from it, when a module loaded so imports from it, or, for `std.env` and `std.time`, when `main` takes the `Env` or the
 `Clock` whose types they declare. In `std.math`, the vectors, quaternions and matrices, `dot` and
 `lerp` are its Fennec code, and `sqrt`, `floor` and `ceil` are modeled here. In
 `std.collections`, `Deque`, `Heap`, `Counter`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Tree`
@@ -119,9 +120,10 @@ workspace pins.
   oracle was started with, as the compiled program reads its own. No signal comes during a run, so
   `Signals` never says to stop and waiting on one is refused. A `Clock` reads the system's clocks,
   and its `sleep` moves them on without waiting, so a program sees the time it slept pass, and its
-  output can't depend on more than what comes before what. An `Entropy`'s bytes and seeds differ every
-  run, as the compiled program's do, so a program's output can't depend on them. A program that takes
-  any other capability is skipped.
+  output can't depend on more than what comes before what. An `Entropy`'s bytes and seeds differ
+  every run, as the compiled program's do, so a program's output can't depend on them. `main` may
+  take `Net`, and any use of it is refused, so what a program prints without reaching the network,
+  as with no arguments, is still checked. A program that takes any other capability is skipped.
 - The file system an `Fs` reaches is modeled in memory, in `interp/disk.rs`. It starts as the
   folder the program runs in was: for `run` and `coverage`, the folder the oracle runs in, as the
   gate runs the examples from the checkout's root, and for `compare`, a fresh empty one, as the

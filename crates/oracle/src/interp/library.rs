@@ -41,6 +41,12 @@ pub(crate) fn has_function(path: &str) -> bool {
             | "std.json.dumps"
             | "std.json.loads"
             | "std.path.Path"
+            | "std.intrinsics.text_byte"
+            | "std.intrinsics.text_size"
+            | "std.intrinsics.text_part"
+            | "std.intrinsics.text_of_code"
+            | "std.intrinsics.bytes_text"
+            | "std.intrinsics.stop"
     )
 }
 
@@ -84,6 +90,44 @@ pub(crate) fn call(path: &str, args: &[Value], span: Span) -> Run<Value> {
             Ok(Value::Float(start + (end - start) * amount))
         }
         ("std.path.Path", [Value::Str(text)]) => Ok(super::files::path_value(text.clone())),
+        // The intrinsics the standard library's own code calls, each as `intrinsics.fen` says it
+        // works.
+        ("std.intrinsics.text_byte", [Value::Str(text), Value::Int(at)]) => Ok(Value::Int(
+            usize::try_from(*at)
+                .ok()
+                .and_then(|at| text.as_bytes().get(at))
+                .map_or(-1, |byte| i64::from(*byte)),
+        )),
+        ("std.intrinsics.text_size", [Value::Str(text)]) => Ok(Value::Int(super::as_int(text.len()))),
+        ("std.intrinsics.text_part", [Value::Str(text), Value::Int(start), Value::Int(end)]) => {
+            let part = usize::try_from(*start)
+                .ok()
+                .zip(usize::try_from(*end).ok())
+                .and_then(|(start, end)| text.get(start..end));
+            match part {
+                Some(part) => Ok(Value::Str(part.to_owned())),
+                None => unsupported("`text_part` at places that aren't where characters start"),
+            }
+        }
+        ("std.intrinsics.text_of_code", [Value::Int(code)]) => {
+            match u32::try_from(*code).ok().and_then(char::from_u32) {
+                Some(c) => Ok(Value::Str(c.to_string())),
+                None => unsupported("`text_of_code` of a code no character has"),
+            }
+        }
+        ("std.intrinsics.bytes_text", [Value::Bytes(data), Value::Int(start), Value::Int(end)]) => {
+            let part = usize::try_from(*start)
+                .ok()
+                .zip(usize::try_from(*end).ok())
+                .and_then(|(start, end)| data.get(start..end));
+            match part {
+                Some(part) => {
+                    Ok(Value::Str(std::str::from_utf8(part).map(str::to_owned).unwrap_or_default()))
+                }
+                None => unsupported("`bytes_text` at places outside the bytes"),
+            }
+        }
+        ("std.intrinsics.stop", [Value::Str(message)]) => crash(message.clone(), span),
         _ => unsupported(path.to_owned()),
     }
 }

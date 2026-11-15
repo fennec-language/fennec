@@ -115,3 +115,28 @@ fn native_code_declares_no_runtime_function_with_a_struct() {
     }
     assert!(checked > 5, "only {checked} files read: LLVM's sources have moved");
 }
+
+/// Each export for one module takes and gives back what the export for every module does, so
+/// compiled code changes only the name it calls.
+#[test]
+fn a_modules_export_has_the_shape_of_the_one_for_every_module() {
+    let found = exports(include_str!("../src/lib.rs"));
+    let shape = |name: &str| {
+        found
+            .iter()
+            .find(|(export, _, _)| export == name)
+            .map(|(_, args, returns)| (args.clone(), returns.clone()))
+    };
+    for (row, export) in fennec_runtime::MODULE_ENTRIES {
+        // A capability's method, a handle's, or one of the runtime's own functions.
+        let every = if export.ends_with("_capability") {
+            "fennec_native_capability"
+        } else if row.chars().next().is_some_and(char::is_uppercase) {
+            "fennec_net_call"
+        } else {
+            "fennec_crypto_call"
+        };
+        assert!(shape(export).is_some(), "{export} isn't exported");
+        assert_eq!(shape(export), shape(every), "{export} isn't shaped as {every}");
+    }
+}

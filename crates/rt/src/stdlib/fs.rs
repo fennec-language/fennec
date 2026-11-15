@@ -469,17 +469,83 @@ pub(crate) fn fake_method(
     }
 }
 
+/// Whether an `Fs` opens databases, and how: the whole one's way, and the way beneath a folder.
+/// It's a type the functions here are compiled for, once each way, so the ones for an `Fs` that
+/// opens none are compiled with no word of SQLite in them, and a program that opens no database
+/// links none of it. Handing the two ways in as functions didn't do that: only one pair is ever
+/// handed in, so the compiler called them by name in the one body both callers shared.
+pub(crate) trait Databases {
+    /// What `method`, `_sqlite_open` or `_sqlite_read`, gives for the database at `path`. The
+    /// second is through an `Fs` narrowed with `read_only`: for reading only, and never made.
+    fn whole(method: &str, path: &str, span: Span) -> Result<Value, Diagnostic>;
+    /// The same for a database at `at` beneath `folder`, whose whole path is `full`.
+    fn beneath(
+        method: &str,
+        place: (Arc<cap_std::fs::Dir>, PathBuf, &str),
+        span: Span,
+    ) -> Result<Value, Diagnostic>;
+}
+
+/// Every method of an `Fs`, opening a database among them.
+pub(crate) struct WithDatabases;
+
+/// The file system's own methods: all but the two that open a database.
+pub(crate) struct NoDatabases;
+
+impl Databases for WithDatabases {
+    fn whole(method: &str, path: &str, _: Span) -> Result<Value, Diagnostic> {
+        Ok(crate::stdlib::sqlite::open_file(path, method == "_sqlite_read"))
+    }
+
+    fn beneath(
+        method: &str,
+        (folder, at, full): (Arc<cap_std::fs::Dir>, PathBuf, &str),
+        _: Span,
+    ) -> Result<Value, Diagnostic> {
+        Ok(sqlite_beneath(folder, at, full, method == "_sqlite_read"))
+    }
+}
+
+/// A method that opens a database, asked of a call that opens none: the call was for the file
+/// system's own methods, and compiled code picked the wrong one.
+impl Databases for NoDatabases {
+    fn whole(method: &str, _: &str, span: Span) -> Result<Value, Diagnostic> {
+        Err(no_databases(method, span))
+    }
+
+    fn beneath(
+        method: &str,
+        _: (Arc<cap_std::fs::Dir>, PathBuf, &str),
+        span: Span,
+    ) -> Result<Value, Diagnostic> {
+        Err(no_databases(method, span))
+    }
+}
+
+fn no_databases(method: &str, span: Span) -> Diagnostic {
+    Diagnostic::new(format!("`{method}` opens a database, which this call into the runtime isn't for"), span)
+}
+
 /// A method of the real `Fs`, which needs nothing of a program's, on paths as `path_text` gives
 /// them.
 pub(crate) fn real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    real_fs_with::<WithDatabases>(method, paths, span)
+}
+
+/// `real_fs` for the file system's own methods: all but the two that open a database.
+pub(crate) fn real_files(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    real_fs_with::<NoDatabases>(method, paths, span)
+}
+
+fn real_fs_with<D: Databases>(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagnostic> {
     if let Some(refused) = holding_nul(paths) {
         return Ok(refused);
     }
-    on_real_fs(method, paths, span)
+    on_real_fs::<D>(method, paths, span)
 }
 
 /// `real_fs` for a path it's checked.
-fn on_real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagnostic> {
+fn on_real_fs<D: Databases>(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagnostic> {
     let wrong = || Err(Diagnostic::new(format!("`{method}` was called with the wrong arguments"), span));
     let io = Fail::from;
     Ok(match (method, paths) {
@@ -546,9 +612,7 @@ fn on_real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagno
         }
         ("_create", [Value::Str(path), Value::Bool(durable)]) => create(path, *durable),
         ("_open", [Value::Str(path)]) => open(path),
-        ("_sqlite_open", [Value::Str(path)]) => crate::stdlib::sqlite::open_file(path, false),
-        // Through an `Fs` narrowed with `read_only`: for reading only, and never made.
-        ("_sqlite_read", [Value::Str(path)]) => crate::stdlib::sqlite::open_file(path, true),
+        ("_sqlite_open" | "_sqlite_read", [Value::Str(path)]) => D::whole(method, path, span)?,
         ("_finish", [file]) => done(finish(file, &mut |_, _| Ok(())).map_err(Fail::from), |()| Value::Unit),
         ("_discard", [file]) => {
             discard(file);
@@ -567,12 +631,12 @@ fn on_real_fs(method: &str, paths: &[Value], span: Span) -> Result<Value, Diagno
 /// `relative` to that folder, whose whole form is `full`. Everything it does goes through a
 /// handle held on the folder, by names beneath it, so a folder or a link swapped in partway down
 /// the path between the narrowed `Fs`'s check and the work can't lead outside: the system refuses
-/// any step out. What's given back reads as `real_fs` gives it.
-pub(crate) fn beneath(
+/// any step out. What's given back reads as `real_fs` gives it. It opens databases or not as `D`
+/// says.
+pub(crate) fn beneath_with<D: Databases>(
     folder: &str,
     (full, relative): (&str, &Path),
-    method: &str,
-    paths: &[Value],
+    (method, paths): (&str, &[Value]),
     span: Span,
 ) -> Result<Value, Diagnostic> {
     if let Some(refused) = holding_nul(paths) {
@@ -648,10 +712,9 @@ pub(crate) fn beneath(
                 Err(fail) => io_failed(&fail),
             }
         }
-        ("_sqlite_open", [Value::Str(_)]) => sqlite_beneath(folder, at, full, false),
-        ("_sqlite_read", [Value::Str(_)]) => sqlite_beneath(folder, at, full, true),
+        ("_sqlite_open" | "_sqlite_read", [Value::Str(_)]) => D::beneath(method, (folder, at, full), span)?,
         // Wrong arguments, and a method that isn't the file system's, say so as the whole `Fs` does.
-        _ => return real_fs(method, paths, span),
+        _ => return real_fs_with::<D>(method, paths, span),
     })
 }
 

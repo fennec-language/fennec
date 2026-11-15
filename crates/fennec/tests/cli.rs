@@ -1714,8 +1714,8 @@ fn a_run_with_another_output_switch_never_gets_the_program_built_without_it() {
             let programs = std::fs::read_dir(version.path().join("programs")).into_iter().flatten().flatten();
             found += programs
                 .filter(|entry| {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    !name.contains('.') || name.ends_with(".sum")
+                    let path = entry.path();
+                    path.extension().is_none_or(|ext| ext.eq_ignore_ascii_case("sum"))
                 })
                 .count();
         }
@@ -5140,8 +5140,8 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
             // One a key: one written as bytes is a file named for the key, and one kept as the file
             // that ran is named by the key's `.sum` file, beside the program.
             .filter(|entry| {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                !name.contains('.') || name.ends_with(".sum")
+                let path = entry.path();
+                path.extension().is_none_or(|ext| ext.eq_ignore_ascii_case("sum"))
             })
             .count()
     };

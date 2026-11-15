@@ -75,17 +75,21 @@ impl Signatures {
         out.push_str(closing);
     }
 
-    /// A struct's or an enum's shape: its name and type arguments, then its fields or cases.
+    /// A struct's or an enum's shape: its name and type arguments, then its fields or cases, a
+    /// generic one's with its arguments filled in, as `Pair[int]{first: int, second: int}`. Only
+    /// the same type with the same arguments inside itself is written by its name alone.
     fn named_shape(&self, name: &str, args: &[Type], open: &mut Vec<String>, out: &mut String) {
+        let start = out.len();
         out.push_str(name);
         if !args.is_empty() {
             let args: Vec<&Type> = args.iter().collect();
             self.wrapped(("[", "]"), &args, open, out);
         }
-        if open.iter().any(|seen| seen == name) {
+        let instance = out.get(start..).unwrap_or(name).to_owned();
+        if open.contains(&instance) {
             return;
         }
-        open.push(name.to_owned());
+        open.push(instance);
         if let Some(found) = self.structure(name) {
             let saved = found.fields.iter().filter(|(field, _)| {
                 !found
@@ -93,7 +97,9 @@ impl Signatures {
                     .get(field)
                     .is_some_and(|written| written.iter().any(|annotation| annotation.name == "skip"))
             });
-            let fields: Vec<&(String, Type)> = saved.collect();
+            let fields: Vec<(String, Type)> =
+                saved.map(|(field, ty)| (field.clone(), filled(ty, &found.generics, args))).collect();
+            let fields: Vec<&(String, Type)> = fields.iter().collect();
             self.fields_shape(&fields, ("{", "}"), open, out);
         } else if let Some(found) = self.enumeration(name) {
             out.push('<');
@@ -103,6 +109,10 @@ impl Signatures {
                 }
                 out.push_str(case);
                 if !fields.is_empty() {
+                    let fields: Vec<(String, Type)> = fields
+                        .iter()
+                        .map(|(field, ty)| (field.clone(), filled(ty, &found.generics, args)))
+                        .collect();
                     let fields: Vec<&(String, Type)> = fields.iter().collect();
                     self.fields_shape(&fields, ("(", ")"), open, out);
                 }
@@ -129,4 +139,16 @@ impl Signatures {
         }
         out.push_str(closing);
     }
+}
+
+/// A field's type with the type's parameters, named in `generics`, filled in with `args`: `int` for
+/// `T` in a `Pair[int]`.
+fn filled(ty: &Type, generics: &[String], args: &[Type]) -> Type {
+    ty.map(&mut |part| match part {
+        Type::Param(name) => {
+            let at = generics.iter().position(|generic| generic == name)?;
+            args.get(at).cloned()
+        }
+        _ => None,
+    })
 }

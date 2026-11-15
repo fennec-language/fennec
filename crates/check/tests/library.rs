@@ -574,3 +574,126 @@ fn a_connection_reads_lines_ending_in_crlf_and_writes_with_a_timeout() {
     let module = fennec_syntax::parse(bad).unwrap();
     assert!(fennec_check::check(&module).is_err());
 }
+
+/// The handlers the route tests give a router: by the `Request`, then a route's parameters by name.
+const HANDLERS: &str = "from std.net import Router, Request, Response\n\nerror Nope:\n    why: str\n\n\
+    def show(request: Request, id: int) -> Response:\n    return Response(status=200)\n\n\
+    def pair(request: Request, name: str, id: u8) -> Response:\n    return Response(status=200)\n\n\
+    def keyed(request: Request, key: int) -> Response:\n    return Response(status=200)\n\n\
+    def floaty(request: Request, id: float) -> Response:\n    return Response(status=200)\n\n\
+    def bare(id: int) -> Response:\n    return Response(status=200)\n\n\
+    def text(request: Request, id: int) -> str:\n    return \"\"\n\n\
+    def failing(request: Request, id: int) -> Response fails Nope:\n    \
+    fail Nope(why=\"no\")\n\n";
+
+/// The problems in a `main` adding routes to `routes`, after the handlers.
+fn routed(body: &str) -> Vec<String> {
+    let body: String = body.lines().map(|line| ["    ", line, "\n"].concat()).collect();
+    problems(&format!("{HANDLERS}def main(stdout: Stdout):\n    mut routes = Router()\n{body}"))
+}
+
+/// `router.get(path, handler)` and the other methods are checked where they're written: the path
+/// is written out, starts at `/` and names each parameter once in a whole segment, at most eight,
+/// and the handler takes the `Request`, then those parameters, each as text or an integer, and
+/// gives back a `Response`. Once it checks, it's written in as a call to `handle`, which checks
+/// again.
+#[test]
+fn a_route_is_checked_against_its_handler_where_its_written() {
+    let fine = "routes.get(\"/\", (request) => Response(status=200))\n\
+        routes.get(\"/notes/{id}\", show)\n\
+        routes.post(\"/pairs/{id}/{name}\", pair)\n\
+        routes.put(\"/notes/{id}\", show)\n\
+        routes.patch(\"/notes/{id}/{name}\", pair)\n\
+        routes.delete(\"/tags/{tag}\", (request, tag) => Response(status=204, body=tag.encode()))\n\
+        routes.get(\"/notes/new/{id}\", show)\n";
+    assert_eq!(routed(fine), Vec::<String>::new());
+    let refused = [
+        (
+            "routes.get(\"/notes/\" + \"{id}\", show)",
+            "a route's path is written out, so it's checked against its handler here @ \"/notes/\" + \"{id}\"",
+        ),
+        ("routes.get(\"notes/{id}\", show)", "`notes/{id}` doesn't start with `/` @ \"notes/{id}\""),
+        (
+            "routes.get(\"/notes/x{id}\", show)",
+            "`x{id}` in `/notes/x{id}` isn't a parameter @ \"/notes/x{id}\"",
+        ),
+        ("routes.get(\"/notes/{Id}\", show)", "`{Id}` in `/notes/{Id}` isn't a parameter @ \"/notes/{Id}\""),
+        (
+            "routes.get(\"/notes/{id}/{id}\", show)",
+            "`/notes/{id}/{id}` has `{id}` twice @ \"/notes/{id}/{id}\"",
+        ),
+        (
+            "routes.get(\"/{a}/{b}/{c}/{d}/{e}/{f}/{g}/{h}/{i}\", show)",
+            "`/{a}/{b}/{c}/{d}/{e}/{f}/{g}/{h}/{i}` has 9 parameters, but a route has at most 8 @ \"/{a}/{b}/{c}/{d}/{e}/{f}/{g}/{h}/{i}\"",
+        ),
+        (
+            "routes.get(\"/notes/{id}\", floaty)",
+            "`floaty` takes `id` as a float, but a route's parameter is read as text or a number @ floaty",
+        ),
+        (
+            "routes.get(\"/notes/{id}\", bare)",
+            "`bare` takes `id` first, but a route's handler takes the `Request` first @ bare",
+        ),
+        (
+            "routes.get(\"/notes/{id}\", text)",
+            "`text` gives back a str, but a route's handler gives back a `Response` @ text",
+        ),
+        (
+            "routes.get(\"/notes/{id}\", failing)",
+            "`failing` can fail, but a route's handler answers every request it's given @ failing",
+        ),
+        (
+            "routes.get(\"/notes/{id}\", (request, id) => 5)",
+            "this arrow gives back an int, but a route's handler gives back a `Response` @ (request, id) => 5",
+        ),
+        ("routes.get(\"/notes/{id}\", 5)", "a route's handler is a function, but this is an int @ 5"),
+        (
+            "routes.get(\"/notes/{id}\")",
+            "`router.get` takes a route's path and its handler @ routes.get(\"/notes/{id}\")",
+        ),
+    ];
+    for (line, said) in refused {
+        assert_eq!(routed(line), [said], "{line}");
+    }
+    let source = format!(
+        "{HANDLERS}def main(stdout: Stdout):\n    mut routes = Router()\n{}",
+        fine.lines().map(|line| ["    ", line, "\n"].concat()).collect::<String>()
+    );
+    let mut module = fennec_syntax::parse(&source).unwrap();
+    let resolved = fennec_check::check_and_resolve(&mut module);
+    assert!(resolved.is_ok(), "{:?}", resolved.err());
+}
+
+/// A route's handler takes its parameters by their names in the path, and two routes on one
+/// router in one function don't clash: the same route twice, or a parameter in a place they share
+/// under two names. The router is held in a `mut` name, as adding a route changes it.
+#[test]
+fn a_route_names_its_handlers_parameters_and_clashes_with_none_before_it() {
+    assert_eq!(
+        routed("routes.get(\"/notes/{id}\", keyed)"),
+        [
+            "`/notes/{id}` has `{id}`, but `keyed` has no parameter called `id` @ keyed",
+            "`keyed` takes `key`, but `/notes/{id}` has no `{key}` @ keyed",
+        ]
+    );
+    assert_eq!(
+        routed("routes.get(\"/notes/{id}\", (request) => Response(status=200))"),
+        [
+            "`/notes/{id}` has `{id}`, but this arrow has no parameter called `id` @ (request) => Response(status=200)"
+        ]
+    );
+    let twice = "routes.get(\"/notes/{id}\", show)\nroutes.get(\"/notes/{key}\", keyed)\n";
+    assert_eq!(
+        routed(twice),
+        ["`GET /notes/{key}` is routed twice: `GET /notes/{id}` is the same route @ \"/notes/{key}\""]
+    );
+    let renamed = "routes.get(\"/notes/{id}\", show)\nroutes.put(\"/notes/{key}/edit\", keyed)\n";
+    assert_eq!(
+        routed(renamed),
+        [
+            "`/notes/{key}/edit` calls the parameter in this place `{key}`, but `/notes/{id}` calls it `{id}` @ \"/notes/{key}/edit\""
+        ]
+    );
+    let apart = "def main(stdout: Stdout):\n    routes = Router()\n    routes.get(\"/notes/{id}\", show)\n";
+    assert_eq!(problems(&format!("{HANDLERS}{apart}")), ["`routes` isn't mut @ routes"]);
+}

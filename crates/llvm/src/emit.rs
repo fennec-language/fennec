@@ -4388,6 +4388,33 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A capability's method is called through its module's own export, so a program that reads
+    /// a file links no SQLite and no sockets. A program with a test built into it calls the export
+    /// that runs every module's, as a test's capabilities are fakes only that one asks.
+    #[test]
+    fn a_capability_method_goes_to_its_modules_export_unless_tests_are_built_in() -> Result<(), String> {
+        let source = "def adds() -> int:\n    return 1 + 1\n\ndef main(fs: Fs, stdout: Stdout):\n    text = fs.read_text(\"notes.txt\") except why:\n        f\"none: {why}\"\n    stdout.print(text, adds())\n    return\n";
+        let emitted = |program: &Program| -> Result<String, String> {
+            let (units, _, _) = emit(program)?;
+            Ok(units.iter().map(|unit| unit.text.as_str()).collect())
+        };
+        let mut program = lowered(source)?;
+        let plain = emitted(&program)?;
+        assert!(plain.contains("@fennec_fs_capability("), "{plain}");
+        assert!(!plain.contains("@fennec_native_capability("), "{plain}");
+        // A test is a function named `test:` and its number, as `fennec test` and `fennec run`
+        // build one in.
+        let mut test = program.functions.iter().find(|function| function.name == "adds").cloned();
+        if let Some(test) = test.as_mut() {
+            "test:0".clone_into(&mut test.name);
+        }
+        program.functions.extend(test);
+        let tested = emitted(&program)?;
+        assert!(tested.contains("@fennec_native_capability("), "{tested}");
+        assert!(!tested.contains("@fennec_fs_capability("), "{tested}");
+        Ok(())
+    }
+
     /// A build that checks proofs writes the checks they left out, each saying which proof broke:
     /// a loop's count can't overflow, and its index is inside the list it goes through.
     #[test]
@@ -4614,6 +4641,32 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A function that does nothing but `stop` can fail, so it's built taking the failure flag.
+    /// The stop was missing from what can fail, so a helper whose whole body was one was taken as
+    /// unable to and refused. Only the standard library can write the call, so the program is
+    /// given one once it's lowered.
+    #[test]
+    fn a_function_that_only_stops_can_fail() -> Result<(), String> {
+        let source = "def halts(why: str):\n    return\n\ndef main(stdout: Stdout):\n    halts(\"nobody is left to send to\")\n    stdout.print(\"went on\")\n    return\n";
+        let mut program = lowered(source)?;
+        let halts = program.functions.iter_mut().find(|function| function.name == "halts");
+        let block = halts.and_then(|halts| halts.blocks.first_mut()).ok_or("no `halts`")?;
+        let stop = InstKind::Builtin {
+            dest: None,
+            name: "intrinsics.stop".to_owned(),
+            args: vec![Operand::Local(LocalId(0))],
+            changes: false,
+        };
+        block.insts.insert(0, fennec_ir::Inst { kind: stop, span: Span::default() });
+        let (units, shared, _) = emit(&program)?;
+        assert!(shared.can_fail.contains("halts"), "{:?}", shared.can_fail);
+        let text = units.into_iter().find(|unit| unit.function == "halts").map(|unit| unit.text);
+        let text = text.ok_or("`halts` wasn't built")?;
+        assert!(text.contains("call void @fennec_stop("), "{text}");
+        assert!(text.contains("ptr swifterror"), "{text}");
+        Ok(())
+    }
+
     /// A new struct key compared by its words goes into a dict that's alone, with room, by
     /// compiled code itself, and only to the runtime otherwise.
     #[test]
@@ -4763,7 +4816,7 @@ out:
 
 ";
 
-fn is_test(name: &str) -> bool {
+pub(crate) fn is_test(name: &str) -> bool {
     name.strip_prefix("test:")
         .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
         || is_attempt(name)

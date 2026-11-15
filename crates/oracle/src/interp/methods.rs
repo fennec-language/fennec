@@ -292,6 +292,18 @@ impl Interp {
                 }
                 _ => unsupported("`clock.sleep` of something other than a Duration"),
             },
+            // Bytes and seeds that differ every run, as the compiled program's do, so its output
+            // can't depend on them. A count below 0 stops the program, as the runtime's does.
+            (Cap::Entropy, "bytes") => match args {
+                [Value::Int(count)] => match usize::try_from(*count) {
+                    Ok(count) => {
+                        Ok(Value::Bytes((0..count).map(|_| random_word().to_le_bytes()[0]).collect()))
+                    }
+                    Err(_) => crash(format!("`bytes` can't give {count} bytes"), span),
+                },
+                _ => unsupported("`entropy.bytes` of something other than an int"),
+            },
+            (Cap::Entropy, "seed") if args.is_empty() => Ok(Value::Int(random_word().cast_signed())),
             // No signal comes while the oracle runs a program, so it's never asked to stop.
             (Cap::Signals, "stopping") => Ok(Value::Bool(false)),
             (Cap::Signals, "wait") => unsupported("waiting for a signal, which never comes"),
@@ -942,4 +954,15 @@ fn hex_problem(text: &str, at: usize) -> String {
             "`fromhex` needs two hex digits for each byte, but the text ends halfway through one".to_owned()
         }
     }
+}
+
+/// A word no run can know beforehand: hashed with keys `std` draws from the system for each new
+/// hasher, so it's new every time. It's for an `Entropy`'s bytes and seeds, which a program's
+/// output can't depend on, never for secrets.
+fn random_word() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static DRAWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(DRAWN.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    hasher.finish()
 }

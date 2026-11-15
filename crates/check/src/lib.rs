@@ -62,6 +62,7 @@ mod program;
 mod protocols;
 mod ref_lowering;
 mod results_fix;
+mod routes;
 mod rules;
 mod saving;
 mod secrets;
@@ -836,7 +837,8 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     }
     imports_for_std_calls(module, checked.std_calls.values());
     imports_for_cases(module, &checked.cases);
-    if sources_copied(module, checked) || widened_values(module, &checked.widened_values) {
+    let rewritten = sources_copied(module, checked) || widened_values(module, &checked.widened_values);
+    if rewritten || routes::lower(module, &checked.routes) {
         return Round::Again;
     }
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
@@ -1036,6 +1038,9 @@ pub struct Checked {
     opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, which lowering writes in as a source.
     launches: BTreeMap<(u32, u32), launch::Launch>,
+    /// Each route written with a method, as `router.get(...)`, which lowering writes in as a call
+    /// to `handle`.
+    routes: BTreeMap<(u32, u32), routes::Route>,
     /// Each `match` with a `ref` case, with the fields each such case puts back.
     ref_matches: BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
     /// Each `for ref` whose body reads what it loops over, written in to go by position.

@@ -284,10 +284,22 @@ impl Lowering<'_> {
             ) => owner_name(ty).unwrap_or_default().to_owned(),
             _ => return Err(format!("it uses `{}` on a type of its own", op.symbol())),
         };
-        if let Some(Type::List(held)) = self.type_at(items.span)
-            && self.context.signatures.own_equality(&held)
+        // A list of `shared` values, or of a type with its own `==`, is asked item by item, each
+        // compared as `==` compares it.
+        if let Some(Type::List(held)) = self.type_at(items.span).and_then(|ty| self.held(&ty))
+            && (self.context.signatures.own_equality(&held) || self.holds_shared(&held))
         {
-            return Err(super::operators::OWN_EQUALITY.to_owned());
+            let sought = self.expr(item)?;
+            let sought = self.coerce(sought, &held, item.span)?;
+            let (sought, list) = self.both(sought, |lowering| lowering.expr(items), span)?;
+            let found = self.list_holds(list.clone(), sought.clone(), &held, span)?;
+            if op == BinOp::In {
+                return Ok((Operand::Local(found), sought, list));
+            }
+            let flipped = self.temporary(Type::Bool);
+            let value = Operand::Local(found);
+            self.emit(InstKind::Unary { dest: flipped, op: UnaryOp::Not, value }, span);
+            return Ok((Operand::Local(flipped), sought, list));
         }
         let mut item_at = self.expr(item)?;
         // A member sought among a union's values is made one of them.

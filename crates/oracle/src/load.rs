@@ -156,7 +156,27 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
 /// The standard library's modules the oracle runs from their own Fennec source, as the compiler
 /// builds them. Only the functions the runtime writes in Rust beneath them are modeled here, in
 /// `interp/library.rs`, so a bug in one of these modules' own Fennec would show on both sides.
-const RUN_FROM_SOURCE: &[&str] = &["math", "collections", "env", "time", "string", "base64"];
+const RUN_FROM_SOURCE: &[&str] = &[
+    "math",
+    "collections",
+    "env",
+    "time",
+    "string",
+    "base64",
+    "random",
+    "uuid",
+    "cli",
+    "crypto",
+    "csv",
+    "html",
+    "log",
+    "url",
+    "concurrent",
+    "postgres",
+    "re",
+    "template",
+    "sql",
+];
 
 /// The capabilities `main` may take whose type a module run from its own source declares, which
 /// that module is loaded for even when the program imports nothing from it: `Env` is
@@ -386,12 +406,16 @@ fn typed_fields(
 
 /// The capabilities `main` may take here: standard output and standard error, which are real,
 /// the arguments and standard input, which are empty, the file system, which is modeled, the
-/// environment, which is read, `Signals`, which never says to stop, and a `Clock`, read from the
-/// system's, whose `sleep` moves it on without waiting.
+/// environment, which is read, `Signals`, which never says to stop, a `Clock`, read from the
+/// system's, whose `sleep` moves it on without waiting, `Entropy`, and the network, any use of which
+/// is refused.
 fn given_to_main(main: &FnDef) -> Result<(), Refused> {
     for param in &main.params {
         let ty = param.ty.as_ref().map_or("", |ty| ty.name.as_str());
-        if !matches!(ty, "Stdout" | "Args" | "Stdin" | "Fs" | "Stderr" | "Signals" | "Env" | "Clock") {
+        if !matches!(
+            ty,
+            "Stdout" | "Args" | "Stdin" | "Fs" | "Stderr" | "Signals" | "Env" | "Clock" | "Entropy" | "Net"
+        ) {
             return Err(Refused::Unsupported(format!("the capability {ty}")));
         }
     }

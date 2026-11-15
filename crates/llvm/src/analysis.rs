@@ -167,6 +167,9 @@ pub(crate) struct Whole<'p> {
     /// Whether its closures are blocks in the runtime's table, since it keeps one where the
     /// runtime reads (see `closures`).
     pub(crate) runtime_closures: bool,
+    /// Whether the program has tests built into it, as `fennec test`'s and `fennec run`'s do: a
+    /// test's capabilities are fakes, which only the runtime's export for every module asks.
+    pub(crate) tested: bool,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -3610,6 +3613,9 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
         )
         // A launch fails with no thread to run on, and a wait for a task can be cut short.
         || matches!(name, "intrinsics.launch" | "intrinsics.launch_take")
+        // The standard library's `stop` ends the program as a failure does, passed up through
+        // whatever called it.
+        || name == "intrinsics.stop"
         || is_socket_method(name)
         // Sorting what isn't a plain number, string or bool orders by its type's own `<`, which
         // can fail.
@@ -4008,6 +4014,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         cells: crate::parallel::has_cells(program),
         tasks,
         runtime_closures: crate::closures::runtime_holds_closures(program),
+        tested: program.functions.iter().any(|function| crate::emit::is_test(&function.name)),
     }
 }
 

@@ -32,6 +32,7 @@ const MOST_IN_A_PACKET: usize = 65_507;
 
 /// How long a UDP read waits before it looks again at whether its socket was closed. `close` can't
 /// wake one by itself, as UDP has no `shutdown` to ask for.
+#[cfg(not(any(test, feature = "threads")))]
 const UDP_LOOKS_EVERY: Duration = Duration::from_millis(100);
 
 /// A real connection, which any thread holding its handle can use: one thread reading and another
@@ -190,12 +191,112 @@ pub(crate) trait TlsServer: Send + Sync {
 /// A real UDP socket. Only one thread reads at a time, as how long a read waits is the socket's.
 struct Udp {
     socket: UdpSocket,
+    /// Without threads a receive waits in the kernel, for as long as the socket's own timeout
+    /// says, so one receives at a time.
+    #[cfg(not(any(test, feature = "threads")))]
     receiving: Mutex<()>,
+    #[cfg(any(test, feature = "threads"))]
+    waits: Waits,
+}
+
+/// What a listener or a UDP socket keeps for the waits on it, as a connection keeps its own.
+#[cfg(any(test, feature = "threads"))]
+#[derive(Default)]
+struct Waits {
+    /// Whether the socket has been made not to block, which it then never does again: from the
+    /// first wait on it that goes through a poll.
+    never_blocks: AtomicBool,
+    /// Whether it's been closed from here: a wait about to start looks first, as nothing would
+    /// wake it after.
+    closed: AtomicBool,
+    /// The waits on it, for closing it to wake.
+    waiting: Mutex<Vec<Wait>>,
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Waits {
+    /// It's closed from here: no wait on it starts after this, and those under way look again.
+    fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        let waiting = std::mem::take(&mut *self.waiting.lock().unwrap_or_else(PoisonError::into_inner));
+        for Wait { wake, .. } in waiting {
+            wake.wake();
+        }
+    }
+
+    /// Makes its socket not block, with `make`, the first time a wait on it goes through a poll.
+    fn never_blocking(&self, make: impl FnOnce() -> std::io::Result<()>) -> Result<(), Failure> {
+        if !self.never_blocks.load(Ordering::SeqCst) {
+            make().map_err(|error| Failure::Other(error.to_string()))?;
+            self.never_blocks.store(true, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    /// Waits until `socket` may be ready for `interest`, `deadline` passes, or it's closed from
+    /// here. A task that can park parks on its worker's poll. Anything else waits on its thread,
+    /// in a poll of its own. True once there's no more waiting to do: the time's up, or the task's
+    /// been stopped.
+    fn out(&self, socket: &dyn Polled, interest: mio::Interest, deadline: Option<Instant>) -> bool {
+        let noted = (&self.closed, &self.waiting);
+        if task_parks() {
+            return park_noted(noted, socket, interest, deadline) != crate::embed::serve::Parked::Ready;
+        }
+        own_poll_wait(socket, interest, deadline, Some(noted))
+    }
+}
+
+/// A socket a wait can be put on a poll for: a connection's, a listener's or a UDP socket's.
+#[cfg(any(test, feature = "threads"))]
+trait Polled {
+    /// A copy of it of the kind a poll takes, which has a descriptor of its own.
+    fn poll_copy(&self) -> Option<crate::embed::serve::PollCopy>;
+    /// Its own descriptor, which a worker's poll can be told of on Unix.
+    #[cfg(unix)]
+    fn descriptor(&self) -> std::os::fd::RawFd;
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Polled for TcpStream {
+    fn poll_copy(&self) -> Option<crate::embed::serve::PollCopy> {
+        Some(Box::new(mio::net::TcpStream::from_std(self.try_clone().ok()?)))
+    }
+
+    #[cfg(unix)]
+    fn descriptor(&self) -> std::os::fd::RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(self)
+    }
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Polled for TcpListener {
+    fn poll_copy(&self) -> Option<crate::embed::serve::PollCopy> {
+        Some(Box::new(mio::net::TcpListener::from_std(self.try_clone().ok()?)))
+    }
+
+    #[cfg(unix)]
+    fn descriptor(&self) -> std::os::fd::RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(self)
+    }
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Polled for UdpSocket {
+    fn poll_copy(&self) -> Option<crate::embed::serve::PollCopy> {
+        Some(Box::new(mio::net::UdpSocket::from_std(self.try_clone().ok()?)))
+    }
+
+    #[cfg(unix)]
+    fn descriptor(&self) -> std::os::fd::RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(self)
+    }
 }
 
 /// A port listened on, with the TLS each connection it takes starts with, if it has any.
 struct Listening {
     listener: TcpListener,
+    #[cfg(any(test, feature = "threads"))]
+    waits: Waits,
     tls: Option<Arc<dyn TlsServer>>,
     /// How long its rounds have to finish once the program's asked to stop, when `stop_on` said
     /// to drain then.
@@ -1302,7 +1403,16 @@ fn listen(port: u16, tls: Option<Arc<dyn TlsServer>>) -> Result<Made, Failure> {
     let port = listener.local_addr().map_or(port, |address| address.port());
     let handle = open(|open| {
         let handle = fresh_handle(open);
-        open.insert(handle, Socket::Listener(Arc::new(Listening { listener, tls, stop: Mutex::new(None) })));
+        open.insert(
+            handle,
+            Socket::Listener(Arc::new(Listening {
+                listener,
+                #[cfg(any(test, feature = "threads"))]
+                waits: Waits::default(),
+                tls,
+                stop: Mutex::new(None),
+            })),
+        );
         handle
     });
     Ok(("Server", vec![("_handle", Value::Int(handle)), ("port", Value::Int(i64::from(port)))]))
@@ -1523,6 +1633,57 @@ pub(crate) fn line_from(handle: i64) -> Result<Option<Vec<u8>>, Failure> {
 #[cfg(test)]
 pub(crate) fn shut(handle: i64) {
     close(handle);
+}
+
+/// What a `Server` or a `UdpSocket` was made with: its handle and its port.
+#[cfg(test)]
+fn handle_and_port(made: &Made) -> (i64, u16) {
+    let number = |name: &str| match made.1.iter().find(|(field, _)| *field == name) {
+        Some((_, Value::Int(number))) => *number,
+        _ => -1,
+    };
+    (number("_handle"), u16::try_from(number("port")).unwrap_or(0))
+}
+
+/// A listener on a port of its own, for tests of taking connections by hand: its handle and port.
+#[cfg(test)]
+pub(crate) fn listened() -> (i64, u16) {
+    handle_and_port(&listen(0, None).ok().unwrap())
+}
+
+/// The next connection on a listener, waiting no longer than `limit`, or as long as it takes.
+#[cfg(test)]
+pub(crate) fn accepted_within(server: i64, limit: Option<Duration>) -> Result<i64, Failure> {
+    accept(server, limit).map(|(connection, _)| connection)
+}
+
+/// A UDP socket on a port of its own: its handle and port.
+#[cfg(test)]
+pub(crate) fn udp_bound() -> (i64, u16) {
+    handle_and_port(&udp(0).ok().unwrap())
+}
+
+/// The next packet on a UDP socket, waiting no longer than `limit`.
+#[cfg(test)]
+pub(crate) fn received_within(socket: i64, limit: Duration) -> Result<Vec<u8>, Failure> {
+    receive(socket, Some(limit)).map(|(data, _)| data)
+}
+
+/// Sends a packet from a UDP socket to a port on this machine.
+#[cfg(test)]
+pub(crate) fn sent_to_port(socket: i64, data: &[u8], port: u16) -> Result<(), Failure> {
+    send_to(socket, data, &format!("127.0.0.1:{port}"))
+}
+
+/// How many waits are on a listener, or about to be.
+#[cfg(test)]
+pub(crate) fn waiting_on_a_listener(server: i64) -> usize {
+    match open(|open| open.get(&server).cloned()) {
+        Some(Socket::Listener(listening)) => {
+            listening.waits.waiting.lock().unwrap_or_else(PoisonError::into_inner).len()
+        }
+        _ => 0,
+    }
 }
 
 /// A line from a kept connection, waiting no longer than `limit` for it.
@@ -1879,7 +2040,7 @@ thread_local! {
 /// retry**, and what's left when the system is out of descriptors, which nothing here can make.
 #[cfg(any(test, feature = "threads"))]
 fn wait_in_own_poll(stream: &Stream, interest: mio::Interest, deadline: Option<Instant>) -> bool {
-    own_poll_wait(&stream.socket, interest, deadline, Some(stream))
+    own_poll_wait(&stream.socket, interest, deadline, Some((&stream.closed, &stream.parked)))
 }
 
 /// `wait_in_own_poll` on `socket`. With `noted`, the wait is noted on that connection, and is over
@@ -1887,33 +2048,33 @@ fn wait_in_own_poll(stream: &Stream, interest: mio::Interest, deadline: Option<I
 /// for the last reads of a connection that's closing.
 #[cfg(any(test, feature = "threads"))]
 fn own_poll_wait(
-    socket: &TcpStream,
+    socket: &dyn Polled,
     interest: mio::Interest,
     deadline: Option<Instant>,
-    noted: Option<&Stream>,
+    noted: Option<(&AtomicBool, &Mutex<Vec<Wait>>)>,
 ) -> bool {
     let waited = OWN_POLL.with_borrow_mut(|own| {
         if own.is_none() {
             *own = OwnPoll::new().ok();
         }
         let own = own.as_mut()?;
-        let mut copy = socket.try_clone().ok().map(mio::net::TcpStream::from_std)?;
+        let mut copy = socket.poll_copy()?;
         own.poll.registry().register(&mut copy, OwnPoll::SOCKET, interest).ok()?;
         // Noted first, and then a look at whether it's closed already, as a close that came
         // before the note woke nobody: a close either finds the note or is seen here.
         let wait = NEXT_WAIT.fetch_add(1, Ordering::Relaxed);
-        if let Some(stream) = noted {
+        if let Some((_, waiting)) = noted {
             let wake = Waking::Thread(Arc::clone(&own.waker));
             let note = Wait { number: wait, wake, on_the_socket: false };
-            stream.parked.lock().unwrap_or_else(PoisonError::into_inner).push(note);
+            waiting.lock().unwrap_or_else(PoisonError::into_inner).push(note);
         }
-        if !noted.is_some_and(|stream| stream.closed.load(Ordering::SeqCst)) {
+        if !noted.is_some_and(|(closed, _)| closed.load(Ordering::SeqCst)) {
             let left = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
             // Interrupted, or woken for a wait that's over: either way whoever called looks again.
             let _ = own.poll.poll(&mut own.events, left);
         }
-        if let Some(stream) = noted {
-            let mut parked = stream.parked.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, waiting)) = noted {
+            let mut parked = waiting.lock().unwrap_or_else(PoisonError::into_inner);
             parked.retain(|noted| noted.number != wait);
         }
         let _ = own.poll.registry().deregister(&mut copy);
@@ -1978,25 +2139,37 @@ fn park_on_socket(
     interest: mio::Interest,
     deadline: Option<Instant>,
 ) -> crate::embed::serve::Parked {
+    park_noted((&stream.closed, &stream.parked), &stream.socket, interest, deadline)
+}
+
+/// `park_on_socket` for any socket, with whether it's closed from here and the notes of the waits
+/// on it, which a connection, a listener and a UDP socket each keep.
+#[cfg(any(test, feature = "threads"))]
+fn park_noted(
+    (closed, waiting): (&AtomicBool, &Mutex<Vec<Wait>>),
+    socket: &dyn Polled,
+    interest: mio::Interest,
+    deadline: Option<Instant>,
+) -> crate::embed::serve::Parked {
     use crate::embed::serve::{Parked, ParkedTask};
     let token = crate::embed::serve::next_token();
     let wait = NEXT_WAIT.fetch_add(1, Ordering::Relaxed);
     let on_the_socket = {
         // Looked at and noted with the list held, so of two waits that come at once, one sees the
         // other.
-        let mut parked = stream.parked.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut parked = waiting.lock().unwrap_or_else(PoisonError::into_inner);
         let on_the_socket = !parked.iter().any(|other| other.on_the_socket);
         if let Some(task) = ParkedTask::here(token) {
             parked.push(Wait { number: wait, wake: Waking::Task(task), on_the_socket });
         }
         on_the_socket
     };
-    let parked = if stream.closed.load(Ordering::SeqCst) {
+    let parked = if closed.load(Ordering::SeqCst) {
         Parked::Ready
     } else {
-        park_on(token, &stream.socket, (interest, deadline), on_the_socket)
+        park_on(token, socket, (interest, deadline), on_the_socket)
     };
-    stream.parked.lock().unwrap_or_else(PoisonError::into_inner).retain(|noted| noted.number != wait);
+    waiting.lock().unwrap_or_else(PoisonError::into_inner).retain(|noted| noted.number != wait);
     parked
 }
 
@@ -2005,7 +2178,7 @@ fn park_on_socket(
 #[cfg(any(test, feature = "threads"))]
 fn park_on(
     token: mio::Token,
-    socket: &TcpStream,
+    socket: &dyn Polled,
     (interest, deadline): (mio::Interest, Option<Instant>),
     on_the_socket: bool,
 ) -> crate::embed::serve::Parked {
@@ -2014,15 +2187,14 @@ fn park_on(
         #[cfg(test)]
         let on_the_socket = on_the_socket && PARKING_ON_COPIES.load(Ordering::SeqCst) == 0;
         if on_the_socket {
-            let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-            return crate::embed::serve::park_on_fd(token, fd, interest, deadline);
+            return crate::embed::serve::park_on_fd(token, socket.descriptor(), interest, deadline);
         }
-        crate::embed::serve::park_on_copy(token, socket, interest, deadline)
+        crate::embed::serve::park_on_a_copy(token, || socket.poll_copy(), interest, deadline)
     }
     #[cfg(not(unix))]
     {
         let _ = on_the_socket;
-        crate::embed::serve::park_on_copy(token, socket, interest, deadline)
+        crate::embed::serve::park_on_a_copy(token, || socket.poll_copy(), interest, deadline)
     }
 }
 
@@ -2085,33 +2257,80 @@ fn wait_to_write(stream: &Stream, deadline: Option<Instant>) -> Result<bool, Fai
     Ok(false)
 }
 
+/// The next connection on a listener, waited for on a poll: a task that can park parks, so the
+/// other tasks on its worker run meanwhile, the one that's about to connect among them. It used
+/// to wait in the kernel, or asleep 5 ms at a time when it had a timeout, holding its worker
+/// either way. Anything else waits in a poll of its thread's own, and a listener closed from here
+/// ends the wait.
+///
+/// The listener is made not to block the first time, and never switched back. A thread that
+/// can't park, waiting as long as it takes on a listener no task has used, still waits in the
+/// kernel as it always has.
+#[cfg(any(test, feature = "threads"))]
+fn accept_on_a_poll(
+    listening: &Listening,
+    timeout: Option<Duration>,
+) -> Result<(TcpStream, std::net::SocketAddr), Failure> {
+    let (listener, waits) = (&listening.listener, &listening.waits);
+    if !task_parks() && timeout.is_none() && !waits.never_blocks.load(Ordering::SeqCst) {
+        return listener.accept().map_err(|error| Failure::of(&error, None));
+    }
+    waits.never_blocking(|| listener.set_nonblocking(true))?;
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    loop {
+        match listener.accept() {
+            Ok(accepted) => return Ok(accepted),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if waits.closed.load(Ordering::SeqCst) {
+                    return Err(closed_here());
+                }
+                let late = deadline.is_some_and(|deadline| deadline <= Instant::now());
+                if late || waits.out(listener, mio::Interest::READABLE, deadline) {
+                    return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(Failure::of(&error, timeout)),
+        }
+    }
+}
+
+/// The next connection on a listener, without threads: waited for in the kernel, or asked for
+/// again and again when there's a timeout, as a listener has none of its own.
+#[cfg(not(any(test, feature = "threads")))]
+fn accept_in_the_kernel(
+    listener: &TcpListener,
+    timeout: Option<Duration>,
+) -> Result<(TcpStream, std::net::SocketAddr), Failure> {
+    let Some(limit) = timeout else {
+        return listener.accept().map_err(|error| Failure::of(&error, None));
+    };
+    listener.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
+    let started = Instant::now();
+    let accepted = loop {
+        match listener.accept() {
+            Ok(accepted) => break Ok(accepted),
+            Err(error) if error.kind() == ErrorKind::WouldBlock && started.elapsed() < limit => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                break Err(Failure::TimedOut(limit));
+            }
+            Err(error) => break Err(Failure::of(&error, Some(limit))),
+        }
+    };
+    listener.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
+    accepted
+}
+
 fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failure> {
     let Some(Socket::Listener(listening)) = open(|open| open.get(&handle).cloned()) else {
         return Err(closed_here());
     };
-    let listener = &listening.listener;
-    let accepted = match timeout {
-        None => listener.accept().map_err(|error| Failure::of(&error, None))?,
-        Some(limit) => {
-            // A listener has no timeout of its own, so it's asked again until one passes.
-            listener.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
-            let started = Instant::now();
-            let accepted = loop {
-                match listener.accept() {
-                    Ok(accepted) => break Ok(accepted),
-                    Err(error) if error.kind() == ErrorKind::WouldBlock && started.elapsed() < limit => {
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                        break Err(Failure::TimedOut(limit));
-                    }
-                    Err(error) => break Err(Failure::of(&error, Some(limit))),
-                }
-            };
-            listener.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
-            accepted?
-        }
-    };
+    #[cfg(any(test, feature = "threads"))]
+    let accepted = accept_on_a_poll(&listening, timeout)?;
+    #[cfg(not(any(test, feature = "threads")))]
+    let accepted = accept_in_the_kernel(&listening.listener, timeout)?;
     let (stream, peer) = accepted;
     stream.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
     let peer = peer.to_string();
@@ -2209,7 +2428,16 @@ fn udp(port: u16) -> Result<Made, Failure> {
     let port = socket.local_addr().map_or(port, |address| address.port());
     let handle = open(|open| {
         let handle = fresh_handle(open);
-        open.insert(handle, Socket::Udp(Arc::new(Udp { socket, receiving: Mutex::new(()) })));
+        open.insert(
+            handle,
+            Socket::Udp(Arc::new(Udp {
+                socket,
+                #[cfg(not(any(test, feature = "threads")))]
+                receiving: Mutex::new(()),
+                #[cfg(any(test, feature = "threads"))]
+                waits: Waits::default(),
+            })),
+        );
         handle
     });
     Ok(("UdpSocket", vec![("_handle", Value::Int(handle)), ("port", Value::Int(i64::from(port)))]))
@@ -2222,8 +2450,42 @@ fn udp_socket(handle: i64) -> Result<Arc<Udp>, Failure> {
     }
 }
 
-/// The next packet and who sent it. It looks up its socket each time it looks for a packet, so
-/// closing the socket on another thread ends the wait.
+/// The next packet and who sent it, waited for on a poll: a task that can park parks, and anything
+/// else waits in a poll of its thread's own. Closing the socket from here ends the wait. It used
+/// to wait in the kernel a tenth of a second at a time, to notice a close, holding its worker.
+#[cfg(any(test, feature = "threads"))]
+fn receive(handle: i64, timeout: Option<Duration>) -> Result<(Vec<u8>, String), Failure> {
+    let udp = udp_socket(handle)?;
+    let (socket, waits) = (&udp.socket, &udp.waits);
+    waits.never_blocking(|| socket.set_nonblocking(true))?;
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let mut data = vec![0; MOST_IN_A_PACKET];
+    loop {
+        match socket.recv_from(&mut data) {
+            Ok((size, sender)) => {
+                data.truncate(size);
+                return Ok((data, sender.to_string()));
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if waits.closed.load(Ordering::SeqCst) {
+                    return Err(closed_here());
+                }
+                let late = deadline.is_some_and(|deadline| deadline <= Instant::now());
+                if late || waits.out(socket, mio::Interest::READABLE, deadline) {
+                    return Err(Failure::TimedOut(timeout.unwrap_or_default()));
+                }
+            }
+            // Windows says the first of a packet this socket sent earlier that nothing took.
+            // Nothing's wrong with the socket, and UDP doesn't say what's lost.
+            Err(error) if matches!(error.kind(), ErrorKind::ConnectionReset | ErrorKind::Interrupted) => {}
+            Err(error) => return Err(Failure::of(&error, timeout)),
+        }
+    }
+}
+
+/// The next packet and who sent it, without threads. It looks up its socket each time it looks
+/// for a packet, so closing the socket ends the wait.
+#[cfg(not(any(test, feature = "threads")))]
 fn receive(handle: i64, timeout: Option<Duration>) -> Result<(Vec<u8>, String), Failure> {
     let started = Instant::now();
     let mut data = vec![0; MOST_IN_A_PACKET];
@@ -2263,7 +2525,27 @@ fn send_to(handle: i64, data: &[u8], address: &str) -> Result<(), Failure> {
         .map_err(|_| Failure::NotFound(host.to_owned()))?
         .next()
         .ok_or_else(|| Failure::NotFound(host.to_owned()))?;
-    udp.socket.send_to(data, target).map(|_| ()).map_err(|error| Failure::of(&error, None))
+    #[cfg(not(any(test, feature = "threads")))]
+    {
+        udp.socket.send_to(data, target).map(|_| ()).map_err(|error| Failure::of(&error, None))
+    }
+    // A socket a receive has made not block says so when it has no room: it waits for some on a
+    // poll, as a receive waits for a packet.
+    #[cfg(any(test, feature = "threads"))]
+    loop {
+        match udp.socket.send_to(data, target) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                if udp.waits.closed.load(Ordering::SeqCst) {
+                    return Err(closed_here());
+                }
+                if udp.waits.out(&udp.socket, mio::Interest::WRITABLE, None) {
+                    return Err(Failure::TimedOut(Duration::default()));
+                }
+            }
+            Err(error) => return Err(Failure::of(&error, None)),
+        }
+    }
 }
 
 /// Closes a socket. Whoever else was using it finds out: a read waiting on another thread ends,
@@ -2287,6 +2569,13 @@ fn close(handle: i64) {
         // itself; Windows' doesn't report a close made from this side, and the task would wait on.
         #[cfg(any(test, feature = "threads"))]
         wake_waits(stream);
+    }
+    // A task or a thread waiting on a listener or a UDP socket looks again, and finds it closed.
+    #[cfg(any(test, feature = "threads"))]
+    match &closed {
+        Some(Socket::Listener(listening)) => listening.waits.close(),
+        Some(Socket::Udp(udp)) => udp.waits.close(),
+        _ => {}
     }
     // A server that's being served isn't among the open sockets: its workers have its listener.
     #[cfg(any(test, feature = "threads"))]
@@ -2689,6 +2978,64 @@ pub(crate) mod tests {
         assert!(sending.join().unwrap(), "a piece the client sent was refused");
         assert!(lasted >= std::time::Duration::from_millis(100), "it closed after {lasted:?}");
         assert!(lasted < super::LINGER, "it closed after {lasted:?}");
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0, "a wait slept and looked again");
+    }
+
+    /// A thread that can't park, `main` say, waits for a connection or a packet in a poll of its
+    /// own: for as long as its timeout and no longer, until one comes, or until the socket's
+    /// closed from another thread. With a timeout a listener used to be asked again every 5 ms,
+    /// and a UDP socket every tenth of a second, which is how a close was noticed.
+    #[test]
+    fn a_thread_waits_for_a_connection_or_a_packet_in_a_poll_of_its_own() {
+        use std::time::{Duration, Instant};
+        let patient = Duration::from_secs(10);
+        let short = Duration::from_millis(50);
+        // A listener: nothing comes, then a connection does, then it's closed under a wait.
+        let (server, port) = super::listened();
+        let started = Instant::now();
+        let none = super::accepted_within(server, Some(short));
+        assert!(matches!(none, Err(Failure::TimedOut(_))), "{none:?}");
+        assert!(started.elapsed() >= short, "{:?}", started.elapsed());
+        let connecting = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            std::net::TcpStream::connect(("127.0.0.1", port)).unwrap()
+        });
+        let taken = super::accepted_within(server, Some(patient));
+        assert!(taken.is_ok(), "{taken:?}");
+        close(taken.unwrap_or(0));
+        drop(connecting.join().unwrap());
+        let closing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            close(server);
+        });
+        let started = Instant::now();
+        let ended = super::accepted_within(server, Some(patient));
+        assert!(matches!(ended, Err(Failure::Other(_))), "{ended:?}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        closing.join().unwrap();
+        // A UDP socket, the same three ways.
+        let (socket, port) = super::udp_bound();
+        let (other, _) = super::udp_bound();
+        let started = Instant::now();
+        let none = super::received_within(socket, short);
+        assert!(matches!(none, Err(Failure::TimedOut(_))), "{none:?}");
+        assert!(started.elapsed() >= short, "{:?}", started.elapsed());
+        let sending = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            super::sent_to_port(other, b"ping", port)
+        });
+        assert_eq!(super::received_within(socket, patient), Ok(b"ping".to_vec()));
+        assert_eq!(sending.join().unwrap(), Ok(()));
+        let closing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            close(socket);
+        });
+        let started = Instant::now();
+        let ended = super::received_within(socket, patient);
+        assert!(matches!(ended, Err(Failure::Other(_))), "{ended:?}");
+        assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
+        closing.join().unwrap();
+        close(other);
         assert_eq!(crate::embed::serve::waits_not_registered_here(), 0, "a wait slept and looked again");
     }
 

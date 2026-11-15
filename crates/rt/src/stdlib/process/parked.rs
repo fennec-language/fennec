@@ -22,7 +22,7 @@ use mio::unix::pipe::{Receiver, Sender};
 use mio::{Events, Interest, Poll, Token};
 
 use super::{Ending, stop};
-use crate::embed::serve::{Parked, park_on_fd};
+use crate::embed::serve::{Parked, next_token, park_on_fd};
 
 const STDOUT: Token = Token(0);
 const STDERR: Token = Token(1);
@@ -86,7 +86,9 @@ pub(super) fn run(
         } else {
             deadline
         };
-        if park_on_fd(running.poll.as_raw_fd(), Interest::READABLE, Some(until)) == Parked::Cancelled {
+        if park_on_fd(next_token(), running.poll.as_raw_fd(), Interest::READABLE, Some(until))
+            == Parked::Cancelled
+        {
             stop(&mut child);
             return Err(std::io::Error::new(ErrorKind::Interrupted, "its task was stopped"));
         }

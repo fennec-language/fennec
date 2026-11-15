@@ -23,26 +23,26 @@ how values are held, copied, compared and printed, is modeled here on its own, f
 
 Where a standard library module is written in Fennec, the oracle can run its own source, as
 `fennec-syntax` gives it to the compiler, and model only the functions the runtime writes in Rust
-beneath it. `std.math`, `std.collections`, `std.time`, `std.string`, `std.env`, `std.base64`, `std.random`
-and `std.uuid` are run this way
-(`RUN_FROM_SOURCE` in `src/load.rs`), each loaded when the program imports from it, when a module
-loaded so imports from it, or, for `std.env` and `std.time`, when `main` takes the `Env` or the
-`Clock` whose types they declare. In `std.math`, the vectors, quaternions and matrices, `dot` and
-`lerp` are its Fennec code, and `sqrt`, `floor` and `ceil` are modeled here. In
-`std.collections`, `Deque`, `Heap`, `Counter`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Tree`
-and the rest are its Fennec code. Its `extend`s of `Table` and `Id`, which the oracle models on its
-own, are left out. `std.time`'s `Duration`, `Instant` and `Time` are its Fennec code, and a
-duration written out, as `30s`, is its `Duration`. The intrinsics their code calls that only read,
-like `text_byte`, `text_size`, `text_part` and `bytes_text`, are modeled here (`interp/library.rs`)
-from what `intrinsics.fen` says each does, and so is making a core error, like `InvalidValue`, by
-name. `std.random`'s draws, beneath its `Random`, are modeled here as `docs/language.md` pins them:
-SplitMix64, and a range by Lemire's method. The types of the modules' expressions are what
-the checker gave them as it checked the program. So
-the oracle still checks how the compiler and runtime run that code, but a mistake in the module's
-own Fennec would be the same on both sides. A module modeled on its own, like `std.json`, isn't
-run from source. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's
-`**` are computed with the `libm` crate, as `docs/language.md` says they are, at the version the
-workspace pins.
+beneath it. These are run this way (`RUN_FROM_SOURCE` in `src/load.rs`): `std.math`,
+`std.collections`, `std.time`, `std.string`, `std.env`, `std.base64`, `std.random`, `std.uuid`,
+`std.cli`, `std.crypto`, `std.csv`, `std.html`, `std.log`, `std.url`, `std.concurrent`,
+`std.postgres`, `std.re`, `std.template`, `std.sql` and `std.io`. Each is loaded when the program
+imports from it, when a module loaded so imports from it, or, for `std.env` and `std.time`, when
+`main` takes the `Env` or the `Clock` whose types they declare. In `std.math`, the vectors,
+quaternions and matrices, `dot` and `lerp` are its Fennec code, and `sqrt`, `floor` and `ceil` are
+modeled here. In `std.collections`, `Deque`, `Heap`, `Counter`, `SortedMap`, `SortedSet`, `Grid`,
+`Packed`, `Tree` and the rest are its Fennec code. Its `extend`s of `Table` and `Id`, which the
+oracle models on its own, are left out. `std.time`'s `Duration`, `Instant` and `Time` are its Fennec
+code, and a duration written out, as `30s`, is its `Duration`. The intrinsics their code calls that
+only read, like `text_byte`, `text_size`, `text_part` and `bytes_text`, are modeled here
+(`interp/library.rs`) from what `intrinsics.fen` says each does, and so is making a core error, like
+`InvalidValue`, by name. `std.random`'s draws, beneath its `Random`, are modeled here as
+`docs/language.md` pins them: SplitMix64, and a range by Lemire's method. The types of the modules'
+expressions are what the checker gave them as it checked the program. So the oracle still checks how
+the compiler and runtime run that code, but a mistake in the module's own Fennec would be the same
+on both sides. A module modeled on its own, like `std.json`, isn't run from source. `sin`, `cos`,
+`tan`, `acos`, `exp`, `log` and a float's `**` are computed with the `libm` crate, as
+`docs/language.md` says they are, at the version the workspace pins.
 
 ## How it models a program
 
@@ -119,17 +119,20 @@ workspace pins.
   oracle was started with, as the compiled program reads its own. No signal comes during a run, so
   `Signals` never says to stop and waiting on one is refused. A `Clock` reads the system's clocks,
   and its `sleep` moves them on without waiting, so a program sees the time it slept pass, and its
-  output can't depend on more than what comes before what. An `Entropy`'s bytes and seeds differ every
-  run, as the compiled program's do, so a program's output can't depend on them. A program that takes
-  any other capability is skipped.
+  output can't depend on more than what comes before what. An `Entropy`'s bytes and seeds differ
+  every run, as the compiled program's do, so a program's output can't depend on them. `main` may
+  take `Net`, and any use of it is refused, so what a program prints without reaching the network,
+  as with no arguments, is still checked. A program that takes any other capability is skipped.
 - The file system an `Fs` reaches is modeled in memory, in `interp/disk.rs`. It starts as the
   folder the program runs in was: for `run` and `coverage`, the folder the oracle runs in, as the
   gate runs the examples from the checkout's root, and for `compare`, a fresh empty one, as the
   compiled program gets. What the program writes, makes and removes is held in memory, and the disk
   is never written. Where the folder isn't a fresh empty one, the oracle looks at the disk, a name
   at a time and never through a link, only for whether a file or a folder is there: reading a file
-  that was there before, its size, and what's in a folder that was there before are refused. A
-  path outside the folder is refused, but for the folders on the way to it, which are there.
+  that was there before, its size, and what's in a folder that was there before are refused.
+  Outside the folder the disk is looked at the same way, and only that way, so the compiled
+  program on the same machine sees the same: the root is there, a path through nothing fails as
+  not found, and reading, listing or changing anything that's there is refused.
 - Each of `Fs`'s methods fails as the runtime's does, with its case of `IoError` and its words, and
   a path goes through the folders on its way as the system goes, a `..` back up. An `Fs` narrowed
   with `only` reaches what's inside its folder, by the path's text with `.` and `..` worked out, and
@@ -142,6 +145,15 @@ workspace pins.
   folder's listing while a file is being made in it, under a hidden name holding the process's
   number, bytes, and on Windows what it reads its own way.
 - `std.path`'s `Path` is its text, and its methods only look at it, each written here on its own.
+- `value? from Context(...)` passes a failure up as the context, made only then. Native code
+  keeps what caused it with it, but nothing reads that yet.
+- An `array[T, N]` is held as the list it prints as, and `array[T, N]()` is `N` of `T`'s zero, as
+  the checker types it.
+- `std.crypto`'s `equal` compares two texts or two runs of bytes; its time, which depends only on
+  their lengths, isn't something a program can see. The intrinsics that write into a byte builder
+  through a `ref`, `bytes_push` and the rest, are modeled as `intrinsics.fen` says they work, and
+  `std.io`, run from its source, leaves out its `Stdout`, `Stdin` and `Stderr`, which the oracle
+  models as capabilities.
 - Anything it doesn't model it refuses, as `unsupported: <feature>`, rather than guess. A run has a
   budget of steps, items and nesting, and one that goes past it is unsupported too, as `ran too
   long`.

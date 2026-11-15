@@ -272,6 +272,243 @@ fn a_wait_that_cant_park_blocks_its_thread_and_is_counted() {
     client.join().unwrap();
 }
 
+/// A round sent "wait" waits on a socket of its own, a plain one connected to `to`, through a copy
+/// of it: first with 20 ms for something to read, then, having said it's waiting, with 30 s. It
+/// answers with what each wait came to and how many bytes it then read. Any other line is echoed.
+fn waits_on_a_copy_or_echoes(to: SocketAddr) -> Handler {
+    Arc::new(move |conn: Conn| {
+        let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
+        if line != b"wait" {
+            line.push(b'\n');
+            return i64::from(conn.write(&line).is_err());
+        }
+        let own = std::net::TcpStream::connect(to).unwrap();
+        own.set_nonblocking(true).unwrap();
+        let wait = |within: Duration| {
+            let by = Some(std::time::Instant::now() + within);
+            super::park_on_copy(super::next_token(), &own, mio::Interest::READABLE, by)
+        };
+        let quiet = wait(Duration::from_millis(20));
+        if conn.write(b"waiting\n").is_err() {
+            return 1;
+        }
+        let sent = wait(Duration::from_secs(30));
+        let mut bytes = [0_u8; 16];
+        let read = std::io::Read::read(&mut &own, &mut bytes).unwrap_or(0);
+        i64::from(conn.write(format!("{quiet:?} {sent:?} {read}\n").as_bytes()).is_err())
+    })
+}
+
+/// A task's wait on a plain socket through a copy of it, which is how every such wait goes on
+/// Windows, parks the task: its worker, the only one, answers another connection meanwhile. The
+/// wait says when its time's up, and when the socket has something to read, and the socket is
+/// still open once its copy is closed. On Windows such a wait blocked its worker, so a program
+/// that was its own client waited for ever on one thread.
+#[test]
+fn a_wait_on_a_copy_of_a_socket_parks_its_task_and_says_when_the_socket_is_ready() {
+    let between = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let to = between.local_addr().unwrap();
+    let served = run(1, &waits_on_a_copy_or_echoes(to), move |address| {
+        let mut waiting = std::net::TcpStream::connect(address).unwrap();
+        waiting.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        let mut heard = BufReader::new(waiting.try_clone().unwrap());
+        waiting.write_all(b"wait\n").unwrap();
+        let (mut other_end, _) = between.accept().unwrap();
+        let mut said = String::new();
+        heard.read_line(&mut said).unwrap();
+        assert_eq!(said, "waiting\n");
+        // Its round goes from saying so straight into its wait, and only a round that's parked
+        // lets another run on the one worker.
+        assert_eq!(ask(address, "meanwhile").as_deref(), Some("meanwhile\n"));
+        other_end.write_all(b"now\n").unwrap();
+        said.clear();
+        heard.read_line(&mut said).unwrap();
+        assert_eq!(said, "TimedOut Ready 4\n");
+        // Its round over, the socket's closed: a copy left open would hold the connection, and
+        // this read would wait out its time.
+        other_end.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut rest = Vec::new();
+        assert_eq!(std::io::Read::read_to_end(&mut other_end, &mut rest).ok(), Some(0), "{rest:?}");
+    });
+    assert_eq!((served.connections, served.failed), (2, 0));
+}
+
+/// A round sent "wait" says it's waiting, then waits 50 ms on a descriptor the worker's poll won't
+/// take, as there's none with that number, looking again each time the wait says to. It says how
+/// the wait ended and how many times it looked. Any other line is echoed.
+#[cfg(unix)]
+fn waits_on_what_the_poll_wont_take() -> Handler {
+    Arc::new(|conn: Conn| {
+        let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
+        if line != b"wait" {
+            line.push(b'\n');
+            return i64::from(conn.write(&line).is_err());
+        }
+        if conn.write(b"waiting\n").is_err() {
+            return 1;
+        }
+        let by = Some(std::time::Instant::now() + Duration::from_millis(50));
+        let mut looks = 0;
+        let ended = loop {
+            match super::park_on_fd(super::next_token(), -1, mio::Interest::READABLE, by) {
+                super::Parked::Ready if looks < 100_000 => looks += 1,
+                ended => break ended,
+            }
+        };
+        i64::from(conn.write(format!("{ended:?} {looks}\n").as_bytes()).is_err())
+    })
+}
+
+/// A wait on a socket that the worker's poll refuses parks a moment and says to look again, until
+/// its time runs out, and its worker goes on with others meanwhile. It used to say "ready" at
+/// once: its task looked again and again without the worker ever polling, and a wait with a
+/// deadline never ran out of time. That's 100,000 looks here and no end, where it's now 50 at most.
+#[cfg(unix)]
+#[test]
+fn a_wait_the_poll_refuses_parks_a_moment_at_a_time_and_still_runs_out_of_time() {
+    let served = run(1, &waits_on_what_the_poll_wont_take(), |address| {
+        let mut waiting = std::net::TcpStream::connect(address).unwrap();
+        waiting.write_all(b"wait\n").unwrap();
+        let mut heard = BufReader::new(waiting.try_clone().unwrap());
+        let mut said = String::new();
+        heard.read_line(&mut said).unwrap();
+        assert_eq!(said, "waiting\n");
+        // Its round goes from saying so straight into its wait, and only a round that's parked
+        // lets another run on the one worker.
+        assert_eq!(ask(address, "meanwhile").as_deref(), Some("meanwhile\n"));
+        said.clear();
+        heard.read_line(&mut said).unwrap();
+        let (ended, looks) = said.trim_end().split_once(' ').unwrap();
+        assert_eq!(ended, "TimedOut", "after {looks} looks");
+        assert!(looks.parse::<usize>().unwrap() <= 60, "it looked {looks} times in 50 ms");
+    });
+    assert_eq!((served.connections, served.failed), (2, 0));
+}
+
+/// A round sent "wait" says it's waiting, then waits on a socket of its own, a plain one connected
+/// to `to`, through a copy of it, for as long as it takes. Whatever ends the wait, it writes on the
+/// socket and waits again, and notes in `came` what the two waits came to and whether it could
+/// write. Any other line is echoed.
+fn waits_on_a_copy_until_its_ended(to: SocketAddr, came: &Arc<std::sync::Mutex<Vec<String>>>) -> Handler {
+    let came = Arc::clone(came);
+    Arc::new(move |conn: Conn| {
+        let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
+        if line != b"wait" {
+            line.push(b'\n');
+            return i64::from(conn.write(&line).is_err());
+        }
+        let own = std::net::TcpStream::connect(to).unwrap();
+        own.set_nonblocking(true).unwrap();
+        if conn.write(b"waiting\n").is_err() {
+            return 1;
+        }
+        let first = super::park_on_copy(super::next_token(), &own, mio::Interest::READABLE, None);
+        let wrote = (&own).write_all(b"still here\n").is_ok();
+        let again = super::park_on_copy(super::next_token(), &own, mio::Interest::READABLE, None);
+        came.lock().unwrap().push(format!("{first:?} {again:?} {wrote}"));
+        0
+    })
+}
+
+/// A wait on a copy of a socket that's cancelled partway, as a round's is when its server stops,
+/// gives its copy up like any other: the wait says it was cancelled, the socket is still its
+/// round's to write on, and when the round ends the socket closes, which it couldn't with a copy
+/// of it left open or left with the worker's poll. A wait begun after that is cancelled at once.
+#[test]
+fn a_wait_on_a_copy_thats_cancelled_partway_closes_its_copy_and_leaves_the_socket_open() {
+    let between = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let to = between.local_addr().unwrap();
+    let came = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (hand_over, handed) = std::sync::mpsc::channel();
+    let served = run(1, &waits_on_a_copy_until_its_ended(to, &came), move |address| {
+        let mut waiting = std::net::TcpStream::connect(address).unwrap();
+        waiting.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        waiting.write_all(b"wait\n").unwrap();
+        let (other_end, _) = between.accept().unwrap();
+        let mut said = String::new();
+        BufReader::new(waiting.try_clone().unwrap()).read_line(&mut said).unwrap();
+        assert_eq!(said, "waiting\n");
+        // Only a round that's parked lets another run on the one worker: it's in its wait.
+        assert_eq!(ask(address, "meanwhile").as_deref(), Some("meanwhile\n"));
+        hand_over.send((other_end, waiting)).unwrap();
+        // The clients are done, so the server's stopped now, with that round still waiting.
+    });
+    let (mut other_end, _waiting) = handed.recv().unwrap();
+    assert_eq!(*came.lock().unwrap(), ["Cancelled Cancelled true"]);
+    // What the round wrote after its wait was cancelled, and then the socket's end.
+    other_end.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut heard = Vec::new();
+    let read = std::io::Read::read_to_end(&mut other_end, &mut heard).ok();
+    assert_eq!((read, heard.as_slice()), (Some(11), b"still here\n".as_slice()));
+    assert_eq!(served.connections, 2);
+}
+
+/// A round sent "fill" writes on a socket of its own, a plain one connected to `to` and made not
+/// to block, until a write would block, and says how much went. Then it waits for room through a
+/// copy of the socket, writes a last line, and says what the wait came to and whether the line
+/// went. Any other line is echoed.
+fn fills_then_waits_for_room_on_a_copy(to: SocketAddr) -> Handler {
+    Arc::new(move |conn: Conn| {
+        let Ok(Some(mut line)) = conn.read_line(None) else { return 1 };
+        if line != b"fill" {
+            line.push(b'\n');
+            return i64::from(conn.write(&line).is_err());
+        }
+        let own = std::net::TcpStream::connect(to).unwrap();
+        own.set_nonblocking(true).unwrap();
+        let piece = vec![7_u8; 64 * 1024];
+        let mut sent = 0;
+        loop {
+            match (&own).write(&piece) {
+                Ok(wrote) => sent += wrote,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => return 1,
+            }
+        }
+        if conn.write(format!("{sent}\n").as_bytes()).is_err() {
+            return 1;
+        }
+        let by = Some(std::time::Instant::now() + Duration::from_secs(30));
+        let room = super::park_on_copy(super::next_token(), &own, mio::Interest::WRITABLE, by);
+        own.set_nonblocking(false).unwrap();
+        let last = (&own).write_all(b"last\n").is_ok();
+        i64::from(conn.write(format!("{room:?} {last}\n").as_bytes()).is_err())
+    })
+}
+
+/// A task's wait for room to write, through a copy of its socket, parks too, and ends when the
+/// other side has read enough: the first time a write can wait this way on Windows, where a
+/// task's socket used to block. The round fills its socket until a write would block, waits while
+/// its worker answers another connection, and is woken once the other end reads what was sent.
+#[test]
+fn a_wait_for_room_on_a_copy_of_a_socket_parks_and_ends_when_the_other_side_reads() {
+    let between = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let to = between.local_addr().unwrap();
+    let served = run(1, &fills_then_waits_for_room_on_a_copy(to), move |address| {
+        let mut filling = std::net::TcpStream::connect(address).unwrap();
+        filling.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        let mut heard = BufReader::new(filling.try_clone().unwrap());
+        filling.write_all(b"fill\n").unwrap();
+        let (mut other_end, _) = between.accept().unwrap();
+        other_end.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        let mut said = String::new();
+        heard.read_line(&mut said).unwrap();
+        let sent: usize = said.trim().parse().unwrap();
+        assert!(sent > 0, "{said:?}");
+        // Nothing's been read, so there's no room: the round is parked, and its worker is free.
+        assert_eq!(ask(address, "meanwhile").as_deref(), Some("meanwhile\n"));
+        let mut taken = vec![0_u8; sent];
+        std::io::Read::read_exact(&mut other_end, &mut taken).unwrap();
+        said.clear();
+        heard.read_line(&mut said).unwrap();
+        assert_eq!(said, "Ready true\n");
+        let mut rest = Vec::new();
+        assert_eq!(std::io::Read::read_to_end(&mut other_end, &mut rest).ok(), Some(5));
+        assert_eq!(rest, b"last\n");
+    });
+    assert_eq!((served.connections, served.failed), (2, 0));
+}
+
 /// A shell, started before the connections are opened, that reports the process's resident
 /// memory, in bytes, as `ps` does, each time it's asked: starting one with thousands of
 /// sockets open fails on macOS.

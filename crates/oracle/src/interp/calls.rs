@@ -5,7 +5,7 @@
 use fennec_check::Type;
 use fennec_syntax::{Arg, CompKind, Expr, ExprKind, Field, FnDef, Span};
 
-use super::{Binding, Flow, Interp, Place, Run, crash, unsupported};
+use super::{Binding, Flow, Interp, MOST_ITEMS, Place, Run, crash, unsupported};
 use crate::load::Kind;
 use crate::value::{Func, Value};
 
@@ -176,6 +176,14 @@ impl Interp {
                 }
                 ExprKind::Name(name) if self.program.types.contains_key(&*self.type_named(name)) => {
                     Target::Construct { ty: self.type_named(name).into_owned(), case: None }
+                }
+                // `array[T, N]()`: N items, each T's zero, as the checker typed it. An array is
+                // held as the list it prints as.
+                ExprKind::Name(name) if name == "array" && args.is_empty() && !self.is_bound(name) => {
+                    match self.program.type_at(expr.span).cloned() {
+                        Some(ty @ Type::Array(..)) => Target::Given(self.zero_of(&ty, expr.span)?),
+                        _ => return unsupported("`array[...]()` whose type isn't known"),
+                    }
                 }
                 ExprKind::Name(name) if name == "Table" && args.is_empty() && self.is_the_table() => {
                     Target::Given(Value::Table(Box::new(crate::value::Table::new(self.shared.new_tag()))))
@@ -583,6 +591,30 @@ impl Interp {
         let value = self.eval(expr);
         self.pop_frame(previous);
         value
+    }
+
+    /// The zero an `array[T, N]()` fills its items with: `0`, `0.0`, `False`, `""`, `None`, an
+    /// array of zeros, or a struct made from its defaults, as `docs/language.md` says.
+    fn zero_of(&mut self, ty: &Type, span: Span) -> Run<Value> {
+        Ok(match ty {
+            Type::Int => Value::Int(0),
+            Type::Float => Value::Float(0.0),
+            Type::Bool => Value::Bool(false),
+            Type::Str | Type::LiteralStr => Value::Str(String::new()),
+            Type::Optional(_) => Value::None,
+            Type::Array(item, size) => {
+                let size = usize::try_from(*size).unwrap_or(usize::MAX);
+                let mut items = Vec::with_capacity(size.min(MOST_ITEMS));
+                for _ in 0..size {
+                    items.push(self.zero_of(item, span)?);
+                }
+                Value::List(items)
+            }
+            Type::Named(name) if self.program.types.contains_key(name.as_str()) => {
+                self.construct(name, None, Vec::new(), span)?
+            }
+            other => return unsupported(format!("the zero of a {other:?} in an array")),
+        })
     }
 
     /// Makes a struct, an error, or a case: values given by position go to the public fields in

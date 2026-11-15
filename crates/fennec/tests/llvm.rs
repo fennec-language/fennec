@@ -697,6 +697,24 @@ fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result
     )
 }
 
+/// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
+/// `mine.visits`, `mine = other` and then `mine.visits[key] = fresh` wrote where the lookup had
+/// found the key: in the dict `mine` held before, which the caller still had, so the caller's
+/// value changed and the new dict never got the key. For a struct's value and a plain word, and
+/// where nothing else held the first dict, so the entry written was in a block already let go of.
+/// It prints what the reference evaluator prints, and what's left at the end is nothing.
+#[test]
+fn a_store_after_its_struct_is_replaced_goes_into_the_dict_there_now() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_in_place_and_boxed(
+        "store_after_dict_replaced",
+        include_str!("fixtures/store_after_dict_replaced.fen"),
+        include_str!("fixtures/store_after_dict_replaced.out"),
+    )
+}
+
 /// A struct holding a `u64`, an `f32`, `bytes`, a set, a text, a `str?` and a dict is held in place,
 /// as are a program's own types named `Option`, `Match`, `Table` and `Id`: each compared with `==`,
 /// printed, copied and changed, its copy unchanged, and used as a dict's value, after other values
@@ -16484,7 +16502,17 @@ fn a_block_a_round_leaves_is_found_wherever_the_server_runs() -> std::io::Result
                     Some(how) => command.env("FENNEC_AUDIT_SELFTEST", how),
                     None => command.env_remove("FENNEC_AUDIT_SELFTEST"),
                 };
-                let ended = command.output_within()?;
+                // Each takes under a second, and one that waits for something that never comes
+                // spends nothing: a minute by the clock says so, and which program it was. On
+                // Windows the second one's clients, in a task, blocked the one worker that had to
+                // answer them, and the test took its ten minutes to say only that something hung.
+                let ended = command
+                    .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(60))
+                    .map_err(|error| {
+                        let leaving = if selftest.is_some() { ", leaving a block a round" } else { "" };
+                        let said = format!("{shape} on {threads} threads{leaving}: {error}");
+                        std::io::Error::new(error.kind(), said)
+                    })?;
                 Ok((ended.status.code(), String::from_utf8_lossy(&ended.stderr).into_owned()))
             };
             let how = format!("{shape} on {threads} threads");
@@ -18299,6 +18327,58 @@ def main(stdout: Stdout):
     return
 "#,
         "2\n6\n6\nheld 5 table 7\n",
+    )
+}
+
+/// Routes added with `router.get` and the other methods, written in as calls to `handle`, answer
+/// natively: a handler taking its parameters in another order than the path's, a sized int that
+/// doesn't hold what's in the path answering 404, as text that isn't a number does, an arrow
+/// taking its parameter as text, and routes added through a field and a `ref` parameter.
+#[test]
+fn routes_added_with_their_methods_answer_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "checked_routes",
+        r#"from std.net import Router, Request, Response
+
+struct App:
+    router: Router
+    greeting: str
+
+    def add(ref self):
+        self.router.get("/hello/{who}", (request, who) => Response(status=200, body=f"{self.greeting} {who}".encode()))
+
+def home(request: Request) -> Response:
+    return Response(status=200, body="home".encode())
+
+def show(request: Request, id: int) -> Response:
+    return Response(status=200, body=f"note {id + 1}".encode())
+
+def pair(request: Request, name: str, id: u8) -> Response:
+    return Response(status=200, body=f"{name} {id}".encode())
+
+def more(ref router: Router, prefix: str):
+    router.delete("/tags/{tag}", (request, tag) => Response(status=204, body=f"{prefix}{tag}".encode()))
+
+def main(stdout: Stdout):
+    mut app = App(router=Router(), greeting="hi")
+    app.router.get("/", home)
+    app.router.get("/notes/{id}", show)
+    app.router.post("/pairs/{id}/{name}", pair)
+    app.add()
+    more(ref app.router, "tag ")
+    asked = [("GET", "/"), ("GET", "/notes/41"), ("GET", "/notes/abc"), ("POST", "/pairs/7/ann"), ("POST", "/pairs/300/ann"), ("GET", "/hello/bo"), ("DELETE", "/tags/x"), ("GET", "/tags/x")]
+    for method, path in asked:
+        response = app.router.respond(Request(method=method, path=path))
+        text = response.body.decode() except InvalidValue(): "?"
+        stdout.print(f"{method} {path} {response.status} {text}")
+    return
+"#,
+        "GET / 200 home\nGET /notes/41 200 note 42\nGET /notes/abc 404 there's nothing here\n\
+         POST /pairs/7/ann 200 ann 7\nPOST /pairs/300/ann 404 there's nothing here\nGET /hello/bo 200 hi bo\n\
+         DELETE /tags/x 204 tag x\nGET /tags/x 405 this takes DELETE\n",
     )
 }
 

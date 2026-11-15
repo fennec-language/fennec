@@ -12,6 +12,16 @@ use fennec_syntax::{BinOp, Span};
 use crate::emit::Emit;
 use crate::kinds::Kind;
 
+/// Where a lookup just before a store found the store's key.
+pub(crate) struct Found {
+    /// The key's entry, or null.
+    pub(crate) entry: String,
+    /// Whether the dict it searched is surely the one the store writes: the store's own local's,
+    /// which nothing has written since the lookup, or it would have been forgotten. A dict read
+    /// out of a field isn't: the store compares the block it searched with the one there now.
+    pub(crate) sure: bool,
+}
+
 const MIX: i64 = 0x9E37_79B9_7F4A_7C15_u64.cast_signed();
 /// Where a dict's count of keys, entries used and slots less one are.
 const KEYS: u32 = 16;
@@ -550,7 +560,8 @@ impl Emit<'_, '_, '_> {
             Some(value) => self.operand(value)?.0,
             None => String::new(),
         };
-        self.dict_store_word(place, (key_word, value_word), &key, &held, (found.clone(), found))
+        let for_store = found.clone().map(|entry| Found { entry, sure: false });
+        self.dict_store_word(place, (key_word, value_word), &key, &held, (for_store, found))
     }
 
     /// [`Self::dict_store_at`] with a value, given apart where a lookup found the key for the store
@@ -561,7 +572,7 @@ impl Emit<'_, '_, '_> {
         (key_word, value_word): (Word, Word),
         key: &Operand,
         value: &Operand,
-        found: (Option<String>, Option<String>),
+        found: (Option<Found>, Option<String>),
     ) -> Result<(), String> {
         let key = self.key_value(key, key_word)?;
         let held = self.operand(value)?.0;
@@ -649,19 +660,53 @@ impl Emit<'_, '_, '_> {
         (searched, entry): (String, String),
         (key, key_word, value_word): (&Operand, Word, Word),
     ) -> Result<String, String> {
+        let key = self.key_value(key, key_word)?;
+        Ok(self
+            .found_or_searched(dict, (searched, entry), |emit| emit.find(dict, (key_word, value_word), &key)))
+    }
+
+    /// What a lookup found, `entry`, when the block it searched, `searched`, is `dict`, and what
+    /// `search` finds in `dict` now otherwise.
+    fn found_or_searched(
+        &mut self,
+        dict: &str,
+        (searched, entry): (String, String),
+        search: impl FnOnce(&mut Self) -> String,
+    ) -> String {
         let (same, look, have) = (self.temp(), self.label("look"), self.label("have"));
         self.line(&format!("{same} = icmp eq ptr {dict}, {searched}"));
         let came = self.current.clone();
         self.line(&format!("br i1 {same}, label %{have}, label %{look}"));
         self.start_block(&look);
-        let key = self.key_value(key, key_word)?;
-        let looked = self.find(dict, (key_word, value_word), &key);
+        let looked = search(self);
         let looked_from = self.current.clone();
         self.line(&format!("br label %{have}"));
         self.start_block(&have);
         let entry_now = self.temp();
         self.line(&format!("{entry_now} = phi ptr [ {entry}, %{came} ], [ {looked}, %{looked_from} ]"));
-        Ok(entry_now)
+        entry_now
+    }
+
+    /// Where a store's key is in the dict it's writing, `dict`: what a lookup just before found,
+    /// when the block that lookup searched is this one, and what `search` finds otherwise. A
+    /// lookup's entry is in the dict it read, and a field can hold another by the time of the
+    /// store with nothing written that names the lookup's own local, as after
+    /// `known = mine.visits.get(key)` and then `mine = other`: the store then wrote into the dict
+    /// `mine` had held, which the caller may still hold, or which is freed.
+    fn found_in(
+        &mut self,
+        dict: &str,
+        found: Option<Found>,
+        search: impl FnOnce(&mut Self) -> String,
+    ) -> String {
+        match found {
+            Some(Found { entry, sure: true }) => entry,
+            Some(Found { entry, sure: false }) => match self.searched.get(&entry).cloned() {
+                Some(searched) => self.found_or_searched(dict, (searched, entry), search),
+                None => search(self),
+            },
+            None => search(self),
+        }
     }
 
     /// As [`Self::dict_store_at`], with the key and value already worked out.
@@ -671,7 +716,7 @@ impl Emit<'_, '_, '_> {
         (key_word, value_word): (Word, Word),
         key: &str,
         held: &str,
-        (found, checked): (Option<String>, Option<String>),
+        (found, checked): (Option<Found>, Option<String>),
     ) -> Result<(), String> {
         let (key, held) = (key.to_owned(), held.to_owned());
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
@@ -697,11 +742,8 @@ impl Emit<'_, '_, '_> {
         };
         self.line(&format!("br i1 {alone}, label %{quick}, label %{slow}"));
         self.start_block(&quick);
-        // With the dict alone, it's the same block the lookup searched, unchanged since.
-        let entry = match found {
-            Some(entry) => entry,
-            None => self.find(&dict, (key_word, value_word), &key),
-        };
+        // The lookup's entry, when this is the block it searched: alone, so unchanged since.
+        let entry = self.found_in(&dict, found, |emit| emit.find(&dict, (key_word, value_word), &key));
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
         // A short new key held inline, or a plain key compared by its words, for values holding
@@ -841,7 +883,7 @@ impl Emit<'_, '_, '_> {
         place: &str,
         (key_word, value_word): (Word, Word),
         (key, held): (&str, &str),
-        found: Option<String>,
+        found: Option<Found>,
     ) -> Result<(), String> {
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
         let dict = self.temp();
@@ -861,10 +903,7 @@ impl Emit<'_, '_, '_> {
         };
         self.line(&format!("br i1 {alone}, label %{quick}, label %{slow}"));
         self.start_block(&quick);
-        let entry = match found {
-            Some(entry) => entry,
-            None => self.find(&dict, (key_word, value_word), key),
-        };
+        let entry = self.found_in(&dict, found, |emit| emit.find(&dict, (key_word, value_word), key));
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
         self.line(&format!("br i1 {missing}, label %{slow}, label %{change}"));
@@ -1680,7 +1719,7 @@ found:
         &mut self,
         place: &str,
         (key_word, value_word): (Word, Word),
-        (key, found): (&crate::analysis::SliceKey, Option<String>),
+        (key, found): (&crate::analysis::SliceKey, Option<Found>),
         value: &Operand,
     ) -> Result<(), String> {
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
@@ -1690,10 +1729,7 @@ found:
         let dict = self.temp();
         self.line(&format!("{dict} = load ptr, ptr {place}"));
         // A key that's there, in a dict nothing else holds, just gets its new value.
-        let value_at = match found {
-            Some(value_at) => value_at,
-            None => self.slice_value_at(&dict, key_word, &sliced),
-        };
+        let value_at = self.found_in(&dict, found, |emit| emit.slice_value_at(&dict, key_word, &sliced));
         let alone = self.alone(&dict);
         let (there, quick) = (self.temp(), self.temp());
         self.line(&format!("{there} = icmp ne ptr {value_at}, null"));

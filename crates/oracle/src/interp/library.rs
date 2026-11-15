@@ -47,9 +47,16 @@ pub(crate) fn has_function(path: &str) -> bool {
             | "std.intrinsics.text_of_code"
             | "std.intrinsics.bytes_text"
             | "std.intrinsics.stop"
+            | "std.intrinsics.bytes_builder"
+            | "std.intrinsics.bytes_push"
+            | "std.intrinsics.bytes_push_word"
+            | "std.intrinsics.bytes_push_text"
+            | "std.intrinsics.bytes_push_bytes"
+            | "std.intrinsics.bytes_set"
             | "std.random.random_int"
             | "std.random.random_float"
             | "std.random.random_choice"
+            | "std.crypto.equal"
     )
 }
 
@@ -75,6 +82,15 @@ pub(crate) fn call(path: &str, args: &[Value], span: Span) -> Run<Value> {
     }
     if let Some(name) = path.strip_prefix("std.random.") {
         return random(name, args, span);
+    }
+    // `crypto.equal`: whether two texts, or two runs of bytes, are the same. It takes a time that
+    // depends only on their lengths, which a program can't see.
+    if path == "std.crypto.equal" {
+        return match args {
+            [Value::Str(a), Value::Str(b)] => Ok(Value::Bool(a == b)),
+            [Value::Bytes(a), Value::Bytes(b)] => Ok(Value::Bool(a == b)),
+            _ => unsupported("`crypto.equal` of something other than two texts or two bytes"),
+        };
     }
     match (path, args) {
         ("std.math.sqrt", [Value::Float(x)]) => {
@@ -140,6 +156,8 @@ fn intrinsic(name: &str, args: &[Value], span: Span) -> Run<Value> {
             }
         }
         ("stop", [Value::Str(message)]) => crash(message.clone(), span),
+        // An empty byte builder, which the writing intrinsics, in `builtins.rs`, write into.
+        ("bytes_builder", []) => Ok(Value::Bytes(Vec::new())),
         _ => unsupported(format!("std.intrinsics.{name}")),
     }
 }

@@ -231,10 +231,10 @@ fn what_it_doesnt_model_is_refused_by_name() {
     assert_eq!(printed, "");
     assert_eq!(ended, Ended::Unsupported("std.toml.dumps".to_owned()));
     let (_, ended) = ran("
-        def main(stdout: Stdout, net: Net):
+        def main(stdout: Stdout, process: Process):
             stdout.print('hi')
         ");
-    assert_eq!(ended, Ended::Unsupported("the capability Net".to_owned()));
+    assert_eq!(ended, Ended::Unsupported("the capability Process".to_owned()));
 }
 
 #[test]
@@ -970,12 +970,43 @@ fn what_differs_from_one_system_to_another_is_refused() {
         "    fs.write_text('Notes.txt', 'a')?\n    stdout.print(fs.exists('notes.txt')?)\n",
         "the name `notes.txt` beside `Notes.txt`, which some systems take as the same name",
     );
-    refused("    stdout.print(fs.exists('/etc/hosts')?)\n", "a path outside the folder the program runs in");
+    refused(
+        "    fs.write_text('/made-by-the-oracle.txt', 'x')?\n",
+        "changing something outside the folder the program runs in",
+    );
     refused(
         "    stdout.print(fs.metadata('.')?.is_dir)\n    stdout.print(fs.metadata('.')?)\n",
         "a folder's size, which differs from one system to another",
     );
     refused("    _ = fs.read_bytes('a.bin')?\n", "bytes");
+}
+
+/// Outside the folder the program runs in, the disk is only looked at: whether a file or a folder
+/// is there. The root is, a path through nothing fails as not found, and reading a file that's
+/// there is refused, as it is inside for what was there before.
+#[test]
+fn outside_its_folder_the_disk_is_only_looked_at() {
+    let (printed, ended) = ran_in_work(
+        "
+        def failure(run: () -> str fails IoError) -> str:
+            _ = run() except why:
+                return why.message()
+            return 'read'
+
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            stdout.print(fs.exists('/')?, fs.exists('/no-such-fennec-folder')?)
+            stdout.print(failure(() => fs.read_text('/no-such-fennec-folder/settings.toml')?))
+        ",
+    );
+    assert_eq!(ended, Ended::Exited(0), "it printed:\n{printed}");
+    assert!(printed.starts_with("True False\n"), "{printed}");
+    let (_, ended) = ran_in_work(
+        "
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            stdout.print(fs.read_text('/')?)
+        ",
+    );
+    assert!(matches!(ended, Ended::Unsupported(_) | Ended::Stopped(_)), "{ended:?}");
 }
 
 /// In the folder the test runs in, the crate's own, the oracle sees what's there, reads none of

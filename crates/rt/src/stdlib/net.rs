@@ -59,6 +59,24 @@ struct Stream {
     /// set: a server gives a request's head and body one, so a client sending a byte at a time
     /// can't hold a connection open for longer than a request may take.
     reads_by: Mutex<Option<(Instant, Duration)>>,
+    /// Whether it's been closed from here. A task about to park on it looks first, as nothing
+    /// would wake it after.
+    closed: AtomicBool,
+    /// The tasks parked waiting on it, each with a number of its wait's own, for closing it to
+    /// wake: on Windows a worker's poll isn't told that a connection was closed from this side.
+    #[cfg(any(test, feature = "threads"))]
+    parked: Mutex<Vec<Wait>>,
+}
+
+/// A task parked waiting on a connection, as the connection notes it.
+#[cfg(any(test, feature = "threads"))]
+struct Wait {
+    /// A number of this wait's own, to take its note back by.
+    number: u64,
+    task: crate::embed::serve::ParkedTask,
+    /// Whether its worker's poll was told of the socket itself, and not of a copy of it. One wait
+    /// at a time is.
+    on_the_socket: bool,
 }
 
 /// What a connection reads through: the socket itself, or TLS over it, which writes through the
@@ -1225,6 +1243,9 @@ fn keep_stream_as(
         awaiting_a_message: AtomicBool::new(false),
         label: if served { next_label(0) } else { 0 },
         reads_by: Mutex::new(None),
+        closed: AtomicBool::new(false),
+        #[cfg(any(test, feature = "threads"))]
+        parked: Mutex::new(Vec::new()),
     };
     Ok(open(|open| {
         let handle = fresh_handle(open);
@@ -1348,7 +1369,7 @@ fn write_within(handle: i64, mut data: &[u8], timeout: Option<Duration>) -> Resu
             Ok(0) => return Err(Failure::Closed),
             Ok(written) => data = data.get(written..).unwrap_or_default(),
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                if wait_to_write(socket, deadline) {
+                if wait_to_write(&stream, deadline)? {
                     return Err(Failure::TimedOut(timeout.unwrap_or_default()));
                 }
             }
@@ -1381,7 +1402,7 @@ fn write_securely(
         match sent {
             Ok(()) => return Ok(()),
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                if wait_to_write(&stream.socket, deadline) {
+                if wait_to_write(stream, deadline)? {
                     return Err(Failure::TimedOut(timeout.unwrap_or_default()));
                 }
             }
@@ -1412,7 +1433,7 @@ fn lock_parking<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
             Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {}
         }
-        if !socket_parks() || !yield_to_others() {
+        if !task_parks() || !yield_to_others() {
             return lock.lock().unwrap_or_else(PoisonError::into_inner);
         }
     }
@@ -1433,6 +1454,81 @@ pub(crate) fn fetch_line(host: &str, port: u16) -> Result<Vec<u8>, Failure> {
     line?.ok_or(Failure::Closed)
 }
 
+/// Connects to `host` on `port` and keeps the connection, for tests of waits that park.
+#[cfg(test)]
+pub(crate) fn kept(host: &str, port: u16) -> Result<i64, Failure> {
+    let (stream, peer) = if task_parks() {
+        let host = host.to_owned();
+        off_thread(move || connected(&host, port, Duration::from_secs(10)))?
+    } else {
+        connected(host, port, Duration::from_secs(10))?
+    };
+    keep_stream(stream, peer, None)
+}
+
+/// A line from a kept connection, however long it takes.
+#[cfg(test)]
+pub(crate) fn line_from(handle: i64) -> Result<Option<Vec<u8>>, Failure> {
+    read_line(handle, None)
+}
+
+/// Closes a kept connection.
+#[cfg(test)]
+pub(crate) fn shut(handle: i64) {
+    close(handle);
+}
+
+/// A line from a kept connection, waiting no longer than `limit` for it.
+#[cfg(test)]
+pub(crate) fn line_from_within(handle: i64, limit: Duration) -> Result<Option<Vec<u8>>, Failure> {
+    read_line(handle, Some(limit))
+}
+
+/// Writes `data` to a kept connection, with the socket made not to block as a read parked on it
+/// makes it, waiting no longer than `limit` for room.
+#[cfg(test)]
+pub(crate) fn written_within(handle: i64, data: &[u8], limit: Duration) -> Result<(), Failure> {
+    if let Ok(stream) = stream(handle) {
+        let _ = blocks(&stream, false);
+    }
+    write_within(handle, data, Some(limit))
+}
+
+/// How many tasks are parked waiting on a kept connection, or about to be: those with the socket
+/// itself, and those with a copy of it.
+#[cfg(test)]
+pub(crate) fn waiting_on(handle: i64) -> (usize, usize) {
+    let Ok(stream) = stream(handle) else { return (0, 0) };
+    let parked = stream.parked.lock().unwrap_or_else(PoisonError::into_inner);
+    let on_the_socket = parked.iter().filter(|wait| wait.on_the_socket).count();
+    (on_the_socket, parked.len() - on_the_socket)
+}
+
+/// Writes `data` to a kept connection over and over, with the socket made not to block as a read
+/// parked on it makes it, until a write fails: how it failed.
+#[cfg(test)]
+pub(crate) fn written_until_it_fails(handle: i64, data: &[u8]) -> Failure {
+    if let Ok(stream) = stream(handle) {
+        let _ = blocks(&stream, false);
+    }
+    loop {
+        if let Err(failure) = write(handle, data) {
+            return failure;
+        }
+    }
+}
+
+/// Connects to `host` on `port`, sends `line` and reads a line back, for tests of waits that park.
+#[cfg(test)]
+pub(crate) fn said_and_heard(host: &str, port: u16, line: &[u8]) -> Result<Vec<u8>, Failure> {
+    let host = host.to_owned();
+    let (stream, peer) = off_thread(move || connected(&host, port, Duration::from_secs(10)))?;
+    let handle = keep_stream(stream, peer, None)?;
+    let heard = write(handle, line).and_then(|()| read_line(handle, Some(Duration::from_secs(10))));
+    close(handle);
+    heard?.ok_or(Failure::Closed)
+}
+
 /// Whether this call is in a task that can park while it waits for something to look up or connect
 /// to, on a thread that may block.
 fn task_parks() -> bool {
@@ -1444,12 +1540,6 @@ fn task_parks() -> bool {
     {
         false
     }
-}
-
-/// Whether this call is in a task that can park on a socket itself: a task, on Unix, whose poll can
-/// be told of the socket. On Windows, a socket's wait blocks its thread.
-fn socket_parks() -> bool {
-    cfg!(unix) && task_parks()
 }
 
 /// `work`, run on a thread that may block while this task parks, or here when it can't.
@@ -1486,14 +1576,14 @@ fn reading<T>(
         }
         None => timeout,
     };
-    let mut attempt = || {
+    let attempt = || {
         let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
         match &mut *reader {
             Reading::Plain(plain) => read(plain),
             Reading::Tls(secured) => read(&mut **secured),
         }
     };
-    if !socket_parks() {
+    if !task_parks() {
         let mut reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
         // The reader reads through a copy of the socket, and on Windows a copy keeps its own
         // timeouts: one set on the connection's own socket leaves a read on the copy waiting.
@@ -1539,28 +1629,61 @@ fn reading<T>(
         }
         return done.map_err(|error| Failure::of(&error, timeout));
     }
-    let socket = &stream.socket;
-    socket.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
+    read_parking(stream, timeout, attempt)
+}
+
+/// `reading`, for a task that can park: it tries with the socket made not to block, and between
+/// tries parks until the socket may be readable, its time's up, or the connection's closed.
+fn read_parking<T>(
+    stream: &Stream,
+    timeout: Option<Duration>,
+    mut attempt: impl FnMut() -> std::io::Result<T>,
+) -> Result<T, Failure> {
+    blocks(stream, false).map_err(|error| Failure::Other(error.to_string()))?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let mut closed = false;
     let done = loop {
         match attempt() {
             Ok(done) => break Ok(done),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                // Closed from here while it waited, and there's still nothing: there never will be.
+                if closed {
+                    break Err(Failure::Closed);
+                }
                 if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
                     break Err(Failure::TimedOut(timeout.unwrap_or_default()));
                 }
-                if park_until_readable(socket, deadline) {
+                if park_until_readable(stream, deadline) {
                     break Err(Failure::TimedOut(timeout.unwrap_or_default()));
                 }
+                closed = stream.closed.load(Ordering::SeqCst);
             }
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) => break Err(Failure::of(&error, timeout)),
         }
     };
-    let blocking = socket.set_nonblocking(false);
+    let blocking = blocks(stream, true);
     let done = done?;
     blocking.map_err(|error| Failure::Other(error.to_string()))?;
     Ok(done)
+}
+
+/// Has a connection's reads and writes wait in the kernel, or come back at once to say they would,
+/// as a read that parks its task between tries needs.
+fn blocks(stream: &Stream, waiting: bool) -> std::io::Result<()> {
+    stream.socket.set_nonblocking(!waiting)?;
+    // The reader reads through a copy of the socket. On Unix a copy shares this; whether one on
+    // Windows does isn't said anywhere, so there it's told too.
+    #[cfg(windows)]
+    {
+        let reader = stream.reader.lock().unwrap_or_else(PoisonError::into_inner);
+        let copy = match &*reader {
+            Reading::Plain(plain) => plain.get_ref(),
+            Reading::Tls(secured) => secured.socket(),
+        };
+        copy.set_nonblocking(!waiting)?;
+    }
+    Ok(())
 }
 
 /// Whether this is a launched task that's been stopped, which then fails as a stopped one does.
@@ -1575,8 +1698,9 @@ fn stopped_while_reading() -> bool {
     }
 }
 
-/// The connections launched tasks are blocked reading, each by its task's stop. On Windows a task's
-/// read blocks its thread, so nothing run there can end it: its stop shuts the socket instead.
+/// The connections launched tasks are blocked reading, each by its task's stop. A read by a task
+/// that can't park, one holding a lock say, blocks its thread, so nothing run there can end it:
+/// its stop shuts the socket instead.
 #[cfg(any(test, feature = "threads"))]
 static BLOCKED_READS: Mutex<Vec<(usize, Arc<Stream>)>> = Mutex::new(Vec::new());
 
@@ -1629,34 +1753,135 @@ pub(crate) fn cut_blocked_reads(stop: &Arc<std::sync::atomic::AtomicU8>) {
 
 /// Parks this task until `socket` may be readable or `deadline` passes: true if it passed, or the
 /// task was cancelled.
-#[cfg(all(unix, any(test, feature = "threads")))]
-fn park_until_readable(socket: &TcpStream, deadline: Option<Instant>) -> bool {
-    use crate::embed::serve::Parked;
-    let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-    crate::embed::serve::park_on_fd(fd, mio::Interest::READABLE, deadline) != Parked::Ready
+#[cfg(any(test, feature = "threads"))]
+fn park_until_readable(stream: &Stream, deadline: Option<Instant>) -> bool {
+    park_on_socket(stream, mio::Interest::READABLE, deadline) != crate::embed::serve::Parked::Ready
 }
 
-#[cfg(not(all(unix, any(test, feature = "threads"))))]
-fn park_until_readable(_socket: &TcpStream, _deadline: Option<Instant>) -> bool {
+#[cfg(not(any(test, feature = "threads")))]
+fn park_until_readable(_stream: &Stream, _deadline: Option<Instant>) -> bool {
     false
 }
 
-/// Waits until `socket` may take more to write: parked in a task that can, and otherwise a moment,
-/// as only a socket another task made not block gets here.
-/// Waits for room to write, or until `deadline` passes: true once it has.
-fn wait_to_write(socket: &TcpStream, deadline: Option<Instant>) -> bool {
+/// For tests: how many of them are having sockets park on a copy on every platform, as Windows
+/// always does. A count, so one that's done doesn't turn it off under another.
+#[cfg(test)]
+static PARKING_ON_COPIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// For tests: while one of these lives, sockets park on a copy on every platform.
+#[cfg(test)]
+pub(crate) struct OnCopies;
+
+#[cfg(test)]
+impl OnCopies {
+    pub(crate) fn begin() -> OnCopies {
+        PARKING_ON_COPIES.fetch_add(1, Ordering::SeqCst);
+        OnCopies
+    }
+}
+
+#[cfg(test)]
+impl Drop for OnCopies {
+    fn drop(&mut self) {
+        PARKING_ON_COPIES.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// The number the next wait parked on a connection is noted under.
+#[cfg(any(test, feature = "threads"))]
+static NEXT_WAIT: AtomicU64 = AtomicU64::new(0);
+
+/// Parks this task until `stream`'s socket may be ready for `interest`, `deadline` passes, or the
+/// connection is closed from here. On Unix the worker's poll is told of the socket itself, and on
+/// Windows of a copy of it.
+///
+/// **One wait at a time has the socket itself.** A poll takes a descriptor once, and a connection
+/// can have two tasks waiting on it at once: one reading while another writes, as a chat's reader
+/// and the task that broadcasts to it do. Both used to hand their worker's poll the socket. On
+/// Linux the second was refused, and tried again at once for as long as it had to wait, its worker
+/// never polling. On macOS both were taken, and the first to finish took both off the poll, so the
+/// other was never woken. So a wait that finds another with the socket goes through a copy of it,
+/// which has a descriptor of its own.
+///
+/// The wait is noted on the connection first, so closing it wakes this task, and then it looks at
+/// whether it's closed already, as a close that came before the note woke nobody. A close either
+/// finds the note or is seen here.
+#[cfg(any(test, feature = "threads"))]
+fn park_on_socket(
+    stream: &Stream,
+    interest: mio::Interest,
+    deadline: Option<Instant>,
+) -> crate::embed::serve::Parked {
+    use crate::embed::serve::{Parked, ParkedTask};
+    let token = crate::embed::serve::next_token();
+    let wait = NEXT_WAIT.fetch_add(1, Ordering::Relaxed);
+    let on_the_socket = {
+        // Looked at and noted with the list held, so of two waits that come at once, one sees the
+        // other.
+        let mut parked = stream.parked.lock().unwrap_or_else(PoisonError::into_inner);
+        let on_the_socket = !parked.iter().any(|other| other.on_the_socket);
+        if let Some(task) = ParkedTask::here(token) {
+            parked.push(Wait { number: wait, task, on_the_socket });
+        }
+        on_the_socket
+    };
+    let parked = if stream.closed.load(Ordering::SeqCst) {
+        Parked::Ready
+    } else {
+        park_on(token, &stream.socket, (interest, deadline), on_the_socket)
+    };
+    stream.parked.lock().unwrap_or_else(PoisonError::into_inner).retain(|noted| noted.number != wait);
+    parked
+}
+
+/// `park_on_socket`'s wait itself, on `token`: through the socket's own descriptor if it's
+/// `on_the_socket`, on Unix, and otherwise through a copy.
+#[cfg(any(test, feature = "threads"))]
+fn park_on(
+    token: mio::Token,
+    socket: &TcpStream,
+    (interest, deadline): (mio::Interest, Option<Instant>),
+    on_the_socket: bool,
+) -> crate::embed::serve::Parked {
+    #[cfg(unix)]
+    {
+        #[cfg(test)]
+        let on_the_socket = on_the_socket && PARKING_ON_COPIES.load(Ordering::SeqCst) == 0;
+        if on_the_socket {
+            let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
+            return crate::embed::serve::park_on_fd(token, fd, interest, deadline);
+        }
+        crate::embed::serve::park_on_copy(token, socket, interest, deadline)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = on_the_socket;
+        crate::embed::serve::park_on_copy(token, socket, interest, deadline)
+    }
+}
+
+/// Waits until `stream`'s socket may take more to write: parked in a task that can, and otherwise
+/// a moment, as only a socket another task made not block gets here. Gives true once `deadline`
+/// has passed, or the task's been stopped or cancelled, which ends its write as it does a read:
+/// thrown away, that left a stopped task writing for ever, never waiting and never done. A
+/// connection closed from here has no room coming, and fails as closed.
+fn wait_to_write(stream: &Stream, deadline: Option<Instant>) -> Result<bool, Failure> {
+    if stream.closed.load(Ordering::SeqCst) {
+        return Err(Failure::Closed);
+    }
     if deadline.is_some_and(|deadline| deadline <= Instant::now()) {
-        return true;
+        return Ok(true);
     }
-    #[cfg(all(unix, any(test, feature = "threads")))]
-    if socket_parks() {
-        let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-        let _ = crate::embed::serve::park_on_fd(fd, mio::Interest::WRITABLE, deadline);
-        return deadline.is_some_and(|deadline| deadline <= Instant::now());
+    #[cfg(any(test, feature = "threads"))]
+    if task_parks() {
+        let parked = park_on_socket(stream, mio::Interest::WRITABLE, deadline);
+        if parked == crate::embed::serve::Parked::Cancelled {
+            return Ok(true);
+        }
+        return Ok(deadline.is_some_and(|deadline| deadline <= Instant::now()));
     }
-    let _ = socket;
     std::thread::sleep(Duration::from_millis(1));
-    false
+    Ok(false)
 }
 
 fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failure> {
@@ -1845,6 +2070,7 @@ fn send_to(handle: i64, data: &[u8], address: &str) -> Result<(), Failure> {
 fn close(handle: i64) {
     let closed = open(|open| open.remove(&handle));
     if let Some(Socket::Stream(stream)) = &closed {
+        stream.closed.store(true, Ordering::SeqCst);
         if stream.served && task_parks() {
             let lingering = Arc::clone(stream);
             off_thread(move || linger(&lingering.socket));
@@ -1853,6 +2079,14 @@ fn close(handle: i64) {
         }
         // It may be closed already from the other side, which is what closing wanted.
         let _ = stream.socket.shutdown(Shutdown::Both);
+        // A task parked waiting on it looks again, and finds it shut. Unix's poll would say so
+        // itself; Windows' doesn't report a close made from this side, and the task would wait on.
+        #[cfg(any(test, feature = "threads"))]
+        for Wait { task, .. } in
+            std::mem::take(&mut *stream.parked.lock().unwrap_or_else(PoisonError::into_inner))
+        {
+            task.wake();
+        }
     }
     // A server that's being served isn't among the open sockets: its workers have its listener.
     #[cfg(any(test, feature = "threads"))]

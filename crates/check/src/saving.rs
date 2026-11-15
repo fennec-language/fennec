@@ -88,32 +88,9 @@ pub(crate) fn generate(module: &mut Module) {
         return;
     }
     let mut checker = Checker::new(module);
-    let types: Vec<TypeDef> = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Struct(def) | Item::Enum(def) if !def.shared => Some(def.clone()),
-            _ => None,
-        })
-        .collect();
+    let types = program_types(module);
     let written = written_by_hand(module);
-    let mut generated: BTreeSet<String> = types
-        .iter()
-        .filter(|def| !written.contains(&def.name) && !has_method(def) && never_saved(&def.name).is_none())
-        .map(|def| def.name.clone())
-        .collect();
-    // What can't be saved takes what holds it with it, until nothing more goes.
-    loop {
-        let before = generated.len();
-        for def in &types {
-            if generated.contains(&def.name) && !all_saved(&mut checker, def, &generated) {
-                generated.remove(&def.name);
-            }
-        }
-        if generated.len() == before {
-            break;
-        }
-    }
+    let generated = generated_among(&mut checker, &types, &written);
     // What can't be saved but can be loaded, as a struct holding a `Secret` can, gets only its
     // `deserialize`: what can't be loaded takes what holds it with it in the same way.
     let mut load_only: BTreeSet<String> = types
@@ -157,6 +134,47 @@ pub(crate) fn generate(module: &mut Module) {
     // through, which are written last.
     if written.fill(&mut made).is_some() {
         module.items.extend(made);
+    }
+}
+
+/// The program's own types, a `shared` one's aside, which saving makes a pair for if it can.
+fn program_types(module: &Module) -> Vec<TypeDef> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(def) | Item::Enum(def) if !def.shared => Some(def.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The program's types `generate` makes a `serialize` and a `deserialize` for, or made them for
+/// already, which `saved` takes. Asked once they're made, it's those still to make, none, and
+/// `saved` finds the made ones by their methods, so `saved` answers the same before and after:
+/// what asks needn't come after `generate`.
+pub(crate) fn generated_types(checker: &mut Checker, module: &Module) -> BTreeSet<String> {
+    generated_among(checker, &program_types(module), &written_by_hand(module))
+}
+
+/// Of `types`, those that write neither method and aren't never saved, and whose fields can all
+/// be saved. What can't be saved takes what holds it with it, until nothing more goes.
+fn generated_among(checker: &mut Checker, types: &[TypeDef], written: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut generated: BTreeSet<String> = types
+        .iter()
+        .filter(|def| !written.contains(&def.name) && !has_method(def) && never_saved(&def.name).is_none())
+        .map(|def| def.name.clone())
+        .collect();
+    loop {
+        let before = generated.len();
+        for def in types {
+            if generated.contains(&def.name) && !all_saved(checker, def, &generated) {
+                generated.remove(&def.name);
+            }
+        }
+        if generated.len() == before {
+            return generated;
+        }
     }
 }
 

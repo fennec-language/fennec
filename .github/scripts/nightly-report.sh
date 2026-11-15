@@ -9,8 +9,12 @@
 # It also copies this Mac's flake ledger (see `flakes.sh`), listed by test with `fennec-flakes` and
 # each entry whole under it, as `flakes-<date>.md`, so every flake the gates saw is there to read.
 #
+# It says too whether main's CI is green on every system, naming each job that isn't, with
+# `main-ci.sh`.
+#
 # It needs `gh`, signed in. A night still running, or one with no report, is said so, and nothing
-# is written. It exits 1 when the night failed, so whatever runs it can say so loudly.
+# is written. It exits 1 when the night failed, or a job of main's CI is red on any system, so
+# whatever runs it can say so loudly.
 set -eu
 folder=$1
 here=$(cd "$(dirname "$0")" && pwd)
@@ -35,23 +39,27 @@ else
   echo "flakes: none, as there's no ledger at $ledger"
 fi
 repository=${2:-fennec-language/fennec}
+# Main's CI on every system, in a line: a job red on one, like Windows, is said here, and fails the
+# report, the day it goes red.
+main_ci=0
+"$here/main-ci.sh" "$repository" || main_ci=1
 read -r run conclusion created <<< "$(gh run list --repo "$repository" --workflow proofs.yml --limit 1 \
   --json databaseId,conclusion,createdAt --jq '.[0] | "\(.databaseId) \(.conclusion // "running") \(.createdAt)"')"
 if [ -z "${run:-}" ]; then
   echo "no Proofs run yet"
-  exit 0
+  exit "$main_ci"
 fi
 if [ "$conclusion" = running ] || [ "$conclusion" = "" ]; then
   echo "the Proofs run $run is still going"
-  exit 0
+  exit "$main_ci"
 fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 if ! gh run download "$run" --repo "$repository" --name nightly-report --dir "$work" > /dev/null 2>&1; then
   echo "the Proofs run $run ($conclusion) kept no report"
-  exit 0
+  exit "$main_ci"
 fi
 day=${created%%T*}
 cp "$work/nightly.md" "$folder/nightly-proofs-$day.md"
 echo "Proofs on $day: $conclusion, report in $folder/nightly-proofs-$day.md"
-[ "$conclusion" = success ]
+[ "$conclusion" = success ] && [ "$main_ci" -eq 0 ]

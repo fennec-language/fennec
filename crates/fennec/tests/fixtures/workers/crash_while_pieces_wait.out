@@ -1,0 +1,5 @@
+pieces gave [-1, -2]
+main: Crashed(why="the task crashed")
+pieces gave [-1, -2]
+task: Crashed(why="the task crashed")
+done

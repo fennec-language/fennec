@@ -946,6 +946,8 @@ const TASK_COMPREHENSIONS: &str = "\
 12 a greeting long enough to need a block of its own, name 11 12\n\
 8.583749889959188\n\
 TooFar(at=4)\n\
+TooFar(at=4)\n\
+[\"pieces\", \"words\", \"pieces\", \"words\", \"pieces\", \"words\", \"pieces\", \"words\", \"pieces\"]\n\
 piece 0\n\
 piece 1\n\
 piece 2\n\
@@ -998,6 +1000,41 @@ fn a_task_s_comprehensions_run_their_pieces_at_once_as_main_s_do() -> std::io::R
         assert_eq!(from("main"), wanted.join("\n"), "from main, {how}");
         assert_eq!(from("task"), from("main"), "from a task, {how}");
         assert!(printed.ends_with("done\n"), "{how}: {printed}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// The pieces of a comprehension take owners of what they capture while they hold a write lock,
+/// odd pieces one lock and even ones another, so two do it at once. From a task they read a copy
+/// the task made for them, and a piece holding a lock leaves that copy's counts to the runtime, as
+/// it does `main`'s blocks: every count comes out right, so nothing's left live at the end. A lent
+/// copy was once marked as what a lock guards is, which its holder counts in place: two pieces
+/// under two locks then wrote one count at once. ThreadSanitizer runs this program too.
+#[test]
+fn a_task_s_pieces_holding_write_locks_leave_lent_counts_to_the_runtime() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-two-locks-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/pieces_under_two_locks.fen");
+    let built = build_on_threads(&dir, source, "pieces_under_two_locks")?;
+    let wanted = include_str!("fixtures/workers/pieces_under_two_locks.out");
+    for (threads, stressed) in [("4", false), ("16", false), ("16", true)] {
+        let mut run = Command::new(&built);
+        run.env("FENNEC_THREADS", threads).env("FENNEC_COUNTS", "1");
+        if stressed {
+            run.env("FENNEC_PARALLEL_STRESS", "1");
+        }
+        let ran = run.output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        let how = format!("on {threads} threads, stressed: {stressed}");
+        assert_eq!(ran.status.code(), Some(0), "{how}: {said}");
+        assert_eq!(printed, wanted, "{how}");
+        assert!(said.contains(" live 0"), "{how} left blocks live: {said}");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

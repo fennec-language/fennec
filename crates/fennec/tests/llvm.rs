@@ -12615,6 +12615,25 @@ fn a_task_stopped_in_a_call_to_the_runtime_lets_go_of_what_the_call_was_given() 
     prints_with_nothing_left(&dir, &program, &format!("{}1\n", stopped.repeat(2)), &["1", "4"])
 }
 
+/// The same stop, reaching the pieces of a comprehension the stopped task was parked in: each
+/// piece waits in a read with `timeout=` on a worker of its own choosing, the task's stop is passed
+/// on to it, and it lets go of what its call was given before what it made is handed back to the
+/// task. Nothing's left live, from `main` and from inside a task.
+#[test]
+fn pieces_stopped_in_calls_to_the_runtime_let_go_of_what_the_calls_were_given() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("pieces_stopped_in_a_wait")?;
+    let program = dir.join("pieces_stopped_in_a_wait.fen");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pieces_stopped_in_a_wait.fen"),
+        &program,
+    )?;
+    let stopped = "Refused(why=\"leaving this way stops the task\")\n";
+    prints_with_nothing_left(&dir, &program, &stopped.repeat(2), &["1", "4"])
+}
+
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what
 /// changes it next finds the list with one owner: a `ref` function changing the items, then a
 /// plain loop reading them, round after round, copies nothing.

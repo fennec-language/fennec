@@ -25,6 +25,7 @@ mod constants;
 mod crossing;
 mod effects;
 mod enumerate_lowering;
+mod every;
 mod except;
 mod except_fix;
 mod expect;

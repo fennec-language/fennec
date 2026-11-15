@@ -145,41 +145,45 @@ impl Interp {
 
     /// Ends the parts read since `mark`, the newest first, so one inside another is written into
     /// it before it's written back itself. With `write`, each goes back through its type's
-    /// `def []=`; without, the change didn't happen, and nothing's written.
+    /// `def []=`; without, the change didn't happen, and nothing's written. Should a write back
+    /// stop, the parts after it are let go of unwritten, and what stopped it is passed on.
     pub(crate) fn settle_write_backs(&mut self, mark: usize, write: bool, span: Span) -> Run<()> {
+        let mut settled = Ok(());
         while self.write_backs.len() > mark {
             let Some(back) = self.write_backs.pop() else { break };
-            let part = self.read_place(&back.part, span)?;
+            let part = self.read_place(&back.part, span);
             if let Some(frame) = self.frames.get_mut(back.part.frame) {
                 frame.vars.retain(|(name, _)| *name != back.part.name);
             }
-            if !write {
+            if !write || settled.is_err() {
                 continue;
             }
-            let Some(setter) = self.program.method(&back.ty, "[]=") else {
-                return unsupported(format!("changing part of a {}, which has no `def []=`", back.ty));
-            };
-            let given = vec![ArgVal::Value(None, back.key), ArgVal::Value(None, part)];
-            self.call_def(setter, None, Some(Receiver::Place(back.owner)), given, span)?;
+            settled = part.and_then(|part| {
+                let Some(setter) = self.program.method(&back.ty, "[]=") else {
+                    return unsupported(format!("changing part of a {}, which has no `def []=`", back.ty));
+                };
+                let given = vec![ArgVal::Value(None, back.key), ArgVal::Value(None, part)];
+                self.call_def(setter, None, Some(Receiver::Place(back.owner)), given, span).map(|_| ())
+            });
         }
-        Ok(())
+        settled
     }
 }
 
 impl Interp {
     /// What a change through places read since `mark` came to: each part is written back when
-    /// it went through. A failure partway, which a program can catch, is refused, since whether
-    /// the runtime writes back what changed before it isn't promised; anything else that stopped
-    /// it is passed on, with nothing written.
+    /// it went through, and when it failed partway too, with what it changed before the failure,
+    /// since only `lock ... as ref` rolls back (`docs/language.md`). Anything else that stopped
+    /// it, a crash or a refusal, is passed on with nothing written.
     pub(crate) fn settled<R>(&mut self, mark: usize, changed: Run<R>, span: Span) -> Run<R> {
         match changed {
             Ok(done) => {
                 self.settle_write_backs(mark, true, span)?;
                 Ok(done)
             }
-            Err(Flow::Fail(..)) if self.write_backs.len() > mark => {
-                self.settle_write_backs(mark, false, span)?;
-                unsupported("a failure partway through a change through a type's own `def []=`")
+            Err(failed @ Flow::Fail(..)) => {
+                self.settle_write_backs(mark, true, span)?;
+                Err(failed)
             }
             Err(other) => {
                 self.settle_write_backs(mark, false, span)?;

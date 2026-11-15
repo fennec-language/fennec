@@ -613,33 +613,69 @@ fn a_types_own_index_reads_writes_back_and_gives_positions() {
          [Part(name=\"bolt\", x=3), Part(name=\"nut\", x=9)] 3 2\n\
          [7, 102, 31] 3\n",
     );
-    // A failure partway through a change made through `[]=` is refused: whether what changed
-    // before it is written back isn't promised.
-    let (_, ended) = ran("
+}
+
+/// A change through a type's own `def []=` that fails partway keeps what it changed before the
+/// failure: the part is written back, since only `lock ... as ref` rolls back. What it prints is
+/// what the compiled program printed, built for dev and with `--release`.
+#[test]
+fn a_change_through_its_own_index_that_fails_partway_is_written_back() {
+    prints(
+        "
         error Nope:
             code: int
 
+        struct Part:
+            name: str
+            x: int
+            marks: list[int]
+
+            def shift(ref self, by: int) fails Nope:
+                self.x += by
+                self.marks.append(by)
+                if by > 5:
+                    fail Nope(code=by)
+                self.x += 100
+
         struct Shelf:
-            parts: list[int]
+            parts: dict[str, Part]
+
+            def [](self, key: str) -> Part:
+                return self.parts[key]
+
+            def []=(ref self, key: str, part: Part):
+                self.parts[key] = part
+
+        struct Rack:
+            counts: list[int]
 
             def [](self, at: int) -> int:
-                return self.parts[at]
+                return self.counts[at]
 
-            def []=(ref self, at: int, part: int):
-                self.parts[at] = part
+            def []=(ref self, at: int, count: int):
+                self.counts[at] = count
 
-        def failing(ref value: int) fails Nope:
-            value += 1
-            fail Nope(code=1)
+        def failing(ref value: int, by: int) fails Nope:
+            value += by
+            fail Nope(code=by)
 
         def main(stdout: Stdout):
-            mut shelf = Shelf(parts=[1])
-            failing(ref shelf[0]) except Nope():
-                stdout.print(shelf.parts)
-        ");
-    assert_eq!(
-        ended,
-        Ended::Unsupported("a failure partway through a change through a type's own `def []=`".to_owned())
+            mut shelf = Shelf(parts={'bolt': Part(name='bolt', x=1, marks=[])})
+            shelf['bolt'].shift(2) except why:
+                stdout.print('failed', why.code)
+            stdout.print(shelf['bolt'])
+            shelf['bolt'].shift(9) except why:
+                stdout.print('failed', why.code)
+            stdout.print(shelf['bolt'])
+            mut rack = Rack(counts=[1, 2])
+            failing(ref rack[1], by=40) except Nope():
+                stdout.print('failed', rack.counts)
+            return
+        ",
+        "Part(name=\"bolt\", x=103, marks=[2])\n\
+         failed 9\n\
+         Part(name=\"bolt\", x=112, marks=[2, 9])\n\
+         failed [1, 42]\n",
     );
 }
 

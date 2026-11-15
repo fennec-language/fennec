@@ -153,8 +153,8 @@ on both sides. A module modeled on its own, like `std.json`, isn't run from sour
   and writes it back with `[]=` once the change is done: once for `shelf[0].x += 1`, nested too,
   and once for a call that takes it as `ref`, even one that changes it twice. A key that isn't an
   int goes to the plain form, so a type can have both, as `Grid` does. A failure partway through
-  such a change is refused, since whether what changed before it is written back isn't promised,
-  and so is a `with` source given a `ref` through `[]=`.
+  such a change writes the part back too, with what changed before it, since only
+  `lock ... as ref` rolls back. A `with` source given a `ref` through `[]=` is refused.
 - `value? from Context(...)` passes a failure up as the context, made only then. Native code
   keeps what caused it with it, but nothing reads that yet.
 - An `array[T, N]` is held as the list it prints as, and `array[T, N]()` is `N` of `T`'s zero, as

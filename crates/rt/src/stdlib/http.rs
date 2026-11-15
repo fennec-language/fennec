@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::net::SecureStream;
-use super::net::{Failure, TlsServer};
+use super::net::{Failure, TlsServer, Wanted, parked_out_on};
 
 /// How many redirects a request follows.
 const MOST_REDIRECTS: usize = 10;
@@ -205,6 +205,28 @@ pub(crate) fn send(request: &Request) -> Result<Answer, Failure> {
     Err(Failure::Other(format!("`{}` redirects more than {MOST_REDIRECTS} times", request.url)))
 }
 
+/// A request with nothing but its method, URL and body, for tests of requests made in tasks: the
+/// answer's status and body.
+#[cfg(test)]
+pub(crate) fn asked(
+    method: &str,
+    url: &str,
+    body: Vec<u8>,
+    timeout: Duration,
+) -> Result<(i64, Vec<u8>), Failure> {
+    let request = Request {
+        method: method.to_owned(),
+        url: url.to_owned(),
+        params: Vec::new(),
+        headers: Vec::new(),
+        body,
+        timeout,
+        most_body: MOST_BODY,
+        hosts: None,
+    };
+    send(&request).map(|answer| (answer.status, answer.body))
+}
+
 /// Whether a header says nothing about who's asking, so it can follow a redirect to another site.
 fn is_harmless(name: &str) -> bool {
     ["accept", "accept-encoding", "accept-language", "content-type", "user-agent"]
@@ -236,9 +258,21 @@ fn once<'h>(
             return Err(Failure::Other(format!("the header `{shown}` has a line break or `:` in it")));
         }
     }
-    let tcp = connect(url, deadline, timeout)?;
-    let mut stream =
-        if url.secure { secured(tcp, &url.host, deadline, timeout)? } else { Stream::Plain(tcp) };
+    // In a task that can park, only opening the connection holds a thread that may block: looking
+    // the host up, connecting, and the TLS handshake, which each end in their own time. The
+    // exchange itself can wait as long as the server likes, so the task parks on the socket for
+    // it. Run whole on a blocking thread, as it was, a few slow requests held every one of them,
+    // and whatever else needed one waited behind.
+    let parks = super::net::task_parks();
+    let to = url.clone();
+    let open = move || {
+        let tcp = connect(&to, deadline, timeout)?;
+        if to.secure { secured(tcp, &to.host, deadline, timeout) } else { Ok(Stream::Plain(tcp)) }
+    };
+    let mut stream = if parks { super::net::off_thread(open)? } else { open()? };
+    if parks {
+        stream.tcp().set_nonblocking(true).map_err(|error| Failure::of(&error, Some(timeout)))?;
+    }
     let host = if matches!((url.secure, url.port), (false, 80) | (true, 443)) {
         url.host.clone()
     } else {
@@ -265,8 +299,8 @@ fn once<'h>(
     // the body waits for the server to acknowledge the head, which it may hold back for 40 ms.
     let mut request = head.into_bytes();
     request.extend_from_slice(body);
-    stream.write_all_by(&request, deadline, timeout)?;
-    read_answer(&mut stream, method, (deadline, timeout), most_body)
+    stream.write_all_by(&request, (deadline, timeout), parks)?;
+    read_answer(&mut stream, method, (deadline, timeout), most_body, parks)
 }
 
 /// Whether this is what HTTP calls a token, as a method or a header's name has to be.
@@ -313,8 +347,13 @@ fn connect(url: &Url, deadline: Instant, timeout: Duration) -> Result<TcpStream,
 }
 
 /// A connection with TLS over it.
-trait Secure: Read + Write {
+trait Secure: Read + Write + Send {
     fn tcp(&self) -> &TcpStream;
+
+    /// Whether it has something of its own to send before it can read any more.
+    fn wants_write(&self) -> bool {
+        false
+    }
 }
 
 /// Puts TLS over a connection, once something has said it's wanted. A program that makes no
@@ -388,20 +427,38 @@ impl Stream {
 
     /// Reads some, by the time left. Nothing read means the other side is done, and `cut_off` says
     /// whether it went without saying so.
+    ///
+    /// A stream that `parks` has a socket that doesn't block, in a task: when there's nothing to
+    /// read yet, the task parks until there may be, or the time's up.
     fn read_by(
         &mut self,
         into: &mut [u8],
         (deadline, timeout): (Instant, Duration),
         cut_off: &mut bool,
+        parks: bool,
     ) -> Result<usize, Failure> {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(Failure::TimedOut(timeout));
         }
-        self.tcp().set_read_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
-        let read = match self {
-            Stream::Plain(tcp) => tcp.read(into),
-            Stream::Secure(stream) => stream.read(into),
+        if !parks {
+            self.tcp().set_read_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
+        }
+        let read = loop {
+            let read = match self {
+                Stream::Plain(tcp) => tcp.read(into),
+                Stream::Secure(stream) => stream.read(into),
+            };
+            match read {
+                Err(error) if parks && error.kind() == ErrorKind::WouldBlock => {
+                    let wanted = if self.wants_write() { Wanted::Either } else { Wanted::ToRead };
+                    if parked_out_on(self.tcp(), wanted, deadline) {
+                        return Err(Failure::TimedOut(timeout));
+                    }
+                }
+                Err(error) if parks && error.kind() == ErrorKind::Interrupted => {}
+                read => break read,
+            }
         };
         match read {
             Ok(count) => Ok(count),
@@ -415,11 +472,21 @@ impl Stream {
         }
     }
 
-    fn write_all_by(&mut self, data: &[u8], deadline: Instant, timeout: Duration) -> Result<(), Failure> {
+    /// Writes all of `data`, by the time left. A stream that `parks` waits for room as it waits
+    /// to read: parked.
+    fn write_all_by(
+        &mut self,
+        data: &[u8],
+        (deadline, timeout): (Instant, Duration),
+        parks: bool,
+    ) -> Result<(), Failure> {
         crate::stdlib::net::wrote_to_a_connection();
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return Err(Failure::TimedOut(timeout));
+        }
+        if parks {
+            return self.write_all_parking(data, (deadline, timeout));
         }
         self.tcp().set_write_timeout(Some(left)).map_err(|error| Failure::of(&error, Some(timeout)))?;
         let wrote = match self {
@@ -427,6 +494,53 @@ impl Stream {
             Stream::Secure(stream) => stream.write_all(data).and_then(|()| stream.flush()),
         };
         wrote.map_err(|error| failure_of(&error, timeout))
+    }
+
+    /// `write_all_by` on a socket that doesn't block: it gives what it can, and parks whenever
+    /// there's no room, until all of `data` is given and sent. TLS takes some of `data` to hold
+    /// and sends it as there's room, so it's all sent only once the flush says so.
+    fn write_all_parking(
+        &mut self,
+        mut data: &[u8],
+        (deadline, timeout): (Instant, Duration),
+    ) -> Result<(), Failure> {
+        loop {
+            let wrote =
+                if data.is_empty() { self.flush().map(|()| None) } else { self.write(data).map(Some) };
+            match wrote {
+                Ok(None) => return Ok(()),
+                Ok(Some(0)) => return Err(Failure::Closed),
+                Ok(Some(written)) => data = data.get(written..).unwrap_or_default(),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    if parked_out_on(self.tcp(), Wanted::ToWrite, deadline) {
+                        return Err(Failure::TimedOut(timeout));
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => return Err(failure_of(&error, timeout)),
+            }
+        }
+    }
+
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Stream::Plain(tcp) => tcp.write(data),
+            Stream::Secure(stream) => stream.write(data),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Stream::Plain(tcp) => tcp.flush(),
+            Stream::Secure(stream) => stream.flush(),
+        }
+    }
+
+    fn wants_write(&self) -> bool {
+        match self {
+            Stream::Plain(_) => false,
+            Stream::Secure(stream) => stream.wants_write(),
+        }
     }
 }
 
@@ -447,13 +561,16 @@ struct Reader<'s> {
     looked_at: usize,
     /// The most the body can be.
     most_body: usize,
+    /// Whether the stream's socket doesn't block, and its task parks while it waits to read.
+    parks: bool,
 }
 
 impl Reader<'_> {
     /// Reads more in. False once the other side is done.
     fn more(&mut self) -> Result<bool, Failure> {
         let mut chunk = [0; 16 * 1024];
-        let read = self.stream.read_by(&mut chunk, (self.deadline, self.timeout), &mut self.cut_off)?;
+        let by = (self.deadline, self.timeout);
+        let read = self.stream.read_by(&mut chunk, by, &mut self.cut_off, self.parks)?;
         // What's been taken goes, once there's a good deal of it, so a long answer isn't all held.
         if self.at > 1 << 16 && self.at * 2 > self.held.len() {
             self.held.drain(..self.at);
@@ -570,6 +687,7 @@ fn read_answer(
     method: &str,
     (deadline, timeout): (Instant, Duration),
     most_body: usize,
+    parks: bool,
 ) -> Result<Answer, Failure> {
     let mut reader = Reader {
         stream,
@@ -582,6 +700,7 @@ fn read_answer(
         last_line: 0,
         looked_at: 0,
         most_body,
+        parks,
     };
     let (status, headers) = loop {
         let (status, headers) = read_head(&mut reader)?;
@@ -678,6 +797,34 @@ pub(crate) mod tls {
         fn tcp(&self) -> &TcpStream {
             &self.sock
         }
+
+        fn wants_write(&self) -> bool {
+            self.conn.wants_write()
+        }
+    }
+
+    /// For tests: what connections are made with in place of what the system trusts, so a test can
+    /// make a request of a server of its own, whose certificate only the tests' authority signed.
+    #[cfg(test)]
+    static TRUSTED_BY_TESTS: std::sync::Mutex<Option<Arc<ClientConfig>>> = std::sync::Mutex::new(None);
+
+    /// For tests: while one of these lives, requests are made with the `ClientConfig` it was given.
+    #[cfg(test)]
+    pub(crate) struct TrustedByTests;
+
+    #[cfg(test)]
+    impl TrustedByTests {
+        pub(crate) fn begin(config: Arc<ClientConfig>) -> TrustedByTests {
+            *TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(config);
+            TrustedByTests
+        }
+    }
+
+    #[cfg(test)]
+    impl Drop for TrustedByTests {
+        fn drop(&mut self) {
+            *TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
     }
 
     /// How connections are made, worked out once: loading what's trusted takes a while. Every
@@ -685,6 +832,12 @@ pub(crate) mod tls {
     /// that turns it off; rustls speaks TLS 1.2 and 1.3 only; and the host's name is sent (SNI).
     pub(super) fn config() -> Result<Arc<ClientConfig>, Failure> {
         static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
+        #[cfg(test)]
+        if let Some(trusted) =
+            TRUSTED_BY_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        {
+            return Ok(trusted);
+        }
         CONFIG
             .get_or_init(|| {
                 let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -1036,6 +1189,7 @@ mod tests {
             last_line: 0,
             looked_at: 0,
             most_body: super::MOST_BODY,
+            parks: false,
         };
         assert!(matches!(reader.all(), Err(Failure::Tls(_))));
     }
@@ -1096,6 +1250,7 @@ mod tests {
             last_line: 0,
             looked_at: 0,
             most_body: super::MOST_BODY,
+            parks: false,
         };
         let head = super::read_head(&mut reader);
         (head, reader.looked_at)

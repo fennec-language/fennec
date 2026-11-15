@@ -150,6 +150,12 @@ impl Table {
         self.len
     }
 
+    /// How many places looking through all of it reads (`all`): each page a region can have, and
+    /// each place on every page it has. Kept as it goes, so asking costs nothing.
+    pub(super) fn places_to_look_through(&self) -> usize {
+        self.regions.len() * PAGES + (self.kept + self.made) * PLACES
+    }
+
     /// How many pages it holds, for counting what's live.
     #[cfg(any(test, feature = "threads"))]
     pub(super) fn pages(&self) -> usize {
@@ -174,8 +180,9 @@ impl Table {
         (sizes, never_freed)
     }
 
-    /// Every block it holds, in no order, for the heap's audit to read where it lies.
-    #[cfg(any(test, feature = "audit"))]
+    /// Every block it holds, in no order: for the heap's audit to read where it lies, and for a
+    /// long task's end to find the blocks with its mark.
+    #[cfg(any(test, feature = "audit", feature = "threads"))]
     pub(super) fn all(&self) -> impl Iterator<Item = &[u64]> {
         let placed = self.regions.iter().flat_map(|(_, pages)| pages.iter().flatten());
         placed.flat_map(|page| page.iter().flatten()).chain(self.short.values()).map(|block| &**block)

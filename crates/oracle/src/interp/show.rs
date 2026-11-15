@@ -198,17 +198,18 @@ impl Interp {
                 Ok(true)
             }
             (Value::Shared(a), Value::Shared(b)) => self.shared_equal(a, b),
+            // An optional `shared` value that's there is never equal to one that's missing.
+            (Value::Shared(_), Value::None) | (Value::None, Value::Shared(_)) => Ok(false),
             _ => plain_equal(left, right),
         }
     }
 
     /// Two `shared` values compare by what they hold, as `==` takes both their locks in a fixed
-    /// order and compares the values (decided 2026-11-14), so a cell is equal to itself. A cell a
-    /// `lock` holds now is refused, since `==` would wait there for that lock.
+    /// order and compares the values (decided 2026-11-14), with the type's own `def ==` where it
+    /// has one. That holds for a cell compared with itself too: there's no shortcut, so a `def ==`
+    /// that says no is what `a == a` gives, as native code gives. A cell a `lock` holds now is
+    /// refused, since `==` would wait there for that lock.
     fn shared_equal(&mut self, a: &Cell, b: &Cell) -> Run<bool> {
-        if a.id == b.id {
-            return Ok(true);
-        }
         let locked = std::sync::atomic::Ordering::SeqCst;
         if a.locked.load(locked) || b.locked.load(locked) {
             return unsupported("comparing a `shared` value a `lock` holds");

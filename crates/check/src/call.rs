@@ -119,7 +119,7 @@ impl FnCx<'_> {
                 }
                 if let ExprKind::Name(name) = &object.kind
                     && self.lookup(name).is_none()
-                    && self.checker.program.functions.contains_key(name)
+                    && self.names_function(name)
                 {
                     let types = self.types_in(index);
                     self.record(object.span, &Type::Function(name.clone()));
@@ -185,7 +185,7 @@ impl FnCx<'_> {
         if let Some(refused) = self.test_only_function(name, span) {
             self.error(refused);
         }
-        if self.checker.program.functions.contains_key(name) {
+        if self.names_function(name) {
             self.record(callee.span, &Type::Function(name.to_owned()));
             return Some(self.call_function(name, name, args, span));
         }
@@ -245,6 +245,11 @@ impl FnCx<'_> {
         if arg.is_mut {
             self.mut_place(&arg.value, MUT_ARG);
         }
+        if let Some(expected) = expected
+            && self.arrow_of_several(&arg.value, expected)
+        {
+            return Type::Unknown;
+        }
         match (&arg.value.kind, expected) {
             (ExprKind::Lambda { params: names, body }, _) => {
                 let ty = self.lambda(names, body, params, arg.value.span);
@@ -279,6 +284,30 @@ impl FnCx<'_> {
             (_, Some(expected)) => self.expr_as(&arg.value, expected),
             (_, None) => self.expr(&arg.value),
         }
+    }
+
+    /// Refuses an arrow function written where a union of several function types goes, as
+    /// `Shown | Measured`: which one it is, and so what its parameters are, can't be told. Its body
+    /// is checked with its parameters' types unknown, so nothing else is said about it. Says
+    /// whether it was one.
+    pub(crate) fn arrow_of_several(&mut self, value: &Expr, wanted: &Type) -> bool {
+        let ExprKind::Lambda { params, body } = &value.kind else { return false };
+        let Type::Union(members) = self.checker.settled(wanted).without_none() else { return false };
+        let arrows: Vec<String> = members
+            .iter()
+            .filter(|member| matches!(member, Type::Arrow(..)))
+            .map(|arrow| format!("`{arrow}`"))
+            .collect();
+        let shown = match arrows.as_slice() {
+            [] | [_] => return false,
+            [first, second] => format!("either {first} or {second}"),
+            [rest @ .., last] => format!("any of {} and {last}", rest.join(", ")),
+        };
+        let message = format!("this arrow could be {shown}, so what its parameters are can't be told");
+        let help = "write a nested `def` with its parameters' types, and pass it by its name";
+        self.error(Diagnostic::new(message, value.span).with_help(help));
+        self.lambda(params, body, &vec![Type::Unknown; params.len()], value.span);
+        true
     }
 
     /// An arrow function that fails fewer ways than the function type it's given for, as one
@@ -688,6 +717,11 @@ impl FnCx<'_> {
                     // Every error's notes, which the language gives each `error` type.
                     None if matches!(method, "notes" | "add_note") && self.checker.is_error_type(ty) => {
                         self.note_method(object, method, args, span)
+                    }
+                    // A route written with a method, as `router.get(...)`, checked against its
+                    // handler here and written in as a call to `handle`.
+                    None if crate::routes::is_route(self.checker, name, method) => {
+                        self.route_call(object, method, args, span)
                     }
                     // Methods written in Rust, like `Regex`'s.
                     None => self.builtin_method(object, ty, method, args, span),

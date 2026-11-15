@@ -516,7 +516,9 @@ impl Lowering<'_> {
         // is named and shaped as it's written: what a program saves never depends on what the
         // library happens to name its own types.
         let source = || ty.source().map(|source| fennec_syntax::rename::shown_key(&source));
-        let shape = || shape_hash(&fennec_syntax::rename::shown_key(&self.context.signatures.shape(ty)));
+        let written = self.context.as_written(ty);
+        let shape =
+            || shape_hash(&fennec_syntax::rename::shown_key(&self.context.signatures.shape(&written)));
         match name.as_str() {
             "intrinsics.type_name" => source().map(Operand::Str),
             "intrinsics.shape_hash" => Some(Operand::Int(shape())),
@@ -652,10 +654,12 @@ impl Lowering<'_> {
         match &callee.kind {
             ExprKind::Name(name) => {
                 // What the checker accepted and nothing here defines, like an import of
-                // `sqrt`, is the engines'.
+                // `sqrt`, is the engines'. A program's function of the same name as a builtin is
+                // its own: std's code and a dependency's still mean the builtin.
                 let written = signatures.get(name).is_some();
+                let own = self.own_function(name);
                 let plain = self.lookup(name).is_none()
-                    && !self.context.functions.contains(name.as_str())
+                    && !own
                     && (fennec_check::provided_everywhere(name) || !written);
                 plain.then(|| (name.clone(), None, false))
             }
@@ -826,7 +830,8 @@ impl Lowering<'_> {
                 let place = self.place(&arg.value, (index_changes, takes_optional), write_backs, span)?;
                 reads.add_place(place);
             } else {
-                let lowered = self.expr(&arg.value)?;
+                let lowered =
+                    if own { self.expr_where(&arg.value, &param.ty)? } else { self.expr(&arg.value)? };
                 let value = if own { self.coerce(lowered, &param.ty, arg.value.span)? } else { lowered };
                 reads.add(self, value);
             }

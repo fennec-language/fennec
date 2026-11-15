@@ -73,7 +73,7 @@ impl FnCx<'_> {
     /// Reports a change to a constant, if `name` is one that isn't hidden by a local name.
     /// Returns whether it is.
     pub(crate) fn changes_constant(&mut self, name: &str, span: Span) -> bool {
-        if self.lookup(name).is_some() || !self.checker.program.constants.contains_key(name) {
+        if self.lookup(name).is_some() || self.named_constant(name, span).is_none() {
             return false;
         }
         self.error(

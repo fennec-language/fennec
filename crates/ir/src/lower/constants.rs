@@ -16,6 +16,13 @@ pub(super) struct Written<'a> {
     prelude: bool,
 }
 
+impl Written<'_> {
+    /// Whether it's the standard library's constant.
+    pub(super) fn prelude(&self) -> bool {
+        self.prelude
+    }
+}
+
 /// The constants a module can read: its own, and the standard library's where it doesn't
 /// have one of that name.
 pub(super) fn written(module: &Module) -> HashMap<&str, Written<'_>> {
@@ -44,7 +51,9 @@ pub(super) fn lower_all(context: &Context<'_>, program: &mut Program, wanted: &d
     waiting.extend(read_by(&program.functions));
     while let Some(name) = waiting.pop() {
         let done = |function: &Function| function.name == name;
+        // An empty collection a field defaults to is made as it's first read, in `field_default`.
         if program.constants.iter().any(done)
+            || context.empties.borrow().iter().any(done)
             || program.not_lowered.iter().any(|skipped| skipped.function == name)
         {
             continue;
@@ -111,7 +120,12 @@ impl<'a> Lowering<'a> {
         if let Some(Type::Function(key)) = self.type_at(expr.span) {
             return self.function_value(&key, expr);
         }
-        let Some(written) = self.context.constants.get(name) else {
+        // A program's constant of the same name as one the engines provide, like `PI`, is its
+        // own: std's code and a dependency's still mean the engines'.
+        let Some(written) = self.context.constants.get(name).filter(|written| {
+            let compilers = written.prelude || fennec_check::compiler_written(written.value.span);
+            fennec_check::reaches(&self.name, self.in_library(), name, compilers)
+        }) else {
             return self.std_value(self.std_member(expr).unwrap_or_else(|| name.to_owned()), expr);
         };
         let ty = self.ty(expr)?;

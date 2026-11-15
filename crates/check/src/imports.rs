@@ -66,11 +66,19 @@ impl Uses<'_> {
         if fennec_syntax::importable_type(name).is_none()
             || defined_here
             || self.program.imported_types.contains(name)
+            || self.std_constant(name)
             || !self.reported.insert(name.to_owned())
         {
             return;
         }
         self.found.push(unknown_name(name, span));
+    }
+
+    /// Whether `name` is one of std's constants, which is said where it's used without its import,
+    /// as any name is: this check is for types.
+    fn std_constant(&self, name: &str) -> bool {
+        let suffix = format!(".{name}");
+        self.program.constants.iter().any(|(key, entry)| entry.prelude && key.ends_with(&suffix))
     }
 
     fn function(&mut self, def: &FnDef) {

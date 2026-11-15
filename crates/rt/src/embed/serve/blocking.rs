@@ -32,8 +32,16 @@ const IDLE: Duration = Duration::from_secs(5);
 static POOL: Blocking = Blocking::new(KEPT, MOST, IDLE);
 
 /// Hands `job` to one of the runtime's blocking threads, as [`Blocking::run`] does.
-pub(super) fn run(job: Job) -> Result<(), Job> {
+pub(super) fn run(job: Job) -> Result<(), Vec<Job>> {
     POOL.run(job)
+}
+
+/// Starts a thread named `name` running `body`.
+type Starter = fn(String, Job) -> std::io::Result<()>;
+
+/// Starts a thread, as the runtime's pool does.
+fn start_thread(name: String, body: Job) -> std::io::Result<()> {
+    std::thread::Builder::new().name(name).spawn(body).map(drop)
 }
 
 /// A pool of threads for blocking work, growing while all of them are busy.
@@ -44,6 +52,7 @@ pub(super) struct Blocking {
     kept: usize,
     most: usize,
     idle: Duration,
+    start: Starter,
 }
 
 /// What a pool's threads share, under its lock.
@@ -53,16 +62,24 @@ struct State {
     waiting: usize,
     /// Wakes promised to waiting threads, each for a job queued since.
     promised: usize,
-    /// Threads started that haven't left.
+    /// Threads running work or waiting for it, not counting those still being started.
     threads: usize,
-    /// Threads ever started, which names the next.
+    /// Threads being started that haven't begun running: a start that fails never does.
+    starting: usize,
+    /// Threads ever asked for, which names the next.
     started: usize,
 }
 
 impl Blocking {
     pub(super) const fn new(kept: usize, most: usize, idle: Duration) -> Self {
-        let state = State { jobs: VecDeque::new(), waiting: 0, promised: 0, threads: 0, started: 0 };
-        Self { state: Mutex::new(state), ready: Condvar::new(), kept, most, idle }
+        Self::starting_with(kept, most, idle, start_thread)
+    }
+
+    /// A pool that starts its threads with `start`, which a test makes fail.
+    const fn starting_with(kept: usize, most: usize, idle: Duration, start: Starter) -> Self {
+        let state =
+            State { jobs: VecDeque::new(), waiting: 0, promised: 0, threads: 0, starting: 0, started: 0 };
+        Self { state: Mutex::new(state), ready: Condvar::new(), kept, most, idle, start }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -70,9 +87,10 @@ impl Blocking {
     }
 
     /// Hands `job` to a thread: one waiting for work, or a new one while there are fewer than
-    /// `most`. With `most` busy, it waits its turn. Gives the job back only when there's no thread
-    /// at all to run it, because none could be started, for the caller to run where it is.
-    pub(super) fn run(&'static self, job: Job) -> Result<(), Job> {
+    /// `most`. With `most` busy, it waits its turn. Gives back jobs only when no thread is running
+    /// or being started to run them, because none could be started, for the caller to run where it
+    /// is: all that are queued, so none waits for a thread that won't come.
+    pub(super) fn run(&'static self, job: Job) -> Result<(), Vec<Job>> {
         let mut state = self.lock();
         state.jobs.push_back(job);
         if state.waiting > 0 {
@@ -82,33 +100,32 @@ impl Blocking {
             self.ready.notify_one();
             return Ok(());
         }
-        if state.threads >= self.most {
+        if state.threads + state.starting >= self.most {
             return Ok(());
         }
-        state.threads += 1;
+        state.starting += 1;
         let number = state.started;
         state.started += 1;
         drop(state);
-        let spawned =
-            std::thread::Builder::new().name(format!("fennec-blocking-{number}")).spawn(move || self.work());
-        if spawned.is_ok() {
+        if (self.start)(format!("fennec-blocking-{number}"), Box::new(move || self.work())).is_ok() {
             return Ok(());
         }
-        // The job stays queued for the threads there are, and comes back only when there are none.
+        // The jobs stay queued for a thread running, or one still being started, which runs them
+        // or, failing to start, gives them back. With neither, they come back now.
         let mut state = self.lock();
-        state.threads -= 1;
-        if state.threads == 0
-            && let Some(job) = state.jobs.pop_back()
-        {
-            return Err(job);
+        state.starting -= 1;
+        if state.threads > 0 || state.starting > 0 {
+            return Ok(());
         }
-        Ok(())
+        Err(state.jobs.drain(..).collect())
     }
 
     /// A thread's life: it runs the queued work, then waits for more. A thread past the first
     /// `kept` leaves once it's waited `idle` with nothing promised to it.
     fn work(&self) {
         let mut state = self.lock();
+        state.starting -= 1;
+        state.threads += 1;
         loop {
             if let Some(job) = state.jobs.pop_front() {
                 drop(state);

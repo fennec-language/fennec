@@ -137,3 +137,45 @@ fn work_waiting_on_work_queued_behind_it_finishes_below_the_most() {
     let wanted: Vec<(usize, Option<usize>)> = (0..8).map(|number| (number, Some(number))).collect();
     assert_eq!(ended, wanted);
 }
+
+/// Both callers wait here until each has tried to start a thread, so their starts fail together.
+static BOTH_TRYING: std::sync::Barrier = std::sync::Barrier::new(2);
+
+/// A thread start that fails, once both callers have tried.
+fn failing_together(_: String, _: super::Job) -> std::io::Result<()> {
+    BOTH_TRYING.wait();
+    Err(std::io::Error::other("no thread can be started"))
+}
+
+/// When thread starts fail at once with no thread running, every queued job comes back to run
+/// where it was asked for: the last start to fail takes back them all. Counting a start that never
+/// began as a thread, the first to fail left its job for the second's thread, which never came.
+#[test]
+fn jobs_come_back_when_thread_starts_fail_at_once() {
+    let pool: &'static Blocking =
+        Box::leak(Box::new(Blocking::starting_with(2, 6, Duration::from_secs(60), failing_together)));
+    let (ran, heard) = channel();
+    let callers: Vec<_> = (0..2)
+        .map(|number| {
+            let ran = ran.clone();
+            std::thread::spawn(move || {
+                let job: super::Job = Box::new(move || {
+                    let _ = ran.send(number);
+                });
+                if let Err(given_back) = pool.run(job) {
+                    for job in given_back {
+                        job();
+                    }
+                }
+            })
+        })
+        .collect();
+    for caller in callers {
+        assert!(caller.join().is_ok());
+    }
+    let mut ran_ones: Vec<usize> = (0..2).filter_map(|_| heard.recv_timeout(PATIENCE).ok()).collect();
+    ran_ones.sort_unstable();
+    assert_eq!(ran_ones, [0, 1]);
+    assert_eq!(pool.threads(), 0);
+    assert_eq!(pool.queued(), 0);
+}

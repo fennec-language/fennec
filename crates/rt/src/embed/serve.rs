@@ -1570,8 +1570,13 @@ pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 's
             PARKING.set(Some((Interest::READABLE, None)));
             let _ = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
         }
-        // No thread could be started to run it, so it runs here: its wake finds nothing parked.
-        Err(job) => job(),
+        // No thread could be started to run them, so they run here: this job's wake finds nothing
+        // parked, and another task's job wakes that task through its worker's mail.
+        Err(jobs) => {
+            for job in jobs {
+                job();
+            }
+        }
     }
     loop {
         if let Some(done) = result.lock().unwrap_or_else(PoisonError::into_inner).take() {

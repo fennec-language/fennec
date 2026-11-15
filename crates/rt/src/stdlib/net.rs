@@ -918,9 +918,7 @@ pub(crate) fn native_net(name: &str, args: &[Value], span: Span) -> Result<Value
         let request = request_of(method, plain, &given, span)?;
         // A task parks while its request waits, on a thread that may block, as `connect` does,
         // rather than holding its worker: a server in the same program may need that worker to
-        // answer it. The exchange holds that blocking thread until its answer comes, so while
-        // every blocking thread waits on an answer, other blocking work waits behind them, until
-        // its socket waits park instead (#1790).
+        // answer it.
         let sent = if task_parks() { off_thread(move || http::send(&request)) } else { http::send(&request) };
         return Ok(done_or_failed(sent.map(answer_value)));
     }

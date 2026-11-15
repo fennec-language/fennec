@@ -60,14 +60,17 @@ pub(crate) fn lower(module: &mut Module, saved: &BTreeSet<Type>) -> bool {
     for ty in saved {
         reach(&mut checker, ty, &mut tuples, &mut open);
     }
-    // Only those whose items can all be saved: the rest can't be, so nothing calls for them.
+    // Only those whose items can all be saved: the rest can't be, so nothing calls for them. A
+    // type of the program's own saves through the pair saving makes it, whether or not it's made
+    // yet.
+    let generated = crate::saving::generated_types(&mut checker, module);
     tuples.retain(|tuple| {
         let Type::Tuple(items) = tuple else { return false };
         // A union is saved through a type made for it, which an item can't be changed to yet.
         !items.iter().any(crate::saving::holds_union)
             && items
                 .iter()
-                .all(|item| *item == Type::None || crate::saving::saved(&checker, item, &BTreeSet::new()))
+                .all(|item| *item == Type::None || crate::saving::saved(&checker, item, &generated))
     });
     if tuples.is_empty() {
         return false;
@@ -208,4 +211,48 @@ fn functions_for(tuple: &Type) -> Option<(FnDef, FnDef)> {
         crate::slots::fill_text(def, LABEL, &shown);
     }
     Some((saving, loading))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use fennec_syntax::Item;
+
+    use crate::types::Type;
+
+    /// The tuple functions `lower` writes into a program for what it saves, with saving's own
+    /// pairs made first or not at all.
+    fn written(source: &str, saved: &Type, pairs_first: bool) -> Vec<String> {
+        let mut module = fennec_syntax::parse(source).unwrap();
+        if pairs_first {
+            crate::saving::generate(&mut module);
+        }
+        super::lower(&mut module, &BTreeSet::from([saved.clone()]));
+        module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Function(def) if def.name.starts_with("fennec_tuple_") => Some(def.name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A tuple holding a program's own type saves through the pair saving makes that type,
+    /// whether tuples are lowered before the pair is made or after, so nothing hangs on which
+    /// comes first. One holding a type that can't be saved gets nothing either way.
+    #[test]
+    fn a_tuple_of_a_programs_type_saves_whether_its_pair_is_made_before_or_after() {
+        let source = "from std import json\n\nstruct Point:\n    x: int\n\nstruct Printer:\n    out: Stdout\n\n\
+            def main(stdout: Stdout):\n    stdout.print(json.dumps([(Point(x=1), 2)]))\n";
+        let tuple = Type::Tuple(vec![Type::named("Point"), Type::Int]);
+        let made = [super::tuple_function("serialize", &tuple), super::tuple_function("deserialize", &tuple)];
+        let saved = Type::list(tuple);
+        assert_eq!(written(source, &saved, false), made);
+        assert_eq!(written(source, &saved, true), made);
+        let unsaved = Type::list(Type::Tuple(vec![Type::named("Printer"), Type::Int]));
+        assert_eq!(written(source, &unsaved, false), Vec::<String>::new());
+        assert_eq!(written(source, &unsaved, true), Vec::<String>::new());
+    }
 }

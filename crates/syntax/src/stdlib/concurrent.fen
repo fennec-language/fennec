@@ -12,7 +12,7 @@
 ## waits while it's empty. `send_within` and `receive_within` give up after a while, failing
 ## with `Timeout`. A channel closes when its `with` block ends: a send on it then fails with
 ## `Closed`, and a receive gives `None` once nothing's left in it.
-from std.intrinsics import channel_close, channel_free, channel_listen, channel_new, channel_new_every, channel_receive, channel_send
+from std.intrinsics import channel_close, channel_free, channel_listen, channel_new, channel_new_every, channel_receive, channel_send, stop
 from std.time import Duration
 
 ## A send on a channel that's closed.
@@ -37,7 +37,7 @@ export def channel[T](size: int, to: Delivery? = None) -> with Channel[T]:
             number = channel_new(size)
         case .Every:
             number = channel_new_every(size)
-    made = Channel[T](_channel=number)
+    made = Channel[T](_channel=number, _every=delivery == .Every)
     lend made except:
         channel_close(made._channel)
         channel_free(made._channel)
@@ -60,6 +60,8 @@ export enum Behind:
 ## receive from. Hand one end to a task with `sender()` or `inbox()`.
 export struct Channel[T]:
     _channel: int
+    ## Whether it's to `.Every` listener: its messages are listened to, never taken one at a time.
+    _every = False
 
     ## Sends `message`, waiting as long as the channel is full.
     def send(self, message: T) fails Closed:
@@ -70,13 +72,19 @@ export struct Channel[T]:
         sent(channel_send[T](self._channel, message, nanos_of(wait)), wait=wait)?
 
     ## The next message, waiting as long as the channel is empty, or `None` once it's closed and
-    ## nothing's left in it.
+    ## nothing's left in it. A channel to `.Every` has no one next message, so asking it for one
+    ## is a bug in the program, which stops it: loop over it, or take an `inbox()`.
     def receive(self) -> T?:
+        if self._every:
+            stop(NO_ONE_MESSAGE)
         return next_message[T](self._channel)
 
     ## The next message, waiting while the channel is empty for at most `wait`, or `None` once
-    ## it's closed and nothing's left in it.
+    ## it's closed and nothing's left in it. On a channel to `.Every` it stops the program, as
+    ## `receive` does.
     def receive_within(self, wait: Duration) -> T? fails Timeout:
+        if self._every:
+            stop(NO_ONE_MESSAGE)
         return message_within[T](self._channel, wait)?
 
     ## Each message until the channel is closed and empty, as `for message in channel`. On a
@@ -99,9 +107,10 @@ export struct Channel[T]:
     def sender(self) -> Sender[T]:
         return Sender[T](_channel=self._channel)
 
-    ## The receiving end, to hand to a task.
+    ## The receiving end, to hand to a task. Of a channel to `.Every`, each inbox is a listener of
+    ## its own, which hears every message sent from when it's made.
     def inbox(self) -> Inbox[T]:
-        return Inbox[T](_channel=self._channel)
+        return Inbox[T](_channel=channel_listen(self._channel, False))
 
 ## The receiving end of a channel: a task's inbox, as `with launch` makes it.
 export struct Inbox[T]:
@@ -156,6 +165,12 @@ def sent_while_open(answer: int) fails Closed:
 def next_message[T](channel: int) -> T?:
     mut why = 0
     return channel_receive[T](channel, -1, ref why)
+
+## What a program is told when it asks a channel to `.Every` for its next message. Each listener
+## has a place of its own in what the channel keeps, so there's no one message that's next. Taking
+## the oldest kept, as this used to, left a listener that was caught up never hearing the message
+## sent after, with nothing said.
+NO_ONE_MESSAGE = "this channel is to every listener, so it has no one next message to take: loop over it with `for message in channel`, or take an `inbox()` and receive from that"
 
 ## The next message on channel `channel`, waiting for at most `wait`, or `None` once it's closed
 ## and empty.

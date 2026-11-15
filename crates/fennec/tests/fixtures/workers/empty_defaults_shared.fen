@@ -112,7 +112,10 @@ def on_a_task(made: int) -> int:
     return total
 
 def main(args: Args, stdout: Stdout) fails Crashed:
-    made = int.parse(args[0]) except InvalidValue(): 10
+    # How many values to make and only read: the test asks for ten and for a thousand more, and
+    # what runs every fixture as it is asks for none, which is ten.
+    asked = args[0] if len(args) > 0 else "10"
+    made = int.parse(asked) except InvalidValue(): 10
     stdout.print(only_read(made) - only_read(made))
     written(stdout)
     stopped(2) except why:

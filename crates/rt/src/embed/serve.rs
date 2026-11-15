@@ -1563,8 +1563,27 @@ mod blocking;
 /// on one of the blocking threads (`serve/blocking.rs`), which hands its result back and wakes the
 /// task through its worker's mail. Anywhere a wait can't park, it runs here.
 pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    off_thread_on(blocking::pool(), work)
+}
+
+/// `off_thread` for work that keeps a core busy for long, as hashing a password does: on a pool of
+/// its own, a thread to a core and at most 8, so a burst of it runs a few at once while the rest
+/// wait their turn parked.
+pub(crate) fn off_thread_heavy<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    off_thread_on(blocking::heavy(), work)
+}
+
+/// `off_thread` on `threads`. A task whose work can't park, as inside a `lock`, runs it where it
+/// is, holding its worker meanwhile as a wait that blocks does, and is counted with those.
+fn off_thread_on<R: Send + 'static>(
+    threads: &'static blocking::Blocking,
+    work: impl FnOnce() -> R + Send + 'static,
+) -> R {
     let Some((pool, at)) = super::parallel::here() else { return work() };
     if !can_park() {
+        if fennec_parked::stack_low().is_some() {
+            BLOCKED_WAITS.fetch_add(1, Ordering::Relaxed);
+        }
         return work();
     }
     let token = Token(NEXT_TOKEN.get());
@@ -1577,7 +1596,7 @@ pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 's
         // The worker takes its mail only after this task has parked, on that same thread.
         pool.run_on(at, Box::new(move |io: &mut Io| io.wake_token(token)));
     });
-    match blocking::run(job) {
+    match threads.run(job) {
         Ok(()) => {
             super::write_kept_output();
             PARKING.set(Some((Interest::READABLE, None)));

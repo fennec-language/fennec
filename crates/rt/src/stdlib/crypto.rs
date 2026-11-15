@@ -97,14 +97,17 @@ pub(super) fn wipe(bytes: &mut [u8]) {
     std::hint::black_box(bytes);
 }
 
-/// `work` on a thread that may block while this task parks, as a password's hash takes tens of
-/// milliseconds and 19 MiB, or here outside a task.
+/// `work` on a thread of the pool for work that keeps a core busy, while this task parks, as a
+/// password's hash takes tens of milliseconds and 19 MiB, or here outside a task.
 fn off_worker<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     #[cfg(any(test, feature = "threads"))]
-    if crate::embed::serve::can_park() {
-        return crate::embed::serve::off_thread(work);
+    {
+        crate::embed::serve::off_thread_heavy(work)
     }
-    work()
+    #[cfg(not(any(test, feature = "threads")))]
+    {
+        work()
+    }
 }
 
 /// `crypto._hash_password(password, salt)`, `crypto._password_problem(stored)` and

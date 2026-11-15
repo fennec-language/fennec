@@ -228,6 +228,47 @@ impl Interp {
                     _ => unsupported("`round` of something that isn't a float"),
                 }
             }
+            // A core error, its one field its message.
+            "InvalidValue" | "ParseError" => {
+                let message = match given.take_named("message") {
+                    Some(arg) => arg,
+                    None => Self::first(&mut given, name)?,
+                };
+                match self.arg_as_value(message)? {
+                    Value::Str(message) => {
+                        Ok(Value::instance(name, None, vec![("message".to_owned(), Value::Str(message))]))
+                    }
+                    other => unsupported(format!("`{name}` with a message that's a {}", other.kind())),
+                }
+            }
+            // `bytes()`, empty, or `bytes(items)`: each item an int from 0 to 255, and any other
+            // stops the program, as the runtime's does.
+            "bytes" => match given.positional.pop() {
+                None => Ok(Value::Bytes(Vec::new())),
+                Some(arg) => match self.arg_as_value(arg)? {
+                    Value::List(items) => {
+                        let mut data = Vec::with_capacity(items.len());
+                        for item in items {
+                            match item {
+                                Value::Int(n) => match u8::try_from(n) {
+                                    Ok(byte) => data.push(byte),
+                                    Err(_) => {
+                                        return crash(
+                                            format!("a byte is an int from 0 to 255, not {n}"),
+                                            span,
+                                        );
+                                    }
+                                },
+                                other => {
+                                    return unsupported(format!("`bytes` of a list of {}", other.kind()));
+                                }
+                            }
+                        }
+                        Ok(Value::Bytes(data))
+                    }
+                    other => unsupported(format!("`bytes` of a {}", other.kind())),
+                },
+            },
             other => unsupported(format!("the builtin `{other}`")),
         }
     }
@@ -257,6 +298,7 @@ impl Interp {
     pub(crate) fn length(&mut self, value: Value, span: Span) -> Run<i64> {
         Ok(as_int(match value {
             Value::Str(text) => text.chars().count(),
+            Value::Bytes(data) => data.len(),
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.len(),
             Value::Dict(pairs) => pairs.len(),
             Value::Table(table) => table.len(),

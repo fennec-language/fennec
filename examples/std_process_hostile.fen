@@ -94,8 +94,13 @@ def main(stdout: Stdout, process: Process):
         unread = unread + unread
     left_unread = outcome(() => process.run("true", [], input=unread)?)
     stdout.print(f"true, given a MB it never reads: {left_unread}")
-    # Nothing is read by a shell: each argument prints as it's written.
-    printed = process.run("printf", ["%s|", "$(id)", "a;b", "`id`", "*", "~"]) except why:
+    # Nothing is read by a shell, or by a program that expands its own arguments as some on
+    # Windows do: each argument prints as it's written, `*` and `~` unexpanded, and a `{a,b}` one
+    # argument, not two, so a value can't slip in an option.
+    printed = process.run(
+        "printf",
+        ["%s|", "$(id)", "a;b", "`id`", "*", "~", "{--upload-pack=x,y}", "{a,b}"],
+    ) except why:
         stdout.print(f"printf couldn't run: {why.message()}")
         return
     stdout.print(printed.stdout)

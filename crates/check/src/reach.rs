@@ -142,35 +142,56 @@ impl FnCx<'_> {
 }
 
 impl FnCx<'_> {
-    /// Why a name the standard library has at its top level can't be named here: one std keeps
-    /// to itself, like str.fen's `padding` or std.net's `MOST_ROUTE_PARAMETERS`, or one a module
-    /// exports that isn't imported. `None` for a name std doesn't have.
+    /// The modules or core files whose top-level function or constant is called `name`: `json`
+    /// for `json.quoted`, `core.str` for str.fen's `padding`. Methods, like `Duration.seconds`,
+    /// aren't among them.
+    fn std_owners(&self, name: &str) -> Vec<&str> {
+        let program = &self.checker.program;
+        let suffix = format!(".{name}");
+        let functions = program.functions.iter().filter(|(_, entry)| entry.prelude && entry.owner.is_none());
+        let constants = program.constants.iter().filter(|(_, entry)| entry.prelude);
+        let mut owners: Vec<&str> = functions
+            .map(|(key, _)| key.as_str())
+            .chain(constants.map(|(key, _)| key.as_str()))
+            .filter_map(|key| key.strip_suffix(&suffix))
+            .filter(|owner| !owner.contains(|c: char| c.is_ascii_uppercase()))
+            .collect();
+        owners.sort_unstable();
+        owners.dedup();
+        owners
+    }
+
+    /// The std modules that export a function or constant called `name`, written in Fennec, for
+    /// the help on using one that isn't imported.
+    pub(crate) fn std_exporters(&self, name: &str, span: Span) -> Vec<String> {
+        let owners = self.std_owners(name);
+        let exported =
+            owners.into_iter().filter(|owner| fennec_syntax::std_member(owner, name, span).is_ok());
+        exported.map(str::to_owned).collect()
+    }
+
+    /// Why a name only the standard library's own code has can't be named here, as str.fen's
+    /// `padding` or std.net's `MOST_ROUTE_PARAMETERS`. `None` for a name std doesn't have, or one
+    /// a module exports, which is imported to be used.
     pub(crate) fn std_own(&self, name: &str, span: Span) -> Option<Diagnostic> {
         if self.code() == Code::Library {
             return None;
         }
-        let program = &self.checker.program;
-        let suffix = format!(".{name}");
-        // Std's top-level functions and constants, `module.name` or a core file's `core.file.name`:
-        // not a method, as `Duration.seconds` is.
-        let functions = program.functions.iter().filter(|(_, entry)| entry.prelude && entry.owner.is_none());
-        let constants = program.constants.iter().filter(|(_, entry)| entry.prelude);
-        let owner = functions
-            .map(|(key, _)| key)
-            .chain(constants.map(|(key, _)| key))
-            .filter_map(|key| key.strip_suffix(&suffix))
-            .find(|owner| !owner.contains(|c: char| c.is_ascii_uppercase()))?;
-        if owner.starts_with("core.") {
-            let message = format!("`{name}` is private to the standard library");
-            let help = format!("only std's own code uses it: write a `{name}` of your own");
-            return Some(Diagnostic::new(message, span).with_help(help));
+        let owners = self.std_owners(name);
+        if owners.iter().any(|owner| fennec_syntax::std_member(owner, name, span).is_ok()) {
+            return None;
         }
-        if fennec_syntax::std_member(owner, name, span).is_ok() {
-            let help = format!("import it, like `from std.{owner} import {name}`");
-            return Some(Diagnostic::new(format!("`{name}` doesn't exist"), span).with_help(help));
-        }
-        let message = format!("`{name}` is private to `std.{owner}`");
-        let help = format!("only `std.{owner}`'s own code uses it: write a `{name}` of your own");
+        let owner = owners.first()?;
+        let (message, help) = match owner.strip_prefix("core.") {
+            Some(_) => (
+                format!("`{name}` is private to the standard library"),
+                format!("only std's own code uses it: write a `{name}` of your own"),
+            ),
+            None => (
+                format!("`{name}` is private to `std.{owner}`"),
+                format!("only `std.{owner}`'s own code uses it: write a `{name}` of your own"),
+            ),
+        };
         Some(Diagnostic::new(message, span).with_help(help))
     }
 }

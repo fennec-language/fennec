@@ -204,7 +204,15 @@ impl FnCx<'_> {
         if let Some(problem) = self.std_own(name, span) {
             return problem;
         }
-        let problem = unknown_name(name, span);
+        let mut problem = unknown_name(name, span);
+        // One a std module written in Fennec exports, imported to be used.
+        if problem.help.is_none()
+            && let [first, ..] = self.std_exporters(name, span).as_slice()
+        {
+            let modules = self.std_exporters(name, span).join(" or std.");
+            problem = problem
+                .with_help(format!("import it from std.{modules}, like `from std.{first} import {name}`"));
+        }
         match self.similar_name(name).filter(|_| problem.help.is_none()) {
             Some(similar) => problem.with_help(format!("did you mean `{similar}`?")),
             None if problem.help.is_none() => {

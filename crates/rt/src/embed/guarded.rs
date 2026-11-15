@@ -223,7 +223,7 @@ fn copied_as(
 fn copy_read_in(
     state: &mut State,
     address: u64,
-    (copies, left, counted): Copy<'_>,
+    (copies, left, counted): UnderWay<'_>,
 ) -> Result<(), Diagnostic> {
     if state.heap.reading.is_empty() {
         return Ok(());
@@ -258,13 +258,13 @@ fn copy_read_in(
 
 /// A copy under way: what's been copied, by where it was, what's left to walk, and the handles
 /// counted so far.
-type Copy<'a> = (&'a mut HashMap<u64, u64>, &'a mut Vec<u64>, &'a mut Vec<u64>);
+type UnderWay<'a> = (&'a mut HashMap<u64, u64>, &'a mut Vec<u64>, &'a mut Vec<u64>);
 
 /// The block in the copy for what's at `address`, added to `left` if it's new.
 fn copy_of(
     state: &mut State,
     address: u64,
-    (copies, left, counted): Copy<'_>,
+    (copies, left, counted): UnderWay<'_>,
     how: Copying,
 ) -> Result<u64, Diagnostic> {
     if is_handle(address) {

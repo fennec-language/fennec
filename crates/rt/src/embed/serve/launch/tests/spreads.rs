@@ -257,12 +257,22 @@ static CLEANERS_SLEEPING: AtomicI64 = AtomicI64::new(0);
 /// How many of a cleanup's ranges slept their sleep out, though their task had been stopped.
 static CLEANERS_SLEPT: AtomicI64 = AtomicI64::new(0);
 
-/// A range of a comprehension a crash's cleanup makes: it waits a moment, as a rollback over the
-/// network would.
+/// Whether the task whose code is running here has been told to stop.
+fn told_to_stop() -> bool {
+    threads::task_stop().is_some_and(|stop| stop.load(Ordering::Acquire) > 0)
+}
+
+/// A range of a comprehension a crash's cleanup makes: it waits, a millisecond at a time, as a
+/// rollback over the network would, until its task has been told to stop, and then once more. A
+/// wait the stop cut short leaves the range failed.
 extern "C" fn waits_in_a_cleanup(_env: i64, _from: i64, _to: i64, _thread: i64, _out: i64) -> i64 {
     CLEANERS_SLEEPING.fetch_add(1, Ordering::SeqCst);
-    clock_sleep(SECONDS / 5);
-    if super::super::super::super::failed() {
+    let started = Instant::now();
+    while !told_to_stop() && started.elapsed() < GIVES_UP {
+        clock_sleep(SECONDS / 1000);
+    }
+    clock_sleep(SECONDS / 1000);
+    if super::super::super::super::failed() || !told_to_stop() {
         return CRASHED;
     }
     CLEANERS_SLEPT.fetch_add(1, Ordering::SeqCst);
@@ -281,7 +291,8 @@ extern "C" fn cleans_up_with_a_comprehension(_env: i64, _thread: i64) -> i64 {
 
 /// A stopped task's cleanup after a crash may still wait, until it's stopped hard a second later.
 /// The ranges of a comprehension it makes are the cleanup's code, so they have that grace too:
-/// they once ran in the task and had it, and on other threads would have lost it.
+/// they once ran in the task and had it, and on other threads would have lost it. Each range here
+/// is waiting when the stop comes, and waits once more after it.
 #[test]
 fn a_cleanup_s_ranges_may_wait_as_the_cleanup_may_after_a_stop() {
     begin();
@@ -354,13 +365,16 @@ static FIRST_HOLDS_ITS_THREAD: [AtomicBool; 2] = [AtomicBool::new(false), Atomic
 /// What each call gave back once its task had been stopped, plus one.
 static STOPPED_EARLY_GAVE: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
 
-/// Counts itself, and the first holds the pool's one thread for a while, so the rest haven't begun
-/// when their task is stopped.
+/// Counts itself, and the first holds the pool's one thread until its task has been told to stop,
+/// so the rest haven't begun by then.
 fn begins(kind: usize, from: i64) -> i64 {
     BEGAN[kind].fetch_add(1, Ordering::SeqCst);
     if from == 0 {
         FIRST_HOLDS_ITS_THREAD[kind].store(true, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        while !told_to_stop() && started.elapsed() < GIVES_UP {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
     0
 }

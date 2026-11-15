@@ -4614,6 +4614,32 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A function that does nothing but `stop` can fail, so it's built taking the failure flag.
+    /// The stop was missing from what can fail, so a helper whose whole body was one was taken as
+    /// unable to and refused. Only the standard library can write the call, so the program is
+    /// given one once it's lowered.
+    #[test]
+    fn a_function_that_only_stops_can_fail() -> Result<(), String> {
+        let source = "def halts(why: str):\n    return\n\ndef main(stdout: Stdout):\n    halts(\"nobody is left to send to\")\n    stdout.print(\"went on\")\n    return\n";
+        let mut program = lowered(source)?;
+        let halts = program.functions.iter_mut().find(|function| function.name == "halts");
+        let block = halts.and_then(|halts| halts.blocks.first_mut()).ok_or("no `halts`")?;
+        let stop = InstKind::Builtin {
+            dest: None,
+            name: "intrinsics.stop".to_owned(),
+            args: vec![Operand::Local(LocalId(0))],
+            changes: false,
+        };
+        block.insts.insert(0, fennec_ir::Inst { kind: stop, span: Span::default() });
+        let (units, shared, _) = emit(&program)?;
+        assert!(shared.can_fail.contains("halts"), "{:?}", shared.can_fail);
+        let text = units.into_iter().find(|unit| unit.function == "halts").map(|unit| unit.text);
+        let text = text.ok_or("`halts` wasn't built")?;
+        assert!(text.contains("call void @fennec_stop("), "{text}");
+        assert!(text.contains("ptr swifterror"), "{text}");
+        Ok(())
+    }
+
     /// A new struct key compared by its words goes into a dict that's alone, with room, by
     /// compiled code itself, and only to the runtime otherwise.
     #[test]

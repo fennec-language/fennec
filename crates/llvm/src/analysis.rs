@@ -3610,6 +3610,9 @@ pub(crate) fn builtin_fails(function: &Function, name: &str, args: &[Operand]) -
         )
         // A launch fails with no thread to run on, and a wait for a task can be cut short.
         || matches!(name, "intrinsics.launch" | "intrinsics.launch_take")
+        // The standard library's `stop` ends the program as a failure does, passed up through
+        // whatever called it.
+        || name == "intrinsics.stop"
         || is_socket_method(name)
         // Sorting what isn't a plain number, string or bool orders by its type's own `<`, which
         // can fail.

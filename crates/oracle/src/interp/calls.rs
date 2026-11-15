@@ -49,6 +49,9 @@ pub(crate) enum Target {
         value: Value,
         ty: Type,
     },
+    /// `T.deserialize(ref src)` of a type with no `def deserialize` of its own, as `saving.rs`
+    /// models it.
+    Deserialize(Type),
     Lambda {
         params: Vec<String>,
         body: &'static Expr,
@@ -406,6 +409,11 @@ impl Interp {
             && !self.is_bound(owner)
             && !self.program.constants.contains_key(owner.as_str())
         {
+            if name == "deserialize"
+                && let Some(target) = self.deserialize_target(owner)?
+            {
+                return Ok(Some(target));
+            }
             let owner = &self.type_named(owner).into_owned();
             if let Some(declared) = self.program.types.get(owner.as_str()) {
                 if declared.def.cases.iter().any(|case| case.name == name) {
@@ -549,6 +557,12 @@ impl Interp {
         match target {
             Target::Def { def, parent, receiver, types } => {
                 self.call_def_bound((def, types), parent, receiver, given, expr.span)
+            }
+            Target::Deserialize(ty) => {
+                let [ArgVal::Ref(_, src)] = given.as_slice() else {
+                    return unsupported("`deserialize` given something other than `ref` to a `Deserializer`");
+                };
+                self.deserialize_from(&ty, src, expr.span)
             }
             Target::Serialize { value, ty } => {
                 let [ArgVal::Ref(_, out)] = given.as_slice() else {

@@ -131,8 +131,14 @@ to each other. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's `**` are 
   enum's case. A type's own `def serialize` runs instead. A generic function runs once here, where
   the compiler builds it for each set of types, so each call notes what its type parameters stand
   for there (`interp/typed.rs`): `x.serialize(ref out)` of a `T` saves an `int?` holding 1 through
-  `some`, as the compiled program does. A union, a tuple, a `Table` or an `Id` saved this way, and
-  loading through a format a program writes, are unsupported.
+  `some`, as the compiled program does. Loading through a format's `Deserializer` is modeled the
+  same way (`deserialize_from`): a plain value by its own method, an optional through `none` then
+  `value`, a list through `sequence`, a set through `sequence` with its repeats dropped, a dict
+  through `map_count` or `map`, a key that comes twice failing where `here` says, and a struct or a
+  case through `ordered`, or `record`, `next_field` and `field_at`, as the checker's `def
+  deserialize` reads it: a field left out takes its default, an optional one with none is `None`,
+  and any other fails with `missing`. A union, a tuple, a `Table`, an `Id` and a type with a `where`
+  rule, saved or loaded this way, are unsupported.
 - Standard output is real. `Args` and `Stdin` are empty. `Fs` is modeled, as below. Standard
   error is written as the program writes it, and never compared. `Env` reads the variables the
   oracle was started with, as the compiled program reads its own. No signal comes during a run, so

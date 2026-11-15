@@ -969,6 +969,63 @@ fn toml_dumps_runs_std_tomls_own_writer() {
     );
 }
 
+/// `toml.loads` runs `std.toml`'s own reader, written in Fennec, in place of the runtime's,
+/// through the `def deserialize` the checker writes for each type, as the oracle models it: a
+/// field left out takes its default, an optional one is `None`, a `@skip` field keeps its
+/// default, and a missing field, a value of the wrong type, a key given twice and a key no field
+/// has each fail as the reader says. What it prints is what the compiled program printed.
+#[test]
+fn toml_loads_runs_std_tomls_own_reader_through_each_types_deserialize() {
+    prints(
+        "
+        from std import toml
+
+        struct Limit:
+            name: str
+            most = 1.0
+
+        struct Server:
+            name: str
+            tags: list[str]
+            note: str?
+            limits: dict[str, float]
+            rules: list[Limit]
+            port = 80
+            @skip
+            seen = 3
+
+        def failure(text: str) -> str:
+            _ = toml.loads[Server](text) except why:
+                return why.message
+            return 'loaded'
+
+        def main(stdout: Stdout):
+            text = 'name = \\'den\\'\\ntags = [\\'a\\']\\n\\n[limits]\\ncpu = 0.5\\n\\n[[rules]]\\nname = \\'cpu\\'\\n\\n[[rules]]\\nname = \\'mem\\'\\nmost = 2.5\\n'
+            server = toml.loads[Server](text)?
+            stdout.print(server)
+            again = toml.dumps(Limit(name='kit'))
+            stdout.print(again.strip(), toml.loads[Limit](again)? == Limit(name='kit'))
+            stdout.print(failure('tags = []\\n[limits]\\n'))
+            stdout.print(failure('name = 3\\ntags = []\\n[limits]\\n'))
+            stdout.print(failure('name = \\'x\\'\\ntags = []\\nport = 1\\nport = 2\\n[limits]\\n'))
+            stdout.print(failure('name = \\'x\\'\\ntags = []\\nextra = 1\\n[limits]\\n'))
+            stdout.print(failure('name = \\'x\\'\\nnote = \\'hi\\'\\ntags = [1]\\n[limits]\\n'))
+            counts = toml.loads[dict[str, list[int]]]('a = [1, 2]\\nb = []\\n')?
+            stdout.print(counts)
+            return
+        ",
+        "Server(name=\"den\", tags=[\"a\"], note=None, limits={\"cpu\": 0.5}, rules=[Limit(name=\"cpu\", most=1.0), Limit(name=\"mem\", most=2.5)], port=80, seen=3)\n\
+         name = \"kit\"\n\
+         most = 1.0 True\n\
+         `name` is missing\n\
+         `name` should be a str, but it's an int\n\
+         `port` is defined twice, at line 4, column 1\n\
+         `Server` has no field \"extra\", but the text has one\n\
+         `tags[0]` should be a str, but it's an int\n\
+         {\"a\": [1, 2], \"b\": []}\n",
+    );
+}
+
 /// `main` may take `Env`, `Stderr`, `Signals` and a `Clock`. `Env` is `std.env`'s, run from its
 /// own source, with `get` reading the variables the oracle was started with and `secret`
 /// failing with `Missing`. Standard error is written and not compared, no signal ever comes, and

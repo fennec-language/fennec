@@ -697,7 +697,7 @@ fn missing(shown: &str, listed: &[(String, String)], reading: &Reading) -> Strin
 
 /// A key given twice, as a message names it: as it prints, in backticks, cut to its first 20
 /// characters past 40, with its control characters written as escapes.
-fn twice_key(shown: &str) -> String {
+pub(crate) fn twice_key(shown: &str) -> String {
     let cut = if shown.chars().count() <= 40 {
         shown.to_owned()
     } else {

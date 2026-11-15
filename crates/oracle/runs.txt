@@ -64,6 +64,7 @@ hello.fen
 http_server.fen
 http_strict.fen
 id_in_a_map.fen
+import_as.fen
 interface_fails.fen
 interface_mut_self.fen
 interface_params.fen
@@ -108,6 +109,7 @@ path_inside_windows.fen
 postgres_auth.fen
 postgres_messages.fen
 postgres_query.fen
+projects/aliases
 projects/arena
 projects/cases
 projects/constants
@@ -173,6 +175,7 @@ text_contains.fen
 text_native.fen
 times.fen
 tokenizer.fen
+toml.fen
 toml_hostile.fen
 tree_values.fen
 trees.fen

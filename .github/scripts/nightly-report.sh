@@ -61,6 +61,11 @@ if ! gh run download "$run" --repo "$repository" --name nightly-report --dir "$w
 fi
 day=${created%%T*}
 cp "$work/nightly.md" "$folder/nightly-proofs-$day.md"
+# The soaks' curves from the same night, after the rest: each real program's memory and live
+# blocks over an hour, where they started and ended and how fast they rose.
+if gh run download "$run" --repo "$repository" --pattern 'soak-*' --dir "$work/soak" > /dev/null 2>&1; then
+  cat "$work"/soak/soak.md "$work"/soak/*/soak.md 2> /dev/null >> "$folder/nightly-proofs-$day.md" || true
+fi
 # The tests that failed, by name, so a failed night reads in one line.
 failed=$(sed -n 's/^Failed tests: //p' "$work/nightly.md" | head -n 1)
 echo "Proofs on $day: $conclusion${failed:+, failed tests: $failed}, report in $folder/nightly-proofs-$day.md"

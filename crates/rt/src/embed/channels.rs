@@ -507,11 +507,15 @@ fn wait(
         }
         None => (channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), false),
     };
-    // Awake again, however it was woken, with the queue held once more.
-    match side {
-        Side::Sending => queue.asleep.for_room = queue.asleep.for_room.saturating_sub(1),
-        Side::Receiving => queue.asleep.for_a_message = queue.asleep.for_a_message.saturating_sub(1),
-    }
+    // Awake again, however it was woken, with the queue held once more. It was counted above, so
+    // the count has it: one that didn't would mean a thread left asleep and uncounted, which a
+    // count held at nothing would hide.
+    let counted = match side {
+        Side::Sending => &mut queue.asleep.for_room,
+        Side::Receiving => &mut queue.asleep.for_a_message,
+    };
+    debug_assert!(*counted > 0, "a thread woke on a channel that didn't count it asleep");
+    *counted -= 1;
     drop(queue);
     #[cfg(any(test, feature = "threads"))]
     super::threads::Launcher::waited_here();

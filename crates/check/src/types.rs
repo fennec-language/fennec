@@ -178,6 +178,22 @@ impl Type {
         }
     }
 
+    /// The function type an arrow written where this goes takes its parameters' types from: this,
+    /// or a union's one function member, as `(Request) -> Response` in `Router | (Request) -> Response`.
+    pub(crate) fn arrow_member(&self) -> Option<Type> {
+        match self {
+            Type::Arrow(..) => Some(self.clone()),
+            Type::Union(members) => {
+                let mut arrows = members.iter().filter(|member| matches!(member, Type::Arrow(..)));
+                match (arrows.next(), arrows.next()) {
+                    (Some(arrow), None) => Some(arrow.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// The short name messages use for a value of this type, as in "this is a list".
     pub(crate) fn kind(&self) -> String {
         match self {

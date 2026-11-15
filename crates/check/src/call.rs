@@ -410,8 +410,9 @@ impl FnCx<'_> {
                     Diagnostic::new(message, arg.value.span).with_help(format!("write `{}=...`", param.name)),
                 );
             }
-            // An arrow function passed for a function parameter receives its parameters' types.
-            let receives = match found.map(|(_, param)| self.checker.settled(&param.ty)) {
+            // An arrow function passed for a function parameter receives its parameters' types,
+            // as it does for a union's one function member.
+            let receives = match found.and_then(|(_, param)| self.checker.settled(&param.ty).arrow_member()) {
                 Some(Type::Arrow(receives, _)) => receives,
                 _ => Vec::new(),
             };

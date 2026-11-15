@@ -46,6 +46,11 @@ const BUILTINS: [(&str, usize, usize); 30] = [
     ("zip", 2, 2),
 ];
 
+/// The names of the functions the language provides everywhere, called bare, as `round` and `len`.
+pub(crate) fn names() -> impl Iterator<Item = &'static str> {
+    ["len", "abs"].into_iter().chain(BUILTINS.iter().map(|(name, ..)| *name))
+}
+
 /// Builtins whose arguments have to be plain values, not results or optionals.
 const NEEDS_VALUES: [&str; 12] =
     ["float", "int", "range", "round", "i8", "i16", "i32", "u8", "u16", "u32", "u64", "f32"];

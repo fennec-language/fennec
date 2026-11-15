@@ -145,6 +145,9 @@ pub const NEVER_FAIL: &[&str] = &[
     // and bytes read as text whatever they hold give a text always, with what isn't UTF-8
     // replaced: `fennec_bytes_decode` above without its one refusal.
     "fennec_bytes_text",
+    // Says TLS is wanted before a request, which only sets the three functions that put TLS over a
+    // connection, each once.
+    "fennec_use_tls",
 ];
 
 /// Which export takes which names, and the function that looks one up: in `fennec-rt`, where the

@@ -119,7 +119,7 @@ impl FnCx<'_> {
                 }
                 if let ExprKind::Name(name) = &object.kind
                     && self.lookup(name).is_none()
-                    && self.checker.program.functions.contains_key(name)
+                    && self.names_function(name)
                 {
                     let types = self.types_in(index);
                     self.record(object.span, &Type::Function(name.clone()));
@@ -185,7 +185,7 @@ impl FnCx<'_> {
         if let Some(refused) = self.test_only_function(name, span) {
             self.error(refused);
         }
-        if self.checker.program.functions.contains_key(name) {
+        if self.names_function(name) {
             self.record(callee.span, &Type::Function(name.to_owned()));
             return Some(self.call_function(name, name, args, span));
         }
@@ -709,6 +709,7 @@ impl FnCx<'_> {
             }
             Type::Result(..) => self.unusable(unhandled_result(object.span), args),
             Type::Named(name) | Type::Generic(name, _) if self.checker.program.type_info(name).is_some() => {
+                self.receive_from_every(object, method, span);
                 match self.checker.program.method(name, method) {
                     Some((key, entry)) => {
                         let takes_self = entry.def.takes_self();

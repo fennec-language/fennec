@@ -25,6 +25,7 @@ mod constants;
 mod crossing;
 mod effects;
 mod enumerate_lowering;
+mod every;
 mod except;
 mod except_fix;
 mod expect;
@@ -60,6 +61,7 @@ mod plain;
 mod privacy;
 mod program;
 mod protocols;
+mod reach;
 mod ref_lowering;
 mod results_fix;
 mod routes;
@@ -89,6 +91,24 @@ pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;
 pub use results_fix::result_fixes;
 pub use tuple_lowering::tuple_function;
+
+pub use reach::std_code;
+
+/// Whether a top-level item declared at `span` is the compiler's: the standard library's, or one
+/// the checker wrote into the program, like a type's saving functions. Any code reaches those by
+/// name, as it reaches std's; only what a program wrote is kept from std's code and a dependency's.
+#[must_use]
+pub fn compiler_written(span: Span) -> bool {
+    lend_lowering::not_written_by_hand(span)
+}
+
+/// Whether code in the function `caller` reaches the top-level function or constant `name` by
+/// writing it bare: std's code reaches only std's names, and a dependency's never the program's
+/// own. `caller_std` says whether the caller is std's code, and `std` whether `name` is std's.
+#[must_use]
+pub fn reaches(caller: &str, caller_std: bool, name: &str, std: bool) -> bool {
+    reach::Code::of(caller, caller_std).reaches(name, std)
+}
 pub use types::{Num, Type};
 
 /// Checks a parsed module. Returns the signature of every function and method, or every
@@ -276,6 +296,13 @@ pub fn provided_everywhere(name: &str) -> bool {
     (builtins::is_builtin(name) && !name.contains('.'))
         || program::BUILT_IN_TYPES.contains(&name)
         || program::BUILT_IN_INTERFACES.contains(&name)
+}
+
+/// The functions the language provides everywhere, called bare, as `round` and `len`. A program may
+/// name a function of its own after one that isn't reserved, and it's the program's own: the
+/// standard library's code and a dependency's still mean the builtin.
+pub fn builtin_function_names() -> impl Iterator<Item = &'static str> {
+    builtins::names()
 }
 
 /// Whether the engines provide a function of this name, like `sum` or `math.sqrt`.
@@ -687,10 +714,6 @@ enum Round {
     Done,
 }
 
-/// What starts the name a library function goes under in a program's items while it's rewritten:
-/// no name a program writes starts with it.
-const STD_AT: &str = "\0std:";
-
 /// Puts into the program's items, under hidden names, the library's functions it runs that hold
 /// a `with` over a source or a `launch`, and those rewritten already, so a round rewrites them as
 /// it does the program's own. Says whether any was new, which the check after takes up.
@@ -722,7 +745,7 @@ fn std_rewritten_in(module: &mut Module, checked: &Checked) -> bool {
         }
     }
     for (key, mut def) in std::mem::take(&mut module.std_rewritten) {
-        def.name = format!("{STD_AT}{key}\0{}", def.name);
+        def.name = format!("{}{key}\0{}", reach::STD_AT, def.name);
         module.items.push(Item::Function(def));
     }
     new
@@ -733,8 +756,8 @@ fn std_rewritten_out(module: &mut Module) {
     let items = std::mem::take(&mut module.items);
     for item in items {
         match item {
-            Item::Function(mut def) if def.name.starts_with(STD_AT) => {
-                let marked = def.name.trim_start_matches(STD_AT).to_owned();
+            Item::Function(mut def) if def.name.starts_with(reach::STD_AT) => {
+                let marked = def.name.trim_start_matches(reach::STD_AT).to_owned();
                 let (key, name) = marked.split_once('\0').unwrap_or((marked.as_str(), marked.as_str()));
                 name.clone_into(&mut def.name);
                 module.std_rewritten.push((key.to_owned(), def));

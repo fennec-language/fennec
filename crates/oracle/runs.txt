@@ -8,6 +8,7 @@ baked_constants.fen
 bench_blocks.fen
 bits.fen
 builtins.fen
+bytes.fen
 calculator.fen
 case_guards.fen
 collections.fen
@@ -108,6 +109,8 @@ shared_bank.fen
 signals.fen
 sorted_native.fen
 sources.fen
+std_base64.fen
+std_base64_hostile.fen
 std_collections.fen
 std_fs.fen
 std_fs_hostile.fen
@@ -127,6 +130,7 @@ std_time.fen
 std_time_hostile.fen
 stderr.fen
 string_building.fen
+strings.fen
 struct_keys_native.fen
 structs.fen
 sum.fen

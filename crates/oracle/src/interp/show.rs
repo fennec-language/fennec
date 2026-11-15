@@ -29,6 +29,10 @@ impl Interp {
             Value::Sized(_, n) => n.to_string(),
             Value::Float(x) => text::float(*x),
             Value::Str(text) => text::quoted(text),
+            Value::Bytes(data) => {
+                let shown: Vec<String> = data.iter().map(u8::to_string).collect();
+                format!("bytes([{}])", shown.join(", "))
+            }
             Value::List(items) => format!("[{}]", self.joined(items)?),
             Value::Tuple(items) if items.len() == 1 => format!("({},)", self.joined(items)?),
             Value::Tuple(items) => format!("({})", self.joined(items)?),
@@ -222,6 +226,7 @@ impl Interp {
             (Value::Sized(_, a), Value::Sized(_, b)) => Ok(a.cmp(b)),
             (Value::Float(a), Value::Float(b)) => Ok(float_order(*a, *b)),
             (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
+            (Value::Bytes(a), Value::Bytes(b)) => Ok(a.cmp(b)),
             (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
             (Value::List(a), Value::List(b)) | (Value::Tuple(a), Value::Tuple(b)) => {
                 for (x, y) in a.iter().zip(b) {
@@ -286,6 +291,7 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
         (Value::Sized(x, a), Value::Sized(y, b)) => x == y && a == b,
         (Value::Float(a), Value::Float(b)) => float_order(*a, *b) == Ordering::Equal,
         (Value::Str(a), Value::Str(b)) => a == b,
+        (Value::Bytes(a), Value::Bytes(b)) => a == b,
         (Value::List(a), Value::List(b))
         | (Value::Tuple(a), Value::Tuple(b))
         | (Value::Set(a), Value::Set(b)) => {

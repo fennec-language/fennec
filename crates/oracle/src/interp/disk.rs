@@ -301,16 +301,22 @@ impl Disk {
         if let Some(entry) = self.known.get(parts) {
             return Ok(entry.clone());
         }
-        let Some((name, folder)) = parts.split_last() else { return refused("the root") };
+        // The root is always there.
+        let Some((name, folder)) = parts.split_last() else { return Ok(Entry::Folder { listed: false }) };
         checked_name(name)?;
         if cfg!(windows) && self.shown(parts).chars().count() > LONGEST_ON_WINDOWS {
             return refused("a path longer than Windows allows unless it's told to");
         }
         let home = self.home()?;
-        if parts.len() <= home.parts.len() || !parts.starts_with(&home.parts) {
-            return refused("a path outside the folder the program runs in");
-        }
         let (empty, front) = (home.empty, home.front.clone());
+        // Outside the folder the program runs in, the disk is only looked at, as it is for what
+        // was there before inside it: whether a file or a folder is there. Reading, listing and
+        // changing anything there are refused where they're asked for.
+        if parts.len() <= home.parts.len() || !parts.starts_with(&home.parts) {
+            let found = looked_at(&front, parts)?;
+            self.known.insert(parts.to_vec(), found.clone());
+            return Ok(found);
+        }
         self.no_other_case(folder, name)?;
         let listed = matches!(self.known.get(folder), Some(Entry::Folder { listed: true }));
         if listed || empty {

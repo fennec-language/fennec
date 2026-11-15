@@ -176,6 +176,7 @@ const RUN_FROM_SOURCE: &[&str] = &[
     "re",
     "template",
     "sql",
+    "io",
 ];
 
 /// The capabilities `main` may take whose type a module run from its own source declares, which
@@ -184,10 +185,11 @@ const RUN_FROM_SOURCE: &[&str] = &[
 /// `std.time`'s `Instant` and `Time`.
 const CAPABILITY_MODULES: &[(&str, &str)] = &[("Env", "env"), ("Clock", "time")];
 
-/// The types the oracle models on its own, whose methods a module run from its source adds in an
-/// `extend` are left out: `std.collections` extends `Table` and `Id`, which `interp/tables.rs`
-/// models.
-const MODELED_HERE: &[&str] = &["Table", "Id"];
+/// The types the oracle models on its own, which a module run from its source declares or adds
+/// methods to in an `extend`: those are left out. `std.collections` extends `Table` and `Id`,
+/// which `interp/tables.rs` models, and `std.io` declares the capabilities `main` is given and
+/// the writer and reader `Stdout` and `Stdin` hand out, which `Cap` models or refuses.
+const MODELED_HERE: &[&str] = &["Table", "Id", "Stdout", "Stdin", "Stderr", "StdoutWriter", "StdinReader"];
 
 /// What the tables are made from: the program's own declarations, and those of each standard
 /// library module it imports that's run from its own source.
@@ -212,6 +214,11 @@ impl Gathered {
                 self.functions.insert(def.name.clone(), def);
                 // A module's functions are named `module.function` when it's run.
                 std.zip(def.name.split_once('.')).map(|(module, (_, short))| (module, short, &def.name))
+            }
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def)
+                if std.is_some() && MODELED_HERE.contains(&def.name.as_str()) =>
+            {
+                None
             }
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
                 let kind = match item {

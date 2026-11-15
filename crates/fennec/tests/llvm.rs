@@ -20682,7 +20682,7 @@ fn a_buffer_reserves_room_for_that_many_more() -> std::io::Result<()> {
     squares.reserve(20)
     stdout.print(squares.capacity() >= len(squares) + 20, squares.capacity())
     # Adding the 20 leaves its room as it was.
-    room = squares.capacity()
+    mut room = squares.capacity()
     for i in range(20):
         squares.push(i)
     stdout.print(len(squares), squares.capacity() == room)

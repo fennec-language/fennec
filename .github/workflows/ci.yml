@@ -200,8 +200,9 @@ jobs:
         run: .github/scripts/time-wait.sh 3000 cargo test --locked --no-fail-fast -p fennec --test fennec 'llvm::'
       # A hello world built for release, held to its size here: Windows keeps a program's symbols
       # out of it, so what it links is checked on Linux, in `lean-runtime`, and in the gate on a Mac.
+      # Even when a test failed, so the size is always known.
       - name: Check a hello world's size
-        if: runner.os == 'Windows' && matrix.part == 'llvm'
+        if: ${{ !cancelled() && runner.os == 'Windows' && matrix.part == 'llvm' }}
         shell: bash
         run: .github/scripts/linkage-check.sh target/debug/fennec
       # Every test removes what it makes in the temporary folder, passing or failing, so a run

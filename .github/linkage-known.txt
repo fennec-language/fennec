@@ -16,5 +16,5 @@ linux hello tls | two of rustls's functions a vtable holds: a TLS payload's drop
 # cut lands, and raise it only knowing what grew.
 # system size hello bytes | measured
 macos size hello 1300000 | 1,232,088 on 2026-11-14, from the gate's dev build of fennec on arm64
-linux size hello 1150000 | 1,004,464 on 2026-11-14, from a release build of fennec on aarch64: CI's x86-64 is to confirm
+linux size hello 1050000 | 942,288 on 2026-11-14 in CI on x86-64, and 1,004,464 on aarch64, each from a release build of fennec
 windows size hello 2000000 | not measured yet: CI's first run says, and this comes down to it

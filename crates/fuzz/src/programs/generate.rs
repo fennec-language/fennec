@@ -64,19 +64,18 @@ const CRASH_WAKES: bool = true;
 
 /// Whether random programs keep what a lookup in a struct's dict found, set the struct whole to
 /// another, then store at the same key: the store has to go to the dict the struct holds now.
-/// Main stores into the dict the lookup searched, the caller's or one let go of, as the review of
-/// #1785 found (finding 3), and this shape finds it within a few dozen programs. Off until the
-/// LLVM lane's fix lands, since CI's run of this target would fail on main until then; the
-/// seed `review_1785_lookup_swapped` writes it once it's on.
-const LOOKUPS_SWAPPED: bool = false;
+/// Before #1812 it went into the dict the lookup searched, the caller's or one let go of, as the
+/// review of #1785 found (finding 3), and this shape found it within a few dozen programs. On
+/// since that fix; the seed `review_1785_lookup_swapped` writes it.
+const LOOKUPS_SWAPPED: bool = true;
 
 /// Whether random programs crash inside a `ref self` method, or a change by hand, on part of a
-/// `shared` value under its lock, which has to undo the whole lock. Main puts back a freed block
-/// when the part is a list's item, so the pouch prints `items=None` and the program stops with
-/// "a list native code changed isn't one this thread can find", as the review of #1785 found
-/// (finding 1, `b5.fen`). Off until the LLVM lane's fix lands, as above; the seed
-/// `review_1785_crash_in_locked_part` writes it once it's on.
-const PART_CRASHES: bool = false;
+/// `shared` value under its lock, which has to undo the whole lock. Before the fix for #1798 a
+/// value out of a list's item wasn't put back when the crash left, so the rollback left the pouch
+/// naming a freed block: it printed `items=None` and the program stopped with "a list native
+/// code changed isn't one this thread can find", as the review of #1785 found (finding 1,
+/// `b5.fen`). On since that fix; the seed `review_1785_crash_in_locked_part` writes it.
+const PART_CRASHES: bool = true;
 
 /// Whether a call handling several of `Crashed`, `Closed`, `Timeout` and `Refused` prints each
 /// one's own word, `crashed`, `closed`, `timeout` or `refused`, rather than one word for them all,

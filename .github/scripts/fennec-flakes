@@ -11,7 +11,8 @@
 # An entry whose cause was found elsewhere isn't a flake of its test: a program killed from outside
 # the gate, a watchdog stopping what it shouldn't have, or a failure main itself had and fixed
 # between two gates. `flakes-causes.log`, beside the ledger, names each such entry by when it
-# failed and its test, with what it was, a line each:
+# failed, to the second, which is the entry's own, then its test, for whoever reads it, and what it
+# was, a line each:
 #
 #   2026-11-13T18:57:31Z replay::a_wait_that_timed_out_or_not_replays_as_it_came_out | killed from outside: ...
 #
@@ -46,16 +47,16 @@ awk -v causes="$causes" -v explained="$explained" '
   BEGIN {
     while ((getline line < causes) > 0) {
       if (line ~ /^#/ || line !~ / \| /) continue
-      key = substr(line, 1, index(line, " | ") - 1)
-      cause[key] = substr(line, index(line, " | ") + 3)
+      split(line, word, " ")
+      cause[word[1]] = substr(line, index(line, " | ") + 3)
     }
   }
   /^=== flake$/ { test = ""; when = ""; commit = ""; next }
   /^test: / { test = substr($0, 7) }
   /^commit: / { commit = substr($0, 9, 12) }
   /^failed at: / { when = substr($0, 12) }
-  /^=== end$/ && test != "" && ((when " " test) in cause) {
-    printf "  %s  %s: %s\n", when, test, cause[when " " test] > explained
+  /^=== end$/ && test != "" && (when in cause) {
+    printf "  %s  %s: %s\n", when, test, cause[when] > explained
     next
   }
   /^=== end$/ && test != "" {

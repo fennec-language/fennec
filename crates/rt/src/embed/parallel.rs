@@ -1380,6 +1380,86 @@ mod tests {
         finish();
     }
 
+    /// The thread of the task that's connecting, in each of the two tests below, for its server
+    /// to ask about.
+    static CONNECTING_FROM: [Mutex<Option<std::thread::ThreadId>>; 2] = [Mutex::new(None), Mutex::new(None)];
+    static CONNECTED_AND_HEARD: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// How many pieces of work the connecting task's thread has on the blocking threads.
+    fn connecting_task_s_blocking_work(test: usize) -> i64 {
+        let from = *CONNECTING_FROM[test].lock().unwrap();
+        from.map_or(-1, crate::embed::serve::blocking_jobs_of)
+    }
+
+    fn plain_connector_s_blocking_work() -> i64 {
+        connecting_task_s_blocking_work(0)
+    }
+
+    fn secure_connector_s_blocking_work() -> i64 {
+        connecting_task_s_blocking_work(1)
+    }
+
+    /// Connects to the server on port `env` as `net.connect` does, by address, or by name with
+    /// TLS for the second test, and talks to it, as a parked task.
+    extern "C" fn connects_and_talks(env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        let (test, secure) = (usize::from(from != 0), from != 0);
+        let port = u16::try_from(env).unwrap();
+        *CONNECTING_FROM[test].lock().unwrap() = Some(std::thread::current().id());
+        let host = if secure { "localhost" } else { "127.0.0.1" };
+        let heard = crate::stdlib::net::tests::tls::connected_and_pinged(host, port, secure);
+        assert_eq!(heard, Ok(b"pong\n".to_vec()));
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        CONNECTED_AND_HEARD.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    /// A task that connects holds no blocking thread while the connect is under way: its server,
+    /// as the connection comes, finds the task with no work on a blocking thread. The connect once
+    /// ran whole on one, for as long as the network took.
+    #[test]
+    fn a_task_s_connect_holds_no_blocking_thread() {
+        begin();
+        let (port, server) =
+            crate::stdlib::net::tests::tls::answering_and_looking(false, plain_connector_s_blocking_work);
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        // The range from 0 connects by address.
+        let run = super::each_on_pool(run, pool, 1, super::Leaf::For(connects_and_talks, i64::from(port)));
+        assert_eq!(run.finish(), 0);
+        assert_eq!(server.join().unwrap(), [0], "blocking work its task had as the connection came");
+        finish();
+    }
+
+    /// The same with TLS, by name: the name's lookup is the one thing done on a blocking thread, and
+    /// it's over before the connect starts. The server finds the task with no work on a blocking
+    /// thread as the connection comes, and again once its own half of the handshake is done, the
+    /// client's being under way. The lookup, the connect and the handshake once ran as one piece
+    /// of work on a blocking thread, for as long as the network and the server took.
+    #[test]
+    fn a_task_s_handshake_as_a_client_holds_no_blocking_thread() {
+        begin();
+        crate::stdlib::http::use_tls();
+        let trusting = crate::stdlib::net::tests::tls::trusting_the_tests();
+        let (port, server) =
+            crate::stdlib::net::tests::tls::answering_and_looking(true, secure_connector_s_blocking_work);
+        let pool = super::pool::with_threads(1);
+        // A list of two with its ranges an item each, of which only the second is run here: the
+        // range from 1 connects by name, with TLS.
+        let run = super::Run::new(1).waiting(true);
+        let connecting = super::Leaf::For(second_connects_and_talks, i64::from(port));
+        let run = super::each_on_pool(run, pool, 2, connecting);
+        let ended = run.finish();
+        drop(trusting);
+        assert_eq!(ended, 0);
+        assert_eq!(server.join().unwrap(), [0, 0], "blocking work its task had, at each look");
+        finish();
+    }
+
+    /// `connects_and_talks`, for the range from 1 alone: the one from 0 has nothing to do.
+    extern "C" fn second_connects_and_talks(env: i64, from: i64, to: i64, thread: i64) -> i64 {
+        if from == 0 { 0 } else { connects_and_talks(env, from, to, thread) }
+    }
+
     /// A server that takes two connections and answers neither until both have sent a line.
     fn answers_once_both_have_spoken() -> u16 {
         use std::io::{BufRead as _, Write as _};

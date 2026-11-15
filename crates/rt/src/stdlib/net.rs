@@ -3130,6 +3130,63 @@ pub(crate) mod tests {
             (handle, server)
         }
 
+        /// A server on a port of its own that takes one connection, with the tests' certificate
+        /// when `secure`, answers its one line with `pong`, and gives back what `looks` said each
+        /// time it looked: as the connection came, and, with TLS, once the handshake was done. So
+        /// a test sees, from the server's end, what its client was doing while it connected and
+        /// while it shook hands.
+        pub(crate) fn answering_and_looking(
+            secure: bool,
+            looks: fn() -> i64,
+        ) -> (u16, std::thread::JoinHandle<Vec<i64>>) {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut tcp, _) = listener.accept().unwrap();
+                let mut seen = vec![looks()];
+                let mut line = String::new();
+                if !secure {
+                    let _ = BufReader::new(&tcp).read_line(&mut line);
+                    let _ = tcp.write_all(b"pong\n");
+                    return seen;
+                }
+                let chain: Vec<CertificateDer<'static>> =
+                    CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+                let config = ServerConfig::builder_with_provider(provider())
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_single_cert(chain, PrivateKeyDer::from_pem_slice(KEY).unwrap())
+                    .unwrap();
+                let mut connection = ServerConnection::new(Arc::new(config)).unwrap();
+                while connection.is_handshaking() {
+                    if connection.complete_io(&mut tcp).is_err() {
+                        return seen;
+                    }
+                }
+                seen.push(looks());
+                let mut reader = BufReader::new(StreamOwned::new(connection, tcp));
+                let _ = reader.read_line(&mut line);
+                let _ = reader.get_mut().write_all(b"pong\n");
+                let _ = reader.get_mut().flush();
+                seen
+            });
+            (port, server)
+        }
+
+        /// Connects as `net.connect(host, port, tls=...)` does, says `ping`, and gives back the
+        /// line it hears.
+        pub(crate) fn connected_and_pinged(host: &str, port: u16, secure: bool) -> Result<Vec<u8>, Failure> {
+            let made = super::super::connect(host, port, Duration::from_secs(20), secure)?;
+            let handle = super::handle_of_made(&made);
+            let heard = match write(handle, b"ping\n") {
+                Ok(()) => read_line(handle, Some(Duration::from_secs(20))),
+                Err(failure) => Err(failure),
+            };
+            close(handle);
+            heard.map(Option::unwrap_or_default)
+        }
+
         /// A server's TLS with the tests' own certificate for `localhost`.
         pub(crate) fn server_tls() -> Arc<dyn super::super::TlsServer> {
             let (chain, key) = (std::str::from_utf8(CHAIN).unwrap(), std::str::from_utf8(KEY).unwrap());

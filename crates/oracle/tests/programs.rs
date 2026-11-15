@@ -538,6 +538,42 @@ fn std_collections_runs_from_its_own_source() {
     );
 }
 
+/// `bytes`: made by `encode` and `bytes(items)`, read by place and by slice, gone through, joined,
+/// compared, written as hex and read back from it, and decoded, with the words the runtime fails
+/// with. `std.base64` runs from its own source over them, with the intrinsics it calls modeled
+/// here. What it prints is what the compiled program printed.
+#[test]
+fn bytes_are_made_read_joined_and_decoded() {
+    prints(
+        "
+        from std import base64
+
+        def problem(text: str) -> str:
+            _ = bytes.fromhex(text) except why:
+                return why.message
+            return 'read'
+
+        def main(stdout: Stdout):
+            data = 'fox é'.encode()
+            stdout.print(data, len(data), data[-1], data[1:3], 111 in data, [byte for byte in data[:2]])
+            joined = bytes([1, 2]) + bytes([255])
+            stdout.print(joined, joined == bytes([1, 2, 255]), bytes() < joined, joined.hex(), joined.hex(':'))
+            stdout.print(bytes.fromhex('0a 0B')?, problem('zz'), problem('8'))
+            text = bytes([255]).decode() except why:
+                why.message
+            stdout.print(text, data.decode()?)
+            stdout.print(base64.encode(data), base64.decode('Zm94IMOp')? == data)
+            return
+        ",
+        "bytes([102, 111, 120, 32, 195, 169]) 6 169 bytes([111, 120]) True [102, 111]\n\
+         bytes([1, 2, 255]) True True 0102ff 01:02:ff\n\
+         bytes([10, 11]) `fromhex` needs two hex digits for each byte, but found \"z\" at 0 `fromhex` needs \
+         two hex digits for each byte, but the text ends halfway through one\n\
+         these bytes aren't UTF-8 text: invalid utf-8 sequence of 1 bytes from index 0 fox é\n\
+         Zm94IMOp True\n",
+    );
+}
+
 /// `main` may take `Env`, `Stderr`, `Signals` and a `Clock`. `Env` is `std.env`'s, run from its
 /// own source, with `get` reading the variables the oracle was started with and `secret`
 /// failing with `Missing`. Standard error is written and not compared, no signal ever comes, and

@@ -23,7 +23,8 @@ how values are held, copied, compared and printed, is modeled here on its own, f
 
 Where a standard library module is written in Fennec, the oracle can run its own source, as
 `fennec-syntax` gives it to the compiler, and model only the functions the runtime writes in Rust
-beneath it. `std.math`, `std.collections`, `std.time`, `std.string` and `std.env` are run this way
+beneath it. `std.math`, `std.collections`, `std.time`, `std.string`, `std.env` and `std.base64` are
+run this way
 (`RUN_FROM_SOURCE` in `src/load.rs`), each loaded when the program imports from it, when a module
 loaded so imports from it, or, for `std.env` and `std.time`, when `main` takes the `Env` or the
 `Clock` whose types they declare. In `std.math`, the vectors, quaternions and matrices, `dot` and
@@ -31,7 +32,10 @@ loaded so imports from it, or, for `std.env` and `std.time`, when `main` takes t
 `std.collections`, `Deque`, `Heap`, `Counter`, `SortedMap`, `SortedSet`, `Grid`, `Packed`, `Tree`
 and the rest are its Fennec code. Its `extend`s of `Table` and `Id`, which the oracle models on its
 own, are left out. `std.time`'s `Duration`, `Instant` and `Time` are its Fennec code, and a
-duration written out, as `30s`, is its `Duration`. The types of the modules' expressions are what
+duration written out, as `30s`, is its `Duration`. The intrinsics their code calls that only read,
+like `text_byte`, `text_size`, `text_part` and `bytes_text`, are modeled here (`interp/library.rs`)
+from what `intrinsics.fen` says each does, and so is making a core error, like `InvalidValue`, by
+name. The types of the modules' expressions are what
 the checker gave them as it checked the program. So
 the oracle still checks how the compiler and runtime run that code, but a mistake in the module's
 own Fennec would be the same on both sides. A module modeled on its own, like `std.json`, isn't
@@ -42,8 +46,11 @@ workspace pins.
 ## How it models a program
 
 - Values are plain Rust values: `i64` ints checked on every operation, `f64` floats, `String`,
-  `Vec` for lists, sets and dicts (kept in the order their items went in), and structs, errors and
-  enum cases as their named fields.
+  `Vec<u8>` for `bytes`, `Vec` for lists, sets and dicts (kept in the order their items went in),
+  and structs, errors and enum cases as their named fields. `bytes` prints as `bytes([104, 105])`,
+  as a byte is an int; `bytes(items)` stops on an item past 0 to 255, `decode` fails with the words
+  the runtime gives, which are Rust's for bytes that aren't UTF-8, and `hex` and `fromhex` read and
+  write two hex digits a byte.
 - A function the program declares is equal only to itself.
 - A `Table` is a list of slots, each with the generation of its item and the item while it's
   there, and a tag of its own, which a copy keeps. An item goes in the lowest slot that's free, at

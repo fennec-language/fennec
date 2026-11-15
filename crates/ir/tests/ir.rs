@@ -44,6 +44,32 @@ fn embedded_bytes_are_a_constant_operand_named_by_their_hash() {
     assert!(function.to_string().contains(&format!("bytes(3, {})", data.hash())), "{function}");
 }
 
+/// `array[T, N]()` still as written, as it is in the standard library's own code, which is
+/// lowered as it was checked, is the array filled with zeros that the checker writes it as in a
+/// program's own code: for an int, a float, a bool, a string, an optional, an array and a struct
+/// of defaults. It wasn't lowered at all: "it calls `array`".
+#[test]
+fn an_array_made_as_written_is_filled_with_its_zero() {
+    let source = "struct Point:\n    x = 0\n    y = 0.0\n\ndef made() -> int:\n    mut ints = array[int, 8]()\n    ints[3] = 7\n    floats = array[float, 2]()\n    flags = array[bool, 2]()\n    names = array[str, 2]()\n    maybe = array[int?, 2]()\n    grid = array[array[int, 2], 3]()\n    points = array[Point, 2]()\n    if flags[0] or names[1] != \"\" or maybe[0] is not None:\n        return -1\n    return ints[3] + grid[2][1] + points[1].x + int(floats[1])\n";
+    // As the checker left it, with nothing written in.
+    let module = fennec_syntax::parse(source).unwrap();
+    let checked = fennec_check::check(&module).unwrap();
+    let as_checked = lower(&module, &checked);
+    assert!(as_checked.not_lowered.is_empty(), "{:?}", as_checked.not_lowered);
+    validate(&as_checked).unwrap();
+    // And the same function as a program's own code is lowered, with each zero written in.
+    let resolved = lowered(source).unwrap();
+    let made = |program: &Program| {
+        program.functions.iter().find(|function| function.name == "made").map(ToString::to_string)
+    };
+    assert!(
+        made(&resolved).is_some_and(|text| text.matches("array.new").count() >= 8),
+        "{:?}",
+        made(&resolved)
+    );
+    assert_eq!(made(&as_checked), made(&resolved));
+}
+
 #[test]
 fn operators_and_tail_values() {
     let source = "def lerp(a: float, b: float, t: float) -> float:\n    return a + (b - a) * t\n";
@@ -674,6 +700,62 @@ fn fail_and_success_are_written_out() {
     jump bb4
 "
     );
+}
+
+/// A function nesting `depth` `with` blocks, each a task's launch or a channel, with a `?` at the
+/// bottom.
+fn nested_withs(depth: usize, launches: bool) -> String {
+    let mut lines = vec![
+        "from std.concurrent import Closed, Crashed, Inbox, channel\n\n\
+         def worker(inbox: Inbox[int]) fails Closed:\n    mut total = 0\n    for n in inbox:\n        total += n\n    \
+         assert total >= 0\n    return\n\n\
+         def main(stdout: Stdout) fails Closed | Crashed:"
+            .to_owned(),
+    ];
+    for at in 0..depth {
+        let pad = "    ".repeat(at + 1);
+        if launches {
+            lines.push(format!("{pad}with launch((inbox) => worker(inbox)?, inbox_size=4)? as w{at}:"));
+        } else {
+            lines.push(format!("{pad}with channel[int](size=1) as w{at}:"));
+        }
+    }
+    let pad = "    ".repeat(depth + 1);
+    lines.push(if launches { format!("{pad}w0.send(1)?") } else { format!("{pad}w0.sender().send(1)?") });
+    lines.push("    stdout.print(1)\n    return\n".to_owned());
+    lines.join("\n")
+}
+
+/// A `with` block's cleanup is written once, however many ways what's inside it fails, and one
+/// inside another is one failure for the outer one to clean up after. So `main` grows by the same
+/// amount for each `with` it nests, one to ten deep: with seven `with launch`es it was 174,893
+/// locals, each doubling twice what's inside it.
+#[test]
+fn nested_with_blocks_grow_by_the_same_amount_each() {
+    for launches in [true, false] {
+        let mut sizes = Vec::new();
+        for depth in 1..=10 {
+            let program = lowered(&nested_withs(depth, launches)).unwrap();
+            let main = program.functions.iter().find(|function| function.name == "main").unwrap();
+            let insts: usize = main.blocks.iter().map(|block| block.insts.len()).sum();
+            sizes.push((main.locals.len(), main.blocks.len(), insts));
+        }
+        let steps: Vec<(usize, usize, usize)> = sizes
+            .windows(2)
+            .filter_map(|pair| match pair {
+                [(locals, blocks, insts), (more_locals, more_blocks, more_insts)] => {
+                    Some((more_locals - locals, more_blocks - blocks, more_insts - insts))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            steps.windows(2).all(|pair| matches!(pair, [a, b] if a == b)),
+            "launches {launches}: {sizes:?}"
+        );
+        // A few dozen locals a level, not thousands.
+        assert!(sizes.last().is_some_and(|(locals, _, _)| *locals < 1_000), "launches {launches}: {sizes:?}");
+    }
 }
 
 #[test]
@@ -2333,7 +2415,7 @@ fn a_shared_value_is_locked_for_each_lock_block() {
   local _12: int
   local _13: Account
   bb0:
-    _1 = []
+    _1 = constant empty list[int]
     _2 = make Account(0, _1)
     _3 = make Shared__Account(_2)
     _4 = _3
@@ -3110,7 +3192,7 @@ fn a_type_with_its_own_str_prints_through_it() {
   local _3: str
   local _4: str
   bb0:
-    _1 = []
+    _1 = constant empty list[str]
     _2 = make StrWriter(_1)
     call Point.str(_0, _2)
     _3 = call StrWriter.text(_2)
@@ -3169,9 +3251,9 @@ fn a_result_passed_on_fails_every_way_its_function_can() {
 }
 
 /// A `with` source's `else:` runs when its block crashes as well as when it fails: it's a closure
-/// marked to run on a crash where the block starts, and unmarked where the block ends, before the
-/// cleanup a failure runs, and before the one written in at a `?`. One that would pass a failure
-/// up some other way isn't marked.
+/// marked to run on a crash where the block starts, and unmarked where the block ends, which every
+/// way out of it passes, a `?` included, before the cleanup a failure runs. One that would pass a
+/// failure up some other way isn't marked.
 #[test]
 fn a_with_blocks_else_is_marked_to_run_on_a_crash() {
     let source = "error Boom:\n    pass\n\n\
@@ -3181,7 +3263,10 @@ fn a_with_blocks_else_is_marked_to_run_on_a_crash() {
         def main(stdout: Stdout):\n    used(stdout) except Boom():\n        return\n";
     let function = printed(source, "used").unwrap();
     assert_eq!(function.matches("on crash run ").count(), 1, "{function}");
-    assert!(function.matches("on crash no longer run ").count() >= 2, "{function}");
+    assert_eq!(function.matches("on crash no longer run ").count(), 1, "{function}");
+    let unmarked = function.find("on crash no longer run ").unwrap_or(usize::MAX);
+    let cleanup = function.find("\"cleanup\"").unwrap_or(0);
+    assert!(unmarked < cleanup, "{function}");
 }
 
 /// A standard library function rewritten for a program, as one holding a `with` source is,

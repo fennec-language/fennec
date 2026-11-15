@@ -111,6 +111,7 @@ fn lower_from(
         generator_defs: std::cell::RefCell::default(),
         own_texts: std::cell::RefCell::default(),
         equals: std::cell::RefCell::default(),
+        empties: std::cell::RefCell::default(),
         layouts: std::cell::RefCell::default(),
         layout_problems: std::cell::RefCell::default(),
         // A library's yield methods too, which a loop over one can copy in.
@@ -173,6 +174,8 @@ fn saves_itself(functions: &[(String, &FnDef)]) -> HashSet<String> {
 fn take_what_was_found(program: &mut Program, context: &Context<'_>) {
     program.generators = context.generator_defs.take();
     program.own_texts = context.own_texts.take();
+    program.constants.extend(context.empties.take());
+    program.constants.sort_by(|first, second| first.name.cmp(&second.name));
     program.layouts = context.layouts.take();
     program.layout_problems = context.layout_problems.take();
 }
@@ -318,6 +321,9 @@ struct Context<'a> {
     /// The structs and enums a function comparing two of them part by part is made for, or is
     /// being made for: by its name, `Tree.equal`.
     equals: std::cell::RefCell<HashSet<String>>,
+    /// The empty lists, dicts and sets that fields default to, each a constant: the function
+    /// giving it, which a value built with the default reads rather than make one of its own.
+    empties: std::cell::RefCell<Vec<Function>>,
     /// The layout of each type `std.pack` saves, as `layout[T]()` gives them.
     layouts: std::cell::RefCell<Vec<crate::SavedLayout>>,
     /// Why a type can't load a layout its kit's `pack.lock` holds for it.
@@ -1030,6 +1036,10 @@ impl<'a> Lowering<'a> {
         // `list[int]()`, `dict[str, int]()` or `set[str]()`: an empty one, its type the call's.
         if let Some(empty) = typed_empty(expr) {
             return self.expr(&empty).map(Some);
+        }
+        // `array[int, 8]()` still as written, where the checker hasn't written its zero in.
+        if let Some(filled) = self.filled_array(expr, callee, args) {
+            return self.expr(&filled).map(Some);
         }
         // `copy(value, field=new)` copies with fields changed. `replace` was its old name.
         if let ExprKind::Name(name) = &callee.kind

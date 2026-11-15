@@ -20242,6 +20242,110 @@ fn pack_loads_an_earlier_version_of_a_type_by_its_names() -> std::io::Result<()>
     Ok(())
 }
 
+/// What the next test packs with the first version of its generic types: each value's bytes, a
+/// line each.
+const GENERIC_PACK_FIRST: &str = r#"from std import pack
+
+struct Pair[T]:
+    first: T
+    second: T
+
+struct Box[T]:
+    held: T
+    count: int
+
+enum Maybe[T]:
+    Some(value: T, note: str)
+    Nothing
+
+struct Holder:
+    pair: Pair[int]
+    label: str
+
+## A value's bytes as numbers apart by commas.
+def shown(data: bytes) -> str:
+    return ",".join([f"{data[at]}" for at in range(len(data))])
+
+def main(stdout: Stdout):
+    boxes: Pair[Box[int]] = Pair(first=Box(held=3, count=4), second=Box(held=5, count=6))
+    maybe: Maybe[int] = .Some(value=7, note="seven")
+    stdout.print(shown(pack.dumps(Pair(first=1, second=2))))
+    stdout.print(shown(pack.dumps(boxes)))
+    stdout.print(shown(pack.dumps(maybe)))
+    stdout.print(shown(pack.dumps(Holder(pair=Pair(first=8, second=9), label="h"))))
+    stdout.print(shown(pack.dumps([Pair(first=10, second=11)])))
+    stdout.print(shown(pack.dumps({"k": Pair(first=12, second=13)})))
+    stdout.print(shown(pack.dumps((Pair(first=14, second=15), 16))))
+"#;
+
+/// The next version of those types, each with its fields moved, loading what the first saved.
+const GENERIC_PACK_NEXT: &str = r#"from std import pack
+
+struct Pair[T]:
+    second: T
+    first: T
+
+struct Box[T]:
+    count: int
+    held: T
+
+enum Maybe[T]:
+    Some(note: str, value: T)
+    Nothing
+
+struct Holder:
+    pair: Pair[int]
+    label: str
+
+## The bytes numbers apart by commas stand for.
+def bytes_of(text: str) -> bytes:
+    mut items = list[int]()
+    for part in text.split(","):
+        number = int.parse(part) except InvalidValue(): 0
+        items.append(number)
+    return bytes(items)
+
+def main(stdout: Stdout) fails ParseError:
+    saved = [SAVED]
+    pair = pack.loads[Pair[int]](bytes_of(saved[0]))?
+    stdout.print(pair.first, pair.second)
+    boxes = pack.loads[Pair[Box[int]]](bytes_of(saved[1]))?
+    stdout.print(boxes.first.held, boxes.first.count, boxes.second.held, boxes.second.count)
+    match pack.loads[Maybe[int]](bytes_of(saved[2]))?:
+        case .Some(note, value):
+            stdout.print(value, note)
+        case .Nothing:
+            stdout.print("nothing")
+    holder = pack.loads[Holder](bytes_of(saved[3]))?
+    stdout.print(holder.pair.first, holder.pair.second, holder.label)
+    listed = pack.loads[list[Pair[int]]](bytes_of(saved[4]))?
+    stdout.print(listed[0].first, listed[0].second)
+    keyed = pack.loads[dict[str, Pair[int]]](bytes_of(saved[5]))?
+    stdout.print(keyed["k"].first, keyed["k"].second)
+    paired = pack.loads[(Pair[int], int)](bytes_of(saved[6]))?
+    stdout.print(paired[0].first, paired[0].second, paired[1])
+"#;
+
+/// A generic type's shape holds its fields with its arguments filled in, so data saved by an
+/// earlier version of `Pair[T]`, with its fields in another order, is read by their names rather
+/// than by place, as a plain struct's is. Before, `Pair[int]`'s shape was its name alone, and the
+/// next version read `first` as `second`. The same for a generic inside a generic, a generic
+/// enum's case, a generic inside a plain struct, and one inside a list, a dict and a tuple.
+#[test]
+fn pack_loads_a_generic_types_earlier_fields_by_their_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let saved = printed_by("generic_pack_first", GENERIC_PACK_FIRST)?;
+    let lines: Vec<String> = saved.lines().map(|line| format!("\"{line}\"")).collect();
+    let next = GENERIC_PACK_NEXT.replace("SAVED", &lines.join(", "));
+    assert_eq!(
+        printed_by("generic_pack_next", &next)?,
+        "1 2\n3 4 5 6\n7 seven\n8 9 h\n10 11\n12 13\n14 15 16\n"
+    );
+    Ok(())
+}
+
 /// What the next test builds: many small values in one stream, read in order, by name, fed a
 /// byte at a time, cut off, and two `Packer`s' bytes one after the other.
 const PACK_STREAMS: &str = r#"from std import pack

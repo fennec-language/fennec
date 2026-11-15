@@ -134,6 +134,9 @@ pub(crate) struct Heap {
     owner_bits: u64,
     /// On a worker, the blocks it made since it last handed what it made over.
     made: Vec<u64>,
+    /// Whether that list still names everything the task running here made, and who has it
+    /// marked.
+    made_listing: Listing,
     /// Whether this heap serves connections, whose tasks hand nothing over.
     pub(super) serving: bool,
     /// The tables behind the current one while this thread holds write locks, each with the owner
@@ -385,6 +388,31 @@ const CELL_SHAPE: u64 = SHAPE_BITS - 1;
 /// through the runtime (see `threads`).
 pub const OWNER_SHIFT: u32 = 48;
 
+/// How a heap's list of what it's made stands, for the task running on its thread: a parked task
+/// keeps its own, with its list.
+#[derive(Default)]
+pub(super) struct Listing {
+    /// Whether the task let its list go, once handing it over would cost what a look through its
+    /// thread's table does. What it made and still holds is then found at its end by its mark in
+    /// each block (`hand_over_all`).
+    let_go: bool,
+    /// How long the list is when it's next looked at: until then a block made is only added to
+    /// it. 0 once it's let go, so every block made after comes by the look, which adds none.
+    look_at: usize,
+    /// How many ranges or chunks running on this thread have marked where the list was as they
+    /// started, to hand over what comes after. The list isn't let go of under them.
+    scopes: usize,
+}
+
+/// How many blocks a task lists as made between looks at whether to let the list go, and the
+/// fewest it lets go of. A list this long is 32 KB.
+pub(crate) const MADE_LISTED: usize = 4096;
+
+/// How many of a table's places a look through it reads in about the time handing one listed
+/// block over takes: the look reads a place and moves on, where a listed block is found in the
+/// table, checked, taken out, and forgotten by what remembers strings.
+const PLACES_A_LISTED_BLOCK: usize = 16;
+
 /// Where a block's shape word holds which task on its thread made it, in the bits below the thread.
 const TASK_SHIFT: u32 = 24;
 
@@ -404,12 +432,31 @@ pub(crate) fn shape_word(block: &[u64]) -> Option<u64> {
     block.get(1).map(|word| word & SHAPE_BITS)
 }
 
-/// A task's mark for the blocks it makes, from its number on its thread, never 0, which is what a
-/// thread makes outside any task. Two tasks alive together could only share one after one of them
-/// has seen 16 million others start on its thread.
+/// A task's mark for the blocks it makes, from a number on its thread, never 0, which is what a
+/// thread makes outside any task. There are 16 million marks, so a number's mark comes round
+/// again once that many tasks have started on the thread: `number_to_mark` sees that no two
+/// tasks alive there share one.
 #[cfg(any(test, feature = "threads"))]
 pub(super) fn task_mark(task: u64) -> u64 {
-    ((task % (TASK_BITS >> TASK_SHIFT)) + 1) << TASK_SHIFT
+    ((task % TASK_MARKS) + 1) << TASK_SHIFT
+}
+
+/// How many marks there are for a thread's tasks.
+#[cfg(any(test, feature = "threads"))]
+const TASK_MARKS: u64 = TASK_BITS >> TASK_SHIFT;
+
+/// The number whose mark a task starting as number `task` on its thread takes: its own, unless
+/// marks have come round and a task still alive there has that mark, which `taken` says of a
+/// number, when it's the next number whose mark is free. A task that has run since the marks
+/// last came round, as a long one can, would otherwise share its mark with a new one: and a long
+/// task's end finds its blocks by its mark, so it would take the new task's blocks with its own.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn number_to_mark(task: u64, taken: impl Fn(u64) -> bool) -> u64 {
+    if task < TASK_MARKS {
+        return task;
+    }
+    // Every mark there is, from its own: with all of them held there's none to take.
+    (task..task.saturating_add(TASK_MARKS)).find(|number| !taken(*number)).unwrap_or(task)
 }
 
 /// The owner in the shape word of a block that's never freed, like a string literal's or a
@@ -916,24 +963,101 @@ impl Heap {
                 && !self.serving
                 && self.owner_bits >> OWNER_SHIFT != super::guarded::GUARDED_OWNER
             {
-                self.made.push(u64::try_from(address).unwrap_or(0));
+                self.list_made(address);
             }
         }
         self.blocks.insert(block);
         i64::try_from(address).unwrap_or(0)
     }
 
-    /// How many blocks this heap has made since it last handed them over, to hand over only
-    /// the ones made after this.
+    /// Lists a block this heap made, for a task to hand over what it made that outlives it.
+    ///
+    /// A task that ran for long listed every block it ever made, freed or not. The list was only
+    /// emptied when the task ended, so the task's memory grew by a word a block for as long as it
+    /// ran: 191 MB after eight million strings, each let go of at once. So a task lets its list
+    /// go and lists no more, and what it still holds when it ends is found by its mark in each
+    /// block, by looking through its thread's table.
+    ///
+    /// It lets the list go once handing the list over would cost about what that look does: when
+    /// the list is a sixteenth as long as the table has places to read (`PLACES_A_LISTED_BLOCK`).
+    /// Until then the list is the cheaper way to find its blocks, and it's kept: a task that
+    /// makes a few thousand blocks and ends would otherwise pay for a look through the whole
+    /// table, which costs far more than its list. So a task's end costs about what its list would
+    /// have at most, and the list is never longer than a sixteenth of the table's own places,
+    /// whatever the task has made.
+    ///
+    /// The list is looked at every `MADE_LISTED` blocks. Between looks a block made costs one
+    /// comparison more than adding it to the list, and once the list is let go it costs the look
+    /// alone, which adds nothing.
+    ///
+    /// A range or chunk hands over by where the list was when it started, so while one is running
+    /// the list is kept whole.
+    #[inline]
+    fn list_made(&mut self, address: usize) {
+        if self.made.len() < self.made_listing.look_at {
+            self.made.push(u64::try_from(address).unwrap_or(0));
+            return;
+        }
+        self.list_made_after_a_look(address);
+    }
+
+    /// `list_made`, when it's time to look at the list, or the list's been let go.
+    #[cold]
+    #[inline(never)]
+    fn list_made_after_a_look(&mut self, address: usize) {
+        if self.made_listing.scopes == 0 {
+            if self.made_listing.let_go {
+                return;
+            }
+            let listed = self.made.len();
+            let as_a_look = self.blocks.places_to_look_through() / PLACES_A_LISTED_BLOCK;
+            if listed >= MADE_LISTED.max(as_a_look) {
+                self.made = Vec::new();
+                self.made_listing.let_go = true;
+                self.made_listing.look_at = 0;
+                return;
+            }
+        }
+        self.made.push(u64::try_from(address).unwrap_or(0));
+        // A list that's been let go, kept again for a range, is looked at with every block.
+        self.made_listing.look_at = if self.made_listing.let_go { 0 } else { self.made.len() + MADE_LISTED };
+    }
+
+    /// Whether the task running here has let its list of what it made go.
+    #[cfg(test)]
+    pub(crate) fn made_let_go(&self) -> bool {
+        self.made_listing.let_go
+    }
+
+    /// The most blocks a task running here lists before it lets its list go, as things stand.
+    #[cfg(test)]
+    pub(crate) fn most_listed(&self) -> usize {
+        MADE_LISTED.max(self.blocks.places_to_look_through() / PLACES_A_LISTED_BLOCK) + MADE_LISTED
+    }
+
+    /// How many blocks this heap has listed as made since it last handed them over.
     pub(crate) fn made_so_far(&self) -> usize {
         self.made.len()
+    }
+
+    /// Marks where the list of what's made is, for a range or chunk starting on this thread to
+    /// hand over only what it makes: `made_scope_ends` says when it's done.
+    pub(crate) fn made_scope_starts(&mut self) -> usize {
+        self.made_listing.scopes += 1;
+        self.made.len()
+    }
+
+    /// A range or chunk that marked the list has ended.
+    pub(crate) fn made_scope_ends(&mut self) {
+        self.made_listing.scopes = self.made_listing.scopes.saturating_sub(1);
     }
 
     /// Puts `made` in place of the blocks this heap's made since it last handed them over, and
     /// those in `made`'s place: for a parked range, which keeps its own.
     #[cfg(any(test, feature = "threads"))]
-    pub(super) fn swap_made(&mut self, made: &mut Vec<u64>, task: &mut u64) {
+    pub(super) fn swap_made(&mut self, made: &mut Vec<u64>, listing: &mut Listing, task: &mut u64) {
         std::mem::swap(&mut self.made, made);
+        std::mem::swap(&mut self.made_listing, listing);
         // The main thread's blocks hold no thread's number, and it doesn't hand any over.
         if self.owner_bits >> OWNER_SHIFT != 0 {
             let was = self.owner_bits & TASK_BITS;
@@ -948,18 +1072,47 @@ impl Heap {
         let mut handed = Vec::new();
         let task = self.owner_bits & TASK_BITS;
         for address in self.made.split_off(since.min(self.made.len())) {
-            // An address it freed may have come back as another task's block.
-            let block = self.block(address);
-            if block.and_then(|block| block.get(1)).is_none_or(|word| word & TASK_BITS != task) {
-                continue;
-            }
-            let lives = block.and_then(<[u64]>::first).is_some_and(|count| *count < IMMORTAL);
-            self.forget_place(address);
-            if lives && let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at))
-            {
-                // Its address can come back holding another string.
-                self.texts.get_mut().remove(&block.as_ptr().addr());
-                handed.push(block);
+            self.hand_one(address, task, &mut handed);
+        }
+        handed
+    }
+
+    /// Takes the block at `address` for `handed`, if it's `task`'s and doesn't live for the whole
+    /// run.
+    fn hand_one(&mut self, address: u64, task: u64, handed: &mut Vec<Box<[u64]>>) {
+        // An address it freed may have come back as another task's block.
+        let block = self.block(address);
+        if block.and_then(|block| block.get(1)).is_none_or(|word| word & TASK_BITS != task) {
+            return;
+        }
+        let lives = block.and_then(<[u64]>::first).is_some_and(|count| *count < IMMORTAL);
+        self.forget_place(address);
+        if lives && let Some(block) = usize::try_from(address).ok().and_then(|at| self.blocks.remove(at)) {
+            // Its address can come back holding another string.
+            self.texts.get_mut().remove(&block.as_ptr().addr());
+            handed.push(block);
+        }
+    }
+
+    /// Takes every block the task running here made and still holds, as it ends, for the thread
+    /// that launched it to adopt. What it listed is taken from the list. A task that let its list
+    /// go, once handing it over would have cost what this look does, has the rest found by its mark: every block
+    /// in this heap's table that the task made has the task's mark in its shape word, and no other
+    /// task alive on this thread has that mark.
+    #[cfg(any(test, feature = "threads"))]
+    pub(crate) fn hand_over_all(&mut self) -> Vec<Box<[u64]>> {
+        let mut handed = self.hand_over(0);
+        let task = self.owner_bits & TASK_BITS;
+        if std::mem::take(&mut self.made_listing.let_go) && task != 0 {
+            let marked = |block: &&[u64]| block.get(1).is_some_and(|word| word & TASK_BITS == task);
+            let mine: Vec<u64> = self
+                .blocks
+                .all()
+                .filter(marked)
+                .map(|block| u64::try_from(block.as_ptr().addr()).unwrap_or(0))
+                .collect();
+            for address in mine {
+                self.hand_one(address, task, &mut handed);
             }
         }
         handed

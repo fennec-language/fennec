@@ -996,6 +996,52 @@ fn a_union_saves_when_its_members_are_named_types() {
     );
 }
 
+/// A type's shape, which `pack` checks data against, holds its fields: a generic type's with its
+/// arguments filled in, so changing or moving a field of `Pair[T]` changes `Pair[int]`'s shape as
+/// it does a plain struct's. A generic enum's cases, a generic inside another, inside a plain
+/// struct and inside a list, a dict and a tuple are each shaped by their fields too. A type inside
+/// itself with the same arguments is written by its name the second time; with other arguments,
+/// it's another type, and shaped in full.
+#[test]
+fn a_generic_types_shape_holds_its_fields_with_its_arguments_filled_in() {
+    use fennec_check::Type;
+    let shapes = |source: &str, ty: &Type| {
+        let mut module = fennec_syntax::parse(source).unwrap();
+        fennec_check::check_and_resolve(&mut module).unwrap().shape(ty)
+    };
+    let declared = "struct Pair[T]:\n    first: T\n    second: T\n\n\
+        enum Maybe[T]:\n    Some(value: T, note: str)\n    Nothing\n\n\
+        struct Chain[T]:\n    value: T\n    links: list[Chain[T]]\n\n\
+        struct Holder:\n    pair: Pair[int]\n\ndef main():\n    pass\n";
+    let moved = declared.replace("    first: T\n    second: T", "    second: T\n    first: T");
+    let generic = |name: &str, args: Vec<Type>| Type::Generic(name.to_owned(), args);
+    let pair = generic("Pair", vec![Type::Int]);
+    assert_eq!(shapes(declared, &pair), "Pair[int]{first: int, second: int}");
+    assert_eq!(shapes(&moved, &pair), "Pair[int]{second: int, first: int}");
+    assert_eq!(
+        shapes(declared, &generic("Maybe", vec![Type::Str])),
+        "Maybe[str]<Some(value: str, note: str), Nothing>"
+    );
+    assert_eq!(
+        shapes(declared, &generic("Chain", vec![Type::Int])),
+        "Chain[int]{value: int, links: list[Chain[int]]}"
+    );
+    let holder = Type::Named("Holder".to_owned());
+    assert_eq!(shapes(declared, &holder), "Holder{pair: Pair[int]{first: int, second: int}}");
+    assert_ne!(shapes(declared, &holder), shapes(&moved, &holder));
+    let nested = generic("Pair", vec![generic("Pair", vec![Type::Str])]);
+    let inner = "Pair[str]{first: str, second: str}";
+    assert_eq!(shapes(declared, &nested), format!("Pair[{inner}]{{first: {inner}, second: {inner}}}"));
+    for held in [
+        Type::List(Box::new(pair.clone())),
+        Type::Dict(Box::new(Type::Str), Box::new(pair.clone())),
+        Type::Tuple(vec![pair.clone(), Type::Int]),
+    ] {
+        assert!(shapes(declared, &held).contains("Pair[int]{first: int, second: int}"), "{held}");
+        assert_ne!(shapes(declared, &held), shapes(&moved, &held), "{held}");
+    }
+}
+
 /// A tuple saves when each of its items does, but not one of a single item yet.
 #[test]
 fn a_tuple_saves_when_its_items_do() {

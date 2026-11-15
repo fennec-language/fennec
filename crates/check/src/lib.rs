@@ -93,6 +93,41 @@ pub use tuple_lowering::tuple_function;
 
 pub use reach::std_code;
 
+/// Where an import, or a name used, at `span` belongs, among a program's `files`: std's own code,
+/// one of the files by its place, or the code lowering writes in, whose imports have no place in a
+/// file. A program parsed from one text, with no files listed, is one file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Std,
+    File(usize),
+    Written,
+}
+
+/// Where what's at `span` belongs among `files`, by [`Place`].
+#[must_use]
+pub fn place(files: &[Span], span: Span) -> Place {
+    if span.in_prelude() {
+        return Place::Std;
+    }
+    if lend_lowering::not_written_by_hand(span) {
+        return Place::Written;
+    }
+    if files.is_empty() {
+        return Place::File(0);
+    }
+    match files.iter().position(|file| file.start <= span.start && span.start <= file.end) {
+        Some(at) => Place::File(at),
+        None => Place::Written,
+    }
+}
+
+/// Where an import at `span` belongs: as [`place`], but one lowering writes in, at no span of
+/// its own, is the written-in code's.
+#[must_use]
+pub fn import_place(files: &[Span], span: Span) -> Place {
+    if span.start == span.end && !span.in_prelude() { Place::Written } else { place(files, span) }
+}
+
 /// Whether a top-level item declared at `span` is the compiler's: the standard library's, or one
 /// the checker wrote into the program, like a type's saving functions. Any code reaches those by
 /// name, as it reaches std's; only what a program wrote is kept from std's code and a dependency's.

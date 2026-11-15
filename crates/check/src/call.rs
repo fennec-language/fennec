@@ -197,6 +197,9 @@ impl FnCx<'_> {
             return Some(self.construct(name, args, span));
         }
         if let Some(builtin) = self.checker.program.imported(name, callee.span).cloned() {
+            // Written in by its own name, as `math.sqrt`: what a file imports is its own, and
+            // nothing after the check looks a name up by what another file imports.
+            self.checker.std_names.insert((callee.span.start, callee.span.end), builtin.clone());
             return Some(self.call_builtin(&builtin, args, span));
         }
         if matches!(name, "len" | "abs") || builtins::is_builtin(name) {
@@ -227,8 +230,9 @@ impl FnCx<'_> {
                 Member::Name(member) => member,
                 Member::Missing => return None,
             },
+            // An import's name, or the builtin's own once it's written in.
             ExprKind::Name(name) if self.lookup(name).is_none() => {
-                self.checker.program.imported(name, callee.span)?.clone()
+                self.checker.program.imported(name, callee.span).cloned().unwrap_or_else(|| name.clone())
             }
             _ => return None,
         };

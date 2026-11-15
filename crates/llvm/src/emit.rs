@@ -4435,6 +4435,52 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// `main` and a test are started by the runtime, which has a capability for each thing they
+    /// take and nothing for anything else. A parameter of another type stops the build: handed a
+    /// null in its place, `main` read a list at address 0 and the program died.
+    #[test]
+    fn what_the_runtime_starts_takes_capabilities_and_nothing_else() -> Result<(), String> {
+        // Neither reads `args`, so the body builds whatever its type is and only the entry differs.
+        let source = "def main(stdout: Stdout, args: Args):\n    stdout.print(1)\n    return\n";
+        let entries = |program: &Program| -> (Result<String, String>, Result<String, String>) {
+            let made = emit(program).and_then(|(_, shared, layouts)| {
+                let image = crate::entry::Image::of(&layouts, &shared)?;
+                Ok((shared, image))
+            });
+            match made {
+                Ok((shared, image)) => (
+                    crate::entry::entry(program, &shared, &image, &[]),
+                    crate::entry::tests_entry(program, &shared, &image, &[], &["test:0".to_owned()]),
+                ),
+                Err(why) => (Err(why.clone()), Err(why)),
+            }
+        };
+        // A test is a function named `test:` and its number, here one that takes `Args`.
+        let mut program = lowered(source)?;
+        let mut test = program.functions.iter().find(|function| function.name == "main").cloned();
+        if let Some(test) = test.as_mut() {
+            "test:0".clone_into(&mut test.name);
+        }
+        program.functions.extend(test);
+        let (main, tests) = entries(&program);
+        assert!(main?.contains("call i64 @fennec_capability_block(i64 3)"));
+        assert!(tests?.contains("call i64 @fennec_capability_block(i64 3)"));
+        // The same program as it would reach here had the checker let `args: list[str]` through.
+        for function in &mut program.functions {
+            if (function.name == "main" || function.name == "test:0")
+                && let Some(args) = function.locals.get_mut(1)
+            {
+                args.ty = fennec_check::Type::List(Box::new(fennec_check::Type::Str));
+            }
+        }
+        let (main, tests) = entries(&program);
+        let main = main.err().ok_or("`main` was started with a list")?;
+        assert!(main.contains("`main` takes `args`, a `list[str]`, which isn't a capability"), "{main}");
+        let tests = tests.err().ok_or("a test was started with a list")?;
+        assert!(tests.contains("`test:0` takes `args`, a `list[str]`, which isn't a capability"), "{tests}");
+        Ok(())
+    }
+
     /// A build that checks proofs writes the checks they left out, each saying which proof broke:
     /// a loop's count can't overflow, and its index is inside the list it goes through.
     #[test]

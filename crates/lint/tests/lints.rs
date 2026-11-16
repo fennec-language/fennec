@@ -33,12 +33,35 @@ fn alone_as_together(source: &str) {
             let Ok(parsed) = parse_at(text, base) else { return };
             module.items.extend(parsed.items);
         }
+        // Each file's span, as the kit loader lists them, so each file's imports are its own.
+        module.files = sources.spans();
         let mut parts = across_files(&module, &sources);
         for (path, _) in files {
             parts.extend(within_files(&module, &sources, false, &|wanted| wanted == path));
         }
         assert_eq!(said(&parts), said(&lint(&module, &sources)), "linting {source:?} beside another file");
     }
+}
+
+/// The lints of one file at a time see each file's imports as its own, as the whole program's
+/// check does: two files import `pick` from different places, and the second's needless `int(...)`
+/// is found whether it's linted on its own or with the first. Once, the file linted on its own was
+/// checked as one file with both imports, which failed, and nothing was found there.
+#[test]
+fn a_files_lints_see_its_own_imports() {
+    let first = "from std.math import floor as pick\n\ndef main(stdout: Stdout):\n    stdout.print(pick(2.7), shown(3))\n";
+    let second = "from std.math import ceil as pick\n\n## Shown with a ceiling.\ndef shown(count: int) -> int:\n    return int(count) + pick(2.2)\n";
+    let mut sources = Sources::new();
+    let mut module = Module::default();
+    for (path, text) in [("first.fen", first), ("second.fen", second)] {
+        let base = sources.add(path, text);
+        module.items.extend(parse_at(text, base).unwrap().items);
+    }
+    module.files = sources.spans();
+    let needless = |lints: &[Lint]| lints.iter().filter(|lint| lint.rule == "needless-conversion").count();
+    assert_eq!(needless(&lint(&module, &sources)), 1);
+    assert_eq!(needless(&within_files(&module, &sources, false, &|path| path == "second.fen")), 1);
+    assert_eq!(needless(&within_files(&module, &sources, false, &|path| path == "first.fen")), 0);
 }
 
 fn found(source: &str) -> Result<Vec<Lint>, String> {

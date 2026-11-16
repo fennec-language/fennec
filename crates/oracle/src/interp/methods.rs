@@ -284,7 +284,9 @@ impl Interp {
                     if name == "write_line" {
                         text.push('\n');
                     }
-                    let _ = std::io::Write::write_all(&mut std::io::stderr(), text.as_bytes());
+                    if !self.shared.quiet.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = std::io::Write::write_all(&mut std::io::stderr(), text.as_bytes());
+                    }
                     Ok(Value::Unit)
                 }
                 _ => unsupported(format!("`stderr.{name}` of something other than text")),

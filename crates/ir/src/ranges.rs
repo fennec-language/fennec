@@ -29,8 +29,8 @@
 //! What a backend can drop, by the place of its instruction in its function, is in
 //! [`FunctionRanges`]. A wrong one turns a negative side's floor into the wrong number, lets
 //! `int(x)` give a wrong int, or puts a NaN in the wrong place in the order, so each is checked
-//! as a program runs in the IR's evaluator (`crate::eval::check_ranges`), and a build that checks
-//! proofs checks them too.
+//! as a program runs in the IR's evaluator (`crate::eval::check_ranges`). A backend that drops a
+//! check on one checks it again in its build that checks proofs, as it does the length facts.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 

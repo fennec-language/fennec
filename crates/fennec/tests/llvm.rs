@@ -15005,6 +15005,58 @@ fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> 
     std::fs::remove_dir_all(&dir)
 }
 
+/// Hashing a password in a task parks the task while a thread of its own does the work: a
+/// launched task hashes and checks one, and a server's handler one for each of 12 clients at
+/// once. The call into `std.crypto` held the runtime's state, so no task could park there, and
+/// each hash ran on its task's worker, holding up every other task on it for the tens of
+/// milliseconds a hash takes. Under `FENNEC_COUNTS`, a wait that blocked its thread is counted, so
+/// the counts line has no `blocked_waits` now, where it had 26 (#1815).
+///
+/// It's built for a heap audit and run under it on 1, 4 and 16 threads, each run cut off at two
+/// minutes: it ends with what it should have printed, nothing live and nothing said.
+#[test]
+fn hashing_a_password_in_a_task_parks_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("passwords-hashed-parked")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "passwords_hashed_in_tasks";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(
+            printed, "a task's hash checks: True\n12 of 12 signed up\n",
+            "on {threads} threads: {said}"
+        );
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("blocked_waits"), "a hash held its worker, on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
 /// listed and not gone into, and through an `Fs` narrowed to one folder.
 #[cfg(unix)]

@@ -95,6 +95,41 @@ pub use tuple_lowering::tuple_function;
 
 pub use reach::std_code;
 
+/// Where an import, or a name used, at `span` belongs, among a program's `files`: std's own code,
+/// one of the files by its place, or the code lowering writes in, whose imports have no place in a
+/// file. A program parsed from one text, with no files listed, is one file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Std,
+    File(usize),
+    Written,
+}
+
+/// Where what's at `span` belongs among `files`, by [`Place`].
+#[must_use]
+pub fn place(files: &[Span], span: Span) -> Place {
+    if span.in_prelude() {
+        return Place::Std;
+    }
+    if lend_lowering::not_written_by_hand(span) {
+        return Place::Written;
+    }
+    if files.is_empty() {
+        return Place::File(0);
+    }
+    match files.iter().position(|file| file.start <= span.start && span.start <= file.end) {
+        Some(at) => Place::File(at),
+        None => Place::Written,
+    }
+}
+
+/// Where an import at `span` belongs: as [`place`], but one lowering writes in, at no span of
+/// its own, is the written-in code's.
+#[must_use]
+pub fn import_place(files: &[Span], span: Span) -> Place {
+    if span.start == span.end && !span.in_prelude() { Place::Written } else { place(files, span) }
+}
+
 /// Whether a top-level item declared at `span` is the compiler's: the standard library's, or one
 /// the checker wrote into the program, like a type's saving functions. Any code reaches those by
 /// name, as it reaches std's; only what a program wrote is kept from std's code and a dependency's.
@@ -593,6 +628,25 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     resolved(module, checked, scope)
 }
 
+/// A name written in as the standard library's own, as `sha256` imported from std.crypto is
+/// `crypto.sha256`, and a call the checker sent to another of std's functions, as `crypto.blake3`
+/// given a list goes to `crypto.blake3_of_str_list`. A call is seen before its callee, so `sent`
+/// holds each such callee: the name it was written with, which may be std's too, mustn't then
+/// replace where it was sent.
+fn std_written(expr: &mut Expr, checked: &Checked, span: (u32, u32), sent: &mut BTreeSet<(u32, u32)>) {
+    if let Some(function) = checked.std_names.get(&span)
+        && !sent.contains(&span)
+    {
+        expr.kind = ExprKind::Name(function.clone());
+    }
+    if let Some(function) = checked.std_calls.get(&span)
+        && let ExprKind::Call { callee, .. } = &mut expr.kind
+    {
+        sent.insert((callee.span.start, callee.span.end));
+        callee.kind = ExprKind::Name(function.clone());
+    }
+}
+
 /// A call the checker sent to a standard library function, like `sum` of a list of floats to
 /// `math.fixed_sum`, needs that function's module where it runs, though the program may never have
 /// imported it: it's imported under a name of its own, which nothing written can reach or clash
@@ -826,6 +880,8 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         || !checked.std_calls.is_empty()
         || !checked.field_args.is_empty()
     {
+        // The callees of calls the checker sent to another function, which `std_written` keeps.
+        let mut sent: BTreeSet<(u32, u32)> = BTreeSet::new();
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
             let span = (expr.span.start, expr.span.end);
             if let Some(owner) = checked.cases.get(&span) {
@@ -835,14 +891,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
             if let Some(defaults) = checked.defaults.get(&span) {
                 fennec_syntax::visit::add_defaults(expr, defaults);
             }
-            if let Some(function) = checked.std_names.get(&span) {
-                expr.kind = ExprKind::Name(function.clone());
-            }
-            if let Some(function) = checked.std_calls.get(&span)
-                && let ExprKind::Call { callee, .. } = &mut expr.kind
-            {
-                callee.kind = ExprKind::Name(function.clone());
-            }
+            std_written(expr, checked, span, &mut sent);
             if let ExprKind::Call { args, .. } = &mut expr.kind {
                 for arg in args.iter_mut().filter(|arg| arg.name.is_none()) {
                     if let Some(field) = checked.field_args.get(&(arg.value.span.start, arg.value.span.end)) {

@@ -17,6 +17,21 @@ pub(crate) fn float(x: f64) -> String {
     if x.fract() == 0.0 { format!("{x}.0") } else { format!("{x}") }
 }
 
+/// An `f32` as Fennec prints it: as a float prints, with the shortest digits that read back as
+/// the same `f32`, as `docs/language.md` says.
+pub(crate) fn float32(x: f32) -> String {
+    if x.is_nan() {
+        return "nan".to_owned();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 { "inf".to_owned() } else { "-inf".to_owned() };
+    }
+    if x != 0.0 && !(1e-4..1e16).contains(&x.abs()) {
+        return with_python_exponent(&format!("{x:e}"));
+    }
+    if x.fract() == 0.0 { format!("{x}.0") } else { format!("{x}") }
+}
+
 /// Rust's `1.5e17` written as Python writes it, `1.5e+17`, with at least two digits after the sign.
 fn with_python_exponent(text: &str) -> String {
     match text.split_once('e') {

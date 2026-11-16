@@ -36,7 +36,7 @@ pub(crate) fn kit(dir: &Path, shown: &str) -> Result<Merged, Refused> {
         return Err(Refused::Unsupported("a kit with dependencies".to_owned()));
     }
     let shown_src = format!("{}/src/", shown.trim_end_matches('/'));
-    let mut loader = Loader::new(dir.join("src"), shown_src);
+    let mut loader = Loader::new(dir.join("src"), dir.to_path_buf(), shown_src);
     let (real, shown_main) = loader.path(&["main".to_owned()]);
     loader.visit("main".to_owned(), &real, shown_main)?;
     loader.merge()
@@ -51,7 +51,7 @@ pub(crate) fn file(path: &Path, shown: &str) -> Result<Merged, Refused> {
         _ => String::new(),
     };
     let name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut loader = Loader::new(src, shown_src);
+    let mut loader = Loader::new(src.clone(), src, shown_src);
     loader.visit(name, path, shown.to_owned())?;
     loader.merge()
 }
@@ -95,6 +95,8 @@ struct File {
 struct Loader {
     /// The folder module paths resolve against.
     src: PathBuf,
+    /// The folder nothing embedded may be outside of: the kit's, or a lone file's own.
+    root: PathBuf,
     /// How `src` is shown before a module's path.
     shown_src: String,
     sources: Sources,
@@ -105,9 +107,10 @@ struct Loader {
 }
 
 impl Loader {
-    fn new(src: PathBuf, shown_src: String) -> Loader {
+    fn new(src: PathBuf, root: PathBuf, shown_src: String) -> Loader {
         Loader {
             src,
+            root,
             shown_src,
             sources: Sources::new(),
             files: Vec::new(),
@@ -137,9 +140,7 @@ impl Loader {
         let base = self.sources.add(shown, text.clone());
         let mut module = fennec_syntax::parse_at(&text, base)
             .map_err(|problem| Refused::Invalid(self.sources.render(&problem)))?;
-        if let Some(embed) = embeds(&mut module) {
-            return Err(Refused::Unsupported(format!("`{embed}`")));
-        }
+        embed_files(&mut module, real, &self.root)?;
         let mut wanted = Vec::new();
         for item in &module.items {
             if let Item::Import(import) = item
@@ -208,19 +209,48 @@ impl Loader {
     }
 }
 
-/// The first of `embed_file` and `embed_folder` a file calls, which the compiler reads the files of
-/// as it loads the program, and the oracle doesn't.
-fn embeds(module: &mut Module) -> Option<String> {
-    let mut found = None;
+/// Puts each `embed_file("path")` a file calls in as the bytes it gives, as the compiler reads
+/// them as it builds the program: the file at `path` from the folder of the file that calls it,
+/// which can't be outside `root`. `embed_folder` isn't modeled.
+fn embed_files(module: &mut Module, file: &Path, root: &Path) -> Result<(), Refused> {
+    let folder = file.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let root = root.canonicalize().map_err(|err| Refused::Invalid(format!("the kit's folder: {err}")))?;
+    let mut refused = None;
     visit::exprs_mut(module, &mut |expr| {
-        if let ExprKind::Call { callee, .. } = &expr.kind
-            && let ExprKind::Name(name) = &callee.kind
-            && matches!(name.as_str(), "embed_file" | "embed_folder")
-        {
-            found.get_or_insert_with(|| name.clone());
+        let ExprKind::Call { callee, args } = &expr.kind else { return };
+        let ExprKind::Name(name) = &callee.kind else { return };
+        if name == "embed_folder" {
+            refused.get_or_insert_with(|| Refused::Unsupported("`embed_folder`".to_owned()));
+            return;
         }
+        if name != "embed_file" {
+            return;
+        }
+        let [arg] = args.as_slice() else { return };
+        let ExprKind::Str(path) = &arg.value.kind else {
+            refused.get_or_insert_with(|| {
+                Refused::Unsupported("`embed_file` of a path not written out".to_owned())
+            });
+            return;
+        };
+        let found = folder.join(path).canonicalize().ok().filter(|found| found.starts_with(&root));
+        let Some(data) = found.and_then(|found| std::fs::read(found).ok()) else {
+            refused.get_or_insert_with(|| {
+                Refused::Invalid(format!("`embed_file(\"{path}\")` finds no file in the kit"))
+            });
+            return;
+        };
+        let span = expr.span;
+        let items =
+            data.into_iter().map(|byte| Expr { kind: ExprKind::Int(i64::from(byte)), span }).collect();
+        let list = Expr { kind: ExprKind::List(items), span };
+        let made = Expr { kind: ExprKind::Name("bytes".to_owned()), span };
+        expr.kind = ExprKind::Call {
+            callee: Box::new(made),
+            args: vec![fennec_syntax::Arg { name: None, is_mut: false, value: list }],
+        };
     });
-    found
+    refused.map_or(Ok(()), Err)
 }
 
 /// The names a file defines at the top level.

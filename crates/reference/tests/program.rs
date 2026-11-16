@@ -11,7 +11,21 @@ fn it_writes_the_page_and_fails_on_a_decision_that_isnt_there() {
     }
     std::fs::write(dir.join("docs/decisions.md"), "## Syntax\n\n**A rule.** Why.\n").unwrap();
     std::fs::write(dir.join("examples/one.fen"), "# decision: A rule.\nx = 1\n").unwrap();
-    let run = || Command::new(env!("CARGO_BIN_EXE_fennec-reference")).current_dir(&dir).output().unwrap();
+    // A run that can't start says which of the two wasn't there: on 2026-11-15 one failed with
+    // only "No such file or directory", once, and a sweep of old build files (fixed in #1821)
+    // most likely took the program from under the gate.
+    let run = || {
+        let program = std::path::Path::new(env!("CARGO_BIN_EXE_fennec-reference"));
+        Command::new(program).current_dir(&dir).output().unwrap_or_else(|err| {
+            panic!(
+                "couldn't run {} in {}: {err}; the program is {}there, and the folder is {}there",
+                program.display(),
+                dir.display(),
+                if program.is_file() { "" } else { "not " },
+                if dir.is_dir() { "" } else { "not " },
+            )
+        })
+    };
 
     assert!(run().status.success());
     let page = std::fs::read_to_string(dir.join("site/src/pages/reference.md")).unwrap();

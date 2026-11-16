@@ -63,6 +63,7 @@ pub(crate) fn has_function(path: &str) -> bool {
             | "std.intrinsics.bytes_builder"
             | "std.intrinsics.bytes_push"
             | "std.intrinsics.bytes_push_word"
+            | "std.intrinsics.bytes_push_varint"
             | "std.intrinsics.bytes_push_text"
             | "std.intrinsics.bytes_push_bytes"
             | "std.intrinsics.bytes_set"

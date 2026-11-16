@@ -345,7 +345,7 @@ impl Interp {
             shared.threads.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             return unsupported("ran too long: too many generators at once");
         }
-        let actor = self.actor;
+        let actor = (self.actor, self.rounds_as.clone());
         let (items, read) = channel();
         let (resume, asked) = channel();
         let thread = std::thread::Builder::new()
@@ -374,15 +374,17 @@ impl Interp {
 
 fn generator_thread(
     shared: &Arc<Shared>,
-    actor: usize,
+    (actor, rounds_as): (usize, Vec<Option<usize>>),
     side: YieldSide,
     body: impl FnOnce(&mut Interp) -> Run<()>,
 ) {
     if side.resume.recv().is_ok() {
         let items = side.items.clone();
         let mut interp = Interp::new(Arc::clone(shared), Some(side));
-        // It runs for whoever reads it, `main` or a task, and waits as they do.
+        // It runs for whoever reads it, `main` or a task, and waits as they do, and for the
+        // `parallel` round it was made in, if it was.
         interp.actor = actor;
+        interp.rounds_as = rounds_as;
         match body(&mut interp) {
             Ok(()) => {
                 let _ = items.send(Msg::End);

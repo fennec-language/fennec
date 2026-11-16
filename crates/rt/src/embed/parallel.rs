@@ -1215,6 +1215,149 @@ mod tests {
         finish();
     }
 
+    /// The listener the tasks below take a connection from by hand, the port it's on, whether the
+    /// one that takes waits with a timeout, and how each one's part ended: 1 for as it should.
+    static TAKEN_FROM: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static TAKEN_ON: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static TAKES_WITHIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static TOOK_ONE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static CONNECTED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// One of two tasks takes a connection from the listener by hand. The other connects to it.
+    extern "C" fn takes_or_connects(_env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        use crate::stdlib::net::{accepted_within, kept, shut};
+        if from == 0 {
+            let limit = TAKES_WITHIN.load(Ordering::SeqCst).then_some(WITHIN);
+            let taken = accepted_within(TAKEN_FROM.load(Ordering::SeqCst), limit);
+            TOOK_ONE.store(if taken.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+            shut(taken.unwrap_or(0));
+        } else {
+            let port = u16::try_from(TAKEN_ON.load(Ordering::SeqCst)).unwrap();
+            let connected = kept("127.0.0.1", port);
+            CONNECTED.store(if connected.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+            shut(connected.unwrap_or(0));
+        }
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        0
+    }
+
+    /// A task waiting in `server.accept()` parks, and the task on its worker that's about to
+    /// connect runs: with a timeout and without. It used to hold its worker, asleep 5 ms at a time
+    /// with a timeout and in the kernel without, so the task that would connect never ran: with a
+    /// timeout the wait ran out, and without it the two waited on each other for good.
+    #[test]
+    fn a_task_taking_a_connection_by_hand_parks_and_the_task_that_connects_runs() {
+        begin();
+        for within in [true, false] {
+            let (server, port) = crate::stdlib::net::listened();
+            TAKEN_FROM.store(server, Ordering::SeqCst);
+            TAKEN_ON.store(i64::from(port), Ordering::SeqCst);
+            TAKES_WITHIN.store(within, Ordering::SeqCst);
+            for slot in [&TOOK_ONE, &CONNECTED] {
+                slot.store(0, Ordering::SeqCst);
+            }
+            let pool = super::pool::with_threads(1);
+            let run = super::Run::new(1).waiting(true);
+            let ended = super::each_on_pool(run, pool, 2, super::Leaf::For(takes_or_connects, 0)).finish();
+            crate::stdlib::net::shut(server);
+            assert_eq!(ended, 0);
+            assert_eq!(TOOK_ONE.load(Ordering::SeqCst), 1, "the one that takes; with a timeout: {within}");
+            assert_eq!(
+                CONNECTED.load(Ordering::SeqCst),
+                1,
+                "the one that connects; with a timeout: {within}"
+            );
+        }
+        finish();
+    }
+
+    /// The UDP sockets the tasks below use, the port the first is on, and how each part ended.
+    static HEARS_ON: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static SAYS_FROM: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static HEARD_ON_PORT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static HEARD_IT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static SAID_IT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// One of two tasks waits for a packet. The other sends it one.
+    extern "C" fn hears_or_says(_env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        use crate::stdlib::net::{received_within, sent_to_port};
+        if from == 0 {
+            let heard = received_within(HEARS_ON.load(Ordering::SeqCst), WITHIN);
+            HEARD_IT.store(if heard == Ok(b"ping".to_vec()) { 1 } else { 2 }, Ordering::SeqCst);
+        } else {
+            let port = u16::try_from(HEARD_ON_PORT.load(Ordering::SeqCst)).unwrap();
+            let said = sent_to_port(SAYS_FROM.load(Ordering::SeqCst), b"ping", port);
+            SAID_IT.store(if said.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+        }
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        0
+    }
+
+    /// A task waiting for a UDP packet parks, and the task on its worker that sends it runs. It
+    /// used to hold its worker in the kernel, a tenth of a second at a time, so the sender never
+    /// ran and the wait ran out.
+    #[test]
+    fn a_task_waiting_for_a_packet_parks_and_the_task_that_sends_it_runs() {
+        begin();
+        let (hears, port) = crate::stdlib::net::udp_bound();
+        let (says, _) = crate::stdlib::net::udp_bound();
+        HEARS_ON.store(hears, Ordering::SeqCst);
+        SAYS_FROM.store(says, Ordering::SeqCst);
+        HEARD_ON_PORT.store(i64::from(port), Ordering::SeqCst);
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let ended = super::each_on_pool(run, pool, 2, super::Leaf::For(hears_or_says, 0)).finish();
+        for socket in [hears, says] {
+            crate::stdlib::net::shut(socket);
+        }
+        assert_eq!(ended, 0);
+        assert_eq!(SAID_IT.load(Ordering::SeqCst), 1, "the one that sends");
+        assert_eq!(HEARD_IT.load(Ordering::SeqCst), 1, "the one that waits");
+        finish();
+    }
+
+    /// The listener one of the tasks below waits on and the other closes, and how the wait ended.
+    static CLOSED_UNDER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static ENDED_AS_CLOSED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// One of two tasks waits for a connection that never comes. The other closes the listener
+    /// once the first is waiting.
+    extern "C" fn waits_or_closes_the_listener(_env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        use crate::stdlib::net::{Failure, accepted_within, shut, waiting_on_a_listener};
+        let server = CLOSED_UNDER.load(Ordering::SeqCst);
+        if from == 0 {
+            let ended = accepted_within(server, Some(WITHIN));
+            let closed = matches!(ended, Err(Failure::Other(_)));
+            ENDED_AS_CLOSED.store(if closed { 1 } else { 2 }, Ordering::SeqCst);
+        } else {
+            // On the one worker this runs only while the other task is parked, in its wait.
+            let started = std::time::Instant::now();
+            while waiting_on_a_listener(server) == 0 && started.elapsed() < WITHIN {
+                crate::embed::serve::yield_now();
+            }
+            shut(server);
+        }
+        0
+    }
+
+    /// Closing a listener from one task ends a wait for a connection another task is parked in,
+    /// at once and as closed, not when its time runs out.
+    #[test]
+    fn closing_a_listener_ends_a_task_parked_waiting_for_a_connection() {
+        begin();
+        let (server, _) = crate::stdlib::net::listened();
+        CLOSED_UNDER.store(server, Ordering::SeqCst);
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let leaf = super::Leaf::For(waits_or_closes_the_listener, 0);
+        let started = std::time::Instant::now();
+        let ended = super::each_on_pool(run, pool, 2, leaf).finish();
+        assert_eq!(ended, 0);
+        assert_eq!(ENDED_AS_CLOSED.load(Ordering::SeqCst), 1, "the wait ended some other way");
+        assert!(started.elapsed() < WITHIN / 2, "it took {:?}", started.elapsed());
+        finish();
+    }
+
     /// More requests than there'll ever be blocking threads.
     const ASKING: usize = 100;
     static ANSWERED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);

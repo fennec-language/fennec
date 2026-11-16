@@ -1415,16 +1415,31 @@ pub(crate) static PARKED_ON_COPIES: AtomicU64 = AtomicU64::new(0);
 /// Unix hands the poll the socket itself (`park_on_fd`) for one wait at a time. A second wait on
 /// the same connection, as when one task reads it while another writes to it, comes this way: a
 /// poll takes a descriptor once, and a copy has one of its own.
+#[cfg(test)]
 pub(crate) fn park_on_copy(
     token: Token,
     socket: &std::net::TcpStream,
     interest: Interest,
     deadline: Option<Instant>,
 ) -> Parked {
+    let copy = || socket.try_clone().ok().map(|copy| Box::new(TcpStream::from_std(copy)) as PollCopy);
+    park_on_a_copy(token, copy, interest, deadline)
+}
+
+/// A copy of a socket, of the kind a poll takes: a connection's, a listener's or a UDP socket's.
+pub(crate) type PollCopy = Box<dyn mio::event::Source>;
+
+/// `park_on_copy` for any kind of socket, with `copy` to make the copy of it.
+pub(crate) fn park_on_a_copy(
+    token: Token,
+    copy: impl FnOnce() -> Option<PollCopy>,
+    interest: Interest,
+    deadline: Option<Instant>,
+) -> Parked {
     if cut_short() {
         return Parked::Cancelled;
     }
-    let copied = socket.try_clone().ok().map(TcpStream::from_std).and_then(|mut source| {
+    let copied = copy().and_then(|mut source| {
         let registered = REGISTRY.with_borrow(|registry| {
             registry.as_ref().is_some_and(|registry| registry.register(&mut source, token, interest).is_ok())
         });

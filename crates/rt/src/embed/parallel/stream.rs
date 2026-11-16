@@ -143,7 +143,7 @@ impl Stream {
             with(|state| state.failure = held);
             set_failed(1);
         }
-        threads::made_scope_ends();
+        threads::made_scope_ends(threads::index() == self.reader);
         let made = if threads::index() == self.reader { Vec::new() } else { threads::hand_over(since) };
         // What it printed is written before the reader can see it's done, so what the reader
         // prints after the stream comes after it, as for a range, and under the chunk's own name

@@ -8,9 +8,15 @@
 //! for a day.
 //!
 //! An entry is written to a temporary file of its own and renamed into place, so a reader never
-//! sees half of one, and reading and writing take no locks. Each ends in a hash of its bytes, or,
-//! for a program kept as the file that was launched, has the hash in a file beside it, and a read
-//! that doesn't match is a miss: a torn or changed entry is never used. The hash guards against
+//! sees half of one, and reading and writing take no locks. Each ends in a hash of its bytes, and a
+//! read that doesn't match is a miss: a torn or changed entry is never used.
+//!
+//! A program kept as the file that was launched can't end in its hash, so it's kept under a name
+//! that holds it, `<name>.<hash>`, a file never written again, and the entry is a file beside it,
+//! `<name>.sum`, that names that hash. Keeping a new program puts its file in place first and then
+//! renames the entry's file over the old one, in one step, so a reader finds the old program or the
+//! new one, each whole, never one program beside the other's hash: that mix, read under load, was a
+//! miss said on standard error, which a recorded run printed and its replay didn't. The hash guards against
 //! accidents; against people, Fennec's folder is its user's alone, and a cache folder another
 //! user owns or can write to isn't used at all (see `private.rs`). Reading an entry sets its modified time,
 //! which is how cleanup knows what was used least recently; access times are unreliable.
@@ -85,8 +91,7 @@ struct Entry {
     build: PathBuf,
     /// How many names the file has: more than one once a run has a program put out as it.
     links: u64,
-    /// A kept program's hash beside it, which goes with it: cleanup taking the hash alone would
-    /// leave a program that reads as torn.
+    /// For a kept program, the entry's file that names it, which goes with it.
     sum: Option<PathBuf>,
 }
 
@@ -124,11 +129,13 @@ impl Cache {
         if !self.usable() {
             return None;
         }
-        let path = self.path(kind, name);
+        let named = self.path(kind, name);
+        // A kept program is the whole of the file its entry names.
+        let sum = beside(&named);
+        let path = sum.as_deref().map_or_else(|| named.clone(), |sum| kept_at(&named, sum));
         let mut bytes = std::fs::read(&path).ok()?;
-        let whole = match beside(&path) {
-            // A kept program is the whole file, with its hash beside it.
-            Some(sum) => sum_of(&bytes) == sum,
+        let whole = match &sum {
+            Some(sum) => sum_of(&bytes) == *sum,
             None => match bytes.len().checked_sub(HASH_LEN).and_then(|end| bytes.split_at_checked(end)) {
                 Some((text, hash)) => {
                     let whole = hash == fennec_blake3::hash(text).as_bytes();
@@ -171,7 +178,9 @@ impl Cache {
     /// under the same name is a new file put in its place, so a link to the old one goes on
     /// holding the old program, never the new one. `from` has to be a file nothing else writes.
     ///
-    /// Its hash goes in a file beside it, since the program itself is run and can't end in one.
+    /// The program itself is run and can't end in its hash, so it's kept under a name holding its
+    /// hash, and the entry is a file naming that, put in place after it, in one step: a reader finds
+    /// the program kept before or this one, each whole.
     pub fn keep_file(&self, kind: &str, name: &str, from: &Path) -> std::io::Result<()> {
         if !self.usable() {
             return Ok(());
@@ -183,19 +192,20 @@ impl Cache {
         // On the disk before it's an entry, so a power cut can't leave one with no bytes.
         synced(from)?;
         let sum = sum_of(&std::fs::read(from)?);
-        let temporary = linked_beside(from, &path)?;
-        read_only_program(&temporary)?;
-        // The hash first: a reader between the two finds the old program with the new hash, a
-        // mismatch, which is a miss.
-        put(&sum_path(&path), &[sum.as_bytes()])?;
-        // Windows won't rename over a read-only file, as an older program kept at this name is.
-        #[cfg(windows)]
-        if let Ok(found) = std::fs::metadata(&path) {
-            let mut permissions = found.permissions();
-            permissions.set_readonly(false);
-            let _ = std::fs::set_permissions(&path, permissions);
+        let program = kept_at(&path, &sum);
+        // The same program kept before is these bytes already, and never written again.
+        if !program.is_file() {
+            let temporary = linked_beside(from, &program)?;
+            read_only_program(&temporary)?;
+            std::fs::rename(&temporary, &program)?;
         }
-        std::fs::rename(&temporary, &path)
+        put(&sum_path(&path), &[sum.as_bytes()])
+    }
+
+    /// The file a kept program's bytes are in, as its entry names it now, if it has one.
+    pub fn kept_program(&self, kind: &str, name: &str) -> Option<PathBuf> {
+        let path = self.path(kind, name);
+        beside(&path).map(|sum| kept_at(&path, &sum))
     }
 
     /// Puts the entry at `to` as that very file rather than a copy, marked as just used: linked
@@ -206,18 +216,20 @@ impl Cache {
         if !self.usable() {
             return Ok(false);
         }
-        let path = self.path(kind, name);
-        if !path.is_file() {
-            return Ok(false);
-        }
-        let Some(sum) = beside(&path) else {
+        let named = self.path(kind, name);
+        let Some(sum) = beside(&named) else {
+            if !named.is_file() {
+                return Ok(false);
+            }
             let Some(bytes) = self.read(kind, name) else { return Ok(false) };
             let _ = std::fs::remove_file(to);
             put(to, &[&bytes])?;
             read_only_program(to)?;
             return Ok(true);
         };
-        if sum_of(&std::fs::read(&path)?) != sum {
+        let path = kept_at(&named, &sum);
+        let Ok(bytes) = std::fs::read(&path) else { return Ok(false) };
+        if sum_of(&bytes) != sum {
             crate::unsaved::doubted(&path);
             return Ok(false);
         }
@@ -243,12 +255,14 @@ impl Cache {
         for build in builds.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()) {
             files(&build, &build, &mut found);
         }
-        // A kept program and the hash beside it are one entry, its size both of theirs.
+        // A kept program and the entry's file naming it are one entry, its size both of theirs. A
+        // program file no entry names any more, one a newer program replaced, is an entry of its
+        // own, for cleanup to take once nothing holds it.
         let at: HashMap<PathBuf, usize> =
             found.iter().enumerate().map(|(index, entry)| (entry.path.clone(), index)).collect();
         let mut sums = Vec::new();
         for (index, entry) in found.iter().enumerate() {
-            if let Some(&program) = program_of(&entry.path).and_then(|program| at.get(&program)) {
+            if let Some(&program) = program_named_by(&entry.path).and_then(|program| at.get(&program)) {
                 sums.push((index, program));
             }
         }
@@ -325,12 +339,11 @@ impl Cache {
                 if size <= goal {
                     break;
                 }
-                // The program first: a hash left alone is only a few bytes, where a program left
-                // without its hash reads as torn.
-                std::fs::remove_file(&entry.path)?;
+                // The entry's file first, so no entry ever names a program that's gone.
                 if let Some(sum) = &entry.sum {
                     let _ = std::fs::remove_file(sum);
                 }
+                std::fs::remove_file(&entry.path)?;
                 size -= entry.size;
                 cleanup.removed += 1;
                 cleanup.freed += entry.size;
@@ -364,8 +377,8 @@ impl Entry {
     }
 }
 
-/// The file beside a kept program that holds its hash: its whole name with `.sum` after it, so
-/// `root` and `root.functions` never share one.
+/// A kept program's entry: the file naming its hash, the entry's whole name with `.sum` after it,
+/// so `root` and `root.functions` never share one.
 fn sum_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(".");
@@ -373,13 +386,21 @@ fn sum_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// The kept program a hash file is beside, for a path ending in `.sum`.
-fn program_of(path: &Path) -> Option<PathBuf> {
-    let name = path.as_os_str().to_str()?;
-    name.strip_suffix(&format!(".{SUM}")).map(PathBuf::from)
+/// Where a kept program with hash `sum` is: the entry's name with the hash after it.
+fn kept_at(path: &Path, sum: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".");
+    name.push(sum);
+    PathBuf::from(name)
 }
 
-/// The hash in the file beside a kept program, if it has one.
+/// The program an entry's `.sum` file names, for a path ending in `.sum`.
+fn program_named_by(path: &Path) -> Option<PathBuf> {
+    let entry = path.as_os_str().to_str()?.strip_suffix(&format!(".{SUM}"))?;
+    beside(Path::new(entry)).map(|sum| kept_at(Path::new(entry), &sum))
+}
+
+/// The hash a kept program's entry names, if it's one.
 fn beside(path: &Path) -> Option<String> {
     std::fs::read_to_string(sum_path(path)).ok().map(|sum| sum.trim().to_owned())
 }
@@ -449,9 +470,14 @@ fn linked_beside(from: &Path, path: &Path) -> std::io::Result<PathBuf> {
 /// on this, so a failure is said; an entry another command's cleanup took meanwhile is none.
 fn mark_used(path: &Path) {
     crate::touched("mark what it used as used", set_time(path, SystemTime::now()));
-    // A kept program's hash goes with it, or cleanup would take the hash and leave the program.
-    let sum = sum_path(path);
-    if sum.is_file() {
+    // A kept program's entry goes with it: the file naming it, the program's name less its hash.
+    if let Some(sum) = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(entry, _)| path.with_file_name(format!("{entry}.{SUM}")))
+        .filter(|sum| sum.is_file())
+    {
         crate::touched("mark what it used as used", set_time(&sum, SystemTime::now()));
     }
 }
@@ -603,7 +629,7 @@ mod tests {
         let next = dir.join("next");
         assert!(cache.link_out("programs", "root", &next).unwrap());
         let inode = |path: &std::path::Path| std::fs::metadata(path).unwrap().ino();
-        assert_eq!(inode(&launched), inode(&cache.path("programs", "root")));
+        assert_eq!(inode(&launched), inode(&cache.kept_program("programs", "root").unwrap()));
         assert_eq!(inode(&launched), inode(&next));
         assert_eq!(std::fs::read(&next).unwrap(), b"a program");
         // Put out again over what's there, it's still the one file.
@@ -622,7 +648,9 @@ mod tests {
 
     /// A program kept under a name another was kept under replaces it with a file of its own: a
     /// link to the old one still holds the old program, the next one put out holds the new, and
-    /// neither can be written into.
+    /// neither can be written into. The old program's file stays whole beside the new one, so a
+    /// reader that found the entry naming it just before reads it whole: no reader ever finds one
+    /// program with the other's hash.
     #[test]
     #[cfg(unix)]
     fn a_program_kept_again_never_changes_one_put_out_before() {
@@ -636,16 +664,21 @@ mod tests {
         let (first, second) = (dir.join("first"), dir.join("second"));
         std::fs::write(&first, b"the old program").unwrap();
         cache.keep_file("programs", "root", &first).unwrap();
+        let kept_first = cache.kept_program("programs", "root").unwrap();
         let (old, new) = (dir.join("old"), dir.join("new"));
         assert!(cache.link_out("programs", "root", &old).unwrap());
         std::fs::write(&second, b"the new program").unwrap();
         cache.keep_file("programs", "root", &second).unwrap();
+        let kept_second = cache.kept_program("programs", "root").unwrap();
+        assert_ne!(kept_first, kept_second);
+        assert_eq!(std::fs::read(&kept_first).unwrap(), b"the old program");
+        assert_eq!(cache.read("programs", "root").as_deref(), Some(&b"the new program"[..]));
         assert!(cache.link_out("programs", "root", &new).unwrap());
         assert_eq!(std::fs::read(&old).unwrap(), b"the old program");
         assert_eq!(std::fs::read(&new).unwrap(), b"the new program");
         let metadata = |path: &std::path::Path| std::fs::metadata(path).unwrap();
         assert_ne!(metadata(&old).ino(), metadata(&new).ino());
-        for path in [&old, &new, &cache.path("programs", "root")] {
+        for path in [&old, &new, &kept_first, &kept_second] {
             assert_eq!(metadata(path).permissions().mode() & 0o222, 0, "{} can be written", path.display());
             assert!(std::fs::OpenOptions::new().write(true).open(path).is_err());
         }

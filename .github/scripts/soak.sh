@@ -77,6 +77,19 @@ if ! "$fennec" build --release "$work/$name.fen" -o "$work/$name" > "$work/built
   exit 1
 fi
 
+# First, the program as it is, one round run to its end under `FENNEC_COUNTS`: its counts line says
+# how many waits blocked their thread rather than parking, as `blocked_waits N` when there were
+# any: a network wait outside a task, or a task's blocking work that couldn't park and ran where it
+# was (#1815). A server should have none, and one that blocks blocks every round, so one shows it.
+if ! "$fennec" build --release "$program" -o "$work/once" > "$work/built" 2>&1; then
+  echo "::error::$name didn't build as it is"
+  cat "$work/built"
+  exit 1
+fi
+FENNEC_COUNTS=1 TMPDIR="$work" "$work/once" > /dev/null 2> "$work/once-said" || true
+counted=$(grep -E ' live [0-9]+$' "$work/once-said" | tail -n 1)
+blocked=$(sed -nE 's/.* blocked_waits ([0-9]+).*/\1/p' <<< "$counted")
+
 # Started in a folder of its own, its output thrown away, and read every minute.
 FENNEC_LIVE_REPORT="$work/live" TMPDIR="$work" "$work/$name" > "$work/printed" 2> "$work/said" &
 pid=$!
@@ -127,6 +140,18 @@ failed=0
 {
   echo "## Soak: $name, its rounds in $([ "$where" = task ] && echo "one long task" || echo "its own thread")"
   echo
+  if [ -z "$counted" ]; then
+    echo "One round run to its end said no counts, so whether its waits blocked can't be told."
+    echo
+    failed=1
+  elif [ "${blocked:-0}" -gt 0 ]; then
+    echo "One round blocked a thread $blocked times rather than parking: \`$counted\`."
+    echo
+    failed=1
+  else
+    echo "One round run to its end blocked no thread: \`$counted\`."
+    echo
+  fi
   if [ "$stalled" != no ]; then
     echo "No round finished in minute $stalled: it stopped making progress, so its curves say nothing."
     echo

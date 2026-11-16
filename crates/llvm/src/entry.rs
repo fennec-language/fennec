@@ -41,6 +41,11 @@ fn used_layouts(layouts: &Layouts, shared: &Shared) -> fennec_layout::Numbering 
 impl Image {
     pub fn of(layouts: &Layouts, shared: &Shared) -> Result<Image, String> {
         let mut registry = Registry::numbered(layouts, used_layouts(layouts, shared));
+        if let Some(name) = registry.undescribed() {
+            return Err(format!(
+                "a dict holds `{name}` in its entries, which this backend can't describe to the runtime yet"
+            ));
+        }
         let mut elements = Vec::with_capacity(shared.elements.len());
         for (symbol, item) in &shared.elements {
             let number =
@@ -54,7 +59,8 @@ impl Image {
         elements.extend(boxed);
         let str_shape = registry.str_shape();
         let dicts = shared.dicts.iter().filter_map(|(symbol, (key, value))| {
-            let number = fennec_rt::embed::dicts::shape(str_shape, *key, *value)?;
+            let number =
+                fennec_rt::embed::dicts::shape(str_shape, *key, layouts.dict_value_for_runtime(*value))?;
             Some((symbol.clone(), i64::try_from(number).ok()?))
         });
         elements.extend(dicts);

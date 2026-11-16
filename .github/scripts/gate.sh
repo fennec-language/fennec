@@ -7,8 +7,8 @@
 # what it found is a fix to make before an hour of tests is worth spending.
 #
 # After them, every step runs, whatever an earlier one did, so a failure main already has never
-# hides one this change brings: tests run with `--no-fail-fast`, and the examples and the Rosetta
-# pass go through every program. Only the steps that need the build are left out when it fails,
+# hides one this change brings: tests run with `--no-fail-fast`, and the examples step goes
+# through every program. Only the steps that need the build are left out when it fails,
 # and a step that didn't run fails the gate. A step's failures are named: a test by its exact name, a program by
 # its path. The gate passes when every step ran and failed on nothing but what
 # `.github/known-failures.txt` names, the failures main has, each with the change that broke it.
@@ -17,8 +17,8 @@ set -u
 root="$(git rev-parse --show-toplevel)" || exit 1
 cd "$root" || exit 1
 logs="$(mktemp -d)"
-# Its logs, and the x86-64 programs and Fennec folder it makes, go however it ends: what a failed
-# step printed is shown before then.
+# Its logs, and the programs and Fennec folder it makes, go however it ends: what a failed step
+# printed is shown before then.
 trap 'rm -rf "$logs"' EXIT
 log="$logs/gate.log"
 : > "$log"
@@ -258,6 +258,7 @@ oracle_agrees() {
 # - The examples pass the linter.
 # - The uses of `unsafe` are what `.github/unsafe-allowed.txt` lists.
 # - The ratchet of unchecked runtime calls, `crates/llvm/unchecked_runtime_calls.txt`, holds.
+# - The crates from outside Fennec the runtime names are what `.github/runtime-crates.txt` lists.
 # - Each benchmark kernel makes exactly the copies `bench/copies.txt` says.
 # - The ThreadSanitizer suppressions keep to their rules, and the known failures' file to its form.
 # - A hello world and a program using only `fs` link no SQLite, TLS or cryptography beyond what
@@ -292,6 +293,7 @@ quick() {
     .github/scripts/known-failures.sh tests-failed "$said" >> "$names"
     failed=1
   fi
+  .github/scripts/runtime-crates.sh || { echo "runtime-crates" >> "$names"; failed=1; }
   .github/scripts/tsan-suppressions-check.sh || { echo "tsan-suppressions-check" >> "$names"; failed=1; }
   .github/scripts/test-known-failures.sh > /dev/null || { echo "test-known-failures" >> "$names"; failed=1; }
   .github/scripts/linkage-check.sh target/debug/fennec || { echo "linkage-check" >> "$names"; failed=1; }
@@ -320,51 +322,9 @@ tests() {
   return "$status"
 }
 
-# Whether Rosetta runs a new x86-64 program. When it's wedged, every one sits unkillable instead
-# of starting, so this tries a tiny one built just now, which Rosetta hasn't translated before,
-# and fails the step at once, saying what to do, rather than letting each example hang.
-rosetta() {
-  local probe="$logs/rosetta"
-  printf 'int main(void) { return 0; }\n' > "$probe.c" || return 1
-  /usr/bin/cc -arch x86_64 -o "$probe" "$probe.c" || return 1
-  # Rosetta's first translation of a program took 15 seconds on a busy Mac, so this waits a minute
-  # by the clock: a wedged Rosetta spends no CPU time.
-  if ! WITHIN_WALL=60 .github/scripts/within.sh 60 "$probe"; then
-    echo "Rosetta isn't running new x86-64 programs; restart the Mac or \`sudo launchctl kickstart -k system/com.apple.oahd\`" >&2
-    return 1
-  fi
-}
-
-# An Arm-only pass can hide what only x86-64 does, like having two return registers, not eight. So
-# `fennec` built for x86-64 builds every example as an x86-64 program, under Rosetta, with LLVM's
-# own tools and a `cc` that links for x86-64, and each has to print its `.out`.
-x86() {
-  rosetta || return 1
-  rustup target add x86_64-apple-darwin || return 1
-  cargo build --locked -p fennec -p fennec-runtime --target x86_64-apple-darwin || return 1
-  # And the runtime with threads, which a program that uses `launch` needs, in a folder of its
-  # own as for this Mac's build, so nothing left by an earlier build of other source is taken.
-  rm -f target/x86_64-apple-darwin/debug/libfennec_runtime_*.a
-  cargo build --locked -p fennec-runtime --features threads --target x86_64-apple-darwin --target-dir target/threads || return 1
-  cp target/threads/x86_64-apple-darwin/debug/libfennec_runtime.a target/x86_64-apple-darwin/debug/libfennec_runtime_threads.a || return 1
-  local work="$logs/x86" tools program
-  tools="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
-  mkdir -p "$work/bin" || return 1
-  printf '#!/bin/sh\nexec /usr/bin/cc -arch x86_64 "$@"\n' > "$work/bin/cc" && chmod +x "$work/bin/cc" || return 1
-  local failed=0
-  for program in examples/*.fen; do
-    if ! { PATH="$work/bin:$PATH" FENNEC_HOME="$work/home" FENNEC_LLVM_BIN="$tools" \
-      .github/scripts/within.sh 120 ./target/x86_64-apple-darwin/debug/fennec build "$program" -o "$work/program" \
-      > /dev/null \
-      && .github/scripts/within.sh 60 "$work/program" < /dev/null > "$work/printed" \
-      && diff --strip-trailing-cr "${program%.fen}.out" "$work/printed"; }; then
-      echo "$program" >> "$names"
-      failed=1
-    fi
-  done
-  return "$failed"
-}
-
+# x86-64 is CI's to check, on its native x86-64 Linux and macOS runners, not this Mac's under
+# Rosetta: every gate built every example as a new x86-64 program, and Rosetta keeps a translation of
+# each one it runs, in a folder no cleanup here reaches.
 watched() {
   "$@" &
   local pid=$!
@@ -388,7 +348,7 @@ else
   skipped "the quick checks" "since the build failed"
 fi
 for name in "clippy" "the workspace and its tests compile on Linux" "the workspace and its tests compile for Windows" \
-  "tests" "examples and kits" "every example as x86-64 under Rosetta"; do
+  "tests" "examples and kits"; do
   if [ "$stopped" -eq 1 ]; then
     skipped "$name" "since a quick check failed: fix it, and run the gate again"
     continue
@@ -404,8 +364,7 @@ for name in "clippy" "the workspace and its tests compile on Linux" "the workspa
       fi
       case "$name" in
         tests) step "$name" watched tests ;;
-        examples*) step "$name" watched examples ;;
-        *) step "$name" watched x86 ;;
+        *) step "$name" watched examples ;;
       esac
       ;;
   esac

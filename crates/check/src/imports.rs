@@ -65,7 +65,7 @@ impl Uses<'_> {
         let defined_here = self.program.type_info(name).is_some_and(|info| !info.prelude);
         if fennec_syntax::importable_type(name).is_none()
             || defined_here
-            || self.program.imported_types.contains(name)
+            || self.program.imported_by(span, |imports| imports.types.get(name)).is_some()
             || self.std_constant(name)
             || !self.reported.insert(name.to_owned())
         {

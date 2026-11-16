@@ -129,6 +129,14 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_parse_float_header",
     // Only says where a buffer is.
     "fennec_dict_value_words",
+    // A value's words taken from that buffer into a dict that holds its values in its entries:
+    // `fennec_dict_set` and `fennec_dict_set_header` above for such a dict. Each runs under
+    // `with`, which sets no flag, and stops the program as a bug for a dict of one-word values.
+    "fennec_dict_set_words",
+    "fennec_dict_set_words_header",
+    // Tells a lock's log of the value in one entry before it's changed where it is. It runs
+    // under `with`, gives nothing back, and saves nothing for a dict no log marked.
+    "fennec_lock_save_entry",
     // One atomic add to the count of native blocks made and not freed.
     "fennec_native_live",
     // Bytes made from bytes. Each runs under `with`, which sets no flag, and none has a wrong

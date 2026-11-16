@@ -68,6 +68,13 @@ pub struct Layouts {
     /// The types laid out by `add_through_lists`, whose items a list's description names by
     /// their place here.
     through_lists: Vec<u32>,
+    /// The plain types a dict holds in its entries, in the order each was first asked for, which
+    /// is the number a dict's value word names one by here. The runtime's tables give each the
+    /// kind of item that many after the types laid out through lists (see `Registry::numbered`).
+    dict_values: std::cell::RefCell<Vec<u32>>,
+    /// The structs with no words at all: no fields, or only fields that are such structs. A dict
+    /// keeps a value of one in a block, as before, since an entry has nowhere to hold it.
+    wordless: BTreeSet<String>,
     /// The types decided to be blocks before anything was laid out, when they were (see
     /// [`boxed_types`]): no pass lays one of them out in place, and every other is.
     decided: Option<BTreeSet<String>>,
@@ -143,6 +150,7 @@ impl Layouts {
             one_word_optionals: true,
             native_buffers: true,
             in_place: InPlace { text_headers: true, counted_fields: true, results: results_in_place() },
+            wordless: wordless(definitions),
             ..Layouts::default()
         };
         for (name, def) in definitions {
@@ -176,6 +184,7 @@ impl Layouts {
             native_buffers: true,
             in_place: InPlace { text_headers: true, counted_fields: true, results: results_in_place() },
             decided: Some(boxed.clone()),
+            wordless: wordless(definitions),
             ..Layouts::default()
         };
         for (name, def) in definitions {
@@ -782,18 +791,62 @@ impl Layouts {
         u32::try_from(at).ok()
     }
 
-    /// How a dict holds a value of a kind that isn't one word already: in a block.
-    fn value_word(&self, value: Ty) -> Option<Word> {
+    /// How a dict holds a value of a kind that isn't one word already: in its entry, or in a
+    /// block. `written` is the value's type as written, which says whether it has any words: one
+    /// with none is kept in a block, as the runtime finds a value in an entry by its words.
+    fn value_word(&self, value: Ty, written: &Type) -> Option<Word> {
         if !self.native_buffers {
             return None;
         }
         match value {
+            Ty::Struct(id) if dict_values_in_place() && !has_no_words(written, &self.wordless) => {
+                self.dict_value_number(id).map(Word::InPlace)
+            }
             Ty::Struct(id) => Some(Word::Plain(id)),
             // An optional string is three words, where strings are headers.
             Ty::Maybe(Block::Str) if self.text_headers() => None,
             value if value.counted() => self.block_number(value).map(Word::Block),
             _ => None,
         }
+    }
+
+    /// The number a plain type goes by here as a dict's value held in the entry: its place in the
+    /// order such types were first asked for. It's asked for while types are still being laid
+    /// out, so it can't lean on how many are laid out through lists; the runtime's number for it
+    /// is worked out from this one once they all are (`dict_value_for_runtime`).
+    fn dict_value_number(&self, id: u32) -> Option<u32> {
+        let mut values = self.dict_values.borrow_mut();
+        let at = values.iter().position(|known| *known == id).unwrap_or_else(|| {
+            values.push(id);
+            values.len() - 1
+        });
+        u32::try_from(at).ok()
+    }
+
+    /// The plain type a dict holds in its entries under this number.
+    #[must_use]
+    pub fn dict_value(&self, number: u32) -> Option<u32> {
+        self.dict_values.borrow().get(usize::try_from(number).ok()?).copied()
+    }
+
+    /// A dict's value word as the runtime knows it: one held in the entry goes by its kind of
+    /// item's number in the runtime's tables, which come after the types laid out through lists
+    /// (see `Registry::numbered`). Any other word is the same there as here.
+    #[must_use]
+    pub fn dict_value_for_runtime(&self, value: Word) -> Word {
+        match value {
+            Word::InPlace(number) => {
+                let after = u32::try_from(self.through_lists.len()).unwrap_or(u32::MAX);
+                Word::InPlace(after.saturating_add(number))
+            }
+            other => other,
+        }
+    }
+
+    /// The plain types dicts hold in their entries, in the order of their numbers.
+    #[must_use]
+    pub fn dict_values(&self) -> Vec<u32> {
+        self.dict_values.borrow().clone()
     }
 
     /// How many kinds of block have numbers.
@@ -848,6 +901,46 @@ impl Layouts {
 #[must_use]
 pub fn types_in_place() -> bool {
     std::env::var("FENNEC_BOXED_TYPES").as_deref() != Ok("1")
+}
+
+/// Whether a type as written has no words: a struct known to have none, a tuple of such, or
+/// nothing at all.
+fn has_no_words(ty: &Type, wordless: &BTreeSet<String>) -> bool {
+    match ty {
+        Type::Named(name) => wordless.contains(name),
+        Type::Tuple(items) => items.iter().all(|item| has_no_words(item, wordless)),
+        Type::Unit => true,
+        _ => false,
+    }
+}
+
+/// The structs among `definitions` with no words: no fields, or only fields with none.
+fn wordless(definitions: &[(String, Written)]) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    loop {
+        let more: Vec<String> = definitions
+            .iter()
+            .filter(|(name, def)| {
+                !found.contains(name)
+                    && matches!(def, Written::Struct(fields)
+                        if fields.iter().all(|(_, ty, _)| has_no_words(ty, &found)))
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if more.is_empty() {
+            return found;
+        }
+        found.extend(more);
+    }
+}
+
+/// Whether a dict holds a struct that's held in place in its own entries, each entry as wide as
+/// its key and its value, as it does unless `FENNEC_BOXED_DICT_VALUES=1` has it hold the address
+/// of a block made for each value, as before. It changes what a build makes, so a build's cache
+/// key says it.
+#[must_use]
+pub fn dict_values_in_place() -> bool {
+    std::env::var("FENNEC_BOXED_DICT_VALUES").as_deref() != Ok("1")
 }
 
 /// Whether a result is kept in place, as it is unless `FENNEC_BOXED_RESULTS=1` keeps each a block of
@@ -999,7 +1092,7 @@ fn in_place_field_ty(
                 Type::Float => Some(Word::Float),
                 Type::Bool => Some(Word::Bool),
                 Type::Str => Some(Word::Str),
-                other => layouts.value_word(held(other)),
+                other => layouts.value_word(held(other), other),
             };
             match (key(key_ty), word) {
                 (Some(key), Some(value)) => Ty::Dict(key, value),
@@ -1294,7 +1387,7 @@ fn dict_ty(layouts: &Layouts, key: &Type, value: &Type, held: &dyn Fn(&Type) -> 
         Type::Float => Some(Word::Float),
         Type::Bool => Some(Word::Bool),
         Type::Str => Some(Word::Str),
-        other => layouts.value_word(held(other)),
+        other => layouts.value_word(held(other), other),
     };
     match (key_word(layouts, key), word) {
         (Some(key), Some(value)) => Ty::Dict(key, value),

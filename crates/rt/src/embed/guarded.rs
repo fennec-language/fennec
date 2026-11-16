@@ -197,7 +197,7 @@ fn copied_as(
     if root == address && how == Copying::ForReaders {
         copy_read_in(state, address, under_way)?;
     }
-    while let Some(new) = under_way.left.pop() {
+    while let Some(new) = under_way.next_to_walk() {
         for place in places_in(state, new)? {
             let block = state.heap.block(new).ok_or_else(|| lost(new))?;
             let old = block.get(place).copied().unwrap_or(0);
@@ -250,13 +250,70 @@ fn copy_read_in(state: &mut State, address: u64, under_way: &mut UnderWay) -> Re
     Ok(())
 }
 
-/// A copy under way: what's been copied, by where it was, what's left to walk, and the handles
-/// counted so far. One thing to hand on, so each block copied passes a pointer.
+/// How many of a copy's blocks are kept in a row before a map and a list are made for them.
+const FEW: usize = 8;
+
+/// A copy under way: which block each one copied so far became, the copies whose own holdings are
+/// still to be copied, and the handles counted so far. One thing to hand on, so each block copied
+/// passes a pointer.
+///
+/// A message is mostly a struct and what it holds, a few blocks, so the first few of each are kept
+/// in a row, with nothing made for them. Every copy used to make a map hashed with `SipHash` and a
+/// list, for three blocks. More than a few go on into a map, hashed by mixing an address's bits
+/// once, and a list.
 #[derive(Default)]
 struct UnderWay {
-    copies: HashMap<u64, u64>,
-    left: Vec<u64>,
+    few: [(u64, u64); FEW],
+    count: usize,
+    more: HashMap<u64, u64, BuildHasherDefault<AddressHasher>>,
+    left_few: [u64; FEW],
+    left_count: usize,
+    left_more: Vec<u64>,
     counted: Vec<u64>,
+}
+
+impl UnderWay {
+    /// What the block at `address` became, if it's been copied.
+    fn copy_made_of(&self, address: u64) -> Option<u64> {
+        let few = self.few.get(..self.count).unwrap_or_default();
+        if let Some((_, copy)) = few.iter().find(|(old, _)| *old == address) {
+            return Some(*copy);
+        }
+        if self.more.is_empty() {
+            return None;
+        }
+        self.more.get(&address).copied()
+    }
+
+    /// The block at `address` became `copy`, whose own holdings are still to be copied.
+    fn became(&mut self, address: u64, copy: u64) {
+        match self.few.get_mut(self.count) {
+            Some(slot) => {
+                *slot = (address, copy);
+                self.count += 1;
+            }
+            None => {
+                self.more.insert(address, copy);
+            }
+        }
+        // Last in, first out, as a list is: once any are in the list, the rest follow them there.
+        match self.left_few.get_mut(self.left_count) {
+            Some(slot) if self.left_more.is_empty() => {
+                *slot = copy;
+                self.left_count += 1;
+            }
+            _ => self.left_more.push(copy),
+        }
+    }
+
+    /// The next copy whose holdings are to be copied: the last one made.
+    fn next_to_walk(&mut self) -> Option<u64> {
+        if let Some(copy) = self.left_more.pop() {
+            return Some(copy);
+        }
+        self.left_count = self.left_count.checked_sub(1)?;
+        self.left_few.get(self.left_count).copied()
+    }
 }
 
 /// The block in the copy for what's at `address`, added to what's left to walk if it's new.
@@ -271,7 +328,7 @@ fn copy_of(
         under_way.counted.push(address);
         return Ok(address);
     }
-    if let Some(copy) = under_way.copies.get(&address).copied() {
+    if let Some(copy) = under_way.copy_made_of(address) {
         bump(state, copy);
         return Ok(copy);
     }
@@ -294,8 +351,7 @@ fn copy_of(
     mark_owner(&mut copy, state.heap.owner_bits());
     state.heap.copied(copy.len());
     let new = u64::try_from(state.heap.insert(copy)).unwrap_or(0);
-    under_way.copies.insert(address, new);
-    under_way.left.push(new);
+    under_way.became(address, new);
     Ok(new)
 }
 

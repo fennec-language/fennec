@@ -399,11 +399,15 @@ impl FnCx<'_> {
             self.ignore_args(args);
             return Type::Unknown;
         }
-        let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
+        let (signature, chosen, given) = self.instantiate(key, &signature, None, types, span);
         if !chosen.is_empty() {
-            let types = chosen.iter().map(|chosen| chosen.ty.clone()).collect();
-            let call =
-                crate::generic_copies::Call { caller: self.key.clone(), callee: key.to_owned(), types };
+            let (names, types) = given.into_iter().unzip();
+            let call = crate::generic_copies::Call {
+                caller: self.key.clone(),
+                callee: key.to_owned(),
+                types,
+                names,
+            };
             self.checker.generic_calls.insert((span.start, span.end), call);
         }
         if let Some(what) = crate::waits::intrinsic_waits(key) {

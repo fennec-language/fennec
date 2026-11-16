@@ -164,6 +164,10 @@ pub extern "C" fn item_unshare(list: i64, at: i64) -> i64 {
     with(|state| marked_set(state, list, at).or_else(|| grow_in(state, list, 0)).unwrap_or(list))
 }
 
+/// The item at `at` of a marked list with one owner, about to be set or changed where it is: the
+/// log keeps it as it is, the first time this lock sets it, for a crash to put back. A list, a dict
+/// or a struct's block the item holds is marked, so what changes it changes it where it is; the log
+/// holds an owner of anything else. `None` for any other list, which is copied as one shared is.
 fn marked_set(state: &mut State, list: i64, at: i64) -> Option<i64> {
     let address = u64::try_from(list).ok()?;
     let block = state.heap.block(address)?;
@@ -180,12 +184,44 @@ fn marked_set(state: &mut State, list: i64, at: i64) -> Option<i64> {
     }
     let start = LIST_HEADER_WORDS + at * stride;
     let words = block.get(start..start + stride)?.to_vec();
-    retain_items(state, &element, &words);
-    if !super::guarded::rollback::set(address, at, words.clone()) {
-        release_items(state, &element, &words);
+    // Asked before anything the item's words hold is looked at: set again, as a take's put-back
+    // does, they may name a list taken out and moved since, which only the log's first save of
+    // the item is right about.
+    if super::guarded::rollback::item_set_already(address, at)? {
+        // Set already, with nothing since that moved items about: the log has it as it was
+        // before the lock.
+        return Some(list);
+    }
+    let mut marked = Vec::new();
+    let mut held = Vec::new();
+    for place in holding_places(&element, &words) {
+        let Some(&block) = words.get(place).filter(|block| **block != 0) else { continue };
+        if super::guarded::rollback::marked_for_an_item(state, address, block) {
+            marked.push(place);
+        } else {
+            super::heap::retain(state, block);
+            held.push(block);
+        }
+    }
+    if !super::guarded::rollback::set(address, at, words, marked) {
+        for block in held {
+            release(state, block);
+        }
         return None;
     }
     Some(list)
+}
+
+/// Which of an item's `words`, laid out as items of `element` are, hold a block.
+fn holding_places(element: &Element, words: &[u64]) -> Vec<usize> {
+    if owns_items(element) {
+        return (0..words.len()).collect();
+    }
+    let mut found = Vec::new();
+    if super::heap::holds_blocks(element) {
+        super::heap::boxed_words(element, words, &mut 0, &mut found);
+    }
+    found
 }
 
 /// After a crash, a marked list's item at `at` as it was before it was set, with the owners the log
@@ -247,10 +283,21 @@ pub(super) fn put_back(state: &mut State, address: u64, at: usize, words: &[u64]
     }
 }
 
-/// Lets go of the owners a log held of what a popped item's `words` hold, as items of `list`'s kind.
-pub(super) fn let_go_of_words(state: &mut State, list: u64, words: &[u64]) {
+/// Lets go of the owners a log held of what an item's `words` hold, as items of `list`'s kind: all
+/// but the blocks at `marked`, which it marked instead, and lets go of as marks.
+pub(super) fn let_go_of_words(state: &mut State, list: u64, words: &[u64], marked: &[usize]) {
     let Some(element) = state.heap.block(list).and_then(|block| element_of(state, block)) else { return };
-    release_items(state, &element, words);
+    if marked.is_empty() {
+        release_items(state, &element, words);
+        return;
+    }
+    let mut owned = words.to_vec();
+    for at in marked {
+        if let Some(word) = owned.get_mut(*at) {
+            *word = 0;
+        }
+    }
+    release_items(state, &element, &owned);
 }
 
 /// The shape of lists of the element numbered `element`.
@@ -260,13 +307,37 @@ fn shape(state: &State, element: usize) -> u64 {
 
 /// The kind of item a block holds, when it's a list's.
 pub(super) fn element_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
-    let at = shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
-    state.tables.element(usize::try_from(at).ok()?).cloned()
+    kind_of_list(state, block).cloned()
 }
 
 /// `element_of`, borrowed.
 pub(super) fn element_in<'a>(state: &'a State, block: &[u64]) -> Option<&'a Element> {
-    state.tables.element(element_number(state, block)?).map(AsRef::as_ref)
+    kind_of_list(state, block).map(AsRef::as_ref)
+}
+
+/// The kind of item a block holds, when it's a list's. A block with a list's shape whose kind this
+/// thread knows nothing of stops the program as a bug: taken as no list, it would read as nothing,
+/// print as `None`, copy and free nothing it holds, and compare unequal, as an error's notes were
+/// lost without a word (#1843).
+fn kind_of_list<'a>(state: &'a State, block: &[u64]) -> Option<&'a Rc<Element>> {
+    let number = element_number(state, block)?;
+    let kind = state.tables.element(number);
+    if kind.is_none() && number < state.tables.elements.len() + MOST_ADDED_KINDS {
+        unknown_kind(number);
+    }
+    kind
+}
+
+/// Stops the program: a list's kind of item, numbered `number`, is one this thread knows nothing
+/// of. The fuzzer makes up blocks on purpose, and goes on.
+#[cold]
+#[inline(never)]
+fn unknown_kind(number: usize) {
+    if !super::made_up_inputs() {
+        super::heap::runtime_bug(&format!(
+            "a list holds items of kind {number}, which this thread knows nothing of, so it can't be read"
+        ));
+    }
 }
 
 /// The number of the kind of item a list's block holds.
@@ -286,14 +357,24 @@ fn item_words(state: &State, element: i64) -> Option<(usize, usize)> {
     let at = usize::try_from(element).ok()?;
     let words = match state.heap.item_words(at) {
         Some(words) => words,
-        None => state.tables.element(at)?.words(),
+        None => known_kind(state, at)?.words(),
     };
     Some((at, words))
 }
 
 fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
     let at = usize::try_from(element).ok()?;
-    Some((at, Rc::clone(state.tables.element(at)?)))
+    Some((at, Rc::clone(known_kind(state, at)?)))
+}
+
+/// The kind of item native code numbered `number`, which it has described: one this thread knows
+/// nothing of stops the program as a bug, rather than making nothing.
+fn known_kind(state: &State, number: usize) -> Option<&Rc<Element>> {
+    let kind = state.tables.element(number);
+    if kind.is_none() {
+        unknown_kind(number);
+    }
+    kind
 }
 
 /// Whether a list of this kind of item owns a block for each.
@@ -973,11 +1054,29 @@ pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> 
     })
 }
 
-/// Empties a list only one owner holds, letting go of what it held, and zeroes the room it held
-/// it in.
+/// Empties a list only one owner holds, letting go of what it held.
+///
+/// A list whose items hold no blocks, like a `list[int]`, only has its length set to 0, on one
+/// look at its block: what it held stays in its room, which nothing reads past the length, and
+/// growing into that room zeroes each item it adds. Looking it up twice and zeroing the room was
+/// most of what `cell.clear()` cost `game_tick`, where Rust's `Vec::clear` sets the length.
+/// A list whose items hold blocks lets go of them and has its room zeroed, as before.
 pub extern "C" fn clear(list: i64) {
     with(|state| {
         let address = u64::try_from(list).unwrap_or(0);
+        let first = first_list_shape(state);
+        let State { heap, tables, .. } = &mut *state;
+        let Some(block) = heap.block_mut(address) else { return };
+        let plain = shape_word(block)
+            .and_then(|shape| usize::try_from(shape.checked_sub(first)?).ok())
+            .and_then(|number| tables.element(number))
+            .is_some_and(|element| !super::heap::holds_blocks(element));
+        if plain {
+            if let Some(length) = block.get_mut(2) {
+                *length = 0;
+            }
+            return;
+        }
         let Some(block) = state.heap.block(address) else { return };
         let Some(element) = element_of(state, block) else { return };
         let stride = element.words();
@@ -1277,7 +1376,7 @@ fn number_of_element(state: &mut State, element: &Rc<Element>) -> usize {
         .elements
         .iter()
         .position(|known| known == element)
-        .unwrap_or_else(|| tables.elements.len() + added_number(element));
+        .unwrap_or_else(|| tables.elements.len() + added_number(tables, element));
     if tables.found_elements.len() == KEPT {
         tables.found_elements.remove(0);
     }
@@ -1285,20 +1384,30 @@ fn number_of_element(state: &mut State, element: &Rc<Element>) -> usize {
     at
 }
 
-/// The kinds of item the runtime numbered itself, past those the program described, as their
-/// bytes, in the order they were numbered: one numbering for every thread of the run. Each thread
+/// The kinds of item the runtime numbered itself for a program, past those it described, as their
+/// bytes, in the order they were numbered: one numbering for every thread of a run. Each thread
 /// numbered its own before, so a list made on one, like an error's notes made on `main`, read as a
 /// kind another didn't know, or as another kind, on a task's thread (#1843).
-static ADDED_KINDS: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+type Kinds = std::sync::Mutex<Vec<Vec<u8>>>;
 
-/// How many kinds the runtime numbers itself at most: far past the few a program needs.
+/// Each program's [`Kinds`], by the bytes of the kinds it described, held only while a thread
+/// running it holds them: so a process that runs many programs, as tests do, has a count of kinds
+/// for each, and lets a program's go once nothing runs it. Every thread of a run has the same
+/// described kinds, read from one image, so they find one list.
+static PROGRAMS_KINDS: std::sync::Mutex<Vec<(Vec<u8>, std::sync::Weak<Kinds>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// How many kinds the runtime numbers itself for a program at most: far past the few one needs.
 const MOST_ADDED_KINDS: usize = 4096;
 
-/// A thread's copies of the kinds of item the runtime numbered itself, by number past those the
-/// program described, each read from [`ADDED_KINDS`] the first time this thread meets it. Each is
-/// written once and never moved, so it can be read with the runtime's state only borrowed.
+/// A thread's hold on its program's `Kinds`, and its copies of them, by number past those the
+/// program described, each read the first time this thread meets it. Each is written once and
+/// never moved, so it can be read with the runtime's state only borrowed.
 #[derive(Default)]
-pub struct AddedKinds(std::cell::OnceCell<Box<[std::cell::OnceCell<Rc<Element>>]>>);
+pub struct AddedKinds {
+    kinds: std::cell::OnceCell<std::sync::Arc<Kinds>>,
+    copies: std::cell::OnceCell<Box<[std::cell::OnceCell<Rc<Element>>]>>,
+}
 
 impl super::Tables {
     /// The kind of item numbered `number`: one the program described, or one the runtime numbered
@@ -1321,27 +1430,50 @@ impl super::Tables {
     fn added_element(&self, at: usize) -> Option<&Rc<Element>> {
         let slots = self
             .added_elements
-            .0
+            .copies
             .get_or_init(|| (0..MOST_ADDED_KINDS).map(|_| std::cell::OnceCell::new()).collect());
         let slot = slots.get(at)?;
         if let Some(element) = slot.get() {
             return Some(element);
         }
-        let bytes = ADDED_KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(at)?.clone();
+        let bytes = self.kinds().lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(at)?.clone();
         let element = <Element as super::codec::Decode>::decode(&mut super::codec::Reader::new(&bytes))?;
         Some(slot.get_or_init(|| Rc::new(element)))
     }
 }
 
+impl super::Tables {
+    /// This program's [`Kinds`], found the first time this thread asks.
+    fn kinds(&self) -> &std::sync::Arc<Kinds> {
+        self.added_elements.kinds.get_or_init(|| {
+            let mut writer = super::codec::Writer::default();
+            for element in &self.elements {
+                super::codec::Encode::encode(&**element, &mut writer);
+            }
+            let described = writer.into_bytes();
+            let mut programs = PROGRAMS_KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            programs.retain(|(_, kinds)| kinds.strong_count() > 0);
+            if let Some(kinds) =
+                programs.iter().filter(|(of, _)| *of == described).find_map(|(_, kinds)| kinds.upgrade())
+            {
+                return kinds;
+            }
+            let kinds = std::sync::Arc::new(Kinds::default());
+            programs.push((described, std::sync::Arc::downgrade(&kinds)));
+            kinds
+        })
+    }
+}
+
 /// The number past the kinds the program described of a kind it didn't, numbered now if no thread
-/// has numbered it yet.
+/// of its has numbered it yet.
 #[cold]
 #[inline(never)]
-fn added_number(element: &Element) -> usize {
+fn added_number(tables: &super::Tables, element: &Element) -> usize {
     let mut writer = super::codec::Writer::default();
     super::codec::Encode::encode(element, &mut writer);
     let bytes = writer.into_bytes();
-    let mut added = ADDED_KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut added = tables.kinds().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(at) = added.iter().position(|known| *known == bytes) {
         return at;
     }

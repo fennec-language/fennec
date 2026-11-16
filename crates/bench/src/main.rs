@@ -19,6 +19,8 @@
 //! fennec-bench rehash [--fennec PATH] [--kernels DIR] [--targets DIR]
 //! fennec-bench budgets [--fennec PATH] [--runs N] [--files N]
 //! fennec-bench build-times [--fennec PATH] [--runs N] [--budgets PATH] [--pin]
+//! fennec-bench big-codebase [--fennec PATH] [--lines N,N,...] [--seed N] [--runs N] [--budgets PATH] [--pin] [--markdown PATH]
+//! fennec-bench big-codebase generate DIR [--lines N] [--seed N]
 //! fennec-bench llvm-suite [--fennec PATH] [--runs N] [--kernels DIR] [--json PATH]
 //! fennec-bench parallel [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
 //! fennec-bench realworld [--fennec PATH] [--runs N] [--dir DIR] [--markdown PATH]
@@ -26,13 +28,16 @@
 //! ```
 //!
 //! `budgets` measures something else: see the `budgets` module. `build-times` measures how much
-//! work building, checking and starting the real programs takes: see the `build_times` module. `llvm-suite` compares what
-//! `fennec build --llvm --release` makes with the Rust twins: see the `llvm_suite` module.
+//! work building, checking and starting the real programs takes: see the `build_times` module.
+//! `big-codebase` measures how checking, building and testing grow with a generated program's
+//! size: see the `big` module. `llvm-suite` compares what `fennec build --llvm --release` makes
+//! with the Rust twins: see the `llvm_suite` module.
 //! `parallel` compares `parallel` with rayon, by threads: see the `parallel` module. `realworld`
 //! compares programs using the standard library with Rust using crates: see the `realworld` module.
 #![expect(clippy::print_stdout, reason = "the suite prints its table")]
 #![expect(clippy::print_stderr, reason = "the suite reports failures")]
 
+mod big;
 mod budgets;
 mod build_times;
 mod kernels;
@@ -140,72 +145,41 @@ fn report_section(
 }
 
 fn main() -> ExitCode {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let section: Option<(&str, Section)> = match args.first().map(String::as_str) {
-        Some("parallel") => Some(("bench/parallel", parallel::run)),
-        Some("realworld") => Some(("bench/realworld", realworld::run)),
-        Some("server") => Some(("bench/server", server::run)),
-        _ => None,
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let command = args.first().cloned();
+    // Each command but the suite itself passes, fails on what it found, or stops with an error.
+    let found = match command.as_deref() {
+        Some("parallel") => {
+            report_section(args.into_iter().skip(1), "bench/parallel", parallel::run).map(|()| true)
+        }
+        Some("realworld") => {
+            report_section(args.into_iter().skip(1), "bench/realworld", realworld::run).map(|()| true)
+        }
+        Some("server") => {
+            report_section(args.into_iter().skip(1), "bench/server", server::run).map(|()| true)
+        }
+        Some("llvm-suite") => llvm_suite(args.into_iter().skip(1)),
+        Some("ops") => ops::run(args.into_iter().skip(1)),
+        Some("build-times") => build_times::command(args.into_iter().skip(1)),
+        Some("big-codebase") => big::command(args.into_iter().skip(1)),
+        Some("budgets") => budgets(args.into_iter().skip(1)),
+        Some("rehash") => {
+            options(args.into_iter().skip(1)).and_then(|options| rehash(&options)).map(|()| true)
+        }
+        _ => return suite_or_pin(args),
     };
-    if let Some((dir, section)) = section {
-        return match report_section(args.into_iter().skip(1), dir, section) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(message) => {
-                eprintln!("error: {message}");
-                ExitCode::FAILURE
-            }
-        };
+    match found {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(message) => {
+            eprintln!("error: {message}");
+            ExitCode::FAILURE
+        }
     }
-    if args.first().is_some_and(|first| first == "llvm-suite") {
-        return match llvm_suite(args.into_iter().skip(1)) {
-            Ok(true) => ExitCode::SUCCESS,
-            Ok(false) => ExitCode::FAILURE,
-            Err(message) => {
-                eprintln!("error: {message}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if args.first().is_some_and(|first| first == "ops") {
-        return match ops::run(args.into_iter().skip(1)) {
-            Ok(true) => ExitCode::SUCCESS,
-            Ok(false) => ExitCode::FAILURE,
-            Err(message) => {
-                eprintln!("error: {message}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if args.first().is_some_and(|first| first == "build-times") {
-        return match build_times::command(args.into_iter().skip(1)) {
-            Ok(true) => ExitCode::SUCCESS,
-            Ok(false) => ExitCode::FAILURE,
-            Err(message) => {
-                eprintln!("error: {message}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if args.first().is_some_and(|first| first == "budgets") {
-        return match budgets(args.into_iter().skip(1)) {
-            Ok(true) => ExitCode::SUCCESS,
-            Ok(false) => ExitCode::FAILURE,
-            Err(message) => {
-                eprintln!("error: {message}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if args.first().is_some_and(|first| first == "rehash") {
-        args.remove(0);
-        return match options(args.into_iter()).and_then(|options| rehash(&options)) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(message) => {
-                eprintln!("error: {message}");
-                ExitCode::FAILURE
-            }
-        };
-    }
+}
+
+/// The suite itself, the kernels against their targets, or `pin`, which measures the targets again.
+fn suite_or_pin(mut args: Vec<String>) -> ExitCode {
     let pinning = args.first().is_some_and(|first| first == "pin");
     if pinning {
         args.remove(0);

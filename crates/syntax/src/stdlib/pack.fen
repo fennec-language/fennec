@@ -24,7 +24,7 @@
 ## same slots, so a replay's later `add`s hand out the same `Id`s, and an `Id` whose item had gone
 ## is still gone. Either way an `Id` has to be in a `Table` saved with it, one of each type.
 
-from std.intrinsics import bytes_builder, bytes_push, bytes_push_bytes, bytes_push_text, bytes_push_word, bytes_set, bytes_text, float_bits, float_of_bits, layout, new_tag, pack_lock, shape_hash, shape_locked, text_byte, text_size, type_name
+from std.intrinsics import bytes_builder, bytes_push, bytes_push_bytes, bytes_push_text, bytes_push_varint, bytes_push_word, bytes_set, bytes_text, float_bits, float_of_bits, layout, new_tag, pack_lock, shape_hash, shape_locked, text_byte, text_size, type_name
 from std.io import Reader, Writer, read_all
 from std.json import IdsSeen, found_tables
 
@@ -354,10 +354,6 @@ def read_value[T: Deserializable](ref src: PackReader) -> T fails ParseError:
     if problem != "": fail ParseError(message=problem if src._explain else "", line=0, column=0)
     return value
 
-## The bits a varint takes, 7 at a time, with the top 7 cleared after an arithmetic shift so it
-## goes down as an unsigned number would.
-LOW_57 = 144115188075855871
-
 ## The top bit of an int cleared, for a shift by 1 that goes down as an unsigned number would.
 LOW_63 = 9223372036854775807
 
@@ -401,11 +397,7 @@ export struct PackWriter:
 
     ## A number as unsigned, 7 bits a byte, low first, with the top bit of each saying more come.
     def _varint(ref self, n: int):
-        mut rest = n
-        while rest < 0 or rest >= 128:
-            bytes_push(ref self._out, (rest & 127) | 128)
-            rest = (rest >> 7) & LOW_57
-        bytes_push(ref self._out, rest)
+        bytes_push_varint(ref self._out, n)
 
     def int(ref self, value: int):
         # Zigzag: small numbers either side of 0 take one byte.

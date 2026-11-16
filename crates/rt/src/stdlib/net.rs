@@ -1518,8 +1518,32 @@ fn keep_stream_made(
 
 /// TLS over a connection, as `secured` makes it.
 type Secured = Box<dyn SecureStream>;
+
+/// How many connections a server asks the system to keep waiting for it to take them: the most
+/// there is. Linux, macOS and Windows each cut that down to their own most: 4,096 on Linux by
+/// default (`/proc/sys/net/core/somaxconn`), 128 on macOS (`kern.ipc.somaxconn`), and on Windows
+/// what it takes for a reasonable most. Past what's kept, Linux drops a connection's handshake, so
+/// its client tries again and may time out, and macOS resets it. Rust's `bind` asks for 128, so a
+/// burst bigger than that waited or failed wherever the system allows more, and on the Mac 172 of
+/// 300 connections at once were reset (#1903).
+const LISTEN_QUEUE: i32 = i32::MAX;
+
+/// A listener on every address of this machine at `port`, or one the system picks for 0, with as
+/// long a queue as the system allows.
+fn bound(port: u16) -> std::io::Result<TcpListener> {
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)?;
+    // As Rust's `bind` does everywhere but Windows, where it would let another socket take the
+    // port too: a server started again binds its port at once, not once the last one's closed
+    // connections have timed out.
+    #[cfg(not(windows))]
+    socket.set_reuse_address(true)?;
+    socket.bind(&std::net::SocketAddr::from(([0, 0, 0, 0], port)).into())?;
+    socket.listen(LISTEN_QUEUE)?;
+    Ok(socket.into())
+}
+
 fn listen(port: u16, tls: Option<Arc<dyn TlsServer>>) -> Result<Made, Failure> {
-    let listener = TcpListener::bind(("0.0.0.0", port)).map_err(|error| match error.kind() {
+    let listener = bound(port).map_err(|error| match error.kind() {
         ErrorKind::AddrInUse => Failure::Other(format!("port {port} is already in use")),
         _ => Failure::Other(error.to_string()),
     })?;
@@ -2394,6 +2418,36 @@ fn wait_to_write(stream: &Stream, deadline: Option<Instant>) -> Result<bool, Fai
     Ok(false)
 }
 
+/// Whether an error taking a connection is that connection's own, gone before it was taken, so the
+/// next one is taken instead and the program never hears of it: one reset or given up while it
+/// waited, which Windows says from `accept` itself, and on Linux a network error the connection
+/// met, which its manual says to take as nothing to take yet.
+pub(crate) fn gone_before_taken(error: &std::io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::Interrupted
+            | ErrorKind::NetworkDown
+            | ErrorKind::NetworkUnreachable
+            | ErrorKind::HostUnreachable
+    ) {
+        return true;
+    }
+    // EPROTO, ENOPROTOOPT, EHOSTDOWN, ENONET and EOPNOTSUPP, the rest of Linux's list.
+    cfg!(target_os = "linux") && matches!(error.raw_os_error(), Some(71 | 92 | 112 | 64 | 95))
+}
+
+/// The next connection on `listener`, past any gone before it was taken.
+fn taken(listener: &TcpListener) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+    loop {
+        match listener.accept() {
+            Err(error) if gone_before_taken(&error) => {}
+            other => return other,
+        }
+    }
+}
+
 /// The next connection on a listener, waited for on a poll: a task that can park parks, so the
 /// other tasks on its worker run meanwhile, the one that's about to connect among them. It used
 /// to wait in the kernel, or asleep 5 ms at a time when it had a timeout, holding its worker
@@ -2410,12 +2464,12 @@ fn accept_on_a_poll(
 ) -> Result<(TcpStream, std::net::SocketAddr), Failure> {
     let (listener, waits) = (&listening.listener, &listening.waits);
     if !task_parks() && timeout.is_none() && !waits.never_blocks.load(Ordering::SeqCst) {
-        return listener.accept().map_err(|error| Failure::of(&error, None));
+        return taken(listener).map_err(|error| Failure::of(&error, None));
     }
     waits.never_blocking(|| listener.set_nonblocking(true))?;
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     loop {
-        match listener.accept() {
+        match taken(listener) {
             Ok(accepted) => return Ok(accepted),
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 if waits.closed.load(Ordering::SeqCst) {
@@ -2440,12 +2494,12 @@ fn accept_in_the_kernel(
     timeout: Option<Duration>,
 ) -> Result<(TcpStream, std::net::SocketAddr), Failure> {
     let Some(limit) = timeout else {
-        return listener.accept().map_err(|error| Failure::of(&error, None));
+        return taken(listener).map_err(|error| Failure::of(&error, None));
     };
     listener.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
     let started = Instant::now();
     let accepted = loop {
-        match listener.accept() {
+        match taken(listener) {
             Ok(accepted) => break Ok(accepted),
             Err(error) if error.kind() == ErrorKind::WouldBlock && started.elapsed() < limit => {
                 std::thread::sleep(Duration::from_millis(5));
@@ -2874,6 +2928,116 @@ pub(crate) mod tests {
 
     use super::{Failure, Fake, MOST_LINE_BYTES, Made, close, receive, udp};
     use crate::value::Value;
+
+    /// How many connect at once to a server that takes none yet.
+    const CONNECTING: usize = 200;
+
+    /// A server's queue of connections waiting for it to take them holds as many as the system
+    /// allows, where Rust's `bind` asked for 128 (#1903): of 200 that connect at once, as many as
+    /// the system's most are kept, all 200 on Linux by default and 128 on macOS, and on Windows
+    /// more than 128. Past what's kept, Linux has the client try again, and macOS resets it, as 172
+    /// of 300 at once were. Each taken is closed at once, so the test holds no more than 200 sockets.
+    #[test]
+    fn a_servers_queue_keeps_as_many_connections_as_the_system_allows() {
+        let listener = super::bound(0).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let address = socket2::SockAddr::from(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+        let clients: Vec<socket2::Socket> = (0..CONNECTING)
+            .map(|_| {
+                let client =
+                    socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+                client.set_nonblocking(true).unwrap();
+                // A connect under way says it would block, which is all this one needs to do.
+                let _ = client.connect(&address);
+                client
+            })
+            .collect();
+        // Long enough for the system's handshakes, which need nothing taken, and short of the
+        // second a client waits before trying again where its first try was dropped.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        listener.set_nonblocking(true).unwrap();
+        let kept = std::iter::from_fn(|| listener.accept().ok()).count();
+        drop(clients);
+        match system_most() {
+            Some(most) => assert!(
+                kept >= CONNECTING.min(most),
+                "{kept} of {CONNECTING} were kept waiting, where the system allows {most}"
+            ),
+            None => assert!(kept > 128, "{kept} of {CONNECTING} were kept waiting, no more than Rust's 128"),
+        }
+    }
+
+    /// An error taking a connection that is that connection's own, gone before it was taken, is
+    /// passed over for the next, and only those: a reset or an abort while it waited, which Windows
+    /// says from `accept` itself, and a signal's interruption. Running out of descriptors, or a
+    /// listener with nothing waiting, still says so.
+    #[test]
+    fn only_a_connection_gone_before_it_was_taken_is_passed_over() {
+        use std::io::{Error, ErrorKind};
+        for gone in [ErrorKind::ConnectionReset, ErrorKind::ConnectionAborted, ErrorKind::Interrupted] {
+            assert!(super::gone_before_taken(&Error::from(gone)), "{gone:?}");
+        }
+        for kept in [ErrorKind::WouldBlock, ErrorKind::InvalidInput, ErrorKind::OutOfMemory] {
+            assert!(!super::gone_before_taken(&Error::from(kept)), "{kept:?}");
+        }
+        assert!(!super::gone_before_taken(&Error::from_raw_os_error(24)), "out of descriptors");
+    }
+
+    /// Connections reset before a program takes them don't fail its `accept`: twenty connect and
+    /// reset, then one says hello, and each `accept` gives back a connection until the one that
+    /// says it. macOS and Linux hand a reset connection over, and reading it fails; Windows says
+    /// the reset from `accept` itself, which reached the program as its `accept` failing, so a
+    /// server's loop of `accept`s ended at a stranger's reset.
+    #[test]
+    fn connections_reset_before_theyre_taken_dont_fail_a_programs_accept() {
+        use std::io::{Read as _, Write as _};
+        let Ok((_, fields)) = super::listen(0, None) else { panic!("no server") };
+        let field = |name: &str| {
+            fields
+                .iter()
+                .find_map(|(at, value)| match value {
+                    Value::Int(number) if *at == name => Some(*number),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let (server, port) = (field("_handle"), u16::try_from(field("port")).unwrap());
+        for _ in 0..20 {
+            let reset = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            socket2::SockRef::from(&reset).set_linger(Some(std::time::Duration::ZERO)).unwrap();
+        }
+        let mut hello = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        hello.write_all(b"hello").unwrap();
+        // Long enough for the resets to arrive before anything is taken.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut heard = false;
+        for _ in 0..21 {
+            let (taken, _) = super::accept(server, Some(std::time::Duration::from_secs(10)))
+                .unwrap_or_else(|failure| panic!("a reset failed the accept: {failure:?}"));
+            let mut said = [0; 5];
+            let read = super::stream(taken).ok().map(|stream| (&stream.socket).read_exact(&mut said));
+            close(taken);
+            if matches!(read, Some(Ok(()))) && &said == b"hello" {
+                heard = true;
+                break;
+            }
+        }
+        close(server);
+        assert!(heard, "the connection that said hello was never taken");
+    }
+
+    /// The longest queue of connections this system keeps for a server, where it says.
+    fn system_most() -> Option<usize> {
+        if cfg!(target_os = "linux") {
+            return std::fs::read_to_string("/proc/sys/net/core/somaxconn").ok()?.trim().parse().ok();
+        }
+        if cfg!(target_os = "macos") {
+            let said =
+                std::process::Command::new("sysctl").args(["-n", "kern.ipc.somaxconn"]).output().ok()?;
+            return String::from_utf8_lossy(&said.stdout).trim().parse().ok();
+        }
+        None
+    }
 
     /// The ranges of a task's `parallel` call share the task's stop, so reads blocking their
     /// threads can be noted under one stop at once: one that ends takes back its own note, and

@@ -1344,9 +1344,7 @@ enum AfterAccept {
 
 fn accept_failed(error: &std::io::Error) -> AfterAccept {
     match error.kind() {
-        ErrorKind::Interrupted | ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset => {
-            AfterAccept::Next
-        }
+        _ if crate::stdlib::net::gone_before_taken(error) => AfterAccept::Next,
         ErrorKind::WouldBlock => AfterAccept::Stop,
         _ if matches!(error.raw_os_error(), Some(23 | 24)) => AfterAccept::Later,
         ErrorKind::OutOfMemory => AfterAccept::Later,
@@ -1899,7 +1897,9 @@ pub(super) fn serve_replayed(
         let to = usize::try_from(n).unwrap_or(0) % workers.max(1);
         pool.run_on(to, Box::new(move |io: &mut Io| io.take_recorded(id, n)));
     }
-    server.left.wait();
+    // A task parks, as a live server's does, so its worker runs the rounds it was given (#1832).
+    let stopping = Stopper { server: Arc::clone(&server), pool };
+    wait_for_every_worker(&server.left, || stopping.stop());
     server.lent.lock().unwrap_or_else(PoisonError::into_inner).take();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }

@@ -103,8 +103,12 @@ says they are, at the version the workspace pins.
   a `Table` runs its rounds in the list's order: a comprehension's results are in that order, as
   promised, and the failure passed up is the first round's that fails, by position, as the
   runtime keeps the lowest range's. Rounds after one that fails or breaks out may run or not, so
-  they run here too, and are refused if they'd change a `shared` value or their item, or fail
-  after a `break`. A stream, `(f(x) for x in parallel(xs))`, works out each item as its reader
+  they run here too, and are refused if they'd change a `shared` value or their item, use a
+  channel, or fail after a `break`. Each round is one of its own to the channels it uses, as a
+  task is, so which round's message comes first is tried every way, and two rounds taking from
+  one channel are refused. Of a channel made outside a round, refused as what runs beside it could
+  come first: a receive while rounds after it haven't run here, a close, and any use in a stream's
+  item. A stream, `(f(x) for x in parallel(xs))`, works out each item as its reader
   asks, and an item's failure is the reader's when it gets there. Refused, as their order isn't
   promised: printing or the file system inside a round, a `shared` value one round changes and
   another reaches, any `lock` in a stream's item, and a generator made outside a round, read in
@@ -125,7 +129,8 @@ says they are, at the version the workspace pins.
   on time. A channel to every listener gives each listener every message from when it started
   listening, and a plain `receive()` on one stops the program, as `docs/language.md` says. The
   `with` ends as the task does, with its failure, or `Crashed(why="the task crashed")` for a crash.
-  Refused: two tasks taking from one channel to one receiver; several senders to a listener whose
+  Refused: two tasks taking from one channel to one receiver at once, where neither had heard of
+  the other's last take; several senders to a listener whose
   next messages differ; a channel to every listener sent more than it keeps; a send waiting for room
   when its channel closes; a task that ends with messages left in its inbox, and a send to the inbox
   after; a `shared` value one side changes and the other reaches; a block that fails, which cuts its

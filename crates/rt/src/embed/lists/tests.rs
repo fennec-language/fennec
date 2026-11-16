@@ -259,9 +259,10 @@ fn a_powers_fast_paths_are_exact() {
     assert_eq!(super::float_power(1.5, 2.7).to_bits(), libm::pow(1.5, 2.7).to_bits());
 }
 
-/// Clearing a list of ints keeps its block and its room, with what it held zeroed, so the appends
-/// after it go into the same block: items that hold nothing are only zeroed, not copied out to be
-/// let go of.
+/// Clearing a list of ints keeps its block and its room, and only sets its length to 0: what it held
+/// stays in the room, past the length, so the appends after it go into the same block, and growing
+/// into the room zeroes the item it adds, whatever was there. Items that hold nothing are neither
+/// copied out to be let go of nor zeroed.
 #[test]
 fn a_cleared_list_of_ints_keeps_its_room() {
     let tables = Tables { elements: vec![Rc::new(Element::Int)], ..Tables::default() };
@@ -278,8 +279,15 @@ fn a_cleared_list_of_ints_keeps_its_room() {
     super::clear(numbers);
     let cleared = words(numbers);
     assert_eq!((cleared[2], cleared[3]), (0, room), "no items, and the same room");
-    assert!(cleared[super::LIST_HEADER_WORDS..].iter().all(|word| *word == 0), "what it held is zeroed");
+    assert_eq!(
+        &cleared[super::LIST_HEADER_WORDS..super::LIST_HEADER_WORDS + 3],
+        [7, 8, 9],
+        "left in the room"
+    );
     assert_eq!(super::grow(numbers), numbers, "an append after it goes into the same block");
+    let grown = words(numbers);
+    assert_eq!(grown[2], 1);
+    assert_eq!(grown[super::LIST_HEADER_WORDS], 0, "the item an append adds starts at 0");
     heap::free(numbers);
     assert_eq!(with(|state| state.heap.live()), before);
     finish();
@@ -316,7 +324,10 @@ fn a_list_of_a_kind_the_runtime_numbered_reads_the_same_on_another_thread() {
             notes: None,
         }))
     };
-    let made = std::thread::spawn(move || {
+    // The two threads run at once, as a run's threads do, and the maker ends only once the list is read.
+    let (sent, made) = std::sync::mpsc::channel::<Vec<u64>>();
+    let (read_it, done) = std::sync::mpsc::channel::<()>();
+    let maker = std::thread::spawn(move || {
         begin();
         // Another kind first, which this thread numbers and the reading thread never meets, so the
         // two threads' own counts of kinds differ.
@@ -328,14 +339,14 @@ fn a_list_of_a_kind_the_runtime_numbered_reads_the_same_on_another_thread() {
         .unwrap();
         let block: Vec<u64> =
             with(|state| state.heap.block(u64::try_from(list).ok()?).map(<[u64]>::to_vec)).unwrap();
+        sent.send(block).unwrap();
+        done.recv().unwrap();
         finish();
-        block
-    })
-    .join()
-    .unwrap();
+    });
     begin();
+    let made = made.recv().unwrap();
     let read = with(|state| {
-        let mut block = made.clone().into_boxed_slice();
+        let mut block = made.into_boxed_slice();
         // Adopted as this thread's own, as a block a task hands over is.
         if let Some(count) = block.first_mut() {
             *count = 1;
@@ -344,6 +355,101 @@ fn a_list_of_a_kind_the_runtime_numbered_reads_the_same_on_another_thread() {
         Some(heap::read_block(state, u64::try_from(address).ok()?).unpacked())
     })
     .unwrap();
+    read_it.send(()).unwrap();
+    maker.join().unwrap();
     assert_eq!(read, Value::list(vec![item(7)]));
     finish();
+}
+
+/// A thread's runtime whose program described `described` kinds, as each thread of one run has.
+fn begin_described(described: usize) {
+    let elements = (0..described)
+        .map(|at| Rc::new(Element::Struct { name: Rc::from(format!("Described{at}")), fields: vec![] }))
+        .collect();
+    let tables = Tables { shapes: vec![Rc::new(Element::Str)], elements, ..Tables::default() };
+    start(tables, crate::Inputs::default());
+}
+
+/// A kind no program describes, one for each `at`.
+fn undescribed(tag: &str, at: usize) -> Rc<Element> {
+    let fields = vec![(Rc::from("count"), Element::Int), (Rc::from("name"), Element::Str)];
+    Rc::new(Element::Struct { name: Rc::from(format!("{tag}{at}")), fields })
+}
+
+/// Sixteen threads of one run number the same kinds at once, each in its own order and each only
+/// some of them, then read every number back: each kind has one number on every thread, and reads
+/// back as itself there, numbered there or not. From the review of #1870.
+#[test]
+fn kinds_numbered_at_once_on_many_threads_get_one_number_each() {
+    const THREADS: usize = 16;
+    const KINDS: usize = 60;
+    let together = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+    let threads: Vec<_> = (0..THREADS)
+        .map(|thread| {
+            let together = std::sync::Arc::clone(&together);
+            std::thread::spawn(move || {
+                begin_described(7);
+                together.wait();
+                for step in 0..KINDS {
+                    let at = (step * 7 + thread * 11) % KINDS;
+                    if !(at + thread).is_multiple_of(3) {
+                        with(|state| Some(super::number_of_element(state, &undescribed("AtOnce", at))))
+                            .unwrap();
+                    }
+                }
+                together.wait();
+                let read: Vec<(usize, bool)> = (0..KINDS)
+                    .map(|at| {
+                        let kind = undescribed("AtOnce", at);
+                        let number = with(|state| Some(super::number_of_element(state, &kind))).unwrap();
+                        let same = with(|state| {
+                            Some(state.tables.element(number).is_some_and(|found| *found == kind))
+                        });
+                        (number, same.unwrap_or(false))
+                    })
+                    .collect();
+                finish();
+                read
+            })
+        })
+        .collect();
+    let read: Vec<Vec<(usize, bool)>> = threads.into_iter().map(|thread| thread.join().unwrap()).collect();
+    for thread in &read {
+        assert_eq!(thread, &read[0], "two threads gave a kind different numbers, or misread one");
+    }
+    let mut numbers: Vec<usize> = read[0].iter().map(|(number, _)| *number).collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    assert_eq!(numbers.len(), KINDS);
+    assert!(numbers.iter().all(|number| *number >= 7));
+    assert!(read[0].iter().all(|(_, same)| *same));
+}
+
+/// Runs one after another on one thread, as the fuzzer and these tests run them in one process,
+/// each numbering 1024 kinds of its own: the most kinds is counted for each run, as a run lets its
+/// program's go when it ends. With one list for the process, the fifth stopped as a bug.
+#[test]
+fn the_most_kinds_the_runtime_numbers_is_counted_for_each_run() {
+    for run in 0..6 {
+        begin_described(2);
+        for at in 0..1024 {
+            with(|state| Some(super::number_of_element(state, &undescribed(&format!("Run{run}Kind"), at))))
+                .unwrap();
+        }
+        finish();
+    }
+}
+
+/// A list of a kind of item this thread knows nothing of stops as a bug when it's read, rather than
+/// reading as nothing: as nothing, an error's notes were lost without a word (#1843).
+#[test]
+#[should_panic(expected = "which this thread knows nothing of")]
+fn a_list_of_a_kind_this_thread_knows_nothing_of_stops_when_read() {
+    begin();
+    let address = with(|state| {
+        let shape = super::first_list_shape(state) + 5;
+        Some(state.heap.insert(vec![1, shape, 0, 0].into_boxed_slice()))
+    })
+    .unwrap();
+    let _ = read(address);
 }

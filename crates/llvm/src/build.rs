@@ -9,7 +9,17 @@ use fennec_build::Cache;
 use crate::emit::Unit;
 
 const KIND: &str = "llvm";
-const MOST_THREADS: usize = 4;
+
+/// How many of a dev build's functions are compiled at once: one for each core, unless
+/// `FENNEC_BUILD_JOBS` gives a number. It was four on any machine, which left an 18-core Mac
+/// starting LLVM's tools three at a time for a program of thousands of functions (#1902).
+fn workers() -> usize {
+    std::env::var("FENNEC_BUILD_JOBS")
+        .ok()
+        .and_then(|jobs| jobs.parse().ok())
+        .filter(|&jobs: &usize| jobs > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from))
+}
 const PIPELINE: &str = "default<O3>";
 
 /// Allocas times blocks past which a function is compiled as written, with `llc -O0`, rather than
@@ -562,7 +572,7 @@ pub fn compile(
     std::fs::create_dir_all(work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let version = tools.version()?;
     let pipeline = pipeline();
-    let threads = std::thread::available_parallelism().map_or(1, usize::from).min(MOST_THREADS);
+    let threads = workers();
     let next = Mutex::new(0_usize);
     let results: Mutex<Vec<(usize, Compiled)>> = Mutex::new(Vec::with_capacity(units.len()));
     // The entry is made fresh each build and needs nothing of the functions, so it's compiled

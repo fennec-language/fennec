@@ -31,6 +31,14 @@ enum Word {
     Header,
 }
 
+/// Whether a local is a lock's handle, a `shared Shared__T` that `lock ... as ref` is lowered onto.
+pub(crate) fn is_lock_handle(function: &Function, local: LocalId) -> bool {
+    matches!(
+        function.locals.get(local.0).map(|local| &local.ty),
+        Some(Type::Named(name)) if name.starts_with(LOCKED)
+    )
+}
+
 /// The handles a function locks to write that save their changes, in the order they're first
 /// locked: each `lock ... as ref` is lowered onto a handle of its own, so its `unlock` is known by
 /// the handle alone.
@@ -456,6 +464,7 @@ impl Emit<'_, '_, '_> {
             return Ok(());
         }
         let Operand::Local(local) = handle else { return Ok(()) };
+        self.proof_nothing_out();
         self.undo_changes(handle)?;
         self.rolled_back.insert(local.0);
         Ok(())
@@ -1054,6 +1063,15 @@ impl Emit<'_, '_, '_> {
                 ));
             }
         }
+    }
+
+    /// Before a value, or a field of one, is taken out of what's at `path` from `root`, to change
+    /// and put back: where `root` is the handle of a lock this function holds that saves what it
+    /// changes, the path is saved first, as a write along it is. The dict or list on it is then
+    /// one the log marked, changed where it is rather than copied, and put back by a crash. A
+    /// function handed part of the lock's value finds it marked already.
+    pub(crate) fn save_for_take(&mut self, root: LocalId, path: &[String]) -> Result<(), String> {
+        if self.saving.contains(&root.0) { self.save_along(root, path) } else { Ok(()) }
     }
 
     /// Before a write reaches along `path` from a local into what a `lock ... as ref` block's value

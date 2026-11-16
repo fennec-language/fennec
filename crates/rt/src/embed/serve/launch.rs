@@ -274,11 +274,13 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
     match held {
         Some(held) => super::super::fail_with(held),
         // Stopped while it waited, as its recording says.
-        None if replaying => crate::replay::stopped_at_block_end_as_recorded(),
+        None if replaying => {
+            let _ = crate::replay::stopped_in_as_recorded(crate::replay::StoppedIn::BlockEnd);
+        }
         // Stopped while it waited: it's cut short now its task has ended, which a recording notes.
         None => {
             if super::cut_short() {
-                crate::replay::stopped_at_block_end();
+                crate::replay::stopped_in(crate::replay::StoppedIn::BlockEnd);
             }
         }
     }

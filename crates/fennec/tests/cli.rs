@@ -1096,6 +1096,33 @@ fn a_kit_without_main_can_be_tested_but_not_run() {
     assert!(text(&test.stdout).ends_with("1 passed, 0 failed\n"));
 }
 
+/// A kit's files are in `src/`. One whose only file is beside `kit.toml` has nothing in it, and
+/// checking, linting or testing it fails and says to move the file. It passed without a word
+/// before, so `fennec lint` there found none of the file's lints.
+#[test]
+fn a_kit_with_its_file_beside_kit_toml_says_to_move_it_to_src() {
+    let dir = scratch("file-beside").unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"beside\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(
+        dir.join("main.fen"),
+        "def shown(count: int) -> int:\n    return int(count) + 1\n\ndef main(stdout: Stdout):\n    stdout.print(shown(3))\n",
+    )
+    .unwrap();
+    let said: Vec<_> =
+        ["check", "lint", "test"].iter().map(|command| fennec_in(&dir, &[command], "").unwrap()).collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    for (command, output) in ["check", "lint", "test"].iter().zip(&said) {
+        let stderr = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
+        assert!(
+            stderr.starts_with("error: src/ has no .fen file, so there's nothing in this kit"),
+            "{command}: {stderr}"
+        );
+        assert!(stderr.contains("move main.fen to src/main.fen"), "{command}: {stderr}");
+    }
+}
+
 #[test]
 fn run_outside_a_kit_says_how_to_start_one() {
     let dir = scratch("no-kit").unwrap();

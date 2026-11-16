@@ -16814,13 +16814,18 @@ fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::
 /// a blocking thread. When each client's exchange held a blocking thread while it waited for its
 /// answer, eight clients took all of a fixed eight, the handlers queued behind them, and the
 /// clients failed at their 30-second timeout. Exchanges park on their sockets now (#1823), and the
-/// pool grows while every thread is busy, so the handlers get theirs at 300 clients too.
+/// pool grows while every thread is busy, so the handlers get theirs at 100 clients too.
+///
+/// A hundred is more than the pool's 64 blocking threads, so exchanges holding them would starve
+/// the handlers, and under the 128 connections the Mac keeps waiting for a server to take. With
+/// three hundred, a loaded machine left the server's accepts behind, the queue overflowed and the
+/// Mac reset the rest: 184 of 300 saved (#1903).
 ///
 /// Each run is built for a heap audit and run under it, on 1, 4 and 16 threads: it ends with
 /// what it should have printed, nothing live and nothing said.
 #[test]
 fn a_servers_blocking_work_isnt_starved_by_its_own_clients() -> std::io::Result<()> {
-    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32, 300])
+    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32, 100])
 }
 
 /// Builds `served_handler_blocks_while_clients_post.fen` for a heap audit, and runs it with each

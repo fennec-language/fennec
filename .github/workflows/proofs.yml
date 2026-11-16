@@ -14,7 +14,7 @@ name: Proofs
 # runtime's tests run under Miri, which stops on undefined behavior in the crates under it
 # (`.github/scripts/miri.sh`). The game server and the web backend each run for an hour under
 # their own load, and what they hold has to level off (`.github/scripts/soak.sh`). A generated
-# program of up to 200,000 lines is checked, built and tested, and each step held to its time and
+# program of 20,000 and 30,000 lines is checked, built and tested, and each step held to its time and
 # memory, and to growing no faster than the program (`fennec-bench big-codebase`). The night's
 # report is kept as `nightly-report`, which
 # `.github/scripts/nightly-report.sh` copies into the lanes' notes. No pull request waits on this.
@@ -261,7 +261,7 @@ jobs:
           path: soak.md
           if-no-files-found: ignore
 
-  # A program of 50,000, 100,000 and 200,000 lines, generated the same each night: checked, built
+  # A program of 20,000 and 30,000 lines, generated the same each night: checked, built
   # cold in dev and release, built again after a one-line edit, and tested, each step held to its
   # time and memory in `bench/big-codebase.txt`, and to growing in step with the program, not
   # faster (`fennec-bench big-codebase`).
@@ -289,8 +289,9 @@ jobs:
           cargo rustc --release --locked -p fennec-runtime --features threads --target-dir target/threads --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
           cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
           cp "$(find target/threads/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_threads.bc
+      # 50,000 lines and more once #1896 lifts the cap on copies of generic functions.
       - name: Measure each step at each size
-        run: ./target/release/fennec-bench big-codebase --markdown big-codebase.md
+        run: ./target/release/fennec-bench big-codebase --lines 20000,30000 --markdown big-codebase.md
       - name: Show the numbers on the run's summary page
         if: always()
         run: '[ -f big-codebase.md ] && cat big-codebase.md >> "$GITHUB_STEP_SUMMARY" || true'

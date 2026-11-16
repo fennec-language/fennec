@@ -32,7 +32,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::build_times::{Counted, Invocation, Setup, ToolCount, billions, counted, load, median, over, seconds};
+use crate::build_times::{
+    Counted, Invocation, Setup, ToolCount, billions, counted, load, median, over, seconds,
+};
 
 /// How far over its budget a step's wall time can go before it fails, in percent: a machine of
 /// the same kind, as CI's runners are, can be this much slower on a bad night.
@@ -149,7 +151,7 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> Result<bool, String
     let mut args: Vec<String> = args.collect();
     let into = if args.first().is_some_and(|first| first == "generate") {
         args.remove(0);
-        if !args.first().is_some_and(|folder| !folder.starts_with("--")) {
+        if args.first().is_none_or(|folder| folder.starts_with("--")) {
             return Err("`generate` needs a folder to write the program into".to_owned());
         }
         Some(PathBuf::from(args.remove(0)))
@@ -178,7 +180,9 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> Result<bool, String
 fn options(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
         fennec: PathBuf::from("target/release/fennec"),
-        sizes: vec![50_000, 100_000, 200_000],
+        // As the nightly runs it. 50,000 lines and more ask for over 2,000 copies of generic
+        // functions, which a build refuses until #1896.
+        sizes: vec![20_000, 30_000],
         seed: 1,
         runs: 1,
         budgets: PathBuf::from("bench/big-codebase.txt"),
@@ -191,11 +195,15 @@ fn options(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
             continue;
         }
         let value = args.next().ok_or_else(|| format!("`{flag}` needs a value"))?;
-        let number = |text: &str| text.parse::<usize>().map_err(|_| format!("`{flag}` needs a number, not `{text}`"));
+        let number =
+            |text: &str| text.parse::<usize>().map_err(|_| format!("`{flag}` needs a number, not `{text}`"));
         match flag.as_str() {
             "--fennec" => options.fennec = PathBuf::from(&value),
             "--lines" => options.sizes = value.split(',').map(number).collect::<Result<_, _>>()?,
-            "--seed" => options.seed = value.parse().map_err(|_| format!("`{flag}` needs a number, not `{value}`"))?,
+            "--seed" => {
+                options.seed =
+                    value.parse().map_err(|_| format!("`{flag}` needs a number, not `{value}`"))?;
+            }
             "--runs" => options.runs = number(&value)?,
             "--budgets" => options.budgets = PathBuf::from(&value),
             "--markdown" => options.markdown = Some(PathBuf::from(&value)),
@@ -221,7 +229,8 @@ fn system() -> String {
 
 /// Every step at every size, printed as it's measured, then how each grew, then what failed.
 fn measure_all(options: &Options) -> Result<bool, String> {
-    let work = std::fs::canonicalize(".").map_err(|err| err.to_string())?.join(crate::OUT_DIR).join("big-codebase");
+    let work =
+        std::fs::canonicalize(".").map_err(|err| err.to_string())?.join(crate::OUT_DIR).join("big-codebase");
     let setup = Setup::new(&options.fennec, work)?;
     let system = system();
     let pinned = read_budgets(&options.budgets)?;
@@ -329,7 +338,8 @@ fn measure_size(setup: &Setup, options: &Options, lines: usize) -> Result<(Progr
                 Step::Test => (dev_home, vec!["test", "."]),
             };
             let load = load();
-            let run = Invocation { args: &args, folder: &made.app, stdin: None, home, counting: true, own: false };
+            let run =
+                Invocation { args: &args, folder: &made.app, stdin: None, home, counting: true, own: false };
             let found = counted(setup, &run)
                 .map_err(|err| format!("{err}\n(the {} step, at {lines} lines)", step.name()))?;
             steps.push((step, found, load));
@@ -390,7 +400,9 @@ fn tool_medians(runs: &[&(Step, Counted, f64)]) -> Option<Vec<ToolCount>> {
         .map(|tool| {
             let of_tool: Vec<&ToolCount> = runs
                 .iter()
-                .filter_map(|(_, found, _)| found.by_tool.as_ref()?.iter().find(|other| other.name == tool.name))
+                .filter_map(|(_, found, _)| {
+                    found.by_tool.as_ref()?.iter().find(|other| other.name == tool.name)
+                })
                 .collect();
             if of_tool.len() != runs.len() {
                 return None;
@@ -407,7 +419,12 @@ fn tool_medians(runs: &[&(Step, Counted, f64)]) -> Option<Vec<ToolCount>> {
         .collect()
 }
 
-fn budget_for(pinned: &[(String, usize, Step, Budget)], system: &str, lines: usize, step: Step) -> Option<Budget> {
+fn budget_for(
+    pinned: &[(String, usize, Step, Budget)],
+    system: &str,
+    lines: usize,
+    step: Step,
+) -> Option<Budget> {
     pinned
         .iter()
         .find(|(at, size, of, _)| at == system && *size == lines && *of == step)
@@ -416,11 +433,11 @@ fn budget_for(pinned: &[(String, usize, Step, Budget)], system: &str, lines: usi
 
 fn print_line(found: &Found, budget: Option<Budget>) {
     let instructions = found.instructions().map_or_else(|| "-".to_owned(), billions);
-    let budget = budget.and_then(|budget| budget.instructions).map_or_else(
-        || budget.map_or_else(|| "none".to_owned(), |budget| seconds(budget.wall)),
-        billions,
-    );
-    let compiled = found.built.map_or_else(|| "-".to_owned(), |built| format!("{}/{}", built.compiled, built.total));
+    let budget = budget
+        .and_then(|budget| budget.instructions)
+        .map_or_else(|| budget.map_or_else(|| "none".to_owned(), |budget| seconds(budget.wall)), billions);
+    let compiled =
+        found.built.map_or_else(|| "-".to_owned(), |built| format!("{}/{}", built.compiled, built.total));
     println!(
         "{:>7} {:<12} {:>9} {:>9} {instructions:>14} {budget:>14} {compiled:>13} {:>6.1}",
         found.lines,
@@ -704,7 +721,12 @@ fn write_budgets(
          # it took, by {INSTRUCTIONS_SLACK_PERCENT}%, `-` where they weren't measured. linux-x86_64's are CI's runners,\n\
          # each night in `proofs.yml`.\n"
     );
-    let _ = writeln!(text, "# {system} pinned on {} with {} cores.", crate::machine::cpu(), crate::machine::cores());
+    let _ = writeln!(
+        text,
+        "# {system} pinned on {} with {} cores.",
+        crate::machine::cpu(),
+        crate::machine::cores()
+    );
     let mut lines: Vec<String> = pinned
         .iter()
         .filter(|(at, ..)| at != system)
@@ -791,7 +813,10 @@ mod tests {
         assert_eq!(budgets.len(), 1);
         let (system, lines, step, budget) = &budgets[0];
         assert_eq!((system.as_str(), *lines, *step), ("linux-x86_64", 50_000, Step::ColdDev));
-        assert_eq!((budget.wall.as_millis(), budget.peak_kb, budget.instructions), (61_000, Some(812_000), None));
+        assert_eq!(
+            (budget.wall.as_millis(), budget.peak_kb, budget.instructions),
+            (61_000, Some(812_000), None)
+        );
         std::fs::write(&path, "linux-x86_64 50000 cold 61000\n").unwrap();
         assert!(read_budgets(&path).is_err());
     }

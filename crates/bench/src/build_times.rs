@@ -449,7 +449,8 @@ fn ran(
     args: &[&str],
     own: bool,
 ) -> Result<(Option<u64>, Duration), String> {
-    let run = Invocation { args, folder: &program.folder, stdin: program.stdin.as_deref(), home, counting, own };
+    let run =
+        Invocation { args, folder: &program.folder, stdin: program.stdin.as_deref(), home, counting, own };
     let found = counted(setup, &run).map_err(|err| format!("{err}, for {}", program.name))?;
     Ok((found.instructions(), found.wall))
 }
@@ -479,11 +480,16 @@ struct Reports {
 impl Reports {
     /// The files in `work`, emptied of the last run's.
     fn new(work: &Path) -> Result<Reports, String> {
-        let reports = Reports { own: work.join("count.txt"), tools: work.join("children"), peak: work.join("peak.txt") };
+        let reports = Reports {
+            own: work.join("count.txt"),
+            tools: work.join("children"),
+            peak: work.join("peak.txt"),
+        };
         let _ = std::fs::remove_file(&reports.own);
         let _ = std::fs::remove_file(&reports.peak);
         let _ = std::fs::remove_dir_all(&reports.tools);
-        std::fs::create_dir_all(&reports.tools).map_err(|err| format!("{}: {err}", reports.tools.display()))?;
+        std::fs::create_dir_all(&reports.tools)
+            .map_err(|err| format!("{}: {err}", reports.tools.display()))?;
         Ok(reports)
     }
 }
@@ -529,7 +535,11 @@ pub(crate) fn counted(setup: &Setup, run: &Invocation<'_>) -> Result<Counted, St
     let output = command.output().map_err(|err| format!("couldn't run {}: {err}", setup.fennec.display()))?;
     let wall = started.elapsed();
     if !output.status.success() {
-        return Err(format!("`fennec {}` failed:\n{}", run.args.join(" "), String::from_utf8_lossy(&output.stderr)));
+        return Err(format!(
+            "`fennec {}` failed:\n{}",
+            run.args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        ));
     }
     let (by_tool, peak_kb) = read_counts(counter, &reports);
     Ok(Counted { wall, by_tool, peak_kb, said: String::from_utf8_lossy(&output.stdout).into_owned() })
@@ -572,18 +582,25 @@ fn read_counts(counter: &Counter, reports: &Reports) -> (Option<Vec<ToolCount>>,
             let mut by_tool: Vec<ToolCount> = Vec::new();
             let mut peak = apple_peak(&own);
             if let Some(instructions) = apple_counts(&own) {
-                by_tool.push(ToolCount { name: "fennec".to_owned(), runs: 1, instructions, took: apple_real(&own) });
+                by_tool.push(ToolCount {
+                    name: "fennec".to_owned(),
+                    runs: 1,
+                    instructions,
+                    took: apple_real(&own),
+                });
                 for (name, text) in &tool_reports(&reports.tools) {
                     peak = peak.max(apple_peak(text));
                     let Some(instructions) = apple_counts(text) else { continue };
-                    let took = apple_real(text);
+                    let real = apple_real(text);
                     match by_tool.iter_mut().find(|tool| tool.name == *name) {
                         Some(tool) => {
                             tool.runs += 1;
                             tool.instructions += instructions;
-                            tool.took = tool.took.zip(took).map(|(before, now)| before + now);
+                            tool.took = tool.took.zip(real).map(|(before, now)| before + now);
                         }
-                        None => by_tool.push(ToolCount { name: name.clone(), runs: 1, instructions, took }),
+                        None => {
+                            by_tool.push(ToolCount { name: name.clone(), runs: 1, instructions, took: real });
+                        }
                     }
                 }
             }
@@ -591,7 +608,12 @@ fn read_counts(counter: &Counter, reports: &Reports) -> (Option<Vec<ToolCount>>,
         }
         Counter::Perf => {
             let count = perf_count(&std::fs::read_to_string(&reports.own).unwrap_or_default());
-            (count.map(|instructions| vec![ToolCount { name: "all".to_owned(), runs: 1, instructions, took: None }]), None)
+            (
+                count.map(|instructions| {
+                    vec![ToolCount { name: "all".to_owned(), runs: 1, instructions, took: None }]
+                }),
+                None,
+            )
         }
         Counter::None => (None, None),
     };
@@ -694,10 +716,11 @@ fn counting_tools(fennec: &Path, tools: &Path) -> Result<(), String> {
     std::fs::create_dir_all(tools).map_err(|err| format!("{}: {err}", tools.display()))?;
     let counted = |name: &str, command: &str| -> Result<(), String> {
         let script = tools.join(name);
-        // A file of its own for each process, named for the tool and the process: `exec` keeps
-        // the shell's process id.
+        // A file of its own for each process, named for the tool, made new by `mktemp`: a process
+        // id alone was used again within one build of thousands of functions, and a report written
+        // over lost a run.
         let text = format!(
-            "#!/bin/sh\nexec /usr/bin/time -l -o \"$BUILD_TIMES_COUNTS/{name}.$$\" {command} \"$@\"\n"
+            "#!/bin/sh\nexec /usr/bin/time -l -o \"$(mktemp \"$BUILD_TIMES_COUNTS/{name}.XXXXXX\")\" {command} \"$@\"\n"
         );
         std::fs::write(&script, text).map_err(|err| format!("{}: {err}", script.display()))?;
         executable(&script)

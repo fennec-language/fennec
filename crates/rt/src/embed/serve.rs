@@ -1344,9 +1344,7 @@ enum AfterAccept {
 
 fn accept_failed(error: &std::io::Error) -> AfterAccept {
     match error.kind() {
-        ErrorKind::Interrupted | ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset => {
-            AfterAccept::Next
-        }
+        _ if crate::stdlib::net::gone_before_taken(error) => AfterAccept::Next,
         ErrorKind::WouldBlock => AfterAccept::Stop,
         _ if matches!(error.raw_os_error(), Some(23 | 24)) => AfterAccept::Later,
         ErrorKind::OutOfMemory => AfterAccept::Later,

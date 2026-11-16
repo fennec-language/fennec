@@ -322,6 +322,11 @@ impl Checker {
         if self.diagnostics.is_empty() {
             self.body_rules(scope);
         }
+        // A generic that comes back to itself with a bigger type each time can't be built.
+        if self.diagnostics.is_empty() {
+            let growing = crate::copies::growing(&self);
+            self.diagnostics.extend(growing);
+        }
         // What a program as lowering rewrote it hands over is what it handed as written.
         if self.diagnostics.is_empty() && !self.again {
             let refused = crate::holds::refused(&mut self);

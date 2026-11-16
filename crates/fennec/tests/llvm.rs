@@ -19448,6 +19448,85 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
 
+/// TOML takes time in proportion to its size to read, however its tables are laid out. Each
+/// `[[name]]`, each key under a header and each dotted key copied the table it went into, so these
+/// 3,000 of each copied 1 GB, and finding a key looked through every key before it, so 500,000
+/// keys in one table took minutes. Now a table is changed where it is and finds a key in one
+/// lookup: what's copied is a few bytes, and the keys take a fraction of their 20 seconds of CPU
+/// time. Found by fuzzing `std.toml` with large documents.
+#[test]
+fn toml_reads_many_tables_and_keys_in_time_in_proportion_to_its_size() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("toml_many")?;
+    std::fs::write(dir.join("toml_many_tables.fen"), TOML_MANY_TABLES)?;
+    let (printed, counts) = printed_and_counts(&dir, "toml_many_tables", &["--llvm"])?;
+    assert_eq!(printed, "3000 2999 3000 2999 3000 2999\n");
+    let copied = counts.split(' ').skip_while(|word| *word != "copied_bytes").nth(1);
+    let copied: u64 = copied.and_then(|bytes| bytes.parse().ok()).unwrap_or(u64::MAX);
+    assert!(copied < 1_000_000, "{counts}");
+    let program = dir.join("toml_many_keys.fen");
+    std::fs::write(&program, TOML_MANY_KEYS)?;
+    let executable = dir.join("toml_many_keys");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_before(std::time::Duration::from_secs(20))?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "500000 499999\n");
+    Ok(())
+}
+
+/// 3,000 dotted keys, `[[entries]]` and keys under `[table]`, read and checked.
+const TOML_MANY_TABLES: &str = r#"from std import toml
+
+struct Entry:
+    number: int
+
+struct Deeper:
+    under: dict[str, int]
+
+struct Many:
+    entries: list[Entry]
+    table: dict[str, int]
+    dotted: Deeper
+
+def main(stdout: Stdout):
+    mut text = ""
+    for count in range(3000):
+        text += f"dotted.under.k{count} = {count}\n"
+    for count in range(3000):
+        text += f"[[entries]]\nnumber = {count}\n"
+    text += "[table]\n"
+    for count in range(3000):
+        text += f"k{count} = {count}\n"
+    many = toml.loads[Many](text) except why:
+        stdout.print(f"{why}")
+        return
+    stdout.print(
+        len(many.entries),
+        many.entries[2999].number,
+        len(many.table),
+        many.table["k2999"],
+        len(many.dotted.under),
+        many.dotted.under["k2999"],
+    )
+"#;
+
+/// 500,000 keys in one table.
+const TOML_MANY_KEYS: &str = r#"from std import toml
+
+def main(stdout: Stdout):
+    mut text = ""
+    for count in range(500000):
+        text += f"k{count} = {count}\n"
+    found = toml.loads[dict[str, int]](text) except why:
+        stdout.print(f"{why}")
+        return
+    stdout.print(len(found), found["k499999"])
+"#;
+
 /// JSON and TOML refuse what they'd have to guess at, rather than loading something the text
 /// didn't say: a number too big for a float, a struct's field given twice, a dict's int key
 /// written any way but its plain digits, and a key that isn't in quotes.

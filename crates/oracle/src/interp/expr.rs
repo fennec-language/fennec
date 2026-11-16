@@ -371,6 +371,9 @@ impl Interp {
 
     /// `left op right` on two values already worked out.
     pub(crate) fn binary_values(&mut self, op: BinOp, left: Value, right: Value, span: Span) -> Run<Value> {
+        if matches!(left, Value::Room(_)) || matches!(right, Value::Room(_)) {
+            return room_compared(op, &left, &right).map(Value::Bool);
+        }
         match op {
             BinOp::Eq => self.equal(&left, &right).map(Value::Bool),
             BinOp::NotEq => self.equal(&left, &right).map(|same| Value::Bool(!same)),
@@ -1247,4 +1250,18 @@ fn names_in_stmts(body: &[Stmt], names: &mut BTreeSet<String>) {
             _ => {}
         }
     }
+}
+
+/// A comparison with a `Buffer`'s room that what's promised of it settles: that it's at least
+/// some number no bigger than its promised least. Any other is refused, as its answer would hang
+/// on how the runtime grows a buffer.
+fn room_compared(op: BinOp, left: &Value, right: &Value) -> Run<bool> {
+    let settled = match (op, left, right) {
+        (BinOp::GtEq, Value::Room(least), Value::Int(than))
+        | (BinOp::LtEq, Value::Int(than), Value::Room(least)) => least >= than,
+        (BinOp::Gt, Value::Room(least), Value::Int(than))
+        | (BinOp::Lt, Value::Int(than), Value::Room(least)) => least > than,
+        _ => false,
+    };
+    if settled { Ok(true) } else { unsupported(super::show::ROOM_UNPROMISED) }
 }

@@ -275,7 +275,7 @@ impl Interp {
             {
                 self.named_target(name, object.span)?
             }
-            // A `Buffer` is held as the list it prints as. What it has room for isn't modeled.
+            // A `Buffer` is held as the list it prints as, and its room as `methods.rs` says.
             ExprKind::Name(name)
                 if name == "Buffer"
                     && args.iter().all(|arg| arg.name.as_deref() == Some("capacity"))

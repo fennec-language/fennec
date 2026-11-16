@@ -96,6 +96,29 @@ fn a_recording_cut_short_is_said_to_be_cut_short() {
     assert!(why.contains("its recording had nothing more"), "{why}");
 }
 
+/// A replay says a log was made before stops were recorded when it's any older log whose run had
+/// tasks, `FENREPL2` as well as `FENREPL3`, and a task that only used a channel counts: either
+/// replayed wrong with nothing said where a task had been stopped.
+#[test]
+fn a_replay_of_any_log_from_before_stops_with_tasks_says_so() {
+    let marked = |magic: &[u8; 8], entries: &[(&str, &str, &[u8])]| {
+        let mut log = log_of(entries);
+        log.splice(..MAGIC.len(), magic.iter().copied());
+        let player = player_of(&log).unwrap();
+        made_before_stops(&log, &player)
+    };
+    let task: &[(&str, &str, &[u8])] = &[("0.0", "Clock.now", &5_i64.to_le_bytes())];
+    let at_a_channel: &[(&str, &str, &[u8])] = &[("0:c0", "0.0 receive", &0_i64.to_le_bytes())];
+    let main_alone: &[(&str, &str, &[u8])] =
+        &[("0", "Clock.now", &5_i64.to_le_bytes()), ("0:c0", "0 send", &0_i64.to_le_bytes())];
+    for old in [MAGIC_BEFORE_STOPS, MAGIC_UNMARKED] {
+        assert!(marked(old, task));
+        assert!(marked(old, at_a_channel));
+        assert!(!marked(old, main_alone));
+    }
+    assert!(!marked(MAGIC, task));
+}
+
 /// A log from before stops were recorded still reads, whole when it ends with its mark, and a
 /// replay can tell whether it has tasks, to say a stopped one may not be stopped in it.
 #[test]

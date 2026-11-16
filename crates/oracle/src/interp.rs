@@ -230,6 +230,10 @@ pub(crate) struct Interp {
     pub(crate) loadings: Vec<json::read::Loading>,
     /// Which of `main`'s thread and the tasks it launched this runs as: 0 for `main`.
     pub(crate) actor: usize,
+    /// The local `Buffer` a `reserve(n)` was just called on, by its frame and name, and the room
+    /// it promised: `n` more than it held. Any write anywhere forgets it, so it holds only until
+    /// the buffer, or anything else, changes.
+    pub(crate) reserved: Option<(usize, String, i64)>,
 }
 
 /// How `main` ended.
@@ -260,6 +264,7 @@ impl Interp {
             recordings: Vec::new(),
             loadings: Vec::new(),
             actor: 0,
+            reserved: None,
         }
     }
 
@@ -446,6 +451,7 @@ impl Interp {
 
     /// Gives a new name a value, hiding any it had.
     pub(crate) fn bind(&mut self, name: &str, value: Value) -> Run<()> {
+        self.reserved = None;
         if name != "_" {
             self.frame_mut()?.vars.push((name.to_owned(), Binding::Value(value)));
         }
@@ -453,6 +459,7 @@ impl Interp {
     }
 
     pub(crate) fn bind_ref(&mut self, name: &str, place: Place) -> Run<()> {
+        self.reserved = None;
         if name != "_" {
             self.frame_mut()?.vars.push((name.to_owned(), Binding::Ref(place)));
         }
@@ -462,6 +469,7 @@ impl Interp {
     /// Sets a name: a value it holds is replaced, a place it stands for is written, and a name
     /// it doesn't have yet is made.
     pub(crate) fn set_name(&mut self, name: &str, value: Value, span: Span) -> Run<()> {
+        self.reserved = None;
         if name == "_" {
             return Ok(());
         }
@@ -550,6 +558,7 @@ impl Interp {
         adding: bool,
         change: impl FnOnce(&mut Value) -> Run<R>,
     ) -> Run<R> {
+        self.reserved = None;
         let last = place.path.len().saturating_sub(1);
         let mut value = self.root_mut(place)?;
         for (at, step) in place.path.iter().enumerate() {

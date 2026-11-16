@@ -66,6 +66,11 @@ says they are, at the version the workspace pins.
   the runtime gives, which are Rust's for bytes that aren't UTF-8, and `hex` and `fromhex` read and
   write two hex digits a byte.
 - A function the program declares is equal only to itself.
+- A `Buffer` is the list it prints as. Its room is known only as far as `docs/language.md` promises
+  it: `capacity()` is at least what it holds, and right after `reserve(n)`, with nothing written
+  since, at least `n` more. A comparison that settles, as `capacity() >= len(b)`, answers. The
+  number itself, or a comparison past what's promised, is refused, as its answer would hang on how
+  the runtime grows a buffer.
 - A `Table` is a list of slots, each with the generation of its item and the item while it's
   there, and a tag of its own, which a copy keeps. An item goes in the lowest slot that's free, at
   that slot's next generation, and an `Id` is its slot, generation and tag, so one whose item is

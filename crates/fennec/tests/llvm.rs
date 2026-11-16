@@ -12595,10 +12595,10 @@ fn a_program_asking_for_thousands_of_generic_copies_builds_and_runs() -> std::io
     let (generics, parts) = (800, 8);
     let mut source = String::new();
     for at in 0..generics {
-        let _ = write!(source, "def kept_{at}[T](value: T) -> T:\n    return value\n\n");
+        let _ = writeln!(source, "def kept_{at}[T](value: T) -> T:\n    return value\n");
     }
     for part in 0..parts {
-        let _ = write!(source, "def part_{part}() -> int:\n    mut total = 0\n");
+        let _ = writeln!(source, "def part_{part}() -> int:\n    mut total = 0");
         for at in (part * generics / parts)..((part + 1) * generics / parts) {
             let _ = writeln!(
                 source,
@@ -12608,7 +12608,7 @@ fn a_program_asking_for_thousands_of_generic_copies_builds_and_runs() -> std::io
         source.push_str("    return total\n\n");
     }
     let parts_added: Vec<String> = (0..parts).map(|part| format!("part_{part}()")).collect();
-    let _ = write!(source, "def main(stdout: Stdout):\n    stdout.print({})\n", parts_added.join(" + "));
+    let _ = writeln!(source, "def main(stdout: Stdout):\n    stdout.print({})", parts_added.join(" + "));
     let total: usize = (0..generics).map(|at| at + "some text".len() + 2).sum();
     let dir = folder("thousands_of_copies")?;
     let (program, executable) = (dir.join("copies.fen"), dir.join("copies"));

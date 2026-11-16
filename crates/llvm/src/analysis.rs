@@ -72,6 +72,12 @@ pub(crate) struct Analysis {
     /// Locals taking a field of a list's item out to change it, put back through the same place
     /// read again: `root.list[index].field`, as the root, the list's field and the index.
     path_taken: HashMap<usize, (LocalId, Vec<String>, Operand)>,
+    /// Those of them taken out only when the append comes, as its argument is worked out between
+    /// the read and it: by the block and instruction the append is, the field's local, the item
+    /// it's read from and the field.
+    path_waits: HashMap<(usize, usize), (LocalId, LocalId, String)>,
+    /// The fields' locals of [`Self::path_waits`].
+    path_waiting: HashSet<usize>,
     /// `for mut` items taken out for the whole of the loop's body.
     loop_taken: HashSet<usize>,
     /// Locals holding a place a call changes, which is taken out for it: each place in order
@@ -540,7 +546,7 @@ fn analyze(
     find_place_takes(function, changes, &mut known);
     find_borrows(function, changes, &mut known);
     find_live_borrows(function, changes, &mut known);
-    find_path_takes(function, &mut known);
+    find_path_takes(function, changes, &mut known);
     find_aliases(function, &mut known);
     settle_place_takes(function, &mut known);
     find_loop_takes(function, &mut known);
@@ -2160,14 +2166,20 @@ fn settle_place_takes(function: &Function, known: &mut Analysis) {
 /// `root.list[index].field.append(x)` or `list[index].field.append(x)`, which the IR writes as
 /// reading the field out, changing it, then reading the item again to put it back: the field is
 /// taken, not copied, when nothing else touches the root meanwhile and the index stays the same.
-fn find_path_takes(function: &Function, known: &mut Analysis) {
+///
+/// The IR works `x` out between the read and the append. Where that's more than a read, a string
+/// being made, a call, a struct, the field is taken only when the append comes: nothing is out of
+/// the root while `x` is made, so a failure there has nothing to put back, and the read before it
+/// still fails first on a key that isn't there. That needs `x` to leave the root, the index and
+/// what's read on the way as they are; anything else keeps the field's own copy, as before.
+fn find_path_takes(function: &Function, changes: Changes<'_>, known: &mut Analysis) {
     let steady = |operand: &Operand, known: &Analysis| match operand {
         // A number or a string written out: a list's position, or a dict's key.
         Operand::Int(_) | Operand::Str(_) => true,
         Operand::Local(local) => known.writes.get(local.0).copied().unwrap_or(0) <= 1,
         _ => false,
     };
-    for block in &function.blocks {
+    for (block_at, block) in function.blocks.iter().enumerate() {
         let defined = |local: LocalId, before: usize| {
             block.insts.get(..before).unwrap_or_default().iter().rev().find_map(|inst| match &inst.kind {
                 InstKind::GetField { dest, object: Operand::Local(from), field } if *dest == local => {
@@ -2204,22 +2216,55 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
             if !steady(&index, known) || !known.borrowed.contains(&item.0) {
                 continue;
             }
+            // What's worked out for the append before it stands by: it may read the root, but
+            // changes neither it nor the index, and touches nothing read on the way to the field.
+            let index_local = match &index {
+                Operand::Local(local) => Some(*local),
+                _ => None,
+            };
+            let on_the_way = [Some(*dest), Some(*item), (list != root).then_some(list)];
+            let stands_by = |inst: &InstKind| {
+                let (mut read, mut written) = (Vec::new(), Vec::new());
+                visit(inst, |operand| read.push(operand.clone()), |local| written.push(local));
+                let touched =
+                    |local: LocalId| read.contains(&Operand::Local(local)) || written.contains(&local);
+                let changed = |local: LocalId| {
+                    written.contains(&local)
+                        || may_change(inst, std::slice::from_ref(&local), changes, &Roots::new())
+                };
+                !on_the_way.iter().flatten().any(|local| touched(*local))
+                    && !changed(root)
+                    && !index_local.is_some_and(changed)
+            };
             // Then: changes to it, the same place read again, and it put back there.
             let mut again: (Option<LocalId>, Option<LocalId>) = (list_path.is_empty().then_some(root), None);
             let mut put_in_item = false;
-            for next in block.insts.get(at + 1..).unwrap_or_default() {
+            // Where the first append is, and whether anything stood by before it.
+            let (mut appended_at, mut waits) = (None, false);
+            for (after, next) in block.insts.get(at + 1..).unwrap_or_default().iter().enumerate() {
                 match &next.kind {
                     InstKind::Builtin { name, args, .. }
                         if name == "list.append"
                             && args.first() == Some(&Operand::Local(*dest))
-                            && args.iter().skip(1).all(|arg| *arg != Operand::Local(root)) => {}
+                            && args.iter().skip(1).all(|arg| *arg != Operand::Local(root)) =>
+                    {
+                        appended_at = appended_at.or(Some(at + 1 + after));
+                    }
+                    // The place read again to put the field back, which comes after the append:
+                    // before it, the same read is one the argument makes.
                     InstKind::GetField { dest: list2, object: Operand::Local(from), field: name }
-                        if *from == root && list_path.first() == Some(name) && again.0.is_none() =>
+                        if appended_at.is_some()
+                            && *from == root
+                            && list_path.first() == Some(name)
+                            && again.0.is_none() =>
                     {
                         again.0 = Some(*list2);
                     }
                     InstKind::GetIndex { dest: item2, object: Operand::Local(from), index: at_again }
-                        if Some(*from) == again.0 && *at_again == index && again.1.is_none() =>
+                        if appended_at.is_some()
+                            && Some(*from) == again.0
+                            && *at_again == index
+                            && again.1.is_none() =>
                     {
                         again.1 = Some(*item2);
                     }
@@ -2237,11 +2282,21 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                             && *at_again == index
                             && Some(*put) == again.1 =>
                     {
+                        // A field that waited with nothing appended to it has nothing to be
+                        // taken for, so it keeps its own copy.
+                        if waits && appended_at.is_none() {
+                            break;
+                        }
                         known.taken.insert(dest.0);
                         known.path_taken.insert(dest.0, (root, list_path.clone(), index.clone()));
+                        if waits && let Some(append) = appended_at {
+                            known.path_waiting.insert(dest.0);
+                            known.path_waits.insert((block_at, append), (*dest, *item, field.clone()));
+                        }
                         break;
                     }
                     other if is_quiet(other) && !reads_local(other, root) && !reads_local(other, *dest) => {}
+                    other if appended_at.is_none() && stands_by(other) => waits = true,
                     _ => break,
                 }
             }
@@ -3062,6 +3117,8 @@ impl Analysis {
             slot_homes: HashMap::new(),
             put_back_reads: HashMap::new(),
             path_taken: HashMap::new(),
+            path_waits: HashMap::new(),
+            path_waiting: HashSet::new(),
             loop_taken: HashSet::new(),
             places_taken: HashMap::new(),
             place_parts: HashMap::new(),
@@ -3222,6 +3279,17 @@ impl Analysis {
     /// list from it, and the index.
     pub(crate) fn path_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>, Operand)> {
         self.path_taken.get(&local.0)
+    }
+
+    /// Whether a field taken out by [`Self::path_home`] is taken only when its append comes.
+    pub(crate) fn path_waits(&self, local: LocalId) -> bool {
+        self.path_waiting.contains(&local.0)
+    }
+
+    /// The field taken out just before the instruction at `at`, an append it waited for: its
+    /// local, the item it's read from and the field.
+    pub(crate) fn path_due(&self, at: (usize, usize)) -> Option<&(LocalId, LocalId, String)> {
+        self.path_waits.get(&at)
     }
 
     /// The local and field a local was read from, if that's its one write.
@@ -4051,6 +4119,50 @@ mod tests {
             "def go(ref world: World):\n    for ref unit in world.units:\n        world.log.append(unit.hp)\n        unit.tags.append(1)\n",
         ] {
             assert!(taken(body)?, "not taken: {body}");
+        }
+        Ok(())
+    }
+
+    /// Whether the list a function called `go` appends to, through a field of a dict's value, is
+    /// taken out for it, and whether it's taken only when the append comes.
+    fn field_taken(body: &str) -> Result<(bool, bool), String> {
+        let types = "struct Bag:\n    items: list[str]\n    count: int\n\nstruct Shelf:\n    named: dict[str, Bag]\n    total: int\n\ndef made(turn: int) -> str:\n    return f\"made in turn {turn}\"\n\ndef counted(ref shelf: Shelf) -> str:\n    shelf.total += 1\n    return \"counted\"\n\n";
+        let source = format!("{types}{body}");
+        let module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
+        let changes = |name: &str| if name == "counted" { vec![0] } else { Vec::new() };
+        let known = analyze(function, &changes, &|_, _| false, &[]);
+        let appended =
+            function.blocks.iter().flat_map(|block| &block.insts).find_map(|inst| match &inst.kind {
+                InstKind::Builtin { name, args, .. } if name == "list.append" => match args.first() {
+                    Some(Operand::Local(list)) => Some(*list),
+                    _ => None,
+                },
+                _ => None,
+            });
+        let appended = appended.ok_or("no append")?;
+        Ok((known.path_home(appended).is_some(), known.path_waits(appended)))
+    }
+
+    /// `shelf.named[key].items.append(x)` takes the list out, not a copy of it, whatever `x` is.
+    /// When `x` is a local, the list is taken where it's read. When `x` is made on the way, a
+    /// string, a call's result, something read from the shelf, the list is taken only when the
+    /// append comes, so nothing is out while `x` is made: before this, each of those appended to
+    /// a copy, which copied the whole list every time.
+    #[test]
+    fn a_field_through_a_dict_is_taken_whatever_is_appended() -> Result<(), String> {
+        let go = "def go(ref shelf: Shelf, key: str, text: str, turn: int):\n    ";
+        for (appended, waits) in [
+            ("text", false),
+            ("f\"made in turn {turn}\"", true),
+            ("made(turn)", true),
+            ("str(shelf.total)", true),
+            ("made(shelf.named[key].count)", true),
+        ] {
+            let body = format!("{go}shelf.named[key].items.append({appended})\n");
+            assert_eq!(field_taken(&body)?, (true, waits), "{body}");
         }
         Ok(())
     }

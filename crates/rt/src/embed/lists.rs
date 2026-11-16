@@ -391,9 +391,15 @@ pub extern "C" fn with_room(element: i64, room: i64) -> i64 {
 /// native code to fill: the same block when it had one owner and room, or else a copy
 /// with room to double.
 pub extern "C" fn grow(list: i64) -> i64 {
-    super::made_with("fennec_list_grow", |state| {
-        marked_append(state, list, 1).or_else(|| grow_in(state, list, 1)).unwrap_or(list)
-    })
+    super::made_with("fennec_list_grow", |state| with_one_more(state, list).unwrap_or(list))
+}
+
+/// What `fennec_list_grow` does, for a list the runtime adds to itself: takes over the list's
+/// owner and gives back one with a zeroed item more on the end. That's the same block when it had
+/// one owner and room, a list a lock's log marked changed where it is with the append noted for a
+/// crash to undo, and otherwise a copy with room to double.
+pub(super) fn with_one_more(state: &mut State, list: i64) -> Option<i64> {
+    marked_append(state, list, 1).or_else(|| grow_in(state, list, 1))
 }
 
 /// Takes over a list's owner and gives back a block only that owner holds, copying the
@@ -1137,11 +1143,24 @@ pub extern "C" fn contains(list: i64, word: i64) -> i8 {
     with(|state| i8::from(place_of(state, u64::try_from(list).unwrap_or(0), word.cast_unsigned()).is_some()))
 }
 
-/// `buffer.reserve(room)`: takes over a list's owner and gives back one only that owner holds,
-/// with room for at least `room` items, the same block when it had one owner and the room.
-pub extern "C" fn reserve(list: i64, room: i64) -> i64 {
+/// `buffer.reserve(more)`: takes over a list's owner and gives back one only that owner holds,
+/// with room for at least `more` items beyond those it holds, as Rust's `Vec::reserve` gives: the
+/// same block when it had one owner and the room. So whoever is about to add `more` items never
+/// pays for growing. It once made room for `more` in all, which for a buffer already holding that
+/// many made none.
+///
+/// The two are added with a check: a sum past what a number can hold is the most room there is to
+/// ask for, which stops the program as any room too big does, where a wrapped sum would have asked
+/// for a little.
+pub extern "C" fn reserve(list: i64, more: i64) -> i64 {
     super::made_with("fennec_list_reserve", |state| {
-        grow_to(state, list, 0, usize::try_from(room).unwrap_or(0)).unwrap_or(list)
+        let held = u64::try_from(list)
+            .ok()
+            .and_then(|address| state.heap.block(address))
+            .and_then(|block| usize::try_from(*block.get(2)?).ok())
+            .unwrap_or(0);
+        let room = held.saturating_add(usize::try_from(more).unwrap_or(0));
+        grow_to(state, list, 0, room).unwrap_or(list)
     })
 }
 

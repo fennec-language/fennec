@@ -91,6 +91,25 @@ pub fn never() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
+/// The examples left out of the useful set, from `excluded.txt`, each with why and the check that
+/// covers it instead.
+pub fn excluded() -> Vec<(&'static str, &'static str, &'static str)> {
+    include_str!("../excluded.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, " | ");
+            Some((parts.next()?, parts.next()?, parts.next()?))
+        })
+        .collect()
+}
+
+/// Why an example is left out of the useful set, and what covers it, when it's one.
+fn excluded_why(name: &str) -> Option<(&'static str, &'static str)> {
+    excluded().into_iter().find(|(excluded, ..)| *excluded == name).map(|(_, why, check)| (why, check))
+}
+
 /// Why an example is one the oracle can never model, when it's one.
 fn never_why(name: &str) -> Option<&'static str> {
     never().into_iter().find(|(never, _)| *never == name).map(|(_, why)| why)
@@ -102,32 +121,47 @@ pub fn line(example: &Example, verdict: &Verdict) -> String {
     match verdict {
         Verdict::Matches => format!("run      {}\n", example.name),
         Verdict::Differs(_) => format!("MISMATCH {}\n", example.name),
-        Verdict::Skipped(why) => match never_why(&example.name) {
-            Some(never) => format!("never    {}: {never}\n", example.name),
-            None => format!("skipped  {}: {why}\n", example.name),
+        Verdict::Skipped(why) => match (never_why(&example.name), excluded_why(&example.name)) {
+            (Some(never), _) => format!("never    {}: {never}\n", example.name),
+            (None, Some((excluded, _))) => format!("excluded {}: {excluded}\n", example.name),
+            (None, None) => format!("skipped  {}: {why}\n", example.name),
         },
     }
 }
 
 /// The end of the coverage report: the features that skipped examples, most first, the ones it
-/// can never model, the mismatches, and the share it runs, of every example and of those it can
-/// model.
+/// can never model, those left out of the useful set, the mismatches, the share it runs, of every
+/// example and of those it can model, and how much of the useful set it runs, with the gaps
+/// left to build.
 pub fn summary(examples: &[Example], judged: &[Verdict]) -> String {
     let mut text = String::new();
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     let mut ran = 0;
     let mut differ = Vec::new();
     let mut nevers = Vec::new();
+    let mut left_out = Vec::new();
+    let mut gaps = Vec::new();
+    let mut useful = 0;
+    let mut useful_ran = 0;
     for (example, verdict) in examples.iter().zip(judged) {
+        let excluded = excluded_why(&example.name);
+        if never_why(&example.name).is_none() && excluded.is_none() {
+            useful += 1;
+            useful_ran += usize::from(!matches!(verdict, Verdict::Skipped(_)));
+        }
         match verdict {
             Verdict::Matches => ran += 1,
             Verdict::Differs(why) => {
                 ran += 1;
                 differ.push((example.name.as_str(), why.as_str()));
             }
-            Verdict::Skipped(why) => match never_why(&example.name) {
-                Some(never) => nevers.push((example.name.as_str(), never)),
-                None => *counts.entry(why.as_str()).or_default() += 1,
+            Verdict::Skipped(why) => match (never_why(&example.name), excluded) {
+                (Some(never), _) => nevers.push((example.name.as_str(), never)),
+                (None, Some((why, check))) => left_out.push((example.name.as_str(), why, check)),
+                (None, None) => {
+                    *counts.entry(why.as_str()).or_default() += 1;
+                    gaps.push(example.name.as_str());
+                }
             },
         }
     }
@@ -141,6 +175,12 @@ pub fn summary(examples: &[Example], judged: &[Verdict]) -> String {
         let _ = writeln!(text, "\nwhat it can never model (never.txt):");
         for (name, why) in &nevers {
             let _ = writeln!(text, "       {name}: {why}");
+        }
+    }
+    if !left_out.is_empty() {
+        let _ = writeln!(text, "\nleft out of the useful set, and what covers each (excluded.txt):");
+        for (name, why, check) in &left_out {
+            let _ = writeln!(text, "       {name}: {why}; covered by {check}");
         }
     }
     if !differ.is_empty() {
@@ -158,6 +198,12 @@ pub fn summary(examples: &[Example], judged: &[Verdict]) -> String {
         percent(ran, modeled),
         differ.len()
     );
+    let _ = write!(text, "useful set: {useful_ran} of {useful} ({:.1}%)", percent(useful_ran, useful));
+    if gaps.is_empty() {
+        let _ = writeln!(text);
+    } else {
+        let _ = writeln!(text, ", {} to build: {}", gaps.len(), gaps.join(", "));
+    }
     text
 }
 

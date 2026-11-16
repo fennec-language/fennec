@@ -2846,6 +2846,91 @@ fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::R
     Ok(())
 }
 
+/// What's appended to a list inside a dict's value can be made in the call, a string, a call's
+/// result, a struct, something read from the list itself, and the list is still changed where it
+/// is: it's taken out when the append comes, not when it's read, so nothing is out of the dict
+/// while the argument is made. Each of those appended to a copy before, and copied the whole list
+/// every time: this program made 1,198 copies and copied 11 MB, and now makes none.
+#[test]
+fn what_is_appended_through_a_dict_is_made_with_no_copy_of_the_list() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("appended_through_a_dict", APPENDED_THROUGH_A_DICT, "900 300 after 899 others\n")?;
+    assert_eq!(
+        counts_of("appended_through_a_dict_counts", APPENDED_THROUGH_A_DICT)?,
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 620 allocated_bytes 142688 live 0"
+    );
+    Ok(())
+}
+
+const APPENDED_THROUGH_A_DICT: &str = r#"struct Mark:
+    turn: int
+    name: str
+
+struct Bag:
+    items: list[str]
+    marks: list[Mark]
+
+struct Shelf:
+    named: dict[str, Bag]
+
+def made(turn: int) -> str:
+    return f"made by a call in turn {turn}, long enough for a block"
+
+def main(stdout: Stdout):
+    mut shelf = Shelf(named={"one": Bag(items=[], marks=[])})
+    key = "one"
+    for turn in range(300):
+        shelf.named[key].items.append(f"an f-string in turn {turn}, long enough for a block")
+        shelf.named[key].items.append(made(turn))
+        shelf.named[key].marks.append(Mark(turn=turn, name="a name long enough for a block of its own"))
+        shelf.named[key].items.append(f"after {len(shelf.named[key].items)} others")
+    bag = shelf.named[key]
+    stdout.print(len(bag.items), len(bag.marks), bag.items[-1])
+"#;
+
+/// The order things happen in stays as it's written when the list is taken at its append: a key
+/// that isn't there fails before the argument is made, and an argument that crashes leaves the
+/// list as it was, in a function that owns the dict, where nothing may be left behind, and under
+/// a lock, where the rollback puts back what was there. It prints what the reference evaluator
+/// prints, on one thread and on four, with nothing left.
+#[test]
+fn an_argument_that_crashes_leaves_the_list_it_was_for_as_it_was() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("appended_through_a_dict_crashes")?;
+    let program = dir.join("appended_through_a_dict.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/appended_through_a_dict.fen"))?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("appended_through_a_dict"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .output_within()?;
+            let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+            let wanted = include_str!("fixtures/workers/appended_through_a_dict.out");
+            let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(printed, wanted, "{how:?}, {threads} threads: {errors}");
+            assert!(ran.status.success(), "{how:?}, {threads} threads: {errors}");
+            let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+            assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads: {counts}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A struct's field defaulting to an empty list, dict or set reads one made once, so a value
 /// nothing writes to makes no block: a thousand more values built and only read make exactly as
 /// many blocks as ten, on one thread and on four. Each default made a block of its own for every
@@ -10635,7 +10720,7 @@ fn a_pop_or_remove_that_fails_changes_nothing_and_leaves_nothing() -> std::io::R
     prints_in_both_builds("failed_takes", FAILED_TAKES, FAILED_TAKES_PRINTS)?;
     assert_eq!(
         counts_of("failed_takes_counts", FAILED_TAKES)?,
-        "copies 20 copied_bytes 1104 largest_copy 80 allocations 91 allocated_bytes 11128 live 0"
+        "copies 20 copied_bytes 1104 largest_copy 80 allocations 87 allocated_bytes 10776 live 0"
     );
     Ok(())
 }
@@ -11183,7 +11268,7 @@ fn a_generator_that_fails_lets_go_of_its_failure_wherever_its_stopped() -> std::
     prints_in_both_builds("failed_generators", FAILED_GENERATORS, FAILED_GENERATORS_PRINTS)?;
     assert_eq!(
         counts_of("failed_generators_counts", FAILED_GENERATORS)?,
-        "copies 2 copied_bytes 80 largest_copy 40 allocations 13055 allocated_bytes 1228528 live 0"
+        "copies 2 copied_bytes 80 largest_copy 40 allocations 12044 allocated_bytes 1147456 live 0"
     );
     Ok(())
 }
@@ -15027,6 +15112,58 @@ fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> 
         assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
         assert_eq!(printed, wanted, "on {threads} threads: {said}");
         assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
+/// Hashing a password in a task parks the task while a thread of its own does the work: a
+/// launched task hashes and checks one, and a server's handler one for each of 12 clients at
+/// once. The call into `std.crypto` held the runtime's state, so no task could park there, and
+/// each hash ran on its task's worker, holding up every other task on it for the tens of
+/// milliseconds a hash takes. Under `FENNEC_COUNTS`, a wait that blocked its thread is counted, so
+/// the counts line has no `blocked_waits` now, where it had 26 (#1815).
+///
+/// It's built for a heap audit and run under it on 1, 4 and 16 threads, each run cut off at two
+/// minutes: it ends with what it should have printed, nothing live and nothing said.
+#[test]
+fn hashing_a_password_in_a_task_parks_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("passwords-hashed-parked")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "passwords_hashed_in_tasks";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(
+            printed, "a task's hash checks: True\n12 of 12 signed up\n",
+            "on {threads} threads: {said}"
+        );
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("blocked_waits"), "a hash held its worker, on {threads} threads: {said}");
         assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
     }
     std::fs::remove_dir_all(&dir)
@@ -20435,6 +20572,45 @@ fn pack_loads_a_generic_types_earlier_fields_by_their_names() -> std::io::Result
     Ok(())
 }
 
+/// `docs/pack.md` pins `std.pack`'s format, and its test vectors are held to the compiled program
+/// here: each row's hash is the FNV-1a of its shape as the doc says, and `pack.dumps` writes each
+/// row's mode, hash and layout ahead of its value. A change to the format fails here until the
+/// doc says the same.
+#[test]
+fn pack_headers_are_the_ones_docs_pack_md_pins() -> std::io::Result<()> {
+    let doc = include_str!("../../../docs/pack.md");
+    let vectors = doc.split("## Test vectors").nth(1).unwrap_or_default();
+    let rows: Vec<Vec<String>> = vectors
+        .lines()
+        .filter(|line| line.starts_with("| `"))
+        .map(|line| {
+            line.trim_matches('|')
+                .split(" | ")
+                .map(|cell| cell.trim().trim_matches('`').replace("\\|", "|"))
+                .collect()
+        })
+        .collect();
+    assert!(rows.len() >= 15, "docs/pack.md's table: {rows:?}");
+    let mut wanted = Vec::new();
+    for row in &rows {
+        let [_, shape, hash, layout] = row.as_slice() else { unreachable!("a row of four: {row:?}") };
+        let mut fnv: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in shape.bytes() {
+            fnv ^= u64::from(byte);
+            fnv = fnv.wrapping_mul(0x0100_0000_01b3);
+        }
+        // As the 8 bytes hold it, low byte first.
+        let written = format!("{:016x}", fnv.swap_bytes());
+        assert_eq!(&written, hash, "the hash of `{shape}`");
+        wanted.push(format!("FPK2 {hash} {layout}\n"));
+    }
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(printed_by("pack_vectors", include_str!("fixtures/pack_vectors.fen"))?, wanted.concat());
+    Ok(())
+}
+
 /// What the next test builds: many small values in one stream, read in order, by name, fed a
 /// byte at a time, cut off, and two `Packer`s' bytes one after the other.
 const PACK_STREAMS: &str = r#"from std import pack
@@ -20904,6 +21080,40 @@ fn an_empty_buffer_fails_to_pop_as_pinned() -> std::io::Result<()> {
         "buffer_insert",
         "def main(stdout: Stdout):\n    mut kept = Buffer[str]()\n    kept.insert(0, \"fox\")\n    kept.insert(1, \"kit\")\n    stdout.print(kept[0], kept[1])\n    kept.insert(5, \"den\")\n    stdout.print(kept[0])\n",
     )
+}
+
+/// `reserve(n)` makes room for `n` more than a buffer holds, as Rust's `Vec::reserve` does, so
+/// adding `n` items after it never grows. It once made room for `n` in all: a buffer holding 4
+/// that reserved 20 had room for 20, not 24, and one holding 20 that reserved 20 got none.
+#[test]
+fn a_buffer_reserves_room_for_that_many_more() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "buffer_reserve",
+        "def main(stdout: Stdout):
+    mut squares = Buffer[int]()
+    for i in range(4):
+        squares.push(i * i)
+    squares.reserve(20)
+    stdout.print(squares.capacity() >= len(squares) + 20, squares.capacity())
+    # Adding the 20 leaves its room as it was.
+    mut room = squares.capacity()
+    for i in range(20):
+        squares.push(i)
+    stdout.print(len(squares), squares.capacity() == room)
+    # It holds 24 now, and reserving 20 more makes room for 44, where it once made none.
+    squares.reserve(20)
+    stdout.print(squares.capacity() >= len(squares) + 20)
+    # Room it already has is left alone.
+    room = squares.capacity()
+    squares.reserve(3)
+    stdout.print(squares.capacity() == room, squares[23])
+",
+    )?;
+    assert_eq!(printed, "True 24\n24 True\nTrue\nTrue 19\n");
+    Ok(())
 }
 
 /// `Net` reaches native code as kind 7, and its methods run through the runtime by that kind,
@@ -24731,6 +24941,81 @@ fn a_failure_says_its_call_chain() -> std::io::Result<()> {
             said.ends_with(&format!("  = called from `main` at {at}bouncing_chain.fen:8:18\n")),
             "{how:?}: {said}"
         );
+    }
+    Ok(())
+}
+
+/// An error's call chain is kept as it leaves each call and made into text only when it's shown,
+/// which changes nothing in what's said. A place left over and over by a recursion is said once;
+/// two functions failing through each other keep both ends of the chain with the calls between
+/// counted; and a `main` that gives back a value says its failure where it was raised, with the
+/// chain under it and no note that isn't the program's, as a `main` that gives nothing back does.
+/// A thousand failures caught, their chains never read, say nothing.
+#[test]
+fn a_failure_passed_up_says_its_chain_however_long() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let again = "error Deep:\n    left: int\n\ndef down(left: int) -> int fails Deep:\n    \
+                 if left == 0: fail Deep(left=left)\n    return down(left - 1)? + 1\n\n\
+                 def main(stdout: Stdout) fails Deep:\n    stdout.print(down(50)?)\n";
+    let turns = "error Deep:\n    left: int\n\ndef ping(left: int) -> int fails Deep:\n    \
+                 if left == 0: fail Deep(left=left)\n    return pong(left - 1)? + 1\n\n\
+                 def pong(left: int) -> int fails Deep:\n    if left == 0: fail Deep(left=left)\n    \
+                 return ping(left - 1)? + 1\n\ndef main(stdout: Stdout) fails Deep:\n    \
+                 stdout.print(ping(81)?)\n";
+    let given = "error Missing:\n    name: str\n\ndef find(name: str) -> int fails Missing:\n    \
+                 if name == \"\": fail Missing(name=\"nobody\")\n    return len(name)\n\n\
+                 def look(name: str) -> int fails Missing:\n    return find(name)? + 1\n\n\
+                 def main(stdout: Stdout) -> int fails Missing:\n    got = look(\"\")?\n    \
+                 stdout.print(got)\n    return 3\n";
+    let caught = "error Bad:\n    code: int\n\ndef inner(code: int) -> int fails Bad:\n    \
+                  if code % 3 == 0: fail Bad(code=code)\n    return code\n\n\
+                  def middle(code: int) -> int fails Bad:\n    return inner(code)? + 1\n\n\
+                  def outer(code: int) -> int fails Bad:\n    return middle(code)? + 1\n\n\
+                  def main(stdout: Stdout):\n    mut total = 0\n    mut failed = 0\n    \
+                  for code in range(3000):\n        got = outer(code) except Bad(): -1\n        \
+                  if got < 0:\n            failed += 1\n        else:\n            total += got\n    \
+                  stdout.print(total, failed)\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        // A release names its files from where it was built, never the builder's folders.
+        let at = if how.contains(&"--release") { "" } else { "<dir>/" };
+        let (_, said, code) = both_built_unpinned("again_chain", again, how)?;
+        assert_eq!(code, Some(1));
+        assert!(
+            said.ends_with(&format!(
+                " --> {at}again_chain.fen:5:19\n  |\n5 |     if left == 0: fail Deep(left=left)\n  \
+                 |                   ^^^^^^^^^^^^^^^^^^^^\n  = in `down`\n  \
+                 = called from `down` at {at}again_chain.fen:6:12, more than once\n  \
+                 = called from `main` at {at}again_chain.fen:9:18\n"
+            )),
+            "{how:?}: {said}"
+        );
+        let (_, said, code) = both_built_unpinned("turns_chain", turns, how)?;
+        assert_eq!(code, Some(1));
+        let calls: Vec<&str> = said.lines().filter(|line| line.contains("called from")).collect();
+        assert_eq!(calls.len(), 2 * 16, "{how:?}: {said}");
+        assert_eq!(said.lines().filter(|line| *line == "  = ... more calls").count(), 1, "{how:?}: {said}");
+        assert!(said.contains("  = in `pong`\n  = called from `ping` at "), "{how:?}: {said}");
+        assert!(
+            said.ends_with(&format!("  = called from `main` at {at}turns_chain.fen:13:18\n")),
+            "{how:?}: {said}"
+        );
+        let (printed, said, code) = both_built_unpinned("given_chain", given, how)?;
+        assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
+        assert_eq!(
+            said,
+            format!(
+                "error: `main` failed: Missing(name=\"nobody\")\n --> {at}given_chain.fen:5:20\n  |\n\
+                 5 |     if name == \"\": fail Missing(name=\"nobody\")\n  \
+                 |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  = in `find`\n  \
+                 = called from `look` at {at}given_chain.fen:9:12\n  \
+                 = called from `main` at {at}given_chain.fen:12:11\n"
+            ),
+            "{how:?}"
+        );
+        let (printed, said, code) = both_built_unpinned("caught_chain", caught, how)?;
+        assert_eq!((printed.as_str(), said.as_str(), code), ("3004000 1000\n", "", Some(0)), "{how:?}");
     }
     Ok(())
 }

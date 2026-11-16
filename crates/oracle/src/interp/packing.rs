@@ -1,16 +1,12 @@
 //! What `std.pack` writes beside a value, as `docs/pack.md` pins it: a type's shape, the 64-bit
 //! FNV-1a hash of that text, and its layout. Written from the doc, not from the compiler's code,
-//! so the two are held to each other. What the doc doesn't pin yet is refused: the shape of a type
-//! that saves itself its own way, or of a standard library type that saves as another.
+//! so the two are held to each other. A type that writes its own `serialize` is shaped by what it
+//! saves, as the doc says.
 
 use fennec_check::Type;
 use fennec_syntax::{Expr, ExprKind};
 
 use super::{Interp, Run, unsupported};
-
-/// The standard library's types that save as another type, as `docs/pack.md`'s layout lists them.
-const SAVED_AS_ANOTHER: &[&str] =
-    &["Deque", "SortedSet", "SortedMap", "Packed", "Grid", "Uuid", "Time", "Duration"];
 
 impl Interp {
     /// `shape_hash[T]()`: the FNV-1a hash of `ty`'s shape, read as a signed 64-bit int.
@@ -89,7 +85,12 @@ impl Interp {
     /// full, then its fields or cases with the arguments filled in. Inside itself, the same type
     /// with the same arguments is its name and arguments alone.
     fn named_shape(&self, name: &str, args: &[Type], open: &mut Vec<String>, out: &mut String) -> Run<()> {
-        self.refuse_saving_its_own_way(name)?;
+        // A type that writes its own `serialize` is shaped by what it saves: a standard library
+        // type that saves as another by that type, and any other by its name and arguments alone.
+        if let Some(saved_as) = Self::saved_as(name, args) {
+            return self.shape_into(&saved_as, open, out);
+        }
+        let saves_itself = self.program.method(name, "serialize").is_some();
         let start = out.len();
         out.push_str(fennec_syntax::rename::shown_type_name(name));
         if !args.is_empty() {
@@ -97,7 +98,7 @@ impl Interp {
             self.shapes_within(("[", "]"), &args, open, out)?;
         }
         let instance = out.get(start..).unwrap_or(name).to_owned();
-        if open.contains(&instance) {
+        if saves_itself || open.contains(&instance) {
             return Ok(());
         }
         open.push(instance);
@@ -143,16 +144,18 @@ impl Interp {
         Ok(())
     }
 
-    /// A type that saves itself its own way, or that the standard library saves as another, whose
-    /// shape `docs/pack.md` doesn't pin yet.
-    fn refuse_saving_its_own_way(&self, name: &str) -> Run<()> {
-        if SAVED_AS_ANOTHER.contains(&name) || self.program.method(name, "serialize").is_some() {
-            return unsupported(format!(
-                "the pack shape of a {}, which saves itself its own way, as docs/pack.md doesn't pin yet",
-                fennec_syntax::rename::shown_type_name(name)
-            ));
-        }
-        Ok(())
+    /// What one of the standard library's types that saves as another saves as, as
+    /// `docs/pack.md` lists them: a `Deque[T]` as a `list[T]`, a `Time` as a `str`.
+    fn saved_as(name: &str, args: &[Type]) -> Option<Type> {
+        let first = || Box::new(args.first().cloned().unwrap_or(Type::Unknown));
+        Some(match name {
+            "Deque" | "SortedSet" => Type::List(first()),
+            "SortedMap" => Type::Dict(first(), Box::new(args.get(1).cloned().unwrap_or(Type::Unknown))),
+            "Packed" | "Grid" => Type::List(Box::new(Type::List(first()))),
+            "Uuid" | "Time" => Type::Str,
+            "Duration" => Type::Int,
+            _ => return None,
+        })
     }
 
     /// `layout[T]()`: what a value of `ty` saves as, words apart by single spaces.
@@ -219,17 +222,7 @@ impl Interp {
         open: &mut Vec<String>,
         words: &mut Vec<String>,
     ) -> Run<()> {
-        let first = || args.first().cloned().unwrap_or(Type::Unknown);
-        let saved_as = match name {
-            "Deque" | "SortedSet" => Some(Type::List(Box::new(first()))),
-            "SortedMap" => {
-                Some(Type::Dict(Box::new(first()), Box::new(args.get(1).cloned().unwrap_or(Type::Unknown))))
-            }
-            "Packed" | "Grid" => Some(Type::List(Box::new(Type::List(Box::new(first()))))),
-            "Uuid" | "Time" => Some(Type::Str),
-            "Duration" => Some(Type::Int),
-            _ => None,
-        };
+        let saved_as = Self::saved_as(name, args);
         if let Some(saved_as) = saved_as {
             return self.layout_into(&saved_as, open, words);
         }

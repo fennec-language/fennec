@@ -50,9 +50,9 @@
 //! The log is `FENREPL4`, the header's length as four bytes and the header, then the entries. Each
 //! entry is its task's name and its call's name, each with its length as two bytes, then what it
 //! gave, with its length as four. All numbers are little-endian. A `FENREPL1` log, from before
-//! tasks were named, has no task names, and replays as `main`'s. A `FENREPL3` log, from before
-//! stops were recorded, replays as it did then, saying so when it has tasks: a task stopped in it
-//! may not be stopped in its replay.
+//! tasks were named, has no task names, and replays as `main`'s. A `FENREPL3` or `FENREPL2`
+//! log, from before stops were recorded, replays as it did then, saying so when it has tasks: a
+//! task stopped in it may not be stopped in its replay.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -474,7 +474,7 @@ fn playing(path: &Path) -> std::io::Result<Mode> {
     let log = std::fs::read(path)?;
     entries_start(&log).ok_or_else(|| std::io::Error::other("this isn't a recording"))?;
     let player = player_of(&log).ok_or_else(|| std::io::Error::other("this recording is damaged"))?;
-    if log.starts_with(MAGIC_BEFORE_STOPS) && player.has_tasks() {
+    if made_before_stops(&log, &player) {
         let _ = writeln!(
             std::io::stderr(),
             "warning: this recording was made before stops were recorded, so a task stopped in it \
@@ -484,11 +484,24 @@ fn playing(path: &Path) -> std::io::Result<Mode> {
     Ok(Mode::Replay(Mutex::new(player)))
 }
 
+/// Whether a replay of `log` should say it was made before stops were recorded: any log older than
+/// this one, `FENREPL2` as well as `FENREPL3`, whose run had tasks, as one may have been stopped.
+fn made_before_stops(log: &[u8], player: &Player) -> bool {
+    !log.starts_with(MAGIC) && player.has_tasks()
+}
+
 impl Player {
     /// Whether the recording has entries of any task but `main`: of a launched task, a server's
-    /// round or a `parallel` call's range.
+    /// round or a `parallel` call's range, in a stream of its own, or named where tasks meet, as a
+    /// task that only used a channel is, or in what was written.
     fn has_tasks(&self) -> bool {
-        self.streams.keys().any(|name| name != "0" && name != OUTPUT && !name.contains(':'))
+        self.streams.iter().any(|(name, stream)| {
+            if name.contains(':') || name == OUTPUT {
+                stream.iter().any(|(call, _)| call.split(' ').next().is_some_and(|task| task != "0"))
+            } else {
+                name != "0"
+            }
+        })
     }
 }
 

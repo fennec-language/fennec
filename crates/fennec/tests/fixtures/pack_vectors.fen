@@ -1,6 +1,8 @@
 # The test vectors of docs/pack.md, in the order its table lists them: the header `pack.dumps`
 # writes ahead of each value.
 from std import pack
+from std.collections import Deque
+from std.time import Time
 
 struct Point:
     x: int
@@ -31,6 +33,16 @@ struct Cell:
 struct Chain[T]:
     value: T
     links: list[Chain[T]]
+
+## Saves itself its own way, so it's shaped by its name alone.
+struct Money:
+    cents: int
+
+    def serialize(self, ref out: Serializer):
+        out.int(self.cents)
+
+    def deserialize(ref src: Deserializer) -> Self fails ParseError:
+        return Money(cents=src.int()?)
 
 ## The header `pack.dumps` wrote before `data`'s value: its shape hash as the bytes hold it, low
 ## byte first, and its layout.
@@ -66,3 +78,6 @@ def main(stdout: Stdout):
     stdout.print(header(pack.dumps(Node(name="root", children=[]))))
     stdout.print(header(pack.dumps(Pair[int](first=1, second=2))))
     stdout.print(header(pack.dumps(Chain[int](value=1, links=[]))))
+    stdout.print(header(pack.dumps(Deque.of([1, 2]))))
+    stdout.print(header(pack.dumps(Time(nanos=0))))
+    stdout.print(header(pack.dumps(Money(cents=5))))

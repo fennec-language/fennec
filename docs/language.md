@@ -164,6 +164,10 @@ identity: array[float, 4] = [1.0, 0.0, 0.0, 1.0]
 
 `array[T, N]` holds exactly `N` items where the array is, with no block of its own. Write one as a list of exactly `N` items where an array goes, or as `array[T, N]()`, which fills it with the item's zero: `0`, `0.0`, `False`, `""`, `None`, or a struct made from its defaults. It indexes, loops with `for` and `for ref`, and has `len`, `in` and `==`. A plain `=` copies it. Its size never changes, and it doesn't go where a list goes: `list(arr)` makes one. A wrong count, and a position known to be outside it, are compile errors.
 
+## Buffers
+
+`Buffer[T]` is the growable run of slots that lists are built on, with `push`, `pop`, `insert`, `remove`, `extend`, `truncate` and indexing. Its room, `capacity()`, is always at least what it holds, and `reserve(n)` makes room for at least `n` more than it holds, so adding `n` items after it never grows it. How much room it has beyond that, and how it grows, is the runtime's to tune and can change between versions, so a program shouldn't depend on the exact number. Built.
+
 ## Pointing at things: tables and Ids
 
 ```fennec

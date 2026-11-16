@@ -302,6 +302,69 @@ fn a_buffers_room_is_known_only_as_far_as_its_promised() {
     }
 }
 
+/// `std.pack` runs from its own source, and what it writes beside a value, the shape hash and the
+/// layout, is worked out as `docs/pack.md` pins it: each of the doc's test vectors, from the same
+/// program the LLVM test builds, is what the oracle writes too.
+#[test]
+fn pack_writes_the_headers_docs_pack_md_pins() {
+    let doc = include_str!("../../../docs/pack.md");
+    let vectors = doc.split("## Test vectors").nth(1).unwrap_or_default();
+    let wanted: String = vectors
+        .lines()
+        .filter(|line| line.starts_with("| `"))
+        .map(|line| {
+            let cells: Vec<String> = line
+                .trim_matches('|')
+                .split(" | ")
+                .map(|cell| cell.trim().trim_matches('`').to_owned())
+                .collect();
+            match cells.as_slice() {
+                [_, _, hash, layout] => format!("FPK2 {hash} {}\n", layout.replace("\\|", "|")),
+                _ => unreachable!("a row of four: {line}"),
+            }
+        })
+        .collect();
+    assert!(wanted.lines().count() >= 15, "{wanted}");
+    let (printed, ended) = ran(include_str!("../../fennec/tests/fixtures/pack_vectors.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, wanted);
+}
+
+/// A value saved with `pack.dumps` loads back with `pack.loads`, and data for another type is
+/// refused by its shape hash. What it prints is what the compiled program printed.
+#[test]
+fn a_value_packed_loads_back() {
+    prints(
+        "
+        from std import pack
+
+        enum Mood:
+            Calm
+            Busy(level: int)
+
+        struct Cell:
+            name: str
+            tags: list[str]
+            mood: Mood
+
+        struct Other:
+            count: int
+
+        def main(stdout: Stdout):
+            data = pack.dumps(Cell(name='a', tags=['x', 'y'], mood=.Busy(level=3)))
+            back = pack.loads[Cell](data) except ParseError():
+                stdout.print('failed')
+                return
+            stdout.print(back.name, back.tags, back.mood)
+            other = pack.loads[Other](data) except ParseError():
+                stdout.print('refused')
+                return
+            stdout.print(other.count)
+        ",
+        "a [\"x\", \"y\"] Mood.Busy(level=3)\nrefused\n",
+    );
+}
+
 #[test]
 fn a_value_of_a_generic_type_prints_with_no_type_arguments() {
     prints(
@@ -437,6 +500,27 @@ def today() -> Kind:
         KIT_TOML.replace("[dependencies]\n", "[dependencies]\nphysics = { folder = '../physics' }\n");
     let (_, ended) = kit_ran("depends", &[("kit.toml", &depends), ("src/main.fen", main)]).unwrap();
     assert_eq!(ended, Ended::Unsupported("a kit with dependencies".to_owned()));
+}
+
+/// The files of a kit share one set of top-level names, as the compiler's loader holds them to:
+/// two files defining `area`, each imported by a file of its own, is refused, where the oracle used
+/// to run whichever `area` came last.
+#[test]
+fn a_name_two_files_of_a_kit_define_is_refused() {
+    let main = "from squares import area\nimport report\n\ndef main(stdout: Stdout):\n    stdout.print(area(3), report.circle(3))\n";
+    let files = [
+        ("kit.toml", KIT_TOML),
+        ("src/main.fen", main),
+        ("src/squares.fen", "def area(side: int) -> int:\n    return side * side\n"),
+        ("src/circles.fen", "def area(radius: int) -> int:\n    return 3 * radius * radius\n"),
+        (
+            "src/report.fen",
+            "from circles import area\n\ndef circle(radius: int) -> int:\n    return area(radius)\n",
+        ),
+    ];
+    let (_, ended) = kit_ran("two_areas", &files).unwrap();
+    let Ended::Unsupported(why) = ended else { panic!("it ended {ended:?}") };
+    assert!(why.contains("`area` is defined in `squares` and in `circles`"), "{why}");
 }
 
 #[test]
@@ -1202,6 +1286,45 @@ fn tasks_talk_through_channels_and_listeners() {
          8\n\
          10\n\
          12 12\n",
+    );
+}
+
+/// A task that crashes cuts short every wait its block is in, as a closed channel does, so a
+/// receive in the block, in each of its `parallel` pieces, gives `None` and the block reaches its
+/// end, where the crash comes out. A wait the block starts after the crash is cut short too. The
+/// same from main and from a task. What it prints is what the compiled program printed
+/// (`workers/crash_while_pieces_wait.fen`).
+#[test]
+fn a_crashing_task_cuts_short_every_wait_its_block_is_in() {
+    let (printed, ended) =
+        ran(include_str!("../../fennec/tests/fixtures/workers/crash_while_pieces_wait.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/workers/crash_while_pieces_wait.out"));
+    // A send waiting for room is cut short as a closed channel's: it fails with `Closed`.
+    prints(
+        "
+        from std.concurrent import Channel, Closed, Crashed, channel
+
+        def child(clock: Clock):
+            clock.sleep(20ms)
+            nothing: list[int] = []
+            _ = nothing[3]
+
+        def both(between: Channel[int], clock: Clock, stdout: Stdout) fails Crashed:
+            with launch(() => child(clock))?:
+                between.send(1) except Closed():
+                    stdout.print('first send closed')
+                between.send(2) except Closed():
+                    stdout.print('second send closed')
+                stdout.print('block ends')
+
+        def main(clock: Clock, stdout: Stdout):
+            with channel[int](size=1) as between:
+                both(between, clock=clock, stdout=stdout) except why:
+                    stdout.print(f'{why}')
+            stdout.print('done')
+        ",
+        "second send closed\nblock ends\nCrashed(why=\"the task crashed\")\ndone\n",
     );
 }
 

@@ -203,7 +203,7 @@ impl Interp {
                 let ty = self.enum_named_at(case, &[expr.span, callee.span])?;
                 Target::Construct { ty, case: Some(case.clone()) }
             }
-            ExprKind::Index { object, .. } => match self.bracketed_target(expr, object, args)? {
+            ExprKind::Index { object, index } => match self.bracketed_target(expr, (object, index), args)? {
                 Some(target) => target,
                 None => return Ok((Target::Given(Value::None), Vec::new())),
             },
@@ -233,7 +233,23 @@ impl Interp {
             },
             _ => None,
         };
-        let types = self.bound_at_call(def, object, args, expr);
+        let mut types = self.bound_at_call(def, object, args, expr);
+        // Type arguments written in brackets, as `layout_unless_locked[T]()`, which may name a type
+        // nothing else in the call settles.
+        if let ExprKind::Index { index, .. } = &callee.kind {
+            let written: Vec<&Expr> = match &index.kind {
+                ExprKind::Tuple(items) => items.iter().collect(),
+                _ => vec![&**index],
+            };
+            if written.len() == def.generics.len() {
+                for (generic, written) in def.generics.iter().zip(written) {
+                    if let Ok(ty) = self.type_argument(written) {
+                        types.retain(|(name, _)| *name != generic.name);
+                        types.push((generic.name.clone(), ty));
+                    }
+                }
+            }
+        }
         Target::Def { def, parent, receiver, types }
     }
 
@@ -242,7 +258,7 @@ impl Interp {
     fn bracketed_target(
         &mut self,
         expr: &'static Expr,
-        object: &'static Expr,
+        (object, index): (&'static Expr, &'static Expr),
         args: &'static [Arg],
     ) -> Run<Option<Target>> {
         let target = match &object.kind {
@@ -314,6 +330,9 @@ impl Interp {
                 // `intrinsics.channel_send[T](...)`, as a module run from its source calls one.
                 None => {
                     match name.split_once('.').map(|(module, function)| format!("std.{module}.{function}")) {
+                        Some(path) if TYPED_INTRINSICS.contains(&path.as_str()) => {
+                            Target::Given(self.typed_intrinsic(&path, index)?)
+                        }
                         Some(path) if super::library::has_function(&path) => Target::Builtin(path),
                         _ => return unsupported(format!("`{name}[...]()`")),
                     }
@@ -987,4 +1006,30 @@ fn changes_what_it_reaches(target: &Target, given: &[ArgVal]) -> bool {
         _ => false,
     };
     receiver_changes || given.iter().any(|arg| matches!(arg, ArgVal::Ref(..)))
+}
+
+/// The intrinsics that answer for the type they're called with, `T` in `shape_hash[T]()`: what
+/// `std.pack` writes beside a value, as `docs/pack.md` pins it, and a type's name as written.
+const TYPED_INTRINSICS: &[&str] = &[
+    "std.intrinsics.shape_hash",
+    "std.intrinsics.layout",
+    "std.intrinsics.shape_locked",
+    "std.intrinsics.type_name",
+];
+
+impl Interp {
+    /// What a typed intrinsic gives for the type `written` stands for here.
+    fn typed_intrinsic(&self, path: &str, written: &'static Expr) -> Run<Value> {
+        let ty = self.type_argument(written)?;
+        Ok(match path {
+            "std.intrinsics.shape_hash" => Value::Int(self.shape_hash(&ty)?),
+            "std.intrinsics.layout" => Value::Str(self.layout(&ty)?),
+            // `pack_lock()` is empty, so no type's layout is locked.
+            "std.intrinsics.shape_locked" => Value::Bool(false),
+            _ => match ty.source() {
+                Some(name) => Value::Str(name),
+                None => return unsupported("the name of a type that can't be written"),
+            },
+        })
+    }
 }

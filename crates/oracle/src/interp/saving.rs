@@ -14,9 +14,14 @@
 //!   cases. One with data is `out.case_record(name, case, at, count)`, then its fields as a
 //!   struct's, then `out.end()` for the case: its fields and the case each end.
 //!
+//! - A tuple is `out.items(name, count)`, `name` its type as written, then each item as
+//!   `out.item(x)`, then `out.end_items()`.
+//! - A union's value is `out.member(name, at)`, `name` the type of the member it holds as written
+//!   and `at` where that member is among the union's, then `out.value(x)`, then
+//!   `out.end_member()`. One more than one member could hold, as an empty list, is refused.
+//!
 //! What each is called with is typed as the value's own parts are, so `out.sequence` of a
-//! `list[int?]` is called with `T` an `int?`. A union, a tuple, a `Table` and an `Id` aren't
-//! modeled here.
+//! `list[int?]` is called with `T` an `int?`. A `Table` and an `Id` aren't modeled here.
 
 use fennec_check::Type;
 use fennec_syntax::Span;
@@ -76,6 +81,31 @@ impl Interp {
                     pairs.iter().map(|(key, value)| Value::Tuple(vec![key.clone(), value.clone()])).collect();
                 let types = vec![(**key).clone(), (**held).clone()];
                 self.tell(out, "map", vec![Value::List(pairs)], types, span)
+            }
+            (Type::Tuple(types), Value::Tuple(items)) if types.len() == items.len() => {
+                let Some(name) = ty.source() else {
+                    return unsupported("a tuple whose type can't be written");
+                };
+                let count = Value::Int(i64::try_from(items.len()).unwrap_or(i64::MAX));
+                self.tell(out, "items", vec![Value::Str(name), count], Vec::new(), span)?;
+                for (item, item_type) in items.iter().zip(types) {
+                    self.tell(out, "item", vec![item.clone()], vec![item_type.clone()], span)?;
+                }
+                self.tell(out, "end_items", Vec::new(), Vec::new(), span)
+            }
+            (Type::Union(members), held) => {
+                let holding: Vec<(usize, &Type)> =
+                    members.iter().enumerate().filter(|(_, member)| holds(member, held)).collect();
+                let [(at, member)] = holding.as_slice() else {
+                    return unsupported("saving a union's value that isn't one member's alone");
+                };
+                let Some(name) = member.source() else {
+                    return unsupported("a union's member that can't be written");
+                };
+                let at = Value::Int(i64::try_from(*at).unwrap_or(i64::MAX));
+                self.tell(out, "member", vec![Value::Str(name), at], Vec::new(), span)?;
+                self.tell(out, "value", vec![held.clone()], vec![(*member).clone()], span)?;
+                self.tell(out, "end_member", Vec::new(), Vec::new(), span)
             }
             (Type::Named(name), Value::Instance(_)) => self.serialize_instance(value, name, &[], out, span),
             (Type::Generic(name, args), Value::Instance(_)) => {
@@ -454,6 +484,24 @@ fn holds_union(ty: &Type) -> bool {
         Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => holds_union(inner),
         Type::Dict(key, value) => holds_union(key) || holds_union(value),
         Type::Tuple(items) | Type::Generic(_, items) => items.iter().any(holds_union),
+        _ => false,
+    }
+}
+
+/// Whether a value could be one a union's member `member` holds, by what kind of value it is.
+fn holds(member: &Type, value: &Value) -> bool {
+    match (member, value) {
+        (Type::Int, Value::Int(_))
+        | (Type::Float, Value::Float(_))
+        | (Type::Bool, Value::Bool(_))
+        | (Type::Str | Type::LiteralStr, Value::Str(_))
+        | (Type::Bytes, Value::Bytes(_))
+        | (Type::List(_), Value::List(_))
+        | (Type::Set(_), Value::Set(_))
+        | (Type::Dict(..), Value::Dict(_))
+        | (Type::Tuple(_), Value::Tuple(_))
+        | (Type::None | Type::Optional(_), Value::None) => true,
+        (Type::Named(name) | Type::Generic(name, _), Value::Instance(instance)) => instance.ty == *name,
         _ => false,
     }
 }

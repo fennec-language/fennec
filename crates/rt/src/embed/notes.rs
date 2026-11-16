@@ -150,7 +150,12 @@ fn every_text(state: &State, notes: i64) -> Vec<Rc<str>> {
             .iter()
             .filter_map(|item| if let Value::Str(text) = item { Some(Rc::clone(text)) } else { None })
             .collect(),
-        _ => Vec::new(),
+        // A notes word that holds a block that isn't a list of them, or none this thread finds, is
+        // a bug: read as no notes, they'd be dropped with nothing said, as #1843 dropped them.
+        _ if super::made_up_inputs() => Vec::new(),
+        _ => super::heap::runtime_bug(&format!(
+            "an error's notes at {address:#x} aren't a list this thread can read"
+        )),
     }
 }
 

@@ -542,40 +542,9 @@ fn wait(
     }
     #[cfg(any(test, feature = "threads"))]
     if super::serve::can_park()
-        && let Some((pool, at)) = super::parallel::here()
+        && let Some(here) = super::parallel::here()
     {
-        let mut queue = queue;
-        let token = super::serve::next_token();
-        // A crash of a task this one launched wakes it, said before its last look.
-        let said = super::threads::Launcher::waiting_here(move || {
-            pool.run_on(at, Box::new(move |io: &mut super::serve::Io| io.wake_token(token)));
-        });
-        if super::threads::Launcher::cut_short_here() {
-            super::threads::Launcher::waited_here(said);
-            return Waited::CutShort;
-        }
-        let waiter = Waiter { pool, at, token };
-        match side {
-            Side::Sending => queue.senders.push(waiter),
-            Side::Receiving => queue.receivers.push(waiter),
-        }
-        let left_at = channel.taken(side);
-        drop(queue);
-        let parked = super::serve::park_on(token, deadline);
-        channel.take_back(side, (pool, at, token), left_at);
-        super::threads::Launcher::waited_here(said);
-        return match parked {
-            // Stopped, it's failing. Cancelled, as by a server that's stopping, it can't wait any more
-            // and ends here: it'd never be parked again, and nothing would ever change what it saw.
-            super::serve::Parked::Cancelled => {
-                if !super::failed() {
-                    super::serve::fail_as_stopped();
-                }
-                Waited::Stopped
-            }
-            super::serve::Parked::TimedOut => Waited::TimedOut,
-            super::serve::Parked::Ready => Waited::Again,
-        };
+        return wait_parked(channel, queue, deadline, side, here);
     }
     let mut queue = queue;
     // A crash of a task this code launched wakes it: told with the queue held, so the crash can't
@@ -628,6 +597,51 @@ fn wait(
     #[cfg(any(test, feature = "threads"))]
     super::threads::Launcher::waited_here(said);
     if timed_out { Waited::TimedOut } else { Waited::Again }
+}
+
+/// `wait`, for a task that can park, on worker `at` of `pool`: it leaves a note on the channel to
+/// be woken through, and parks until it is, or its time runs out, or it's stopped. However it was
+/// woken, the note's taken back if it's still there.
+#[cfg(any(test, feature = "threads"))]
+fn wait_parked(
+    channel: &Arc<Channel>,
+    queue: MutexGuard<'_, Queue>,
+    deadline: Option<Instant>,
+    side: Side,
+    (pool, at): (&'static super::parallel::Pool, usize),
+) -> Waited {
+    let mut queue = queue;
+    let token = super::serve::next_token();
+    // A crash of a task this one launched wakes it, said before its last look.
+    let said = super::threads::Launcher::waiting_here(move || {
+        pool.run_on(at, Box::new(move |io: &mut super::serve::Io| io.wake_token(token)));
+    });
+    if super::threads::Launcher::cut_short_here() {
+        super::threads::Launcher::waited_here(said);
+        return Waited::CutShort;
+    }
+    let waiter = Waiter { pool, at, token };
+    match side {
+        Side::Sending => queue.senders.push(waiter),
+        Side::Receiving => queue.receivers.push(waiter),
+    }
+    let left_at = channel.taken(side);
+    drop(queue);
+    let parked = super::serve::park_on(token, deadline);
+    channel.take_back(side, (pool, at, token), left_at);
+    super::threads::Launcher::waited_here(said);
+    match parked {
+        // Stopped, it's failing. Cancelled, as by a server that's stopping, it can't wait any more
+        // and ends here: it'd never be parked again, and nothing would ever change what it saw.
+        super::serve::Parked::Cancelled => {
+            if !super::failed() {
+                super::serve::fail_as_stopped();
+            }
+            Waited::Stopped
+        }
+        super::serve::Parked::TimedOut => Waited::TimedOut,
+        super::serve::Parked::Ready => Waited::Again,
+    }
 }
 
 /// Wakes parked tasks that were waiting on a channel: each looks again.

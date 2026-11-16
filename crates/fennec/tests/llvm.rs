@@ -2870,7 +2870,7 @@ fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::R
 /// under one lock and one under each of 300: the dict's lists are changed where they are, taken
 /// out through the lock's handle and saved by its log first. Each of those 600 appends copied its
 /// whole list, and the program made 1,200 copies. The 600 left are the list items', which copy on
-/// every save of a marked list's item until #1895: that fix lowers this count to none.
+/// every save of a marked list's item until #1895, which lowers that half's pin to none.
 #[test]
 fn appends_in_a_locks_own_body_change_a_dicts_lists_where_they_are() -> std::io::Result<()> {
     if !ready() {
@@ -2881,9 +2881,31 @@ fn appends_in_a_locks_own_body_change_a_dicts_lists_where_they_are() -> std::io:
         APPENDED_IN_A_LOCKS_BODY,
         "301 300 301\n301 301 locked 299, a text long enough for a block of its own\n",
     )?;
+    // Each half is pinned on its own, so a change in one can't hide in the other: the program with
+    // only its appends through a dict's value, and with only those through a list's item.
+    let without = |lines: &[&str]| {
+        lines.iter().fold(APPENDED_IN_A_LOCKS_BODY.to_owned(), |program, line| {
+            assert_eq!(program.matches(line).count(), 1, "{line}");
+            program.replace(line, "")
+        })
+    };
+    let by_name = without(&[
+        "            held.rows[0].items.append(f\"row {turn}, a text long enough for a block of its own\")\n",
+        "            held.rows[1].items.append(f\"locked {turn}, a text long enough for a block of its own\")\n",
+    ]);
+    let by_item = without(&[
+        "            held.named[\"one\"].items.append(\n                f\"named {turn}, a text long enough for a block of its own\",\n            )\n",
+        "            held.named[\"two\"].items.append(\n                f\"locked {turn}, a text long enough for a block of its own\",\n            )\n",
+    ]);
     assert_eq!(
-        counts_of("appended_in_a_locks_body_counts", APPENDED_IN_A_LOCKS_BODY)?,
-        "copies 600 copied_bytes 2167200 largest_copy 7200 allocations 1821 allocated_bytes 3397320 live 0"
+        counts_of("appended_in_a_locks_body_by_name", &by_name)?,
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 621 allocated_bytes 112664 live 0"
+    );
+    // A list's item still copies its list on each set under a lock, in the runtime's
+    // `marked_set` (#1895), which takes this to none.
+    assert_eq!(
+        counts_of("appended_in_a_locks_body_by_item", &by_item)?,
+        "copies 600 copied_bytes 2167200 largest_copy 7200 allocations 1207 allocated_bytes 3285704 live 0"
     );
     Ok(())
 }
@@ -2934,46 +2956,74 @@ def main(stdout: Stdout):
     return
 "#;
 
-/// A task crashes in a lock's own body after appending to a list in a dict's value and in a list's
-/// item, written straight in the body, after 1, 40 and 300 appends, so the list has grown and moved
-/// since the lock saved it. Taken out through the lock's handle, the list goes back to its place
-/// before the lock's rollback runs, so the lock's value is as it was before the lock, and nothing
-/// the task made outlives it. It prints what the reference evaluator prints, dev and release, on
-/// one thread and on four, with nothing left.
+/// Lists taken out in a lock's own body go back before the lock's rollback runs, so the lock's
+/// value is as it was before the lock and nothing the task made outlives it:
+/// - a task crashing after appending to a list in a dict's value and in a list's item, written
+///   straight in the body, after 1, 40 and 300 appends, so the list has grown and moved since the
+///   lock saved it;
+/// - a task crashing while the list is out, between the take and the append, reading the
+///   appended text out of range or multiplying past an int's range;
+/// - a failure leaving the lock, after appends written straight in it and through a `ref` method
+///   failing partway;
+/// - a `for ref` loop over the lock's list, failing or crashing partway.
+///
+/// Each prints what the reference evaluator prints, dev and release, on one thread and on four,
+/// with nothing left.
 #[test]
-fn a_list_taken_in_a_locks_own_body_goes_back_when_a_task_crashes() -> std::io::Result<()> {
+fn a_list_taken_in_a_locks_own_body_goes_back_on_a_crash_or_a_failure() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
-    let dir = folder("taken_in_a_locks_own_body")?;
-    let program = dir.join("taken_in_a_locks_own_body.fen");
-    std::fs::write(&program, include_str!("fixtures/workers/taken_in_a_locks_own_body.fen"))?;
-    let (program, executable) =
-        (program.to_string_lossy().into_owned(), dir.join("taken_in_a_locks_own_body"));
-    let output = executable.to_string_lossy().into_owned();
-    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
-        let args: Vec<&str> = ["build"]
-            .into_iter()
-            .chain(how.iter().copied())
-            .chain([program.as_str(), "-o", &output])
-            .collect();
-        let built = fennec(&args, &dir)?;
-        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        for threads in ["1", "4"] {
-            let ran = Command::new(&executable)
-                .env("FENNEC_COUNTS", "1")
-                .env("FENNEC_THREADS", threads)
-                .output_within()?;
-            let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
-            let wanted = include_str!("fixtures/workers/taken_in_a_locks_own_body.out");
-            let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
-            assert_eq!(printed, wanted, "{how:?}, {threads} threads: {errors}");
-            assert!(ran.status.success(), "{how:?}, {threads} threads: {errors}");
-            let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
-            assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads: {counts}");
+    for (name, source, wanted) in [
+        (
+            "taken_in_a_locks_own_body",
+            include_str!("fixtures/workers/taken_in_a_locks_own_body.fen"),
+            include_str!("fixtures/workers/taken_in_a_locks_own_body.out"),
+        ),
+        (
+            "crashed_while_taken_in_a_locks_own_body",
+            include_str!("fixtures/workers/crashed_while_taken_in_a_locks_own_body.fen"),
+            include_str!("fixtures/workers/crashed_while_taken_in_a_locks_own_body.out"),
+        ),
+        (
+            "failed_after_takes_in_a_locks_own_body",
+            include_str!("fixtures/workers/failed_after_takes_in_a_locks_own_body.fen"),
+            include_str!("fixtures/workers/failed_after_takes_in_a_locks_own_body.out"),
+        ),
+        (
+            "failed_in_a_for_ref_in_a_locks_own_body",
+            include_str!("fixtures/workers/failed_in_a_for_ref_in_a_locks_own_body.fen"),
+            include_str!("fixtures/workers/failed_in_a_for_ref_in_a_locks_own_body.out"),
+        ),
+    ] {
+        let dir = folder(name)?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
+        let output = executable.to_string_lossy().into_owned();
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let args: Vec<&str> = ["build"]
+                .into_iter()
+                .chain(how.iter().copied())
+                .chain([program.as_str(), "-o", &output])
+                .collect();
+            let built = fennec(&args, &dir)?;
+            assert!(built.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&built.stderr));
+            for threads in ["1", "4"] {
+                let ran = Command::new(&executable)
+                    .env("FENNEC_COUNTS", "1")
+                    .env("FENNEC_THREADS", threads)
+                    .output_within()?;
+                let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+                let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+                assert_eq!(printed, wanted, "{name} {how:?}, {threads} threads: {errors}");
+                assert!(ran.status.success(), "{name} {how:?}, {threads} threads: {errors}");
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert!(counts.ends_with(" live 0"), "{name} {how:?}, {threads} threads: {counts}");
+            }
         }
+        std::fs::remove_dir_all(&dir)?;
     }
-    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 

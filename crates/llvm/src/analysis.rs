@@ -2234,16 +2234,25 @@ fn find_path_takes(function: &Function, changes: Changes<'_>, known: &mut Analys
             // struct's `self.named` one up, a lock's `held.value.named` two. Each local on the way
             // is written once.
             let (mut root, mut list_path, mut chain) = (list, Vec::new(), Vec::new());
-            loop {
+            // Each step goes to a local written once before, so this ends; the bound is for safety,
+            // as `root_of`'s is.
+            let mut reached = false;
+            for _ in 0..=function.locals.len() {
                 match defined(root, at) {
                     Some((Some(step), up, None)) if known.writes.get(root.0) == Some(&1) => {
                         chain.push(root);
                         list_path.insert(0, step);
                         root = up;
                     }
-                    None => break,
+                    None => {
+                        reached = true;
+                        break;
+                    }
                     _ => continue 'reads,
                 }
+            }
+            if !reached {
+                continue;
             }
             if crate::rollback::is_lock_handle(function, root) && !saving.contains(&root.0) {
                 continue;
@@ -4184,10 +4193,11 @@ mod tests {
         Ok(())
     }
 
-    /// Whether the list a function called `go` appends to, through a field of a dict's value, is
-    /// taken out for it, and whether it's taken only when the append comes.
-    fn field_taken(body: &str) -> Result<(bool, bool), String> {
-        let types = "struct Bag:\n    items: list[str]\n    count: int\n\nstruct Shelf:\n    named: dict[str, Bag]\n    total: int\n\ndef made(turn: int) -> str:\n    return f\"made in turn {turn}\"\n\ndef counted(ref shelf: Shelf) -> str:\n    shelf.total += 1\n    return \"counted\"\n\n";
+    /// Whether the list a function called `go` appends to, through a field of a dict's value or a
+    /// list's item, is taken out for it, whether it's taken only when the append comes, and
+    /// whether each item read again to be put back is taken too, from where it goes back.
+    fn field_taken(body: &str) -> Result<(bool, bool, bool), String> {
+        let types = "struct Bag:\n    items: list[str]\n    count: int\n\nstruct Shelf:\n    named: dict[str, Bag]\n    rows: list[Bag]\n    total: int\n\ndef made(turn: int) -> str:\n    return f\"made in turn {turn}\"\n\ndef counted(ref shelf: Shelf) -> str:\n    shelf.total += 1\n    return \"counted\"\n\n";
         let source = format!("{types}{body}");
         let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
@@ -4204,7 +4214,21 @@ mod tests {
                 _ => None,
             });
         let appended = appended.ok_or("no append")?;
-        Ok((known.path_home(appended).is_some(), known.path_waits(appended)))
+        // Every item put back whole is one read again and taken, with the put-back's place as its
+        // home: one read and kept would hold the list's old address once the list grows.
+        let put_backs: Vec<bool> = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.insts)
+            .filter_map(|inst| match &inst.kind {
+                InstKind::SetIndex { object, path, value: Operand::Local(item), .. } => {
+                    Some(known.items_taken.get(&item.0) == Some(&(*object, path.clone())))
+                }
+                _ => None,
+            })
+            .collect();
+        let put_back_taken = !put_backs.is_empty() && put_backs.iter().all(|taken| *taken);
+        Ok((known.path_home(appended).is_some(), known.path_waits(appended), put_back_taken))
     }
 
     /// `shelf.named[key].items.append(x)` takes the list out, not a copy of it, whatever `x` is.
@@ -4223,7 +4247,8 @@ mod tests {
             ("made(shelf.named[key].count)", true),
         ] {
             let body = format!("{go}shelf.named[key].items.append({appended})\n");
-            assert_eq!(field_taken(&body)?, (true, waits), "{body}");
+            let (taken, waited, _) = field_taken(&body)?;
+            assert_eq!((taken, waited), (true, waits), "{body}");
         }
         Ok(())
     }
@@ -4232,14 +4257,18 @@ mod tests {
     /// through the lock's handle, two fields up from the dict, whatever `x` is: the IR reads
     /// `held.value` into a new local on the way out and again on the way back, and both are the
     /// same place from the handle. The bag read on the way back is taken too, with the same home.
-    /// Before, the take looked one field up, from a different local each way, found nothing, and
-    /// every append copied the whole list.
+    /// A list's item, for `held.rows[i].items.append(x)`, is taken out of the list whole, so its
+    /// list is its own and grows where it is, with no path taken. Before, the take looked one
+    /// field up, from a different local each way, found nothing, and every append copied the
+    /// whole list.
     #[test]
     fn a_field_in_a_locks_own_body_is_taken_through_its_handle() -> Result<(), String> {
         let go = "def go(shelf: shared Shelf, key: str, text: str, turn: int):\n    lock shelf as ref held:\n        ";
         for (appended, waits) in [("text", false), ("f\"made in turn {turn}\"", true), ("made(turn)", true)] {
             let body = format!("{go}held.named[key].items.append({appended})\n");
-            assert_eq!(field_taken(&body)?, (true, waits), "{body}");
+            assert_eq!(field_taken(&body)?, (true, waits, true), "{body}");
+            let body = format!("{go}held.rows[turn].items.append({appended})\n");
+            assert_eq!(field_taken(&body)?, (false, false, true), "{body}");
         }
         Ok(())
     }

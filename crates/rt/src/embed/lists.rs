@@ -184,8 +184,9 @@ fn marked_set(state: &mut State, list: i64, at: i64) -> Option<i64> {
     }
     let start = LIST_HEADER_WORDS + at * stride;
     let words = block.get(start..start + stride)?.to_vec();
-    if super::guarded::rollback::item_set_last(address, at)? {
-        // Set already, with nothing between: the log has it as it was before the lock.
+    if super::guarded::rollback::item_set_already(address, at)? {
+        // Set already, with nothing since that moved items about: the log has it as it was
+        // before the lock.
         return Some(list);
     }
     let mut marked = Vec::new();

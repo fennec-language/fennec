@@ -135,6 +135,12 @@ impl Places {
         self.few.contains(&place) || self.many.contains(&place)
     }
 
+    /// Takes a place out, as when what was saved there has moved.
+    fn remove(&mut self, place: u64) {
+        self.few.retain(|kept| *kept != place);
+        self.many.remove(&place);
+    }
+
     fn clear(&mut self) {
         self.few.clear();
         if !self.many.is_empty() {
@@ -1002,7 +1008,10 @@ pub(in crate::embed) fn moved(from: u64, to: u64) {
         for log in &mut logs.held {
             for saved in log.saved.iter_mut().filter(|saved| saved.marked && saved.old == from) {
                 saved.old = to;
+                // A save for an item goes by the block's own place, which has moved: the old one
+                // is let go of, as a block made there next is none of this save's.
                 if saved.by_item {
+                    log.places.remove(place(saved));
                     saved.block = to;
                     log.places.insert(place(saved));
                 }
@@ -1049,39 +1058,47 @@ pub(in crate::embed) fn set(list: u64, at: usize, words: Vec<u64>, marked: Vec<u
     note(list, Change::Set { at, words, marked })
 }
 
-/// Whether the item at `at` of `list`, a marked list, was the last thing in it this lock set: then
-/// its log holds the item as it was before the lock, and a set again notes nothing. `None` when no
-/// log has the list.
+/// Whether this lock has set the item at `at` of `list`, a marked list, already, with nothing since
+/// that moved its items about: then its log holds the item as it was before the lock, and a set
+/// again notes nothing. `None` when no log has the list.
 ///
-/// A loop setting one item over and over, as a `ref self` method appending to a list in it does,
-/// once noted it every time, with an owner of every block it held: the item's list then had two
-/// owners, and every append copied it, the log holding each old copy until the lock's end. With
-/// an insert, a pop or another item set in between, the index may name another item, so it's
-/// noted again.
-pub(in crate::embed) fn item_set_last(list: u64, at: usize) -> Option<bool> {
+/// Sets of other items and appends leave every item where it was, so a loop setting items in
+/// turn, as `buckets[k].append(v)` does, notes each once. An insert or a pop moves items, or takes
+/// one away, so after either the index may name another item, and it's noted again. The look goes
+/// back through the list's changes as far as the item's set or the last move.
+///
+/// Setting one item over and over, as a `ref self` method appending to a list in it does, once
+/// noted it every time, with an owner of every block it held: the item's list then had two owners,
+/// and every append copied it, the log holding each old copy until the lock's end.
+pub(in crate::embed) fn item_set_already(list: u64, at: usize) -> Option<bool> {
     logs_as_they_are(|logs| {
         let log = marking(&mut logs.held, list)?;
-        let latest = log.changes.iter().rev().find(|(of, _)| *of == list);
-        Some(latest.is_some_and(|(_, change)| matches!(change, Change::Set { at: was, .. } if *was == at)))
+        for (_, change) in log.changes.iter().rev().filter(|(of, _)| *of == list) {
+            match change {
+                Change::Set { at: was, .. } if *was == at => return Some(true),
+                Change::Set { .. } | Change::Grew { .. } => {}
+                Change::Popped { .. } | Change::Inserted { .. } => return Some(false),
+            }
+        }
+        Some(false)
     })
 }
 
 /// The block `old`, held by an item of `list`, a marked list, is about to be changed where it is,
 /// under the item's set. It's saved as `save_ref` saves one, in the log that marked `list`: marked,
 /// if it's a list, a dict or a struct's block, a struct's fields saved then and there. Says whether
-/// it's marked by that log now, so the item's set holds no owner of it; of anything else, a
-/// string's block or a `shared` value, or a block another lock's log marked, the set holds one.
+/// this call marked it, so the item's set holds no owner of it.
+///
+/// Every other block the set names gets an owner of the set's own: a string's block, a `shared`
+/// value, and a block marked already, by an earlier set of this item or another, a struct's field
+/// or a dict's value this log saved, or another lock's log. A crash puts back every set that names
+/// a block, each giving up what the item holds by then and putting back what it held, and the mark
+/// gives back one owner, for one set. A second set holding none left the block an owner short:
+/// freed while an item still held it, or never freed.
 pub(in crate::embed) fn marked_for_an_item(state: &mut State, list: u64, old: u64) -> bool {
     let (fields, markable) = marked_how(state, old);
     if !markable {
-        // Already marked, by this log through an earlier set or a struct's field it saved, or by
-        // another's.
-        let marked = state
-            .heap
-            .block(old)
-            .and_then(|words| words.first())
-            .is_some_and(|count| count & lists::MARKED != 0);
-        return marked && marked_where(list, old);
+        return false;
     }
     let saved = Saved { block: old, word: 0, old, held: false, marked: true, by_item: true };
     let pushed = with_logs(|logs| {
@@ -1101,14 +1118,6 @@ pub(in crate::embed) fn marked_for_an_item(state: &mut State, list: u64, old: u6
         save_fields(state, old);
     }
     true
-}
-
-/// Whether the log that marked `list` marked `block` too.
-fn marked_where(list: u64, block: u64) -> bool {
-    logs_as_they_are(|logs| {
-        marking(&mut logs.held, list)
-            .is_some_and(|log| log.saved.iter().any(|saved| saved.marked && saved.old == block))
-    })
 }
 
 /// The word at `word` in `block`, a dict a log marked, is about to change in place from `old`, by

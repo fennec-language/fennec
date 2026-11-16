@@ -926,3 +926,228 @@ fn an_item_appended_through_then_replaced_goes_back_on_a_crash_and_stays_replace
         finish();
     }
 }
+
+/// A `Shelf` locked as `locked_shelf` leaves one, with `rows` holding the lists `rows` gives, by
+/// address: the same address twice is one list held by two items.
+fn locked_rows(rows: &[i64]) -> i64 {
+    let cell = heap::alloc(SHELF);
+    let outer = lists::new(ROW, i64::try_from(rows.len()).unwrap());
+    for (at, row) in rows.iter().enumerate() {
+        set_word(outer, LIST_HEADER_WORDS + at, *row);
+    }
+    set_word(cell, ROWS_AT, outer);
+    set_word(cell, BAGS_AT, lists::new(BAG, 0));
+    shared_new(cell);
+    shared_enter(cell, 1);
+    begin(cell);
+    let inside = word(cell, ROWS_AT);
+    save_ref(cell, i64::try_from(ROWS_AT).unwrap(), inside);
+    cell
+}
+
+/// `held.rows[at].append(text)`, as native code does it.
+fn appended_at(outer: i64, at: usize, text: &str) {
+    assert_eq!(lists::item_unshare(outer, i64::try_from(at).unwrap()), outer);
+    let inner = word(outer, LIST_HEADER_WORDS + at);
+    let grown = lists::grow(inner);
+    let length = usize::try_from(word(grown, 2)).unwrap();
+    set_word(grown, LIST_HEADER_WORDS + length - 1, string(text));
+    set_word(outer, LIST_HEADER_WORDS + at, grown);
+}
+
+/// What each of a shelf's rows holds.
+fn rows_of(cell: i64) -> Vec<Vec<String>> {
+    let outer = word(cell, ROWS_AT);
+    let count = usize::try_from(word(outer, 2)).unwrap();
+    (0..count).map(|at| lines(word(outer, LIST_HEADER_WORDS + at))).collect()
+}
+
+/// Three buckets appended to in turn, 60 times each, as `buckets[k].append(v)` does: nothing's
+/// copied, each item's set noted once though other items' sets come between, and a crash puts
+/// every bucket back as it was, a normal end keeping every line, with every count right.
+#[test]
+fn buckets_appended_to_in_turn_under_a_lock_copy_nothing_and_count_right_either_way() {
+    for crashes in [true, false] {
+        start(shelf_tables(), crate::Inputs::default());
+        let firsts = [list(&["zero"]), list(&["one"]), list(&["two"])];
+        let cell = locked_rows(&firsts);
+        let (before, copied) = (blocks(), copies());
+        let outer = word(cell, ROWS_AT);
+        for turn in 0..180 {
+            appended_at(outer, turn % 3, &format!("turn {turn}, a line long enough for a block"));
+        }
+        assert_eq!(copies(), copied, "crashes: {crashes}");
+        if crashes {
+            crash_shelf(cell);
+            assert_eq!(rows_of(cell), [["zero"], ["one"], ["two"]]);
+            assert_eq!(blocks(), before);
+        } else {
+            kept();
+            for (at, row) in rows_of(cell).iter().enumerate() {
+                assert_eq!(row.len(), 61, "row {at}");
+            }
+            assert_eq!(blocks(), before + 180);
+        }
+        audited(cell);
+        shared_leave(cell, 1);
+        finish();
+    }
+}
+
+/// One list held by two items, appended to through each. The first append copies it, as it has
+/// two owners, and so does the second, as the first item's set holds an owner of it now. A crash
+/// gives it back both its holders, with the count to match, and a normal end lets it go, each item
+/// holding a copy of its own. A second set that named it without an owner once left it one short:
+/// freed while an item still held it.
+#[test]
+fn one_list_in_two_items_appended_through_each_counts_right_either_way() {
+    for crashes in [true, false] {
+        start(shelf_tables(), crate::Inputs::default());
+        let first = list(&["shared, a line long enough for a block of its own"]);
+        with(|state| heap::retain(state, address(first)));
+        let cell = locked_rows(&[first, first]);
+        let before = blocks();
+        let outer = word(cell, ROWS_AT);
+        // Making the cell `shared` copied it, the one list still held by both items.
+        let shared = word(outer, LIST_HEADER_WORDS);
+        assert_eq!(word(outer, LIST_HEADER_WORDS + 1), shared);
+        assert_eq!(count_of(shared), 2);
+        appended_at(outer, 0, "through the first, a line long enough for a block");
+        appended_at(outer, 1, "through the second, a line long enough for a block");
+        if crashes {
+            crash_shelf(cell);
+            assert_eq!(word(outer, LIST_HEADER_WORDS), shared);
+            assert_eq!(word(outer, LIST_HEADER_WORDS + 1), shared);
+            assert_eq!(count_of(shared), 2, "both items hold it, and nothing else does");
+            assert_eq!(blocks(), before);
+        } else {
+            kept();
+            let rows = rows_of(cell);
+            assert_eq!(rows[0].len(), 2);
+            assert_eq!(rows[1].len(), 2);
+            assert!(!exists(shared), "neither item holds it now");
+        }
+        audited(cell);
+        shared_leave(cell, 1);
+        finish();
+    }
+}
+
+/// An item set, then an append to the outer list, then the item set again: nothing moved, so it's
+/// noted once. Then an item put in at the front, which moves the first one up, and that one set
+/// again at its new index: noted again, with an owner of the list it holds, as it's marked already.
+/// A crash puts back the rows as they were, the one put in taken out, and a normal end keeps all of
+/// it, with every count right either way.
+#[test]
+fn an_item_set_again_after_an_append_or_an_insert_counts_right_either_way() {
+    for crashes in [true, false] {
+        start(shelf_tables(), crate::Inputs::default());
+        let cell = locked_rows(&[list(&["first, a line long enough for a block"])]);
+        let before = blocks();
+        let outer = word(cell, ROWS_AT);
+        appended_at(outer, 0, "before the append, a line long enough for a block");
+        // `held.rows.append(["added"])`, which moves no item.
+        let grown = lists::grow(outer);
+        assert_eq!(grown, outer, "the marked list grows where it is");
+        set_word(outer, LIST_HEADER_WORDS + 1, list(&["added, a line long enough for a block"]));
+        appended_at(outer, 0, "after the append, a line long enough for a block");
+        // `held.rows.insert(0, ["in front"])`, which moves the first item up one.
+        let inserted = lists::insert(outer, 0, 0, 0);
+        assert_eq!(inserted, outer);
+        set_word(outer, LIST_HEADER_WORDS, list(&["in front, a line long enough for a block"]));
+        appended_at(outer, 1, "after the insert, a line long enough for a block");
+        if crashes {
+            crash_shelf(cell);
+            assert_eq!(rows_of(cell), [["first, a line long enough for a block"]]);
+            assert_eq!(blocks(), before);
+        } else {
+            kept();
+            let rows = rows_of(cell);
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[0], ["in front, a line long enough for a block"]);
+            assert_eq!(rows[1].len(), 4);
+            assert_eq!(rows[2], ["added, a line long enough for a block"]);
+        }
+        audited(cell);
+        shared_leave(cell, 1);
+        finish();
+    }
+}
+
+/// The shape numbers of the boxed tests' `Holder` and `Bag`, which is a struct of its own here,
+/// held by a list of boxed `Bag`s.
+const HOLDER: i64 = 0;
+const BAG_SHAPE: i64 = 1;
+const BAGS_HELD_AT: usize = heap::HEADER_WORDS;
+const ITEMS_AT: usize = heap::HEADER_WORDS;
+
+fn boxed_tables() -> Tables {
+    let strings = Rc::new(Element::Str);
+    let bag = Element::Struct {
+        name: Rc::from("Bag"),
+        fields: vec![(Rc::from("items"), Element::List(Rc::clone(&strings)))],
+    };
+    let holder = Element::Struct {
+        name: Rc::from("Holder"),
+        fields: vec![(Rc::from("bags"), Element::List(Rc::new(Element::Boxed(1))))],
+    };
+    Tables {
+        shapes: vec![Rc::new(holder), Rc::new(bag), Rc::new(Element::Str)],
+        elements: vec![strings, Rc::new(Element::Boxed(1))],
+        str_shape: 2,
+        ..Tables::default()
+    }
+}
+
+/// A list of boxed structs, each a block of its own holding a list, appended to through the first
+/// 300 times: the item's set marks the struct's block and saves its field, which marks the list,
+/// so nothing's copied. A crash puts the struct and its list back as they were, though the list
+/// moved, and a normal end keeps every line, with every count right either way.
+#[test]
+fn a_list_in_a_boxed_struct_in_a_lists_item_is_appended_to_where_it_is_either_way() {
+    for crashes in [true, false] {
+        start(boxed_tables(), crate::Inputs::default());
+        let bag = heap::alloc(BAG_SHAPE);
+        set_word(bag, ITEMS_AT, list(&["first, a line long enough for a block"]));
+        let bags = lists::new(1, 1);
+        set_word(bags, LIST_HEADER_WORDS, bag);
+        let cell = heap::alloc(HOLDER);
+        set_word(cell, BAGS_HELD_AT, bags);
+        shared_new(cell);
+        shared_enter(cell, 1);
+        begin(cell);
+        let outer = word(cell, BAGS_HELD_AT);
+        save_ref(cell, i64::try_from(BAGS_HELD_AT).unwrap(), outer);
+        let (before, copied) = (blocks(), copies());
+        let first_items = word(word(outer, LIST_HEADER_WORDS), ITEMS_AT);
+        for turn in 0..300 {
+            // `held.bags[0].items.append(text)`: the item asked for, its struct to change asked
+            // for, the list appended to and put back in the struct where it now is.
+            assert_eq!(lists::item_unshare(outer, 0), outer);
+            let bag = word(outer, LIST_HEADER_WORDS);
+            assert_eq!(to_change(bag), bag, "the struct's block was copied");
+            let grown = lists::grow(word(bag, ITEMS_AT));
+            let length = usize::try_from(word(grown, 2)).unwrap();
+            set_word(grown, LIST_HEADER_WORDS + length - 1, string(&format!("turn {turn}, long enough")));
+            set_word(bag, ITEMS_AT, grown);
+        }
+        assert_eq!(copies(), copied, "crashes: {crashes}");
+        assert_ne!(word(word(outer, LIST_HEADER_WORDS), ITEMS_AT), first_items, "the list never moved");
+        if crashes {
+            undo();
+            let back = undo_word(i64::try_from(BAGS_HELD_AT).unwrap(), word(cell, BAGS_HELD_AT), 1);
+            set_word(cell, BAGS_HELD_AT, back);
+            let items = word(word(word(cell, BAGS_HELD_AT), LIST_HEADER_WORDS), ITEMS_AT);
+            assert_eq!(lines(items), ["first, a line long enough for a block"]);
+            assert_eq!(blocks(), before);
+        } else {
+            kept();
+            let items = word(word(word(cell, BAGS_HELD_AT), LIST_HEADER_WORDS), ITEMS_AT);
+            assert_eq!(lines(items).len(), 301);
+            assert_eq!(blocks(), before + 300);
+        }
+        audited(cell);
+        shared_leave(cell, 1);
+        finish();
+    }
+}

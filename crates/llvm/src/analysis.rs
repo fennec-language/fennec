@@ -4189,8 +4189,8 @@ mod tests {
     fn field_taken(body: &str) -> Result<(bool, bool), String> {
         let types = "struct Bag:\n    items: list[str]\n    count: int\n\nstruct Shelf:\n    named: dict[str, Bag]\n    total: int\n\ndef made(turn: int) -> str:\n    return f\"made in turn {turn}\"\n\ndef counted(ref shelf: Shelf) -> str:\n    shelf.total += 1\n    return \"counted\"\n\n";
         let source = format!("{types}{body}");
-        let module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
-        let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
+        let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
         let changes = |name: &str| if name == "counted" { vec![0] } else { Vec::new() };

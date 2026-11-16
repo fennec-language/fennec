@@ -1,9 +1,12 @@
 # A slice of a text used as a dict's key, stored and read with no string made for it, where the
 # dict's values are held in its entries and where they're one word each. A tuple is held in an
-# entry as a struct is, whatever it's written as.
+# entry as a struct is, whatever it's written as. A struct with no fields is a block of its own.
 struct Seen:
     first: int
     last: int
+
+struct Marker:
+    pass
 
 def fill(
     text: str,
@@ -15,6 +18,11 @@ def fill(
     mut made = counts
     made[text[start:stop]] = value
     return made
+
+def look(text: str, start: int, stop: int, counts: dict[str, tuple[int, int]]) -> tuple[int, int]:
+    found = counts.get(text[start:stop])
+    if found is None: return (-1, -1)
+    return found
 
 def main(stdout: Stdout):
     text = "alpha beta gamma delta, with a tail long enough for a block of its own"
@@ -47,3 +55,16 @@ def main(stdout: Stdout):
     for start in [0, 6, 0, 11, 6, 0]:
         counts[text[start:start + 4]] = (counts.get(text[start:start + 4]) else 0) + 1
     stdout.print(counts)
+    stdout.print(
+        look(text, start=0, stop=5, counts=handed),
+        look(text, start=6, stop=10, counts=handed),
+        look(text, start=17, stop=22, counts=handed),
+    )
+    mut marked = dict[str, Marker]()
+    marked["other"] = Marker()
+    mut found = 0
+    for number in range(100):
+        marked[text[24:70]] = Marker()
+        if marked.get(text[24:70]) is not None:
+            found += 1
+    stdout.print(len(marked), found, "with a tail long enough for a block of its own" in marked)

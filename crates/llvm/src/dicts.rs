@@ -1813,7 +1813,9 @@ found:
             let (slot, memory) = (self.slot(dest), optional.memory(self.module.layouts));
             self.line(&format!("store {memory} zeroinitializer, ptr {slot}"));
             self.line(&format!("store i64 {number}, ptr {slot}"));
-            let value = self.load_field(&value_kind, &value_at, "");
+            // As a get by a plain key reads it: a struct of its own block where the block holds
+            // it, not from the entry, which holds the block's address.
+            let value = self.dict_part(value_word, &value_kind, &value_at);
             let (value_kind, value, owned) = self.as_header(&value_kind, &value);
             if value_kind.counted() && !owned {
                 self.retain_value(&value, &value_kind);

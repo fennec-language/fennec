@@ -1585,6 +1585,53 @@ fn rounds_beside_each_other_are_refused_where_time_decides() {
     );
 }
 
+/// A `shared` value a round makes is its own, which no other round reaches, until it's sent on a
+/// channel: then another round may have it, and two locking it to change it, in an order time
+/// decides, are refused. Here round 0 changes it after sending it and round 1 after taking it,
+/// so the compiled program can print `[12, 0]` or `[21, 0]`.
+#[test]
+fn a_shared_value_sent_from_its_round_is_no_longer_its_own() {
+    let (_, ended) = ran("
+        from std.concurrent import Channel, channel
+
+        struct Count:
+            total = 0
+
+        struct Holder:
+            count: shared Count
+
+        def piece(number: int, between: Channel[Holder], back: Channel[int]) -> int:
+            if number == 0:
+                shared mine = Count()
+                between.send(Holder(count=mine)) except why:
+                    return -len(f'{why}')
+                lock mine as ref counting:
+                    counting.total = counting.total * 10 + 1
+                _ = back.receive() else -1
+                lock mine as seen:
+                    return seen.total
+            shared spare = Count()
+            got = between.receive() else Holder(count=spare)
+            lock got.count as ref counting:
+                counting.total = counting.total * 10 + 2
+            back.send(0) except why:
+                return -len(f'{why}')
+            return 0
+
+        def main(stdout: Stdout):
+            with channel[Holder](size=1) as between:
+                with channel[int](size=1) as back:
+                    stdout.print([piece(number, between=between, back=back) for number in parallel(range(2))])
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "a `shared` value one `parallel` round changes and another reaches, in an order that isn't promised"
+                .to_owned()
+        )
+    );
+}
+
 /// Taking from a channel in turn, where each knows the last take happened, is in order, and so is
 /// taking from a round's own channel, which no other round reaches: both run.
 #[test]

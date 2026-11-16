@@ -426,6 +426,46 @@ impl Interp {
         }
     }
 
+    /// Notes the `shared` values a message holds, and those they hold, as sent: no `parallel`
+    /// round has them to itself after that.
+    fn note_sent_cells(&self, message: &Value) -> Run<()> {
+        let mut found = Vec::new();
+        let mut waiting: Vec<Value> = vec![message.clone()];
+        while let Some(held) = waiting.pop() {
+            match held {
+                Value::List(items) | Value::Tuple(items) | Value::Set(items) => waiting.extend(items),
+                Value::Dict(pairs) => {
+                    for (key, value) in pairs {
+                        waiting.push(key);
+                        waiting.push(value);
+                    }
+                }
+                Value::Instance(instance) => {
+                    waiting.extend(instance.fields.into_iter().map(|(_, field)| field));
+                }
+                Value::Table(table) => waiting.extend(table.live().map(|(_, item)| item.clone())),
+                Value::Shared(cell) => {
+                    if found.contains(&cell.id) {
+                        continue;
+                    }
+                    found.push(cell.id);
+                    // What it holds, unless a `lock` holds it now, which this can't look inside.
+                    let Ok(inside) = cell.held.try_lock() else {
+                        return unsupported("a message holding a `shared` value a `lock` holds now");
+                    };
+                    waiting.push(inside.clone());
+                }
+                _ => {}
+            }
+        }
+        if !found.is_empty()
+            && let Ok(mut sent) = self.shared.sent_cells.lock()
+        {
+            sent.extend(found);
+        }
+        Ok(())
+    }
+
     /// The number the next channel made gets, so one made since is told apart.
     pub(crate) fn channels_made(&self) -> Run<i64> {
         Ok(self.sched_state()?.next_number)
@@ -732,6 +772,7 @@ impl Interp {
             }
             ("send", [Value::Int(number), message, Value::Int(timeout)]) => {
                 self.charge(message)?;
+                self.note_sent_cells(message)?;
                 self.channel_send(*number, message, *timeout)
             }
             ("receive", [Value::Int(number), Value::Int(timeout)]) => {

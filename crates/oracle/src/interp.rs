@@ -96,6 +96,9 @@ pub(crate) struct Shared {
     pub(crate) disk: Arc<Mutex<disk::Disk>>,
     /// The number the next `shared` value made gets.
     next_cell: AtomicU64,
+    /// The `shared` values sent on a channel, which no `parallel` round has to itself once they
+    /// have been: another round may have taken them.
+    pub(crate) sent_cells: Mutex<std::collections::BTreeSet<u64>>,
     /// What runs side by side now, `parallel` calls' rounds and `with launch` blocks and their
     /// tasks, the innermost last. Only one thread runs at a time, so they're what whatever runs
     /// now is inside.
@@ -126,6 +129,7 @@ impl Shared {
             next_tag: AtomicU64::new(1),
             disk: Arc::new(Mutex::new(disk::Disk::new(workdir))),
             next_cell: AtomicU64::new(1),
+            sent_cells: Mutex::new(std::collections::BTreeSet::new()),
             scopes: Mutex::new(Vec::new()),
             rounds_started: AtomicU64::new(0),
             started: std::time::Instant::now(),

@@ -283,6 +283,8 @@ impl Interp {
     /// Notes a `lock` on the `shared` value `cell`, to change it or not, in everything running
     /// side by side now, refusing one whose outcome depends on the order they run in.
     pub(crate) fn note_lock(&self, cell: u64, writes: bool) -> Run<()> {
+        // One sent on a channel isn't the round's own that made it: another may have taken it.
+        let sent = self.shared.sent_cells.lock().is_ok_and(|sent| sent.contains(&cell));
         let Ok(mut scopes) = self.shared.scopes.lock() else {
             return unsupported("a `parallel` call was lost");
         };
@@ -298,7 +300,7 @@ impl Interp {
                     continue;
                 }
             };
-            if cell >= rounds.first_cell {
+            if cell >= rounds.first_cell && !sent {
                 continue;
             }
             if rounds.streamed {

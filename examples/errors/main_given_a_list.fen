@@ -1,0 +1,3 @@
+# `main` is given capabilities only: the command line comes in as `args: Args`.
+def main(stdout: Stdout, args: list[str]):
+    stdout.print(len(args))

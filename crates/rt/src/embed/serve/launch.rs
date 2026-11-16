@@ -256,12 +256,16 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
     // thread's, and other tasks run on it while this one waits.
     let held = with(|state| state.failure.take());
     super::super::set_failed(0);
-    if failed != 0 || threads::stopped() {
+    // A replay stops nothing by the clock, nor at once: its recording says at which wait each task
+    // was stopped, and the task stops itself there. The clock would stop one where the recorded run
+    // didn't, or miss one it did, as a replay takes no time to sleep (#1831).
+    let replaying = crate::replay::replaying();
+    if !replaying && (failed != 0 || threads::stopped()) {
         stop(&launched, threads::STOPPING);
     }
     let deadline = u64::try_from(stop_after_ns)
         .ok()
-        .filter(|_| failed == 0)
+        .filter(|_| failed == 0 && !replaying)
         .map(|nanos| Instant::now() + Duration::from_nanos(nanos));
     // What this thread printed comes out before it waits for its task, however long that is, as
     // before any other wait: a program stopped while it waits here has said what it had to say.
@@ -269,8 +273,14 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
     let outcome = wait_for(&launched, deadline);
     match held {
         Some(held) => super::super::fail_with(held),
-        // Stopped while it waited: it's cut short now its task has ended.
-        None => drop(super::cut_short()),
+        // Stopped while it waited, as its recording says.
+        None if replaying => crate::replay::stopped_at_block_end_as_recorded(),
+        // Stopped while it waited: it's cut short now its task has ended, which a recording notes.
+        None => {
+            if super::cut_short() {
+                crate::replay::stopped_at_block_end();
+            }
+        }
     }
     with(|state| {
         state.output.0.borrow_mut().extend(outcome.printed);

@@ -1055,6 +1055,166 @@ mod tests {
         finish();
     }
 
+    /// The connection the first of the two tasks below writes to, how its write ended, and whether
+    /// the second ran while it waited for room: 1 for as it should have.
+    static WRITTEN_TO: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static WROTE_IT_ALL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static RAN_MEANWHILE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// The first of two tasks keeps a connection to the server on port `env` and writes `MUCH` to
+    /// it, more than its buffers hold, with nobody reading. The second waits until the first is
+    /// waiting for room, which it can only see by running, and says it ran.
+    extern "C" fn writes_while_another_runs(env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        use crate::stdlib::net::{kept, waiting_on, written_within};
+        if from == 0 {
+            let handle = kept("127.0.0.1", u16::try_from(env).unwrap()).unwrap();
+            WRITTEN_TO.store(handle, Ordering::SeqCst);
+            let wrote = written_within(handle, &vec![b'x'; MUCH], WITHIN);
+            WROTE_IT_ALL.store(if wrote.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+            assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+            return 0;
+        }
+        let started = std::time::Instant::now();
+        let waits = || {
+            let (on_the_socket, on_a_copy) = waiting_on(WRITTEN_TO.load(Ordering::SeqCst));
+            on_the_socket + on_a_copy
+        };
+        while waits() == 0 && started.elapsed() < 2 * WITHIN {
+            crate::embed::serve::yield_now();
+        }
+        RAN_MEANWHILE.store(if waits() > 0 { 1 } else { 2 }, Ordering::SeqCst);
+        0
+    }
+
+    /// A server for one connection that reads nothing until the second task has said it ran, then
+    /// reads all `MUCH` of it and keeps the connection until the write's over.
+    fn reads_once_another_task_has_run() -> u16 {
+        use std::io::Read as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(WITHIN)).unwrap();
+            let started = std::time::Instant::now();
+            while RAN_MEANWHILE.load(Ordering::SeqCst) == 0 && started.elapsed() < 3 * WITHIN {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let mut left = MUCH;
+            let mut some = vec![0_u8; 1 << 16];
+            while left > 0 {
+                match stream.read(&mut some) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => left = left.saturating_sub(read),
+                }
+            }
+            while WROTE_IT_ALL.load(Ordering::SeqCst) == 0 && started.elapsed() < 4 * WITHIN {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        port
+    }
+
+    /// A task writing to a connection whose other side isn't reading parks for room, and the
+    /// other task on its worker runs meanwhile. It used to hold its worker in the kernel: only a
+    /// read made a connection's socket not block, and only while it was parked, so a write with
+    /// no read beside it waited as a thread does. Here the second task then never ran while the
+    /// first waited, and the write ran out its ten seconds, as the server reads only once the
+    /// second task has run.
+    #[test]
+    fn a_task_writing_to_a_full_connection_parks_and_its_workers_other_task_runs() {
+        begin();
+        let port = reads_once_another_task_has_run();
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let leaf = super::Leaf::For(writes_while_another_runs, i64::from(port));
+        let ended = super::each_on_pool(run, pool, 2, leaf).finish();
+        crate::stdlib::net::shut(WRITTEN_TO.load(Ordering::SeqCst));
+        assert_eq!(ended, 0);
+        assert_eq!(RAN_MEANWHILE.load(Ordering::SeqCst), 1, "the other task, while the write waited");
+        assert_eq!(WROTE_IT_ALL.load(Ordering::SeqCst), 1, "the write");
+        finish();
+    }
+
+    /// The TLS connection the two tasks below share, and how each one's part ended: 1 for as it
+    /// should have.
+    static OVER_TLS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static READ_OVER_TLS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static WROTE_OVER_TLS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    /// More than TLS holds at once, and than the socket's buffers hold.
+    const MUCH_OVER_TLS: usize = 2 << 20;
+
+    /// One of two tasks reads a line from the TLS connection, parked until the server answers.
+    /// The other writes `MUCH_OVER_TLS` to it meanwhile.
+    extern "C" fn reads_or_writes_over_tls(_env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        use crate::stdlib::net::{line_from_within, written_within};
+        let handle = OVER_TLS.load(Ordering::SeqCst);
+        if from == 0 {
+            let read = line_from_within(handle, WITHIN);
+            READ_OVER_TLS.store(if read == Ok(Some(b"done\n".to_vec())) { 1 } else { 2 }, Ordering::SeqCst);
+        } else {
+            let wrote = written_within(handle, &vec![b'y'; MUCH_OVER_TLS], WITHIN);
+            WROTE_OVER_TLS.store(if wrote.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+        }
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        0
+    }
+
+    /// A task writes more over TLS than TLS holds at once, to a server that's slow to read, while
+    /// another task on its worker is parked reading the same connection. All of it arrives, and
+    /// the reader gets the server's answer. The write used to hand TLS everything in one go, which
+    /// on a socket that doesn't block gives up partway when there's no room, with part taken and
+    /// the rest lost: the write failed, and the server never got its bytes.
+    #[test]
+    fn a_long_write_over_tls_from_a_task_parks_for_room_and_all_of_it_arrives() {
+        begin();
+        crate::stdlib::http::use_tls();
+        let (handle, server) = crate::stdlib::net::tests::tls::connected_to_a_slow_reader(MUCH_OVER_TLS);
+        OVER_TLS.store(handle, Ordering::SeqCst);
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let ended = super::each_on_pool(run, pool, 2, super::Leaf::For(reads_or_writes_over_tls, 0)).finish();
+        let whole = server.join().unwrap();
+        crate::stdlib::net::shut(handle);
+        assert_eq!(ended, 0);
+        assert_eq!(WROTE_OVER_TLS.load(Ordering::SeqCst), 1, "the write");
+        assert!(whole, "what was written didn't all arrive");
+        assert_eq!(READ_OVER_TLS.load(Ordering::SeqCst), 1, "the read");
+        finish();
+    }
+
+    /// The server's connection the task below closes, and how long closing it took, in
+    /// milliseconds.
+    static CLOSED_BY_A_TASK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static CLOSING_TOOK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+    /// Closes the server's connection, as a parked task.
+    extern "C" fn closes_while_the_client_sends(_env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
+        let started = std::time::Instant::now();
+        crate::stdlib::net::shut(CLOSED_BY_A_TASK.load(Ordering::SeqCst));
+        CLOSING_TOOK.store(i64::try_from(started.elapsed().as_millis()).unwrap(), Ordering::SeqCst);
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        0
+    }
+
+    /// A task closing a server's connection reads what the other side is still sending until
+    /// it's done, parked between reads, so the client's sends all go and nothing's reset.
+    #[test]
+    fn a_task_closing_a_servers_connection_reads_what_is_still_sent_parked() {
+        begin();
+        let (handle, sending) = crate::stdlib::net::tests::served_while_the_client_sends();
+        CLOSED_BY_A_TASK.store(handle, Ordering::SeqCst);
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let leaf = super::Leaf::For(closes_while_the_client_sends, 0);
+        let ended = super::each_on_pool(run, pool, 1, leaf).finish();
+        assert_eq!(ended, 0);
+        assert!(sending.join().unwrap(), "a piece the client sent was refused");
+        let took = CLOSING_TOOK.load(Ordering::SeqCst);
+        let most = i64::try_from(crate::stdlib::net::LINGER.as_millis()).unwrap();
+        assert!((100..most).contains(&took), "closing took {took} ms");
+        finish();
+    }
+
     /// More requests than there'll ever be blocking threads.
     const ASKING: usize = 100;
     static ANSWERED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
@@ -1131,8 +1291,7 @@ mod tests {
     fn requests_over_tls_made_in_tasks_park_for_room_and_for_their_answers() {
         begin();
         crate::stdlib::http::use_tls();
-        let trusting = crate::stdlib::net::tests::tls::trusting_the_tests();
-        let port = crate::stdlib::net::tests::tls::https_echoing(2);
+        let (port, trusting) = crate::stdlib::net::tests::tls::https_echoing(2);
         let pool = super::pool::with_threads(1);
         let run = super::Run::new(1).waiting(true);
         let run = super::each_on_pool(run, pool, 2, super::Leaf::For(posts_over_tls, i64::from(port)));

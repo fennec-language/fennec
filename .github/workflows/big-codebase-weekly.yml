@@ -1,0 +1,52 @@
+name: Big codebase, weekly
+
+# Once a week, a generated program of 100,000 and 200,000 lines is checked, built cold in dev and
+# release, built again after a one-line edit, and tested, as the nightly does at 20,000 and 50,000
+# (`fennec-bench big-codebase`, in `proofs.yml`). Each step is held to growing in step with the
+# program from 100,000 lines to 200,000, not faster, and to its budget in `bench/big-codebase.txt`
+# once one is pinned. 200,000 lines needs more memory than a Mac here runs a benchmark with: its
+# release build holds about 6 GB, which this runner's 16 GB has room for. `nightly-report.sh`
+# copies the latest week's numbers into the lanes' notes. No pull request waits on this.
+on:
+  schedule:
+    - cron: "53 5 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: big-codebase-weekly
+
+jobs:
+  big-codebase:
+    name: Check, build and test a big codebase at 100,000 and 200,000 lines
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # GNU's `time` reads the most memory each step's processes held.
+      - name: Install LLVM's tools and GNU's time
+        run: |
+          rustup component add llvm-tools-preview
+          .github/scripts/apt.sh time
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build fennec, its runtimes, their bitcode and the bench
+        run: .github/scripts/big-codebase-build.sh
+      - name: Measure each step at each size
+        run: ./target/release/fennec-bench big-codebase --lines 100000,200000 --markdown big-codebase-weekly.md
+      - name: Show the numbers on the run's summary page
+        if: always()
+        run: '[ -f big-codebase-weekly.md ] && cat big-codebase-weekly.md >> "$GITHUB_STEP_SUMMARY" || true'
+      # `nightly-report.sh` copies these into the lanes' notes.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: big-codebase-weekly
+          path: big-codebase-weekly.md
+          if-no-files-found: ignore

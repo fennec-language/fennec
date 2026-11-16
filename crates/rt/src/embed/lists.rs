@@ -184,6 +184,9 @@ fn marked_set(state: &mut State, list: i64, at: i64) -> Option<i64> {
     }
     let start = LIST_HEADER_WORDS + at * stride;
     let words = block.get(start..start + stride)?.to_vec();
+    // Asked before anything the item's words hold is looked at: set again, as a take's put-back
+    // does, they may name a list taken out and moved since, which only the log's first save of
+    // the item is right about.
     if super::guarded::rollback::item_set_already(address, at)? {
         // Set already, with nothing since that moved items about: the log has it as it was
         // before the lock.

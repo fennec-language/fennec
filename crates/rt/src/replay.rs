@@ -51,12 +51,13 @@
 //!   connection's reads and writes among them, and when they've all ended the server stops, as if
 //!   it had been stopped there, and says so.
 //!
-//! The log is `FENREPL4`, the header's length as four bytes and the header, then the entries. Each
+//! The log is `FENREPL5`, the header's length as four bytes and the header, then the entries. Each
 //! entry is its task's name and its call's name, each with its length as two bytes, then what it
 //! gave, with its length as four. All numbers are little-endian. A `FENREPL1` log, from before
-//! tasks were named, has no task names, and replays as `main`'s. A `FENREPL3` or `FENREPL2`
-//! log, from before stops were recorded, replays as it did then, saying so when it has tasks: a
-//! task stopped in it may not be stopped in its replay.
+//! tasks were named, has no task names, and replays as `main`'s. A log from an older Fennec, which
+//! recorded less of what tasks do, replays as it did then, saying so when it has tasks: a
+//! `FENREPL4` log has no `parallel` ranges a failure kept from starting, and a `FENREPL3` or
+//! `FENREPL2` log no stops.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -70,7 +71,11 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::{Instance, Value};
 
-const MAGIC: &[u8; 8] = b"FENREPL4";
+const MAGIC: &[u8; 8] = b"FENREPL5";
+
+/// A log from before a `parallel` call's skipped ranges were recorded: one where a piece failed
+/// may run other pieces in its replay.
+const MAGIC_BEFORE_SKIPS: &[u8; 8] = b"FENREPL4";
 
 /// A log from before stops were recorded: a task stopped in it may go on in its replay.
 const MAGIC_BEFORE_STOPS: &[u8; 8] = b"FENREPL3";
@@ -478,19 +483,20 @@ fn playing(path: &Path) -> std::io::Result<Mode> {
     let log = std::fs::read(path)?;
     entries_start(&log).ok_or_else(|| std::io::Error::other("this isn't a recording"))?;
     let player = player_of(&log).ok_or_else(|| std::io::Error::other("this recording is damaged"))?;
-    if made_before_stops(&log, &player) {
+    if made_by_an_older_fennec(&log, &player) {
         let _ = writeln!(
             std::io::stderr(),
-            "warning: this recording was made before stops were recorded, so a task stopped in it \
-             may not be stopped in its replay: record it again to replay it exactly"
+            "warning: this recording was made by an older Fennec, which recorded less of what tasks \
+             do, like where one was stopped, so a task in it may not replay as it ran: record it again \
+             to replay it exactly"
         );
     }
     Ok(Mode::Replay(Mutex::new(player)))
 }
 
-/// Whether a replay of `log` should say it was made before stops were recorded: any log older than
-/// this one, `FENREPL2` as well as `FENREPL3`, whose run had tasks, as one may have been stopped.
-fn made_before_stops(log: &[u8], player: &Player) -> bool {
+/// Whether a replay of `log` should say an older Fennec made it: any log older than this one whose
+/// run had tasks, as one may have been stopped, or a `parallel` call's piece may have failed.
+fn made_by_an_older_fennec(log: &[u8], player: &Player) -> bool {
     !log.starts_with(MAGIC) && player.has_tasks()
 }
 
@@ -511,14 +517,15 @@ impl Player {
 
 /// A log's entries, each task's in a stream of its own: `None` if it's damaged.
 fn player_of(log: &[u8]) -> Option<Player> {
-    let named =
-        log.starts_with(MAGIC) || log.starts_with(MAGIC_BEFORE_STOPS) || log.starts_with(MAGIC_UNMARKED);
+    let named = [MAGIC, MAGIC_BEFORE_SKIPS, MAGIC_BEFORE_STOPS, MAGIC_UNMARKED]
+        .iter()
+        .any(|magic| log.starts_with(*magic));
     let mut player = Player {
         streams: HashMap::new(),
         workers: None,
         orders_output: false,
         held: HashMap::new(),
-        whole: !(log.starts_with(MAGIC) || log.starts_with(MAGIC_BEFORE_STOPS)),
+        whole: ![MAGIC, MAGIC_BEFORE_SKIPS, MAGIC_BEFORE_STOPS].iter().any(|magic| log.starts_with(*magic)),
     };
     let mut reader = Entries { log, at: entries_start(log)? };
     while reader.at < log.len() {
@@ -583,7 +590,7 @@ pub fn header_of(path: &Path) -> std::io::Result<Vec<u8>> {
 
 fn entries_start(log: &[u8]) -> Option<usize> {
     let magic = log.get(..MAGIC.len())?;
-    if ![MAGIC, MAGIC_BEFORE_STOPS, MAGIC_UNMARKED, MAGIC_UNNAMED]
+    if ![MAGIC, MAGIC_BEFORE_SKIPS, MAGIC_BEFORE_STOPS, MAGIC_UNMARKED, MAGIC_UNNAMED]
         .iter()
         .any(|known| known.as_slice() == magic)
     {

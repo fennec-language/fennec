@@ -128,13 +128,15 @@ jobs:
             binary=$(cygpath -u "$binary")
             folder=$(cygpath -u "$folder")
           fi
-          echo "TEST_BINARY=$PWD/$binary" >> "$GITHUB_ENV"
-          echo "PACKAGE_FOLDER=$(dirname "$folder")" >> "$GITHUB_ENV"
           # cargo tells the processes it starts which toolchain it is, and the test's own `cargo
           # build` of the runtime needs it: cargo compiles a crate from the registry in that crate's
           # folder, where there's no rust-toolchain.toml, so rustup would take its default instead,
           # another Rust, and rebuild everything with it, and fail.
-          echo "RUSTUP_TOOLCHAIN=$(rustup show active-toolchain | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          {
+            echo "TEST_BINARY=$PWD/$binary"
+            echo "PACKAGE_FOLDER=$(dirname "$folder")"
+            echo "RUSTUP_TOOLCHAIN=$(rustup show active-toolchain | cut -d ' ' -f 1)"
+          } >> "$GITHUB_ENV"
       # On Windows, a program that crashes as it runs is caught where it crashed: the debugger, `cdb`,
       # set as the one Windows starts on a crash, writes each thread's stack and a full dump into
       # this share's folder, and Windows Error Reporting's own dumps are asked for too. Neither comes

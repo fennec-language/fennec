@@ -15,6 +15,7 @@ mod library;
 mod locks;
 mod methods;
 mod own_index;
+mod packing;
 mod parallel;
 mod paths;
 mod saving;

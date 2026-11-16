@@ -22,6 +22,7 @@ use std::rc::Rc;
 use fennec_syntax::{BinOp, Diagnostic, Span, UnaryOp};
 
 use crate::lengths::{Length, Lengths};
+use crate::ranges::{Fact, Ranges};
 use crate::{Function, InstKind, LocalId, Operand, Program, Terminator};
 
 pub use literal::{Written, literal};
@@ -94,6 +95,55 @@ pub fn check_lengths(program: &Program, lengths: &Lengths, steps: u64) -> Length
     LengthsChecked { checked: machine.checked, broken, stopped }
 }
 
+/// Runs a program's `main` within `steps` steps, checking each fact `ranges` gives: what each
+/// value written to a local and each parameter given holds, and the operands of each `//` and
+/// `%` said unsigned, each `int(x)` said to fit and each comparison said not NaN, as the program
+/// runs. As with [`check_lengths`], it's a test of the facts, not of the program.
+pub fn check_ranges(program: &Program, ranges: &Ranges, steps: u64) -> LengthsChecked {
+    let mut machine = Machine::new(program);
+    machine.ranges = Some(ranges);
+    machine.quiet = true;
+    machine.steps_left = steps;
+    let ran = match machine.functions.get("main").copied() {
+        Some(main) => machine.call(main, vec![Value::Unit; main.params]).map(|_| ()),
+        None => not_here("a program with no `main`"),
+    };
+    let (broken, stopped) = match ran {
+        Ok(()) => (None, None),
+        Err(Stop::Broken(why)) => (Some(why), None),
+        Err(Stop::TooLong) => (None, Some("too many steps".to_owned())),
+        Err(Stop::NotHere(what)) => (None, Some(what)),
+        Err(Stop::Failed(problem)) => (None, Some(problem.message)),
+    };
+    LengthsChecked { checked: machine.checked, broken, stopped }
+}
+
+/// Whether a value holds what's known about it. A value of a kind the fact doesn't say anything
+/// about, as a local's before it's written, holds it.
+fn holds(value: &Value, fact: &Fact) -> bool {
+    match (fact, value) {
+        (Fact::Any, _) | (_, Value::Unit) => true,
+        (Fact::Unset, _) => false,
+        (Fact::Int(low, high), Value::Int(number)) => low <= number && number <= high,
+        (Fact::Float(known), Value::Float(number)) => {
+            if number.is_nan() {
+                known.nan
+            } else {
+                known.low <= *number && *number <= known.high
+            }
+        }
+        (Fact::Struct(fields), Value::Instance(instance)) => {
+            instance.fields.len() == fields.len()
+                && instance.fields.iter().zip(fields).all(|(value, fact)| holds(value, fact))
+        }
+        (Fact::Tuple(items), Value::Tuple(values)) => {
+            values.len() == items.len() && values.iter().zip(items).all(|(value, fact)| holds(value, fact))
+        }
+        (Fact::List(items), Value::List(values)) => values.iter().all(|value| holds(value, items)),
+        _ => true,
+    }
+}
+
 /// The length of a list.
 fn length_of(value: &Value) -> Option<usize> {
     match value {
@@ -146,6 +196,9 @@ pub(crate) struct Machine<'p> {
     depth: usize,
     /// What's known of list lengths, checked as the program runs, when it's being checked.
     lengths: Option<&'p Lengths>,
+    /// What's known of ints' and floats' values, checked as the program runs, when it's being
+    /// checked.
+    ranges: Option<&'p Ranges>,
     /// Whether printing does nothing, rather than stopping here.
     quiet: bool,
     /// How many times a length was checked.
@@ -173,9 +226,86 @@ impl<'p> Machine<'p> {
             steps_left: 0,
             depth: 0,
             lengths: None,
+            ranges: None,
             quiet: false,
             checked: 0,
         }
+    }
+
+    /// What's known about a function's values, when they're being checked.
+    fn ranges_of(&self, function: &Function) -> Option<&'p crate::ranges::FunctionRanges> {
+        self.ranges.and_then(|ranges| ranges.function(&function.name))
+    }
+
+    /// Checks what's known of a function's parameters that aren't lists against what it's given.
+    fn check_given(&mut self, function: &Function, locals: &[Value]) -> Ran<()> {
+        let Some(known) = self.ranges_of(function) else { return Ok(()) };
+        for at in 0..function.params {
+            let (Some(fact), Some(value)) = (known.local(LocalId(at)), locals.get(at)) else { continue };
+            self.checked += 1;
+            if !holds(value, fact) {
+                return Err(Stop::Broken(format!(
+                    "`{}` was given {value:?} for parameter {at}, where {fact:?} says",
+                    function.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks the operands of an instruction a check is left out of because of what's known.
+    fn check_operands(
+        &mut self,
+        function: &Function,
+        place: crate::ranges::Place,
+        inst: &InstKind,
+        locals: &[Value],
+    ) -> Ran<()> {
+        let Some(known) = self.ranges_of(function) else { return Ok(()) };
+        let broken = match inst {
+            InstKind::Binary { op: BinOp::FloorDiv | BinOp::Mod, lhs, rhs, .. } if known.unsigned(place) => {
+                self.checked += 1;
+                let sides = (read(locals, lhs), read(locals, rhs));
+                (!matches!(sides, (Value::Int(left), Value::Int(right)) if left >= 0 && right >= 0))
+                    .then(|| format!("{sides:?} isn't unsigned"))
+            }
+            InstKind::Builtin { args, .. } if known.fits(place) => {
+                self.checked += 1;
+                let given = args.first().map(|arg| read(locals, arg));
+                let fits = matches!(given, Some(Value::Float(number)) if number.is_finite() && number.abs() < 9.223_372_036_854_775e18);
+                (!fits).then(|| format!("`int` was given {given:?}, which doesn't fit"))
+            }
+            InstKind::Binary { lhs, rhs, .. } if known.not_nan(place) => {
+                self.checked += 1;
+                let sides = (read(locals, lhs), read(locals, rhs));
+                let nan = |value: &Value| matches!(value, Value::Float(number) if number.is_nan());
+                (nan(&sides.0) || nan(&sides.1)).then(|| format!("{sides:?} has a NaN"))
+            }
+            _ => None,
+        };
+        match broken {
+            Some(why) => Err(Stop::Broken(format!("in `{}` at {place:?}: {why}", function.name))),
+            None => Ok(()),
+        }
+    }
+
+    /// Checks what an instruction wrote to a local that isn't a list against what's known of it.
+    fn check_written(&mut self, function: &Function, inst: &InstKind, locals: &[Value]) -> Ran<()> {
+        let Some(known) = self.ranges_of(function) else { return Ok(()) };
+        let Some(dest) = inst.dest() else { return Ok(()) };
+        // A list's items are followed through the function, where it's written, not here.
+        if function.locals.get(dest.0).is_some_and(|local| matches!(local.ty, fennec_check::Type::List(_))) {
+            return Ok(());
+        }
+        let (Some(fact), Some(value)) = (known.written(dest), locals.get(dest.0)) else { return Ok(()) };
+        self.checked += 1;
+        if holds(value, fact) {
+            return Ok(());
+        }
+        Err(Stop::Broken(format!(
+            "in `{}`, _{} was written {value:?}, where {fact:?} says",
+            function.name, dest.0
+        )))
     }
 
     /// Checks what's known of a function's list parameters against the values they hold.
@@ -281,6 +411,7 @@ impl<'p> Machine<'p> {
 
     fn run(&mut self, function: &'p Function, args: Vec<Value>) -> Ran<(Value, Vec<Value>)> {
         let mut locals = args;
+        self.check_given(function, &locals)?;
         let given: Vec<Option<usize>> = if self.lengths.is_some() {
             self.check_params(function, &locals, "on the way into")?;
             locals.iter().map(length_of).collect()
@@ -293,9 +424,11 @@ impl<'p> Machine<'p> {
             let Some(block) = function.blocks.get(at) else {
                 return not_here("a block that isn't there");
             };
-            for inst in &block.insts {
+            for (place, inst) in block.insts.iter().enumerate() {
                 self.charge(1)?;
+                self.check_operands(function, (at, place), &inst.kind, &locals)?;
                 self.step(&mut locals, &inst.kind, inst.span)?;
+                self.check_written(function, &inst.kind, &locals)?;
             }
             self.charge(1)?;
             at = match &block.end {

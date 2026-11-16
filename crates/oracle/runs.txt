@@ -64,12 +64,15 @@ hello.fen
 http_server.fen
 http_strict.fen
 id_in_a_map.fen
+import_as.fen
 interface_fails.fen
 interface_mut_self.fen
 interface_params.fen
 interfaces.fen
 json.fen
 json_annotations.fen
+json_collections.fen
+json_enums.fen
 json_hostile.fen
 json_ids.fen
 json_names.fen
@@ -106,6 +109,7 @@ path_inside_windows.fen
 postgres_auth.fen
 postgres_messages.fen
 postgres_query.fen
+projects/aliases
 projects/arena
 projects/cases
 projects/constants
@@ -114,6 +118,7 @@ projects/shadowing
 robot.fen
 self_in_a_type.fen
 self_type.fen
+serialize_protocol.fen
 sets_native.fen
 shared_accounts.fen
 shared_bank.fen
@@ -136,6 +141,7 @@ std_html.fen
 std_html_hostile.fen
 std_io.fen
 std_json.fen
+std_log.fen
 std_long_input_errors.fen
 std_net_hostile.fen
 std_odds.fen
@@ -169,6 +175,8 @@ text_contains.fen
 text_native.fen
 times.fen
 tokenizer.fen
+toml.fen
+toml_hostile.fen
 tree_values.fen
 trees.fen
 unions.fen

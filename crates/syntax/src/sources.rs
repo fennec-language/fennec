@@ -31,6 +31,12 @@ impl Sources {
         Sources::default()
     }
 
+    /// The span each file's text covers, in the order they were added.
+    #[must_use]
+    pub fn spans(&self) -> Vec<Span> {
+        self.files.iter().map(|file| Span { start: file.base, end: file.end() }).collect()
+    }
+
     /// Whether the files reach where what the compiler writes in starts: a program that long, past
     /// 1.75 GiB, would have its own text read as the compiler's.
     #[must_use]
@@ -294,16 +300,19 @@ impl Trace {
     /// How many entries it keeps at each end.
     pub const KEPT: usize = 16;
 
-    /// The failure left the call at `span`, `times` times in a row.
+    /// The failure left the call at `span`, `times` times in a row. Once calls have been left out,
+    /// each place after them is on the far end: it's never joined to the last one before the gap,
+    /// nor put before it.
     pub fn push(&mut self, span: Span, times: u64) {
-        let last = if self.outer.is_empty() { self.inner.last_mut() } else { self.outer.back_mut() };
+        let near = self.outer.is_empty() && self.skipped == 0;
+        let last = if near { self.inner.last_mut() } else { self.outer.back_mut() };
         if let Some((at, already)) = last
             && *at == span
         {
             *already = already.saturating_add(times);
             return;
         }
-        if self.outer.is_empty() && self.inner.len() < Self::KEPT {
+        if near && self.inner.len() < Self::KEPT {
             self.inner.push((span, times));
             return;
         }
@@ -315,7 +324,8 @@ impl Trace {
         }
     }
 
-    /// `calls` calls the failure left, past what's kept.
+    /// `calls` calls the failure left, past what's kept. Every place pushed after this is on the
+    /// far side of them.
     pub fn skip(&mut self, calls: u64) {
         self.skipped = self.skipped.saturating_add(calls);
     }
@@ -388,9 +398,33 @@ impl Trace {
 
 #[cfg(test)]
 mod tests {
-    use super::Sources;
+    use super::{Sources, Trace};
     use crate::diagnostic::{Also, Diagnostic};
     use crate::span::Span;
+
+    /// Once calls are left out, each place after them is on the far end: one that's the same as
+    /// the last before the gap isn't joined to it, and none goes before the gap, however few the
+    /// near end holds. The far end keeps its last [`Trace::KEPT`], the rest counted as left out.
+    #[test]
+    fn a_place_after_the_calls_left_out_is_on_the_far_end() {
+        let at = |turn: u32| Span { start: turn % 2, end: turn % 2 + 1 };
+        let mut trace = Trace::default();
+        for turn in 0..15 {
+            trace.push(at(turn), 1);
+        }
+        trace.skip(40);
+        for turn in 14..31 {
+            trace.push(at(turn), 1);
+        }
+        assert_eq!(trace.inner.len(), 15);
+        assert_eq!(trace.inner.last(), Some(&(at(14), 1)));
+        assert_eq!(trace.outer.len(), Trace::KEPT);
+        assert_eq!(trace.skipped, 41);
+        assert!(trace.inner.iter().chain(&trace.outer).all(|(_, times)| *times == 1));
+        // Read back, and cut short, it's the same.
+        assert_eq!(Trace::decode(&trace.encode()).map(|read| read.encode()), Some(trace.encode()));
+        assert_eq!(trace.until(|_| false).encode(), trace.encode());
+    }
 
     /// Finding a span's file by halving finds the one reading every file from the last finds: at
     /// each file's first and last offset, one past the last file, and in an empty file.

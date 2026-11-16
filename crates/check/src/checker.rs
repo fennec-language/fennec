@@ -183,13 +183,8 @@ fn library_alone<'m>(
         program.add_with(prelude, true, hold);
         program.problems.extend(crate::privacy::top_level_underscores(prelude));
     }
-    program.prelude_imports = std::mem::take(&mut program.imports);
-    program.prelude_modules = std::mem::take(&mut program.modules);
-    // What a standard library module imports is its own: a program names it only by importing
-    // it too.
-    program.std_functions.clear();
-    program.std_constants.clear();
-    program.imported_types.clear();
+    // What a standard library module imports is its own, kept apart by where it's written: a
+    // program names it only by importing it too.
     program
 }
 
@@ -792,7 +787,10 @@ impl Checker {
             let def = &entry.def;
             // A `test` block, and the function LLVM's tests make of one, have no signature.
             let test = key.starts_with("test \"") || key.starts_with("test:");
-            if entry.prelude || def.fails.is_some() || def.name == "main" || test {
+            // What the compiler writes in, like a crash's cleanup run as a function of its own, has
+            // no reader to see a signature: what it can fail with is what its body says.
+            let written = crate::lend_lowering::not_written_by_hand(def.span);
+            if entry.prelude || def.fails.is_some() || def.name == "main" || test || written {
                 continue;
             }
             let Some(State::Done(signature)) = self.states.get(key) else { continue };

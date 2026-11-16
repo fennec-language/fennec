@@ -648,26 +648,73 @@ fn what_earlier_except_cases_left_is_failed_with_as_the_smaller_set() -> std::io
 /// Built with every type that doesn't contain itself in place and with `FENNEC_BOXED_TYPES=1`, in
 /// dev and release, a program prints `wanted` each way and ends with nothing held.
 fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
-    for boxed in [false, true] {
+    same_with_and_without("FENNEC_BOXED_TYPES", name, source, wanted)
+}
+
+/// Built without the switch `switch` and with it set to `1`, in dev and release, a program prints
+/// `wanted` each way and ends with nothing held.
+fn same_with_and_without(switch: &str, name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    for set in [false, true] {
         for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
             let dir = folder(name)?;
             let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
             std::fs::write(&program, source)?;
             let mut command = crate::executables::fennec_command();
             command.arg("build").args(how).arg(&program).arg("-o").arg(&executable).env("FENNEC_HOME", &dir);
-            if boxed {
-                command.env("FENNEC_BOXED_TYPES", "1");
+            command.env_remove(switch);
+            if set {
+                command.env(switch, "1");
             }
             let built = command.output_before(FENNEC_DEADLINE)?;
             assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
             let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
             std::fs::remove_dir_all(&dir)?;
             let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "boxed {boxed} {how:?}: {said}");
-            assert!(said.lines().any(|line| line.ends_with(" live 0")), "boxed {boxed} {how:?}: {said}");
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{switch} {set} {how:?}: {said}");
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "{switch} {set} {how:?}: {said}");
         }
     }
     Ok(())
+}
+
+/// A dict of structs used every way a dict is prints the same with each value held in the dict's
+/// entry and, with `FENNEC_BOXED_DICT_VALUES=1`, as a block of its own, and ends with nothing held:
+/// values of two plain words, of one word, owning a text, a list and a dict, and holding another
+/// struct, an optional and narrow numbers, under int, text and float keys. Each is set new and
+/// again, read, got, changed where it is, popped, walked, cleared, copied and compared; changed
+/// through `ref self` in a struct; changed under a lock that fails, which undoes it, and one that
+/// ends; and held in a dict of dicts. A value that's a block and a generic struct's copy too.
+#[test]
+fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_values_in_entries",
+        include_str!("fixtures/dict_values_in_entries.fen"),
+        include_str!("fixtures/dict_values_in_entries.out"),
+    )
+}
+
+/// A slice of a text used as a dict's key is found and added with no string made for it only in a
+/// dict of one-word values. Which dicts hold their values in their entries is the layouts' to say:
+/// a tuple is held in an entry as a struct is, and a dict of tuples took the one-word way, which
+/// read a tuple's first word as a value's block and stopped the program with a segmentation fault.
+/// A dict of tuples held locally and handed to a function, a dict of structs, and a dict of ints,
+/// which keeps the way with no string made. It prints what the reference evaluator prints, in
+/// entries and boxed, with nothing left.
+#[test]
+fn a_slice_key_into_a_dict_of_tuples_is_made_a_string_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_slice_keys_in_entries",
+        include_str!("fixtures/dict_slice_keys_in_entries.fen"),
+        include_str!("fixtures/dict_slice_keys_in_entries.out"),
+    )
 }
 
 /// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
@@ -2832,7 +2879,7 @@ fn what_is_appended_through_a_dict_is_made_with_no_copy_of_the_list() -> std::io
     prints_in_both_builds("appended_through_a_dict", APPENDED_THROUGH_A_DICT, "900 300 after 899 others\n")?;
     assert_eq!(
         counts_of("appended_through_a_dict_counts", APPENDED_THROUGH_A_DICT)?,
-        "copies 0 copied_bytes 0 largest_copy 0 allocations 620 allocated_bytes 142688 live 0"
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 619 allocated_bytes 142704 live 0"
     );
     Ok(())
 }
@@ -6146,7 +6193,7 @@ fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -
     prints_in_both_builds("moved_in_place", MOVED_IN_PLACE, MOVED_IN_PLACE_PRINTS)?;
     assert_eq!(
         counts_of("moved_in_place_counts", MOVED_IN_PLACE)?,
-        "copies 1 copied_bytes 672 largest_copy 672 allocations 114 allocated_bytes 11840 live 0"
+        "copies 1 copied_bytes 672 largest_copy 672 allocations 111 allocated_bytes 12032 live 0"
     );
     Ok(())
 }
@@ -7558,11 +7605,77 @@ fn a_crash_s_cleanup_ends_where_an_else_as_block_or_a_question_mark_from_fails()
     Ok(())
 }
 
-/// Not built yet: a crash's cleanup with a `?` inside a comprehension, which can't end the cleanup
-/// from where it is, doesn't run at all, as before any `?` could be in one. The program builds and
-/// crashes as it would with no cleanup. Turning the comprehension into a loop would let it run.
+/// A source's `except:` cleanup holding a `with launch`, a source whose block's end fails, a
+/// `lock`, a `parallel` sum or a `?` in a comprehension builds, and runs as it's written when the
+/// caller's block crashes. A failure out of it, from the inner source's end or the comprehension,
+/// ends it and is noted under the crash. Before, a `with launch` there stopped the compiler, the
+/// inner source's failure was noted as `False`, and a `?` in a comprehension left the whole
+/// cleanup out. When the block fails instead, each cleanup runs, and a `?` that isn't
+/// `x = f()?` still passes its failure up in place of the block's, as docs/language.md says.
 #[test]
-fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_is_left_out() -> std::io::Result<()> {
+fn a_crash_runs_a_cleanup_as_its_written_whatever_is_in_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash_cleanup_as_written")?;
+    let program = dir.join("written.fen");
+    std::fs::write(&program, include_str!("fixtures/crash_cleanup_as_written.fen"))?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("written"));
+    let output = output.to_string_lossy().into_owned();
+    let block_failed = "Shut(why=\"the block failed\")";
+    // Each case: what its cleanup prints, the failure noted under a crash, and the failure `main`
+    // says when the block fails.
+    let wanted = [
+        ("1", "cleanup 1\ntask ran\ncleanup done 1\n", None, block_failed),
+        (
+            "2",
+            "cleanup 2\ninside 1\nguard closing\n",
+            Some("Shut(why=\"closing failed\")"),
+            "Shut(why=\"closing failed\")",
+        ),
+        ("3", "cleanup 3\ntotal 10\ncleanup done 3\n", None, block_failed),
+        ("4", "cleanup 4\nsum 12\ncleanup done 4\n", None, block_failed),
+        ("5", "cleanup 5\n", Some("Shut(why=\"2 over 1\")"), "Shut(why=\"2 over 1\")"),
+    ];
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for (which, out, noted, failed) in wanted {
+            let ran = Command::new(&output).args([which, "crash"]).output_within()?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), out, "{how:?} {which} crash: {err}");
+            assert!(!ran.status.success(), "{how:?} {which} crash");
+            let crashed = format!("error: index {which} is out of range for length 1\n");
+            let said = noted.map(|failure| format!("{crashed}note: the cleanup failed: {failure}\n"));
+            assert!(err.contains(said.as_deref().unwrap_or(&crashed)), "{how:?} {which} crash: {err}");
+            assert_eq!(
+                err.matches("note: ").count(),
+                usize::from(noted.is_some()),
+                "{how:?} {which} crash: {err}"
+            );
+            let ran = Command::new(&output).args([which, "fail"]).output_within()?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), out, "{how:?} {which} fail: {err}");
+            assert!(
+                err.contains(&format!("error: `main` failed: {failed}\n")),
+                "{how:?} {which} fail: {err}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A crash's cleanup with a `?` inside a comprehension runs, as it's written: the cleanup is a
+/// function of its own, which the `?` passes up from. Before, the cleanup's rewrite couldn't end
+/// it from inside a comprehension, and a crash left the whole cleanup out.
+#[test]
+fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_runs() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -7575,7 +7688,7 @@ fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_is_left_out() -> st
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&output).output_within()?;
     let err = String::from_utf8_lossy(&ran.stderr);
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "", "{err}");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "cleanup 4\nkept 3\n", "{err}");
     assert!(err.contains("index 4 is out of range for length 1"), "{err}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -15156,6 +15269,59 @@ fn hashing_a_password_in_a_task_parks_it() -> std::io::Result<()> {
         );
         assert!(said.contains(" live 0"), "on {threads} threads: {said}");
         assert!(!said.contains("blocked_waits"), "a hash held its worker, on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
+/// Tasks using one SQLite connection wait their turn at it parked: a server's handlers insert on
+/// one connection, one of them running a slow query on it, for 70 clients at once. Each call went
+/// to a blocking thread that then waited for the connection's lock, so 63 calls behind a slow one
+/// held 63 of the blocking pool's threads doing nothing. Now a task takes the connection's turn
+/// before its call goes to a blocking thread, and under `FENNEC_COUNTS` no blocking thread waits
+/// for the connection: the counts line has no `blocked_waits`, where it had 63 (#1814).
+///
+/// It's built for a heap audit and run under it on 1, 4 and 16 threads, each run cut off at two
+/// minutes: it ends with what it should have printed, nothing live and nothing said.
+#[test]
+fn tasks_wait_their_turn_at_a_connection_parked() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("queries-wait-their-turn")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "queries_wait_their_turn";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("TMPDIR", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, "counted 300000\n70 inserted, 70 rows kept\n", "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(
+            !said.contains("blocked_waits"),
+            "a call waited for the connection on a thread, on {threads} threads: {said}"
+        );
         assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
     }
     std::fs::remove_dir_all(&dir)
@@ -25017,11 +25183,15 @@ fn a_failure_passed_up_says_its_chain_however_long() -> std::io::Result<()> {
     let again = "error Deep:\n    left: int\n\ndef down(left: int) -> int fails Deep:\n    \
                  if left == 0: fail Deep(left=left)\n    return down(left - 1)? + 1\n\n\
                  def main(stdout: Stdout) fails Deep:\n    stdout.print(down(50)?)\n";
-    let turns = "error Deep:\n    left: int\n\ndef ping(left: int) -> int fails Deep:\n    \
-                 if left == 0: fail Deep(left=left)\n    return pong(left - 1)? + 1\n\n\
-                 def pong(left: int) -> int fails Deep:\n    if left == 0: fail Deep(left=left)\n    \
-                 return ping(left - 1)? + 1\n\ndef main(stdout: Stdout) fails Deep:\n    \
-                 stdout.print(ping(81)?)\n";
+    let turns = |depth: u32| {
+        format!(
+            "error Deep:\n    left: int\n\ndef ping(left: int) -> int fails Deep:\n    \
+             if left == 0: fail Deep(left=left)\n    return pong(left - 1)? + 1\n\n\
+             def pong(left: int) -> int fails Deep:\n    if left == 0: fail Deep(left=left)\n    \
+             return ping(left - 1)? + 1\n\ndef main(stdout: Stdout) fails Deep:\n    \
+             stdout.print(ping({depth})?)\n"
+        )
+    };
     let given = "error Missing:\n    name: str\n\ndef find(name: str) -> int fails Missing:\n    \
                  if name == \"\": fail Missing(name=\"nobody\")\n    return len(name)\n\n\
                  def look(name: str) -> int fails Missing:\n    return find(name)? + 1\n\n\
@@ -25049,16 +25219,31 @@ fn a_failure_passed_up_says_its_chain_however_long() -> std::io::Result<()> {
             )),
             "{how:?}: {said}"
         );
-        let (_, said, code) = both_built_unpinned("turns_chain", turns, how)?;
-        assert_eq!(code, Some(1));
-        let calls: Vec<&str> = said.lines().filter(|line| line.contains("called from")).collect();
-        assert_eq!(calls.len(), 2 * 16, "{how:?}: {said}");
-        assert_eq!(said.lines().filter(|line| *line == "  = ... more calls").count(), 1, "{how:?}: {said}");
-        assert!(said.contains("  = in `pong`\n  = called from `ping` at "), "{how:?}: {said}");
-        assert!(
-            said.ends_with(&format!("  = called from `main` at {at}turns_chain.fen:13:18\n")),
-            "{how:?}: {said}"
-        );
+        // Each end keeps 16 places: the near one where it was raised, said above the chain, and
+        // the 15 calls after it, then the far one's 16. Whichever function it's raised in, no
+        // place from after the calls left out comes before them or is joined to one that does.
+        for (depth, raised_in) in [(81, "pong"), (80, "ping")] {
+            let (_, said, code) = both_built_unpinned("turns_chain", &turns(depth), how)?;
+            assert_eq!(code, Some(1));
+            let chain: Vec<&str> = said.lines().skip_while(|line| !line.starts_with("  = in `")).collect();
+            let calls = chain.iter().filter(|line| line.contains("called from")).count();
+            assert_eq!(calls, 15 + 16, "{how:?} {depth}: {said}");
+            assert_eq!(
+                chain.iter().position(|line| *line == "  = ... more calls"),
+                Some(16),
+                "{how:?} {depth}: {said}"
+            );
+            assert!(!said.contains("more than once"), "{how:?} {depth}: {said}");
+            let other = if raised_in == "pong" { "ping" } else { "pong" };
+            assert!(
+                said.contains(&format!("  = in `{raised_in}`\n  = called from `{other}` at ")),
+                "{how:?}: {said}"
+            );
+            assert!(
+                said.ends_with(&format!("  = called from `main` at {at}turns_chain.fen:13:18\n")),
+                "{how:?} {depth}: {said}"
+            );
+        }
         let (printed, said, code) = both_built_unpinned("given_chain", given, how)?;
         assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
         assert_eq!(

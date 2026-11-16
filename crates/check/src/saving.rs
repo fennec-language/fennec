@@ -739,8 +739,8 @@ fn bounded(def: &TypeDef, bound: &str) -> String {
 /// where the case is among them.
 fn constant(number: usize, case: Option<usize>) -> String {
     match case {
-        Some(case) => format!("SAVED_NAMES_{number}_{case}"),
-        None => format!("SAVED_NAMES_{number}_"),
+        Some(case) => format!("SAVED__NAMES_{number}_{case}"),
+        None => format!("SAVED__NAMES_{number}_"),
     }
 }
 

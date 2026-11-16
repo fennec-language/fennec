@@ -49,6 +49,10 @@ pub(crate) enum Value {
     Shared(Arc<Cell>),
     /// An end of the channel a `with launch` makes for its task.
     Channel(Channel),
+    /// A `Buffer`'s room, as `capacity()` gives it: only that it's at least this much is
+    /// promised, as `docs/language.md` says, so it answers only the comparisons that settles, and
+    /// anything else done with it is refused.
+    Room(i64),
     /// A value the oracle can't know, as a folder's size, which differs from one system to
     /// another: it can be held and passed on, and anything else done with it is refused, as this
     /// says why.
@@ -159,6 +163,7 @@ impl Value {
             Value::Id(_) => "Id",
             Value::Shared(_) => "shared value",
             Value::Channel(_) => "channel",
+            Value::Room(_) => "buffer's room",
             Value::Unknown(_) => "value the oracle can't know",
         }
     }

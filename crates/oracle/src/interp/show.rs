@@ -8,6 +8,9 @@ use super::{Binding, Interp, Place, Run, unsupported};
 use crate::text;
 use crate::value::{Cell, Func, Instance, Value};
 
+/// Why a `Buffer`'s room, beyond what's promised of it, is refused.
+pub(crate) const ROOM_UNPROMISED: &str = "a Buffer's exact room, which `docs/language.md` promises only to be at least what it holds, and n more right after `reserve(n)`";
+
 impl Interp {
     /// What `stdout.print` and `str()` show: a string as it is, and anything else as it shows
     /// inside a collection.
@@ -60,6 +63,7 @@ impl Interp {
             Value::Cap(_) => return unsupported("printing a capability"),
             Value::Shared(_) => return unsupported("printing a `shared` value"),
             Value::Channel(_) => return unsupported("printing a channel"),
+            Value::Room(_) => return unsupported(ROOM_UNPROMISED),
             Value::Unknown(why) => return unsupported(why.clone()),
         })
     }
@@ -357,6 +361,7 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
             return unsupported("comparing functions, generators or capabilities");
         }
         (Value::Unknown(why), _) | (_, Value::Unknown(why)) => return unsupported(why.clone()),
+        (Value::Room(_), _) | (_, Value::Room(_)) => return unsupported(ROOM_UNPROMISED),
         (Value::Shared(_) | Value::Channel(_), _) | (_, Value::Shared(_) | Value::Channel(_)) => {
             return unsupported("comparing `shared` values or channels");
         }

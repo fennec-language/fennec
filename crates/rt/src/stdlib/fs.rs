@@ -10,6 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use fennec_syntax::{Diagnostic, Span};
 
 use crate::methods::no_method;
+use crate::stdlib::turns::Held;
 use crate::value::{Capability, Value};
 
 /// A file `fs.create` or `fs.open` has lent, by the handle its `File` holds. One being written
@@ -64,8 +65,9 @@ impl Written {
     }
 }
 
-/// Each open file has a lock of its own, so a long write to one never holds up another.
-type Shared = Arc<Mutex<OpenFile>>;
+/// Each open file has a lock of its own, so a long write to one never holds up another, and a
+/// line of the tasks waiting their turn at it, parked.
+type Shared = Arc<Held<OpenFile>>;
 
 static OPEN: LazyLock<Mutex<HashMap<i64, Shared>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(1));
@@ -89,7 +91,7 @@ fn lent(file: OpenFile) -> Value {
     let mut next = NEXT.lock().unwrap_or_else(PoisonError::into_inner);
     let handle = *next;
     *next += 1;
-    OPEN.lock().unwrap_or_else(PoisonError::into_inner).insert(handle, Arc::new(Mutex::new(file)));
+    OPEN.lock().unwrap_or_else(PoisonError::into_inner).insert(handle, Arc::new(Held::new(file)));
     Value::made("File", vec![("_handle", Value::Int(handle))])
 }
 
@@ -260,37 +262,41 @@ type FakeWrite<'a> = dyn FnMut(&str, &[u8]) -> Result<(), String> + 'a;
 /// one goes into the test's fake file system, by `fake`.
 fn finish(file: &Value, fake: &mut FakeWrite<'_>) -> Result<(), String> {
     let Some(file) = taken(file) else { return Ok(()) };
-    let fake_written = match &mut *file.lock().unwrap_or_else(PoisonError::into_inner) {
+    let fake_written = match &mut *file.lock() {
         OpenFile::FakeWriting { target, data } => Some((std::mem::take(target), std::mem::take(data))),
         _ => None,
     };
     if let Some((target, data)) = fake_written {
         return fake(&target, &data);
     }
-    blocking(move || match &mut *file.lock().unwrap_or_else(PoisonError::into_inner) {
+    let turn = file.turn();
+    let held = Arc::clone(&file);
+    let done = blocking(move || match &mut *held.lock_for_work() {
         OpenFile::Writing { out, at, durable } => finish_writing(out, at, *durable),
         _ => Ok(()),
-    })
+    });
+    drop(turn);
+    done
 }
 
 /// Whether a lent file is one being written, which finishing puts in its target's place. One
 /// being read is only closed, which an `Fs` that only reads may do.
 pub(crate) fn written(file: &Value) -> bool {
     let Some(file) = handle_of(file).and_then(shared) else { return false };
-    matches!(
-        &*file.lock().unwrap_or_else(PoisonError::into_inner),
-        OpenFile::Writing { .. } | OpenFile::FakeWriting { .. }
-    )
+    matches!(&*file.lock(), OpenFile::Writing { .. } | OpenFile::FakeWriting { .. })
 }
 
 /// `fs._discard(file)`: a file written is thrown away, leaving its target as it was.
 fn discard(file: &Value) {
     let Some(file) = taken(file) else { return };
+    let turn = file.turn();
+    let held = Arc::clone(&file);
     blocking(move || {
-        if let OpenFile::Writing { at, .. } = &*file.lock().unwrap_or_else(PoisonError::into_inner) {
+        if let OpenFile::Writing { at, .. } = &*held.lock_for_work() {
             at.throw_away();
         }
     });
+    drop(turn);
 }
 
 /// What a `File`'s method gives back, as plain data that can come back from another thread.
@@ -323,9 +329,11 @@ pub(crate) fn real_file(handle: i64, method: &str, args: &[Value], span: Span) -
         }
         _ => return Err(Diagnostic::new(format!("a File has no method `{method}` that takes these"), span)),
     };
-    let done = blocking(move || {
-        file_work(&mut file.lock().unwrap_or_else(PoisonError::into_inner), &method, data, size)
-    });
+    // The file's turn, waited for parked, so the blocking thread below finds it free.
+    let turn = file.turn();
+    let held = Arc::clone(&file);
+    let done = blocking(move || file_work(&mut held.lock_for_work(), &method, data, size));
+    drop(turn);
     Ok(match done {
         Ok(Given::Nothing) => Value::Ok(Rc::new(Value::Unit)),
         Ok(Given::Data(data)) => Value::Ok(Rc::new(Value::Bytes(Rc::from(data)))),

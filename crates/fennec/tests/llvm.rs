@@ -648,26 +648,73 @@ fn what_earlier_except_cases_left_is_failed_with_as_the_smaller_set() -> std::io
 /// Built with every type that doesn't contain itself in place and with `FENNEC_BOXED_TYPES=1`, in
 /// dev and release, a program prints `wanted` each way and ends with nothing held.
 fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
-    for boxed in [false, true] {
+    same_with_and_without("FENNEC_BOXED_TYPES", name, source, wanted)
+}
+
+/// Built without the switch `switch` and with it set to `1`, in dev and release, a program prints
+/// `wanted` each way and ends with nothing held.
+fn same_with_and_without(switch: &str, name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    for set in [false, true] {
         for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
             let dir = folder(name)?;
             let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
             std::fs::write(&program, source)?;
             let mut command = crate::executables::fennec_command();
             command.arg("build").args(how).arg(&program).arg("-o").arg(&executable).env("FENNEC_HOME", &dir);
-            if boxed {
-                command.env("FENNEC_BOXED_TYPES", "1");
+            command.env_remove(switch);
+            if set {
+                command.env(switch, "1");
             }
             let built = command.output_before(FENNEC_DEADLINE)?;
             assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
             let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
             std::fs::remove_dir_all(&dir)?;
             let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "boxed {boxed} {how:?}: {said}");
-            assert!(said.lines().any(|line| line.ends_with(" live 0")), "boxed {boxed} {how:?}: {said}");
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{switch} {set} {how:?}: {said}");
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "{switch} {set} {how:?}: {said}");
         }
     }
     Ok(())
+}
+
+/// A dict of structs used every way a dict is prints the same with each value held in the dict's
+/// entry and, with `FENNEC_BOXED_DICT_VALUES=1`, as a block of its own, and ends with nothing held:
+/// values of two plain words, of one word, owning a text, a list and a dict, and holding another
+/// struct, an optional and narrow numbers, under int, text and float keys. Each is set new and
+/// again, read, got, changed where it is, popped, walked, cleared, copied and compared; changed
+/// through `ref self` in a struct; changed under a lock that fails, which undoes it, and one that
+/// ends; and held in a dict of dicts. A value that's a block and a generic struct's copy too.
+#[test]
+fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_values_in_entries",
+        include_str!("fixtures/dict_values_in_entries.fen"),
+        include_str!("fixtures/dict_values_in_entries.out"),
+    )
+}
+
+/// A slice of a text used as a dict's key is found and added with no string made for it only in a
+/// dict of one-word values. Which dicts hold their values in their entries is the layouts' to say:
+/// a tuple is held in an entry as a struct is, and a dict of tuples took the one-word way, which
+/// read a tuple's first word as a value's block and stopped the program with a segmentation fault.
+/// A dict of tuples held locally and handed to a function, a dict of structs, and a dict of ints,
+/// which keeps the way with no string made. It prints what the reference evaluator prints, in
+/// entries and boxed, with nothing left.
+#[test]
+fn a_slice_key_into_a_dict_of_tuples_is_made_a_string_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_slice_keys_in_entries",
+        include_str!("fixtures/dict_slice_keys_in_entries.fen"),
+        include_str!("fixtures/dict_slice_keys_in_entries.out"),
+    )
 }
 
 /// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
@@ -2832,7 +2879,7 @@ fn what_is_appended_through_a_dict_is_made_with_no_copy_of_the_list() -> std::io
     prints_in_both_builds("appended_through_a_dict", APPENDED_THROUGH_A_DICT, "900 300 after 899 others\n")?;
     assert_eq!(
         counts_of("appended_through_a_dict_counts", APPENDED_THROUGH_A_DICT)?,
-        "copies 0 copied_bytes 0 largest_copy 0 allocations 620 allocated_bytes 142688 live 0"
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 619 allocated_bytes 142704 live 0"
     );
     Ok(())
 }
@@ -6146,7 +6193,7 @@ fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -
     prints_in_both_builds("moved_in_place", MOVED_IN_PLACE, MOVED_IN_PLACE_PRINTS)?;
     assert_eq!(
         counts_of("moved_in_place_counts", MOVED_IN_PLACE)?,
-        "copies 1 copied_bytes 672 largest_copy 672 allocations 114 allocated_bytes 11840 live 0"
+        "copies 1 copied_bytes 672 largest_copy 672 allocations 111 allocated_bytes 12032 live 0"
     );
     Ok(())
 }
@@ -12766,6 +12813,25 @@ fn a_task_stopped_in_a_call_to_the_runtime_lets_go_of_what_the_call_was_given() 
     prints_with_nothing_left(&dir, &program, &format!("{}1\n", stopped.repeat(2)), &["1", "4"])
 }
 
+/// The same stop, reaching the pieces of a comprehension the stopped task was parked in: each
+/// piece waits in a read with `timeout=` on a worker of its own choosing, the task's stop is passed
+/// on to it, and it lets go of what its call was given before what it made is handed back to the
+/// task. Nothing's left live, from `main` and from inside a task.
+#[test]
+fn pieces_stopped_in_calls_to_the_runtime_let_go_of_what_the_calls_were_given() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("pieces_stopped_in_a_wait")?;
+    let program = dir.join("pieces_stopped_in_a_wait.fen");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pieces_stopped_in_a_wait.fen"),
+        &program,
+    )?;
+    let stopped = "Refused(why=\"leaving this way stops the task\")\n";
+    prints_with_nothing_left(&dir, &program, &stopped.repeat(2), &["1", "4"])
+}
+
 /// A loop over a variable's field borrows the list while nothing changes the variable, so what
 /// changes it next finds the list with one owner: a `ref` function changing the items, then a
 /// plain loop reading them, round after round, copies nothing.
@@ -15137,6 +15203,59 @@ fn hashing_a_password_in_a_task_parks_it() -> std::io::Result<()> {
         );
         assert!(said.contains(" live 0"), "on {threads} threads: {said}");
         assert!(!said.contains("blocked_waits"), "a hash held its worker, on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
+/// Tasks using one SQLite connection wait their turn at it parked: a server's handlers insert on
+/// one connection, one of them running a slow query on it, for 70 clients at once. Each call went
+/// to a blocking thread that then waited for the connection's lock, so 63 calls behind a slow one
+/// held 63 of the blocking pool's threads doing nothing. Now a task takes the connection's turn
+/// before its call goes to a blocking thread, and under `FENNEC_COUNTS` no blocking thread waits
+/// for the connection: the counts line has no `blocked_waits`, where it had 63 (#1814).
+///
+/// It's built for a heap audit and run under it on 1, 4 and 16 threads, each run cut off at two
+/// minutes: it ends with what it should have printed, nothing live and nothing said.
+#[test]
+fn tasks_wait_their_turn_at_a_connection_parked() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("queries-wait-their-turn")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "queries_wait_their_turn";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("TMPDIR", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, "counted 300000\n70 inserted, 70 rows kept\n", "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(
+            !said.contains("blocked_waits"),
+            "a call waited for the connection on a thread, on {threads} threads: {said}"
+        );
         assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
     }
     std::fs::remove_dir_all(&dir)
@@ -19108,6 +19227,25 @@ fn shows_its_arguments(name: &str) -> std::io::Result<(fennec_temp::Temp, String
     Ok((dir, path))
 }
 
+/// A program's own type named as a std module is, `path`, with methods of its own, leaves std.path
+/// its functions: `Path.inside` still refuses `NUL`. Before, the program's type took every std
+/// function whose key started `path.`, as a std type's methods are, and std's code didn't build.
+#[test]
+fn a_programs_type_named_like_a_std_module_leaves_it_its_functions() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "type_named_path",
+        "from std.path import Path\n\nstruct path:\n    name: str\n\n    def shown(self) -> str:\n        return self.name\n\n\
+         def main(stdout: Stdout):\n    stdout.print(path(name=\"p\").shown())\n    \
+         safe = Path(\"uploads\").inside(\"NUL\") except why:\n        stdout.print(f\"refused: {why}\")\n        return\n    \
+         stdout.print(\"accepted\", safe)\n",
+    )?;
+    assert_eq!(printed, "p\nrefused: InvalidValue(message=\"`NUL` can't be a path inside `uploads`\")\n");
+    Ok(())
+}
+
 /// Small things that gave a wrong answer rather than saying so: a `Path` going up from `..`, text
 /// base64 can't have written, a day a month doesn't have, and a delimiter that could never match.
 /// `Path.inside` joins a path from outside so it can't leave the folder.
@@ -20542,6 +20680,53 @@ fn pack_loads_a_generic_types_earlier_fields_by_their_names() -> std::io::Result
         printed_by("generic_pack_next", &next)?,
         "1 2\n3 4 5 6\n7 seven\n8 9 h\n10 11\n12 13\n14 15 16\n"
     );
+    Ok(())
+}
+
+/// A type that writes its own `serialize` is saved with the shape of what it saves, as its layout
+/// already was. A `Deque[int]` saves as a `list[int]`, so its bytes are a list's, and each loads
+/// as the other. A `Duration` saves as its nanoseconds, an int's bytes. A program's `Money`, which
+/// saves itself its own way, is shaped by its name alone: the hash after `FPK2` is `Money`'s. Since
+/// #1836 a `Deque`'s shape had held std's own fields, so how std keeps a ring changed the hash.
+#[test]
+fn pack_shapes_a_type_that_saves_itself_by_what_it_saves() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "saves_itself_shape",
+        r"from std import pack
+from std.collections import Deque
+from std.time import Duration
+
+struct Money:
+    cents: int
+
+extend Money:
+    def serialize(self, ref out: Serializer):
+        out.int(self.cents)
+
+    def deserialize(ref src: Deserializer) -> Self fails ParseError:
+        return Money(cents=src.int()?)
+
+def main(stdout: Stdout) fails ParseError:
+    queue = Deque.of([1, 2, 3])
+    stdout.print(pack.dumps(queue) == pack.dumps([1, 2, 3]))
+    stdout.print(pack.loads[list[int]](pack.dumps(queue))?)
+    stdout.print(pack.loads[Deque[int]](pack.dumps([4, 5]))?.items())
+    stdout.print(pack.dumps(Duration.seconds(2.0)) == pack.dumps(2_000_000_000))
+    stdout.print(pack.dumps(Money(cents=5))[4:12])
+    stdout.print(pack.loads[Money](pack.dumps(Money(cents=7)))?.cents)
+",
+    )?;
+    // FNV-1a, as `shape_hash` takes it, of `Money`'s shape: its name.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in "Money".bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    let shape: Vec<String> = hash.to_le_bytes().iter().map(u8::to_string).collect();
+    assert_eq!(printed, format!("True\n[1, 2, 3]\n[4, 5]\nTrue\nbytes([{}])\n7\n", shape.join(", ")));
     Ok(())
 }
 

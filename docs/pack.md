@@ -36,6 +36,13 @@ A type's shape is text, made as follows:
   up twice side by side, not inside itself, is written in full both times.
 - A program's own type named like one in the standard library is written by its name as the
   program writes it.
+- A type that writes its own `serialize` is shaped by what it saves, not by its fields, as its
+  layout is. A standard library type that saves as another has that type's shape: a `Deque[T]`
+  and a `SortedSet[T]` are `list[T]`, a `SortedMap[K, V]` is `dict[K, V]`, a `Packed[T]` and a
+  `Grid[T]` are `list[list[T]]`, a `Uuid` and a `Time` are `str`, and a `Duration` is `int`.
+- Any other type that writes its own `serialize`, a program's or a kit's, is its name and its type
+  arguments' shapes in brackets, alone: `Money`, `Tagged[int]`. What it saves is its `serialize`'s
+  to say, so its fields aren't in its shape, and changing them changes nothing.
 
 The shape hash is 64-bit FNV-1a over the shape text's UTF-8 bytes: start at
 `0xcbf29ce484222325`, and for each byte, xor it in and multiply by `0x100000001b3`, wrapping. The
@@ -88,3 +95,6 @@ the compiled program to this table, and each hash to its shape.
 | `Node`, holding `list[Node]` | `Node{name: str, children: list[Node]}` | `c2961eff3740fbc4` | `S 2 name s children l r 0` |
 | `Pair[int]` | `Pair[int]{first: int, second: int}` | `047e06715d466f32` | `S 2 first i second i` |
 | `Chain[int]`, holding `list[Chain[int]]` | `Chain[int]{value: int, links: list[Chain[int]]}` | `c8839d44f2c73115` | `S 2 value i links l r 0` |
+| `Deque[int]` | `list[int]` | `4675ffb2ccf2c473` | `l i` |
+| `Time` | `str` | `f0600d5d19836e82` | `s` |
+| `Money`, writing its own `serialize` | `Money` | `6f4393e1f9b543b4` | `O Money` |

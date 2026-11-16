@@ -259,6 +259,49 @@ fn a_buffer_is_held_as_the_list_it_prints_as() {
     );
 }
 
+/// A buffer's room is known only as far as `docs/language.md` promises it: at least what it
+/// holds, and right after `reserve(n)`, at least `n` more. Those comparisons answer, and what
+/// they'd answer the same way whatever the runtime's growth rule. The number itself, or a
+/// comparison past what's promised, is refused, and so is the reserved room once anything's
+/// written. What it prints is what the compiled program printed.
+#[test]
+fn a_buffers_room_is_known_only_as_far_as_its_promised() {
+    prints(
+        "
+        def main(stdout: Stdout):
+            mut buffer = Buffer[int]()
+            buffer.push(1)
+            stdout.print(buffer.capacity() >= len(buffer), len(buffer) <= buffer.capacity())
+            buffer.reserve(10)
+            stdout.print(buffer.capacity() >= len(buffer) + 10, buffer.capacity() > 0)
+        ",
+        "True True\nTrue True\n",
+    );
+    let refused = Ended::Unsupported(
+        "a Buffer's exact room, which `docs/language.md` promises only to be at least what it holds, \
+         and n more right after `reserve(n)`"
+            .to_owned(),
+    );
+    for after in [
+        "stdout.print(buffer.capacity())",
+        "stdout.print(buffer.capacity() >= 3)",
+        "stdout.print(buffer.capacity() == 1)",
+        "buffer.push(2)\n            stdout.print(buffer.capacity() >= 12)",
+    ] {
+        let (_, ended) = ran(&format!(
+            "
+        def main(stdout: Stdout):
+            mut buffer = Buffer[int]()
+            buffer.push(1)
+            buffer.reserve(10)
+            buffer.truncate(0)
+            {after}
+        "
+        ));
+        assert_eq!(ended, refused, "{after}");
+    }
+}
+
 #[test]
 fn a_value_of_a_generic_type_prints_with_no_type_arguments() {
     prints(

@@ -4,7 +4,9 @@
 #
 #   .github/scripts/tsan-in-vm.sh [seconds of fuzzing]
 #
-# The checkout is copied into the container, leaving `target` out, and built there. The nightly
+# The checkout is copied into the container over a pipe, leaving `target` out, and built there:
+# never mounted, as the VM keeps a file of the Mac's open for each one read through a mount
+# (fennec#1864). The nightly
 # compiler, fetched crates and the build are kept in volumes of their own, so a second run builds
 # only what changed. It never uses Docker's default context.
 set -euo pipefail
@@ -24,15 +26,16 @@ memory=$((memory * 7 / 8 / 1024 / 1024))m
 # shellcheck disable=SC2016
 inside='
 set -euo pipefail
+# The checkout first, before anything else might read standard input. Without `target`, and without
+# `.git`, which in a worktree points back to the Mac: the scripts ask git only where the checkout
+# starts, which a fresh repository answers.
+mkdir -p /src
+tar -x -f - -C /src --warning=no-unknown-keyword
 # The ThreadSanitizer runtime of GCC, which links the programs, as the image CI runs on has it.
 # Debian trixie, not bookworm: the runtime of GCC 12 has no __tsan_memcpy, which the nightly emits.
 apt-get update -qq > /dev/null && apt-get install -y -qq git binutils perl libtsan2 > /dev/null
 rustup component add llvm-tools-preview > /dev/null
 rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src > /dev/null
-mkdir -p /src
-# Without `target`, and without `.git`, which in a worktree points back to the Mac: the scripts ask
-# git only where the checkout starts, which a fresh repository answers.
-cd /repo && tar --exclude=./target --exclude=./.git -cf - . | (cd /src && tar -xf -)
 cd /src
 git config --global --add safe.directory /src
 git init -q .
@@ -45,8 +48,9 @@ setarch "$(uname -m)" -R .github/scripts/tsan-programs.sh target/release/fennec 
 # seccomp profile refuses, so this container, in Fennec's own VM, runs without it.
 # What the fuzzer finds is kept on the Mac, in the checkout's `target/tsan-found`.
 mkdir -p "$root/target/tsan-found"
-docker --context "$context" run --rm --memory "$memory" --security-opt seccomp=unconfined \
-  --volume "$root:/repo:ro" \
+# macOS's tar leaves out its own metadata, which Linux's tar has no use for.
+COPYFILE_DISABLE=1 tar -c --no-xattrs --no-mac-metadata --exclude ./target --exclude ./.git -C "$root" -f - . |
+docker --context "$context" run --rm --interactive --memory "$memory" --security-opt seccomp=unconfined \
   --volume "$root/target/tsan-found:/src/found" \
   --volume fennec-tsan-target:/src/target \
   --volume fennec-tsan-rustup:/usr/local/rustup \

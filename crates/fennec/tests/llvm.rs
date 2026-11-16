@@ -648,26 +648,73 @@ fn what_earlier_except_cases_left_is_failed_with_as_the_smaller_set() -> std::io
 /// Built with every type that doesn't contain itself in place and with `FENNEC_BOXED_TYPES=1`, in
 /// dev and release, a program prints `wanted` each way and ends with nothing held.
 fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
-    for boxed in [false, true] {
+    same_with_and_without("FENNEC_BOXED_TYPES", name, source, wanted)
+}
+
+/// Built without the switch `switch` and with it set to `1`, in dev and release, a program prints
+/// `wanted` each way and ends with nothing held.
+fn same_with_and_without(switch: &str, name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
+    for set in [false, true] {
         for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
             let dir = folder(name)?;
             let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
             std::fs::write(&program, source)?;
             let mut command = crate::executables::fennec_command();
             command.arg("build").args(how).arg(&program).arg("-o").arg(&executable).env("FENNEC_HOME", &dir);
-            if boxed {
-                command.env("FENNEC_BOXED_TYPES", "1");
+            command.env_remove(switch);
+            if set {
+                command.env(switch, "1");
             }
             let built = command.output_before(FENNEC_DEADLINE)?;
             assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
             let ran = Command::new(&executable).env("FENNEC_COUNTS", "1").output_within()?;
             std::fs::remove_dir_all(&dir)?;
             let said = String::from_utf8_lossy(&ran.stderr).into_owned();
-            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "boxed {boxed} {how:?}: {said}");
-            assert!(said.lines().any(|line| line.ends_with(" live 0")), "boxed {boxed} {how:?}: {said}");
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{switch} {set} {how:?}: {said}");
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "{switch} {set} {how:?}: {said}");
         }
     }
     Ok(())
+}
+
+/// A dict of structs used every way a dict is prints the same with each value held in the dict's
+/// entry and, with `FENNEC_BOXED_DICT_VALUES=1`, as a block of its own, and ends with nothing held:
+/// values of two plain words, of one word, owning a text, a list and a dict, and holding another
+/// struct, an optional and narrow numbers, under int, text and float keys. Each is set new and
+/// again, read, got, changed where it is, popped, walked, cleared, copied and compared; changed
+/// through `ref self` in a struct; changed under a lock that fails, which undoes it, and one that
+/// ends; and held in a dict of dicts. A value that's a block and a generic struct's copy too.
+#[test]
+fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_values_in_entries",
+        include_str!("fixtures/dict_values_in_entries.fen"),
+        include_str!("fixtures/dict_values_in_entries.out"),
+    )
+}
+
+/// A slice of a text used as a dict's key is found and added with no string made for it only in a
+/// dict of one-word values. Which dicts hold their values in their entries is the layouts' to say:
+/// a tuple is held in an entry as a struct is, and a dict of tuples took the one-word way, which
+/// read a tuple's first word as a value's block and stopped the program with a segmentation fault.
+/// A dict of tuples held locally and handed to a function, a dict of structs, and a dict of ints,
+/// which keeps the way with no string made. It prints what the reference evaluator prints, in
+/// entries and boxed, with nothing left.
+#[test]
+fn a_slice_key_into_a_dict_of_tuples_is_made_a_string_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_slice_keys_in_entries",
+        include_str!("fixtures/dict_slice_keys_in_entries.fen"),
+        include_str!("fixtures/dict_slice_keys_in_entries.out"),
+    )
 }
 
 /// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
@@ -2832,7 +2879,7 @@ fn what_is_appended_through_a_dict_is_made_with_no_copy_of_the_list() -> std::io
     prints_in_both_builds("appended_through_a_dict", APPENDED_THROUGH_A_DICT, "900 300 after 899 others\n")?;
     assert_eq!(
         counts_of("appended_through_a_dict_counts", APPENDED_THROUGH_A_DICT)?,
-        "copies 0 copied_bytes 0 largest_copy 0 allocations 620 allocated_bytes 142688 live 0"
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 619 allocated_bytes 142704 live 0"
     );
     Ok(())
 }
@@ -6146,7 +6193,7 @@ fn moving_in_place_items_about_counts_nothing_and_copies_only_what_is_shared() -
     prints_in_both_builds("moved_in_place", MOVED_IN_PLACE, MOVED_IN_PLACE_PRINTS)?;
     assert_eq!(
         counts_of("moved_in_place_counts", MOVED_IN_PLACE)?,
-        "copies 1 copied_bytes 672 largest_copy 672 allocations 114 allocated_bytes 11840 live 0"
+        "copies 1 copied_bytes 672 largest_copy 672 allocations 111 allocated_bytes 12032 live 0"
     );
     Ok(())
 }

@@ -12585,7 +12585,8 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
 /// A program of ordinary generics, each used with a few types, asks for more than 2,000 copies of
 /// them, as one of about 53,000 lines does, and builds and runs. Past 2,000 the copies were
 /// refused, and the build stopped at a call that "doesn't say what its types stand for", where
-/// `fennec check` said nothing (#1896).
+/// `fennec check` said nothing (#1896). Built as a release, which builds it in a few seconds where
+/// a cold dev build takes ten times as long: the copies are made the same way in both.
 #[test]
 fn a_program_asking_for_thousands_of_generic_copies_builds_and_runs() -> std::io::Result<()> {
     if !ready() {
@@ -12613,7 +12614,7 @@ fn a_program_asking_for_thousands_of_generic_copies_builds_and_runs() -> std::io
     let (program, executable) = (dir.join("copies.fen"), dir.join("copies"));
     std::fs::write(&program, &source)?;
     let built = crate::executables::fennec_command()
-        .args(["build", "--llvm"])
+        .args(["build", "--llvm", "--release"])
         .arg(&program)
         .arg("-o")
         .arg(&executable)

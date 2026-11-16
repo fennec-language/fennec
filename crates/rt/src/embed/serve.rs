@@ -1455,6 +1455,12 @@ pub(crate) fn waits_not_registered_here() -> u64 {
     NOT_REGISTERED.get()
 }
 
+/// For tests: a wait on this thread, in a poll of its own, couldn't be registered.
+#[cfg(test)]
+pub(crate) fn a_wait_wasnt_registered() {
+    NOT_REGISTERED.set(NOT_REGISTERED.get() + 1);
+}
+
 /// How long a wait that couldn't be registered parks before it looks again.
 const LOOKS_AGAIN_AFTER: Duration = Duration::from_millis(1);
 

@@ -1020,6 +1020,9 @@ fn main_gives_back_its_exit_code_on_every_engine() {
             "error Broke:\n    why: str\n\ndef main(args: Args) -> int fails Broke:\n    if len(args) > 5:\n        fail Broke(why=\"many\")\n    return 3\n",
             3,
         ),
+        // The most an exit code holds, and one past it, of which the process gets the lowest 8 bits.
+        ("most", "def main() -> int:\n    return 255\n", 255),
+        ("wrapped", "def main() -> int:\n    return 300\n", 44),
     ];
     for (name, source, code) in programs {
         let program = dir.join(format!("{name}.fen"));
@@ -1040,6 +1043,58 @@ fn main_gives_back_its_exit_code_on_every_engine() {
             assert_eq!(ran.status.code(), Some(code), "{name}, built: {}", text(&ran.stderr));
         }
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// What a built program writes before it ends is there after it: a file, and a row in a SQLite
+/// database it closed, both from a program that gives back 3 and from one that fails, which exits
+/// with 1, each code passed on exactly. On Windows a program ends with `TerminateProcess`, which runs
+/// none of the C runtime's or a library's teardown, so this checks nothing written needs it.
+#[test]
+fn what_a_built_program_wrote_before_it_ended_is_there_after_it() {
+    if !llvm_ready_for_run() {
+        return;
+    }
+    let dir = scratch("written-before-the-end").unwrap();
+    let programs = [
+        (
+            "writer",
+            "from std import sqlite\nfrom std.sql import SqlError\n\ndef main(fs: Fs, stdout: Stdout) -> int fails SqlError | IoError:\n    fs.write_text(\"note.txt\", \"written just before the end\")?\n    with sqlite.open(fs, \"kept.db\")? as db:\n        _ = db.execute(t\"create table words (word text)\")?\n        _ = db.execute(t\"insert into words values ('kept')\")?\n    stdout.print(\"wrote both\")\n    return 3\n",
+        ),
+        (
+            "failer",
+            "from std import sqlite\nfrom std.sql import SqlError\n\nerror Broke:\n    why: str\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError | IoError | Broke:\n    fs.write_text(\"note.txt\", \"written just before the failure\")?\n    with sqlite.open(fs, \"kept.db\")? as db:\n        _ = db.execute(t\"insert into words values ('also kept')\")?\n    stdout.print(\"wrote both, then failed\")\n    fail Broke(why=\"on purpose\")\n",
+        ),
+        (
+            "reader",
+            "from std import sqlite\nfrom std.sql import SqlError\n\nstruct Word:\n    word: str\n\ndef main(fs: Fs, stdout: Stdout) fails SqlError | IoError:\n    stdout.print(fs.read_text(\"note.txt\")?)\n    with sqlite.open(fs, \"kept.db\")? as db:\n        for found in db.query[Word](t\"select word from words order by rowid\")?:\n            stdout.print(found.word)\n",
+        ),
+    ];
+    for (name, source) in programs {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source).unwrap();
+        let built = dir.join(name);
+        let made = fennec(&["build", program.to_str().unwrap(), "-o", built.to_str().unwrap()], "").unwrap();
+        assert!(made.status.success(), "{name}: {}", text(&made.stderr));
+    }
+    let run = |name: &str| std::process::Command::new(dir.join(name)).current_dir(&dir).output().unwrap();
+    let wrote = run("writer");
+    assert_eq!(wrote.status.code(), Some(3), "{}", text(&wrote.stderr));
+    assert_eq!(text(&wrote.stdout), "wrote both\n");
+    let read = run("reader");
+    assert!(read.status.success(), "{}", text(&read.stderr));
+    assert_eq!(text(&read.stdout), "written just before the end\nkept\n");
+    let failed = run("failer");
+    assert_eq!(failed.status.code(), Some(1), "{}", text(&failed.stderr));
+    assert_eq!(text(&failed.stdout), "wrote both, then failed\n");
+    assert!(
+        text(&failed.stderr).contains("error: `main` failed: Broke(why=\"on purpose\")"),
+        "{}",
+        text(&failed.stderr)
+    );
+    let read = run("reader");
+    assert!(read.status.success(), "{}", text(&read.stderr));
+    assert_eq!(text(&read.stdout), "written just before the failure\nkept\nalso kept\n");
     std::fs::remove_dir_all(dir).unwrap();
 }
 

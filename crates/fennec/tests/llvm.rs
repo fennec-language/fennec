@@ -19127,6 +19127,25 @@ fn shows_its_arguments(name: &str) -> std::io::Result<(fennec_temp::Temp, String
     Ok((dir, path))
 }
 
+/// A program's own type named as a std module is, `path`, with methods of its own, leaves std.path
+/// its functions: `Path.inside` still refuses `NUL`. Before, the program's type took every std
+/// function whose key started `path.`, as a std type's methods are, and std's code didn't build.
+#[test]
+fn a_programs_type_named_like_a_std_module_leaves_it_its_functions() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "type_named_path",
+        "from std.path import Path\n\nstruct path:\n    name: str\n\n    def shown(self) -> str:\n        return self.name\n\n\
+         def main(stdout: Stdout):\n    stdout.print(path(name=\"p\").shown())\n    \
+         safe = Path(\"uploads\").inside(\"NUL\") except why:\n        stdout.print(f\"refused: {why}\")\n        return\n    \
+         stdout.print(\"accepted\", safe)\n",
+    )?;
+    assert_eq!(printed, "p\nrefused: InvalidValue(message=\"`NUL` can't be a path inside `uploads`\")\n");
+    Ok(())
+}
+
 /// Small things that gave a wrong answer rather than saying so: a `Path` going up from `..`, text
 /// base64 can't have written, a day a month doesn't have, and a delimiter that could never match.
 /// `Path.inside` joins a path from outside so it can't leave the folder.
@@ -25087,15 +25106,56 @@ fn an_edit_recompiles_only_the_function_it_touches() -> std::io::Result<()> {
     };
     let (path, out) =
         (program.to_string_lossy().into_owned(), dir.join("edit").to_string_lossy().into_owned());
+    // What a build printed and, after it, what it said on standard error, where the cache says
+    // why it couldn't read or keep something.
     let build = |text: String| -> std::io::Result<String> {
         std::fs::write(&program, text)?;
         let built = fennec(&["build", "--llvm", &path, "-o", &out], &dir)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        Ok(String::from_utf8_lossy(&built.stdout).into_owned())
+        Ok(format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr)))
     };
-    assert!(build(source(""))?.contains("compiled 3 of 3"));
-    assert!(build(source("## nothing here\n\n"))?.contains("compiled 0 of 3"));
-    assert!(build(source("").replace("n * 33", "n * 34"))?.contains("compiled 1 of 3"));
+    let said = build(source(""))?;
+    assert!(said.contains("compiled 3 of 3"), "{said}");
+    let said = build(source("## nothing here\n\n"))?;
+    assert!(said.contains("compiled 0 of 3"), "{said}");
+    let said = build(source("").replace("n * 33", "n * 34"))?;
+    assert!(said.contains("compiled 1 of 3"), "{said}");
+    std::fs::remove_dir_all(&dir)
+}
+
+/// Whose Fennec folder it is, which decides whether its cache is used, comes from the user this
+/// process runs as. It once came from a file made in the temp folder, and a build that couldn't
+/// make one, as under heavy load, left the cache unused and compiled everything again. Here the
+/// temp folder isn't there at all, and the second build compiles nothing.
+#[test]
+fn the_cache_is_used_where_no_file_can_be_made_in_the_temp_folder() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("no_temp")?;
+    let program = dir.join("no_temp.fen");
+    std::fs::write(
+        &program,
+        "def twice(n: int) -> int:\n    return n * 2\n\ndef main(stdout: Stdout):\n    stdout.print(twice(4))\n",
+    )?;
+    let (path, out) =
+        (program.to_string_lossy().into_owned(), dir.join("no_temp").to_string_lossy().into_owned());
+    let build = || -> std::io::Result<String> {
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm", &path, "-o", &out])
+            .env("FENNEC_HOME", &dir)
+            .env("TMPDIR", dir.join("not-there"))
+            .output_before(FENNEC_DEADLINE)?;
+        let said =
+            format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
+        assert!(built.status.success(), "{said}");
+        Ok(said)
+    };
+    let first = build()?;
+    assert!(!first.contains("compiled 0 of"), "{first}");
+    let again = build()?;
+    assert!(again.contains("compiled 0 of"), "{again}");
+    assert!(!again.contains("warning"), "{again}");
     std::fs::remove_dir_all(&dir)
 }
 
@@ -25116,11 +25176,14 @@ fn text_added_above_a_function_that_can_fail_doesnt_compile_it_again() -> std::i
     let program = dir.join("edit_above.fen");
     let (path, out) =
         (program.to_string_lossy().into_owned(), dir.join("edit_above").to_string_lossy().into_owned());
-    let build = |text: String| -> std::io::Result<usize> {
+    let build = |text: String| -> std::io::Result<(usize, String)> {
         std::fs::write(&program, text)?;
         let built = fennec(&["build", "--llvm", &path, "-o", &out], &dir)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        let said = String::from_utf8_lossy(&built.stdout).into_owned();
+        // What it printed and, after it, what it said on standard error, where the cache says why
+        // it couldn't read or keep something.
+        let said =
+            format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&out).output_within()?;
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
@@ -25130,26 +25193,26 @@ fn text_added_above_a_function_that_can_fail_doesnt_compile_it_again() -> std::i
             "{said}"
         );
         let compiled = said.split("compiled ").nth(1).and_then(|rest| rest.split(' ').next());
-        Ok(compiled.and_then(|count| count.parse().ok()).unwrap_or(usize::MAX))
+        Ok((compiled.and_then(|count| count.parse().ok()).unwrap_or(usize::MAX), said))
     };
-    assert!(build(EDIT_ABOVE.to_owned())? > 5, "the first build compiles everything");
-    assert_eq!(
-        build(format!(
-            "## nothing here
+    let (compiled, said) = build(EDIT_ABOVE.to_owned())?;
+    assert!(compiled > 5, "the first build compiles everything: {said}");
+    let (compiled, said) = build(format!(
+        "## nothing here
 
 {EDIT_ABOVE}"
-        ))?,
-        0,
-        "a comment added at the top"
-    );
+    ))?;
+    assert_eq!(compiled, 0, "a comment added at the top: {said}");
     let changed = EDIT_ABOVE.replace(
         "    return items[at]
 ",
         "    return items[at] + 0
 ",
     );
-    assert!(build(changed)? <= 2, "one function changed: it, and the caller that holds a copy of it");
-    assert_eq!(build(EDIT_ABOVE.to_owned())?, 0, "as it first was");
+    let (compiled, said) = build(changed)?;
+    assert!(compiled <= 2, "one function changed: it, and the caller that holds a copy of it: {said}");
+    let (compiled, said) = build(EDIT_ABOVE.to_owned())?;
+    assert_eq!(compiled, 0, "as it first was: {said}");
     std::fs::remove_dir_all(&dir)
 }
 
@@ -27783,6 +27846,40 @@ fn notes_go_with_errors_as_pinned() -> std::io::Result<()> {
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
+}
+
+/// An error with a note, kept in a `shared` value, given another note under its lock by a task,
+/// twice, then failed with under the lock by a task: it keeps every note, on any number of threads.
+/// The note the program added on `main` was a list of a kind the runtime numbered there, and a
+/// task's thread had numbered its own kinds apart, so it read the list as nothing: the notes went,
+/// with nothing said, and which went changed with the threads (#1843).
+#[test]
+fn an_error_kept_under_a_lock_keeps_its_notes_in_a_task_on_any_number_of_threads() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("notes-under-a-lock")?;
+    let program = dir.join("notes.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/notes_kept_under_a_lock.fen"))?;
+    let wanted = include_str!("fixtures/workers/notes_kept_under_a_lock.out");
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("notes"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "16"] {
+            let ran = Command::new(&output).env("FENNEC_THREADS", threads).output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(said.0, wanted, "{how:?} on {threads} threads: {}", said.1);
+            assert!(ran.status.success(), "{how:?} on {threads} threads: {}", said.1);
+        }
+    }
+    std::fs::remove_dir_all(&dir)
 }
 
 /// A function that says `fails A | B`, with errors that have cases among them.

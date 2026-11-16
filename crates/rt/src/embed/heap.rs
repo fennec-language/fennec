@@ -1958,6 +1958,14 @@ pub(super) fn read_block(state: &State, address: u64) -> Value {
     if super::lists::element_of(state, &block).is_some() {
         return super::lists::read(state, &block);
     }
+    // A list of a kind this thread knows no description of: read as nothing, it would pass for an
+    // empty value, as an error's notes did, lost without a word (#1843).
+    if super::lists::element_number(state, &block).is_some() {
+        runtime_bug(&format!(
+            "the block at {address:#x} is a list of a kind of item this thread knows nothing of, \
+             so it can't be read"
+        ));
+    }
     let Some(shape) = shape_of(state, &block) else { return Value::None };
     let mut words = block.get(HEADER_WORDS..).unwrap_or_default().iter();
     read(state, &shape, &mut words)
@@ -2151,7 +2159,7 @@ pub(super) fn write(state: &mut State, element: &Element, value: &Value, words: 
             words.push(u64::try_from(super::lists::write_list(state, item, value)?).ok()?);
         }
         (Element::ListOf(number), value) => {
-            let item = Rc::clone(state.tables.elements.get(*number)?);
+            let item = Rc::clone(state.tables.element(*number)?);
             words.push(u64::try_from(super::lists::write_list(state, &item, value)?).ok()?);
         }
         (Element::Struct { name, fields }, value) if named::is_array(name) => {

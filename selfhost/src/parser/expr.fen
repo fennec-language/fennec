@@ -4,8 +4,7 @@
 ## `crates/syntax/src/parser/expr.rs`.
 
 from ast import Arg, BinOp, Case, CompKind, Expr, ExprKind, FStrPart, Field, FnDef, Generic, Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef, TypeExpr, UnaryOp
-from lexer import byte_length, lex
-from parser import Parser, describe, is_field_word, is_name
+from parser import Parser, describe, interpolated_tokens, is_field_word, is_name
 from span import Diagnostic, Span
 from token import FPart, Tok, is_reserved
 
@@ -573,10 +572,7 @@ def interpolated(source: str, offset: int, what: str) -> Expr fails Diagnostic:
             span=Span(start=offset, end=offset + 1),
             help="put an expression inside, or write `{{` for a literal brace",
         )
-    # Lexed on its own, a leading space would read as indentation.
-    code = source.lstrip()
-    skipped = byte_length(source[:len(source) - len(code)])
-    mut parser = Parser.over(lex(code, offset + skipped)?)
+    mut parser = Parser.over(interpolated_tokens(source, offset)?)
     expr = parser.expr()?
     _ = parser.eat(.Newline)
     if not parser.at(.Eof): fail parser.unexpected("`}`")

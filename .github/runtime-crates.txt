@@ -14,6 +14,7 @@ getrandom | `Entropy`
 libm | float functions with the same bits on every system
 mimalloc | the allocator
 mio | waiting on sockets, for parked tasks and servers
+nix | waking a parked `process.run` when its program ends, through kqueue's process events on macOS (#1837)
 rusqlite | `std.sqlite`
 rustix | system calls on Unix
 rustls | TLS

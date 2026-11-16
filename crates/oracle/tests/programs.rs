@@ -1205,6 +1205,45 @@ fn tasks_talk_through_channels_and_listeners() {
     );
 }
 
+/// A task that crashes cuts short every wait its block is in, as a closed channel does, so a
+/// receive in the block, in each of its `parallel` pieces, gives `None` and the block reaches its
+/// end, where the crash comes out. A wait the block starts after the crash is cut short too. The
+/// same from main and from a task. What it prints is what the compiled program printed
+/// (`workers/crash_while_pieces_wait.fen`).
+#[test]
+fn a_crashing_task_cuts_short_every_wait_its_block_is_in() {
+    let (printed, ended) =
+        ran(include_str!("../../fennec/tests/fixtures/workers/crash_while_pieces_wait.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/workers/crash_while_pieces_wait.out"));
+    // A send waiting for room is cut short as a closed channel's: it fails with `Closed`.
+    prints(
+        "
+        from std.concurrent import Channel, Closed, Crashed, channel
+
+        def child(clock: Clock):
+            clock.sleep(20ms)
+            nothing: list[int] = []
+            _ = nothing[3]
+
+        def both(between: Channel[int], clock: Clock, stdout: Stdout) fails Crashed:
+            with launch(() => child(clock))?:
+                between.send(1) except Closed():
+                    stdout.print('first send closed')
+                between.send(2) except Closed():
+                    stdout.print('second send closed')
+                stdout.print('block ends')
+
+        def main(clock: Clock, stdout: Stdout):
+            with channel[int](size=1) as between:
+                both(between, clock=clock, stdout=stdout) except why:
+                    stdout.print(f'{why}')
+            stdout.print('done')
+        ",
+        "second send closed\nblock ends\nCrashed(why=\"the task crashed\")\ndone\n",
+    );
+}
+
 /// Where which of several tasks' messages comes first changes what's printed, every order is
 /// tried, and the program is refused: what it prints hangs on time, from the line it parts at.
 #[test]

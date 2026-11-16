@@ -116,11 +116,24 @@ struct Actor {
     /// What it's heard of each one's sends and ends, by how many of them it's seen: what happened
     /// before what it does now, whatever order things ran in.
     clock: Clock,
+    /// Which one launched it, for a task.
+    launcher: Option<usize>,
+    /// The tasks it launched that crashed while it's still in their blocks, which cuts short every
+    /// wait it's in there, as `docs/language.md` says, until their blocks end.
+    cut_short: Vec<usize>,
 }
 
 impl Actor {
     fn ready(scopes: Vec<Scope>, clock: Clock) -> Actor {
-        Actor { state: Doing::Ready, scopes, ended: None, timed_out: false, clock }
+        Actor {
+            state: Doing::Ready,
+            scopes,
+            ended: None,
+            timed_out: false,
+            clock,
+            launcher: None,
+            cut_short: Vec::new(),
+        }
     }
 }
 
@@ -211,6 +224,8 @@ impl State {
             Doing::Waiting(Wait::Task(task), _) => {
                 self.actors.get(task).is_none_or(|task| matches!(task.state, Doing::Ended))
             }
+            // A wait in the block of a task that crashed is cut short.
+            Doing::Waiting(Wait::Room(_) | Wait::Message(_), _) if !found.cut_short.is_empty() => true,
             Doing::Waiting(Wait::Room(number), _) => {
                 self.channels.get(&number).is_none_or(|chan| chan.closed || chan.queue.len() < chan.size)
             }
@@ -394,6 +409,12 @@ impl Interp {
             }
         }
         let ended = self.task_ended(number)?;
+        {
+            let mut state = self.sched_state()?;
+            if let Some(actor) = state.actors.get_mut(self.actor) {
+                actor.cut_short.retain(|&task| task != number);
+            }
+        }
         if let Some(channel) = channel {
             let mut state = self.sched_state()?;
             // A task that ends with messages left closes its inbox, and whether the block's sends
@@ -446,7 +467,7 @@ impl Interp {
                 parent.clock.clone_from(&clock);
             }
             tick(&mut clock, number);
-            state.actors.push(Actor::ready(task_scopes, clock));
+            state.actors.push(Actor { launcher: Some(self.actor), ..Actor::ready(task_scopes, clock) });
             number
         };
         let shared = Arc::clone(&self.shared);
@@ -579,6 +600,12 @@ impl Interp {
                     }
                     None => return unsupported("a task was lost"),
                 };
+                if cut_short(&mut state, me) {
+                    if let Some(chan) = state.channels.get_mut(&number) {
+                        chan.waiting_sends.retain(|sent| sent.sender != me);
+                    }
+                    return Ok(Value::Int(1));
+                }
                 let Some(chan) = state.channels.get_mut(&number) else { return Ok(Value::Int(1)) };
                 chan.waiting_sends.retain(|sent| sent.sender != me);
                 if chan.left {
@@ -646,6 +673,9 @@ impl Interp {
                     .orders
                     .lock()
                     .map_or_else(|_| unsupported("the tasks were lost"), Ok)?;
+                if cut_short(&mut state, me) {
+                    return Ok((Value::None, 1));
+                }
                 if let Some(taken) = take_message(&mut state, me, number, &mut orders)? {
                     return Ok(taken);
                 }
@@ -658,6 +688,25 @@ impl Interp {
             }
         }
     }
+}
+
+/// Whether `me`'s waits are cut short, by a task it launched crashing while it's in that task's
+/// block, as `docs/language.md` says: a cut wait ends as a closed channel's does, after the
+/// crash, so `me` takes in what the crashed task had done.
+fn cut_short(state: &mut State, me: usize) -> bool {
+    let crashed: Vec<usize> = state.actors.get(me).map(|actor| actor.cut_short.clone()).unwrap_or_default();
+    if crashed.is_empty() {
+        return false;
+    }
+    let clocks: Vec<Clock> =
+        crashed.iter().filter_map(|&task| state.actors.get(task).map(|task| task.clock.clone())).collect();
+    if let Some(actor) = state.actors.get_mut(me) {
+        for clock in &clocks {
+            merge(&mut actor.clock, clock);
+        }
+        tick(&mut actor.clock, me);
+    }
+    true
 }
 
 /// Takes the next message from `number`, a channel or a listener, for `me`: `None` while there's
@@ -782,9 +831,16 @@ fn task_thread(
         return;
     }
     let Ok(mut state) = sched.state.lock() else { return };
+    let crashed = matches!(ended, Err(Flow::Crash(..)));
+    let mut launcher = None;
     if let Some(actor) = state.actors.get_mut(number) {
         actor.state = Doing::Ended;
         actor.ended = Some(ended);
+        launcher = actor.launcher;
+    }
+    // A task that crashes cuts short every wait its block is in.
+    if crashed && let Some(block) = launcher.and_then(|launcher| state.actors.get_mut(launcher)) {
+        block.cut_short.push(number);
     }
     // Its inbox closes as it ends: a send after that fails.
     if let Some(chan) = inbox.and_then(|inbox| state.channels.get_mut(&inbox)) {

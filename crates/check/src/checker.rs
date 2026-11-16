@@ -752,7 +752,7 @@ impl Checker {
         };
         // A value that isn't fully known has been reported already.
         if def.ret.is_none() && gives_back && value.is_known() && !prelude {
-            let fixable = self.can_write(&value);
+            let fixable = self.can_write(&value, def.span);
             self.diagnostics.push(missing_return_type(&def, &value, effects.yields, fixable));
         }
         if let (Some(ret), Some(arrow)) = (&def.ret, def.arrow)
@@ -787,7 +787,10 @@ impl Checker {
             let def = &entry.def;
             // A `test` block, and the function LLVM's tests make of one, have no signature.
             let test = key.starts_with("test \"") || key.starts_with("test:");
-            if entry.prelude || def.fails.is_some() || def.name == "main" || test {
+            // What the compiler writes in, like a crash's cleanup run as a function of its own, has
+            // no reader to see a signature: what it can fail with is what its body says.
+            let written = crate::lend_lowering::not_written_by_hand(def.span);
+            if entry.prelude || def.fails.is_some() || def.name == "main" || test || written {
                 continue;
             }
             let Some(State::Done(signature)) = self.states.get(key) else { continue };
@@ -881,8 +884,9 @@ impl Checker {
         );
     }
 
-    /// Whether a program can write a type as it is, with every type it names in scope.
-    fn can_write(&self, ty: &Type) -> bool {
+    /// Whether a program can write a type as it is at `at`, with every type it names in scope in
+    /// that file.
+    fn can_write(&self, ty: &Type, at: Span) -> bool {
         let mut writable = true;
         ty.map(&mut |part| {
             let name = match part {
@@ -891,7 +895,7 @@ impl Checker {
                 Type::Table(_) => Some("Table"),
                 _ => None,
             };
-            writable &= name.is_none_or(|name| self.program.can_name(name));
+            writable &= name.is_none_or(|name| self.program.can_name(name, at));
             None
         });
         writable

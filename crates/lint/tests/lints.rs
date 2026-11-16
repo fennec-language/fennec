@@ -33,6 +33,8 @@ fn alone_as_together(source: &str) {
             let Ok(parsed) = parse_at(text, base) else { return };
             module.items.extend(parsed.items);
         }
+        // Each file's span, as the kit loader lists them, so each file's imports are its own.
+        module.files = sources.spans();
         let mut parts = across_files(&module, &sources);
         for (path, _) in files {
             parts.extend(within_files(&module, &sources, false, &|wanted| wanted == path));

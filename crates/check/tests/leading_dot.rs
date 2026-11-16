@@ -1,6 +1,7 @@
 //! A leading-dot case like `.Int(value)` takes its enum from the type expected where it's
-//! written: a parameter's, a field's, the return type, a name's declared type, or the other
-//! side of `==`. Only with nothing expected is a case more than one enum has ambiguous.
+//! written: a parameter's, a field's, the return type, a name's declared type, the other side of
+//! `==`, or the item type of the collection it goes in. Only with nothing expected is a case more
+//! than one enum has ambiguous.
 
 use crate::problems;
 
@@ -61,6 +62,36 @@ fn a_name_or_the_other_side_of_equals_chooses_the_enum() {
             stdout.print(tok == .Name('x'), .Int(1) != tok, tok == .Eof, expr)
     ";
     assert_eq!(with_enums(program), Vec::<String>::new());
+}
+
+/// A collection's item type chooses the enum too: a list's `append` and `insert`, a set's `add`,
+/// a list or dict written where one holding `Tok` goes, a field given one, and the left side of
+/// `in`. Once, each of these was "more than one enum", though the item could only be a `Tok`.
+/// Written where nothing says which, as `[.Int(1)]` alone, a shared case is still ambiguous.
+#[test]
+fn a_collections_item_type_chooses_the_enum() {
+    let program = "
+        struct Line:
+            toks: list[Tok]
+
+        def main(stdout: Stdout):
+            mut toks = list[Tok]()
+            toks.append(.Int(1))
+            toks.insert(0, .Name('x'))
+            mut seen = set[Tok]()
+            seen.add(.Int(2))
+            written: list[Tok] = [.Int(3), .Name('y')]
+            keyed: dict[str, list[Tok]] = {'a': [.Int(4)]}
+            line = Line(toks=[.Name('z')])
+            stdout.print(.Int(1) in toks, .Name('x') not in seen, written, keyed, line.toks)
+    ";
+    assert_eq!(with_enums(program), Vec::<String>::new());
+    let alone = "
+        def main(stdout: Stdout):
+            toks = [.Int(1)]
+            stdout.print(toks)
+    ";
+    assert_eq!(with_enums(alone), ["more than one enum has a case called `Int` @ .Int(1)"]);
 }
 
 #[test]

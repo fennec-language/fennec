@@ -130,6 +130,11 @@ jobs:
           fi
           echo "TEST_BINARY=$PWD/$binary" >> "$GITHUB_ENV"
           echo "PACKAGE_FOLDER=$(dirname "$folder")" >> "$GITHUB_ENV"
+          # cargo tells the processes it starts which toolchain it is, and the test's own `cargo
+          # build` of the runtime needs it: cargo compiles a crate from the registry in that crate's
+          # folder, where there's no rust-toolchain.toml, so rustup would take its default instead,
+          # another Rust, and rebuild everything with it, and fail.
+          echo "RUSTUP_TOOLCHAIN=$(rustup show active-toolchain | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
       # On Windows, a program that crashes as it runs is caught where it crashed: the debugger, `cdb`,
       # set as the one Windows starts on a crash, writes each thread's stack and a full dump into
       # this share's folder, and Windows Error Reporting's own dumps are asked for too. Neither comes
@@ -193,7 +198,9 @@ jobs:
               mkdir -p "repeat-$SHARE/dumps"
               dumps=$(cygpath -w "$PWD/repeat-$SHARE/dumps")
               script="$RUNNER_TEMP/cdb-$run.txt"
-              printf '%s\n' 'sxi ibp' \
+              # Quiet about each module loaded and each exception Rust raises to unwind (GCC's
+              # code, 0x20474343), which are many and normal.
+              printf '%s\n' 'sxi ibp' 'sxi ld' 'sxi 0x20474343' \
                 "sxe -c \".echo FENNEC-ACCESS-VIOLATION; .exr -1; r; ~*k 40; !teb; lm; .dump /ma /u $dumps\\run-$run.dmp; gn\" -c2 \"gn\" av" \
                 'g' > "$script"
               (cd "$PACKAGE_FOLDER" && FENNEC_KEEP_FAILED=1 TMPDIR="$temporary" TMP="$temporary" TEMP="$temporary" \
@@ -214,7 +221,8 @@ jobs:
               echo "::error::no test named $TEST ran"
               cat "$said"
               exit 1
-            elif grep -q FENNEC-ACCESS-VIOLATION "$said"; then
+            # The marker on a line of its own, as cdb prints it, not in its echo of the command.
+            elif tr -d '\r' < "$said" | grep -qx FENNEC-ACCESS-VIOLATION; then
               # The tests passed, but the debugger saw an access violation: kept, to read.
               echo "::warning::run $run passed, but cdb saw an access violation"
               mv "$said" "repeat-$SHARE/run-$run-violation.txt"

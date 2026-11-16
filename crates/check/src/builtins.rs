@@ -418,7 +418,7 @@ impl FnCx<'_> {
             }
             _ => &[],
         };
-        let plain = self.builtin_args(name, args, named, &method.receives, span);
+        let plain = self.builtin_args(name, args, named, (&method.params, &method.receives), span);
         self.no_secret_printed(ty, name, &plain);
         if *ty == Type::named("Process") && name == "run" {
             self.process_run_given(&plain, span);
@@ -492,13 +492,25 @@ impl FnCx<'_> {
         name: &str,
         args: &[Arg],
         named: &[&str],
-        receives: &[Type],
+        (params, receives): (&[Type], &[Type]),
         span: Span,
     ) -> Vec<(Type, Span)> {
         let mut plain = Vec::new();
         let mut start = None;
+        let mut position = 0;
         for arg in args {
-            let ty = self.arg_value(arg, receives);
+            // A leading-dot case, or a collection written with one, is a case of the enum its
+            // parameter's type says, as `.Broken("bulb")` is for a `list[Light]`'s `append`.
+            let expected = match arg.name {
+                None => {
+                    position += 1;
+                    params.get(position - 1)
+                }
+                Some(_) => None,
+            };
+            let cased =
+                crate::expect::leading_dot(&arg.value) || crate::expect::written_with_cases(&arg.value);
+            let ty = self.arg_as(arg, receives, expected.filter(|_| cased));
             match arg.name.as_deref() {
                 Some("key") if !named.contains(&"key") => {
                     let message = format!("`{name}` doesn't take `key`");
@@ -639,7 +651,7 @@ impl FnCx<'_> {
             (_, Some((_, function))) => function.named,
             _ => &[],
         };
-        let plain = self.builtin_args(name, args, named, std::slice::from_ref(&item), span);
+        let plain = self.builtin_args(name, args, named, (&[], std::slice::from_ref(&item)), span);
         let (low, high) = match stdlib::function(name) {
             Some((_, function)) => function.arity,
             None => BUILTINS
@@ -896,7 +908,7 @@ impl FnCx<'_> {
     /// `bytes.fromhex(text)`: the bytes that hex digits spell, which fails for text that isn't
     /// pairs of them.
     pub(crate) fn bytes_from_hex(&mut self, args: &[Arg], span: Span) -> Type {
-        let plain = self.builtin_args("fromhex", args, &[], &[], span);
+        let plain = self.builtin_args("fromhex", args, &[], (&[], &[]), span);
         match plain.as_slice() {
             [(text, at)] => {
                 if !self.checker.fits(&Type::Str, text) {
@@ -910,7 +922,7 @@ impl FnCx<'_> {
 
     /// `str.from_code(n)`: the character with a code, which fails for a number that isn't one.
     pub(crate) fn char_from_code(&mut self, args: &[Arg], span: Span) -> Type {
-        let plain = self.builtin_args("from_code", args, &[], &[], span);
+        let plain = self.builtin_args("from_code", args, &[], (&[], &[]), span);
         match plain.as_slice() {
             [(code, at)] => {
                 if !self.checker.fits(&Type::Int, code) {

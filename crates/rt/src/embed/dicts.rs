@@ -1083,12 +1083,23 @@ fn pop_by_header<const IN_PLACE: bool>(dict: i64, [a, b, c]: [u64; 3], span: (i6
 
 /// A new empty dict of a shape, owned once, with room for `room` keys.
 pub extern "C" fn new(shape: i64, room: i64) -> i64 {
-    super::made_with("fennec_dict_new", |state| {
-        let shape = u64::try_from(shape).unwrap_or(0);
-        let width = shape_layout(state, shape).map_or(ENTRY_WORDS, Layout::width);
-        let block = build(state, (shape, Hashing::Fast), width, &[], usize::try_from(room).unwrap_or(0));
-        state.heap.insert(block)
-    })
+    super::made_with("fennec_dict_new", |state| new_in(state, shape, room))
+}
+
+/// What `fennec_dict_new` does. A shape the runtime has no layout for is no dict's, which is a
+/// bug in Fennec, in what native code passed, so the program stops. Made of one-word entries, as
+/// such a dict once was, a dict of wider values lost every put, with nothing said.
+fn new_in(state: &mut State, shape: i64, room: i64) -> i64 {
+    let shape = u64::try_from(shape).unwrap_or(0);
+    let width = if let Some(layout) = shape_layout(state, shape) {
+        layout.width()
+    } else {
+        doesnt_fit(NO_SHAPE);
+        // Only the fuzzer, which hands made-up shapes on purpose, gets here.
+        ENTRY_WORDS
+    };
+    let block = build(state, (shape, Hashing::Fast), width, &[], usize::try_from(room).unwrap_or(0));
+    state.heap.insert(block)
 }
 
 /// `dict[key] = value`: takes over the owners `dict`, `key` and `value` had, and gives back
@@ -1564,10 +1575,12 @@ fn to_take_from(state: &mut State, at: u64, key: &[u64]) -> u64 {
     if found { unshared(state, at).unwrap_or(0) } else { at }
 }
 
-/// A call for one kind of dict was made on the other. Native code has one set of calls for a
-/// value that's a word and another for a value held in place, and picks by the dict's type. It's a bug in Fennec, in what native code
-/// chose, so the program stops: going on would lose the write and every owner it was handed, or
-/// hand back a value where the caller doesn't look, with nothing said.
+/// A call native code made that doesn't fit the dict: one for a dict of one kind made on the
+/// other, or one making a dict of a shape that's no dict's. Native code has one set of calls for a
+/// value that's a word and another for a value held in place, and picks by the dict's type. It's a
+/// bug in Fennec, in what native code chose, so the program stops: going on would lose the write
+/// and every owner it was handed, or hand back a value where the caller doesn't look, with
+/// nothing said.
 #[cold]
 #[inline(never)]
 fn doesnt_fit(what: &str) {
@@ -1578,6 +1591,7 @@ fn doesnt_fit(what: &str) {
 }
 
 const SET_AS_A_WORD: &str = "a dict that holds its values in place was set a value of one word";
+const NO_SHAPE: &str = "a dict was made of a shape that's no dict's: no kind of key and value has it";
 const SET_IN_PLACE: &str = "a dict of one-word values was set a value held in place";
 const TAKEN_AS_A_WORD: &str = "a value was taken as one word out of a dict that holds its values in place";
 const TAKEN_IN_PLACE: &str = "a value was taken as one held in place out of a dict of one-word values";

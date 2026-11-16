@@ -3081,8 +3081,9 @@ fn a_write_under_a_lock_costs_the_same_however_much_the_lock_holds() -> std::io:
 /// Under a lock, a `ref self` method appends to a list held in a value, 300 times and 3,000: in a
 /// dict's value, in a list's item, and in a bag the two share at first. Through a list's item
 /// nothing is copied, through a dict's value or a shared bag one copy is made, whichever the
-/// count. It's built for a heap audit and run under it on 1 and 4 threads: what it prints, nothing
-/// live and nothing said.
+/// count, and through a list's item with a second lock taken with the first nothing is copied either.
+/// It's built for a heap audit and run under it on 1 and 4 threads: what it prints, nothing live and
+/// nothing said.
 ///
 /// Through a list's item every append once copied the whole list, and the lock's log kept each
 /// copy to the lock's end: 3,000 copies and 108 MB copied for 3,000 appends, 273 MB resident
@@ -3110,7 +3111,9 @@ fn appends_through_a_lists_item_under_a_lock_copy_nothing_however_many() -> std:
     let said = |counts: &str, label: &str| -> Option<u64> {
         counts.split_once(label).and_then(|(_, after)| after.split(' ').next()).and_then(|n| n.parse().ok())
     };
-    for (way, copies) in [("row", 0), ("named", 1), ("shared-row", 1), ("shared-named", 1)] {
+    for (way, copies) in
+        [("row", 0), ("named", 1), ("shared-row", 1), ("shared-named", 1), ("together-row", 0)]
+    {
         let mut bytes = Vec::new();
         for turns in ["300", "3000"] {
             for threads in ["1", "4"] {

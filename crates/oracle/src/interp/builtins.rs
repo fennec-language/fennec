@@ -44,6 +44,9 @@ impl Interp {
         if name.starts_with("std.json.") {
             return self.json_call(name, given, expr);
         }
+        if name == "std.intrinsics.new_tag" {
+            return Ok(Value::Int(i64::try_from(self.shared.new_tag()).unwrap_or(i64::MAX)));
+        }
         if let Some(op) = name.strip_prefix("std.intrinsics.channel_") {
             return self.channel_intrinsic(op, given, span);
         }

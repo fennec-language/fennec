@@ -32,8 +32,8 @@ mod expect;
 mod expr;
 mod extend;
 pub use crossing::Crossing;
-pub use shapes::SavedAs;
 pub use extend::method_key;
+pub use shapes::SavedAs;
 mod fields;
 mod function;
 pub use fields::{each_field_type, fields_of};
@@ -351,7 +351,7 @@ pub enum Routed {
     Changed,
     /// Nothing changed. When routing had to check the module to find that out, these are the
     /// signatures `check_to_emit` would give for it, so it needn't be checked again.
-    Unchanged(Option<Signatures>),
+    Unchanged(Option<Box<Signatures>>),
 }
 
 /// Routes a checked, resolved and trimmed module's sorts and formats to std's code written in
@@ -373,7 +373,7 @@ pub fn route_natively(module: &mut Module) -> Routed {
     if sorted.is_some() || formatted {
         Routed::Changed
     } else {
-        Routed::Unchanged(Some(checked.into_signatures()))
+        Routed::Unchanged(Some(Box::new(checked.into_signatures())))
     }
 }
 

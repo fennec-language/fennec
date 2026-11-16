@@ -20420,7 +20420,7 @@ fn pack_shapes_a_type_that_saves_itself_by_what_it_saves() -> std::io::Result<()
     }
     let printed = printed_by(
         "saves_itself_shape",
-        r#"from std import pack
+        r"from std import pack
 from std.collections import Deque
 from std.time import Duration
 
@@ -20442,7 +20442,7 @@ def main(stdout: Stdout) fails ParseError:
     stdout.print(pack.dumps(Duration.seconds(2.0)) == pack.dumps(2_000_000_000))
     stdout.print(pack.dumps(Money(cents=5))[4:12])
     stdout.print(pack.loads[Money](pack.dumps(Money(cents=7)))?.cents)
-"#,
+",
     )?;
     // FNV-1a, as `shape_hash` takes it, of `Money`'s shape: its name.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;

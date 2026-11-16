@@ -1113,11 +1113,15 @@ fn a_type_that_writes_its_own_serialize_is_shaped_by_what_it_saves() {
     ] {
         assert_eq!(shapes(declared, &ty), shape, "{ty}");
     }
-    let moved = declared.replace("struct Money:\n    cents: int\n", "struct Money:\n    cents: int\n    units = 0\n");
+    let moved =
+        declared.replace("struct Money:\n    cents: int\n", "struct Money:\n    cents: int\n    units = 0\n");
     assert_ne!(moved, declared);
     assert_eq!(shapes(&moved, &named("Money")), "Money");
     let renamed = declared.replace("    value: T\n    note: str\n", "    held: T\n");
-    let renamed = renamed.replace("self.value", "self.held").replace("value=src", "held=src").replace(", note=\"\"", "");
+    let renamed = renamed
+        .replace("self.value", "self.held")
+        .replace("value=src", "held=src")
+        .replace(", note=\"\"", "");
     assert_eq!(shapes(&renamed, &generic("Tagged", vec![Type::Int])), "Tagged[int]");
 }
 

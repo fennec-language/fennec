@@ -551,7 +551,9 @@ fn emitted_with(
             }
             emitted_as_written(reached, emit, tests, checked)
         }
-        fennec_check::Routed::Unchanged(found) => emitted_as_written(reached, emit, tests, checked.or(found)),
+        fennec_check::Routed::Unchanged(found) => {
+            emitted_as_written(reached, emit, tests, checked.or(found.map(|found| *found)))
+        }
     }
 }
 

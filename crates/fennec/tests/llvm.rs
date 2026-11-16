@@ -13352,22 +13352,37 @@ fn strings_compare_with_short_literals_as_pinned() -> std::io::Result<()> {
     )
 }
 
-/// A list whose length nothing in its function changes has its length read where it's given its
-/// value, and every check against it uses that, so LLVM can check an index that doesn't change in a
-/// loop once: read after a `continue`, stored into through `ref`, written through a copy made alone
-/// again inside the loop, counted from the end, measured with `len`, and handed by value to a call
-/// that grows its own copy. Dev and release, plain and checking proofs, which check each kept
-/// length against the list's own, it prints what the reference evaluator prints.
+/// A list parameter whose length nothing in its function changes has its length read at the
+/// start, and every check against it uses that, so LLVM can check an index that doesn't change in
+/// a loop once: read after a `continue`, stored into through `ref`, counted from the end, and
+/// measured with `len` (`kept_lengths`). Lists given by `ref` and changed in the loop that reads
+/// them, every way a function can change a list's length, keep nothing (`kept_lengths_changed`).
+/// Dev and release, plain and checking proofs, which check each kept length against the list's
+/// own, each prints what the reference evaluator prints.
 #[test]
 fn a_kept_length_is_the_lists_own_however_the_list_is_used() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    for proofs in ["0", "1"] {
+    let programs = [
+        (
+            "kept_lengths",
+            include_str!("fixtures/kept_lengths.fen"),
+            include_str!("fixtures/kept_lengths.out"),
+        ),
+        (
+            "kept_lengths_changed",
+            include_str!("fixtures/kept_lengths_changed.fen"),
+            include_str!("fixtures/kept_lengths_changed.out"),
+        ),
+    ];
+    for ((name, source, wanted), proofs) in
+        programs.iter().flat_map(|program| [(program, "0"), (program, "1")])
+    {
         for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
-            let dir = folder("kept_lengths")?;
-            let (program, executable) = (dir.join("kept_lengths.fen"), dir.join("kept_lengths"));
-            std::fs::write(&program, include_str!("fixtures/kept_lengths.fen"))?;
+            let dir = folder(name)?;
+            let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+            std::fs::write(&program, source)?;
             let built = crate::executables::fennec_command()
                 .arg("build")
                 .args(how)
@@ -13382,8 +13397,8 @@ fn a_kept_length_is_the_lists_own_however_the_list_is_used() -> std::io::Result<
             std::fs::remove_dir_all(&dir)?;
             assert_eq!(
                 String::from_utf8_lossy(&ran.stdout),
-                include_str!("fixtures/kept_lengths.out"),
-                "{how:?}, proofs {proofs}: {}",
+                *wanted,
+                "{name} {how:?}, proofs {proofs}: {}",
                 String::from_utf8_lossy(&ran.stderr)
             );
         }

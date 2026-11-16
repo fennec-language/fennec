@@ -1070,15 +1070,12 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store {text} %p{at}, ptr %l{at}"));
             }
         }
-        // Each list whose length nothing here changes has its length kept where it's given its
-        // value: a parameter's now.
+        // Each list parameter whose length nothing here changes has its length read now and kept.
         let mut steady: Vec<usize> = self.known.steady_lengths.iter().copied().collect();
         steady.sort_unstable();
         for at in steady {
             let _ = writeln!(self.allocas, "  %sl{at} = alloca i64");
-            if at < function.params {
-                self.keep_length(LocalId(at));
-            }
+            self.keep_length(LocalId(at));
         }
         // What every call gives a parameter, which what's proven from it leans on.
         if self.checks_proofs() && !self.known.param_ranges.is_empty() {
@@ -1218,14 +1215,6 @@ impl Emit<'_, '_, '_> {
                     appended = true;
                 } else {
                     self.inst(&inst.kind, inst.span, at)?;
-                }
-                // A list whose length is kept has it read where it's given its value, here.
-                let mut written = Vec::new();
-                visit(&inst.kind, |_| {}, |local| written.push(local));
-                for local in written {
-                    if self.known.steady_lengths.contains(&local.0) {
-                        self.keep_length(local);
-                    }
                 }
                 if !self.alone_fields.is_empty() {
                     let hit = unsettled(function, self.known, &inst.kind, settles);
@@ -1907,8 +1896,8 @@ impl Emit<'_, '_, '_> {
         }
     }
 
-    /// Reads the length of a list whose length nothing in this function changes, where it's just
-    /// been given its value, into the place it's kept (`%sl`, see `steady_lengths`).
+    /// Reads the length of a list parameter whose length nothing in this function changes into
+    /// the place it's kept (`%sl`, see `steady_lengths`), at the function's start.
     ///
     /// A length is loaded as `!noundef` (`LENGTH_ACCESS`): a kept length LLVM had to take as
     /// maybe poison was frozen where a loop was split on it, which stopped it splitting the loop
@@ -4087,6 +4076,19 @@ mod tests {
             .into_iter()
             .find(|unit| unit.function == function)
             .map_or_else(String::new, |unit| unit.text))
+    }
+
+    /// A list parameter only read in a loop has its length read once, at the start, into `%sl`,
+    /// and the loop's index check compares with that. One the loop appends to has its length
+    /// read from the list each time, and keeps nothing.
+    #[test]
+    fn a_list_parameter_read_in_a_loop_has_its_length_kept() -> Result<(), String> {
+        let source = "def summed(xs: list[int], n: int) -> int:\n    mut got = 0\n    for at in range(n):\n        got += xs[at * 2]\n    return got\n\ndef grown(ref xs: list[int], n: int) -> int:\n    mut got = 0\n    for at in range(n):\n        xs.append(at)\n        got += xs[at * 2]\n    return got\n\ndef main(stdout: Stdout):\n    mut ys = [1, 2, 3, 4, 5, 6]\n    stdout.print(summed(ys, n=3), grown(ref ys, n=2))\n    return\n";
+        let summed = text_of(source, "summed")?;
+        assert!(summed.contains("%sl0 = alloca i64") && summed.contains("load i64, ptr %sl0"), "{summed}");
+        let grown = text_of(source, "grown")?;
+        assert!(!grown.contains("%sl"), "{grown}");
+        Ok(())
     }
 
     /// A program's image describes the shapes of what it makes and what those hold, not the

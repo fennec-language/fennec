@@ -1,9 +1,9 @@
-# Lists whose length nothing in their function changes, indexed in loops, so each check is made
-# against a length read where the list was given its value: read after a `continue`, stored into
-# through `ref`, written through a copy that's made alone again inside the loop, counted from the
-# end, measured with `len`, and handed by value to a call that grows its own copy. What a build
-# prints is what the reference evaluator prints, and a build that checks proofs checks each kept
-# length against the list's own.
+# List parameters whose length nothing in their function changes, indexed in loops, so each
+# check is made against a length read at the function's start: read after a `continue`, stored
+# into through `ref`, counted from the end, and measured with `len`; beside lists made in their
+# function and a copy grown in a call, which keep nothing. What a build prints is what the
+# reference evaluator prints, and a build that checks proofs checks each kept length against the
+# list's own.
 
 def scaled(values: list[float], factors: list[float], every: int) -> float:
     mut total = 0.0

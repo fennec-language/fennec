@@ -650,9 +650,9 @@ fn analyze(
 /// length is only ever in memory, behind calls LLVM can't see past. Left out is a list that's
 /// grown or shrunk here (`grown`: a builtin that changes it, or a call that changes what it's
 /// given), given another value, handed to a closure, which may change what it's given, standing
-/// for or stood for by another local, or taken out of its place. A list made alone again before a change (`fennec_list_unshare`) keeps
-/// its length, so it stays. A build that checks proofs checks each use of a kept length against
-/// the list's own.
+/// for or stood for by another local, or taken out of its place. A list made alone again before
+/// a change (`fennec_list_unshare`) keeps its length, so it stays. A build that checks proofs
+/// checks each use of a kept length against the list's own.
 fn steady_lengths(function: &Function, grown: &HashSet<usize>, known: &Analysis) -> HashSet<usize> {
     // Only a list read in a loop gains from it: elsewhere its length is read once anyway.
     let looped = blocks_in_loops(function);
@@ -4300,7 +4300,8 @@ mod tests {
     }
 
     /// The named list locals of a function called `go` whose length is kept (`steady_lengths`),
-    /// with `grow` changing the list it's given.
+    /// with each call changing what its `ref` parameters are given, as a build has it: `grow`, and
+    /// std's methods taking `ref self`, like `extend`.
     fn steady(body: &str) -> Result<Vec<String>, String> {
         let source = format!(
             "def grow(ref xs: list[int]):\n    xs.append(1)\n    return\n\ndef total(xs: list[int]) -> int:\n    return sum(xs)\n\n{body}"
@@ -4309,7 +4310,13 @@ mod tests {
         let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
-        let changes = |name: &str| if name == "grow" { vec![0] } else { Vec::new() };
+        let changes = |name: &str| {
+            program
+                .functions
+                .iter()
+                .find(|callee| callee.name == name)
+                .map_or_else(Vec::new, |callee| callee.mut_params.clone())
+        };
         let known = analyze(function, &changes, &|_, _| false, &[], &|_| false);
         let mut names: Vec<String> = known
             .steady_lengths
@@ -4329,16 +4336,22 @@ mod tests {
         let kept = "def go(xs: list[int], ref ys: list[int]) -> int:\n    zs = [1, 2, 3]\n    mut total = 0\n    for at in range(len(xs)):\n        ys[at % len(ys)] = xs[at] + zs[at % 3]\n        total += xs[at]\n    return total\n";
         // `zs` is made here, with its length written where LLVM sees it, so it's left alone.
         assert_eq!(steady(kept)?, ["xs", "ys"]);
-        for (body, left_out) in [
-            ("def go(ref xs: list[int]) -> int:\n    xs.append(1)\n    return xs[0]\n", "appended to"),
-            ("def go(ref xs: list[int]) -> int:\n    _ = xs.pop()\n    return xs[0]\n", "popped"),
-            ("def go(ref xs: list[int]) -> int:\n    grow(ref xs)\n    return xs[0]\n", "handed by ref"),
-            (
-                "def go(flag: bool) -> int:\n    mut xs = [1]\n    if flag:\n        xs = [1, 2]\n    return xs[0]\n",
-                "given a value twice",
-            ),
+        // Each change in the loop that reads the list, so only the change can be what leaves it out.
+        let looped = |change: &str| {
+            format!(
+                "def go(ref xs: list[int]) -> int:\n    mut got = 0\n    for at in range(3):\n        {change}\n        got += xs[at]\n    return got\n"
+            )
+        };
+        for (change, left_out) in [
+            ("xs.append(1)", "appended to"),
+            ("_ = xs.pop()", "popped"),
+            ("xs.extend([1, 2])", "extended"),
+            ("xs.swap(0, 1)", "swapped, which a builtin that changes the list does"),
+            ("grow(ref xs)", "handed by ref to a call that changes it"),
+            ("xs = [4, 5, 6]", "given a new value"),
         ] {
-            assert_eq!(steady(body)?, Vec::<String>::new(), "kept though {left_out}: {body}");
+            let body = looped(change);
+            assert_eq!(steady(&body)?, Vec::<String>::new(), "kept though {left_out}: {body}");
         }
         // Handed to a call by value, a list keeps its length: the call has its own copy.
         let handed = "def go(xs: list[int]) -> int:\n    mut got = 0\n    for at in range(3):\n        got += total(xs) + xs[at]\n    return got\n";

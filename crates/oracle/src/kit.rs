@@ -184,6 +184,20 @@ impl Loader {
         let index: HashMap<String, usize> =
             self.files.iter().enumerate().map(|(at, file)| (file.name.clone(), at)).collect();
         let defines: Vec<HashSet<String>> = self.files.iter().map(|file| defined(&file.module)).collect();
+        // The files of a kit share one set of top-level names, as the compiler's loader holds them
+        // to: a name two files define is refused.
+        for (at, names) in defines.iter().enumerate() {
+            for (other, theirs) in defines.iter().enumerate().take(at) {
+                if let Some(name) = names.intersection(theirs).min() {
+                    let module = |at: usize| self.files.get(at).map_or("", |file| file.name.as_str());
+                    return Err(Refused::Invalid(format!(
+                        "`{name}` is defined in `{}` and in `{}`, and the files of a kit share one set of top-level names",
+                        module(other),
+                        module(at)
+                    )));
+                }
+            }
+        }
         let mut cases: HashMap<String, Vec<(String, usize)>> = HashMap::new();
         for (at, file) in self.files.iter().enumerate() {
             for item in &file.module.items {
@@ -205,7 +219,10 @@ impl Loader {
             .flat_map(|file| file.module.items)
             .filter(|item| !matches!(item, Item::Import(import) if !is_std(import)))
             .collect();
-        Ok(Merged { module: Module { items, ..Default::default() }, sources: self.sources })
+        // Each file's span, so the checker takes each file's imports as its own, as the compiler's
+        // loader has it check them.
+        let files = self.sources.spans();
+        Ok(Merged { module: Module { items, files, ..Default::default() }, sources: self.sources })
     }
 }
 

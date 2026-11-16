@@ -79,6 +79,24 @@ elif gh run download "$mutants" --repo "$repository" --pattern 'mutants-nightly-
 else
   echo "mutants: the nightly run $mutants kept nothing to read"
 fi
+# The week's big codebase, from the latest scheduled weekly run, as `big-codebase-weekly-<date>.md`:
+# each step at 100,000 and 200,000 lines, and how each grew against the program.
+read -r weekly weekly_conclusion weekly_started <<< "$(gh run list --repo "$repository" --workflow big-codebase-weekly.yml \
+  --event schedule --limit 1 --json databaseId,conclusion,createdAt --jq '.[0] | "\(.databaseId) \(.conclusion // "running") \(.createdAt)"' 2> /dev/null)"
+if [ -n "${weekly:-}" ] && [ "$weekly_conclusion" != running ] && [ -n "$weekly_conclusion" ]; then
+  week=${weekly_started%%T*}
+  if [ ! -f "$folder/big-codebase-weekly-$week.md" ] \
+    && gh run download "$weekly" --repo "$repository" --name big-codebase-weekly --dir "$work/weekly" > /dev/null 2>&1; then
+    {
+      echo "# The big codebase at 100,000 and 200,000 lines, $week: $weekly_conclusion"
+      echo
+      echo "https://github.com/$repository/actions/runs/$weekly"
+      echo
+      cat "$work/weekly/big-codebase-weekly.md"
+    } > "$folder/big-codebase-weekly-$week.md"
+    echo "big codebase weekly on $week: $weekly_conclusion, in $folder/big-codebase-weekly-$week.md"
+  fi
+fi
 read -r run conclusion created <<< "$(gh run list --repo "$repository" --workflow proofs.yml --limit 1 \
   --json databaseId,conclusion,createdAt --jq '.[0] | "\(.databaseId) \(.conclusion // "running") \(.createdAt)"')"
 if [ -z "${run:-}" ]; then

@@ -66,6 +66,10 @@ pub(crate) fn has_function(path: &str) -> bool {
             | "std.intrinsics.bytes_push_text"
             | "std.intrinsics.bytes_push_bytes"
             | "std.intrinsics.bytes_set"
+            | "std.intrinsics.float_bits"
+            | "std.intrinsics.float_of_bits"
+            | "std.intrinsics.pack_lock"
+            | "std.intrinsics.new_tag"
             | "std.random.random_int"
             | "std.random.random_float"
             | "std.random.random_choice"
@@ -207,6 +211,12 @@ fn intrinsic(name: &str, args: &[Value], span: Span) -> Run<Value> {
         ("stop", [Value::Str(message)]) => crash(message.clone(), span),
         // An empty byte builder, which the writing intrinsics, in `builtins.rs`, write into.
         ("bytes_builder", []) => Ok(Value::Bytes(Vec::new())),
+        // A float's bits as an int, and back, as `intrinsics.fen` says.
+        ("float_bits", [Value::Float(x)]) => Ok(Value::Int(x.to_bits().cast_signed())),
+        ("float_of_bits", [Value::Int(bits)]) => Ok(Value::Float(f64::from_bits(bits.cast_unsigned()))),
+        // A program the oracle runs has no `pack.lock`: a kit with one is refused as it loads
+        // (`kit.rs`), and a single file has none.
+        ("pack_lock", []) => Ok(Value::Str(String::new())),
         _ => unsupported(format!("std.intrinsics.{name}")),
     }
 }

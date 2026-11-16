@@ -41,6 +41,10 @@ on:
       shares:
         description: How many jobs share the runs, at once
         default: "8"
+      debugger:
+        description: On Windows, run each under cdb, which stops at a crash where it happens, even as the program exits, and keeps its stacks and a dump
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -81,6 +85,7 @@ jobs:
       TIMES: ${{ inputs.times }}
       SHARES: ${{ inputs.shares }}
       SHARE: ${{ matrix.share }}
+      DEBUGGER: ${{ inputs.debugger }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,11 +118,23 @@ jobs:
         shell: bash
         run: |
           if [ -n "$TARGET" ]; then which=(--test "$TARGET"); else which=(--lib); fi
-          cargo test --locked -p "$PACKAGE" "${which[@]}" --no-run
-      # On Windows, every program that crashes is caught where it crashed: the debugger, `cdb`, set
-      # as the one Windows starts on a crash, writes each thread's stack and a full dump into this
-      # share's folder. Windows Error Reporting's own dumps are asked for too, but the runner's
-      # image turns its reporting off, so they never came: what's set says so on the log.
+          cargo test --locked -p "$PACKAGE" "${which[@]}" --no-run 2>&1 | tee built.txt
+          # For the debugger, which starts the test's own binary as cargo does: from its package's
+          # folder, which cargo names it by too.
+          binary=$(tr -d '\r' < built.txt | sed -n 's/.*Executable .* (\(.*\))$/\1/p' | tail -n 1)
+          folder=$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r --arg name "$PACKAGE" '.packages[] | select(.name == $name) | .manifest_path')
+          if [ "$RUNNER_OS" = Windows ]; then
+            binary=$(cygpath -u "$binary")
+            folder=$(cygpath -u "$folder")
+          fi
+          echo "TEST_BINARY=$PWD/$binary" >> "$GITHUB_ENV"
+          echo "PACKAGE_FOLDER=$(dirname "$folder")" >> "$GITHUB_ENV"
+      # On Windows, a program that crashes as it runs is caught where it crashed: the debugger, `cdb`,
+      # set as the one Windows starts on a crash, writes each thread's stack and a full dump into
+      # this share's folder, and Windows Error Reporting's own dumps are asked for too. Neither comes
+      # for a crash as a process exits, which Windows ends with no report at all: `debugger` runs
+      # each run under cdb to catch those.
       - name: Catch each program that crashes
         if: runner.os == 'Windows'
         shell: pwsh
@@ -149,7 +166,9 @@ jobs:
       # run's number is its own across the shares. Each says how long it took, so a share stopped
       # partway still says how far it got. Each run has a temporary folder of its own, and a test
       # that fails keeps its folder there (`FENNEC_KEEP_FAILED`), the programs it built in it, which
-      # a failed run keeps beside what it printed.
+      # a failed run keeps beside what it printed. Under the debugger, the run's Fennec folder is
+      # in it too, so the programs a test built go with it. A run passed when the tests say so:
+      # cdb exits 0 whatever they did.
       - name: Run it, again and again
         shell: bash
         run: |
@@ -165,8 +184,27 @@ jobs:
             temporary="$RUNNER_TEMP/run-$run"
             mkdir -p "$temporary"
             if [ "$RUNNER_OS" = Windows ]; then temporary=$(cygpath -w "$temporary"); fi
-            if ! FENNEC_KEEP_FAILED=1 TMPDIR="$temporary" TMP="$temporary" TEMP="$temporary" \
-              cargo test --locked -q -p "$PACKAGE" "${which[@]}" -- "${filter[@]}" > "$said" 2>&1; then
+            status=0
+            if [ "$DEBUGGER" = true ] && [ "$RUNNER_OS" = Windows ]; then
+              # cdb starts the test binary and every process under it (`-o`), passes over each one's
+              # first stop, and at an access violation, even one as a process exits, says what it
+              # was, the registers, every thread's stack, the thread, and where each module is, and
+              # keeps a full dump, then lets the program go on to crash as it would have.
+              mkdir -p "repeat-$SHARE/dumps"
+              dumps=$(cygpath -w "$PWD/repeat-$SHARE/dumps")
+              script="$RUNNER_TEMP/cdb-$run.txt"
+              printf '%s\n' 'sxi ibp' \
+                "sxe -c \".echo FENNEC-ACCESS-VIOLATION; .exr -1; r; ~*k 40; !teb; lm; .dump /ma /u $dumps\\run-$run.dmp; gn\" -c2 \"gn\" av" \
+                'g' > "$script"
+              (cd "$PACKAGE_FOLDER" && FENNEC_KEEP_FAILED=1 TMPDIR="$temporary" TMP="$temporary" TEMP="$temporary" \
+                FENNEC_HOME="$temporary\\home" CARGO_MANIFEST_DIR="$(cygpath -w "$PACKAGE_FOLDER")" \
+                "/c/Program Files (x86)/Windows Kits/10/Debuggers/x64/cdb.exe" -G -o -cf "$(cygpath -w "$script")" \
+                "$(cygpath -w "$TEST_BINARY")" "${filter[@]}") > "$said" 2>&1 || status=$?
+            else
+              FENNEC_KEEP_FAILED=1 TMPDIR="$temporary" TMP="$temporary" TEMP="$temporary" \
+                cargo test --locked -q -p "$PACKAGE" "${which[@]}" -- "${filter[@]}" > "$said" 2>&1 || status=$?
+            fi
+            if [ "$status" -ne 0 ] || ! grep -q "test result: ok\." "$said"; then
               failed=$((failed + 1))
               echo "::error::run $run of $TIMES failed, after $((SECONDS - started)) s"
               tail -n 40 "$said"
@@ -176,6 +214,11 @@ jobs:
               echo "::error::no test named $TEST ran"
               cat "$said"
               exit 1
+            elif grep -q FENNEC-ACCESS-VIOLATION "$said"; then
+              # The tests passed, but the debugger saw an access violation: kept, to read.
+              echo "::warning::run $run passed, but cdb saw an access violation"
+              mv "$said" "repeat-$SHARE/run-$run-violation.txt"
+              mv "$RUNNER_TEMP/run-$run" "repeat-$SHARE/run-$run-kept" || true
             else
               echo "run $run passed in $((SECONDS - started)) s"
               rm "$said"

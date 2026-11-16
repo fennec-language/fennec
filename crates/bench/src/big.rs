@@ -242,8 +242,19 @@ fn measure_all(options: &Options) -> Result<bool, String> {
     );
     let mut found: Vec<Found> = Vec::new();
     let mut programs = Vec::new();
+    let mut failures = Vec::new();
     for &lines in &options.sizes {
-        let (program, measured) = measure_size(&setup, options, lines)?;
+        // A step that fails at one size fails at every larger one, so the sizes stop there, and
+        // what was measured is still reported, with the failure.
+        let (program, measured) = match measure_size(&setup, options, lines) {
+            Ok(measured) => measured,
+            Err(err) => {
+                eprintln!("{err}");
+                let first: Vec<&str> = err.lines().filter(|line| !line.trim().is_empty()).take(3).collect();
+                failures.push(format!("at {lines} lines: {}", first.join(" / ")));
+                break;
+            }
+        };
         for step in &measured {
             let budget = budget_for(&pinned, &system, lines, step.step);
             print_line(step, budget);
@@ -251,9 +262,9 @@ fn measure_all(options: &Options) -> Result<bool, String> {
         programs.push(program);
         found.extend(measured);
     }
-    let growth = growth(&found, &options.sizes);
+    let growth = growth(&found, &programs);
     print!("{}", growth_table(&growth));
-    let mut failures = over_budget(&found, &pinned, &system);
+    failures.extend(over_budget(&found, &pinned, &system));
     for (step, from, to, factor) in &growth {
         if *factor > GROWTH_LIMIT {
             failures.push(format!(
@@ -280,6 +291,9 @@ fn measure_all(options: &Options) -> Result<bool, String> {
 
 /// How big a generated program came out.
 struct Program {
+    /// The lines asked for, which name its size in the budgets.
+    asked: usize,
+    /// The lines it came out at, which its growth is measured against.
     lines: usize,
     files: usize,
     tests: usize,
@@ -322,7 +336,7 @@ fn measure_size(setup: &Setup, options: &Options, lines: usize) -> Result<(Progr
         }
         runs.push(steps);
     }
-    let program = Program { lines: made.lines, files: made.files, tests: made.tests };
+    let program = Program { asked: lines, lines: made.lines, files: made.files, tests: made.tests };
     let _ = std::fs::remove_dir_all(&folder);
     let found = Step::ALL
         .into_iter()
@@ -385,6 +399,7 @@ fn tool_medians(runs: &[&(Step, Counted, f64)]) -> Option<Vec<ToolCount>> {
             let took: Vec<Duration> = of_tool.iter().filter_map(|tool| tool.took).collect();
             Some(ToolCount {
                 name: tool.name.clone(),
+                runs: tool.runs,
                 instructions: median(&mut counts)?,
                 took: (took.len() == runs.len()).then(|| middle(took)),
             })
@@ -432,21 +447,22 @@ fn work_of(found: &Found) -> u128 {
 }
 
 /// How much faster than the program each step grew from each size to the next, in hundredths: its
-/// work's growth over the program's lines' growth.
-fn growth(found: &[Found], sizes: &[usize]) -> Vec<(Step, usize, usize, u128)> {
+/// work's growth over the growth of the lines the programs came out at, named by the sizes asked
+/// for.
+fn growth(found: &[Found], programs: &[Program]) -> Vec<(Step, usize, usize, u128)> {
     let mut grew = Vec::new();
     for step in Step::ALL {
-        for pair in sizes.windows(2) {
-            let &[from, to] = pair else { continue };
-            let at = |lines| found.iter().find(|found| found.lines == lines && found.step == step);
-            let (Some(small), Some(big)) = (at(from), at(to)) else { continue };
+        for pair in programs.windows(2) {
+            let [from, to] = pair else { continue };
+            let at = |asked| found.iter().find(|found| found.lines == asked && found.step == step);
+            let (Some(small), Some(big)) = (at(from.asked), at(to.asked)) else { continue };
             let (small_work, big_work) = (work_of(small), work_of(big));
-            if small_work == 0 {
+            if small_work == 0 || from.lines == 0 {
                 continue;
             }
-            // (big / small) / (to / from), in hundredths.
-            let factor = big_work * 100 * from as u128 / (small_work * to as u128);
-            grew.push((step, from, to, factor));
+            // (big / small) / (to's lines / from's lines), in hundredths.
+            let factor = big_work * 100 * from.lines as u128 / (small_work * to.lines as u128);
+            grew.push((step, from.asked, to.asked, factor));
         }
     }
     grew
@@ -577,8 +593,8 @@ fn markdown(
 /// added up, as a Markdown table.
 fn by_tool_table(found: &[Found]) -> String {
     let mut text = String::from(
-        "\nWhere the instructions went, by process, with the time its processes took, added up, \
-         which is more than the step took where they ran at once:\n\n",
+        "\nWhere the work went, by process: how many times it ran, its instructions, and the time \
+         its processes took, added up, which is more than the step took where they ran at once:\n\n",
     );
     let mut tools: Vec<&str> = Vec::new();
     for step in found {
@@ -597,7 +613,9 @@ fn by_tool_table(found: &[Found]) -> String {
                 step.by_tool.iter().flatten().find(|tool| tool.name == *name).map_or_else(
                     || "-".to_owned(),
                     |tool| match tool.took {
-                        Some(took) => format!("{}, {}", billions(tool.instructions), seconds(took)),
+                        Some(took) => {
+                            format!("{} runs, {}, {}", tool.runs, billions(tool.instructions), seconds(took))
+                        }
                         None => billions(tool.instructions),
                     },
                 )
@@ -715,7 +733,7 @@ fn budget_line(system: &str, lines: usize, step: Step, budget: &Budget) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{Built, Found, Step, ToolCount, growth, read_budgets, said_built};
+    use super::{Built, Found, Program, Step, ToolCount, growth, read_budgets, said_built};
     use std::time::Duration;
 
     fn found(lines: usize, step: Step, instructions: u64) -> Found {
@@ -724,7 +742,7 @@ mod tests {
             step,
             wall: Duration::from_secs(1),
             peak_kb: None,
-            by_tool: Some(vec![ToolCount { name: "fennec".to_owned(), instructions, took: None }]),
+            by_tool: Some(vec![ToolCount { name: "fennec".to_owned(), runs: 1, instructions, took: None }]),
             built: None,
             load: 0.0,
         }
@@ -738,7 +756,13 @@ mod tests {
             found(50, Step::Test, 1000),
             found(100, Step::Test, 4000),
         ];
-        let grew = growth(&measured, &[50, 100]);
+        // The programs came out a little bigger than asked: 50 and 100 lines asked for, 55 and 110
+        // made, still twice the size.
+        let programs = [
+            Program { asked: 50, lines: 55, files: 1, tests: 1 },
+            Program { asked: 100, lines: 110, files: 1, tests: 1 },
+        ];
+        let grew = growth(&measured, &programs);
         assert_eq!(grew.iter().find(|(step, ..)| *step == Step::Check).map(|grew| grew.3), Some(100));
         assert_eq!(grew.iter().find(|(step, ..)| *step == Step::Test).map(|grew| grew.3), Some(200));
     }

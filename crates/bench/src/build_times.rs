@@ -168,6 +168,8 @@ pub(crate) struct Counted {
 #[derive(Clone)]
 pub(crate) struct ToolCount {
     pub(crate) name: String,
+    /// How many times it ran.
+    pub(crate) runs: u64,
     pub(crate) instructions: u64,
     /// The wall time its processes took, added up, where it's reported: tools that run at once
     /// add up to more than the run took.
@@ -570,17 +572,18 @@ fn read_counts(counter: &Counter, reports: &Reports) -> (Option<Vec<ToolCount>>,
             let mut by_tool: Vec<ToolCount> = Vec::new();
             let mut peak = apple_peak(&own);
             if let Some(instructions) = apple_counts(&own) {
-                by_tool.push(ToolCount { name: "fennec".to_owned(), instructions, took: apple_real(&own) });
+                by_tool.push(ToolCount { name: "fennec".to_owned(), runs: 1, instructions, took: apple_real(&own) });
                 for (name, text) in &tool_reports(&reports.tools) {
                     peak = peak.max(apple_peak(text));
                     let Some(instructions) = apple_counts(text) else { continue };
                     let took = apple_real(text);
                     match by_tool.iter_mut().find(|tool| tool.name == *name) {
                         Some(tool) => {
+                            tool.runs += 1;
                             tool.instructions += instructions;
                             tool.took = tool.took.zip(took).map(|(before, now)| before + now);
                         }
-                        None => by_tool.push(ToolCount { name: name.clone(), instructions, took }),
+                        None => by_tool.push(ToolCount { name: name.clone(), runs: 1, instructions, took }),
                     }
                 }
             }
@@ -588,7 +591,7 @@ fn read_counts(counter: &Counter, reports: &Reports) -> (Option<Vec<ToolCount>>,
         }
         Counter::Perf => {
             let count = perf_count(&std::fs::read_to_string(&reports.own).unwrap_or_default());
-            (count.map(|instructions| vec![ToolCount { name: "all".to_owned(), instructions, took: None }]), None)
+            (count.map(|instructions| vec![ToolCount { name: "all".to_owned(), runs: 1, instructions, took: None }]), None)
         }
         Counter::None => (None, None),
     };

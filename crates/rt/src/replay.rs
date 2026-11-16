@@ -31,7 +31,8 @@
 //!   stop cut short says so in the recording. A capability's call, like a sleep or a socket's read,
 //!   has a `cut short` entry right after its own, and a channel's send or receive comes to
 //!   "stopped" there. A task its stop finds waiting at its own `with launch` block's end, for a
-//!   task it launched, has a `stopped at its block's end` entry. A replay stops the task at that
+//!   task it launched, has a `stopped at its block's end` entry, and one its stop found serving has a
+//!   `stopped serving` entry. A replay stops the task at that
 //!   wait, as the recorded run did. So a replay stops nothing by the clock: its block's ends wait
 //!   for their tasks without a deadline, and stop none when they fail, as the recording says
 //!   where each task was stopped.
@@ -88,13 +89,32 @@ const WORKERS: &str = "workers";
 /// task failed as stopped in it.
 const CUT_SHORT: &str = "cut short";
 
-/// The entry that says the task's stop found it waiting at its own `with launch` block's end, for
-/// a task it launched to end, and it failed as stopped there.
+/// A wait that's no capability's call, where a task's stop can find it and fail it as stopped.
 #[cfg_attr(
     not(any(test, feature = "threads")),
-    expect(dead_code, reason = "only launched tasks have blocks that wait for them")
+    expect(dead_code, reason = "only launched tasks are stopped")
 )]
-const STOPPED_AT_BLOCK_END: &str = "stopped at its block's end";
+#[derive(Clone, Copy)]
+pub(crate) enum StoppedIn {
+    /// Its own `with launch` block's end, waiting for a task it launched to end.
+    BlockEnd,
+    /// A call serving, which a stop ends with its server.
+    Serving,
+}
+
+impl StoppedIn {
+    /// The entry that says the task's stop found it here, and it failed as stopped.
+    #[cfg_attr(
+        not(any(test, feature = "threads")),
+        expect(dead_code, reason = "only launched tasks are stopped")
+    )]
+    fn entry(self) -> &'static str {
+        match self {
+            StoppedIn::BlockEnd => "stopped at its block's end",
+            StoppedIn::Serving => "stopped serving",
+        }
+    }
+}
 
 enum Mode {
     Off,
@@ -745,26 +765,26 @@ fn stopped_if_cut_short(player: &Mutex<Player>) {
     }
 }
 
-/// The running task's stop found it waiting at its own `with launch` block's end, and it's failing
-/// as stopped: in a recording, logged, for a replay to stop it there too.
+/// The running task's stop found it waiting `in` a wait that's no capability's call, and it's
+/// failing as stopped: in a recording, logged, for a replay to stop it there too.
 #[cfg_attr(
     not(any(test, feature = "threads")),
-    expect(dead_code, reason = "only launched tasks have blocks that wait for them")
+    expect(dead_code, reason = "only launched tasks are stopped")
 )]
-pub(crate) fn stopped_at_block_end() {
+pub(crate) fn stopped_in(waiting: StoppedIn) {
     if let Mode::Record(file) = mode() {
-        log(file, &running(), STOPPED_AT_BLOCK_END, &[]);
+        log(file, &running(), waiting.entry(), &[]);
     }
 }
 
-/// In a replay, at the running task's own `with launch` block's end, once the task it launched
-/// has ended: if its recording says its stop found it there, it's stopped now, as it was then.
+/// In a replay, where the running task's wait `in` this ended: if its recording says its stop
+/// found it there, it's stopped now, as it was then, and this gives back true.
 #[cfg_attr(
     not(any(test, feature = "threads")),
-    expect(dead_code, reason = "only launched tasks have blocks that wait for them")
+    expect(dead_code, reason = "only launched tasks are stopped")
 )]
-pub(crate) fn stopped_at_block_end_as_recorded() {
-    let Mode::Replay(player) = mode() else { return };
+pub(crate) fn stopped_in_as_recorded(waiting: StoppedIn) -> bool {
+    let Mode::Replay(player) = mode() else { return false };
     let task = running();
     let stopped = {
         let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
@@ -772,7 +792,7 @@ pub(crate) fn stopped_at_block_end_as_recorded() {
         let stopped = stream
             .as_ref()
             .and_then(|stream| stream.front())
-            .is_some_and(|(next, _)| next == STOPPED_AT_BLOCK_END);
+            .is_some_and(|(next, _)| next == waiting.entry());
         if stopped {
             stream.and_then(VecDeque::pop_front);
         }
@@ -781,6 +801,7 @@ pub(crate) fn stopped_at_block_end_as_recorded() {
     if stopped {
         stopped_as_recorded();
     }
+    stopped
 }
 
 fn log(file: &Mutex<std::fs::File>, task: &str, call: &str, payload: &[u8]) {

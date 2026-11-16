@@ -263,6 +263,13 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
     if !replaying && (failed != 0 || threads::stopped()) {
         stop(&launched, threads::STOPPING);
     }
+    // In a replay, a block its recording says was stopped here marks its task stopped before it
+    // waits for it, as the run stopped it: what the task did past its last recorded entry, left
+    // behind by a round that was cancelled, never reached the recording, and running past it then
+    // ends the task as quietly as a stopped one's end, not as a crash.
+    if replaying && crate::replay::will_be_stopped_in(crate::replay::StoppedIn::BlockEnd, false) {
+        launched.stop.fetch_max(threads::STOPPING, Ordering::AcqRel);
+    }
     let deadline = u64::try_from(stop_after_ns)
         .ok()
         .filter(|_| failed == 0 && !replaying)
@@ -277,9 +284,15 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
         None if replaying => {
             let _ = crate::replay::stopped_in_as_recorded(crate::replay::StoppedIn::BlockEnd);
         }
-        // Stopped while it waited: it's cut short now its task has ended, which a recording notes.
+        // Stopped while it waited, or cancelled, as a server's round is when its server stops: it's
+        // cut short now its task has ended, which a recording notes. A cancelled round that went on
+        // ran past its block as if it had ended (#1915).
         None => {
-            if super::cut_short() {
+            let cancelled = fennec_parked::is_cancelled() && !super::super::failed();
+            if cancelled {
+                super::fail_as_stopped();
+            }
+            if cancelled || super::cut_short() {
                 crate::replay::stopped_in(crate::replay::StoppedIn::BlockEnd);
             }
         }

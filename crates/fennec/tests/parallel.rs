@@ -1202,6 +1202,64 @@ fn requests_from_rounds_leave_the_blocking_threads_to_the_handlers_they_wait_for
     Ok(())
 }
 
+/// A server's round in each kind of wait, when the task serving it is stopped, and what each
+/// program prints: the round's first line, `main`'s answer, and the end. A round is cancelled when
+/// its server stops, and fails as stopped at whatever wait it's in, so it goes no further.
+pub(crate) const STOPPED_ROUNDS: [(&str, &str, &str); 8] = [
+    ("sleep", include_str!("fixtures/stopped_rounds/stophandler.fen"), "the slow one began"),
+    ("sleeps in a loop", include_str!("fixtures/stopped_rounds/stopspin.fen"), "the slow one began"),
+    ("sleeps for ever", include_str!("fixtures/stopped_rounds/stopforever.fen"), "the slow one began"),
+    ("its own block's end", include_str!("fixtures/stopped_rounds/stoplaunch.fen"), "the slow one began"),
+    ("a channel", include_str!("fixtures/stopped_rounds/stopchannel.fen"), "the slow one began"),
+    ("another program", include_str!("fixtures/stopped_rounds/stopprocess.fen"), "the slow one began"),
+    (
+        "a database another holds",
+        include_str!("fixtures/stopped_rounds/stopsqlite.fen"),
+        "the slow one began",
+    ),
+    ("a lock, then a sleep", include_str!("fixtures/stopped_rounds/stoplock.fen"), "the slow one counted"),
+];
+
+/// What a program of `STOPPED_ROUNDS` prints, the round's line `first`: `stoplock.fen` counts the
+/// round it saw.
+pub(crate) fn stopped_round_printed(name: &str, first: &str) -> String {
+    let end = if name == "a lock, then a sleep" { "the server is over 1" } else { "the server is over" };
+    format!("{first}\nhello /one\n{end}\n")
+}
+
+/// A server's round that's asleep, at its own block's end, running another program, pausing for a
+/// database or past a lock, when the task serving it is stopped, ends there, quietly, at 1 and 4
+/// threads. A round's sleep, its block's end, a program's wait and a database's pause went on as if
+/// they'd ended, so it printed what it never should have, and a round that slept in a loop never
+/// ended, nor did its program (#1915). A channel's wait already ended it.
+#[test]
+fn a_round_stopped_in_any_wait_ends_there() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-stopped-rounds-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    for (at, (name, source, first)) in STOPPED_ROUNDS.iter().enumerate() {
+        let built = build_on_threads(&dir, source, &format!("stopped_{at}"))?;
+        for threads in ["1", "4"] {
+            let ran =
+                Command::new(&built).env("FENNEC_THREADS", threads).current_dir(&dir).output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(ran.status.code(), Some(0), "{name} on {threads} threads: {said}");
+            assert_eq!(
+                sorted_lines(&ran.stdout),
+                sorted_lines(stopped_round_printed(name, first).as_bytes()),
+                "{name} on {threads} threads: {said}"
+            );
+            assert!(!said.contains("error"), "{name} on {threads} threads: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A launched task can read every constant the program has, not only its strings.
 #[test]
 fn a_task_reads_the_programs_constants() -> std::io::Result<()> {

@@ -8,7 +8,8 @@
 //! reaches is refused, as is a generator made before the task and read in it. A block that fails
 //! or crashes cuts its task short at once, wherever it is, and a task that ends with messages left
 //! unread closes its inbox, so a send after that fails with `Closed` and one before it doesn't:
-//! both are refused. A `stop_after=` hangs on time, and is refused too. What the task ends with is
+//! both are refused. A `stop_after=` hangs on time, and is refused too. A task that crashes cuts
+//! short every wait its block is in, as a closed channel's, until the block ends (`actors.rs`). What the task ends with is
 //! what the `with` ends with, once the block has ended: the task's failure, or
 //! `Crashed(why="the task crashed")` for a crash.
 

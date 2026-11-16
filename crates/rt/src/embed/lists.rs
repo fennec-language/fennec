@@ -307,13 +307,37 @@ fn shape(state: &State, element: usize) -> u64 {
 
 /// The kind of item a block holds, when it's a list's.
 pub(super) fn element_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
-    let at = shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
-    state.tables.element(usize::try_from(at).ok()?).cloned()
+    kind_of_list(state, block).cloned()
 }
 
 /// `element_of`, borrowed.
 pub(super) fn element_in<'a>(state: &'a State, block: &[u64]) -> Option<&'a Element> {
-    state.tables.element(element_number(state, block)?).map(AsRef::as_ref)
+    kind_of_list(state, block).map(AsRef::as_ref)
+}
+
+/// The kind of item a block holds, when it's a list's. A block with a list's shape whose kind this
+/// thread knows nothing of stops the program as a bug: taken as no list, it would read as nothing,
+/// print as `None`, copy and free nothing it holds, and compare unequal, as an error's notes were
+/// lost without a word (#1843).
+fn kind_of_list<'a>(state: &'a State, block: &[u64]) -> Option<&'a Rc<Element>> {
+    let number = element_number(state, block)?;
+    let kind = state.tables.element(number);
+    if kind.is_none() && number < state.tables.elements.len() + MOST_ADDED_KINDS {
+        unknown_kind(number);
+    }
+    kind
+}
+
+/// Stops the program: a list's kind of item, numbered `number`, is one this thread knows nothing
+/// of. The fuzzer makes up blocks on purpose, and goes on.
+#[cold]
+#[inline(never)]
+fn unknown_kind(number: usize) {
+    if !super::made_up_inputs() {
+        super::heap::runtime_bug(&format!(
+            "a list holds items of kind {number}, which this thread knows nothing of, so it can't be read"
+        ));
+    }
 }
 
 /// The number of the kind of item a list's block holds.
@@ -333,14 +357,24 @@ fn item_words(state: &State, element: i64) -> Option<(usize, usize)> {
     let at = usize::try_from(element).ok()?;
     let words = match state.heap.item_words(at) {
         Some(words) => words,
-        None => state.tables.element(at)?.words(),
+        None => known_kind(state, at)?.words(),
     };
     Some((at, words))
 }
 
 fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
     let at = usize::try_from(element).ok()?;
-    Some((at, Rc::clone(state.tables.element(at)?)))
+    Some((at, Rc::clone(known_kind(state, at)?)))
+}
+
+/// The kind of item native code numbered `number`, which it has described: one this thread knows
+/// nothing of stops the program as a bug, rather than making nothing.
+fn known_kind(state: &State, number: usize) -> Option<&Rc<Element>> {
+    let kind = state.tables.element(number);
+    if kind.is_none() {
+        unknown_kind(number);
+    }
+    kind
 }
 
 /// Whether a list of this kind of item owns a block for each.
@@ -1324,7 +1358,7 @@ fn number_of_element(state: &mut State, element: &Rc<Element>) -> usize {
         .elements
         .iter()
         .position(|known| known == element)
-        .unwrap_or_else(|| tables.elements.len() + added_number(element));
+        .unwrap_or_else(|| tables.elements.len() + added_number(tables, element));
     if tables.found_elements.len() == KEPT {
         tables.found_elements.remove(0);
     }
@@ -1332,20 +1366,30 @@ fn number_of_element(state: &mut State, element: &Rc<Element>) -> usize {
     at
 }
 
-/// The kinds of item the runtime numbered itself, past those the program described, as their
-/// bytes, in the order they were numbered: one numbering for every thread of the run. Each thread
+/// The kinds of item the runtime numbered itself for a program, past those it described, as their
+/// bytes, in the order they were numbered: one numbering for every thread of a run. Each thread
 /// numbered its own before, so a list made on one, like an error's notes made on `main`, read as a
 /// kind another didn't know, or as another kind, on a task's thread (#1843).
-static ADDED_KINDS: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+type Kinds = std::sync::Mutex<Vec<Vec<u8>>>;
 
-/// How many kinds the runtime numbers itself at most: far past the few a program needs.
+/// Each program's [`Kinds`], by the bytes of the kinds it described, held only while a thread
+/// running it holds them: so a process that runs many programs, as tests do, has a count of kinds
+/// for each, and lets a program's go once nothing runs it. Every thread of a run has the same
+/// described kinds, read from one image, so they find one list.
+static PROGRAMS_KINDS: std::sync::Mutex<Vec<(Vec<u8>, std::sync::Weak<Kinds>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// How many kinds the runtime numbers itself for a program at most: far past the few one needs.
 const MOST_ADDED_KINDS: usize = 4096;
 
-/// A thread's copies of the kinds of item the runtime numbered itself, by number past those the
-/// program described, each read from [`ADDED_KINDS`] the first time this thread meets it. Each is
-/// written once and never moved, so it can be read with the runtime's state only borrowed.
+/// A thread's hold on its program's [`Kinds`], and its copies of them, by number past those the
+/// program described, each read the first time this thread meets it. Each is written once and
+/// never moved, so it can be read with the runtime's state only borrowed.
 #[derive(Default)]
-pub struct AddedKinds(std::cell::OnceCell<Box<[std::cell::OnceCell<Rc<Element>>]>>);
+pub struct AddedKinds {
+    kinds: std::cell::OnceCell<std::sync::Arc<Kinds>>,
+    copies: std::cell::OnceCell<Box<[std::cell::OnceCell<Rc<Element>>]>>,
+}
 
 impl super::Tables {
     /// The kind of item numbered `number`: one the program described, or one the runtime numbered
@@ -1368,27 +1412,50 @@ impl super::Tables {
     fn added_element(&self, at: usize) -> Option<&Rc<Element>> {
         let slots = self
             .added_elements
-            .0
+            .copies
             .get_or_init(|| (0..MOST_ADDED_KINDS).map(|_| std::cell::OnceCell::new()).collect());
         let slot = slots.get(at)?;
         if let Some(element) = slot.get() {
             return Some(element);
         }
-        let bytes = ADDED_KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(at)?.clone();
+        let bytes = self.kinds().lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(at)?.clone();
         let element = <Element as super::codec::Decode>::decode(&mut super::codec::Reader::new(&bytes))?;
         Some(slot.get_or_init(|| Rc::new(element)))
     }
 }
 
+impl super::Tables {
+    /// This program's [`Kinds`], found the first time this thread asks.
+    fn kinds(&self) -> &std::sync::Arc<Kinds> {
+        self.added_elements.kinds.get_or_init(|| {
+            let mut writer = super::codec::Writer::default();
+            for element in &self.elements {
+                super::codec::Encode::encode(&**element, &mut writer);
+            }
+            let described = writer.into_bytes();
+            let mut programs = PROGRAMS_KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            programs.retain(|(_, kinds)| kinds.strong_count() > 0);
+            if let Some(kinds) =
+                programs.iter().filter(|(of, _)| *of == described).find_map(|(_, kinds)| kinds.upgrade())
+            {
+                return kinds;
+            }
+            let kinds = std::sync::Arc::new(Kinds::default());
+            programs.push((described, std::sync::Arc::downgrade(&kinds)));
+            kinds
+        })
+    }
+}
+
 /// The number past the kinds the program described of a kind it didn't, numbered now if no thread
-/// has numbered it yet.
+/// of its has numbered it yet.
 #[cold]
 #[inline(never)]
-fn added_number(element: &Element) -> usize {
+fn added_number(tables: &super::Tables, element: &Element) -> usize {
     let mut writer = super::codec::Writer::default();
     super::codec::Encode::encode(element, &mut writer);
     let bytes = writer.into_bytes();
-    let mut added = ADDED_KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut added = tables.kinds().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(at) = added.iter().position(|known| *known == bytes) {
         return at;
     }

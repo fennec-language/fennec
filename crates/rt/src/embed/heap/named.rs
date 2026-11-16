@@ -205,7 +205,7 @@ fn write_id_map(
 ) -> Option<()> {
     let item = match fields.first() {
         Some((_, Element::List(item))) => Rc::clone(item),
-        Some((_, Element::ListOf(number))) => Rc::clone(state.tables.elements.get(*number)?),
+        Some((_, Element::ListOf(number))) => Rc::clone(state.tables.element(*number)?),
         _ => return None,
     };
     let mut items = Vec::new();

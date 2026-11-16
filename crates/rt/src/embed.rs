@@ -197,6 +197,9 @@ pub struct Tables {
     /// `elements`, which never changes once given: a list of strings `split` makes finds its
     /// number here, however many kinds a program describes before strings.
     pub found_elements: Vec<(Rc<crate::packed::Element>, usize)>,
+    /// The kinds of item the runtime numbered itself, past `elements`, as this thread has read them
+    /// (see `lists::AddedKinds`).
+    pub added_elements: lists::AddedKinds,
 }
 
 impl Tables {

@@ -124,7 +124,8 @@ impl Cache {
     }
 
     /// Reads an entry, and marks it as just used. One whose bytes don't match its hash is a
-    /// miss, said once a command: it was torn or changed since it was written.
+    /// miss, said once a command: it was torn or changed since it was written. So is one that's
+    /// there but can't be read: only one that isn't there is a miss without a word.
     pub fn read(&self, kind: &str, name: &str) -> Option<Vec<u8>> {
         if !self.usable() {
             return None;
@@ -133,7 +134,13 @@ impl Cache {
         // A kept program is the whole of the file its entry names.
         let sum = beside(&named);
         let path = sum.as_deref().map_or_else(|| named.clone(), |sum| kept_at(&named, sum));
-        let mut bytes = std::fs::read(&path).ok()?;
+        let mut bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                crate::touched("read an entry", Err(err));
+                return None;
+            }
+        };
         let whole = match &sum {
             Some(sum) => sum_of(&bytes) == *sum,
             None => match bytes.len().checked_sub(HASH_LEN).and_then(|end| bytes.split_at_checked(end)) {
@@ -400,9 +407,15 @@ fn program_named_by(path: &Path) -> Option<PathBuf> {
     beside(Path::new(entry)).map(|sum| kept_at(Path::new(entry), &sum))
 }
 
-/// The hash a kept program's entry names, if it's one.
+/// The hash a kept program's entry names, if it's one. One that's there but can't be read is said.
 fn beside(path: &Path) -> Option<String> {
-    std::fs::read_to_string(sum_path(path)).ok().map(|sum| sum.trim().to_owned())
+    match std::fs::read_to_string(sum_path(path)) {
+        Ok(sum) => Some(sum.trim().to_owned()),
+        Err(err) => {
+            crate::touched("read an entry", Err(err));
+            None
+        }
+    }
 }
 
 /// A kept program's hash, as its file beside it holds it.

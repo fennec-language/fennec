@@ -119,7 +119,7 @@ fn an_entry_with_a_changed_byte_is_a_miss() {
     std::fs::remove_file(&program).unwrap();
     let out = home.join("out");
     assert_eq!(cache.read("programs", "root").as_deref(), Some(&b"a program as it was linked"[..]));
-    let kept = cache.path("programs", "root");
+    let kept = cache.kept_program("programs", "root").unwrap();
     // Made writable to change it, as it's kept read-only: on Windows, by its read-only attribute.
     #[cfg(unix)]
     std::fs::set_permissions(&kept, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
@@ -133,6 +133,33 @@ fn an_entry_with_a_changed_byte_is_a_miss() {
     assert!(!cache.link_out("programs", "root", &out).unwrap(), "a changed program was put out");
     assert!(!out.exists());
     assert_eq!(cache.read("programs", "root"), None);
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// A program kept again under one name leaves the old program's file whole, for any reader that
+/// found it just before, and cleanup takes that file once it's old and nothing holds it, leaving
+/// the program the entry names now.
+#[test]
+fn a_program_kept_again_leaves_the_old_one_for_cleanup() {
+    let home = home("kept-again-cleanup").unwrap();
+    let cache = Cache::new(&home);
+    let (first, second) = (home.join("first"), home.join("second"));
+    std::fs::write(&first, b"the old program").unwrap();
+    cache.keep_file("programs", "root", &first).unwrap();
+    let old = cache.kept_program("programs", "root").unwrap();
+    std::fs::write(&second, b"the new program").unwrap();
+    cache.keep_file("programs", "root", &second).unwrap();
+    let new = cache.kept_program("programs", "root").unwrap();
+    std::fs::remove_file(&first).unwrap();
+    std::fs::remove_file(&second).unwrap();
+    assert!(old.exists() && new.exists());
+    let long_ago = SystemTime::now() - fennec_build::KEPT_RECENT - Duration::from_secs(600);
+    set_time(&old, long_ago).unwrap();
+    let cleanup = cache.cleanup(0).unwrap();
+    assert_eq!(cleanup.removed, 1, "{cleanup:?}");
+    assert!(!old.exists(), "the program no entry names any more stayed");
+    assert!(new.exists(), "the program the entry names went");
+    assert_eq!(cache.read("programs", "root").as_deref(), Some(&b"the new program"[..]));
     std::fs::remove_dir_all(&home).unwrap();
 }
 
@@ -280,7 +307,7 @@ fn an_entry_just_stored_used_or_put_out_is_never_removed() {
     std::fs::write(&program, b"a program").unwrap();
     cache.keep_file("programs", "root", &program).unwrap();
     entry(&cache.path("llvm", "spare"), 0, 0).unwrap();
-    let kept = cache.path("programs", "root");
+    let kept = cache.kept_program("programs", "root").unwrap();
     // Kept long ago, read-only, then put out for a run now.
     set_time(&kept, SystemTime::now() - Duration::from_secs(old)).unwrap();
     let run = home.join("work").join("fennec-run-1");

@@ -218,6 +218,10 @@ export struct Net:
 
     ## A server listening on `port`, or on a port the system picks for 0, lent for a `with` block
     ## and closed when it ends. With `tls=`, each connection is TLS, shown by that certificate.
+    ## Connections wait for the server to take them in a queue as long as the system allows:
+    ## 4,096 by default on Linux, where connections past it wait, and may time out, until there's
+    ## room, but 128 on macOS, where they're reset. `sudo sysctl kern.ipc.somaxconn=4096` raises
+    ## the Mac's.
     def listen(self, port: int, tls: Certificate? = None) -> with Server fails NetError:
         server = listened(self, port=port, tls=tls)?
         lend server except:

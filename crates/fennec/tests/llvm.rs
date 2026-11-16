@@ -12648,6 +12648,56 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
     Ok(())
 }
 
+/// A program of ordinary generics, each used with a few types, asks for more than 2,000 copies of
+/// them, as one of about 53,000 lines does, and builds and runs. Past 2,000 the copies were
+/// refused, and the build stopped at a call that "doesn't say what its types stand for", where
+/// `fennec check` said nothing (#1896). Built as a release, which builds it in a few seconds where
+/// a cold dev build takes ten times as long: the copies are made the same way in both.
+#[test]
+fn a_program_asking_for_thousands_of_generic_copies_builds_and_runs() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let (generics, parts) = (800, 8);
+    let mut source = String::new();
+    for at in 0..generics {
+        let _ = writeln!(source, "def kept_{at}[T](value: T) -> T:\n    return value\n");
+    }
+    for part in 0..parts {
+        let _ = writeln!(source, "def part_{part}() -> int:\n    mut total = 0");
+        for at in (part * generics / parts)..((part + 1) * generics / parts) {
+            let _ = writeln!(
+                source,
+                "    total += kept_{at}({at}) + len(kept_{at}(\"some text\")) + len(kept_{at}([{at}, {at}]))"
+            );
+        }
+        source.push_str("    return total\n\n");
+    }
+    let parts_added: Vec<String> = (0..parts).map(|part| format!("part_{part}()")).collect();
+    let _ = writeln!(source, "def main(stdout: Stdout):\n    stdout.print({})", parts_added.join(" + "));
+    let total: usize = (0..generics).map(|at| at + "some text".len() + 2).sum();
+    let dir = folder("thousands_of_copies")?;
+    let (program, executable) = (dir.join("copies.fen"), dir.join("copies"));
+    std::fs::write(&program, &source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", "--release"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        format!("{total}\n"),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed
 
 def kept_then_crash(at: int):
@@ -26823,6 +26873,37 @@ def main(stdout: Stdout):
     stdout.print(count(x * 2 for x in range(10)), count(s for s in ["a", "b"]))
     stdout.print(count(f for f in [1.5, 2.5, 3.5]), last_of((w for w in ["p", "q"]), otherwise="none"))
 "#,
+    )
+}
+
+/// A generic function holding a `Buffer[T]` or an `array[T, N]`, or giving one back, has its copy
+/// made with `T` filled in. It kept `T` in them, so the copy wasn't lowered and the program didn't
+/// build, though `fennec check` passed and the reference evaluator ran it (#1897).
+#[test]
+fn a_generic_holding_a_buffer_or_an_array_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generic_buffers_and_arrays",
+        r#"def first_two[T](items: list[T]) -> array[T, 2]:
+    held: array[T, 2] = [items[0], items[1]]
+    return held
+
+def gathered[T](items: list[T]) -> int:
+    mut held = Buffer[T]()
+    for item in items:
+        held.push(item)
+    return len(held)
+
+def main(stdout: Stdout):
+    pair = first_two([3, 4])
+    stdout.print(pair[0] + pair[1])
+    words = first_two(["first, a text long enough for a block", "second"])
+    stdout.print(words[1], words[0])
+    stdout.print(gathered(["a", "b", "c"]), gathered([1.5]))
+"#,
+        "7\nsecond first, a text long enough for a block\n3 1\n",
     )
 }
 

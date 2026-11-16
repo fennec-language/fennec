@@ -126,8 +126,7 @@ impl Emit<'_, '_, '_> {
         let (block, length) = self.room_for(slot, "10");
         let start = self.byte_place(&block, &length);
         let entry = self.current.clone();
-        let (head, more, last) =
-            (self.label("varint"), self.label("varint_more"), self.label("varint_last"));
+        let (head, more, last) = (self.label("varint"), self.label("varint_more"), self.label("varint_last"));
         self.line(&format!("br label %{head}"));
         self.start_block(&head);
         let (at, rest, place, big) = (self.temp(), self.temp(), self.temp(), self.temp());

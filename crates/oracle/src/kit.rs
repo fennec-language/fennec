@@ -49,7 +49,7 @@ pub(crate) fn kit(dir: &Path, shown: &str) -> Result<Merged, Refused> {
 
 /// Loads a single file, shown as `shown`, and the modules beside it that it imports.
 pub(crate) fn file(path: &Path, shown: &str) -> Result<Merged, Refused> {
-    let src = path.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let src = folder_of(path);
     let shown_src = match Path::new(shown).parent().map(|folder| folder.to_string_lossy().replace('\\', "/"))
     {
         Some(folder) if !folder.is_empty() && folder != "." => format!("{}/", folder.trim_end_matches('/')),
@@ -189,6 +189,20 @@ impl Loader {
         let index: HashMap<String, usize> =
             self.files.iter().enumerate().map(|(at, file)| (file.name.clone(), at)).collect();
         let defines: Vec<HashSet<String>> = self.files.iter().map(|file| defined(&file.module)).collect();
+        // The files of a kit share one set of top-level names, as the compiler's loader holds them
+        // to: a name two files define is refused.
+        for (at, names) in defines.iter().enumerate() {
+            for (other, theirs) in defines.iter().enumerate().take(at) {
+                if let Some(name) = names.intersection(theirs).min() {
+                    let module = |at: usize| self.files.get(at).map_or("", |file| file.name.as_str());
+                    return Err(Refused::Invalid(format!(
+                        "`{name}` is defined in `{}` and in `{}`, and the files of a kit share one set of top-level names",
+                        module(other),
+                        module(at)
+                    )));
+                }
+            }
+        }
         let mut cases: HashMap<String, Vec<(String, usize)>> = HashMap::new();
         for (at, file) in self.files.iter().enumerate() {
             for item in &file.module.items {
@@ -210,7 +224,19 @@ impl Loader {
             .flat_map(|file| file.module.items)
             .filter(|item| !matches!(item, Item::Import(import) if !is_std(import)))
             .collect();
-        Ok(Merged { module: Module { items, ..Default::default() }, sources: self.sources })
+        // Each file's span, so the checker takes each file's imports as its own, as the compiler's
+        // loader has it check them.
+        let files = self.sources.spans();
+        Ok(Merged { module: Module { items, files, ..Default::default() }, sources: self.sources })
+    }
+}
+
+/// The folder a file is in: `.` for a bare name, as `tiny.fen` given from its own folder, whose
+/// parent is the empty path, which can't be read or made canonical.
+fn folder_of(file: &Path) -> PathBuf {
+    match file.parent() {
+        Some(folder) if !folder.as_os_str().is_empty() => folder.to_path_buf(),
+        _ => PathBuf::from("."),
     }
 }
 
@@ -218,7 +244,7 @@ impl Loader {
 /// them as it builds the program: the file at `path` from the folder of the file that calls it,
 /// which can't be outside `root`. `embed_folder` isn't modeled.
 fn embed_files(module: &mut Module, file: &Path, root: &Path) -> Result<(), Refused> {
-    let folder = file.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let folder = folder_of(file);
     let root = root.canonicalize().map_err(|err| Refused::Invalid(format!("the kit's folder: {err}")))?;
     let mut refused = None;
     visit::exprs_mut(module, &mut |expr| {
@@ -521,4 +547,19 @@ fn types_in_function(def: &mut FnDef, change: &mut dyn FnMut(&mut TypeExpr)) {
     def.params.iter_mut().filter_map(|param| param.ty.as_mut()).for_each(&mut *change);
     def.ret.iter_mut().chain(def.fails.iter_mut()).for_each(&mut *change);
     visit::written_types_in(&mut def.body, change);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::folder_of;
+
+    #[test]
+    fn a_file_given_by_its_bare_name_is_in_the_folder_it_runs_from() {
+        assert_eq!(folder_of(Path::new("tiny.fen")), PathBuf::from("."));
+        assert_eq!(folder_of(Path::new("./tiny.fen")), PathBuf::from("."));
+        assert_eq!(folder_of(Path::new("examples/tiny.fen")), PathBuf::from("examples"));
+        assert_eq!(folder_of(Path::new("/work/tiny.fen")), PathBuf::from("/work"));
+    }
 }

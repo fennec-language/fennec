@@ -502,6 +502,27 @@ def today() -> Kind:
     assert_eq!(ended, Ended::Unsupported("a kit with dependencies".to_owned()));
 }
 
+/// The files of a kit share one set of top-level names, as the compiler's loader holds them to:
+/// two files defining `area`, each imported by a file of its own, is refused, where the oracle used
+/// to run whichever `area` came last.
+#[test]
+fn a_name_two_files_of_a_kit_define_is_refused() {
+    let main = "from squares import area\nimport report\n\ndef main(stdout: Stdout):\n    stdout.print(area(3), report.circle(3))\n";
+    let files = [
+        ("kit.toml", KIT_TOML),
+        ("src/main.fen", main),
+        ("src/squares.fen", "def area(side: int) -> int:\n    return side * side\n"),
+        ("src/circles.fen", "def area(radius: int) -> int:\n    return 3 * radius * radius\n"),
+        (
+            "src/report.fen",
+            "from circles import area\n\ndef circle(radius: int) -> int:\n    return area(radius)\n",
+        ),
+    ];
+    let (_, ended) = kit_ran("two_areas", &files).unwrap();
+    let Ended::Unsupported(why) = ended else { panic!("it ended {ended:?}") };
+    assert!(why.contains("`area` is defined in `squares` and in `circles`"), "{why}");
+}
+
 #[test]
 fn json_writes_a_value_as_its_type_saves_it_and_reads_it_back() {
     prints(

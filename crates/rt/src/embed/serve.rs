@@ -24,7 +24,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -45,6 +45,9 @@ const RANGE_STACKS_KEPT: usize = 8;
 
 /// The most ranges of `parallel` calls a worker runs at once. Each has a stack of its own, and past
 /// a few thousand there's no room left for more, nor for the tasks they launch, which they wait for.
+/// Only ranges count: a launched task may live as long as the program, and a worker holding this
+/// many of those would otherwise never start a range, with whatever waits for the range waiting
+/// for good.
 const MOST_RANGES: usize = 1024;
 
 /// A range or task waiting for a stack: the work, its accounts, and what's told its number once it
@@ -706,6 +709,8 @@ pub(in crate::embed) struct Io {
     /// Ranges, and launched tasks, waiting for a stack, which they get as others end. Launched tasks
     /// go first: ranges may be waiting for them.
     deferred_ranges: VecDeque<Deferred>,
+    /// How many ranges are running here as tasks, of the tasks in `ranges`: the rest are launched.
+    live_ranges: usize,
     deferred_tasks: VecDeque<Deferred>,
     /// The runtime's temporaries and inputs each parked task holds, kept apart while it's parked:
     /// tasks take turns on the thread, so one's can't be left where another's truncating would
@@ -730,6 +735,7 @@ impl Io {
             servers: HashMap::new(),
             ranges: Scheduler::keeping(RANGE_STACK, RANGE_STACKS_KEPT),
             deferred_ranges: VecDeque::new(),
+            live_ranges: 0,
             deferred_tasks: VecDeque::new(),
             accounts: HashMap::new(),
             temporaries: HashMap::new(),
@@ -739,8 +745,9 @@ impl Io {
     /// Starts a range as a parked task on this worker, so it can park when it waits. If there's no
     /// stack for it, it runs here and now, as a range whose body can't wait does.
     pub(in crate::embed) fn start_range(&mut self, range: Box<dyn FnOnce() -> i64>) {
-        let deferred = Deferred { run: range, accounts: Box::default(), started: None };
-        if self.ranges.len() >= MOST_RANGES || !self.deferred_ranges.is_empty() {
+        let accounts = Box::new(super::threads::Accounts::for_range());
+        let deferred = Deferred { run: range, accounts, started: None };
+        if self.live_ranges >= MOST_RANGES || !self.deferred_ranges.is_empty() {
             self.deferred_ranges.push_back(deferred);
             return;
         }
@@ -784,6 +791,7 @@ impl Io {
         let number =
             super::heap::number_to_mark(task, |number| alive.values().any(|other| other.marked_as(number)));
         accounts.set_task(number);
+        self.live_ranges += usize::from(accounts.is_range_s());
         // Named as a server's round is: a task's temporaries are swapped last, so they say who it is.
         if let Some(named) = accounts.take_replay() {
             self.temporaries.insert(task, super::Temporaries::of_task(named));
@@ -821,7 +829,7 @@ impl Io {
                 return;
             }
         }
-        while self.ranges.len() < MOST_RANGES
+        while self.live_ranges < MOST_RANGES
             && let Some(deferred) = self.deferred_ranges.pop_front()
         {
             if let Err(deferred) = self.try_start(deferred) {
@@ -837,6 +845,22 @@ impl Io {
         if let Some(token) = token {
             self.waiting.remove(&token);
             self.ready.push_back((task, Wake::Ready(STOPPED)));
+        }
+    }
+
+    /// Cuts short the waits of the ranges parked here that are the task's told to stop with `stop`:
+    /// the ranges of a `parallel` call it made, which stop as it does. In the order they started,
+    /// so they're woken the same way each time.
+    pub(in crate::embed) fn cancel_ranges_of(&mut self, stop: &Arc<AtomicU8>) {
+        let mut ranges: Vec<TaskId> = self
+            .accounts
+            .iter()
+            .filter(|(_, accounts)| accounts.is_range_stopped_with(stop))
+            .map(|(task, _)| *task)
+            .collect();
+        ranges.sort_unstable();
+        for range in ranges {
+            self.cancel(range);
         }
     }
 
@@ -1053,6 +1077,7 @@ impl Io {
             }
             Step::Done(_) | Step::Unknown => {
                 debug_assert!(accounts.is_empty(), "a range ended with what it made not handed over");
+                self.live_ranges -= usize::from(accounts.is_range_s()).min(self.live_ranges);
                 self.start_deferred();
             }
         }
@@ -1513,6 +1538,13 @@ pub(crate) fn next_token() -> Token {
 /// Only for a task that `can_park`.
 pub(crate) fn park_on(token: Token, deadline: Option<Instant>) -> Parked {
     park_on_token(token, deadline, true)
+}
+
+/// Parks this task on `token` until `wake_token` is sent it, whatever it's told meanwhile: a stop
+/// wakes it, as cancelled, without failing it. For a task waiting for work it handed to other
+/// threads, which read what it lent them until they've finished.
+pub(in crate::embed) fn park_through_a_stop(token: Token) -> Parked {
+    park_on_token(token, None, false)
 }
 
 /// `park_on`, which a stop cuts short only if `stoppable`. When it isn't, a stop wakes it, as

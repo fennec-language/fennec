@@ -52,13 +52,13 @@
 //!   connection's reads and writes among them, and when they've all ended the server stops, as if
 //!   it had been stopped there, and says so.
 //!
-//! The log is `FENREPL5`, the header's length as four bytes and the header, then the entries. Each
+//! The log is `FENREPL6`, the header's length as four bytes and the header, then the entries. Each
 //! entry is its task's name and its call's name, each with its length as two bytes, then what it
 //! gave, with its length as four. All numbers are little-endian. A `FENREPL1` log, from before
 //! tasks were named, has no task names, and replays as `main`'s. A log from an older Fennec, which
 //! recorded less of what tasks do, replays as it did then, saying so when it has tasks: a
-//! `FENREPL4` log has no `parallel` ranges a failure kept from starting, and a `FENREPL3` or
-//! `FENREPL2` log no stops.
+//! `FENREPL5` log has no task stopped while it served, a `FENREPL4` log no `parallel` ranges a
+//! failure kept from starting, and a `FENREPL3` or `FENREPL2` log no stops.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -72,7 +72,11 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::{Instance, Value};
 
-const MAGIC: &[u8; 8] = b"FENREPL5";
+const MAGIC: &[u8; 8] = b"FENREPL6";
+
+/// A log from before a task stopped while it served was recorded: its replay may go on past the
+/// call serving.
+const MAGIC_BEFORE_SERVING_STOPS: &[u8; 8] = b"FENREPL5";
 
 /// A log from before a `parallel` call's skipped ranges were recorded: one where a piece failed
 /// may run other pieces in its replay.
@@ -537,7 +541,7 @@ impl Player {
 
 /// A log's entries, each task's in a stream of its own: `None` if it's damaged.
 fn player_of(log: &[u8]) -> Option<Player> {
-    let named = [MAGIC, MAGIC_BEFORE_SKIPS, MAGIC_BEFORE_STOPS, MAGIC_UNMARKED]
+    let named = [MAGIC, MAGIC_BEFORE_SERVING_STOPS, MAGIC_BEFORE_SKIPS, MAGIC_BEFORE_STOPS, MAGIC_UNMARKED]
         .iter()
         .any(|magic| log.starts_with(*magic));
     let mut player = Player {
@@ -545,7 +549,9 @@ fn player_of(log: &[u8]) -> Option<Player> {
         workers: None,
         orders_output: false,
         held: HashMap::new(),
-        whole: ![MAGIC, MAGIC_BEFORE_SKIPS, MAGIC_BEFORE_STOPS].iter().any(|magic| log.starts_with(*magic)),
+        whole: ![MAGIC, MAGIC_BEFORE_SERVING_STOPS, MAGIC_BEFORE_SKIPS, MAGIC_BEFORE_STOPS]
+            .iter()
+            .any(|magic| log.starts_with(*magic)),
     };
     let mut reader = Entries { log, at: entries_start(log)? };
     while reader.at < log.len() {
@@ -610,9 +616,16 @@ pub fn header_of(path: &Path) -> std::io::Result<Vec<u8>> {
 
 fn entries_start(log: &[u8]) -> Option<usize> {
     let magic = log.get(..MAGIC.len())?;
-    if ![MAGIC, MAGIC_BEFORE_SKIPS, MAGIC_BEFORE_STOPS, MAGIC_UNMARKED, MAGIC_UNNAMED]
-        .iter()
-        .any(|known| known.as_slice() == magic)
+    if ![
+        MAGIC,
+        MAGIC_BEFORE_SERVING_STOPS,
+        MAGIC_BEFORE_SKIPS,
+        MAGIC_BEFORE_STOPS,
+        MAGIC_UNMARKED,
+        MAGIC_UNNAMED,
+    ]
+    .iter()
+    .any(|known| known.as_slice() == magic)
     {
         return None;
     }

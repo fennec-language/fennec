@@ -183,6 +183,9 @@ jobs:
           filter=("$TEST")
           [ "$EXACT" = true ] && filter+=(--exact)
           mkdir -p "repeat-$SHARE"
+          # What the checkout holds before any run, to tell what a run leaves in it.
+          before="$RUNNER_TEMP/untracked-before.txt"
+          git ls-files --others --exclude-standard -z | tr '\0' '\n' > "$before"
           ran=0
           failed=0
           for run in $(seq "$SHARE" "$SHARES" "$TIMES"); do
@@ -198,12 +201,15 @@ jobs:
               # was, the registers, every thread's stack, the thread, and where each module is, and
               # keeps a full dump, then lets the program go on to crash as it would have.
               mkdir -p "repeat-$SHARE/dumps"
-              dumps=$(cygpath -w "$PWD/repeat-$SHARE/dumps")
+              # With forward slashes: in a quoted command, cdb reads a backslash as an escape, so
+              # `\r` and `\a` in a Windows path put the dump in the current folder, under crates/,
+              # which changes the build's hash and makes every later run's runtime another build.
+              dumps=$(cygpath -m "$PWD/repeat-$SHARE/dumps")
               script="$RUNNER_TEMP/cdb-$run.txt"
               # Quiet about each module loaded and each exception Rust raises to unwind (GCC's
               # code, 0x20474343), which are many and normal.
               printf '%s\n' 'sxi ibp' 'sxi ld' 'sxi 0x20474343' \
-                "sxe -c \".echo FENNEC-ACCESS-VIOLATION; .exr -1; r; ~*k 40; !teb; lm; .dump /ma /u $dumps\\run-$run.dmp; gn\" -c2 \"gn\" av" \
+                "sxe -c \".echo FENNEC-ACCESS-VIOLATION; .exr -1; r; ~*k 40; !teb; lm; .dump /ma /u $dumps/run-$run.dmp; gn\" -c2 \"gn\" av" \
                 'g' > "$script"
               (cd "$PACKAGE_FOLDER" && FENNEC_KEEP_FAILED=1 TMPDIR="$temporary" TMP="$temporary" TEMP="$temporary" \
                 FENNEC_HOME="$temporary\\home" CARGO_MANIFEST_DIR="$(cygpath -w "$PACKAGE_FOLDER")" \
@@ -233,6 +239,19 @@ jobs:
               echo "run $run passed in $((SECONDS - started)) s"
               rm "$said"
               rm -rf "$RUNNER_TEMP/run-$run"
+            fi
+            # A file a run leaves in the checkout, under crates/ above all, changes the hash
+            # `fennec` and its runtime are stamped with, so the next run's runtime would be another
+            # build: named, and taken away.
+            # Read as git lists them, with a NUL after each, since a stray name may hold anything.
+            stray=()
+            while IFS= read -r -d '' file; do
+              case "$file" in "repeat-$SHARE"/*) continue ;; esac
+              grep -qxF -- "$file" "$before" || stray+=("$file")
+            done < <(git ls-files --others --exclude-standard -z)
+            if [ "${#stray[@]}" -gt 0 ]; then
+              echo "::warning::run $run left ${#stray[@]} files in the checkout, taken away: ${stray[*]}"
+              rm -f -- "${stray[@]}"
             fi
             ran=$((ran + 1))
             echo "$ran $failed" > "repeat-$SHARE/counts"

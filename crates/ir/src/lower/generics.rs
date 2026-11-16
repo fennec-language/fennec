@@ -68,13 +68,18 @@ pub(super) struct Instances {
 pub(super) fn mentions_param(ty: &Type) -> bool {
     match ty {
         Type::Param(_) | Type::Generic(..) => true,
-        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) | Type::Id(item) => {
-            mentions_param(item)
-        }
+        Type::List(item)
+        | Type::Buffer(item)
+        | Type::Array(item, _)
+        | Type::Iterator(item)
+        | Type::Set(item)
+        | Type::Optional(item)
+        | Type::Table(item)
+        | Type::Id(item) => mentions_param(item),
         Type::Dict(first, second) | Type::Result(first, second) => {
             mentions_param(first) || mentions_param(second)
         }
-        Type::Tuple(items) => items.iter().any(mentions_param),
+        Type::Tuple(items) | Type::Union(items) => items.iter().any(mentions_param),
         Type::Arrow(params, returns) => params.iter().any(mentions_param) || mentions_param(returns),
         _ => false,
     }
@@ -97,6 +102,8 @@ impl Context<'_> {
         match ty {
             Type::Param(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
             Type::List(item) => Type::List(inner(item)),
+            Type::Buffer(item) => Type::Buffer(inner(item)),
+            Type::Array(item, size) => Type::Array(inner(item), *size),
             Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Set(item) => Type::Set(inner(item)),
             // As the checker has it, an optional of an optional is that optional: `V?` with `V`

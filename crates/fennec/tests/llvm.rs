@@ -26741,6 +26741,37 @@ def main(stdout: Stdout):
     )
 }
 
+/// A generic function holding a `Buffer[T]` or an `array[T, N]`, or giving one back, has its copy
+/// made with `T` filled in. It kept `T` in them, so the copy wasn't lowered and the program didn't
+/// build, though `fennec check` passed and the reference evaluator ran it (#1897).
+#[test]
+fn a_generic_holding_a_buffer_or_an_array_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generic_buffers_and_arrays",
+        r#"def first_two[T](items: list[T]) -> array[T, 2]:
+    held: array[T, 2] = [items[0], items[1]]
+    return held
+
+def gathered[T](items: list[T]) -> int:
+    mut held = Buffer[T]()
+    for item in items:
+        held.push(item)
+    return len(held)
+
+def main(stdout: Stdout):
+    pair = first_two([3, 4])
+    stdout.print(pair[0] + pair[1])
+    words = first_two(["first, a text long enough for a block", "second"])
+    stdout.print(words[1], words[0])
+    stdout.print(gathered(["a", "b", "c"]), gathered([1.5]))
+"#,
+        "7\nsecond first, a text long enough for a block\n3 1\n",
+    )
+}
+
 const GENERICS_EXPECTED: &str = r#"struct Box[T]:
     value: T
 

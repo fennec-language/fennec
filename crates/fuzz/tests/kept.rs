@@ -140,8 +140,9 @@ fn every_program_to_start_from_prints_what_is_pinned() {
     }
 }
 
-/// A run stopped from outside says so, with the signal and the target it was in, so a failure of
-/// the test above shows whether the run crashed or was killed.
+/// A run stopped from outside says so, with how it ended and the target it was in, so a failure of
+/// the test above shows whether the run crashed or was killed. Killed, it ends by SIGKILL on Unix,
+/// and on Windows, which has no signals, with the exit code `TerminateProcess` gives it, 1.
 #[test]
 fn a_run_stopped_from_outside_says_where() {
     let mut child = fuzz()
@@ -162,7 +163,10 @@ fn a_run_stopped_from_outside_says_where() {
     let status = child.wait().unwrap();
     let stdout = [first.into_bytes(), rest].concat();
     let shown = ended(&std::process::Output { status, stdout, stderr: said });
+    #[cfg(unix)]
     assert!(shown.contains("signal: 9 (SIGKILL)"), "{shown}");
+    #[cfg(windows)]
+    assert!(shown.contains("exit code: 1"), "{shown}");
     assert!(shown.contains("while lexer was running") || shown.contains("after lexer finished"), "{shown}");
 }
 

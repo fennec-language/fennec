@@ -453,3 +453,34 @@ fn outside_a_recording_the_lock_hooks_do_nothing() {
     replay_locked(0, 1);
     assert!(!crate::embed::failed());
 }
+
+/// A copy remembers what each block became, the first few in a row and the rest in a map, and goes
+/// through the copies last made first, however many there are and however making and going through
+/// them are mixed.
+#[test]
+fn a_copy_of_many_blocks_remembers_each_and_goes_through_them_last_first() {
+    let mut copied = UnderWay::default();
+    for block in 1..=20_u64 {
+        copied.became(block * 16, block * 16 + 1);
+    }
+    for block in 1..=20_u64 {
+        assert_eq!(copied.copy_made_of(block * 16), Some(block * 16 + 1), "{block}");
+    }
+    assert_eq!(copied.copy_made_of(7), None);
+    assert_eq!(copied.copy_made_of(21 * 16), None);
+    // The last three made come first, then three more made meanwhile, then the rest.
+    let mut order: Vec<u64> = (0..3).filter_map(|_| copied.next_to_walk()).collect();
+    for block in 21..=23_u64 {
+        copied.became(block * 16, block * 16 + 1);
+    }
+    order.extend(std::iter::from_fn(|| copied.next_to_walk()));
+    let expected: Vec<u64> =
+        [20, 19, 18, 23, 22, 21].into_iter().chain((1..=17).rev()).map(|block| block * 16 + 1).collect();
+    assert_eq!(order, expected);
+    assert_eq!(copied.next_to_walk(), None);
+    assert_eq!(
+        copied.copy_made_of(23 * 16),
+        Some(23 * 16 + 1),
+        "what's been gone through is still remembered"
+    );
+}

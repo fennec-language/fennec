@@ -125,6 +125,29 @@ fn a_message_holding_blocks_arrives_as_the_receiver_s_own_copy() {
     finish();
 }
 
+/// A message of more blocks than a copy keeps in a row, a list of forty strings each with a block
+/// of its own, arrives whole and in order, and nothing of it is left once both sides let go.
+#[test]
+fn a_message_of_many_blocks_arrives_whole() {
+    begin();
+    let before = blocks();
+    let channel = channel_new(1);
+    let texts: Vec<String> =
+        (0..40).map(|at| format!("line {at} of forty, long enough for a block of its own")).collect();
+    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let sent = list(&texts);
+    assert!(blocks() - before > 8, "it's more blocks than are kept in a row: {}", blocks() - before);
+    assert_eq!(channel_send(channel, sent, 1, FOREVER), DONE);
+    heap::free(sent);
+    let (got, received) = receive(channel, FOREVER);
+    assert_eq!(got, DONE);
+    assert_eq!(lines(received), texts);
+    with(|state| heap::release(state, u64::try_from(received).unwrap()));
+    channel_free(channel);
+    assert_eq!(blocks(), before);
+    finish();
+}
+
 /// The copy waits in a table of its own, so freeing the channel takes it into this thread's and
 /// lets go of it there, as anything it holds, a `shared` value's handle among them, needs.
 #[test]

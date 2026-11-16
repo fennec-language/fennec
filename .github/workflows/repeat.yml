@@ -1,0 +1,115 @@
+name: Repeat a test
+
+# One test run many times on one system, by hand, to catch a failure that comes once in a while:
+# a flake, which is a bug, often on one system only. Each run that fails keeps all it printed, in
+# the run's `repeat-failures` artifact, and the summary page says how many of how many failed. For
+# example, a replay test that exited 1 once in a while on Windows:
+#
+#   gh workflow run "Repeat a test" -f os=windows-latest \
+#     -f test=replay::a_task_stopped_in_a_sleep_is_stopped_there_in_its_replay -f times=200
+#
+# The test is built as CI's test jobs build it, with the runtime libraries beside `fennec`, and
+# built once; then the test binary runs it alone, as `--exact`, that many times.
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: The system to run it on
+        type: choice
+        options: [windows-latest, ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        default: windows-latest
+      package:
+        description: The package the test is in
+        default: fennec
+      target:
+        description: Its test target, the name `--test` takes; empty for the package's own unit tests
+        default: fennec
+      test:
+        description: The test's whole name, as `cargo test` names it
+        required: true
+      times:
+        description: How many times to run it
+        default: "200"
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: Repeat ${{ inputs.test }} on ${{ inputs.os }}
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 240
+    env:
+      FENNEC_EXPECT_LLVM: "1"
+      PACKAGE: ${{ inputs.package }}
+      TARGET: ${{ inputs.target }}
+      TEST: ${{ inputs.test }}
+      TIMES: ${{ inputs.times }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # As CI's test jobs set up: Fennec links programs with LLD and MinGW-w64's libraries on
+      # Windows, and with LLVM's tools from the toolchain's own `llvm-tools` elsewhere.
+      - name: Use Rust's gnullvm toolchain and llvm-mingw
+        if: runner.os == 'Windows'
+        shell: bash
+        run: .github/scripts/windows.sh toolchain
+      - name: Install LLVM's tools
+        if: runner.os != 'Windows'
+        run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: repeat
+      - name: Build the runtime libraries
+        shell: bash
+        run: |
+          cargo build --locked -p fennec-runtime
+          cargo build --locked -p fennec-runtime --features threads --target-dir target/threads
+          cp target/threads/debug/libfennec_runtime.a target/debug/libfennec_runtime_threads.a
+      - name: Gather LLVM's tools and what they link
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          .github/scripts/windows.sh folder target/debug/llvm
+          echo "FENNEC_LLVM_BIN=$(cygpath -w "$PWD/target/debug/llvm/bin")" >> "$GITHUB_ENV"
+      - name: Build the test once
+        shell: bash
+        run: |
+          case "$TIMES" in '' | *[!0-9]*) echo "::error::times is a whole number, not $TIMES"; exit 1 ;; esac
+          if [ -n "$TARGET" ]; then which=(--test "$TARGET"); else which=(--lib); fi
+          cargo test --locked -p "$PACKAGE" "${which[@]}" --no-run
+      - name: Run it, again and again
+        shell: bash
+        run: |
+          if [ -n "$TARGET" ]; then which=(--test "$TARGET"); else which=(--lib); fi
+          mkdir -p failures
+          failed=0
+          for run in $(seq 1 "$TIMES"); do
+            if ! cargo test --locked -q -p "$PACKAGE" "${which[@]}" -- --exact "$TEST" > "failures/run-$run.txt" 2>&1; then
+              failed=$((failed + 1))
+              echo "::error::run $run of $TIMES failed"
+              tail -n 40 "failures/run-$run.txt"
+            elif ! grep -q "test result: ok. 1 passed" "failures/run-$run.txt"; then
+              # No test of that name ran: every run would say the same, so it stops here.
+              echo "::error::no test named $TEST ran"
+              cat "failures/run-$run.txt"
+              exit 1
+            else
+              rm "failures/run-$run.txt"
+            fi
+          done
+          {
+            echo "## $TEST on $RUNNER_OS"
+            echo
+            echo "$failed of $TIMES runs failed."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$failed of $TIMES runs failed"
+          [ "$failed" -eq 0 ]
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: repeat-failures
+          path: failures
+          if-no-files-found: ignore
+          retention-days: 14

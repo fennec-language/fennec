@@ -8,6 +8,9 @@ use super::{Binding, Interp, Place, Run, unsupported};
 use crate::text;
 use crate::value::{Cell, Func, Instance, Value};
 
+/// Why a `Buffer`'s room, beyond what's promised of it, is refused.
+pub(crate) const ROOM_UNPROMISED: &str = "a Buffer's exact room, which `docs/language.md` promises only to be at least what it holds, and n more right after `reserve(n)`";
+
 impl Interp {
     /// What `stdout.print` and `str()` show: a string as it is, and anything else as it shows
     /// inside a collection.
@@ -28,6 +31,7 @@ impl Interp {
             Value::Int(n) => n.to_string(),
             Value::Sized(_, n) => n.to_string(),
             Value::Float(x) => text::float(*x),
+            Value::F32(x) => text::float32(*x),
             Value::Str(text) => text::quoted(text),
             Value::Bytes(data) => {
                 let shown: Vec<String> = data.iter().map(u8::to_string).collect();
@@ -59,6 +63,7 @@ impl Interp {
             Value::Cap(_) => return unsupported("printing a capability"),
             Value::Shared(_) => return unsupported("printing a `shared` value"),
             Value::Channel(_) => return unsupported("printing a channel"),
+            Value::Room(_) => return unsupported(ROOM_UNPROMISED),
             Value::Unknown(why) => return unsupported(why.clone()),
         })
     }
@@ -84,8 +89,8 @@ impl Interp {
             return unsupported(format!("printing a {}", instance.ty));
         }
         let name = match &instance.case {
-            Some(case) => format!("{}.{case}", instance.ty),
-            None => instance.ty.clone(),
+            Some(case) => format!("{}.{case}", fennec_syntax::rename::shown_type_name(&instance.ty)),
+            None => fennec_syntax::rename::shown_type_name(&instance.ty).to_owned(),
         };
         if instance.fields.is_empty() && instance.case.is_some() {
             return Ok(name);
@@ -226,6 +231,7 @@ impl Interp {
             (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
             (Value::Sized(_, a), Value::Sized(_, b)) => Ok(a.cmp(b)),
             (Value::Float(a), Value::Float(b)) => Ok(float_order(*a, *b)),
+            (Value::F32(a), Value::F32(b)) => Ok(float_order(f64::from(*a), f64::from(*b))),
             (Value::Str(a), Value::Str(b)) => Ok(a.cmp(b)),
             (Value::Bytes(a), Value::Bytes(b)) => Ok(a.cmp(b)),
             (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
@@ -291,6 +297,7 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
         (Value::Int(a), Value::Int(b)) => a == b,
         (Value::Sized(x, a), Value::Sized(y, b)) => x == y && a == b,
         (Value::Float(a), Value::Float(b)) => float_order(*a, *b) == Ordering::Equal,
+        (Value::F32(a), Value::F32(b)) => float_order(f64::from(*a), f64::from(*b)) == Ordering::Equal,
         (Value::Str(a), Value::Str(b)) => a == b,
         (Value::Bytes(a), Value::Bytes(b)) => a == b,
         (Value::List(a), Value::List(b))
@@ -354,6 +361,7 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
             return unsupported("comparing functions, generators or capabilities");
         }
         (Value::Unknown(why), _) | (_, Value::Unknown(why)) => return unsupported(why.clone()),
+        (Value::Room(_), _) | (_, Value::Room(_)) => return unsupported(ROOM_UNPROMISED),
         (Value::Shared(_) | Value::Channel(_), _) | (_, Value::Shared(_) | Value::Channel(_)) => {
             return unsupported("comparing `shared` values or channels");
         }

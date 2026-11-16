@@ -47,7 +47,7 @@ pub(crate) enum Outside {
 }
 
 impl Outside {
-    fn what(self) -> &'static str {
+    pub(crate) fn what(self) -> &'static str {
         match self {
             Outside::Printing => "printing",
             Outside::Disk => "the file system",
@@ -137,29 +137,17 @@ impl Interp {
         }
     }
 
-    /// Notes reaching outside the program, refusing it inside a `parallel` round, and in both a
-    /// launched task and its block, where its order isn't promised.
+    /// Notes reaching outside the program, refusing it inside a `parallel` round, where its order
+    /// isn't promised. A launched task's is held in order beside its block by `actors.rs`.
     pub(crate) fn reach_out(&self, outside: Outside) -> Run<()> {
-        let Ok(mut scopes) = self.shared.scopes.lock() else {
+        let Ok(scopes) = self.shared.scopes.lock() else {
             return unsupported("a `parallel` call was lost");
         };
-        for scope in scopes.iter_mut() {
-            match scope {
-                Scope::Rounds(_) => {
-                    return unsupported(format!(
-                        "{} inside a `parallel` round, whose order isn't promised",
-                        outside.what()
-                    ));
-                }
-                Scope::Launch(launched) => {
-                    if !launched.reach_out(outside) {
-                        return unsupported(format!(
-                            "{} in both a launched task and its `with` block, whose order isn't promised",
-                            outside.what()
-                        ));
-                    }
-                }
-            }
+        if scopes.iter().any(|scope| matches!(scope, Scope::Rounds(_))) {
+            return unsupported(format!(
+                "{} inside a `parallel` round, whose order isn't promised",
+                outside.what()
+            ));
         }
         Ok(())
     }

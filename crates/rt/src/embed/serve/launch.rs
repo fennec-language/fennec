@@ -326,7 +326,8 @@ const CLEANUP_GRACE: Duration = Duration::from_secs(1);
 /// Waits for the task to end, stopping it at `deadline`, and hard once its grace is up: parked, in a
 /// task that can, and otherwise blocking. A launcher that's stopped itself stops its task at once.
 fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome {
-    if launched.stop.load(Ordering::Acquire) > 0 {
+    // A replay stops nothing by the clock: a task its recording stopped hard stops itself there.
+    if launched.stop.load(Ordering::Acquire) > 0 && !crate::replay::replaying() {
         deadline = Some(Instant::now() + CLEANUP_GRACE);
     }
     loop {

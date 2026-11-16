@@ -1,35 +1,28 @@
 # A web backend shaped like the ones people write first, with its own scripted load in the same
 # program: signing up and signing in, notes kept for each user, a JSON API and an HTML page.
 #
-# Each connection is a task of its own. A password is stretched with HMAC-SHA256 under a salt of
-# its own before it's kept, and signing in gives a token signed with HMAC under the server's key,
-# which every other request carries. Notes are kept in SQLite. The search page is HTML made from a
-# template, with everything users wrote in it escaped.
+# Requests go to their handlers through a `Router`, and `server.serve` answers each connection in a
+# task of its own until the program closes the server. A password is stretched with HMAC-SHA256
+# under a salt of its own before it's kept, and signing in gives a token signed with HMAC under the
+# server's key, which every other request carries. Notes are kept in SQLite. The search page is
+# HTML made from a template, with everything users wrote in it escaped.
 #
-# The load is a crowd of scripted clients. Each signs up, signs in, writes notes, lists them and
-# searches them, and tries a few things it shouldn't. The summary is the same on any number of
-# threads.
-#
-# Two things in `std.net` don't fit this yet, so the program speaks HTTP itself. `server.serve`
-# can't be stopped from inside a program, so the server reads its requests in a loop over
-# `parallel(server)` that ends when the program asks it to. And `net.get` and `net.post` hold
-# their thread while they wait, which starves the server when clients in `parallel` rounds call
-# it, so the clients write their requests over a connection of their own.
+# The load is a crowd of scripted clients calling the server with `net.post` and `net.get`. Each
+# signs up, signs in, writes notes, lists them and searches them, and tries a few things it
+# shouldn't. The summary is the same on any number of threads.
 
 from std import html, json, sqlite
 from std.concurrent import Crashed
 from std.crypto import Secret, equal, hmac_sha256
 from std.html import Html, HtmlError
-from std.net import Connection, NetError, Request, Response, Server
+from std.net import NetError, Request, Response, Router, Server
 from std.sql import SqlError
 from std.sqlite import Database
-from std.url import decode_query, encode_query, unquote
 
 CLIENTS = 32
 NOTES = 12
 STRETCH = 1_000
 TOKEN_LIFE = 3_600
-MOST_BODY = 65_536
 NAME_LETTERS = "abcdefghijklmnopqrstuvwxyz0123456789"
 SEARCHES = ["fox", "<b>", "&", "river", "nothing like this"]
 WORDS = [
@@ -76,14 +69,6 @@ struct Stored:
 struct App:
     db: Database
     key: Secret[str]
-
-# What the server saw go wrong with connections, shared by their tasks.
-struct Stats:
-    dropped = list[str]()
-
-# HTTP/1.1 this program can't read, from either side.
-error HttpError:
-    reason: str
 
 def seconds_now(clock: Clock) -> int:
     return clock.time().nanos // 1_000_000_000
@@ -183,137 +168,46 @@ def search(app: App, owner: str, request: Request) -> Response fails SqlError | 
         body=made.text().encode(),
     )
 
-# Answers one request. A failure here is the server's, and its client gets a 500.
-def respond(
-    app: App,
-    clock: Clock,
-    entropy: Entropy,
-    request: Request,
-) -> Response fails SqlError | HtmlError:
-    match request.path:
-        case "/signup" if request.method == "POST":
-            return sign_up(app, entropy, request)?
-        case "/signin" if request.method == "POST":
-            return sign_in(app, clock, request)?
-        case _:
-            pass
-    owner = signed_in(app.key, clock, request) else return problem(401, error="sign in first")
-    match request.path:
-        case "/notes" if request.method == "POST":
-            return add_note(app, owner, request)?
-        case "/notes" if request.method == "GET":
-            return notes_of(app, owner)?
-        case "/search" if request.method == "GET":
-            return search(app, owner, request)?
-        case _:
-            return problem(404, error="there's nothing here")
-
-# The headers and the body that follow a request's or a response's first line.
-def rest_of(conn: Connection) -> (dict[str, str], bytes) fails NetError | HttpError:
-    mut headers = dict[str, str]()
-    while True:
-        header = conn.read_line()? else fail HttpError(reason="the headers didn't end")
-        if header == "": break
-        colon = header.find(":") else fail HttpError(reason="a header has no `:`")
-        headers[header[:colon].strip().lower()] = header[colon + 1:].strip()
-    length = int.parse(headers.get("content-length") else "0") except InvalidValue():
-        fail HttpError(reason="its length isn't a number")
-    if length < 0 or length > MOST_BODY: fail HttpError(reason="its body is too big")
-    mut body = bytes([])
-    while len(body) < length:
-        more = conn.read(length - len(body))?
-        if len(more) == 0: fail HttpError(reason="its body ended early")
-        body = body + more
-    return (headers, body)
-
-# The next request on a connection, read as HTTP/1.1.
-def request_from(conn: Connection) -> Request fails NetError | HttpError:
-    line = conn.read_line()? else fail HttpError(reason="the client sent nothing")
-    pieces = line.split(" ")
-    if len(pieces) != 3 or pieces[2] != "HTTP/1.1":
-        fail HttpError(reason="that isn't an HTTP/1.1 request line")
-    headers, body = rest_of(conn)?
-    target = pieces[1]
-    question = target.find("?") else len(target)
-    query = decode_query(target[question + 1:]) if question < len(target) else dict[str, str]()
-    return Request(
-        method=pieces[0],
-        path=unquote(target[:question]),
-        query=query,
-        headers=headers,
-        body=body,
-    )
-
-def reason(status: int) -> str:
-    match status:
-        case 200:
-            return "OK"
-        case 201:
-            return "Created"
-        case 204:
-            return "No Content"
-        case 400:
-            return "Bad Request"
-        case 401:
-            return "Unauthorized"
-        case 404:
-            return "Not Found"
-        case 409:
-            return "Conflict"
-        case _:
-            return "Internal Server Error"
-
-def written(conn: Connection, response: Response) fails NetError:
-    mut head = f"HTTP/1.1 {response.status} {reason(response.status)}\r\n"
-    for name, value in response.headers.items():
-        head += f"{name}: {value}\r\n"
-    head += f"content-length: {len(response.body)}\r\nconnection: close\r\n\r\n"
-    conn.write(head)?
-    conn.write(response.body)?
-
-# Answers a connection's one request. Gives whether the program asked the server to stop.
-def answered(
-    conn: Connection,
-    app: App,
-    clock: Clock,
-    entropy: Entropy,
-    stop: Secret[str],
-) -> bool fails NetError:
-    request = request_from(conn) except why:
-        case HttpError(reason):
-            written(conn, problem(400, error=reason))?
-            return False
-        case _:
-            fail why
-    if request.path == "/stop":
-        asked = Secret.of((request.headers.get("authorization") else "").removeprefix("Bearer "))
-        if asked == stop:
-            written(conn, Response(status=204))?
-            return True
-    made = respond(app, clock, entropy, request) except why:
+# A handler's answer, or a 500 when it failed, since a failure here is the server's.
+def or_500(handle: () -> Response fails SqlError | HtmlError) -> Response:
+    answered = handle() except why:
         problem(500, error=f"{why}")
-    written(conn, made)?
-    return False
+    return answered
 
-# Answers each connection's request, each in a task of its own, until the program asks it to stop.
-def serving(
-    server: Server,
+# A handler's answer for whoever a request's token says signed in, or a 401 when the server didn't
+# sign it.
+def as_owner(
     app: App,
     clock: Clock,
-    entropy: Entropy,
-    stop: Secret[str],
-    stats: shared Stats,
-):
-    for conn in parallel(server):
-        stopping = answered(conn, app, clock, entropy, stop) except why:
-            # A client that hung up has nothing left to be told, so it's dropped by name.
-            case .Closed:
-                False
-            case _:
-                lock stats as ref current:
-                    current.dropped.append(f"{why}")
-                False
-        if stopping: break
+    request: Request,
+    handle: (str) -> Response fails SqlError | HtmlError,
+) -> Response:
+    owner = signed_in(app.key, clock, request) else return problem(401, error="sign in first")
+    return or_500(() => handle(owner)?)
+
+# The API's routes, each to its handler.
+def routes(app: App, clock: Clock, entropy: Entropy) -> Router:
+    mut router = Router()
+    router.handle("POST /signup", (request, found) => or_500(() => sign_up(app, entropy, request)?))
+    router.handle("POST /signin", (request, found) => or_500(() => sign_in(app, clock, request)?))
+    router.handle(
+        "POST /notes",
+        (request, found) => as_owner(
+            app,
+            clock,
+            request,
+            (owner) => add_note(app, owner, request)?,
+        ),
+    )
+    router.handle(
+        "GET /notes",
+        (request, found) => as_owner(app, clock, request, (owner) => notes_of(app, owner)?),
+    )
+    router.handle(
+        "GET /search",
+        (request, found) => as_owner(app, clock, request, (owner) => search(app, owner, request)?),
+    )
+    return router
 
 # What one client saw.
 struct Visit:
@@ -325,7 +219,7 @@ struct Visit:
     trail = 0
     failed = ""
 
-    def saw(ref self, answer: Answer):
+    def saw(ref self, answer: Response):
         self.statuses[answer.status] = (self.statuses.get(answer.status) else 0) + 1
 
 def mixed(hash: int, value: int) -> int:
@@ -340,95 +234,56 @@ def text_mixed(hash: int, text: str) -> int:
 def word(at: int) -> str:
     return WORDS[at % len(WORDS)]
 
-# What a client was answered: the status, and the body as text.
-struct Answer:
-    status: int
-    text: str
-
-# One request on a connection of its own, as HTTP/1.1, signed in with `token` when there's one.
-def asked(net: Net, port: int, request: Request, token: str) -> Answer fails NetError | HttpError:
-    with net.connect("127.0.0.1", port)? as conn:
-        mut head = f"{request.method} {request.path} HTTP/1.1\r\nhost: 127.0.0.1\r\n"
-        if token != "":
-            head += f"authorization: Bearer {token}\r\n"
-        head += f"content-length: {len(request.body)}\r\nconnection: close\r\n\r\n"
-        conn.write(head)?
-        conn.write(request.body)?
-        line = conn.read_line()? else fail HttpError(reason="the server sent nothing")
-        status = int.parse(line.split(" ")[1]) except InvalidValue():
-            fail HttpError(reason="that isn't a status line")
-        _, body = rest_of(conn)?
-        text = body.decode() except InvalidValue(): ""
-        return Answer(status=status, text=text)
-
-def posted(
-    net: Net,
-    port: int,
-    path: str,
-    body: str,
-    token = "",
-) -> Answer fails NetError | HttpError:
-    return asked(net, port, Request(method="POST", path=path, body=body.encode()), token=token)?
-
-def got(net: Net, port: int, path: str, token = "") -> Answer fails NetError | HttpError:
-    return asked(net, port, Request(method="GET", path=path), token=token)?
-
 # One scripted client: signs up, signs in, writes notes, lists and searches them, and tries what
 # it shouldn't.
-def visit(net: Net, port: int, number: int) -> Visit fails NetError | HttpError | ParseError:
+def visit(net: Net, port: int, number: int) -> Visit fails NetError | ParseError:
+    site = f"http://127.0.0.1:{port}"
     credentials = Credentials(name=f"user{number}", password=f"correct horse {number} battery")
-    signing_up = json.dumps(credentials)
     mut visit = Visit(name=credentials.name)
-    visit.saw(posted(net, port, path="/signup", body=signing_up)?)
+    visit.saw(net.post(f"{site}/signup", json=credentials)?)
     if number % 5 == 0:
-        visit.saw(posted(net, port, path="/signup", body=signing_up)?)
+        visit.saw(net.post(f"{site}/signup", json=credentials)?)
     if number % 3 == 0:
         wrong = Credentials(name=credentials.name, password="not the password")
-        visit.saw(posted(net, port, path="/signin", body=json.dumps(wrong))?)
-    signed = posted(net, port, path="/signin", body=signing_up)?
+        visit.saw(net.post(f"{site}/signin", json=wrong)?)
+    signed = net.post(f"{site}/signin", json=credentials)?
     visit.saw(signed)
-    token = json.loads[Signed](signed.text)?.token
+    token = signed.json[Signed]()?.token
+    holder = {"authorization": f"Bearer {token}"}
     for at in range(NOTES):
         note = Note(
             title=f"{word(number + at)} {at}",
             body=f"{word(number * 3 + at)} and {word(at * 7)}",
         )
-        visit.saw(posted(net, port, path="/notes", body=json.dumps(note), token=token)?)
-    listed = got(net, port, path="/notes", token=token)?
+        visit.saw(net.post(f"{site}/notes", json=note, headers=holder)?)
+    listed = net.get(f"{site}/notes", headers=holder)?
     visit.saw(listed)
-    for note in json.loads[list[Note]](listed.text)?:
+    for note in listed.json[list[Note]]()?:
         visit.listed += 1
         visit.trail = text_mixed(visit.trail, text=note.title + note.body)
     for words in SEARCHES:
-        query = encode_query({"q": words})
-        page = got(net, port, path=f"/search?{query}", token=token)?
+        page = net.get(f"{site}/search", params={"q": words}, headers=holder)?
         visit.saw(page)
-        visit.found += page.text.count("<li>")
-        visit.escaped += page.text.count("&lt;")
-        visit.trail = text_mixed(visit.trail, text=page.text)
+        shown = page.text()
+        visit.found += shown.count("<li>")
+        visit.escaped += shown.count("&lt;")
+        visit.trail = text_mixed(visit.trail, text=shown)
     # No token, and a token changed by hand, get nothing.
-    visit.saw(got(net, port, path="/notes")?)
-    visit.saw(got(net, port, path="/notes", token=f"{token}0")?)
+    visit.saw(net.get(f"{site}/notes")?)
+    visit.saw(net.get(f"{site}/notes", headers={"authorization": f"Bearer {token}0"})?)
     return visit
 
 def client(net: Net, port: int, number: int) -> Visit:
     return visit(net, port=port, number=number) except why:
         Visit(name=f"user{number}", failed=f"{why}")
 
-# Runs the server while the clients visit, then stops it. Gives what each client saw.
-def run_load(
-    net: Net,
-    server: Server,
-    app: App,
-    clock: Clock,
-    entropy: Entropy,
-    stats: shared Stats,
-) -> list[Visit] fails NetError | HttpError | Crashed:
+# Serves the routes while the clients visit, then closes the server, which ends `serve`. Gives
+# what each client saw.
+def run_load(net: Net, server: Server, router: Router) -> list[Visit] fails Crashed:
     port = server.port
-    stop = Secret.of(entropy.bytes(32).hex())
-    with launch(() => serving(server, app, clock, entropy, stop, stats))?:
+    with launch(() => server.serve(router))?:
         visits = [client(net, port=port, number=number) for number in parallel(range(CLIENTS))]
-        _ = posted(net, port, path="/stop", body="", token=stop.expose_secret())?
+        server.close()
         return visits
 
 def made(db: Database) fails SqlError:
@@ -448,9 +303,9 @@ struct Kept:
     owners: int
 
 # The summary: what the clients saw, then what the database kept.
-def report(visits: list[Visit], db: Database, dropped: list[str]) -> list[str] fails SqlError:
+def report(visits: list[Visit], db: Database) -> list[str] fails SqlError:
     failed = [one for one in visits if one.failed != ""]
-    mut lines = [f"{len(visits)} clients, {len(failed)} failed, {len(dropped)} dropped"]
+    mut lines = [f"{len(visits)} clients, {len(failed)} failed"]
     for one in failed:
         lines.append(f"  {one.name}: {one.failed}")
     mut statuses = dict[int, int]()
@@ -478,8 +333,7 @@ def main(
     clock: Clock,
     entropy: Entropy,
     stdout: Stdout,
-) fails NetError | HttpError | SqlError | IoError | Crashed:
-    shared stats = Stats()
+) fails NetError | SqlError | IoError | Crashed:
     folder = env.get("TMPDIR") else "/tmp"
     mut lines = list[str]()
     with net.listen(0)? as server:
@@ -487,10 +341,8 @@ def main(
         with sqlite.open(fs, path)? as db:
             made(db)?
             app = App(db=db, key=Secret.of(entropy.bytes(32).hex()))
-            visits = run_load(net, server, app, clock, entropy, stats)?
-            dropped = lock stats as current:
-                current.dropped
-            lines = report(visits, db=db, dropped=dropped)?
+            visits = run_load(net, server, router=routes(app, clock, entropy))?
+            lines = report(visits, db=db)?
         for leftover in [path, f"{path}-wal", f"{path}-shm"]:
             if fs.exists(leftover)?:
                 fs.remove(leftover)?

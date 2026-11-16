@@ -30,7 +30,7 @@ pub use modules::{
     Imported, dotted, importable_type, member as std_member, module_as_value, package_member,
     shared_declaration, short_module, std_import, written_type,
 };
-pub use parser::{parse, parse_at, parse_prelude};
+pub use parser::{parse, parse_at, parse_prelude, parse_written};
 pub use sources::{Sources, Trace};
 pub use span::Span;
 pub use stdlib::{

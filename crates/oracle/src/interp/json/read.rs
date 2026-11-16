@@ -331,19 +331,20 @@ impl Interp {
 
     /// A struct or enum the program declares.
     fn read_declared(&mut self, node: &Node, name: &str, args: &[Type], reading: &mut Reading) -> Run<Value> {
-        let name = fennec_syntax::rename::shown_type_name(name);
+        // Looked up by the name it's checked under, and named in messages as it's written.
+        let shown = fennec_syntax::rename::shown_type_name(name);
         if let Some(def) = self.program.method(name, "deserialize") {
             return self.read_through_own(node, def, (name, args), reading);
         }
         match self.saved_type(name)? {
             Kind::Struct => {
-                let Node::Object(entries) = node else { return Err(reading.misfit(name, node)) };
+                let Node::Object(entries) = node else { return Err(reading.misfit(shown, node)) };
                 let fields = self.saved_fields(name, None, args)?;
-                let values = self.read_record(entries, &fields, name, reading)?;
+                let values = self.read_record(entries, &fields, shown, reading)?;
                 let instance = Instance { ty: name.to_owned(), case: None, fields: values };
                 if let Some(broken) = self.broken_rule(&instance)? {
                     return Err(says(format!(
-                        "in {}, {name}.{broken} breaks its `where` rule",
+                        "in {}, {shown}.{broken} breaks its `where` rule",
                         reading.here()
                     )));
                 }
@@ -458,8 +459,9 @@ impl Interp {
     /// An enum's case: its name in quotes when it has no fields, or an object holding its fields
     /// under its name.
     fn read_case(&mut self, node: &Node, name: &str, args: &[Type], reading: &mut Reading) -> Run<Value> {
+        let shown = fennec_syntax::rename::shown_type_name(name);
         let Some(declared) = self.program.types.get(name) else {
-            return unsupported(format!("the enum {name}"));
+            return unsupported(format!("the enum {shown}"));
         };
         let cases = &declared.def.cases;
         if cases.iter().any(|case| case.fields.iter().any(|field| field.rule.is_some())) {
@@ -469,39 +471,39 @@ impl Interp {
             Node::Str(key) => {
                 let Some(case) = cases.iter().find(|case| case.name == *key) else {
                     return Err(says(format!(
-                        "{} is \"{key}\", which isn't a case of `{name}`",
+                        "{} is \"{key}\", which isn't a case of `{shown}`",
                         reading.here()
                     )));
                 };
                 if !case.fields.is_empty() {
                     return Err(says(format!(
-                        "{} is `{name}.{key}`, which needs its fields",
+                        "{} is `{shown}.{key}`, which needs its fields",
                         reading.here()
                     )));
                 }
                 return Ok(Value::instance(name, Some(key), Vec::new()));
             }
             Node::Object(entries) => entries,
-            _ => return Err(reading.misfit(name, node)),
+            _ => return Err(reading.misfit(shown, node)),
         };
         let Some(Entry { key, value: Node::Object(inner), .. }) = entries.first() else {
-            return Err(reading.misfit(name, node));
+            return Err(reading.misfit(shown, node));
         };
         let Some(case) = cases.iter().find(|case| case.name == *key) else {
-            return Err(says(format!("{} is \"{key}\", which isn't a case of `{name}`", reading.here())));
+            return Err(says(format!("{} is \"{key}\", which isn't a case of `{shown}`", reading.here())));
         };
         let values = if case.fields.is_empty() {
             if let Some(first) = inner.first() {
                 let field = cut_input(&first.key);
                 return Err(says(format!(
-                    "`{name}.{key}` has no field \"{field}\", but {} has one",
+                    "`{shown}.{key}` has no field \"{field}\", but {} has one",
                     reading.here()
                 )));
             }
             Vec::new()
         } else {
             let fields = self.saved_fields(name, Some(key), args)?;
-            self.read_record(inner, &fields, &format!("{name}.{key}"), reading)?
+            self.read_record(inner, &fields, &format!("{shown}.{key}"), reading)?
         };
         // A key after the case is a failure once the case's own fields have read, naming the first
         // such key as a field is named (#1686). Anything else after the case is a syntax error,

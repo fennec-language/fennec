@@ -74,6 +74,12 @@ fi
 toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$root/rust-toolchain.toml")
 # The image of that release; its patch release may be newer, which builds the same.
 image="rust:${toolchain%.*}-slim-bookworm"
+# Names have to resolve in the VM, for crates.io and Debian's packages. After a restart on
+# 2026-11-16 the VM asked a resolver Lima's user-v2 network doesn't have, and nothing resolved.
+# Said plainly, as the check can still go on with the crates its volume holds.
+if ! docker --context "$context" run --rm "$image" getent hosts index.crates.io > /dev/null 2>&1; then
+  echo "warning: the Linux VM can't resolve index.crates.io: its /etc/resolv.conf should name 192.168.5.2, the gateway of Lima's user-v2 network, as \`dns: [192.168.5.2]\` in ~/.colima/fennec/colima.yaml has it (docs/landing.md); the check goes on with the crates it has" >&2
+fi
 # Past 75% of the VM's disk, the volumes this makes go, while the lock says nothing uses them.
 full=$(docker --context "$context" run --rm --volume fennec-linux-check-target:/target "$image" \
   df -P /target | awk 'NR == 2 { sub("%", "", $5); print $5 }')

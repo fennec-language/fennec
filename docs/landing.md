@@ -39,9 +39,10 @@ The gate's Linux check runs in a Linux VM of Fennec's own: the colima profile `f
 - **Make it,** once, with 4 CPUs, 8 GB of memory and 40 GB of disk, without making it Docker's context:
 
   ```bash
-  colima start fennec --cpu 4 --memory 8 --disk 40 --activate=false
+  colima start fennec --cpu 4 --memory 8 --disk 40 --dns 192.168.5.2 --activate=false
   ```
 
+- **Its names** resolve through 192.168.5.2, the gateway of Lima's user-v2 network the VM is on: left to itself, Colima points the VM at 192.168.5.3, which that network doesn't have. For a VM made without `--dns`, set `dns: [192.168.5.2]` in `~/.colima/fennec/colima.yaml`, and `nameserver 192.168.5.2` in the VM's `/etc/resolv.conf` (`colima ssh -p fennec`). The check warns when the VM can't resolve `index.crates.io`.
 - **Day to day, nothing to do.** The check starts the VM when it needs it, which the step's time includes, and stops it after 30 minutes with no check. One check runs at a time, whichever worktree's gate starts it.
 - **Its disk.** Every worktree shares one target volume and one of fetched crates. Past 75% of the disk, the check removes its `fennec-` volumes and builds them again.
 - **Without it,** where there's no profile, it won't start, or its disk is full, the step warns that the Linux check is unavailable and the gate goes on. CI's Linux jobs still check.

@@ -1014,7 +1014,7 @@ fn a_task_s_comprehensions_run_their_pieces_at_once_as_main_s_do() -> std::io::R
 /// the task made for them, and a piece holding a lock leaves that copy's counts to the runtime, as
 /// it does `main`'s blocks: every count comes out right, so nothing's left live at the end. A lent
 /// copy was once marked as what a lock guards is, which its holder counts in place: two pieces
-/// under two locks then wrote one count at once. ThreadSanitizer runs this program too.
+/// under two locks then wrote one count at once. `ThreadSanitizer` runs this program too.
 #[test]
 fn a_task_s_pieces_holding_write_locks_leave_lent_counts_to_the_runtime() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {

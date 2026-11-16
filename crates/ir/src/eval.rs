@@ -95,10 +95,14 @@ pub fn check_lengths(program: &Program, lengths: &Lengths, steps: u64) -> Length
     LengthsChecked { checked: machine.checked, broken, stopped }
 }
 
-/// Runs a program's `main` within `steps` steps, checking each fact `ranges` gives: what each
-/// value written to a local and each parameter given holds, and the operands of each `//` and
-/// `%` said unsigned, each `int(x)` said to fit and each comparison said not NaN, as the program
-/// runs. As with [`check_lengths`], it's a test of the facts, not of the program.
+/// Runs a program's `main` within `steps` steps, checking each fact `ranges` gives as the program
+/// runs:
+/// - what each value written to a local and each parameter given holds;
+/// - the operands of each `//`, `%` and `*` and each list index said not negative;
+/// - each `int(x)` said to fit;
+/// - each comparison said not NaN.
+///
+/// As with [`check_lengths`], it's a test of the facts, not of the program.
 pub fn check_ranges(program: &Program, ranges: &Ranges, steps: u64) -> LengthsChecked {
     let mut machine = Machine::new(program);
     machine.ranges = Some(ranges);
@@ -263,11 +267,21 @@ impl<'p> Machine<'p> {
     ) -> Ran<()> {
         let Some(known) = self.ranges_of(function) else { return Ok(()) };
         let broken = match inst {
-            InstKind::Binary { op: BinOp::FloorDiv | BinOp::Mod, lhs, rhs, .. } if known.unsigned(place) => {
+            InstKind::Binary { op: BinOp::FloorDiv | BinOp::Mod | BinOp::Mul, lhs, rhs, .. }
+                if known.not_negative(place) =>
+            {
                 self.checked += 1;
                 let sides = (read(locals, lhs), read(locals, rhs));
                 (!matches!(sides, (Value::Int(left), Value::Int(right)) if left >= 0 && right >= 0))
-                    .then(|| format!("{sides:?} isn't unsigned"))
+                    .then(|| format!("{sides:?} has a negative side"))
+            }
+            InstKind::GetIndex { index, .. } | InstKind::SetIndex { index, .. }
+                if known.not_negative(place) =>
+            {
+                self.checked += 1;
+                let given = read(locals, index);
+                (!matches!(given, Value::Int(at) if at >= 0))
+                    .then(|| format!("the index {given:?} is negative"))
             }
             InstKind::Builtin { args, .. } if known.fits(place) => {
                 self.checked += 1;

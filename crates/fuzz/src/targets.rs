@@ -413,9 +413,9 @@ fn lengths(input: &[u8]) -> Result<(), String> {
 const LENGTH_STEPS: u64 = 100_000;
 
 /// What's known of ints' and floats' values holds while a program runs in the IR's evaluator:
-/// each value written and each parameter given holds what's known of it, and each `//` and `%`
-/// said unsigned, `int(x)` said to fit and comparison said not NaN has operands that are. The
-/// program is one of the two kinds the bytes can write, as for `lengths`.
+/// each value written and each parameter given holds what's known of it, and each `//`, `%`, `*`
+/// and list index said not negative, `int(x)` said to fit and comparison said not NaN has
+/// operands that are. The program is one of the two kinds the bytes can write, as for `lengths`.
 fn ranges(input: &[u8]) -> Result<(), String> {
     let source = if input.len().is_multiple_of(2) {
         crate::programs::written(input)

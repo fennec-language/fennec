@@ -1,7 +1,8 @@
 //! What's known about the values a program's ints and floats can hold, for a backend to leave out
-//! the checks a value in that range can't fail: the correction a floor `//` or `%` makes for a
-//! negative side, `int(x)`'s stop for a float that doesn't fit or is NaN, and the NaN test a
-//! float comparison makes for the total order. It works over the whole program and depends on
+//! the checks a value in that range can't fail: what a negative int costs, as the correction a
+//! floor `//` or `%` makes for a negative side, the way a list index counts from the end and the
+//! signed overflow check of a `*`; `int(x)`'s stop for a float that doesn't fit or is NaN; and
+//! the NaN test a float comparison makes for the total order. It works over the whole program and depends on
 //! nothing but the IR, as the list lengths (`crate::lengths`) do.
 //!
 //! An int is known to be within a range, and a float within a range and whether it can be NaN.
@@ -263,8 +264,9 @@ pub type Place = (usize, usize);
 pub struct FunctionRanges {
     /// What's known about each local that isn't a list, whatever writes it.
     locals: Vec<Fact>,
-    /// Each floor `//` and `%` whose sides are both known not negative.
-    unsigned: BTreeSet<Place>,
+    /// Each instruction whose ints are all known not negative: both sides of a `//`, `%` or `*`,
+    /// or a list's index.
+    not_negative: BTreeSet<Place>,
     /// Each `int(x)` whose float is known to fit an int and not be NaN.
     fits: BTreeSet<Place>,
     /// Each float comparison whose sides are both known not to be NaN.
@@ -285,11 +287,15 @@ impl FunctionRanges {
         self.locals.get(local.0)
     }
 
-    /// Whether the floor `//` or `%` at this place has both sides known not negative, so it's
-    /// the same as the unsigned operation.
+    /// Whether the instruction at this place has its ints known not negative:
+    /// - both sides of a floor `//` or `%`, so it's the same as the unsigned operation;
+    /// - both sides of an int `*`, so it overflows only past `i64::MAX`, as an unsigned multiply
+    ///   finds;
+    /// - the index of a list's item, read or set straight into the list, so it never counts from
+    ///   the end.
     #[must_use]
-    pub fn unsigned(&self, place: Place) -> bool {
-        self.unsigned.contains(&place)
+    pub fn not_negative(&self, place: Place) -> bool {
+        self.not_negative.contains(&place)
     }
 
     /// Whether the `int(x)` at this place takes a float known to fit an int and not be NaN.
@@ -304,10 +310,10 @@ impl FunctionRanges {
         self.not_nan.contains(&place)
     }
 
-    /// The `//` and `%` known unsigned, the `int(x)` known to fit and the comparisons known not
-    /// NaN, by place.
+    /// The instructions whose ints are known not negative, the `int(x)` known to fit and the
+    /// comparisons known not NaN, by place.
     pub fn places(&self) -> (&BTreeSet<Place>, &BTreeSet<Place>, &BTreeSet<Place>) {
-        (&self.unsigned, &self.fits, &self.not_nan)
+        (&self.not_negative, &self.fits, &self.not_nan)
     }
 }
 
@@ -750,7 +756,8 @@ impl<'w, 'p> Walk<'w, 'p> {
                 // An `array` is made as a list is, but isn't followed as one.
                 moved |= self.put(*dest, &Fact::List(Box::new(held)), lists);
             }
-            InstKind::GetIndex { dest, object, .. } => {
+            InstKind::GetIndex { dest, object, index } => {
+                self.note_index(object, index, true, lists, place);
                 let fact = match object {
                     Operand::Local(held) if self.is_list(*held) => {
                         lists.get(&held.0).cloned().unwrap_or(Fact::Any)
@@ -759,7 +766,8 @@ impl<'w, 'p> Walk<'w, 'p> {
                 };
                 moved |= self.put(*dest, &fact, lists);
             }
-            InstKind::SetIndex { object, path, value, .. } => {
+            InstKind::SetIndex { object, path, index, value } => {
+                self.note_index(&Operand::Local(*object), index, path.is_empty(), lists, place);
                 let value = self.read(value, lists, block);
                 moved |= self.set_index(*object, path.is_empty(), &value, lists);
             }
@@ -823,6 +831,19 @@ impl<'w, 'p> Walk<'w, 'p> {
         }
     }
 
+    /// Notes a list's index known not negative, read or set straight into the list.
+    fn note_index(&mut self, object: &Operand, index: &Operand, own_item: bool, lists: &Lists, place: Place) {
+        let Operand::Local(list) = object else { return };
+        if self.noting
+            && own_item
+            && self.is_list(*list)
+            && let Some((low, _)) = self.read(index, lists, place.0).int()
+            && low >= 0
+        {
+            self.found.not_negative.insert(place);
+        }
+    }
+
     /// Notes what's put in a list parameter lent with `ref`.
     fn note_put(&mut self, object: LocalId, value: &Fact) {
         if let Some(put) = self.puts.get_mut(object.0) {
@@ -830,15 +851,15 @@ impl<'w, 'p> Walk<'w, 'p> {
         }
     }
 
-    /// Notes what a `//`, `%` or float comparison can leave out.
+    /// Notes what a `//`, `%`, `*` or float comparison can leave out.
     fn note_binary(&mut self, op: BinOp, left: &Fact, right: &Fact, place: Place) {
         match op {
-            BinOp::FloorDiv | BinOp::Mod => {
+            BinOp::FloorDiv | BinOp::Mod | BinOp::Mul => {
                 if let (Some((left_low, _)), Some((right_low, _))) = (left.int(), right.int())
                     && left_low >= 0
                     && right_low >= 0
                 {
-                    self.found.unsigned.insert(place);
+                    self.found.not_negative.insert(place);
                 }
             }
             BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq | BinOp::Eq | BinOp::NotEq => {

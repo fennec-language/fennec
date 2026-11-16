@@ -42,6 +42,14 @@ fn is_division(kind: &InstKind) -> bool {
     matches!(kind, InstKind::Binary { op: BinOp::FloorDiv | BinOp::Mod, .. })
 }
 
+fn is_product(kind: &InstKind) -> bool {
+    matches!(kind, InstKind::Binary { op: BinOp::Mul, .. })
+}
+
+fn is_index(kind: &InstKind) -> bool {
+    matches!(kind, InstKind::GetIndex { .. } | InstKind::SetIndex { .. })
+}
+
 fn is_int(kind: &InstKind) -> bool {
     matches!(kind, InstKind::Builtin { name, .. } if name == "int")
 }
@@ -56,10 +64,20 @@ fn is_comparison(kind: &InstKind) -> bool {
     )
 }
 
-/// For each `//` or `%` in a function, whether it's known unsigned.
-fn unsigned(program: &Program, ranges: &Ranges, function: &str) -> Result<Vec<bool>, String> {
+/// For each instruction `wanted` picks in a function, whether its ints are known not negative.
+fn not_negative(
+    program: &Program,
+    ranges: &Ranges,
+    function: &str,
+    wanted: &dyn Fn(&InstKind) -> bool,
+) -> Result<Vec<bool>, String> {
     let known = ranges.function(function).ok_or_else(|| format!("no facts for `{function}`"))?;
-    Ok(places(program, function, &is_division)?.into_iter().map(|place| known.unsigned(place)).collect())
+    Ok(places(program, function, wanted)?.into_iter().map(|place| known.not_negative(place)).collect())
+}
+
+/// For each `//` or `%` in a function, whether it's known unsigned: both sides not negative.
+fn unsigned(program: &Program, ranges: &Ranges, function: &str) -> Result<Vec<bool>, String> {
+    not_negative(program, ranges, function, &is_division)
 }
 
 /// For each `int(x)` in a function, whether its float is known to fit.
@@ -117,6 +135,29 @@ fn a_division_is_unsigned_when_every_call_gives_what_isnt_negative() {
     let ranges = Ranges::of(&program);
     assert_eq!(unsigned(&program, &ranges, "part").unwrap(), [false]);
     checked(&program, &ranges);
+}
+
+/// A list's index known not negative, read or set straight into the list, and an int `*` of two
+/// sides known not negative are noted, as the backend's index and product checks want them. An
+/// index counting from the end isn't, and the `*` beside it still is.
+#[test]
+fn an_index_or_a_product_is_not_negative_when_its_ints_arent() {
+    let source = "def weighted(values: list[int]) -> int:\n    mut running = 0\n    for place in range(len(values)):\n        running = running + values[place] * place\n    return running\n\n\
+                  def doubled_tail(values: list[int]) -> int:\n    return values[-1] * 2\n\n\
+                  def main(stdout: Stdout):\n    mut values = [1, 2, 3]\n    for place in range(len(values)):\n        values[place] = place\n    stdout.print(weighted(values), doubled_tail(values))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "weighted", &is_index).unwrap(), [true]);
+    assert_eq!(not_negative(&program, &ranges, "weighted", &is_product).unwrap(), [true]);
+    assert_eq!(not_negative(&program, &ranges, "doubled_tail", &is_index).unwrap(), [false]);
+    assert_eq!(not_negative(&program, &ranges, "doubled_tail", &is_product).unwrap(), [true]);
+    assert_eq!(not_negative(&program, &ranges, "main", &is_index).unwrap(), [true]);
+    checked(&program, &ranges);
+    let negative = source.replace("[1, 2, 3]", "[1, -2, 3]");
+    let program = lowered(&negative).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "weighted", &is_product).unwrap(), [false]);
+    assert_eq!(not_negative(&program, &ranges, "doubled_tail", &is_product).unwrap(), [false]);
 }
 
 /// By floats' total order NaN sorts last: the false side of `at > high` can't be NaN, and the

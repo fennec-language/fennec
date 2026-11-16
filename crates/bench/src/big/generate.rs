@@ -53,6 +53,10 @@ export def tagged(prefix: str, at: int) -> str:
     return f\"{prefix}-{at}\"
 ";
 
+// A case is written whole as an argument, `StateZ1P2U0.Idle` rather than `.Idle`, since
+// `made.append(.Idle)` is "more than one enum" once two units have a state of that name, though
+// `append` says which (fennec#1894).
+
 /// A unit's kind, with its text, in which `{z}`, `{p}` and `{u}` are its zone, module and place
 /// in the module, `{s}` names its functions (`{z}_{p}_{u}`), `{S}` its types (`Z{z}P{p}U{u}`) and
 /// `{k}` is its `scale`, which the one-line edit changes.
@@ -145,11 +149,11 @@ def states_{s}(count: int) -> list[State{S}]:
     mut made = list[State{S}]()
     for i in range(count):
         if i % 3 == 0:
-            made.append(.Idle)
+            made.append(State{S}.Idle)
         elif i % 3 == 1:
-            made.append(.Moving(float(i)))
+            made.append(State{S}.Moving(float(i)))
         else:
-            made.append(.Broken(f\"part {i}\"))
+            made.append(State{S}.Broken(f\"part {i}\"))
     return made
 
 def by_tag_{s}(stock: list[Item{S}]) -> dict[str, int]:
@@ -475,7 +479,11 @@ fn module(made: &Part, seed: u64) -> String {
     let fails = if made.fails() { " fails Crashed" } else { "" };
     let (reached_zone, reached_part) = made.reaches;
     let _ = writeln!(text, "def run_{zone}_{part}(n: int) -> int{fails}:");
-    let _ = writeln!(text, "    mut total = reach_{reached_zone}_{reached_part}(n)");
+    // Its own reach, and the earlier module's it imports: the first module has none to import.
+    let _ = writeln!(text, "    mut total = reach_{zone}_{part}(n)");
+    if reaches {
+        let _ = writeln!(text, "    total += reach_{reached_zone}_{reached_part}(n)");
+    }
     for (place, (kind, _)) in made.units.iter().enumerate() {
         let tried = if kind.fails() { "?" } else { "" };
         let _ = writeln!(text, "    total += run_{zone}_{part}_{place}(n){tried}");

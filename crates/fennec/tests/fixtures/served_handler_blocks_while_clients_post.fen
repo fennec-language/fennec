@@ -32,7 +32,9 @@ def main(net: Net, fs: Fs, env: Env, stdout: Stdout) fails NetError | Crashed | 
             _ = db.execute(t"create table seen (path text)")?
             port = server.port
             with launch(() => server.serve((request) => saved(db, request)))?:
-                answers = [asked(net, port=port, number=number) for number in parallel(range(clients))]
+                answers = [
+                    asked(net, port=port, number=number) for number in parallel(range(clients))
+                ]
                 server.close()
             for kept in db.query[Kept](t"select count(*) as rows from seen")?:
                 rows = kept.rows

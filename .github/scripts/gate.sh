@@ -67,6 +67,7 @@ step() {
     echo "  failures main isn't known to have:"
     printf '%s\n' "$unknown" | sed 's/^/    /'
   fi
+  kept_failure "$name"
   tail -n 60 "$logs/step.log"
   grep gate-watch "$log"
   # Kept under the code it tested: if that passes later, this was a flake, and goes in the
@@ -74,6 +75,38 @@ step() {
   .github/scripts/flakes.sh failed "$name" "$logs/step.log"
   outcomes+=("$name|failed")
   return 1
+}
+
+# What a failed step said, kept whole where it outlasts the gate's folder: its whole log, each
+# failing test's panic in full, which the 60 lines printed after can cut off, and any temporary
+# folder a panic names that's still there. Printed too: each failing test in a line, then each
+# panic whole.
+kept_failure() {
+  local name=$1 kept panics folder
+  kept="${FENNEC_HOME:-$HOME/.fennec}/gate-logs/$(date '+%Y-%m-%d-%H%M%S')-$(git rev-parse --short HEAD)-$(printf '%s' "$1" | tr -c 'a-zA-Z0-9' '-' | cut -c1-40)"
+  mkdir -p "$kept" || return 0
+  cp "$logs/step.log" "$kept/step.log"
+  .github/scripts/failed-tests.sh "$logs/step.log" > "$kept/failed-tests.txt"
+  # Each test's panic, from its `---- name stdout ----` to the next one, or the list of failures.
+  panics="$kept/panics.txt"
+  awk '/^---- .* stdout ----$/ { on = 1 } /^failures:$/ && on { on = 0 } on' "$logs/step.log" > "$panics"
+  if [ -s "$kept/failed-tests.txt" ]; then
+    echo "  each test that failed:"
+    sed 's/^/    /' "$kept/failed-tests.txt"
+  fi
+  if [ -s "$panics" ]; then
+    echo "  what each said, whole:"
+    sed 's/^/    /' "$panics"
+  fi
+  # A temporary folder a failing test kept, or its panic names: what a program it built printed,
+  # its source, its recording. Moved here, so the temporary folder is left as tidy as a pass leaves
+  # it.
+  grep -oE '(/private)?/(var/folders|tmp)/[^] ":)]*fennec-[A-Za-z0-9_.-]+' "$panics" 2> /dev/null | sort -u \
+    | while read -r folder; do
+      [ -d "$folder" ] || continue
+      mv "$folder" "$kept/" 2> /dev/null && echo "  kept the folder $folder"
+    done
+  echo "  all of it is kept in $kept"
 }
 
 # A step left out, which fails the gate as surely as one that failed.
@@ -280,7 +313,9 @@ quick() {
 # by not building or by crashing, is named as that, which nothing known matches.
 tests() {
   local said="$logs/tests.txt" status=0
-  cargo test --locked --no-fail-fast > "$said" 2>&1 || status=$?
+  # A failing test keeps its temporary folder and says where (see `fennec-temp`), for the step's
+  # failure to keep with its log.
+  FENNEC_KEEP_FAILED=1 cargo test --locked --no-fail-fast > "$said" 2>&1 || status=$?
   cat "$said"
   [ "$status" -eq 0 ] && return 0
   .github/scripts/known-failures.sh tests-failed "$said" >> "$names"

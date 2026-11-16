@@ -70,19 +70,19 @@ const EVERY_LISTENER: bool = true;
 
 /// Whether random programs keep what a lookup in a struct's dict found, set the struct whole to
 /// another, then store at the same key: the store has to go to the dict the struct holds now.
-/// Main stores into the dict the lookup searched, the caller's or one let go of, as the review of
-/// #1785 found (finding 3), and this shape finds it within a few dozen programs. Off until the
-/// LLVM lane's fix lands, since CI's run of this target would fail on main until then; the
-/// seed `review_1785_lookup_swapped` writes it once it's on.
-const LOOKUPS_SWAPPED: bool = false;
+/// Main stored into the dict the lookup searched, the caller's or one let go of, as the review
+/// of #1785 found (finding 3), and this shape found it within a few dozen programs. On since
+/// #1812 fixed it; the seed `review_1785_lookup_swapped` is a program that failed before.
+const LOOKUPS_SWAPPED: bool = true;
 
 /// Whether random programs crash inside a `ref self` method, or a change by hand, on part of a
-/// `shared` value under its lock, which has to undo the whole lock. Main puts back a freed block
-/// when the part is a list's item, so the pouch prints `items=None` and the program stops with
-/// "a list native code changed isn't one this thread can find", as the review of #1785 found
-/// (finding 1, `b5.fen`). Off until the LLVM lane's fix lands, as above; the seed
-/// `review_1785_crash_in_locked_part` writes it once it's on.
-const PART_CRASHES: bool = false;
+/// list or dict: under a `shared` value's lock, which has to undo the whole lock, or held by the
+/// task alone, which has to let go of all of it. Main put back a freed block when the part was a
+/// list's item under a lock, so the pouch printed `items=None` and the program stopped with "a
+/// list native code changed isn't one this thread can find", as the review of #1785 found
+/// (finding 1, `b5.fen`). With no lock, it left the blocks the task made live. On since #1853
+/// fixed both; the seed `review_1785_crash_in_locked_part` is a program that failed before.
+const PART_CRASHES: bool = true;
 
 /// Whether a call handling several of `Crashed`, `Closed`, `Timeout` and `Refused` prints each
 /// one's own word, `crashed`, `closed`, `timeout` or `refused`, rather than one word for them all,

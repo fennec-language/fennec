@@ -151,7 +151,7 @@ impl Interp {
 
     /// The method `method` a struct or enum writes for itself, if it does.
     pub(crate) fn own_method(&self, name: &str, method: &str) -> Option<&'static fennec_syntax::FnDef> {
-        self.program.method(fennec_syntax::rename::shown_type_name(name), method)
+        self.program.method(name, method)
     }
 
     /// What a type's own `def serialize` or `def deserialize` has its type's parameters stand for,
@@ -174,12 +174,12 @@ impl Interp {
     /// a `def serialize` or `def deserialize` of its own isn't modeled, nor is the standard
     /// library's.
     pub(crate) fn saved_type(&self, name: &str) -> Run<Kind> {
-        let name = fennec_syntax::rename::shown_type_name(name);
+        let shown = fennec_syntax::rename::shown_type_name(name);
         let Some(declared) = self.program.types.get(name) else {
-            return unsupported(format!("saving a {name} as JSON"));
+            return unsupported(format!("saving a {shown} as JSON"));
         };
         if declared.kind == Kind::Error || declared.def.shared {
-            return unsupported(format!("saving a {name} as JSON"));
+            return unsupported(format!("saving a {shown} as JSON"));
         }
         if self.program.method(name, "serialize").is_some()
             || self.program.method(name, "deserialize").is_some()
@@ -192,9 +192,8 @@ impl Interp {
     /// The fields a struct, or one of an enum's cases, saves, each with its type, the type's
     /// parameters filled in with `args`.
     pub(crate) fn saved_fields(&self, name: &str, case: Option<&str>, args: &[Type]) -> Run<Vec<SavedField>> {
-        let name = fennec_syntax::rename::shown_type_name(name);
         let Some(declared) = self.program.types.get(name) else {
-            return unsupported(format!("saving a {name} as JSON"));
+            return unsupported(format!("saving a {} as JSON", fennec_syntax::rename::shown_type_name(name)));
         };
         let fields: &'static [Field] = match case {
             Some(case) => match declared.def.cases.iter().find(|known| known.name == case) {

@@ -150,7 +150,9 @@ export error PasswordError:
 ## `password` stretched with Argon2id under a fresh 16-byte salt from `entropy`, as text to keep,
 ## like `$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>`. The settings are OWASP's floor, 19 MiB and
 ## two passes, and they travel with the hash, so they can be raised later. In a task it's worked
-## out off the task's worker, so a burst of sign-ups doesn't stall a server.
+## out on a thread of its own while the task waits parked, a thread to a core and at most 8 at
+## once, so a burst of sign-ups neither stalls a server nor takes all the memory. Inside a `lock`
+## it's worked out where it is.
 export def hash_password(password: Secret[str], entropy: Entropy) -> str:
     return crypto._hash_password(password.expose_secret(), entropy.bytes(16))
 
@@ -160,7 +162,8 @@ export def hash_password(password: Secret[str], entropy: Entropy) -> str:
 ## two passes or 46 MiB with one, or past what's worth checking, 256 MiB, 8 passes or 4 lanes: a
 ## hash made with settings that high elsewhere is refused, so a stored hash can't be used to take
 ## all the memory or time there is. For a name nobody has, check against a hash made up for it,
-## so a missing name takes as long to refuse as a wrong password.
+## so a missing name takes as long to refuse as a wrong password. In a task it's worked out as
+## `hash_password` is.
 export def check_password(password: Secret[str], stored: str) -> bool fails PasswordError:
     problem = crypto._password_problem(stored)
     if problem != "": fail PasswordError(reason=problem)

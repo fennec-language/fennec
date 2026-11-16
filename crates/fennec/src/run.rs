@@ -210,7 +210,82 @@ fn started(
     let ran = command.status();
     let _ = std::fs::remove_file(executable);
     let status = ran.map_err(|err| format!("the program it built didn't start: {err}"))?;
-    Ok(status.code().and_then(|code| u8::try_from(code).ok()).map_or(ExitCode::FAILURE, ExitCode::from))
+    Ok(exit_code_of(status))
+}
+
+/// The exit code `fennec run` passes on for the program it waited for: the program's own, when
+/// it's one a process can give back, 0 to 255. Any other status means the program didn't end by
+/// giving one back, and it's said on standard error, as its system names it, with a code of 1.
+///
+/// A crash on Windows ends a process with an exception's code, which no exit code holds, and
+/// Windows itself prints nothing; a signal ends one on Unix with no code at all. Passed on as a
+/// plain 1 with nothing said, a crash read as the program failing without a word.
+fn exit_code_of(status: std::process::ExitStatus) -> ExitCode {
+    if let Some(code) = status.code().and_then(|code| u8::try_from(code).ok()) {
+        return ExitCode::from(code);
+    }
+    eprintln!("error: {}", ended_how(status));
+    ExitCode::FAILURE
+}
+
+/// How a program that gave back no exit code a process can pass on ended, in words.
+fn ended_how(status: std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        if let Some(signal) = status.signal() {
+            let dumped = if status.core_dumped() { ", and dumped its core" } else { "" };
+            return format!(
+                "the program it built was ended by signal {signal}{}{dumped}",
+                signal_name(signal)
+            );
+        }
+    }
+    match status.code() {
+        // An exception's code on Windows, an NTSTATUS, written as Windows writes them.
+        Some(code) => {
+            let code = code.cast_unsigned();
+            format!("the program it built stopped with exception {code:#010X}{}", exception_name(code))
+        }
+        None => format!("the program it built ended with no exit code: {status}"),
+    }
+}
+
+/// The name of a signal that ends a program, after its number, for the ones a crash or a stop
+/// sends: nothing for the rest.
+#[cfg(unix)]
+fn signal_name(signal: i32) -> &'static str {
+    // SIGBUS's number is the one that differs between the two.
+    let bus = if cfg!(target_os = "macos") { 10 } else { 7 };
+    match signal {
+        2 => " (SIGINT)",
+        4 => " (SIGILL)",
+        6 => " (SIGABRT)",
+        8 => " (SIGFPE)",
+        9 => " (SIGKILL)",
+        11 => " (SIGSEGV)",
+        13 => " (SIGPIPE)",
+        15 => " (SIGTERM)",
+        _ if signal == bus => " (SIGBUS)",
+        _ => "",
+    }
+}
+
+/// What a Windows exception that ends a program is, after its code, for the ones a crash ends one
+/// with: nothing for the rest.
+fn exception_name(code: u32) -> &'static str {
+    match code {
+        0xC000_0005 => ", an access violation",
+        // What Rust's `abort` raises on Windows.
+        0xC000_0409 => ", a fast fail, as an abort raises",
+        0xC000_00FD => ", a stack overflow",
+        0xC000_0374 => ", a corrupted heap",
+        0xC000_001D => ", an illegal instruction",
+        0xC000_0094 => ", an integer divided by zero",
+        0xC000_013A => ", a Ctrl-C",
+        0x8000_0003 => ", a breakpoint",
+        _ => "",
+    }
 }
 
 /// How old what an earlier `fennec run` built has to be before a run sweeps it up: far longer than
@@ -483,5 +558,66 @@ mod tests {
         super::sweep_old_runs(&work.join("fennec-run-3-c-0"));
         assert!(!old.exists() && second.exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod exits {
+    /// What a program gave back as an exit code a process can give is passed on, and nothing's
+    /// said.
+    #[cfg(unix)]
+    #[test]
+    fn an_exit_code_a_process_can_give_is_the_programs_own() {
+        use std::os::unix::process::ExitStatusExt as _;
+        for code in [0, 2, 255] {
+            let status = std::process::ExitStatus::from_raw(code << 8);
+            assert_eq!(
+                super::exit_code_of(status),
+                std::process::ExitCode::from(u8::try_from(code).unwrap())
+            );
+        }
+    }
+
+    /// A program a signal ended is said to be, by the signal's number and name, and whether it
+    /// dumped its core.
+    #[cfg(unix)]
+    #[test]
+    fn a_program_a_signal_ended_is_said_to_be() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let said = |raw| super::ended_how(std::process::ExitStatus::from_raw(raw));
+        assert_eq!(said(9), "the program it built was ended by signal 9 (SIGKILL)");
+        assert_eq!(
+            said(0x0B | 0x80),
+            "the program it built was ended by signal 11 (SIGSEGV), and dumped its core"
+        );
+        assert_eq!(said(31), "the program it built was ended by signal 31");
+        assert_eq!(
+            super::exit_code_of(std::process::ExitStatus::from_raw(9)),
+            std::process::ExitCode::FAILURE
+        );
+    }
+
+    /// A program a crash ended on Windows is said to have stopped with the exception's code, as
+    /// Windows writes it, and what it is.
+    #[cfg(windows)]
+    #[test]
+    fn a_program_a_crash_ended_is_said_to_have_stopped_with_its_exception() {
+        use std::os::windows::process::ExitStatusExt as _;
+        let said = |raw| super::ended_how(std::process::ExitStatus::from_raw(raw));
+        assert_eq!(
+            said(0xC000_0005),
+            "the program it built stopped with exception 0xC0000005, an access violation"
+        );
+        assert_eq!(
+            said(0xC000_0409),
+            "the program it built stopped with exception 0xC0000409, a fast fail, as an abort raises"
+        );
+        assert_eq!(said(0xE06D_7363), "the program it built stopped with exception 0xE06D7363");
+        let crashed = std::process::ExitStatus::from_raw(0xC000_0005);
+        assert_eq!(super::exit_code_of(crashed), std::process::ExitCode::FAILURE);
+        assert_eq!(
+            super::exit_code_of(std::process::ExitStatus::from_raw(3)),
+            std::process::ExitCode::from(3)
+        );
     }
 }

@@ -11,4 +11,5 @@ pub(crate) mod process;
 pub(crate) mod random;
 pub(crate) mod re;
 pub(crate) mod sqlite;
+pub(crate) mod turns;
 pub(crate) mod unicode;

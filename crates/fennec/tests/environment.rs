@@ -79,3 +79,16 @@ fn every_fennec_name_in_the_code_is_listed() {
     let stale: Vec<&String> = listed.difference(&used).filter(|name| !planned.contains(*name)).collect();
     assert!(stale.is_empty(), "docs/environment.md lists {stale:?}, which no code uses any more");
 }
+
+/// The tests compile a dev build's functions two at a time, not one for each core: they run many
+/// builds at once, and on 18 cores each with 18 `opt`s and `llc`s took some 20 GB. Cargo sets it
+/// from `.cargo/config.toml`, for this test and every program the tests start. A test binary run
+/// by hand needs `FENNEC_BUILD_JOBS` set, or its builds use every core.
+#[test]
+fn the_tests_compile_two_functions_at_a_time() {
+    let jobs = std::env::var("FENNEC_BUILD_JOBS").expect(
+        "FENNEC_BUILD_JOBS isn't set: run the tests through Cargo, or set it, as .cargo/config.toml does",
+    );
+    let jobs: usize = jobs.parse().expect("FENNEC_BUILD_JOBS is a number");
+    assert!(jobs <= 4, "FENNEC_BUILD_JOBS is {jobs}: the tests run many builds at once");
+}

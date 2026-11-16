@@ -2247,16 +2247,21 @@ fn refusals(program: &Program) -> Vec<String> {
 }
 
 /// A generic that calls itself with a bigger type each time would need a copy for every size. It's
-/// stopped once the type is nested past 32, and the call says so, naming the copy and how deep.
+/// stopped once the type is nested past 32, and the call says so, naming the copy and how deep. A
+/// generic function that does it is refused by the check first, at the call that makes the type
+/// bigger; a generic type's method that does it is stopped here.
 #[test]
 fn a_generic_that_calls_itself_with_a_bigger_type_stops() {
-    let source = "def grow[T](x: T, n: int) -> int:
-    if n == 0:
-        return 0
-    return grow([x], n - 1)
+    let source = "struct Boxed[T]:
+    value: T
+
+    def grow(self, n: int) -> int:
+        if n == 0:
+            return 0
+        return Boxed(value=[self.value]).grow(n - 1)
 
 def f() -> int:
-    return grow(1, 3)
+    return Boxed(value=1).grow(3)
 ";
     let program = lowered(source).unwrap();
     let said = refusals(&program);
@@ -2270,18 +2275,21 @@ def f() -> int:
 /// said so ten thousand times.
 #[test]
 fn a_generic_that_doubles_its_copies_stops_at_the_first_too_deep() {
-    let source = "def fan[T](x: T, n: int) -> int:
-    if n == 0:
-        return 0
-    return fan([x], n - 1) + fan((x, 1), n - 1)
+    let source = "struct Boxed[T]:
+    value: T
+
+    def fan(self, n: int) -> int:
+        if n == 0:
+            return 0
+        return Boxed(value=[self.value]).fan(n - 1) + Boxed(value=(self.value, 1)).fan(n - 1)
 
 def f() -> int:
-    return fan(1, 3)
+    return Boxed(value=1).fan(3)
 ";
     let program = lowered(source).unwrap();
     let said = refusals(&program);
     assert!(said.iter().any(|why| why.contains("a type nested 33 deep")), "{said:?}");
-    assert!(said.iter().any(|why| why.contains("would need another copy of `fan`")), "{said:?}");
+    assert!(said.iter().any(|why| why.contains("would need another copy of `Boxed.fan`")), "{said:?}");
     assert!(said.len() <= 70, "{}", said.len());
     assert!(program.functions.len() <= 70, "{}", program.functions.len());
 }

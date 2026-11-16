@@ -1335,7 +1335,7 @@ static PROGRAMS_KINDS: std::sync::Mutex<Vec<(Vec<u8>, std::sync::Weak<Kinds>)>> 
 /// How many kinds the runtime numbers itself for a program at most: far past the few one needs.
 const MOST_ADDED_KINDS: usize = 4096;
 
-/// A thread's hold on its program's [`Kinds`], and its copies of them, by number past those the
+/// A thread's hold on its program's `Kinds`, and its copies of them, by number past those the
 /// program described, each read the first time this thread meets it. Each is written once and
 /// never moved, so it can be read with the runtime's state only borrowed.
 #[derive(Default)]

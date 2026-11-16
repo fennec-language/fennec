@@ -66,6 +66,10 @@ cp "$work/nightly.md" "$folder/nightly-proofs-$day.md"
 if gh run download "$run" --repo "$repository" --pattern 'soak-*' --dir "$work/soak" > /dev/null 2>&1; then
   cat "$work"/soak/soak.md "$work"/soak/*/soak.md 2> /dev/null >> "$folder/nightly-proofs-$day.md" || true
 fi
+# The big codebase's steps at each size, and how each grew against the program.
+if gh run download "$run" --repo "$repository" --name big-codebase --dir "$work/big" > /dev/null 2>&1; then
+  cat "$work/big/big-codebase.md" 2> /dev/null >> "$folder/nightly-proofs-$day.md" || true
+fi
 # The tests that failed, by name, so a failed night reads in one line.
 failed=$(sed -n 's/^Failed tests: //p' "$work/nightly.md" | head -n 1)
 echo "Proofs on $day: $conclusion${failed:+, failed tests: $failed}, report in $folder/nightly-proofs-$day.md"

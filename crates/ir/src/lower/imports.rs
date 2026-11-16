@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use fennec_syntax::{Expr, ExprKind, Item, Module};
+use fennec_syntax::{Expr, ExprKind, Import, Item, Module, Span};
 
 use super::{Lowered, Lowering};
 use crate::{InstKind, Operand};
@@ -16,33 +16,77 @@ pub(super) struct Imports {
     names: HashMap<String, (String, String)>,
 }
 
-pub(super) fn written(module: &Module) -> Imports {
-    of_library(std::slice::from_ref(module))
+/// What each file of a program imports, and what lowering imports for the code it writes in. A
+/// name's import is the one in the file it's used in, never another file's.
+#[derive(Default)]
+pub(super) struct ByFile {
+    files: Vec<Span>,
+    each: Vec<Imports>,
+    written: Imports,
+}
+
+impl ByFile {
+    /// The imports code at `span` sees: its own file's, then what lowering imported, under names
+    /// no file can write.
+    fn at(&self, span: Span) -> impl Iterator<Item = &Imports> {
+        let own = match fennec_check::place(&self.files, span) {
+            fennec_check::Place::File(at) => self.each.get(at),
+            fennec_check::Place::Std | fennec_check::Place::Written => None,
+        };
+        own.into_iter().chain([&self.written])
+    }
+}
+
+pub(super) fn written(module: &Module) -> ByFile {
+    let mut by_file = ByFile { files: module.files.clone(), ..ByFile::default() };
+    for item in &module.items {
+        let Item::Import(import) = item else { continue };
+        let imports = match fennec_check::import_place(&module.files, import.span) {
+            fennec_check::Place::File(at) => {
+                if by_file.each.len() <= at {
+                    by_file.each.resize_with(at + 1, Imports::default);
+                }
+                match by_file.each.get_mut(at) {
+                    Some(imports) => imports,
+                    None => &mut by_file.written,
+                }
+            }
+            fennec_check::Place::Std | fennec_check::Place::Written => &mut by_file.written,
+        };
+        add(imports, import);
+    }
+    by_file
 }
 
 /// What a group of modules import, all together.
 pub(super) fn of_library(modules: &[Module]) -> Imports {
     let mut imports = Imports::default();
     for item in modules.iter().flat_map(|module| &module.items) {
-        let Item::Import(import) = item else { continue };
-        if import.module.first().map(String::as_str) != Some("std") {
-            continue;
-        }
-        let path = import.module.join(".");
-        let last = import.module.last().cloned().unwrap_or_default();
-        if import.module.len() == 1 {
-            for (name, bound) in import.bound() {
-                imports.modules.insert(bound.to_owned(), name.to_owned());
-            }
-        } else if import.names.is_empty() {
-            imports.modules.insert(import.alias.clone().unwrap_or(path), last);
-        } else {
-            for (name, bound) in import.bound() {
-                imports.names.insert(bound.to_owned(), (last.clone(), name.to_owned()));
-            }
+        if let Item::Import(import) = item {
+            add(&mut imports, import);
         }
     }
     imports
+}
+
+/// The names an import from the standard library binds, put among `imports`.
+fn add(imports: &mut Imports, import: &Import) {
+    if import.module.first().map(String::as_str) != Some("std") {
+        return;
+    }
+    let path = import.module.join(".");
+    let last = import.module.last().cloned().unwrap_or_default();
+    if import.module.len() == 1 {
+        for (name, bound) in import.bound() {
+            imports.modules.insert(bound.to_owned(), name.to_owned());
+        }
+    } else if import.names.is_empty() {
+        imports.modules.insert(import.alias.clone().unwrap_or(path), last);
+    } else {
+        for (name, bound) in import.bound() {
+            imports.names.insert(bound.to_owned(), (last.clone(), name.to_owned()));
+        }
+    }
 }
 
 impl Lowering<'_> {
@@ -56,19 +100,22 @@ impl Lowering<'_> {
             path.push_str(part);
             Some(path.clone())
         });
-        let imports = if in_library.into_iter().any(|path| self.context.library.contains(path.as_str())) {
-            &self.context.library_imports
-        } else {
-            &self.context.imports
-        };
+        let seen: Vec<&Imports> =
+            if in_library.into_iter().any(|path| self.context.library.contains(path.as_str())) {
+                vec![&self.context.library_imports]
+            } else {
+                self.context.imports.at(expr.span).collect()
+            };
         let (module, name) = match &expr.kind {
-            ExprKind::Name(bound) if self.lookup(bound).is_none() => imports.names.get(bound)?.clone(),
+            ExprKind::Name(bound) if self.lookup(bound).is_none() => {
+                seen.iter().find_map(|imports| imports.names.get(bound))?.clone()
+            }
             ExprKind::Attr { object, name, optional: false } => {
                 let alias = fennec_syntax::dotted(object)?;
                 if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
                     return None;
                 }
-                (imports.modules.get(&alias)?.clone(), name.clone())
+                (seen.iter().find_map(|imports| imports.modules.get(&alias))?.clone(), name.clone())
             }
             _ => return None,
         };

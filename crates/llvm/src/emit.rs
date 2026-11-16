@@ -694,6 +694,7 @@ impl<'p> Module<'_, 'p> {
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
             places_out: HashMap::new(),
+            out_of_dicts: BTreeSet::new(),
             at: (usize::MAX, usize::MAX),
             check_kind: None,
             inside_items: Vec::new(),
@@ -724,8 +725,18 @@ impl<'p> Module<'_, 'p> {
         // locks back and lets go of what the function owns, as a return does.
         let owns_any =
             (0..emit.kinds.len()).any(|at| emit.owns(LocalId(at)) || emit.owns_inline(LocalId(at)));
-        let leave_after_crash = ((!emit.on_crash.is_empty() || owns_any) && emit.failed != "unreachable")
-            .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
+        // So does one that may be left while a value is out of a dict or a list, or a place is
+        // out for a call, owning nothing or not: it goes back first, for whatever holds it to find
+        // it whole.
+        let left_out = emit.values_left_out();
+        let out_for_calls = function
+            .places
+            .iter()
+            .any(|place| emit.kind_of(place.value).is_ok_and(|kind| emit.holds_a_block(kind)));
+        let leave_after_crash =
+            ((!emit.on_crash.is_empty() || owns_any || !left_out.is_empty() || out_for_calls)
+                && emit.failed != "unreachable")
+                .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
         emit.leave_after_crash = leave_after_crash;
         // A failure can let go of what's short-lived before `prop` when `prop` doesn't first put
         // back or roll back what's in a local's blocks. Locals whose blocks it does put things in,
@@ -735,6 +746,8 @@ impl<'p> Module<'_, 'p> {
         for place in &function.places {
             untracked.extend([place.root.0, place.value.0]);
         }
+        // What a value may be out of when a crash leaves is let go of only after it's back.
+        untracked.extend(left_out);
         emit.dying = emit.last_reads(&untracked);
         emit.back_edges = back_edges(function);
         emit.holding = holding(&emit, &untracked, emit.split);
@@ -849,6 +862,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// For each place taken out to change, the stack slot saying where it goes back while it's out.
     pub(crate) places_out: HashMap<usize, String>,
+    /// Those of them that are values out of a dict or a list, which go back after the others: a
+    /// field out of such a value goes back into it first.
+    pub(crate) out_of_dicts: BTreeSet<usize>,
     /// The instruction being written: its block, and its place in it.
     pub(crate) at: (usize, usize),
     /// The handles of the `lock ... as ref` blocks whose changes are saved, for a crash to put

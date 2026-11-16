@@ -1,0 +1,36 @@
+went 0 0 84: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+crashed 0 7 84: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 0 1 170: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 1 0 176: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+crashed 1 7 176: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 1 1 184: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 2 0 226: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+crashed 2 7 226: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 2 1 268: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 3 0 310: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+crashed 3 7 310: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 3 1 352: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 4 0 394: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+crashed 4 7 394: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 4 1 436: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 5 0 478: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+crashed 5 7 478: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 5 1 520: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 6 0 562: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+crashed 6 7 562: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 6 1 604: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 7 0 646: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+crashed 7 7 646: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 7 1 688: 1 0 first, a text long enough for a block of its own | 1 0 first, a text long enough for a block of its own
+went 8 0 688: 41 1 added 0 in turn 39, a text long enough for a block | 1 0 first, a text long enough for a block of its own
+crashed 8 7 688: 41 1 added 0 in turn 39, a text long enough for a block | 1 0 first, a text long enough for a block of its own
+went 8 1 688: 81 3 added 1 in turn 39, a text long enough for a block | 1 0 first, a text long enough for a block of its own
+went 9 0 688: 121 4 by hand 0 in turn 39, a text long enough for a block | 1 0 first, a text long enough for a block of its own
+crashed 9 7 688: 121 4 by hand 0 in turn 39, a text long enough for a block | 1 0 first, a text long enough for a block of its own
+went 9 1 688: 161 6 by hand 1 in turn 39, a text long enough for a block | 1 0 first, a text long enough for a block of its own
+went 10 0 688: 161 6 by hand 1 in turn 39, a text long enough for a block | 41 1 added 0 in turn 39, a text long enough for a block
+crashed 10 7 688: 161 6 by hand 1 in turn 39, a text long enough for a block | 41 1 added 0 in turn 39, a text long enough for a block
+went 10 1 688: 161 6 by hand 1 in turn 39, a text long enough for a block | 81 3 added 1 in turn 39, a text long enough for a block
+went 11 0 688: 161 6 by hand 1 in turn 39, a text long enough for a block | 121 4 by hand 0 in turn 39, a text long enough for a block
+crashed 11 7 688: 161 6 by hand 1 in turn 39, a text long enough for a block | 121 4 by hand 0 in turn 39, a text long enough for a block
+went 11 1 688: 161 6 by hand 1 in turn 39, a text long enough for a block | 161 6 by hand 1 in turn 39, a text long enough for a block

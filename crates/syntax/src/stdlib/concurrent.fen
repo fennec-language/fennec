@@ -444,12 +444,18 @@ def run_pool[T: Pooled, E: Explained](
         run_pool[T, E](number + 1, notes, sends, size, open, first)?
 
 ## Hands each borrower a keeper, first come first served: one whose value is open if there's one,
-## or else one that'll open its value, or else the next that comes free.
+## or else one that'll open its value, or else the next that comes free. Keeper 0 starts with the
+## value the pool opened, and counts as open before its hello comes: the first borrower to ask
+## then waits for it, rather than going to a keeper that would open another, as which of the
+## keepers' hellos and the first borrower's ask comes first isn't promised.
 def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
     mut keepers: dict[int, Sender[KeeperOrder[T]]] = {}
     mut open_free: list[int] = []
     mut empty_free: list[int] = []
     mut waiting: list[Sender[Lent[T]]] = []
+    # Who waits for keeper 0's open value until its hello comes, and whether it's still to come.
+    mut for_first: Sender[Lent[T]]? = None
+    mut first_to_come = True
     mut stopping = False
     for note in notes:
         if note.kind == STOP:
@@ -458,6 +464,8 @@ def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
             reply = note.reply else continue
             if len(open_free) > 0:
                 told(keepers[open_free.pop(0)], KeeperOrder[T](reply=reply))
+            elif first_to_come and for_first is None:
+                for_first = reply
             elif len(empty_free) > 0:
                 told(keepers[empty_free.pop(0)], KeeperOrder[T](reply=reply))
             else:
@@ -470,14 +478,27 @@ def dispatch[T](notes: Inbox[PoolNote[T]], size: int):
             for at, wanted in enumerate(waiting):
                 if wanted._channel == gone._channel:
                     queued = at
-            if queued >= 0:
+            if for_first is not None and for_first._channel == gone._channel:
+                for_first = None
+                told(gone, Lent[T](value=None, back=None, failure="", dropped=True))
+            elif queued >= 0:
                 _ = waiting.pop(queued)
                 told(gone, Lent[T](value=None, back=None, failure="", dropped=True))
         else:
             keeper = note.keeper
             if note.kind == HELLO:
                 keepers[keeper] = note.orders else continue
-            if len(waiting) > 0 and not stopping:
+            # Keeper 0's hello: the borrower waiting for its open value gets it.
+            mut lent_first = False
+            if note.kind == HELLO and keeper == 0:
+                first_to_come = False
+                if for_first is not None:
+                    told(keepers[keeper], KeeperOrder[T](reply=for_first))
+                    for_first = None
+                    lent_first = True
+            if lent_first:
+                pass
+            elif len(waiting) > 0 and not stopping:
                 told(keepers[keeper], KeeperOrder[T](reply=waiting.pop(0)))
             elif note.kind == EMPTY or (note.kind == HELLO and keeper != 0):
                 empty_free.append(keeper)

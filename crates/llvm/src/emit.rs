@@ -1183,6 +1183,11 @@ impl Emit<'_, '_, '_> {
                 }
                 self.forget_entries(&inst.kind);
                 self.take_waiting_places(&inst.kind, inst.span)?;
+                // A field that waited for this append is taken out now, with what's appended
+                // already worked out.
+                if let Some((field_local, item, field)) = self.known.path_due(self.at).cloned() {
+                    self.get_field(field_local, &Operand::Local(item), &field)?;
+                }
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
                     for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
                         if let Some(Operand::Local(given)) = args.get(param.0) {

@@ -445,6 +445,11 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn get_field(&mut self, dest: LocalId, object: &Operand, field: &str) -> Result<(), String> {
+        // A field that's taken out only when its append comes isn't read where it's written: the
+        // item read just before has failed if it isn't there, and nothing is out meanwhile.
+        if self.known.path_waits(dest) && self.known.path_due(self.at).is_none_or(|(due, ..)| *due != dest) {
+            return Ok(());
+        }
         if let Some((root, list_path, index)) = self.known.path_home(dest).cloned() {
             let held = self.place_kind(root, &list_path)?;
             if self.is_id_map(&held) {

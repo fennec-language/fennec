@@ -538,11 +538,11 @@ impl Emit<'_, '_, '_> {
         gone
     }
 
-    /// The builtins `parallel` is lowered to.
+    /// The builtins `parallel` is lowered to, and whether the IR says one changes what it's given.
     pub(crate) fn parallel_builtin(
         &mut self,
         dest: Option<LocalId>,
-        name: &str,
+        (name, changes): (&str, bool),
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
@@ -551,7 +551,7 @@ impl Emit<'_, '_, '_> {
                 self.unshared(*list);
                 Ok(())
             }
-            ("parallel.for", [list, range]) => self.parallel_for(list, range),
+            ("parallel.for", [list, range]) => self.parallel_for(list, range, changes),
             ("parallel.serve", [server, task]) => self.parallel_serve(dest, server, task),
             // A comprehension whose items can fail made no list when one failed with a value.
             ("parallel.map_failed", [list]) => {
@@ -765,9 +765,12 @@ impl Emit<'_, '_, '_> {
     }
 
     /// `parallel.for(list, range)`: each range of the list's positions, as the runtime splits
-    /// them.
-    fn parallel_for(&mut self, list: &Operand, range: &Operand) -> Result<(), String> {
-        let call = format!("fennec_parallel_for{}", self.weighed(range));
+    /// them. A `for ref` loop writes each item back where it is, so it calls the runtime's
+    /// `_in_place` entries: a plain `for` gives nothing back through its list, and the runtime may
+    /// hand its ranges a copy of it, which a `for ref` can't be given.
+    fn parallel_for(&mut self, list: &Operand, range: &Operand, in_place: bool) -> Result<(), String> {
+        let call =
+            format!("fennec_parallel_for{}{}", if in_place { "_in_place" } else { "" }, self.weighed(range));
         let (list, env) = self.list_and_env(list, range)?;
         let shim = self.shim(Shape::Each);
         self.declare(&format!("declare i64 @{call}(ptr, ptr, i64) nounwind"));
@@ -1110,7 +1113,8 @@ def main(stdout: Stdout):
     stdout.print(doubled, sum(x for x in parallel(xs)))
 ";
         let text = texts(computes)?;
-        for call in ["fennec_parallel_for", "fennec_parallel_map", "fennec_parallel_reduce"] {
+        // The loop is a `for ref`, which writes its items back where they are.
+        for call in ["fennec_parallel_for_in_place", "fennec_parallel_map", "fennec_parallel_reduce"] {
             assert!(text.contains(&format!("@{call}(ptr")), "{call}: {text}");
             assert!(!text.contains(&format!("@{call}_waiting")), "{call}: {text}");
         }
@@ -1130,7 +1134,7 @@ def main(stdout: Stdout, clock: Clock):
     stdout.print(rested, sum(rest(clock, x) for x in parallel(xs)))
 ";
         let text = texts(waits)?;
-        for call in ["fennec_parallel_for", "fennec_parallel_map", "fennec_parallel_reduce"] {
+        for call in ["fennec_parallel_for_in_place", "fennec_parallel_map", "fennec_parallel_reduce"] {
             assert!(text.contains(&format!("@{call}_waiting(ptr")), "{call}: {text}");
             assert!(!text.contains(&format!("@{call}(ptr")), "{call}: {text}");
         }
@@ -1168,7 +1172,10 @@ def main(stdout: Stdout):
     stdout.print(xs)
 ";
         let text = texts(source)?;
-        assert!(text.contains("@fennec_parallel_for(ptr"), "{text}");
+        // It calls the runtime's entry for a loop that writes its items back, never the plain one,
+        // whose ranges the runtime may hand a copy of the list.
+        assert!(text.contains("@fennec_parallel_for_in_place(ptr"), "{text}");
+        assert!(!text.contains("@fennec_parallel_for(ptr"), "{text}");
         // The range writes in place: no copy of the list it holds, which would lose the change.
         assert!(!text.contains("fennec_list_copy"), "{text}");
         Ok(())

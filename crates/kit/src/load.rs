@@ -750,7 +750,7 @@ impl<'a> Loader<'a> {
             .collect();
         let kit_src = manifest.as_ref().map(|_| (self.own.src.clone(), self.own.shown_src.clone()));
         Ok(Program {
-            module: Module { items, holds: self.holds, ..Default::default() },
+            module: Module { items, holds: self.holds, files: self.sources.spans(), ..Default::default() },
             sources: self.sources,
             manifest,
             embedded: self.embedded,

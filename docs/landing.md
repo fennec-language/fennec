@@ -32,6 +32,21 @@ It does the three steps below in order, and stops at the first that fails, with 
 Say in the text that the gate passed, and what you measured. Don't open a pull request by joining these
 steps by hand in one command: a failed merge or gate goes unnoticed that way, and has more than once.
 
+## Branches and worktrees
+
+- **A branch pushed only for a CI run**, such as one to dispatch a workflow from before it's on
+  `main`, is deleted as soon as the run finishes: `git push origin --delete <branch>`.
+- **Every Monday**, `sweep-branches.yml` deletes the branches on GitHub with no open pull request
+  and no commit in seven days. It never touches `main`, `staging`, `bench-history`, Dependabot's
+  branches or the merge queue's. Its summary lists each branch it deleted with its last commit, so
+  one taken by mistake can be pushed again. The morning's `nightly-report.sh` warns when there are
+  more than 25 branches.
+- **On this Mac**, `.github/scripts/sweep-worktrees.sh` removes the worktrees under
+  `.claude/worktrees` whose branch has landed, that nothing has used for six hours, that nothing is
+  running in, and that have nothing uncommitted. It keeps their branches. It never touches a
+  `-keep`, `-base` or `-gate` worktree, or a session's own. Run it weekly, or with `--dry-run` to see
+  what it would do.
+
 ## The Linux VM
 
 The gate's Linux check runs in a Linux VM of Fennec's own: the colima profile `fennec`, whose Docker context is `colima-fennec`. Nothing in Fennec uses Docker's default context, which on a shared Mac can be another project's VM.

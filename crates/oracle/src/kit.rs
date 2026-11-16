@@ -44,7 +44,7 @@ pub(crate) fn kit(dir: &Path, shown: &str) -> Result<Merged, Refused> {
 
 /// Loads a single file, shown as `shown`, and the modules beside it that it imports.
 pub(crate) fn file(path: &Path, shown: &str) -> Result<Merged, Refused> {
-    let src = path.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let src = folder_of(path);
     let shown_src = match Path::new(shown).parent().map(|folder| folder.to_string_lossy().replace('\\', "/"))
     {
         Some(folder) if !folder.is_empty() && folder != "." => format!("{}/", folder.trim_end_matches('/')),
@@ -209,11 +209,20 @@ impl Loader {
     }
 }
 
+/// The folder a file is in: `.` for a bare name, as `tiny.fen` given from its own folder, whose
+/// parent is the empty path, which can't be read or made canonical.
+fn folder_of(file: &Path) -> PathBuf {
+    match file.parent() {
+        Some(folder) if !folder.as_os_str().is_empty() => folder.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
 /// Puts each `embed_file("path")` a file calls in as the bytes it gives, as the compiler reads
 /// them as it builds the program: the file at `path` from the folder of the file that calls it,
 /// which can't be outside `root`. `embed_folder` isn't modeled.
 fn embed_files(module: &mut Module, file: &Path, root: &Path) -> Result<(), Refused> {
-    let folder = file.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let folder = folder_of(file);
     let root = root.canonicalize().map_err(|err| Refused::Invalid(format!("the kit's folder: {err}")))?;
     let mut refused = None;
     visit::exprs_mut(module, &mut |expr| {
@@ -516,4 +525,19 @@ fn types_in_function(def: &mut FnDef, change: &mut dyn FnMut(&mut TypeExpr)) {
     def.params.iter_mut().filter_map(|param| param.ty.as_mut()).for_each(&mut *change);
     def.ret.iter_mut().chain(def.fails.iter_mut()).for_each(&mut *change);
     visit::written_types_in(&mut def.body, change);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::folder_of;
+
+    #[test]
+    fn a_file_given_by_its_bare_name_is_in_the_folder_it_runs_from() {
+        assert_eq!(folder_of(Path::new("tiny.fen")), PathBuf::from("."));
+        assert_eq!(folder_of(Path::new("./tiny.fen")), PathBuf::from("."));
+        assert_eq!(folder_of(Path::new("examples/tiny.fen")), PathBuf::from("examples"));
+        assert_eq!(folder_of(Path::new("/work/tiny.fen")), PathBuf::from("/work"));
+    }
 }

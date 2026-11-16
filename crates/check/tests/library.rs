@@ -1,7 +1,7 @@
 //! The standard library modules whose functions exist only once imported: `std.json`,
 //! `std.toml` and `std.path`.
 
-use crate::problems;
+use crate::{helps, problems};
 
 /// The problems in statements, in a `main` that can fail, after some imports.
 fn with_imports(imports: &str, body: &str) -> Vec<String> {
@@ -80,7 +80,7 @@ fn no_name_std_keeps_is_reached_from_a_program() {
     );
     let body: String = names.iter().flat_map(|name| ["    _ = ", name.as_str(), "\n"]).collect();
     let problems = crate::problems_as_written(&format!("def main():\n{body}"));
-    let helps = crate::helps(&format!("def main():\n{body}"));
+    let helps = helps(&format!("def main():\n{body}"));
     assert_eq!(problems.len(), names.len(), "{problems:#?}");
     for ((name, problem), help) in names.iter().zip(&problems).zip(&helps) {
         let private = problem.starts_with(&format!("`{name}` is private to "));
@@ -391,7 +391,7 @@ fn an_unknown_module_in_an_import_is_reported_once() {
         ["there's no module called `std.compres` @ from std import compres, json, time"]
     );
     assert_eq!(
-        crate::helps(
+        helps(
             "from std import compres, json\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(1))\n"
         ),
         ["did you mean `std.compress`?"]
@@ -509,6 +509,46 @@ fn a_channel_opens_through_its_generic_source() {
     );
     assert_eq!(made.len(), 1, "{made:?}");
     assert!(made[0].contains("`_channel`"), "{made:?}");
+}
+
+/// A channel to `.Every` has no one next message to take, since each listener has a place of its
+/// own in what's kept, so `receive` and `receive_within` on the name it's lent as are refused where
+/// `to=.Every` is written out: in the block, in a function written inside it, and in an arrow.
+/// Looping over it, listening, its inbox, sending, a work queue's receive, and a `to` that isn't
+/// written out are all fine, and so is the channel handed to a function, which the run-time stop
+/// catches.
+#[test]
+fn a_plain_receive_from_a_channel_to_every_listener_is_refused() {
+    let imports = "from std import concurrent\nfrom std.concurrent import Channel, Closed, Delivery, Timeout, channel\n\n";
+    let refused = "def main(stdout: Stdout) fails Closed | Timeout:\n    \
+        with channel[int](size=8, to=.Every) as hits:\n        hits.send(1)?\n        \
+        stdout.print(hits.receive() else -1, hits.receive_within(1ms)? else -1)\n        \
+        def later() -> int:\n            return hits.receive() else -1\n        stdout.print(later())\n    \
+        with concurrent.channel[int](size=8, to=.Every) as news, channel[int](size=8) as jobs:\n        \
+        heard = () => news.receive() else -1\n        stdout.print(heard(), jobs.receive() else -1)\n";
+    let said = |name: &str, at: &str| {
+        format!("`{name}` is a channel to every listener, so it has no one next message to take @ {at}")
+    };
+    assert_eq!(
+        problems(&format!("{imports}{refused}")),
+        [
+            said("hits", "hits.receive()"),
+            said("hits", "hits.receive_within(1ms)"),
+            said("hits", "hits.receive()"),
+            said("news", "news.receive()"),
+        ]
+    );
+    let help =
+        "loop over it with `for message in hits`, or take an inbox with `hits.inbox()` and receive from that";
+    assert_eq!(helps(&format!("{imports}{refused}")).first().map(String::as_str), Some(help));
+    let fine = "def take(queue: Channel[int]) -> int:\n    return queue.receive() else -1\n\n\
+        def main(stdout: Stdout) fails Closed | Timeout:\n    \
+        with channel[int](size=8, to=.Every) as hits:\n        box = hits.inbox()\n        hits.send(1)?\n        \
+        stdout.print(box.receive() else -1, box.receive_within(1ms)? else -1, take(hits))\n        \
+        for hit in hits:\n            stdout.print(hit)\n        for hit in hits.listen():\n            stdout.print(hit)\n    \
+        with channel[int](size=8) as jobs:\n        stdout.print(jobs.receive() else -1, jobs.receive_within(1ms)? else -1)\n    \
+        kind: Delivery? = None\n    with channel[int](size=8, to=kind) as plain:\n        stdout.print(plain.receive() else -1)\n";
+    assert_eq!(problems(&format!("{imports}{fine}")), Vec::<String>::new());
 }
 
 /// A static method called through a generic type with its type written: the type's parameters

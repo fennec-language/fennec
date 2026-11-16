@@ -1,0 +1,8 @@
+went 0 0 43: 1 first, a text long enough for a block of its own
+crashed 0 7 43: 1 first, a text long enough for a block of its own
+went 0 1 86: 1 first, a text long enough for a block of its own
+went 1 0 87: 42 limit 10 after 41 items, long enough for a block of its own
+crashed 1 7 87: 42 limit 10 after 41 items, long enough for a block of its own
+went 1 1 88: 83 limit 20 after 82 items, long enough for a block of its own
+a key that isn't there crashed before the argument was made
+88: 83 limit 20 after 82 items, long enough for a block of its own

@@ -1004,22 +1004,25 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn list_made_after_a_look(&mut self, address: usize) {
-        if self.made_listing.scopes == 0 {
-            if self.made_listing.let_go {
-                return;
-            }
-            let listed = self.made.len();
-            let as_a_look = self.blocks.places_to_look_through() / PLACES_A_LISTED_BLOCK;
-            if listed >= MADE_LISTED.max(as_a_look) {
-                self.made = Vec::new();
-                self.made_listing.let_go = true;
-                self.made_listing.look_at = 0;
-                return;
-            }
+        if self.made_listing.scopes == 0 && (self.made_listing.let_go || self.let_go_if_long()) {
+            return;
         }
         self.made.push(u64::try_from(address).unwrap_or(0));
         // A list that's been let go, kept again for a range, is looked at with every block.
         self.made_listing.look_at = if self.made_listing.let_go { 0 } else { self.made.len() + MADE_LISTED };
+    }
+
+    /// Lets the list go if it's as long as a look through the table is, with no range or chunk
+    /// running that marked it. Says whether it did.
+    fn let_go_if_long(&mut self) -> bool {
+        let as_a_look = self.blocks.places_to_look_through() / PLACES_A_LISTED_BLOCK;
+        if self.made.len() < MADE_LISTED.max(as_a_look) {
+            return false;
+        }
+        self.made = Vec::new();
+        self.made_listing.let_go = true;
+        self.made_listing.look_at = 0;
+        true
     }
 
     /// Whether the task running here has let its list of what it made go.
@@ -1046,9 +1049,31 @@ impl Heap {
         self.made.len()
     }
 
-    /// A range or chunk that marked the list has ended.
-    pub(crate) fn made_scope_ends(&mut self) {
+    /// A range or chunk that marked the list has ended. With `kept`, it ran on the thread that
+    /// called it, so what it made stays here and none of it is handed over by where the mark was.
+    ///
+    /// Then, with no other running here, the list is looked at as a block made would have it
+    /// looked at, since nothing else will. A look that comes while a range runs can't let the
+    /// list go, and for a task whose blocks are nearly all made in ranges it runs itself, every
+    /// look did. And a list let go already is kept again for each range, for one on another
+    /// thread to hand over: one that stays here has its blocks found by the task's mark, as the
+    /// rest are, so they're dropped from the list. Left in it, they stayed for the task's life,
+    /// a word for every block its ranges ever made.
+    pub(crate) fn made_scope_ends(&mut self, kept: bool) {
         self.made_listing.scopes = self.made_listing.scopes.saturating_sub(1);
+        if !kept || self.made_listing.scopes != 0 {
+            return;
+        }
+        if !self.made_listing.let_go {
+            // Short lists are the common case, and cost a comparison here.
+            if self.made.len() >= MADE_LISTED {
+                self.let_go_if_long();
+            }
+        } else if self.made.capacity() > MADE_LISTED {
+            self.made = Vec::new();
+        } else {
+            self.made.clear();
+        }
     }
 
     /// Puts `made` in place of the blocks this heap's made since it last handed them over, and

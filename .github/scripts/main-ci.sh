@@ -14,8 +14,11 @@
 # it's "since at least". It needs `gh`, signed in. `nightly-report.sh` runs it.
 set -euo pipefail
 repository=${1:-fennec-language/fennec}
+# The newest 31 that finished, picked in jq: cut off with `head`, `gh` was sometimes still writing,
+# died of the broken pipe, and took this script with it, printing nothing.
 runs=$(gh run list --repo "$repository" --workflow CI --branch main --limit 200 \
-  --json databaseId,conclusion,headSha --jq '.[] | select(.conclusion != "" and .conclusion != "cancelled") | "\(.databaseId) \(.headSha[0:9])"' | head -n 31)
+  --json databaseId,conclusion,headSha \
+  --jq '[.[] | select(.conclusion != "" and .conclusion != "cancelled")] | .[:31][] | "\(.databaseId) \(.headSha[0:9])"')
 if [ -z "$runs" ]; then
   echo "main CI: no finished run on main"
   exit 0

@@ -1,7 +1,6 @@
 //! The values a program works with while the oracle runs it: plain Rust values, each one its own.
 //! Every assignment, argument and return clones one, so a name always holds its own value.
 
-use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
@@ -23,6 +22,8 @@ pub(crate) enum Value {
     Sized(Num, i128),
     /// A `float`, which is an `f64`.
     Float(f64),
+    /// An `f32`, rounded to 32 bits after each operation, as `docs/language.md` says.
+    F32(f32),
     Str(String),
     /// `bytes`: a byte string, printed as `bytes([104, 105])`.
     Bytes(Vec<u8>),
@@ -108,6 +109,10 @@ pub(crate) enum Cap {
     /// The network, which `main` may take, and any use of which is refused: what a program prints
     /// when it never reaches the network, as with no arguments, is still checked.
     Net,
+    /// JSON's `Serializer`, as a type's own `def serialize` is given it by `json.dumps`.
+    Saver,
+    /// JSON's `Deserializer`, as a type's own `def deserialize` is given it by `json.loads`.
+    Loader,
 }
 
 /// What an `Fs` reaches: everything, as the one `main` is given does, or less, once `only` or
@@ -139,6 +144,7 @@ impl Value {
             Value::Int(_) => "int",
             Value::Sized(..) => "sized number",
             Value::Float(_) => "float",
+            Value::F32(_) => "f32",
             Value::Str(_) => "str",
             Value::Bytes(_) => "bytes",
             Value::List(_) => "list",
@@ -167,7 +173,8 @@ impl Value {
 #[derive(Clone, Debug)]
 pub(crate) struct Channel {
     pub(crate) sends: bool,
-    pub(crate) queue: Arc<Mutex<VecDeque<Value>>>,
+    /// The channel it is, in `interp/actors.rs`.
+    pub(crate) number: i64,
 }
 
 /// What a `shared` value holds, the one cell every copy of it reaches, and which one it is, so
@@ -281,6 +288,7 @@ pub(crate) fn same(left: &Value, right: &Value) -> bool {
         (Value::Int(a), Value::Int(b)) => a == b,
         (Value::Sized(x, a), Value::Sized(y, b)) => x == y && a == b,
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+        (Value::F32(a), Value::F32(b)) => a.to_bits() == b.to_bits(),
         (Value::Str(a), Value::Str(b)) | (Value::Unknown(a), Value::Unknown(b)) => a == b,
         (Value::List(a), Value::List(b))
         | (Value::Tuple(a), Value::Tuple(b))
@@ -308,7 +316,7 @@ pub(crate) fn same(left: &Value, right: &Value) -> bool {
         }
         (Value::Id(a), Value::Id(b)) => a == b,
         (Value::Shared(a), Value::Shared(b)) => a.id == b.id,
-        (Value::Channel(a), Value::Channel(b)) => a.sends == b.sends && Arc::ptr_eq(&a.queue, &b.queue),
+        (Value::Channel(a), Value::Channel(b)) => a.sends == b.sends && a.number == b.number,
         (Value::Stream(a), Value::Stream(b)) => Arc::ptr_eq(&a.source, &b.source),
         _ => false,
     }

@@ -25,6 +25,7 @@ mod constants;
 mod crossing;
 mod effects;
 mod enumerate_lowering;
+mod every;
 mod except;
 mod except_fix;
 mod expect;
@@ -172,6 +173,14 @@ fn checked_typed_in(module: &Module, scope: checker::Scope) -> Result<Checked, V
     }
     fennec_syntax::rename::rename_types(&mut renamed, &names);
     checker::Checker::new(&renamed).run(scope).map_err(|problems| as_written(problems, &names))
+}
+
+/// The types a program declares with the same name as a standard library type, each with the
+/// name it's checked under, as `own_type_names` gives them: for what models a run with the
+/// checker's types, which name them so.
+#[must_use]
+pub fn renamed_own_types(module: &Module) -> BTreeMap<String, String> {
+    own_type_names(module)
 }
 
 /// The types a program declares with the same name as a standard library type, each with the

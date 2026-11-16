@@ -418,7 +418,7 @@ impl FnCx<'_> {
             }
             _ => &[],
         };
-        let plain = self.builtin_args(name, args, named, &method.receives, span);
+        let plain = self.builtin_args(name, args, named, (&method.params, &method.receives), span);
         self.no_secret_printed(ty, name, &plain);
         if *ty == Type::named("Process") && name == "run" {
             self.process_run_given(&plain, span);
@@ -492,13 +492,14 @@ impl FnCx<'_> {
         name: &str,
         args: &[Arg],
         named: &[&str],
-        receives: &[Type],
+        (params, receives): (&[Type], &[Type]),
         span: Span,
     ) -> Vec<(Type, Span)> {
         let mut plain = Vec::new();
         let mut start = None;
+        let mut position = 0;
         for arg in args {
-            let ty = self.arg_value(arg, receives);
+            let ty = self.arg_as(arg, receives, cased_param(arg, params, &mut position));
             match arg.name.as_deref() {
                 Some("key") if !named.contains(&"key") => {
                     let message = format!("`{name}` doesn't take `key`");
@@ -639,7 +640,7 @@ impl FnCx<'_> {
             (_, Some((_, function))) => function.named,
             _ => &[],
         };
-        let plain = self.builtin_args(name, args, named, std::slice::from_ref(&item), span);
+        let plain = self.builtin_args(name, args, named, (&[], std::slice::from_ref(&item)), span);
         let (low, high) = match stdlib::function(name) {
             Some((_, function)) => function.arity,
             None => BUILTINS
@@ -896,7 +897,7 @@ impl FnCx<'_> {
     /// `bytes.fromhex(text)`: the bytes that hex digits spell, which fails for text that isn't
     /// pairs of them.
     pub(crate) fn bytes_from_hex(&mut self, args: &[Arg], span: Span) -> Type {
-        let plain = self.builtin_args("fromhex", args, &[], &[], span);
+        let plain = self.builtin_args("fromhex", args, &[], (&[], &[]), span);
         match plain.as_slice() {
             [(text, at)] => {
                 if !self.checker.fits(&Type::Str, text) {
@@ -910,7 +911,7 @@ impl FnCx<'_> {
 
     /// `str.from_code(n)`: the character with a code, which fails for a number that isn't one.
     pub(crate) fn char_from_code(&mut self, args: &[Arg], span: Span) -> Type {
-        let plain = self.builtin_args("from_code", args, &[], &[], span);
+        let plain = self.builtin_args("from_code", args, &[], (&[], &[]), span);
         match plain.as_slice() {
             [(code, at)] => {
                 if !self.checker.fits(&Type::Int, code) {
@@ -1008,4 +1009,16 @@ fn named_help(given: &str, options: &[&str], otherwise: &str) -> String {
     }
     let shown: Vec<String> = options.iter().map(|option| format!("`{option}=`")).collect();
     format!("{otherwise}{}", shown.join(", "))
+}
+
+/// The parameter's type a builtin method's argument is given, for a leading-dot case or a
+/// collection written with one, which is a case of the enum that type says, as `.Broken("bulb")`
+/// is for a `list[Light]`'s `append`. Counts `position` along the positional arguments.
+fn cased_param<'p>(arg: &Arg, params: &'p [Type], position: &mut usize) -> Option<&'p Type> {
+    if arg.name.is_some() {
+        return None;
+    }
+    *position += 1;
+    let cased = crate::expect::leading_dot(&arg.value) || crate::expect::written_with_cases(&arg.value);
+    params.get(*position - 1).filter(|_| cased)
 }

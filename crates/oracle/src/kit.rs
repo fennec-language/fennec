@@ -35,6 +35,11 @@ pub(crate) fn kit(dir: &Path, shown: &str) -> Result<Merged, Refused> {
     if depends_on_kits(&manifest) {
         return Err(Refused::Unsupported("a kit with dependencies".to_owned()));
     }
+    // The oracle's `std.pack` has no lock: a kit whose `pack.lock` would leave layouts out of what
+    // it writes is refused.
+    if dir.join("pack.lock").is_file() {
+        return Err(Refused::Unsupported("a kit with a `pack.lock`".to_owned()));
+    }
     let shown_src = format!("{}/src/", shown.trim_end_matches('/'));
     let mut loader = Loader::new(dir.join("src"), dir.to_path_buf(), shown_src);
     let (real, shown_main) = loader.path(&["main".to_owned()]);

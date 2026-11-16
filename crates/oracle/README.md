@@ -26,7 +26,11 @@ Where a standard library module is written in Fennec, the oracle can run its own
 beneath it. These are run this way (`RUN_FROM_SOURCE` in `src/load.rs`): `std.math`,
 `std.collections`, `std.time`, `std.string`, `std.env`, `std.base64`, `std.random`, `std.uuid`,
 `std.cli`, `std.crypto`, `std.csv`, `std.html`, `std.log`, `std.url`, `std.concurrent`,
-`std.postgres`, `std.re`, `std.template`, `std.sql`, `std.io`, `std.toml`, `std.json` and `std.net`.
+`std.postgres`, `std.re`, `std.template`, `std.sql`, `std.io`, `std.toml`, `std.json`, `std.net`
+and `std.pack`. What `std.pack` writes beside a value, a type's shape, its FNV-1a hash and its layout,
+is worked out in `interp/packing.rs` from `docs/pack.md`, not from the compiler's code, and held to
+the doc's test vectors. A shape the doc doesn't pin yet, of a type that saves itself its own way, is
+refused, and so is a kit with a `pack.lock`.
 `std.net`'s requests, responses and router run as its Fennec code, so a program that answers
 requests in-process is checked; a `Net` that reaches the network is still refused. Each is loaded
 when the program imports from it, when a module loaded so imports from it, or, for `std.env` and

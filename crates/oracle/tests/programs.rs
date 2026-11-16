@@ -259,6 +259,69 @@ fn a_buffer_is_held_as_the_list_it_prints_as() {
     );
 }
 
+/// `std.pack` runs from its own source, and what it writes beside a value, the shape hash and the
+/// layout, is worked out as `docs/pack.md` pins it: each of the doc's test vectors, from the same
+/// program the LLVM test builds, is what the oracle writes too.
+#[test]
+fn pack_writes_the_headers_docs_pack_md_pins() {
+    let doc = include_str!("../../../docs/pack.md");
+    let vectors = doc.split("## Test vectors").nth(1).unwrap_or_default();
+    let wanted: String = vectors
+        .lines()
+        .filter(|line| line.starts_with("| `"))
+        .map(|line| {
+            let cells: Vec<String> = line
+                .trim_matches('|')
+                .split(" | ")
+                .map(|cell| cell.trim().trim_matches('`').to_owned())
+                .collect();
+            match cells.as_slice() {
+                [_, _, hash, layout] => format!("FPK2 {hash} {}\n", layout.replace("\\|", "|")),
+                _ => unreachable!("a row of four: {line}"),
+            }
+        })
+        .collect();
+    assert!(wanted.lines().count() >= 15, "{wanted}");
+    let (printed, ended) = ran(include_str!("../../fennec/tests/fixtures/pack_vectors.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, wanted);
+}
+
+/// A value saved with `pack.dumps` loads back with `pack.loads`, and data for another type is
+/// refused by its shape hash. What it prints is what the compiled program printed.
+#[test]
+fn a_value_packed_loads_back() {
+    prints(
+        "
+        from std import pack
+
+        enum Mood:
+            Calm
+            Busy(level: int)
+
+        struct Cell:
+            name: str
+            tags: list[str]
+            mood: Mood
+
+        struct Other:
+            count: int
+
+        def main(stdout: Stdout):
+            data = pack.dumps(Cell(name='a', tags=['x', 'y'], mood=.Busy(level=3)))
+            back = pack.loads[Cell](data) except ParseError():
+                stdout.print('failed')
+                return
+            stdout.print(back.name, back.tags, back.mood)
+            other = pack.loads[Other](data) except ParseError():
+                stdout.print('refused')
+                return
+            stdout.print(other.count)
+        ",
+        "a [\"x\", \"y\"] Mood.Busy(level=3)\nrefused\n",
+    );
+}
+
 #[test]
 fn a_value_of_a_generic_type_prints_with_no_type_arguments() {
     prints(

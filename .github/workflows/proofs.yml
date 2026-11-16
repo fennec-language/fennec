@@ -15,7 +15,8 @@ name: Proofs
 # (`.github/scripts/miri.sh`). The game server and the web backend each run for an hour under
 # their own load, and what they hold has to level off (`.github/scripts/soak.sh`). A generated
 # program of 20,000 and 50,000 lines is checked, built and tested, and each step held to its time and
-# memory, and to growing no faster than the program (`fennec-bench big-codebase`). The night's
+# memory, and to growing no faster than the program (`fennec-bench big-codebase`; 100,000 and
+# 200,000 lines weekly, in `big-codebase-weekly.yml`). The night's
 # report is kept as `nightly-report`, which
 # `.github/scripts/nightly-report.sh` copies into the lanes' notes. No pull request waits on this.
 on:
@@ -266,7 +267,7 @@ jobs:
   # time and memory in `bench/big-codebase.txt`, and to growing in step with the program, not
   # faster (`fennec-bench big-codebase`).
   big-codebase:
-    name: Check, build and test a big codebase at three sizes
+    name: Check, build and test a big codebase at two sizes
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -279,17 +280,10 @@ jobs:
           rustup component add llvm-tools-preview
           .github/scripts/apt.sh time
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build fennec, its runtimes and the bench
-        run: cargo build --release --locked -p fennec -p fennec-runtime -p fennec-bench
-      # A release build puts what it uses of the runtime in the program's own unit, from this.
-      - name: Build the runtimes' bitcode, with threads and without
-        run: |
-          cargo rustc --release --locked -p fennec-runtime --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
-          cp "$(find target/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime.bc
-          cargo rustc --release --locked -p fennec-runtime --features threads --target-dir target/threads --crate-type staticlib -- --emit=llvm-bc,link -C lto=fat -C codegen-units=1
-          cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
-          cp "$(find target/threads/release/deps -name 'fennec_runtime-*.bc' -print -quit)" target/release/libfennec_runtime_threads.bc
-      # 100,000 and 200,000 lines once the checker's part of #1896 lifts its cap on copies.
+      - name: Build fennec, its runtimes, their bitcode and the bench
+        run: .github/scripts/big-codebase-build.sh
+      # 100,000 lines once the first nights say how long these two take. 200,000 is weekly, in
+      # `big-codebase-weekly.yml`.
       - name: Measure each step at each size
         run: ./target/release/fennec-bench big-codebase --lines 20000,50000 --markdown big-codebase.md
       - name: Show the numbers on the run's summary page

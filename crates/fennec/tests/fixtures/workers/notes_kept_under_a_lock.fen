@@ -1,0 +1,48 @@
+# An error with a note, kept in a `shared` value: a task adds a note to it under the lock, twice,
+# then another fails with it under the lock. Every note stays, on any number of threads (#1843).
+
+from std.concurrent import Crashed
+
+error Missing:
+    path: str
+
+struct Kept:
+    problem: Missing
+    seen: int
+
+def noted(path: str) -> Missing:
+    mut problem = Missing(path=path)
+    problem.add_note("first")
+    return problem
+
+def adds(kept: shared Kept) -> int:
+    lock kept as ref held:
+        held.seen = len(held.problem.notes())
+        held.problem.add_note("x")
+    return 1
+
+def fails_with_it(kept: shared Kept) -> int fails Missing:
+    lock kept as ref held:
+        fail held.problem
+    return 0
+
+def went(kept: shared Kept):
+    _ = adds(kept)
+    return
+
+def failed(kept: shared Kept, stdout: Stdout):
+    got = fails_with_it(kept) except problem:
+        stdout.print("failed with", problem.notes())
+        return
+    stdout.print("gave", got)
+
+def main(stdout: Stdout) fails Crashed:
+    shared kept = Kept(problem=noted("a.txt"), seen=-1)
+    for turn in range(2):
+        with launch(() => went(kept))?:
+            pass
+        lock kept as held:
+            stdout.print(turn, held.seen, held.problem.notes())
+    with launch(() => failed(kept, stdout=stdout))?:
+        pass
+    return

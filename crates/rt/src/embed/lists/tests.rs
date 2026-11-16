@@ -295,3 +295,55 @@ fn a_list_this_thread_cant_find_stops_rather_than_drops_what_was_added() {
     // and the rest call, as a panic can't leave an `extern "C"` function.
     let _ = with(|state| super::grow_in(state, 8 * 1_234_567 + 8, 0));
 }
+
+/// A list of a kind of item the program never described, made on one thread and read on another,
+/// reads the same there: the runtime numbers such a kind once for every thread. Each thread
+/// numbered its own before, so another thread read the list as nothing, or as another kind, as an
+/// error's notes made on `main` and changed in a task were lost (#1843).
+#[test]
+fn a_list_of_a_kind_the_runtime_numbered_reads_the_same_on_another_thread() {
+    let kind = |name: &str| {
+        let fields = vec![(Rc::from("only"), Element::Int)];
+        Rc::new(Element::Struct { name: Rc::from(name), fields })
+    };
+    let item = |value: i64| {
+        Value::Instance(Rc::new(Instance {
+            type_name: Rc::from("NumberedOnAnotherThread"),
+            case: None,
+            fields: vec![(Rc::from("only"), Value::Int(value))],
+            is_error: false,
+            cause: None,
+            notes: None,
+        }))
+    };
+    let made = std::thread::spawn(move || {
+        begin();
+        // Another kind first, which this thread numbers and the reading thread never meets, so the
+        // two threads' own counts of kinds differ.
+        let other = kind("NumberedHereOnly");
+        with(|state| super::write_list(state, &other, &Value::list(vec![]))).unwrap();
+        let list = with(|state| {
+            super::write_list(state, &kind("NumberedOnAnotherThread"), &Value::list(vec![item(7)]))
+        })
+        .unwrap();
+        let block: Vec<u64> =
+            with(|state| state.heap.block(u64::try_from(list).ok()?).map(<[u64]>::to_vec)).unwrap();
+        finish();
+        block
+    })
+    .join()
+    .unwrap();
+    begin();
+    let read = with(|state| {
+        let mut block = made.clone().into_boxed_slice();
+        // Adopted as this thread's own, as a block a task hands over is.
+        if let Some(count) = block.first_mut() {
+            *count = 1;
+        }
+        let address = state.heap.insert(block);
+        Some(heap::read_block(state, u64::try_from(address).ok()?).unpacked())
+    })
+    .unwrap();
+    assert_eq!(read, Value::list(vec![item(7)]));
+    finish();
+}

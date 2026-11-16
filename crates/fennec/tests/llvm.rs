@@ -27813,6 +27813,40 @@ fn notes_go_with_errors_as_pinned() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An error with a note, kept in a `shared` value, given another note under its lock by a task,
+/// twice, then failed with under the lock by a task: it keeps every note, on any number of threads.
+/// The note the program added on `main` was a list of a kind the runtime numbered there, and a
+/// task's thread had numbered its own kinds apart, so it read the list as nothing: the notes went,
+/// with nothing said, and which went changed with the threads (#1843).
+#[test]
+fn an_error_kept_under_a_lock_keeps_its_notes_in_a_task_on_any_number_of_threads() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("notes-under-a-lock")?;
+    let program = dir.join("notes.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/notes_kept_under_a_lock.fen"))?;
+    let wanted = include_str!("fixtures/workers/notes_kept_under_a_lock.out");
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("notes"));
+    let output = output.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "16"] {
+            let ran = Command::new(&output).env("FENNEC_THREADS", threads).output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(said.0, wanted, "{how:?} on {threads} threads: {}", said.1);
+            assert!(ran.status.success(), "{how:?} on {threads} threads: {}", said.1);
+        }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A function that says `fails A | B`, with errors that have cases among them.
 #[test]
 fn failing_several_ways_matches_what_was_pinned() -> std::io::Result<()> {

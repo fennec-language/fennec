@@ -129,6 +129,14 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_parse_float_header",
     // Only says where a buffer is.
     "fennec_dict_value_words",
+    // A value's words taken from that buffer into a dict that holds its values in its entries:
+    // `fennec_dict_set` and `fennec_dict_set_header` above for such a dict. Each runs under
+    // `with`, which sets no flag, and stops the program as a bug for a dict of one-word values.
+    "fennec_dict_set_words",
+    "fennec_dict_set_words_header",
+    // Tells a lock's log of the value in one entry before it's changed where it is. It runs
+    // under `with`, gives nothing back, and saves nothing for a dict no log marked.
+    "fennec_lock_save_entry",
     // One atomic add to the count of native blocks made and not freed.
     "fennec_native_live",
     // Bytes made from bytes. Each runs under `with`, which sets no flag, and none has a wrong
@@ -145,6 +153,9 @@ pub const NEVER_FAIL: &[&str] = &[
     // and bytes read as text whatever they hold give a text always, with what isn't UTF-8
     // replaced: `fennec_bytes_decode` above without its one refusal.
     "fennec_bytes_text",
+    // Says TLS is wanted before a request, which only sets the three functions that put TLS over a
+    // connection, each once.
+    "fennec_use_tls",
 ];
 
 /// Which export takes which names, and the function that looks one up: in `fennec-rt`, where the
@@ -403,6 +414,9 @@ export! {
     fennec_parallel_for_heavy(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for_heavy(a0, a1, a2);
     fennec_parallel_map_heavy(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map_heavy(a0, a1, a2, a3);
     fennec_parallel_for_waiting(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for_waiting(a0, a1, a2);
+    fennec_parallel_for_in_place(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for_in_place(a0, a1, a2);
+    fennec_parallel_for_in_place_heavy(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for_in_place_heavy(a0, a1, a2);
+    fennec_parallel_for_in_place_waiting(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for_in_place_waiting(a0, a1, a2);
     fennec_parallel_map_waiting(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_map_waiting(a0, a1, a2, a3);
     fennec_parallel_reduce_waiting(a0: i64, a1: parallel::ReduceBody, a2: parallel::Combine, a3: i64, a4: &mut i64) -> i64 => parallel::parallel_reduce_waiting(a0, a1, a2, a3, a4);
     fennec_parallel_stream(a0: i64, a1: parallel::MapBody, a2: i64, a3: i64) -> i64 => parallel::parallel_stream(a0, a1, a2, a3);

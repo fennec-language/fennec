@@ -26,6 +26,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 
 - `FENNEC_CHECK_PROOFS`: `1` builds an assertion for every check a proof left out, so a wrong proof stops the program. It also checks, rather than hands to LLVM, every fact it can check where it runs: what's assumed, that a length is in range, and that a `ref` parameter's address is no other parameter's.
 - `FENNEC_BOXED_TYPES`: `1` lays types out as before every type that doesn't contain itself was held in place: a struct or enum holding a dict, an optional, a set, a closure or a type that's a block is a block too. It's there to tell the two apart if a type held in place is ever wrong, and it keys the build cache.
+- `FENNEC_BOXED_DICT_VALUES`: `1` holds each struct a dict has as a value in a block of its own, with its address in the dict's entry, as before values were held in the entries themselves, each entry as wide as its key and its value. It's there to tell the two apart if a value held in an entry is ever wrong, and it keys the build cache.
 - `FENNEC_BOXED_RESULTS`: `1` builds every result as a block of its own, as before results were kept in place: the case's number, then the value or the error, in the caller's slot. It's there to tell the two apart if a result kept in place is ever wrong.
 - `FENNEC_STRIP_FACTS`: `1` builds without the facts the compiler hands LLVM beside the code: `!range`, `!tbaa`, `!invariant.load`, `inbounds`, `nsw` and `nuw`, `noalias`, `captures(none)` and `llvm.assume`. The program runs the same, only slower. One that prints otherwise was handed a wrong fact, which is the only way to catch a wrong TBAA tag. The nightly proofs run builds everything both ways and compares.
 - `FENNEC_SANITIZE`: `address` or `thread` builds programs with that sanitizer.
@@ -41,6 +42,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_UPDATE_UNCHECKED`: `1` rewrites `crates/llvm/unchecked_runtime_calls.txt`, the ratchet of runtime calls emitted code doesn't check yet, from what the lint finds now.
 - `FENNEC_RUN_WAITS`: `fennec run` waits for the program rather than becoming it, so its time can be measured.
 - `FENNEC_NEW_EXECUTABLES`: a file every executable a build makes as a new file is added to, a line each, so the gate can count them: macOS can hold a new file's first launch. One linked out of the store, the same file as one launched before, isn't added.
+- `FENNEC_KEEP_FAILED`: `1` has a test that fails keep the temporary folder it made, and say on standard error where, rather than remove it: the gate's tests step sets it, and keeps each such folder, with the failed step's whole log and every panic, in `~/.fennec/gate-logs`.
 - `FENNEC_LINK_KEEP`: a build keeps the objects it links, whole, in the folder this names, for the loader's tests to link them their own way and compare with the system linker's.
 - `FENNEC_LIVE_REPORT`: a program writes the runtime's live counts to this file as it ends.
 - `FENNEC_HASH_SEED`: a fixed seed for dict hashing, so a run's order repeats. `fennec test` sets it.

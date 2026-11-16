@@ -134,6 +134,9 @@ pub(crate) struct Program {
     pub(crate) prelude_imports: BTreeMap<String, String>,
     /// Standard library functions written in Fennec, by the name they're imported under.
     pub(crate) std_functions: BTreeMap<String, String>,
+    /// Standard library constants, by the name they're imported under, as `INFINITY` for
+    /// `math.INFINITY`.
+    pub(crate) std_constants: BTreeMap<String, String>,
     /// Standard library types imported by name, like `Deque` from `std.collections`.
     pub(crate) imported_types: BTreeSet<String>,
     /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
@@ -263,6 +266,8 @@ impl Program {
                         self.imports.insert(alias, builtin);
                     } else if self.functions.contains_key(&builtin) {
                         self.std_functions.insert(alias, builtin);
+                    } else if self.constants.contains_key(&builtin) {
+                        self.std_constants.insert(alias, builtin);
                     } else {
                         self.imported_types.insert(name);
                     }
@@ -272,9 +277,15 @@ impl Program {
     }
 
     fn add_type<'m>(&mut self, def: &'m TypeDef, kind: TypeKind, prelude: bool, hold: &impl Holds<'m>) {
-        // A program's own type replaces a standard library type of the same name, methods too.
+        // A program's own type replaces a standard library type of the same name, methods too: only
+        // that type's, never a std module's functions, as `path.is_device` beside a `struct path`.
         let methods = format!("{}.", def.name);
-        self.functions.retain(|key, entry| !(!prelude && entry.prelude && key.starts_with(&methods)));
+        self.functions.retain(|key, entry| {
+            !(!prelude
+                && entry.prelude
+                && key.starts_with(&methods)
+                && entry.owner.as_deref() == Some(def.name.as_str()))
+        });
         for method in &def.methods {
             self.add_method(&def.name, method, prelude, &[], hold);
         }
@@ -292,10 +303,10 @@ impl Program {
         if span.in_prelude() { &self.prelude_modules } else { &self.modules }
     }
 
-    /// The builtin an imported name at `span` stands for.
+    /// The builtin an imported name at `span` stands for: what std's own code imports, there,
+    /// and what the program imports anywhere else.
     pub(crate) fn imported(&self, name: &str, span: Span) -> Option<&String> {
-        let prelude = span.in_prelude().then(|| self.prelude_imports.get(name)).flatten();
-        self.imports.get(name).or(prelude)
+        if span.in_prelude() { self.prelude_imports.get(name) } else { self.imports.get(name) }
     }
 
     pub(crate) fn type_info(&self, name: &str) -> Option<&TypeInfo> {

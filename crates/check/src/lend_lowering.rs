@@ -258,11 +258,17 @@ pub(crate) fn reserved(length: u32) -> u32 {
 
 /// The lowest a span a lowering writes can be: well above any program's text, and below the
 /// standard library's.
-const WRITTEN_FROM: u32 = Span::PRELUDE - (1 << 28);
+const WRITTEN_FROM: u32 = Span::WRITTEN;
 
 /// Whether lowering wrote what's at `span` in, rather than a program or the standard library.
 pub(crate) fn written_in(span: Span) -> bool {
     (WRITTEN_FROM..Span::PRELUDE).contains(&span.start)
+}
+
+/// Whether what's at `span` is anything but a program's own text: the standard library's, or what
+/// lowering wrote in, from text parsed as std's is or not.
+pub(crate) fn not_written_by_hand(span: Span) -> bool {
+    span.start >= WRITTEN_FROM
 }
 
 /// The number a name written in by an earlier pass ends with, like `3` in `conn__lend3`, or 0.

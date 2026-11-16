@@ -1,0 +1,29 @@
+main [7, 0]
+main ["a: 8 longer", "list: 2 longer", "of: 7 longer", "words: 1 longer", "that: 2 longer", "the: 5 longer", "pieces: 0 longer", "all: 5 longer", "read: 2 longer"]
+main 12 a greeting long enough to need a block of its own, name 11 12
+main 8.583749889959188
+main TooFar(at=4)
+main TooFar(at=4)
+main ["pieces", "words", "pieces", "words", "pieces", "words", "pieces", "words", "pieces"]
+main piece 2
+main piece 3
+main piece 4
+main piece 0
+main piece 1
+main piece 5
+main [0, 1, 4, 9, 16, 25] ["a", "list", "of", "words", "that", "the", "pieces", "all", "read"] a greeting long enough to need a block of its own name 0
+task [7, 0]
+task ["a: 8 longer", "list: 2 longer", "of: 7 longer", "words: 1 longer", "that: 2 longer", "the: 5 longer", "pieces: 0 longer", "all: 5 longer", "read: 2 longer"]
+task 12 a greeting long enough to need a block of its own, name 11 12
+task 8.583749889959188
+task TooFar(at=4)
+task TooFar(at=4)
+task ["pieces", "words", "pieces", "words", "pieces", "words", "pieces", "words", "pieces"]
+task piece 0
+task piece 5
+task piece 3
+task piece 4
+task piece 1
+task piece 2
+task [0, 1, 4, 9, 16, 25] ["a", "list", "of", "words", "that", "the", "pieces", "all", "read"] a greeting long enough to need a block of its own name 0
+done

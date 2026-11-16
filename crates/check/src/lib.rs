@@ -25,6 +25,7 @@ mod constants;
 mod crossing;
 mod effects;
 mod enumerate_lowering;
+mod every;
 mod except;
 mod except_fix;
 mod expect;
@@ -32,6 +33,7 @@ mod expr;
 mod extend;
 pub use crossing::Crossing;
 pub use extend::method_key;
+pub use shapes::SavedAs;
 mod fields;
 mod function;
 pub use fields::{each_field_type, fields_of};
@@ -60,6 +62,7 @@ mod plain;
 mod privacy;
 mod program;
 mod protocols;
+mod reach;
 mod ref_lowering;
 mod results_fix;
 mod routes;
@@ -89,6 +92,24 @@ pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;
 pub use results_fix::result_fixes;
 pub use tuple_lowering::tuple_function;
+
+pub use reach::std_code;
+
+/// Whether a top-level item declared at `span` is the compiler's: the standard library's, or one
+/// the checker wrote into the program, like a type's saving functions. Any code reaches those by
+/// name, as it reaches std's; only what a program wrote is kept from std's code and a dependency's.
+#[must_use]
+pub fn compiler_written(span: Span) -> bool {
+    lend_lowering::not_written_by_hand(span)
+}
+
+/// Whether code in the function `caller` reaches the top-level function or constant `name` by
+/// writing it bare: std's code reaches only std's names, and a dependency's never the program's
+/// own. `caller_std` says whether the caller is std's code, and `std` whether `name` is std's.
+#[must_use]
+pub fn reaches(caller: &str, caller_std: bool, name: &str, std: bool) -> bool {
+    reach::Code::of(caller, caller_std).reaches(name, std)
+}
 pub use types::{Num, Type};
 
 /// Checks a parsed module. Returns the signature of every function and method, or every
@@ -153,6 +174,14 @@ fn checked_typed_in(module: &Module, scope: checker::Scope) -> Result<Checked, V
     }
     fennec_syntax::rename::rename_types(&mut renamed, &names);
     checker::Checker::new(&renamed).run(scope).map_err(|problems| as_written(problems, &names))
+}
+
+/// The types a program declares with the same name as a standard library type, each with the
+/// name it's checked under, as `own_type_names` gives them: for what models a run with the
+/// checker's types, which name them so.
+#[must_use]
+pub fn renamed_own_types(module: &Module) -> BTreeMap<String, String> {
+    own_type_names(module)
 }
 
 /// The types a program declares with the same name as a standard library type, each with the
@@ -278,6 +307,13 @@ pub fn provided_everywhere(name: &str) -> bool {
         || program::BUILT_IN_INTERFACES.contains(&name)
 }
 
+/// The functions the language provides everywhere, called bare, as `round` and `len`. A program may
+/// name a function of its own after one that isn't reserved, and it's the program's own: the
+/// standard library's code and a dependency's still mean the builtin.
+pub fn builtin_function_names() -> impl Iterator<Item = &'static str> {
+    builtins::names()
+}
+
 /// Whether the engines provide a function of this name, like `sum` or `math.sqrt`.
 pub fn is_builtin(name: &str) -> bool {
     builtins::is_builtin(name)
@@ -323,7 +359,7 @@ pub enum Routed {
     Changed,
     /// Nothing changed. When routing had to check the module to find that out, these are the
     /// signatures `check_to_emit` would give for it, so it needn't be checked again.
-    Unchanged(Option<Signatures>),
+    Unchanged(Option<Box<Signatures>>),
 }
 
 /// Routes a checked, resolved and trimmed module's sorts and formats to std's code written in
@@ -345,7 +381,7 @@ pub fn route_natively(module: &mut Module) -> Routed {
     if sorted.is_some() || formatted {
         Routed::Changed
     } else {
-        Routed::Unchanged(Some(checked.into_signatures()))
+        Routed::Unchanged(Some(Box::new(checked.into_signatures())))
     }
 }
 
@@ -687,10 +723,6 @@ enum Round {
     Done,
 }
 
-/// What starts the name a library function goes under in a program's items while it's rewritten:
-/// no name a program writes starts with it.
-const STD_AT: &str = "\0std:";
-
 /// Puts into the program's items, under hidden names, the library's functions it runs that hold
 /// a `with` over a source or a `launch`, and those rewritten already, so a round rewrites them as
 /// it does the program's own. Says whether any was new, which the check after takes up.
@@ -722,7 +754,7 @@ fn std_rewritten_in(module: &mut Module, checked: &Checked) -> bool {
         }
     }
     for (key, mut def) in std::mem::take(&mut module.std_rewritten) {
-        def.name = format!("{STD_AT}{key}\0{}", def.name);
+        def.name = format!("{}{key}\0{}", reach::STD_AT, def.name);
         module.items.push(Item::Function(def));
     }
     new
@@ -733,8 +765,8 @@ fn std_rewritten_out(module: &mut Module) {
     let items = std::mem::take(&mut module.items);
     for item in items {
         match item {
-            Item::Function(mut def) if def.name.starts_with(STD_AT) => {
-                let marked = def.name.trim_start_matches(STD_AT).to_owned();
+            Item::Function(mut def) if def.name.starts_with(reach::STD_AT) => {
+                let marked = def.name.trim_start_matches(reach::STD_AT).to_owned();
                 let (key, name) = marked.split_once('\0').unwrap_or((marked.as_str(), marked.as_str()));
                 name.clone_into(&mut def.name);
                 module.std_rewritten.push((key.to_owned(), def));
@@ -1158,6 +1190,9 @@ pub struct Signatures {
     types: Types,
     lock_verdicts: BTreeMap<String, String>,
     crossing: Crossing,
+    /// The types that write their own `serialize`, by name, with whose it is: the shape and the
+    /// layout `pack` saves go by what those save rather than by their fields.
+    own_saving: BTreeMap<String, shapes::Writer>,
 }
 
 /// A struct's fields, with their types, in the order they're written.

@@ -428,6 +428,36 @@ fn a_programs_type_replaces_a_standard_library_type_of_the_same_name() {
     assert_eq!(problems(wrong), ["`Tree` has no method `len` @ len(Tree(size=1))"]);
 }
 
+/// A program's `main` is given its capabilities and nothing else, since that's all a program is
+/// started with. A parameter of any other type, as `args: list[str]`, is refused, naming what
+/// `main` can take, where before it checked, built, and was handed nothing, which crashed. Every
+/// capability the program's entry hands out is one `main` can take.
+#[test]
+fn main_is_given_capabilities_and_nothing_else() {
+    let every = "def main(stdout: Stdout, stderr: Stderr, stdin: Stdin, args: Args, fs: Fs, clock: Clock, \
+        process: Process, entropy: Entropy, net: Net, env: Env, signals: Signals):\n    pass\n";
+    assert_eq!(problems(every), Vec::<String>::new());
+    let fix = "`main` can take `stdout: Stdout`, `stderr: Stderr`, `stdin: Stdin`, `args: Args`, `fs: Fs`, \
+        `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net`, `env: Env` and `signals: Signals`, in any order";
+    for (written, name) in [
+        ("args: list[str]", "args"),
+        ("count: int", "count"),
+        ("name = \"x\"", "name"),
+        ("stdout: Stdout, rest: list[str]", "rest"),
+    ] {
+        let program = format!("def main({written}):\n    pass\n");
+        let said = format!(
+            "`main` can't be given `{name}`: a program is started with its capabilities, and nothing else"
+        );
+        let at = written.rsplit(", ").next().unwrap_or(written);
+        assert_eq!(problems(&program), [format!("{said} @ {at}")], "{program}");
+        assert_eq!(helps(&program), [fix], "{program}");
+    }
+    let elsewhere = "def total(numbers: list[int]) -> int:\n    return sum(numbers)\n\n\
+        def main(stdout: Stdout):\n    stdout.print(total([1, 2]))\n";
+    assert_eq!(problems(elsewhere), Vec::<String>::new());
+}
+
 #[test]
 fn a_test_receives_capabilities_by_type() {
     let fine = "
@@ -1040,6 +1070,59 @@ fn a_generic_types_shape_holds_its_fields_with_its_arguments_filled_in() {
         assert!(shapes(declared, &held).contains("Pair[int]{first: int, second: int}"), "{held}");
         assert_ne!(shapes(declared, &held), shapes(&moved, &held), "{held}");
     }
+}
+
+/// A type that writes its own `serialize` is shaped by what it saves, as its layout is, and not by
+/// its fields. A standard library type that saves as another has that type's shape: a `Deque[int]`
+/// a `list[int]`'s, a `Time` text's. A program's type that saves itself its own way is its name
+/// and type arguments alone, so changing its fields changes nothing. A type that writes neither
+/// method keeps its fields, with those inside it shaped the same way.
+#[test]
+fn a_type_that_writes_its_own_serialize_is_shaped_by_what_it_saves() {
+    use fennec_check::Type;
+    let shapes = |source: &str, ty: &Type| {
+        let mut module = fennec_syntax::parse(source).unwrap();
+        fennec_check::check_and_resolve(&mut module).unwrap().shape(ty)
+    };
+    let declared = "from std.collections import Deque, Grid, SortedMap, SortedSet\n\
+        from std.time import Duration, Time\nfrom std.uuid import Uuid\n\n\
+        struct Money:\n    cents: int\n\n\
+        extend Money:\n    def serialize(self, ref out: Serializer):\n        out.int(self.cents)\n\n    \
+        def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        return Money(cents=src.int()?)\n\n\
+        struct Tagged[T]:\n    value: T\n    note: str\n\n\
+        extend Tagged[T: Serializable]:\n    def serialize(self, ref out: Serializer):\n        out.value(self.value)\n\n\
+        extend Tagged[T: Deserializable]:\n    def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        \
+        return Tagged(value=src.value[T]()?, note=\"\")\n\n\
+        struct Ledger:\n    wallet: Money\n    queue: Deque[int]\n    at: Time\n    tagged: Tagged[int]\n\n\
+        def kept(id: Uuid, span: Duration, grid: Grid[float], names: SortedMap[str, int], seen: SortedSet[str]):\n    \
+        pass\n\ndef main():\n    pass\n";
+    let generic = |name: &str, args: Vec<Type>| Type::Generic(name.to_owned(), args);
+    let named = |name: &str| Type::Named(name.to_owned());
+    for (ty, shape) in [
+        (generic("Deque", vec![Type::Int]), "list[int]"),
+        (generic("SortedSet", vec![Type::Str]), "list[str]"),
+        (generic("SortedMap", vec![Type::Str, Type::Int]), "dict[str, int]"),
+        (generic("Grid", vec![Type::Float]), "list[list[float]]"),
+        (named("Time"), "str"),
+        (named("Uuid"), "str"),
+        (named("Duration"), "int"),
+        (named("Money"), "Money"),
+        (generic("Tagged", vec![Type::Int]), "Tagged[int]"),
+        (generic("Deque", vec![named("Money")]), "list[Money]"),
+        (named("Ledger"), "Ledger{wallet: Money, queue: list[int], at: str, tagged: Tagged[int]}"),
+    ] {
+        assert_eq!(shapes(declared, &ty), shape, "{ty}");
+    }
+    let moved =
+        declared.replace("struct Money:\n    cents: int\n", "struct Money:\n    cents: int\n    units = 0\n");
+    assert_ne!(moved, declared);
+    assert_eq!(shapes(&moved, &named("Money")), "Money");
+    let renamed = declared.replace("    value: T\n    note: str\n", "    held: T\n");
+    let renamed = renamed
+        .replace("self.value", "self.held")
+        .replace("value=src", "held=src")
+        .replace(", note=\"\"", "");
+    assert_eq!(shapes(&renamed, &generic("Tagged", vec![Type::Int])), "Tagged[int]");
 }
 
 /// A tuple saves when each of its items does, but not one of a single item yet.

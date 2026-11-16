@@ -6,7 +6,7 @@ from std.process import Output, ProcessError
 from std.time import Duration
 
 WAITERS = 70
-CASES = 7
+CASES = 8
 
 # What a run came to: its status and what it wrote, or the failure it ended in.
 def outcome(run: () -> Output fails ProcessError) -> str:
@@ -43,9 +43,14 @@ def one_round(process: Process, fs: Fs, clock: Clock, marker: str, number: int) 
             return outcome(() => process.run("true", [], input=big())?)
         case 5:
             # It ends at once, but what it started holds its outputs open.
-            return outcome(() => process.run("sh", ["-c", "sleep 30 &"], timeout=Duration.millis(300))?)
+            return outcome(
+                () => process.run("sh", ["-c", "sleep 30 &"], timeout=Duration.millis(300))?,
+            )
         case 6:
             return outcome(() => process.run("sh", ["-c", "echo oops >&2; exit 3"])?)
+        case 7:
+            # It closes its outputs, then runs on: its end, not its outputs, says it's done.
+            return outcome(() => process.run("sh", ["-c", "exec >&- 2>&-; sleep 0.3"])?)
         case _:
             pass
     if number < CASES + WAITERS:
@@ -57,11 +62,20 @@ def one_round(process: Process, fs: Fs, clock: Clock, marker: str, number: int) 
         return f"couldn't write: {why}"
     return "wrote"
 
-def main(process: Process, fs: Fs, env: Env, clock: Clock, entropy: Entropy, stdout: Stdout) fails IoError:
+def main(
+    process: Process,
+    fs: Fs,
+    env: Env,
+    clock: Clock,
+    entropy: Entropy,
+    stdout: Stdout,
+) fails IoError:
     folder = env.get("TMPDIR") else "/tmp"
     marker = f"{folder}/fennec-process-parks-{entropy.bytes(8).hex()}"
     rounds = CASES + WAITERS + 1
-    seen = [one_round(process, fs, clock, marker, number=number) for number in parallel(range(rounds))]
+    seen = [
+        one_round(process, fs, clock, marker, number=number) for number in parallel(range(rounds))
+    ]
     if fs.exists(marker)?:
         fs.remove(marker)?
     for number in range(CASES):

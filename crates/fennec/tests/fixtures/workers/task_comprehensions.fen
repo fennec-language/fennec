@@ -1,0 +1,110 @@
+from std.concurrent import Channel, Crashed, channel
+
+error TooFar:
+    at: int
+
+struct Seen:
+    pieces = 0
+
+# One of two pieces of a comprehension over `parallel`: the first waits for what the second sends,
+# so they both end only if they run at once.
+def piece(number: int, between: Channel[int]) -> int:
+    if number == 0: return between.receive() else -1
+    between.send(7) except why:
+        return -len(f"{why}")
+    return 0
+
+# A body with a loop in it, which reads a list it captures.
+def weighed(word: str, others: list[str]) -> str:
+    mut longer = 0
+    for other in others:
+        if len(other) > len(word):
+            longer += 1
+    return f"{word}: {longer} longer"
+
+# A body that may wait. It makes a string from one it captures, and counts itself in a shared
+# value, which every piece changes in place.
+def greeted(name: str, greeting: str, clock: Clock, seen: shared Seen) -> str:
+    clock.sleep(1ms)
+    lock seen as ref counting:
+        counting.pieces += 1
+    return f"{greeting}, {name}"
+
+def reciprocal(number: int, clock: Clock) -> float:
+    if number % 500 == 0:
+        clock.sleep(1ms)
+    return 1.0 / float(number + 1)
+
+def checked(number: int, clock: Clock) -> int fails TooFar:
+    clock.sleep(1ms)
+    if number % 5 == 4: fail TooFar(at=number)
+    return number
+
+def lowest(clock: Clock) -> int fails TooFar:
+    passed = [checked(number, clock=clock)? for number in parallel(range(12))]
+    return len(passed)
+
+def how_far(clock: Clock) -> str:
+    passed = lowest(clock) except why:
+        return f"{why}"
+    return f"{passed} passed"
+
+# A piece that makes a string and then fails, for some numbers: what it made goes with it.
+def labelled(number: int, clock: Clock) -> str fails TooFar:
+    label = f"number {number}, labelled before a wait"
+    clock.sleep(1ms)
+    if number % 5 == 4: fail TooFar(at=number)
+    return label
+
+def first_label(clock: Clock) -> str fails TooFar:
+    labels = [labelled(number, clock=clock)? for number in parallel(range(12))]
+    return labels[0]
+
+def how_labelled(clock: Clock) -> str:
+    label = first_label(clock) except why:
+        return f"{why}"
+    return label
+
+# A body with a loop that gives back one of the strings it captures: the list its task gets then
+# holds blocks of the copy its pieces read, which the task keeps when the copy's let go.
+def picked(at: int, words: list[str]) -> str:
+    mut longest = words[at]
+    for word in words:
+        if len(word) > len(longest) and len(word) % 2 == at % 2:
+            longest = word
+    return longest
+
+def said(number: int, place: str, clock: Clock, stdout: Stdout) -> int:
+    clock.sleep(1ms)
+    stdout.print(place, "piece", number)
+    return number * number
+
+def calls(place: str, clock: Clock, stdout: Stdout):
+    with channel[int](size=1) as between:
+        stdout.print(place, [piece(number, between=between) for number in parallel(range(2))])
+    words = ["a", "list", "of", "words", "that", "the", "pieces", "all", "read"]
+    stdout.print(place, [weighed(word, others=words) for word in parallel(words)])
+    shared seen = Seen()
+    greeting = "a greeting long enough to need a block of its own"
+    names = [f"name {at}" for at in range(12)]
+    greetings = [
+        greeted(name, greeting=greeting, clock=clock, seen=seen) for name in parallel(names)
+    ]
+    lock seen as counted:
+        stdout.print(place, len(greetings), greetings[11], counted.pieces)
+    stdout.print(place, sum(reciprocal(number, clock=clock) for number in parallel(range(3000))))
+    stdout.print(place, how_far(clock))
+    stdout.print(place, how_labelled(clock))
+    kept = [picked(at, words=words) for at in parallel(range(len(words)))]
+    stdout.print(place, kept)
+    squares = [
+        said(number, place=place, clock=clock, stdout=stdout) for number in parallel(range(6))
+    ]
+    # What the pieces captured is as it was: they read copies, and nothing came back.
+    stdout.print(place, squares, words, greeting, names[0])
+
+def main(clock: Clock, stdout: Stdout) fails Crashed:
+    calls("main", clock=clock, stdout=stdout)
+    with launch(() => calls("task", clock=clock, stdout=stdout))?:
+        pass
+    stdout.print("done")

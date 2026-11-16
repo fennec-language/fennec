@@ -1,0 +1,48 @@
+# The pieces of a comprehension take owners of what they capture while they hold a write lock, a
+# different lock for odd pieces and even ones, so two do it at the same moment. From `main` they
+# read main's own blocks; from a task they read a copy the task made for them. Either way a piece
+# holding a lock leaves the counts of what it was lent to the runtime, which notes them for the
+# owner: counted in place, as a lock's holder counts what the lock guards, two pieces would write
+# one count at once.
+from std.concurrent import Crashed
+
+struct Tally:
+    total = 0
+
+def tallied(
+    number: int,
+    words: list[str],
+    phrase: str,
+    evens: shared Tally,
+    odds: shared Tally,
+) -> int:
+    if number % 2 == 0:
+        lock evens as ref tally:
+            for turn in range(200):
+                held = [phrase, words[turn % len(words)], phrase]
+                tally.total += len(held)
+    else:
+        lock odds as ref tally:
+            for turn in range(200):
+                held = [phrase, words[turn % len(words)], phrase]
+                tally.total += len(held)
+    return number
+
+def counted(place: str, stdout: Stdout):
+    shared evens = Tally()
+    shared odds = Tally()
+    words = [f"a word long enough to need a block of its own, {at}" for at in range(8)]
+    phrase = "a phrase long enough to need a block of its own"
+    done = [
+        tallied(number, words=words, phrase=phrase, evens=evens, odds=odds) for number in parallel(
+            range(64),
+        )
+    ]
+    lock evens, odds as first, second:
+        stdout.print(place, len(done), first.total, second.total, phrase, words[7])
+
+def main(stdout: Stdout) fails Crashed:
+    counted("main", stdout=stdout)
+    with launch(() => counted("task", stdout=stdout))?:
+        pass
+    stdout.print("done")

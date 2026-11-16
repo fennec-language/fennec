@@ -41,6 +41,11 @@ fn used_layouts(layouts: &Layouts, shared: &Shared) -> fennec_layout::Numbering 
 impl Image {
     pub fn of(layouts: &Layouts, shared: &Shared) -> Result<Image, String> {
         let mut registry = Registry::numbered(layouts, used_layouts(layouts, shared));
+        if let Some(name) = registry.undescribed() {
+            return Err(format!(
+                "a dict holds `{name}` in its entries, which this backend can't describe to the runtime yet"
+            ));
+        }
         let mut elements = Vec::with_capacity(shared.elements.len());
         for (symbol, item) in &shared.elements {
             let number =
@@ -54,7 +59,8 @@ impl Image {
         elements.extend(boxed);
         let str_shape = registry.str_shape();
         let dicts = shared.dicts.iter().filter_map(|(symbol, (key, value))| {
-            let number = fennec_rt::embed::dicts::shape(str_shape, *key, *value)?;
+            let number =
+                fennec_rt::embed::dicts::shape(str_shape, *key, layouts.dict_value_for_runtime(*value))?;
             Some((symbol.clone(), i64::try_from(number).ok()?))
         });
         elements.extend(dicts);
@@ -295,6 +301,17 @@ fn capability_kind(ty: &fennec_check::Type) -> Option<i64> {
     })
 }
 
+/// What stops the build when `function`, which the runtime starts, takes something that isn't a
+/// capability: there's nothing to hand it, and a null in its place would be read as if it were
+/// there.
+fn not_started_with(function: &str, local: &fennec_ir::Local) -> String {
+    let name = local.name.as_deref().unwrap_or("a value");
+    format!(
+        "`{function}` takes `{name}`, a `{}`, which isn't a capability: what the runtime starts is given capabilities and nothing else",
+        local.ty
+    )
+}
+
 pub fn tests_entry(
     program: &Program,
     shared: &Shared,
@@ -353,7 +370,7 @@ pub fn tests_entry(
                     );
                     args.push(format!("ptr {name}"));
                 }
-                None => args.push("ptr null".to_owned()),
+                None => return Err(not_started_with(test, local)),
             }
         }
         if can_fail.contains(test.as_str()) {
@@ -400,7 +417,7 @@ pub fn entry(program: &Program, shared: &Shared, image: &Image, bytes: &[u8]) ->
                 }
                 args.push(format!("ptr %capability{at}"));
             }
-            None => args.push("ptr null".to_owned()),
+            None => return Err(not_started_with("main", local)),
         }
     }
     let mut types = vec!["ptr".to_owned(); main.params];

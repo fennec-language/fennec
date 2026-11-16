@@ -551,7 +551,9 @@ fn emitted_with(
             }
             emitted_as_written(reached, emit, tests, checked)
         }
-        fennec_check::Routed::Unchanged(found) => emitted_as_written(reached, emit, tests, checked.or(found)),
+        fennec_check::Routed::Unchanged(found) => {
+            emitted_as_written(reached, emit, tests, checked.or(found.map(|found| *found)))
+        }
     }
 }
 
@@ -809,10 +811,14 @@ fn link_objects(
     }
     let started = Instant::now();
     let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
+    // Linked under one name always, then moved where it goes: macOS's linker makes a program's
+    // UUID, and the signature over it, from the name it's written to, so the same program built
+    // to two names, as a recorded run and its replay are, came out 48 bytes apart.
+    let linked_at = work.join(format!("program{}", std::env::consts::EXE_SUFFIX));
     let mut command = if statically {
-        static_linker(&paths, &runtime, output, release)
+        static_linker(&paths, &runtime, &linked_at, release)
     } else {
-        let mut command = linker(&paths, &runtime, output, tls);
+        let mut command = linker(&paths, &runtime, &linked_at, tls);
         if release {
             command.arg(NO_DEBUG_INFO);
         }
@@ -837,7 +843,13 @@ fn link_objects(
     if let Some(kept) = kept {
         keep_objects(&paths, &kept)?;
     }
+    let moved = if linked.as_ref().is_ok_and(|linked| linked.status.success()) {
+        moved_into_place(&linked_at, output)
+    } else {
+        Ok(())
+    };
     let _ = std::fs::remove_dir_all(&work);
+    moved.map_err(|err| format!("couldn't put the program at {}: {err}", output.display()))?;
     let linked = linked.map_err(|err| {
         if cfg!(target_os = "macos") && err.kind() == std::io::ErrorKind::NotFound {
             NO_XCODE_TOOLS.to_owned()
@@ -850,6 +862,15 @@ fn link_objects(
     }
     made_new(output);
     Ok(took)
+}
+
+/// Moves a program just linked to where it goes: renamed, or copied where it's on another disk,
+/// with its permissions, as a copy keeps them.
+fn moved_into_place(linked: &Path, output: &Path) -> std::io::Result<()> {
+    if std::fs::rename(linked, output).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(linked, output).map(|_| ())
 }
 
 /// Adds `path` to the file `FENNEC_NEW_EXECUTABLES` names, a line each, when it's set. It's called

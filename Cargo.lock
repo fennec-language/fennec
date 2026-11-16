@@ -329,6 +329,7 @@ dependencies = [
  "fennec-blake3",
  "fennec-temp",
  "ring",
+ "rustix",
 ]
 
 [[package]]
@@ -485,6 +486,7 @@ dependencies = [
  "getrandom 0.4.3",
  "libm",
  "mio",
+ "nix",
  "rusqlite",
  "rustix",
  "rustls",

@@ -1,0 +1,48 @@
+# For the test that a server's blocking work isn't starved by clients waiting on that same server:
+# clients in `parallel` rounds `net.post` to a server served from a task, whose handler writes each
+# request to SQLite. `CLIENTS` in the environment says how many clients there are.
+from std import sqlite
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response
+from std.sql import SqlError
+from std.sqlite import Database
+
+# How many rows the table holds.
+struct Kept:
+    rows: int
+
+def saved(db: Database, request: Request) -> Response:
+    _ = db.execute(t"insert into seen (path) values ({request.path})") except why:
+        return Response(status=500, body=f"{why}".encode())
+    return Response(status=201, body="saved".encode())
+
+def asked(net: Net, port: int, number: int) -> str:
+    got = net.post(f"http://127.0.0.1:{port}/n{number}", body="x") except why:
+        return f"{why}"
+    return got.text()
+
+def main(net: Net, fs: Fs, env: Env, stdout: Stdout) fails NetError | Crashed | SqlError | IoError:
+    clients = int.parse(env.get("CLIENTS") else "8") except InvalidValue(): 8
+    folder = env.get("TMPDIR") else "/tmp"
+    mut answers = list[str]()
+    mut rows = 0
+    with net.listen(0)? as server:
+        path = f"{folder}/fennec-blocking-pool-{server.port}.db"
+        with sqlite.open(fs, path)? as db:
+            _ = db.execute(t"create table seen (path text)")?
+            port = server.port
+            with launch(() => server.serve((request) => saved(db, request)))?:
+                answers = [
+                    asked(net, port=port, number=number) for number in parallel(range(clients))
+                ]
+                server.close()
+            for kept in db.query[Kept](t"select count(*) as rows from seen")?:
+                rows = kept.rows
+        for leftover in [path, f"{path}-wal", f"{path}-shm"]:
+            if fs.exists(leftover)?:
+                fs.remove(leftover)?
+    count = len([answer for answer in answers if answer == "saved"])
+    stdout.print(f"{count} of {clients} saved")
+    stdout.print(f"{rows} rows kept")
+    for failed in sorted(set([answer for answer in answers if answer != "saved"])):
+        stdout.print(f"failed: {failed}")

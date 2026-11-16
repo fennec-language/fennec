@@ -216,7 +216,7 @@ fn next_abandoned(state: &mut State) -> Option<(u64, extern "C" fn(i64))> {
 fn holds_nothing_now(state: &State, block: &[u64], number: Option<usize>) -> bool {
     match number {
         // Past the kinds of list are other blocks, like cells, whose third word means something else.
-        Some(number) => number < state.tables.elements.len() && block.get(2) == Some(&0),
+        Some(number) => state.tables.is_element(number) && block.get(2) == Some(&0),
         None => crate::embed::dicts::is_dict(state, block) && block.get(3) == Some(&0),
     }
 }
@@ -407,7 +407,7 @@ fn release_planned_items(
         return false;
     }
     let Some(number) = crate::embed::lists::element_number(state, block) else { return false };
-    if state.tables.elements.get(number).is_none_or(|element| crate::embed::lists::owns_items(element)) {
+    if state.tables.element(number).is_none_or(|element| crate::embed::lists::owns_items(element)) {
         return false;
     }
     let planned = state.heap.item_plans.get(number);
@@ -434,7 +434,7 @@ fn release_planned_items(
 #[inline(never)]
 fn walk_item(letting_go: &mut LettingGo<'_>, number: usize, item: &[u64]) {
     let mut found = Vec::new();
-    if let Some(element) = letting_go.state.tables.elements.get(number) {
+    if let Some(element) = letting_go.state.tables.element(number) {
         super::held_addresses(element, item, &mut found);
     }
     letting_go.extend(found);

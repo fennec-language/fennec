@@ -29,6 +29,9 @@ impl Interp {
                 None => args.push(value),
             }
         }
+        if let Some(done) = self.format_method(&receiver, name, (&args, &named), expr)? {
+            return Ok(done);
+        }
         // The standard library's own code has `len(x)` and `abs(x)` written as these methods
         // when it's parsed, which a program can't call on a built-in value.
         if matches!(name, "len" | "abs") && args.is_empty() && named.is_empty() {
@@ -99,7 +102,34 @@ impl Interp {
         }
     }
 
-    /// A `Buffer`'s methods, on the list it's held as. How much room it has isn't modeled.
+    /// A method of JSON's `Serializer` or `Deserializer`, given to a type's own `def serialize`
+    /// or `def deserialize`, when that's what `receiver` holds.
+    fn format_method(
+        &mut self,
+        receiver: &Receiver,
+        name: &str,
+        (args, named): (&[Value], &[(String, Value)]),
+        expr: &'static Expr,
+    ) -> Run<Option<Value>> {
+        let format = match receiver {
+            Receiver::Place(place) => self.peek_place(place, expr.span, |held| match held {
+                Value::Cap(cap @ (Cap::Saver | Cap::Loader)) => Some(cap.clone()),
+                _ => None,
+            })?,
+            Receiver::Value(Value::Cap(cap @ (Cap::Saver | Cap::Loader))) => Some(cap.clone()),
+            Receiver::Value(_) => None,
+        };
+        match format {
+            Some(_) if !named.is_empty() => unsupported(format!("`{name}` with a named argument")),
+            Some(Cap::Saver) => self.saver_method(name, args, expr).map(Some),
+            Some(_) => self.loader_method(name, args, expr).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// A `Buffer`'s methods, on the list it's held as. Its room is known only as far as
+    /// `docs/language.md` promises it: at least what it holds, and right after `reserve(n)`, at
+    /// least `n` more.
     pub(crate) fn buffer_method(
         &mut self,
         receiver: Receiver,
@@ -117,6 +147,34 @@ impl Interp {
         let Receiver::Place(place) = receiver else {
             return unsupported(format!("the Buffer method `{name}` on a value that isn't a place"));
         };
+        if name == "capacity" && args.is_empty() {
+            let held = match self.read_place(&place, span)? {
+                Value::List(items) => i64::try_from(items.len()).unwrap_or(i64::MAX),
+                _ => return unsupported("a Buffer that isn't a list"),
+            };
+            let promised = match &self.reserved {
+                Some((frame, local, room))
+                    if place.path.is_empty() && *frame == place.frame && *local == place.name =>
+                {
+                    *room
+                }
+                _ => 0,
+            };
+            return Ok(Value::Room(held.max(promised)));
+        }
+        if let ("reserve", [Value::Int(more)]) = (name, args.as_slice()) {
+            let more = *more;
+            let held = match self.read_place(&place, span)? {
+                Value::List(items) => i64::try_from(items.len()).unwrap_or(i64::MAX),
+                _ => return unsupported("a Buffer that isn't a list"),
+            };
+            if more < 0 {
+                return unsupported("`reserve` of fewer than none");
+            }
+            self.reserved =
+                place.path.is_empty().then(|| (place.frame, place.name.clone(), held.saturating_add(more)));
+            return Ok(Value::Unit);
+        }
         self.change_place(&place, span, false, |value| {
             let Value::List(items) = value else { return unsupported("a Buffer that isn't a list") };
             match (name, args.as_mut_slice()) {
@@ -148,7 +206,6 @@ impl Interp {
                     items.truncate(usize::try_from(*keep).unwrap_or(0));
                     Ok(Value::Unit)
                 }
-                ("reserve", [Value::Int(_)]) => Ok(Value::Unit),
                 _ => unsupported(format!("the Buffer method `{name}`")),
             }
         })
@@ -256,7 +313,9 @@ impl Interp {
                     if name == "write_line" {
                         text.push('\n');
                     }
-                    let _ = std::io::Write::write_all(&mut std::io::stderr(), text.as_bytes());
+                    if !self.shared.quiet.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = std::io::Write::write_all(&mut std::io::stderr(), text.as_bytes());
+                    }
                     Ok(Value::Unit)
                 }
                 _ => unsupported(format!("`stderr.{name}` of something other than text")),

@@ -188,6 +188,7 @@ fn library_alone<'m>(
     // What a standard library module imports is its own: a program names it only by importing
     // it too.
     program.std_functions.clear();
+    program.std_constants.clear();
     program.imported_types.clear();
     program
 }
@@ -359,6 +360,27 @@ impl Checker {
         }
     }
 
+    /// The types that write their own `serialize`, with whose it is: the standard library's, or
+    /// one a program or a kit wrote by hand. What the checker writes for a type that writes
+    /// neither method is parsed where std's code is, but it's the program's, and saves field by
+    /// field, so it isn't among them.
+    fn own_saving(&self) -> BTreeMap<String, crate::shapes::Writer> {
+        let saving = self.program.functions.values().filter(|entry| entry.def.name == "serialize");
+        saving
+            .filter_map(|entry| {
+                let owner = entry.owner.clone()?;
+                let writer = if entry.prelude {
+                    crate::shapes::Writer::Library
+                } else if !entry.def.span.in_prelude() {
+                    crate::shapes::Writer::Program
+                } else {
+                    return None;
+                };
+                Some((owner, writer))
+            })
+            .collect()
+    }
+
     /// What a check that found nothing wrong gives back.
     fn checked(
         mut self,
@@ -383,6 +405,7 @@ impl Checker {
         // A type asked about before what it holds was known, like the list in `pack.dumps(pairs)`
         // before `pairs.append((1, "a"))`, is what it holds once the check is done.
         let saved_types = std::mem::take(&mut self.saved_types).iter().map(|ty| self.settled(ty)).collect();
+        let own_saving = self.own_saving();
         let functions = self
             .states
             .into_iter()
@@ -399,6 +422,7 @@ impl Checker {
             locals,
             lock_verdicts: self.lock_verdicts,
             crossing: std::mem::take(&mut self.crossing),
+            own_saving,
             ..Signatures::default()
         };
         let types = Types { functions: self.typed };

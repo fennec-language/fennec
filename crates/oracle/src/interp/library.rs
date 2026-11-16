@@ -46,6 +46,19 @@ pub(crate) fn has_function(path: &str) -> bool {
             | "std.intrinsics.text_part"
             | "std.intrinsics.text_of_code"
             | "std.intrinsics.bytes_text"
+            | "std.intrinsics.channel_new"
+            | "std.intrinsics.channel_new_every"
+            | "std.intrinsics.channel_listen"
+            | "std.intrinsics.channel_send"
+            | "std.intrinsics.channel_receive"
+            | "std.intrinsics.channel_close"
+            | "std.intrinsics.channel_free"
+            | "std.intrinsics.id_tag"
+            | "std.intrinsics.table_tag"
+            | "std.intrinsics.id_key"
+            | "std.intrinsics.text_plain_end"
+            | "std.intrinsics.text_escape_at"
+            | "std.intrinsics.text_same_at"
             | "std.intrinsics.stop"
             | "std.intrinsics.bytes_builder"
             | "std.intrinsics.bytes_push"
@@ -120,6 +133,11 @@ pub(crate) fn call(path: &str, args: &[Value], span: Span) -> Run<Value> {
 }
 
 /// An intrinsic the standard library's own code calls, each as `intrinsics.fen` says it works.
+/// A `Table`'s tag as the int a program reads it as.
+fn tag_as_int(tag: u64) -> Run<i64> {
+    i64::try_from(tag).map_or_else(|_| unsupported("a `Table` tag past the largest int"), Ok)
+}
+
 fn intrinsic(name: &str, args: &[Value], span: Span) -> Run<Value> {
     match (name, args) {
         ("text_byte", [Value::Str(text), Value::Int(at)]) => Ok(Value::Int(
@@ -155,6 +173,37 @@ fn intrinsic(name: &str, args: &[Value], span: Span) -> Run<Value> {
                 None => unsupported("`bytes_text` at places outside the bytes"),
             }
         }
+        // From byte `at` on, the first byte a JSON reader looks closer at, `"`, `\` or a control
+        // character, or the first JSON writes escaped or that starts a character it might, which
+        // adds DEL and 194, the first byte of U+0080 to U+00BF. Or the text's size.
+        ("text_plain_end" | "text_escape_at", [Value::Str(text), Value::Int(at)]) => {
+            let Some(rest) = usize::try_from(*at).ok().and_then(|at| text.as_bytes().get(at..)) else {
+                return unsupported(format!("`{name}` from past the text's end"));
+            };
+            let escaped = |byte: u8| byte == b'"' || byte == b'\\' || byte < 0x20;
+            let found = rest.iter().position(|&byte| {
+                escaped(byte) || (name == "text_escape_at" && (byte == 0x7f || byte == 194))
+            });
+            let size = text.len();
+            Ok(Value::Int(super::as_int(found.map_or(size, |found| size - rest.len() + found))))
+        }
+        // Whether the text's bytes from `start` begin with all of `word`'s: false from a negative
+        // start, or where `word` would run past the end.
+        ("text_same_at", [Value::Str(text), Value::Int(start), Value::Str(word)]) => Ok(Value::Bool(
+            usize::try_from(*start)
+                .ok()
+                .and_then(|start| text.as_bytes().get(start..))
+                .is_some_and(|rest| rest.starts_with(word.as_bytes())),
+        )),
+        // The tag of the `Table` an `Id` is from, and a `Table`'s own, which its `Id`s have.
+        ("id_tag", [Value::Id(id)]) => Ok(Value::Int(tag_as_int(id.tag)?)),
+        ("table_tag", [Value::Table(table)]) => Ok(Value::Int(tag_as_int(table.tag)?)),
+        // An `Id`'s slot and generation in one number, the slot above the generation's 32 bits,
+        // as `id_of_key` takes it back.
+        ("id_key", [Value::Id(id)]) => match i64::try_from(id.slot) {
+            Ok(slot) if slot < 1 << 31 => Ok(Value::Int(slot << 32 | i64::from(id.generation))),
+            _ => unsupported("an `Id` whose slot doesn't fit in 31 bits"),
+        },
         ("stop", [Value::Str(message)]) => crash(message.clone(), span),
         // An empty byte builder, which the writing intrinsics, in `builtins.rs`, write into.
         ("bytes_builder", []) => Ok(Value::Bytes(Vec::new())),

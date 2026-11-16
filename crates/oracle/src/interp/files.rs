@@ -51,6 +51,7 @@ impl Interp {
     /// Works on the file system this run shares.
     fn disk<R>(&self, span: Span, work: impl FnOnce(&mut Disk) -> Done<R>) -> Run<R> {
         self.reach_out(super::parallel::Outside::Disk)?;
+        self.outside_in_order(super::parallel::Outside::Disk)?;
         let Ok(mut disk) = self.shared.disk.lock() else { return unsupported("the file system was lost") };
         done(work(&mut disk), span)
     }

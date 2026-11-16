@@ -229,9 +229,148 @@ fn a_parked_receive_times_out_and_a_stop_cuts_one_short() {
     let task = launch(waits_for_nothing);
     let mut failure = 0;
     assert_eq!(launch_end(task, 20 * MILLISECOND, 0, &mut failure), 0, "stopped, quietly");
+    assert_eq!(noted(quiet), (0, 0), "the wait that timed out and the one stopped each took its note back");
     channel_free(quiet);
     assert_eq!(TIMED.load(Ordering::SeqCst), TIMED_OUT);
     assert_eq!(STOPPED.load(Ordering::SeqCst), 1, "the stop cut the wait short");
+    finish();
+}
+
+/// How many parked tasks have a note on `channel` to be woken through, waiting for room and for a
+/// message.
+fn noted(channel: i64) -> (usize, usize) {
+    let found = find(channel).unwrap();
+    let queue = found.queue();
+    (queue.senders.len(), queue.receivers.len())
+}
+
+/// How many times each of these tests' tasks waits and gives up.
+const TRIES: i64 = 50;
+/// What each test's task waits on: a quiet channel, a full one, and a listener nothing's sent to.
+static GIVEN_UP_ON: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+static GAVE_UP: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+
+/// Waits a millisecond for what never comes, `TRIES` times over: room to send if `sending`, and
+/// otherwise a message.
+fn gives_up(which: usize, sending: bool) -> i64 {
+    let on = GIVEN_UP_ON[which].load(Ordering::SeqCst);
+    let mut value = 0;
+    for _ in 0..TRIES {
+        let got = if sending {
+            channel_send(on, 7, 0, MILLISECOND)
+        } else {
+            channel_receive(on, MILLISECOND, &mut value)
+        };
+        GAVE_UP[which].fetch_add(i64::from(got == TIMED_OUT), Ordering::SeqCst);
+    }
+    0
+}
+
+extern "C" fn gives_up_receiving(_env: i64, _thread: i64) -> i64 {
+    gives_up(0, false)
+}
+
+extern "C" fn gives_up_sending(_env: i64, _thread: i64) -> i64 {
+    gives_up(1, true)
+}
+
+extern "C" fn gives_up_listening(_env: i64, _thread: i64) -> i64 {
+    gives_up(2, false)
+}
+
+/// A parked wait leaves a note on its channel to be woken through. One that runs out of time is
+/// woken another way, and used to leave the note behind: a task waiting with a timeout in a loop
+/// on a quiet channel added one each time, without end.
+#[test]
+fn a_parked_wait_that_runs_out_of_time_takes_its_note_back() {
+    begin();
+    let quiet = channel_new(1);
+    let full = channel_new(1);
+    assert_eq!(channel_send(full, 1, 0, FOREVER), DONE);
+    let every = channel_new_every(4);
+    let listener = channel_listen(every, 0);
+    for (which, on) in [quiet, full, listener].into_iter().enumerate() {
+        GIVEN_UP_ON[which].store(on, Ordering::SeqCst);
+        GAVE_UP[which].store(0, Ordering::SeqCst);
+    }
+    for task in [launch(gives_up_receiving), launch(gives_up_sending), launch(gives_up_listening)] {
+        assert_eq!(end(task), 0);
+    }
+    for gave_up in &GAVE_UP {
+        assert_eq!(gave_up.load(Ordering::SeqCst), TRIES, "every wait ran out of time");
+    }
+    assert_eq!(noted(quiet), (0, 0), "a receive");
+    assert_eq!(noted(full), (0, 0), "a send");
+    assert_eq!(noted(every), (0, 0), "a listener's receive");
+    for channel in [quiet, full, every] {
+        channel_free(channel);
+    }
+    finish();
+}
+
+/// A wait takes back only its own note. A token is one worker's, so two tasks on two workers can
+/// wait on one channel under the same token: the one whose time runs out leaves the other's note,
+/// which the next send still wakes it through. And once a take has moved the count on, the wait's
+/// note has gone with it, so it looks for nothing: a note left since under its name isn't its own.
+#[test]
+fn a_wait_takes_back_its_own_note_and_no_other_worker_s_under_the_same_token() {
+    begin();
+    let number = channel_new(1);
+    let channel = find(number).unwrap();
+    let token = mio::Token(5);
+    let left_at = {
+        let mut queue = channel.queue();
+        queue.receivers.push(Waiter { pool: pool(), at: 0, token });
+        queue.receivers.push(Waiter { pool: pool(), at: 1, token });
+        channel.taken(Side::Receiving)
+    };
+    channel.take_back(Side::Receiving, (pool(), 0, token), left_at);
+    let left: Vec<usize> = channel.queue().receivers.iter().map(|note| note.at).collect();
+    assert_eq!(left, [1], "the note of the task on the other worker");
+    let woken = {
+        let mut queue = channel.queue();
+        channel.take_notes(&mut queue, Side::Receiving)
+    };
+    assert_eq!(woken.len(), 1);
+    channel.queue().receivers.push(Waiter { pool: pool(), at: 1, token });
+    channel.take_back(Side::Receiving, (pool(), 1, token), left_at);
+    assert_eq!(noted(number), (0, 1), "a note left after the take isn't the earlier wait's");
+    channel.queue().receivers.clear();
+    channel_free(number);
+    finish();
+}
+
+static CUT: AtomicI64 = AtomicI64::new(0);
+static CUT_SHORT: AtomicI64 = AtomicI64::new(-1);
+
+extern "C" fn fails_at_once(_env: i64, _thread: i64) -> i64 {
+    crate::embed::fail_with(Diagnostic::new("the task failed", Span::default()));
+    0
+}
+
+/// Launches a task that fails, and waits for a message that never comes. The new task is put on
+/// this one's worker, so it runs, and fails, only once this one is parked.
+extern "C" fn waits_on_a_task_that_fails(_env: i64, _thread: i64) -> i64 {
+    let task = launch(fails_at_once);
+    let mut value = 0;
+    CUT_SHORT.store(channel_receive(CUT.load(Ordering::SeqCst), PATIENCE, &mut value), Ordering::SeqCst);
+    let mut failure = 0;
+    launch_end(task, FOREVER, 0, &mut failure);
+    0
+}
+
+/// A parked wait that's ended by a task it launched failing is woken by the failure, not through
+/// its note, and takes the note back too.
+#[test]
+fn a_parked_wait_cut_short_by_a_task_that_failed_takes_its_note_back() {
+    begin();
+    let quiet = channel_new(1);
+    CUT.store(quiet, Ordering::SeqCst);
+    let task = launch(waits_on_a_task_that_fails);
+    assert_eq!(end(task), 0);
+    assert_eq!(CUT_SHORT.load(Ordering::SeqCst), CLOSED, "the failure ended the wait as a close would");
+    assert_eq!(noted(quiet), (0, 0));
+    channel_free(quiet);
     finish();
 }
 

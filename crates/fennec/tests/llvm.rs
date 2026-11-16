@@ -15208,6 +15208,59 @@ fn hashing_a_password_in_a_task_parks_it() -> std::io::Result<()> {
     std::fs::remove_dir_all(&dir)
 }
 
+/// Tasks using one SQLite connection wait their turn at it parked: a server's handlers insert on
+/// one connection, one of them running a slow query on it, for 70 clients at once. Each call went
+/// to a blocking thread that then waited for the connection's lock, so 63 calls behind a slow one
+/// held 63 of the blocking pool's threads doing nothing. Now a task takes the connection's turn
+/// before its call goes to a blocking thread, and under `FENNEC_COUNTS` no blocking thread waits
+/// for the connection: the counts line has no `blocked_waits`, where it had 63 (#1814).
+///
+/// It's built for a heap audit and run under it on 1, 4 and 16 threads, each run cut off at two
+/// minutes: it ends with what it should have printed, nothing live and nothing said.
+#[test]
+fn tasks_wait_their_turn_at_a_connection_parked() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("queries-wait-their-turn")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "queries_wait_their_turn";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("TMPDIR", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, "counted 300000\n70 inserted, 70 rows kept\n", "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(
+            !said.contains("blocked_waits"),
+            "a call waited for the connection on a thread, on {threads} threads: {said}"
+        );
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
 /// listed and not gone into, and through an `Fs` narrowed to one folder.
 #[cfg(unix)]

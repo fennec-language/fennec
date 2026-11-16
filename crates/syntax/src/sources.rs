@@ -31,6 +31,12 @@ impl Sources {
         Sources::default()
     }
 
+    /// The span each file's text covers, in the order they were added.
+    #[must_use]
+    pub fn spans(&self) -> Vec<Span> {
+        self.files.iter().map(|file| Span { start: file.base, end: file.end() }).collect()
+    }
+
     /// Whether the files reach where what the compiler writes in starts: a program that long, past
     /// 1.75 GiB, would have its own text read as the compiler's.
     #[must_use]

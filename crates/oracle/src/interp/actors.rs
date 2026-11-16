@@ -291,24 +291,22 @@ fn lock_state(shared: &super::Shared) -> Run<MutexGuard<'_, State>> {
 fn who(rounds_as: &mut [Option<usize>], actor: usize, state: &mut State) -> Run<usize> {
     let mut parent = actor;
     for round in rounds_as.iter_mut() {
-        let number = match *round {
-            Some(number) => number,
-            None => {
-                if state.actors.len() >= MOST_TASKS {
-                    return unsupported("ran too long: too many tasks and `parallel` rounds using channels");
-                }
-                let number = state.actors.len();
-                let mut clock = state.actors.get(parent).map(|actor| actor.clock.clone()).unwrap_or_default();
-                tick(&mut clock, number);
-                state.actors.push(Actor {
-                    state: Doing::Ended,
-                    ended: Some(Ok(())),
-                    ..Actor::ready(Vec::new(), clock)
-                });
-                *round = Some(number);
-                number
-            }
-        };
+        if let Some(number) = *round {
+            parent = number;
+            continue;
+        }
+        if state.actors.len() >= MOST_TASKS {
+            return unsupported("ran too long: too many tasks and `parallel` rounds using channels");
+        }
+        let number = state.actors.len();
+        let mut clock = state.actors.get(parent).map(|actor| actor.clock.clone()).unwrap_or_default();
+        tick(&mut clock, number);
+        state.actors.push(Actor {
+            state: Doing::Ended,
+            ended: Some(Ok(())),
+            ..Actor::ready(Vec::new(), clock)
+        });
+        *round = Some(number);
         parent = number;
     }
     Ok(parent)

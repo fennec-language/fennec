@@ -1875,8 +1875,12 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
     write_kit(&dir.join("plain"), "plain", "", &[("lib.fen", BUILTINS_SAY)]).unwrap();
     let hostile = format!("{imports}{std_says}\n{}", defining(&functions, &constants, "export "));
     write_kit(&dir.join("hostile"), "hostile", "", &[("lib.fen", &hostile)]).unwrap();
+    // A kit that imports every name the program imports, each as another module.
+    let swapped = "from std import json as collections, log as json, net as log, time as net, toml as time, \
+        collections as toml\n\n## What its own `time` is.\nexport def swapped() -> str:\n    return time.dumps({\"a\": 1}).strip()\n";
+    write_kit(&dir.join("swapped"), "swapped", "", &[("lib.fen", swapped)]).unwrap();
     let app_main = format!(
-        "import hostile\nimport plain\n{imports}{STD_SAYS}\n{}\ndef main(stdout: Stdout):\n{logged}{}{}{}    stdout.print(own_total(), hostile.own_total())\n",
+        "import hostile\nimport plain\nimport swapped\n{imports}{STD_SAYS}\n{}\ndef main(stdout: Stdout):\n{logged}{}{}{}    stdout.print(own_total(), hostile.own_total(), swapped.swapped())\n",
         defining(&functions, &constants, ""),
         printed("std_says"),
         printed("plain.builtins_say"),
@@ -1885,14 +1889,17 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
     write_kit(
         &dir.join("app"),
         "app",
-        "[dependencies]\nhostile = { path = \"../hostile\" }\nplain = { path = \"../plain\" }\n",
+        "[dependencies]\nhostile = { path = \"../hostile\" }\nplain = { path = \"../plain\" }\nswapped = { path = \"../swapped\" }\n",
         &[("main.fen", &app_main)],
     )
     .unwrap();
     let (log_and_std, builtins) = alone.split_once("--\n").unwrap();
     let (_, std_lines) = log_and_std.split_once('\n').unwrap();
     let total = 8 * functions.len() + 7 * constants.len();
-    assert_eq!(run(&dir.join("app")), format!("{log_and_std}--\n{builtins}{std_lines}--\n{total} {total}\n"));
+    assert_eq!(
+        run(&dir.join("app")),
+        format!("{log_and_std}--\n{builtins}{std_lines}--\n{total} {total} a = 1\n")
+    );
     // A dependency can't name what std keeps to itself, any more than a program can.
     let peeks =
         "## Pads with std's own helper.\nexport def peeks() -> str:\n    return padding(\"x\", count=2)\n";
@@ -1913,6 +1920,93 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
         "{}",
         text(&refused.stderr)
     );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What each file imports is its own, in a program's files and in its kits'. A kit's
+/// `from std.html import escape as sha256` once made the program's own `sha256(...)` give escaped
+/// text, as one table of imports served every file and the last import of a name decided it for
+/// all. Now each file's names are its own:
+/// - `sha256` beside a kit's, `dumps` from JSON beside a kit's from TOML, and `pick` as `floor`
+///   beside a kit's or another of the program's files' `pick` as `ceil`;
+/// - a name only a kit, or only another file, imports is refused where it isn't imported;
+/// - a hash given its chunks, imported by name or through its module, goes to std's function for
+///   chunks, as the checker sends it there.
+#[test]
+fn what_each_file_imports_is_its_own() {
+    let dir = scratch("imports_by_file").unwrap();
+    let fennec = |at: &Path| {
+        crate::executables::fennec_command()
+            .args(["run", "--no-test"])
+            .current_dir(at)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let ran = |at: &Path| {
+        let output = fennec(at);
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        text(&output.stdout)
+    };
+    let kit =
+        |name: &str, source: &str| write_kit(&dir.join(name), name, "", &[("lib.fen", source)]).unwrap();
+    kit(
+        "escaping",
+        "from std.html import escape as sha256\nfrom std.toml import dumps\nfrom std.math import ceil as pick\n\n\
+         ## Its own `sha256`, `dumps` and `pick`.\nexport def own() -> str:\n    escaped = sha256(\"<kit>\")\n    \
+         saved = dumps({\"a\": 1}).strip()\n    return f\"{escaped} {saved} {pick(2.2)}\"\n",
+    );
+    let app = dir.join("app");
+    let main = "from std.crypto import sha256\nfrom std.json import dumps\nfrom std.math import floor as pick\n\
+        import escaping\nimport other\n\n\
+        def main(stdout: Stdout):\n    stdout.print(sha256(\"abc\"), dumps({\"a\": 1}), pick(2.7))\n    \
+        stdout.print(escaping.own(), other.picked())\n    \
+        stdout.print(sha256([\"a\", \"bc\"]) == sha256(\"abc\"), other.chunked())\n";
+    let other = "from std import crypto\nfrom std.math import ceil as pick\n\n## Its own `pick`.\nexport def picked() -> int:\n    return pick(2.2)\n\n\
+        ## Hashed in chunks.\nexport def chunked() -> bool:\n    return crypto.blake3([\"a\", \"bc\"]) == crypto.blake3(\"abc\")\n";
+    write_kit(
+        &app,
+        "app",
+        "[dependencies]\nescaping = { path = \"../escaping\" }\n",
+        &[("main.fen", main), ("other.fen", other)],
+    )
+    .unwrap();
+    assert_eq!(
+        ran(&app),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad {\"a\": 1} 2\n&lt;kit&gt; a = 1 3 3\nTrue True\n"
+    );
+    // A name only a kit imports, or only another of the program's files.
+    kit(
+        "lifting",
+        "from std.math import ceil as lift\nfrom std import math as mathy\n\n## Uses both.\nexport def plain() -> float:\n    return lift(1.5) + mathy.sqrt(4.0)\n",
+    );
+    for (main, other, refused) in [
+        (
+            "import lifting\n\ndef main(stdout: Stdout):\n    stdout.print(lift(2.2), lifting.plain())\n",
+            None,
+            "`lift` doesn't exist",
+        ),
+        (
+            "import lifting\n\ndef main(stdout: Stdout):\n    stdout.print(mathy.sqrt(16.0), lifting.plain())\n",
+            None,
+            "`mathy` doesn't exist",
+        ),
+        (
+            "import lifting\nimport other\n\ndef main(stdout: Stdout):\n    stdout.print(other.lifted(), lifting.plain())\n",
+            Some("## Calls what only the kit imported.\nexport def lifted() -> int:\n    return lift(2.2)\n"),
+            "`lift` doesn't exist",
+        ),
+    ] {
+        let mut files = vec![("main.fen", main)];
+        files.extend(other.map(|other| ("other.fen", other)));
+        let refusing = dir.join("refusing");
+        let _ = std::fs::remove_dir_all(&refusing);
+        write_kit(&refusing, "refusing", "[dependencies]\nlifting = { path = \"../lifting\" }\n", &files)
+            .unwrap();
+        let output = fennec(&refusing);
+        assert!(!output.status.success(), "{main}");
+        assert!(text(&output.stderr).contains(refused), "{main}: {}", text(&output.stderr));
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

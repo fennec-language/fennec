@@ -208,6 +208,141 @@ fn a_parallel_call_whose_ranges_take_inputs_replays_identically() -> std::io::Re
     Ok(())
 }
 
+/// A comprehension over `parallel` whose pieces sleep, one in five of them failing.
+const PIECES_FAILING: &str = "error TooFar:
+    at: int
+
+def checked(number: int, clock: Clock) -> int fails TooFar:
+    clock.sleep(1ms)
+    if number % 5 == 4:
+        fail TooFar(at=number)
+    return number
+
+def lowest(clock: Clock) -> int fails TooFar:
+    passed = [checked(number, clock=clock)? for number in parallel(range(12))]
+    return len(passed)
+
+def main(clock: Clock, stdout: Stdout):
+    passed = lowest(clock) except why:
+        stdout.print(f\"{why}\")
+        return
+    stdout.print(passed)
+";
+
+/// A `for` loop over `parallel` whose pieces work and print, one crashing. A loop's body that
+/// fails with `?` runs as a plain loop, so a crash is how a piece of a loop fails.
+const PIECES_FAILING_IN_A_LOOP: &str = "def busy(turns: int) -> int:
+    return sum(step % 7 for step in range(turns)) % 2
+
+def checked(number: int, stdout: Stdout):
+    worked = busy(100000)
+    stdout.print(\"did\", number, 1000 // (77 - number) + worked)
+
+def main(stdout: Stdout):
+    for number in parallel(range(200)):
+        checked(number, stdout=stdout)
+    stdout.print(\"never said\")
+";
+
+/// A sum over `parallel` of enough items to be cut into many leaves, whose pieces sleep now and
+/// then and print, one crashing.
+const PIECES_FAILING_IN_A_SUM: &str = "def weighed(number: int, clock: Clock, stdout: Stdout) -> int:
+    if number % 97 == 0:
+        clock.sleep(1ms)
+        stdout.print(\"at\", number)
+    return 1000 // (2100 - number)
+
+def main(clock: Clock, stdout: Stdout):
+    added = sum(weighed(number, clock=clock, stdout=stdout) for number in parallel(range(20000)))
+    stdout.print(\"never said\", added)
+";
+
+/// The first piece fails at once and the rest sleep, so most pieces never begin.
+const FIRST_PIECE_FAILING: &str = "error TooFar:
+    at: int
+
+def checked(number: int, clock: Clock) -> int fails TooFar:
+    if number == 0:
+        fail TooFar(at=number)
+    clock.sleep(5ms)
+    return number
+
+def lowest(clock: Clock) -> int fails TooFar:
+    passed = [checked(number, clock=clock)? for number in parallel(range(64))]
+    return len(passed)
+
+def main(clock: Clock, stdout: Stdout):
+    passed = lowest(clock) except why:
+        stdout.print(f\"{why}\")
+        return
+    stdout.print(passed)
+";
+
+/// Records `source` at 1 thread and at 4, with every piece on the pool or not, and replays each
+/// recording `rounds` times at each of 1, 4 and 16 threads: every recording ends with `ends`, and
+/// every replay is the recorded run.
+fn replays_at_one_four_and_sixteen(
+    name: &str,
+    source: &str,
+    rounds: usize,
+    ends: i32,
+) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, source)?;
+    for (recorded_threads, stress) in [("1", "0"), ("4", "0"), ("4", "1")] {
+        let log = dir.join(format!("recorded-{recorded_threads}-{stress}.log"));
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", recorded_threads).env("FENNEC_PARALLEL_STRESS", stress);
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = outcome(&record.output_before(DEADLINE)?);
+        assert_eq!(recorded.2, Some(ends), "{name} recorded at {recorded_threads}: {}", recorded.1);
+        for round in 0..rounds {
+            for threads in ["1", "4", "16"] {
+                let replayed = outcome(
+                    &fennec_command()
+                        .env("FENNEC_THREADS", threads)
+                        .env("FENNEC_PARALLEL_STRESS", stress)
+                        .args(["replay", &log.to_string_lossy()])
+                        .current_dir(&dir)
+                        .output_before(DEADLINE)?,
+                );
+                assert_eq!(
+                    replayed, recorded,
+                    "{name} recorded at {recorded_threads} (stress {stress}), replay {round} at {threads}"
+                );
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A `parallel` call where a piece fails replays from its own recording. Which later pieces had
+/// begun when the failure was noted depends on timing, and pieces that hadn't don't begin, so a
+/// replay used to run another set: 11 of 12 asked for an input its recording didn't have, or ended
+/// with one left over (#1804). Now the recording says which pieces a failure kept from starting,
+/// and a replay skips exactly those.
+#[test]
+fn a_parallel_call_where_a_piece_fails_replays_the_pieces_it_ran() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_at_one_four_and_sixteen("pieces-failing", PIECES_FAILING, 17, 0)?;
+    replays_at_one_four_and_sixteen("first-piece-failing", FIRST_PIECE_FAILING, 17, 0)
+}
+
+/// The same in a `for` loop and in a sum, which split their pieces their own way, and whose pieces
+/// fail by crashing, which ends the program: what it printed before is the recording's.
+#[test]
+fn a_parallel_loop_or_sum_where_a_piece_fails_replays_the_pieces_it_ran() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_at_one_four_and_sixteen("pieces-failing-in-a-loop", PIECES_FAILING_IN_A_LOOP, 5, 1)?;
+    replays_at_one_four_and_sixteen("pieces-failing-in-a-sum", PIECES_FAILING_IN_A_SUM, 5, 1)
+}
+
 const DRAWN_IN_A_TASK: &str = "from std.concurrent import Crashed
 
 def drawn(clock: Clock, entropy: Entropy) -> int:

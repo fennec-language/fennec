@@ -166,7 +166,17 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         return ended;
     }
     // A task stopped while it served stopped its server with it, and now fails as any wait cut
-    // short does. A round's failure that got as far as here is let go of: the stop comes first.
+    // short does, which a recording notes.
+    let_go_of_passed_up();
+    let cut = super::cut_short();
+    if cut {
+        crate::replay::stopped_in(crate::replay::StoppedIn::Serving);
+    }
+    i64::from(cut)
+}
+
+/// Lets go of a round's failure that got as far as the call serving, when a stop comes first.
+fn let_go_of_passed_up() {
     let failure = PASSED_UP.take().cast_unsigned();
     if failure != 0 {
         attempt(|state: &mut State| {
@@ -174,7 +184,6 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
             Ok(())
         });
     }
-    i64::from(super::cut_short())
 }
 
 /// What a call serving gives back once its server has ended: 2 with the failure a round passed
@@ -189,8 +198,23 @@ fn passed_up(passed: &Passed) -> i64 {
 
 /// `net_serve` in a replay: the recorded rounds run again with no socket, each reading and writing
 /// what its recording has, and the server stops once they've all ended, as if stopped there.
+///
+/// A task serving lends a copy of what its rounds are given, as `net_serve` does, and parks while
+/// they run: blocking its thread, it held up the rounds handed to its own worker, and the replay
+/// never ended (#1832).
 fn replayed(rounds: u64, body: ConnBody, env: i64, call: Option<&crate::replay::Task>) -> i64 {
     let Some(call) = call else { return 0 };
+    let in_task = super::super::parallel::here().is_some();
+    let given = if in_task && env != 0 {
+        let copied = attempt(|state: &mut State| {
+            super::super::guarded::copied_for_task(state, env.cast_unsigned()).map(Some)
+        });
+        let Some((copy, table)) = copied else { return 1 };
+        Some((copy, Arc::new(*table)))
+    } else {
+        None
+    };
+    let env = given.as_ref().map_or(env, |(copy, _)| copy.cast_signed());
     let passed: Passed = Arc::new(Mutex::new(None));
     let passing = Arc::clone(&passed);
     let replayed: super::Replayed = Arc::new(move |handle: i64| {
@@ -206,13 +230,33 @@ fn replayed(rounds: u64, body: ConnBody, env: i64, call: Option<&crate::replay::
         return fail("couldn't serve: this program has no workers to serve on".to_owned());
     };
     super::super::write_kept_output();
-    let lent = threads::lend();
+    let lent = match &given {
+        Some((_, table)) => Arc::clone(table),
+        None => threads::lend(),
+    };
     let finished = super::serve_replayed(rounds, pool, Some(&lent), (replayed, call));
-    threads::take_back(lent);
-    threads::settle(finished.owners);
+    if let Some((copy, table)) = given {
+        drop(lent);
+        let table = Arc::try_unwrap(table).unwrap_or_default();
+        super::super::with(|state| state.heap.adopt_made(table.into_blocks()));
+        threads::settle(finished.owners);
+        attempt(|state: &mut State| {
+            super::super::heap::release(state, copy);
+            Ok(())
+        });
+    } else {
+        threads::take_back(lent);
+        threads::settle(finished.owners);
+    }
     super::super::write_kept_output();
     let _ = writeln!(std::io::stderr(), "replay: the recording ends here, so the server is stopped");
-    passed_up(&passed)
+    let ended = passed_up(&passed);
+    // Stopped while it served, as its recording says: it fails as stopped, as the run did.
+    if crate::replay::stopped_in_as_recorded(crate::replay::StoppedIn::Serving) {
+        let_go_of_passed_up();
+        return 1;
+    }
+    ended
 }
 
 /// How many connections this worker is serving now.

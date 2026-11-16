@@ -131,6 +131,11 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     if entry != Entry::Main {
         let mut modules = Vec::new();
         find_modules(&src, &mut Vec::new(), &mut modules);
+        // A kit with no file of its own has nothing to check, lint or test, and passing it
+        // without a word hid that its files were beside `kit.toml`, where no command reads them.
+        if modules.is_empty() && !overlay.keys().any(|path| path.starts_with(&src)) {
+            return Err(Problems::unplaced(no_files(&root, &shown_root)));
+        }
         modules.sort();
         loader.parse_ahead(loader.own_modules(&modules));
         for module in modules {
@@ -141,6 +146,28 @@ pub(crate) fn kit(dir: &Path, shown_as: &str, entry: Entry, overlay: &Overlay) -
     let mut program = loader.finish(Some(manifest))?;
     with_pack_lock(&mut program, &root);
     Ok(program)
+}
+
+/// What a kit with no `.fen` file in `src/` says: where its files go, and which `.fen` files are
+/// beside `kit.toml` instead, as a kit's are in other languages' layouts.
+fn no_files(root: &Path, shown_root: &str) -> String {
+    let mut beside: Vec<String> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "fen"))
+        .filter_map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .collect();
+    beside.sort();
+    let help = if beside.is_empty() {
+        format!("a kit's files are in {shown_root}src/, with `main` in src/main.fen")
+    } else {
+        let moves: Vec<String> =
+            beside.iter().map(|name| format!("{shown_root}{name} to {shown_root}src/{name}")).collect();
+        format!("a kit's files are in {shown_root}src/, so no command reads these: move {}", moves.join(", "))
+    };
+    format!("error: {shown_root}src/ has no .fen file, so there's nothing in this kit\n  = help: {help}\n")
 }
 
 /// Whether a program loaded from the kit at `dir` has every one of the kit's own modules, as

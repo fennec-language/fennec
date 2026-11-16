@@ -1187,10 +1187,16 @@ fn entry_word(block: &[u64], at: u64, layout: Layout, entry: i64) -> Option<usiz
 
 /// `fennec_lock_save_entry(dict, entry)`: the value at `entry` in a dict a lock's log marked is
 /// about to be changed where it is, by native code that takes it out of its entry to change.
-/// Each of the value's words is saved in the log as it is, and the log takes an owner of its own
-/// of each block they hold: a crash puts the words back, and a normal end lets them go. A word
-/// saved already in this lock holds what was made under it, so saving an entry again does
-/// nothing.
+/// Each of the value's words is saved in the log as it is, for a crash to put back. A list, a dict
+/// or a struct's block a word holds is marked, as `fennec_lock_save_ref` marks one, so it's
+/// changed where it is too, and a crash undoes what was done to it; of any other block a word
+/// holds, the log takes an owner of its own, which a normal end lets go. A word saved already in
+/// this lock holds what was made under it, so saving an entry again does nothing.
+///
+/// After a crash, each word of the entry that holds a block has to hold what's current, with the
+/// entry's one owner of it, before the log is undone: a marked list that outgrew its room has
+/// moved, and the log goes by where it is now. So native code puts a value that's out back into
+/// its entry first.
 ///
 /// Native code calls it only for a dict whose count is the mark and one owner, and goes on with
 /// the entry it looked up: nothing here moves the dict or gives anything back. For any other
@@ -1219,7 +1225,11 @@ fn entry_saved(state: &mut State, dict: i64, entry: i64) -> Option<()> {
         None => {}
     }
     for (offset, word) in value.iter().enumerate() {
-        super::guarded::rollback::changing(state, at, place + offset, *word, holding.contains(&offset));
+        if holding.contains(&offset) {
+            super::guarded::rollback::changing_held(state, at, place + offset, *word);
+        } else {
+            super::guarded::rollback::changing(state, at, place + offset, *word, false);
+        }
     }
     Some(())
 }

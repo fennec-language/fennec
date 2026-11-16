@@ -1,0 +1,5 @@
+went 2 3 named 1, a text long enough for a block | 3 2 looped 1, a text long enough for a block
+failed 4 2 3 named 1, a text long enough for a block | 3 2 looped 1, a text long enough for a block
+went 3 6 named 2, a text long enough for a block | 6 8 looped 2, a text long enough for a block
+crashed 8 6 named 2, a text long enough for a block | 6 8 looped 2, a text long enough for a block
+went 1 7 named 0, a text long enough for a block | 7 8 looped 0, a text long enough for a block

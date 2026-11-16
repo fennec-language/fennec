@@ -127,7 +127,9 @@ impl Interp {
         }
     }
 
-    /// A `Buffer`'s methods, on the list it's held as. How much room it has isn't modeled.
+    /// A `Buffer`'s methods, on the list it's held as. Its room is known only as far as
+    /// `docs/language.md` promises it: at least what it holds, and right after `reserve(n)`, at
+    /// least `n` more.
     pub(crate) fn buffer_method(
         &mut self,
         receiver: Receiver,
@@ -145,6 +147,34 @@ impl Interp {
         let Receiver::Place(place) = receiver else {
             return unsupported(format!("the Buffer method `{name}` on a value that isn't a place"));
         };
+        if name == "capacity" && args.is_empty() {
+            let held = match self.read_place(&place, span)? {
+                Value::List(items) => i64::try_from(items.len()).unwrap_or(i64::MAX),
+                _ => return unsupported("a Buffer that isn't a list"),
+            };
+            let promised = match &self.reserved {
+                Some((frame, local, room))
+                    if place.path.is_empty() && *frame == place.frame && *local == place.name =>
+                {
+                    *room
+                }
+                _ => 0,
+            };
+            return Ok(Value::Room(held.max(promised)));
+        }
+        if let ("reserve", [Value::Int(more)]) = (name, args.as_slice()) {
+            let more = *more;
+            let held = match self.read_place(&place, span)? {
+                Value::List(items) => i64::try_from(items.len()).unwrap_or(i64::MAX),
+                _ => return unsupported("a Buffer that isn't a list"),
+            };
+            if more < 0 {
+                return unsupported("`reserve` of fewer than none");
+            }
+            self.reserved =
+                place.path.is_empty().then(|| (place.frame, place.name.clone(), held.saturating_add(more)));
+            return Ok(Value::Unit);
+        }
         self.change_place(&place, span, false, |value| {
             let Value::List(items) = value else { return unsupported("a Buffer that isn't a list") };
             match (name, args.as_mut_slice()) {
@@ -176,7 +206,6 @@ impl Interp {
                     items.truncate(usize::try_from(*keep).unwrap_or(0));
                     Ok(Value::Unit)
                 }
-                ("reserve", [Value::Int(_)]) => Ok(Value::Unit),
                 _ => unsupported(format!("the Buffer method `{name}`")),
             }
         })

@@ -26,6 +26,7 @@
 //!
 //! `--pin` writes what this run measured as the budgets.
 
+use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -105,22 +106,81 @@ struct Budget {
 
 /// What every run uses: the `fennec` measured, how its work is counted, and the folder runs work
 /// in.
-struct Setup {
+pub(crate) struct Setup {
     fennec: PathBuf,
     counter: Counter,
+    /// Whether GNU's `time` is at `/usr/bin/time`, to read the most memory a run held where
+    /// macOS's `time -l` doesn't.
+    gnu_time: bool,
     work: PathBuf,
+}
+
+impl Setup {
+    /// Measures `fennec`, working in `work`, which is made new, empty.
+    pub(crate) fn new(fennec: &Path, work: PathBuf) -> Result<Setup, String> {
+        let fennec = std::fs::canonicalize(fennec).map_err(|err| format!("{}: {err}", fennec.display()))?;
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
+        let counter = counter(&fennec, &work)?;
+        let gnu_time = !cfg!(target_os = "macos")
+            && Command::new("/usr/bin/time")
+                .arg("--version")
+                .output()
+                .is_ok_and(|output| String::from_utf8_lossy(&output.stderr).contains("GNU"));
+        Ok(Setup { fennec, counter, gnu_time, work })
+    }
+
+    pub(crate) fn work(&self) -> &Path {
+        &self.work
+    }
+
+    /// Whether instructions are counted here.
+    pub(crate) fn counts(&self) -> bool {
+        !matches!(self.counter, Counter::None)
+    }
 }
 
 /// How work is counted here.
 enum Counter {
     /// macOS's `time -l`, with the scripts in this folder standing for LLVM's tools, `cc` and the
-    /// linker, each writing its own count to the file in `BUILD_TIMES_COUNTS`.
+    /// linker, each writing its own report into the folder in `BUILD_TIMES_COUNTS`.
     Apple {
         tools: PathBuf,
     },
     /// `perf stat`, which counts every process.
     Perf,
     None,
+}
+
+/// What one run of `fennec` took.
+pub(crate) struct Counted {
+    pub(crate) wall: Duration,
+    /// What each process took, by what it was: `fennec`, then each of the tools it started, added
+    /// up by name, when they can be counted. `perf` counts them all as one.
+    pub(crate) by_tool: Option<Vec<ToolCount>>,
+    /// The most memory any one of its processes held, in KB, when it can be read.
+    pub(crate) peak_kb: Option<u64>,
+    /// What `fennec` printed.
+    pub(crate) said: String,
+}
+
+/// The work one kind of process did in a run, added up over each time it ran.
+#[derive(Clone)]
+pub(crate) struct ToolCount {
+    pub(crate) name: String,
+    /// How many times it ran.
+    pub(crate) runs: u64,
+    pub(crate) instructions: u64,
+    /// The wall time its processes took, added up, where it's reported: tools that run at once
+    /// add up to more than the run took.
+    pub(crate) took: Option<Duration>,
+}
+
+impl Counted {
+    /// Every process's instructions, added up.
+    pub(crate) fn instructions(&self) -> Option<u64> {
+        self.by_tool.as_ref().map(|by_tool| by_tool.iter().map(|tool| tool.instructions).sum())
+    }
 }
 
 pub(crate) fn command(mut args: impl Iterator<Item = String>) -> Result<bool, String> {
@@ -146,14 +206,10 @@ pub(crate) fn command(mut args: impl Iterator<Item = String>) -> Result<bool, St
     if runs == 0 {
         return Err("`--runs` needs at least one run".to_owned());
     }
-    let fennec = std::fs::canonicalize(&fennec).map_err(|err| format!("{}: {err}", fennec.display()))?;
     let work =
         std::fs::canonicalize(".").map_err(|err| err.to_string())?.join(crate::OUT_DIR).join("build-times");
-    let _ = std::fs::remove_dir_all(&work);
-    std::fs::create_dir_all(&work).map_err(|err| format!("{}: {err}", work.display()))?;
-    let counter = counter(&fennec, &work)?;
-    let programs = programs(&work)?;
-    let setup = Setup { fennec, counter, work };
+    let setup = Setup::new(&fennec, work)?;
+    let programs = programs(&setup.work)?;
     let pinned = read_budgets(&budgets)?;
     println!(
         "build times on {} ({} cores), the median of {runs} runs",
@@ -233,7 +289,7 @@ fn measure_all(
 }
 
 /// Whether `found` is more than `percent` over `budget`.
-fn over(found: u128, budget: u128, percent: u128) -> bool {
+pub(crate) fn over(found: u128, budget: u128, percent: u128) -> bool {
     found * 100 > budget * (100 + percent)
 }
 
@@ -249,12 +305,12 @@ fn print_line(name: &str, step: Step, found: &Found, budget: Option<Budget>) {
 }
 
 /// A count in billions, to three places.
-fn billions(count: u64) -> String {
+pub(crate) fn billions(count: u64) -> String {
     let millions = count / 1_000_000;
     format!("{}.{:03} G", millions / 1000, millions % 1000)
 }
 
-fn seconds(wall: Duration) -> String {
+pub(crate) fn seconds(wall: Duration) -> String {
     format!("{:.2} s", wall.as_secs_f64())
 }
 
@@ -365,7 +421,7 @@ fn measure(setup: &Setup, program: &Measured, step: Step, runs: usize) -> Result
 }
 
 /// The middle count, or the lower middle one, of some counts.
-fn median(counts: &mut [u64]) -> Option<u64> {
+pub(crate) fn median(counts: &mut [u64]) -> Option<u64> {
     counts.sort_unstable();
     counts.get(counts.len().checked_sub(1)? / 2).copied()
 }
@@ -393,74 +449,217 @@ fn ran(
     args: &[&str],
     own: bool,
 ) -> Result<(Option<u64>, Duration), String> {
-    let (fennec, work) = (&setup.fennec, &setup.work);
-    let counter = if counting { &setup.counter } else { &Counter::None };
-    let report = work.join("count.txt");
-    let children = work.join("children.txt");
-    let _ = std::fs::remove_file(&report);
-    let _ = std::fs::write(&children, "");
-    let mut command = match counter {
-        Counter::Apple { .. } => {
-            let mut time = Command::new("/usr/bin/time");
-            time.arg("-l").arg("-o").arg(&report).arg(fennec);
-            time
-        }
-        Counter::Perf => {
-            let mut perf = Command::new("perf");
-            perf.args(["stat", "-x,", "-e", "instructions:u", "-o"]).arg(&report);
-            if own {
-                perf.arg("--no-inherit");
-            }
-            perf.arg("--").arg(fennec);
-            perf
-        }
-        Counter::None => Command::new(fennec),
-    };
+    let run =
+        Invocation { args, folder: &program.folder, stdin: program.stdin.as_deref(), home, counting, own };
+    let found = counted(setup, &run).map_err(|err| format!("{err}, for {}", program.name))?;
+    Ok((found.instructions(), found.wall))
+}
+
+/// One run of `fennec`: what it's given, where, and what of it is counted.
+pub(crate) struct Invocation<'a> {
+    pub(crate) args: &'a [&'a str],
+    /// The folder it runs in.
+    pub(crate) folder: &'a Path,
+    pub(crate) stdin: Option<&'a Path>,
+    /// Its Fennec folder, `FENNEC_HOME`.
+    pub(crate) home: &'a Path,
+    /// Whether its work is counted, where it can be.
+    pub(crate) counting: bool,
+    /// Whether only `fennec` itself is counted, not the program a run starts.
+    pub(crate) own: bool,
+}
+
+/// Where a run's counts are written: `fennec`'s own `time -l` or `perf` report, a folder of a
+/// report for each tool it started, and GNU `time`'s reading of the most memory held.
+struct Reports {
+    own: PathBuf,
+    tools: PathBuf,
+    peak: PathBuf,
+}
+
+impl Reports {
+    /// The files in `work`, emptied of the last run's.
+    fn new(work: &Path) -> Result<Reports, String> {
+        let reports = Reports {
+            own: work.join("count.txt"),
+            tools: work.join("children"),
+            peak: work.join("peak.txt"),
+        };
+        let _ = std::fs::remove_file(&reports.own);
+        let _ = std::fs::remove_file(&reports.peak);
+        let _ = std::fs::remove_dir_all(&reports.tools);
+        std::fs::create_dir_all(&reports.tools)
+            .map_err(|err| format!("{}: {err}", reports.tools.display()))?;
+        Ok(reports)
+    }
+}
+
+/// Runs `fennec` as `run` says: how long it took, the instructions it and the tools it started
+/// took, where they're counted, and the most memory one of them held, where that can be read.
+pub(crate) fn counted(setup: &Setup, run: &Invocation<'_>) -> Result<Counted, String> {
+    let counter = if run.counting { &setup.counter } else { &Counter::None };
+    let reports = Reports::new(&setup.work)?;
+    let line = command_line(setup, counter, &reports, run);
+    let Some((program, rest)) = line.split_first() else { return Err("no command to run".to_owned()) };
+    let mut command = Command::new(program);
     command
-        .args(args)
-        .current_dir(&program.folder)
-        .env("FENNEC_HOME", home)
+        .args(rest)
+        .args(run.args)
+        .current_dir(run.folder)
+        .env("FENNEC_HOME", run.home)
         // The daemon would do the work in a process of its own, out of what's counted.
         .env("FENNEC_NO_DAEMON", "1")
         .env("FENNEC_RUN_WAITS", "1")
-        .stdout(Stdio::null())
+        // What's measured is an everyday build, not one checking the compiler's proofs, as the
+        // nightly jobs' builds do.
+        .env_remove("FENNEC_CHECK_PROOFS")
+        .env_remove("FENNEC_STRIP_FACTS")
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    command.stdin(match &program.stdin {
+    command.stdin(match run.stdin {
         Some(path) => {
             std::fs::File::open(path).map(Stdio::from).map_err(|err| format!("{}: {err}", path.display()))?
         }
         None => Stdio::null(),
     });
-    if let (Counter::Apple { tools }, false) = (counter, own) {
+    if let (Counter::Apple { tools }, false) = (counter, run.own) {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut paths = vec![tools.clone()];
         paths.extend(std::env::split_paths(&path));
         command
             .env("PATH", std::env::join_paths(paths).map_err(|err| err.to_string())?)
             .env("FENNEC_LLVM_BIN", tools)
-            .env("BUILD_TIMES_COUNTS", &children);
+            .env("BUILD_TIMES_COUNTS", &reports.tools);
     }
     let started = Instant::now();
-    let output = command.output().map_err(|err| format!("couldn't run {}: {err}", fennec.display()))?;
+    let output = command.output().map_err(|err| format!("couldn't run {}: {err}", setup.fennec.display()))?;
     let wall = started.elapsed();
     if !output.status.success() {
         return Err(format!(
-            "`fennec {}` for {} failed:\n{}",
-            args.join(" "),
-            program.name,
+            "`fennec {}` failed:\n{}",
+            run.args.join(" "),
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    let count = match counter {
+    let (by_tool, peak_kb) = read_counts(counter, &reports);
+    Ok(Counted { wall, by_tool, peak_kb, said: String::from_utf8_lossy(&output.stdout).into_owned() })
+}
+
+/// The command line up to `fennec`'s own arguments: GNU's `time`, reading the most memory a
+/// process and the ones it waited for held, where it's there and macOS's `time -l` isn't; then
+/// what counts instructions; then `fennec`.
+fn command_line(setup: &Setup, counter: &Counter, reports: &Reports, run: &Invocation<'_>) -> Vec<OsString> {
+    let mut line: Vec<OsString> = Vec::new();
+    if setup.gnu_time && run.counting {
+        line.extend(["/usr/bin/time", "-f", "%M", "-o"].map(OsString::from));
+        line.push(reports.peak.clone().into());
+    }
+    match counter {
         Counter::Apple { .. } => {
-            let own = apple_counts(&std::fs::read_to_string(&report).unwrap_or_default());
-            let started = apple_counts(&std::fs::read_to_string(&children).unwrap_or_default());
-            own.map(|own| own + started.unwrap_or(0))
+            line.extend(["/usr/bin/time", "-l", "-o"].map(OsString::from));
+            line.push(reports.own.clone().into());
         }
-        Counter::Perf => perf_count(&std::fs::read_to_string(&report).unwrap_or_default()),
-        Counter::None => None,
+        Counter::Perf => {
+            line.extend(["perf", "stat", "-x,", "-e", "instructions:u", "-o"].map(OsString::from));
+            line.push(reports.own.clone().into());
+            if run.own {
+                line.push("--no-inherit".into());
+            }
+            line.push("--".into());
+        }
+        Counter::None => {}
+    }
+    line.push(setup.fennec.clone().into());
+    line
+}
+
+/// What a run's reports say: the instructions by process, added up by name, and the most memory
+/// one process held, in KB.
+fn read_counts(counter: &Counter, reports: &Reports) -> (Option<Vec<ToolCount>>, Option<u64>) {
+    let (by_tool, apple_peak) = match counter {
+        Counter::Apple { .. } => {
+            let own = std::fs::read_to_string(&reports.own).unwrap_or_default();
+            let mut by_tool: Vec<ToolCount> = Vec::new();
+            let mut peak = apple_peak(&own);
+            if let Some(instructions) = apple_counts(&own) {
+                by_tool.push(ToolCount {
+                    name: "fennec".to_owned(),
+                    runs: 1,
+                    instructions,
+                    took: apple_real(&own),
+                });
+                for (name, text) in &tool_reports(&reports.tools) {
+                    peak = peak.max(apple_peak(text));
+                    let Some(instructions) = apple_counts(text) else { continue };
+                    let real = apple_real(text);
+                    match by_tool.iter_mut().find(|tool| tool.name == *name) {
+                        Some(tool) => {
+                            tool.runs += 1;
+                            tool.instructions += instructions;
+                            tool.took = tool.took.zip(real).map(|(before, now)| before + now);
+                        }
+                        None => {
+                            by_tool.push(ToolCount { name: name.clone(), runs: 1, instructions, took: real });
+                        }
+                    }
+                }
+            }
+            ((!by_tool.is_empty()).then_some(by_tool), peak)
+        }
+        Counter::Perf => {
+            let count = perf_count(&std::fs::read_to_string(&reports.own).unwrap_or_default());
+            (
+                count.map(|instructions| {
+                    vec![ToolCount { name: "all".to_owned(), runs: 1, instructions, took: None }]
+                }),
+                None,
+            )
+        }
+        Counter::None => (None, None),
     };
-    Ok((count, wall))
+    let peak_kb = apple_peak.map(|bytes| bytes / 1024).or_else(|| {
+        let text = std::fs::read_to_string(&reports.peak).ok()?;
+        text.lines().rev().find_map(|line| line.trim().parse().ok())
+    });
+    (by_tool, peak_kb)
+}
+
+/// Each tool's `time -l` report in `folder`, by the tool's name: each is named for its tool and
+/// the process it was, as `opt.4321`, so tools that run at once never write into one file.
+fn tool_reports(folder: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
+    let mut reports: Vec<(String, String)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let tool = name.split('.').next()?.to_owned();
+            Some((tool, std::fs::read_to_string(entry.path()).ok()?))
+        })
+        .collect();
+    reports.sort();
+    reports
+}
+
+/// The wall time a `time -l` report says its processes took, added up.
+fn apple_real(report: &str) -> Option<Duration> {
+    let seconds: Vec<f64> = report
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let seconds = words.next()?;
+            if words.next()? == "real" { seconds.parse().ok() } else { None }
+        })
+        .collect();
+    (!seconds.is_empty()).then(|| Duration::from_secs_f64(seconds.iter().sum()))
+}
+
+/// The most memory a `time -l` report says its process held, in bytes.
+fn apple_peak(report: &str) -> Option<u64> {
+    report
+        .lines()
+        .filter(|line| line.contains("maximum resident set size"))
+        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+        .max()
 }
 
 /// Every `instructions retired` count in a `time -l` report, added up, or None if there's none.
@@ -479,7 +678,7 @@ fn perf_count(report: &str) -> Option<u64> {
 }
 
 /// The machine's load over the last minute.
-fn load() -> f64 {
+pub(crate) fn load() -> f64 {
     let text = if cfg!(target_os = "macos") {
         Command::new("sysctl")
             .args(["-n", "vm.loadavg"])
@@ -509,16 +708,20 @@ fn counter(fennec: &Path, work: &Path) -> Result<Counter, String> {
 }
 
 /// A folder standing for LLVM's: `opt`, `llc` and `llvm-link` each start the real one through
-/// `time -l`, writing its count to the file in `BUILD_TIMES_COUNTS`, and the rest are links to the
-/// real ones. `cc` and `ld` do the same for the C compiler and the linker it starts, which `-B`
+/// `time -l`, writing its report into the folder in `BUILD_TIMES_COUNTS`, and the rest are links
+/// to the real ones. `cc` and `ld` do the same for the C compiler and the linker it starts, which `-B`
 /// has it find here.
 fn counting_tools(fennec: &Path, tools: &Path) -> Result<(), String> {
     let real = llvm_folder(fennec)?;
     std::fs::create_dir_all(tools).map_err(|err| format!("{}: {err}", tools.display()))?;
     let counted = |name: &str, command: &str| -> Result<(), String> {
         let script = tools.join(name);
-        let text =
-            format!("#!/bin/sh\nexec /usr/bin/time -l -a -o \"$BUILD_TIMES_COUNTS\" {command} \"$@\"\n");
+        // A file of its own for each process, named for the tool, made new by `mktemp`: a process
+        // id alone was used again within one build of thousands of functions, and a report written
+        // over lost a run.
+        let text = format!(
+            "#!/bin/sh\nexec /usr/bin/time -l -o \"$(mktemp \"$BUILD_TIMES_COUNTS/{name}.XXXXXX\")\" {command} \"$@\"\n"
+        );
         std::fs::write(&script, text).map_err(|err| format!("{}: {err}", script.display()))?;
         executable(&script)
     };
@@ -641,7 +844,7 @@ fn write_budgets(path: &Path, measured: &[(String, Step, Found)]) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::{apple_counts, billions, median, over, perf_count};
+    use super::{apple_counts, apple_peak, apple_real, billions, median, over, perf_count};
 
     #[test]
     fn a_count_over_its_budget_by_more_than_the_slack_is_over() {
@@ -656,6 +859,14 @@ mod tests {
         let report = "  1.0 real 0.5 user\n  4000  instructions retired\n  9  cycles elapsed\n  2.0 real\n  600  instructions retired\n";
         assert_eq!(apple_counts(report), Some(4600));
         assert_eq!(apple_counts("  1.0 real\n"), None);
+    }
+
+    #[test]
+    fn a_report_gives_its_wall_time_and_most_memory() {
+        let report = "        1.25 real         0.50 user\n  52428800  maximum resident set size\n        0.75 real\n  1024  maximum resident set size\n";
+        assert_eq!(apple_real(report), Some(std::time::Duration::from_secs(2)));
+        assert_eq!(apple_peak(report), Some(52_428_800));
+        assert_eq!(apple_real("  4000  instructions retired\n"), None);
     }
 
     #[test]

@@ -195,6 +195,7 @@ const RUN_FROM_SOURCE: &[&str] = &[
     "toml",
     "json",
     "net",
+    "pack",
 ];
 
 /// The capabilities `main` may take whose type a module run from its own source declares, which

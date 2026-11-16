@@ -1,6 +1,7 @@
 //! Lowering checked programs to the IR: the printed form is pinned for a few functions, and
 //! everything lowered from every example has to pass the validator.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -2240,6 +2241,13 @@ def h() -> list[int]:
     assert!(names.contains(&"f[int].again"), "{names:?}");
 }
 
+/// What each function that wasn't lowered says, as `function: why`.
+fn refusals(program: &Program) -> Vec<String> {
+    program.not_lowered.iter().map(|skipped| format!("{}: {}", skipped.function, skipped.why)).collect()
+}
+
+/// A generic that calls itself with a bigger type each time would need a copy for every size. It's
+/// stopped once the type is nested past 32, and the call says so, naming the copy and how deep.
 #[test]
 fn a_generic_that_calls_itself_with_a_bigger_type_stops() {
     let source = "def grow[T](x: T, n: int) -> int:
@@ -2251,8 +2259,75 @@ def f() -> int:
     return grow(1, 3)
 ";
     let program = lowered(source).unwrap();
-    assert_ne!(program.not_lowered, []);
-    assert!(program.functions.len() <= 2001, "{}", program.functions.len());
+    let said = refusals(&program);
+    assert!(said.iter().any(|why| why.contains("a type nested 33 deep")), "{said:?}");
+    assert!(program.functions.len() <= 40, "{}", program.functions.len());
+}
+
+/// One that calls itself with two bigger types would double its copies with each size: once one
+/// of them runs past the depth, no more copies of it are made, so it stops after a few dozen, each
+/// call that asked for one saying why. Every branch used to go on down to the depth, and a build
+/// said so ten thousand times.
+#[test]
+fn a_generic_that_doubles_its_copies_stops_at_the_first_too_deep() {
+    let source = "def fan[T](x: T, n: int) -> int:
+    if n == 0:
+        return 0
+    return fan([x], n - 1) + fan((x, 1), n - 1)
+
+def f() -> int:
+    return fan(1, 3)
+";
+    let program = lowered(source).unwrap();
+    let said = refusals(&program);
+    assert!(said.iter().any(|why| why.contains("a type nested 33 deep")), "{said:?}");
+    assert!(said.iter().any(|why| why.contains("would need another copy of `fan`")), "{said:?}");
+    assert!(said.len() <= 70, "{}", said.len());
+    assert!(program.functions.len() <= 70, "{}", program.functions.len());
+}
+
+/// A chain of generics, each asking for copies of the next with two types, doubles them at every
+/// step without any type nesting deep: 17 steps ask for 131,071. The backstop stops it, past 16
+/// copies for each of the program's functions, and says so.
+#[test]
+fn a_chain_of_generics_doubling_their_copies_stops_at_the_backstop() {
+    let steps = 16;
+    let mut source = String::new();
+    for step in 0..steps {
+        let next = step + 1;
+        let _ = writeln!(
+            source,
+            "def step_{step}[T](x: T) -> int:\n    return step_{next}((x, 1)) + step_{next}([x])\n"
+        );
+    }
+    let _ = writeln!(source, "def step_{steps}[T](x: T) -> int:\n    return 1\n");
+    source.push_str("def f() -> int:\n    return step_0(1)\n");
+    let program = lowered(&source).unwrap();
+    let said = refusals(&program);
+    assert!(said.iter().any(|why| why.contains("can ask for, 16 for each")), "{:?}", said.first());
+    assert!(!said.iter().any(|why| why.contains("nested")), "{:?}", said.first());
+}
+
+/// A program of ordinary generics, many of them each used with a few types, asks for well over
+/// 2,000 copies, as a large program does, and every one is lowered. Past 2,000 the copies used
+/// to be refused, and the calls that asked for them said they didn't say what their types stood
+/// for.
+#[test]
+fn a_program_asking_for_thousands_of_copies_has_them_all() {
+    let mut source = String::new();
+    for at in 0..800 {
+        let _ = writeln!(source, "def kept_{at}[T](x: T) -> T:\n    return x\n");
+    }
+    source.push_str("def f() -> int:\n    mut total = 0\n");
+    for at in 0..800 {
+        let _ =
+            writeln!(source, "    total += kept_{at}({at}) + len(kept_{at}(\"t\")) + len(kept_{at}([{at}]))");
+    }
+    source.push_str("    return total\n");
+    let program = lowered(&source).unwrap();
+    assert_eq!(refusals(&program), Vec::<String>::new());
+    let copies = program.functions.iter().filter(|function| function.name.starts_with("kept_")).count();
+    assert_eq!(copies, 2400);
 }
 
 #[test]

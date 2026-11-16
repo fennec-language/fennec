@@ -4,10 +4,15 @@
 # the handlers always find one. A request once held a blocking thread until it was answered: as
 # many clients as there were such threads held them all, no handler could run, and every request
 # timed out. Each gives up after 20 seconds, so that fails rather than hangs.
+#
+# A hundred clients: more than the runtime's 64 blocking threads, so requests holding them would
+# leave the handlers none, and fewer than the 128 connections the Mac keeps waiting for a server to
+# take. Three hundred at once overflowed that queue when a loaded machine left the server's accepts
+# behind, and the Mac reset the rest (#1903).
 from std.concurrent import Crashed
 from std.net import NetError, Request, Response
 
-CLIENTS = 300
+CLIENTS = 100
 
 # Answers a request once the disk has said whether this folder is there.
 def looked(fs: Fs, request: Request) -> Response:

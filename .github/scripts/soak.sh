@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # A real program run for a long time under its own scripted load, to see that what it holds levels
-# off: its resident memory and the runtime's count of live blocks are read every second, the lowest
-# of each minute kept, and a line fitted through those after a warm-up has to rise by less than a
-# small part of where it started. The lowest, because a reading in the middle of a round holds what
-# that round has in flight, which comes and goes: what a leak leaves is the floor between rounds
-# creeping up.
+# off: its resident memory, the runtime's count of live blocks, and the most any running task's list
+# of what it made holds (`task held`, #1794) are read every second, the lowest of each minute kept,
+# and a line fitted through those after a warm-up has to rise by less than a small part of where it
+# started. The lowest, because a reading in the middle of a round holds what that round has in
+# flight, which comes and goes: what a leak leaves is the floor between rounds creeping up.
 #
 #   .github/scripts/soak.sh target/release/fennec bench/realworld/game_server.fen soak.md [minutes]
 #
@@ -77,15 +77,28 @@ if ! "$fennec" build --release "$work/$name.fen" -o "$work/$name" > "$work/built
   exit 1
 fi
 
+# First, the program as it is, one round run to its end under `FENNEC_COUNTS`: its counts line says
+# how many waits blocked their thread rather than parking, as `blocked_waits N` when there were
+# any: a network wait outside a task, or a task's blocking work that couldn't park and ran where it
+# was (#1815). A server should have none, and one that blocks blocks every round, so one shows it.
+if ! "$fennec" build --release "$program" -o "$work/once" > "$work/built" 2>&1; then
+  echo "::error::$name didn't build as it is"
+  cat "$work/built"
+  exit 1
+fi
+FENNEC_COUNTS=1 TMPDIR="$work" "$work/once" > /dev/null 2> "$work/once-said" || true
+counted=$(grep -E ' live [0-9]+$' "$work/once-said" | tail -n 1)
+blocked=$(sed -nE 's/.* blocked_waits ([0-9]+).*/\1/p' <<< "$counted")
+
 # Started in a folder of its own, its output thrown away, and read every minute.
 FENNEC_LIVE_REPORT="$work/live" TMPDIR="$work" "$work/$name" > "$work/printed" 2> "$work/said" &
 pid=$!
-echo "minute rss_kb live_blocks printed_lines" > "$work/samples"
+echo "minute rss_kb live_blocks printed_lines task_held" > "$work/samples"
 stopped=no
 stalled=no
 printed=0
 for minute in $(seq 1 "$minutes"); do
-  rss='' live=''
+  rss='' live='' held=''
   for _ in $(seq 1 60); do
     sleep 1
     kill -0 "$pid" 2> /dev/null || break
@@ -93,6 +106,9 @@ for minute in $(seq 1 "$minutes"); do
     [ -n "$now" ] && { [ -z "$rss" ] || [ "$now" -lt "$rss" ]; } && rss=$now
     now=$(sed -n 's/^blocks //p' "$work/live" 2> /dev/null)
     [ -n "$now" ] && { [ -z "$live" ] || [ "$now" -lt "$live" ]; } && live=$now
+    # The most any running task's list of what it made holds, where the runtime says (#1794).
+    now=$(sed -n 's/^task held //p' "$work/live" 2> /dev/null)
+    [ -n "$now" ] && { [ -z "$held" ] || [ "$now" -lt "$held" ]; } && held=$now
   done
   if ! kill -0 "$pid" 2> /dev/null; then
     stopped=$minute
@@ -102,7 +118,7 @@ for minute in $(seq 1 "$minutes"); do
   now=$(wc -l < "$work/printed" | tr -d ' ')
   [ "$now" -gt "$printed" ] || [ "$stalled" != no ] || stalled=$minute
   printed=$now
-  echo "$minute ${rss:-0} ${live:-0} $printed" >> "$work/samples"
+  echo "$minute ${rss:-0} ${live:-0} $printed ${held:-0}" >> "$work/samples"
   echo "$name $([ "$where" = task ] && echo "in a task" || echo "on its own thread"), minute $minute: at least ${rss:-?} KB resident and ${live:-?} live blocks, $printed lines printed"
 done
 kill "$pid" 2> /dev/null
@@ -124,6 +140,18 @@ failed=0
 {
   echo "## Soak: $name, its rounds in $([ "$where" = task ] && echo "one long task" || echo "its own thread")"
   echo
+  if [ -z "$counted" ]; then
+    echo "One round run to its end said no counts, so whether its waits blocked can't be told."
+    echo
+    failed=1
+  elif [ "${blocked:-0}" -gt 0 ]; then
+    echo "One round blocked a thread $blocked times rather than parking: \`$counted\`."
+    echo
+    failed=1
+  else
+    echo "One round run to its end blocked no thread: \`$counted\`."
+    echo
+  fi
   if [ "$stalled" != no ]; then
     echo "No round finished in minute $stalled: it stopped making progress, so its curves say nothing."
     echo
@@ -139,7 +167,8 @@ failed=0
     failed=1
   fi
   # Each measure, its column and the least rise that counts against it.
-  for what in "resident memory, KB:2:16384" "live blocks:3:64"; do
+  # A task's list of what it made, held to a bound since #1794, which a leak in it passes.
+  for what in "resident memory, KB:2:16384" "live blocks:3:64" "a task's list of what it made:5:4096"; do
     least=${what##*:}
     what=${what%:*}
     read -r start end slope <<< "$(fit "${what##*:}")"
@@ -156,7 +185,7 @@ failed=0
     [ "$over" -eq 1 ] && failed=1
   done
   echo
-  echo "Each minute's lowest reading, resident memory in KB and live blocks, and the lines it had printed:"
+  echo "Each minute's lowest reading, resident memory in KB, live blocks, the lines it had printed, and the most a task's list held:"
   echo
   echo '```'
   cat "$work/samples"

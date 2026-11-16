@@ -2263,10 +2263,12 @@ def f() -> int:
     assert!(program.functions.len() <= 40, "{}", program.functions.len());
 }
 
-/// One that calls itself with two bigger types doubles its copies with each size, well within
-/// the depth: a backstop that grows with the program stops it, and the call says why.
+/// One that calls itself with two bigger types would double its copies with each size: once one
+/// of them runs past the depth, no more copies of it are made, so it stops after a few dozen, each
+/// call that asked for one saying why. Every branch used to go on down to the depth, and a build
+/// said so ten thousand times.
 #[test]
-fn a_generic_that_doubles_its_copies_stops_at_the_backstop() {
+fn a_generic_that_doubles_its_copies_stops_at_the_first_too_deep() {
     let source = "def fan[T](x: T, n: int) -> int:
     if n == 0:
         return 0
@@ -2277,10 +2279,31 @@ def f() -> int:
 ";
     let program = lowered(source).unwrap();
     let said = refusals(&program);
-    assert!(
-        said.iter().any(|why| why.contains("calls itself with bigger types in more than one way")),
-        "{said:?}"
-    );
+    assert!(said.iter().any(|why| why.contains("a type nested 33 deep")), "{said:?}");
+    assert!(said.iter().any(|why| why.contains("would need another copy of `fan`")), "{said:?}");
+    assert!(said.len() <= 70, "{}", said.len());
+    assert!(program.functions.len() <= 70, "{}", program.functions.len());
+}
+
+/// A chain of generics, each asking for copies of the next with two types, doubles them at every
+/// step without any type nesting deep: 17 steps ask for 131,071. The backstop stops it, past 16
+/// copies for each of the program's functions, and says so.
+#[test]
+fn a_chain_of_generics_doubling_their_copies_stops_at_the_backstop() {
+    let steps = 16;
+    let mut source = String::new();
+    for step in 0..steps {
+        let next = step + 1;
+        source.push_str(&format!(
+            "def step_{step}[T](x: T) -> int:\n    return step_{next}((x, 1)) + step_{next}([x])\n\n"
+        ));
+    }
+    source.push_str(&format!("def step_{steps}[T](x: T) -> int:\n    return 1\n\n"));
+    source.push_str("def f() -> int:\n    return step_0(1)\n");
+    let program = lowered(&source).unwrap();
+    let said = refusals(&program);
+    assert!(said.iter().any(|why| why.contains("can ask for, 16 for each")), "{:?}", said.first());
+    assert!(!said.iter().any(|why| why.contains("nested")), "{:?}", said.first());
 }
 
 /// A program of ordinary generics, many of them each used with a few types, asks for well over

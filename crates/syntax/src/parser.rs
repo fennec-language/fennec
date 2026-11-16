@@ -52,8 +52,11 @@ fn no_double_underscores(tokens: &[Token]) -> Result<(), Diagnostic> {
             }
             Tok::FStr(parts) | Tok::TStr(parts) => {
                 for part in parts {
-                    if let FPart::Expr { source, offset, .. } = part {
-                        no_double_underscores(&lex(source, *offset)?)?;
+                    // Code that doesn't lex is the parser's to report, where it reads it.
+                    if let FPart::Expr { source, offset, .. } = part
+                        && let Ok(code) = interpolated_tokens(source, *offset)
+                    {
+                        no_double_underscores(&code)?;
                     }
                 }
             }
@@ -61,6 +64,14 @@ fn no_double_underscores(tokens: &[Token]) -> Result<(), Diagnostic> {
         }
     }
     Ok(())
+}
+
+/// The tokens of the code inside an f-string's or a template's braces, lexed on its own. A leading
+/// space would read as indentation, so it's left out, and the offset moved past it.
+fn interpolated_tokens(source: &str, offset: u32) -> Result<Vec<Token>, Diagnostic> {
+    let trimmed = source.trim_start();
+    let skipped = source.len() - trimmed.len();
+    lex(trimmed, Span::new(skipped, skipped).shifted(offset).start)
 }
 
 /// Parses a standard library source. Its spans start at `Span::PRELUDE`, so a mistake found

@@ -133,6 +133,8 @@ fn a_name_with_two_underscores_in_a_row_is_the_compilers() {
         ("SAVED__NAMES_0_ = [\"evil\"]", "SAVED__NAMES_0_"),
         ("x = f\"{held__lock}\"", "held__lock"),
         ("x = f\"{len(a__b)}\"", "a__b"),
+        ("x = f\"{ a} { a__b:>3}\"", "a__b"),
+        ("x = t\"{ a__b}\"", "a__b"),
         ("x = __init__", "__init__"),
     ] {
         let error = fennec_syntax::parse(&format!("{source}\n")).err();
@@ -151,6 +153,11 @@ fn a_name_with_two_underscores_in_a_row_is_the_compilers() {
         );
     }
     assert!(fennec_syntax::parse("x = \"a__b is text\"\n").is_ok());
+    // What's in braces is read as the parser reads it, past a leading space, and pointed at there.
+    assert!(fennec_syntax::parse("x = f\"{ a} { b:>3}\"\n").is_ok());
+    let spaced = "x = f\"{  a__b}\"\n";
+    let at = spaced.find("a__b").and_then(|at| u32::try_from(at).ok());
+    assert_eq!(fennec_syntax::parse(spaced).err().map(|diagnostic| diagnostic.span.start), at);
     assert!(
         fennec_syntax::parse_written(
             "def route__1(request__route: int) -> int:\n    return request__route\n"

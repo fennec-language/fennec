@@ -12648,6 +12648,56 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
     Ok(())
 }
 
+/// A program of ordinary generics, each used with a few types, asks for more than 2,000 copies of
+/// them, as one of about 53,000 lines does, and builds and runs. Past 2,000 the copies were
+/// refused, and the build stopped at a call that "doesn't say what its types stand for", where
+/// `fennec check` said nothing (#1896). Built as a release, which builds it in a few seconds where
+/// a cold dev build takes ten times as long: the copies are made the same way in both.
+#[test]
+fn a_program_asking_for_thousands_of_generic_copies_builds_and_runs() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let (generics, parts) = (800, 8);
+    let mut source = String::new();
+    for at in 0..generics {
+        let _ = writeln!(source, "def kept_{at}[T](value: T) -> T:\n    return value\n");
+    }
+    for part in 0..parts {
+        let _ = writeln!(source, "def part_{part}() -> int:\n    mut total = 0");
+        for at in (part * generics / parts)..((part + 1) * generics / parts) {
+            let _ = writeln!(
+                source,
+                "    total += kept_{at}({at}) + len(kept_{at}(\"some text\")) + len(kept_{at}([{at}, {at}]))"
+            );
+        }
+        source.push_str("    return total\n\n");
+    }
+    let parts_added: Vec<String> = (0..parts).map(|part| format!("part_{part}()")).collect();
+    let _ = writeln!(source, "def main(stdout: Stdout):\n    stdout.print({})", parts_added.join(" + "));
+    let total: usize = (0..generics).map(|at| at + "some text".len() + 2).sum();
+    let dir = folder("thousands_of_copies")?;
+    let (program, executable) = (dir.join("copies.fen"), dir.join("copies"));
+    std::fs::write(&program, &source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", "--release"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        format!("{total}\n"),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed
 
 def kept_then_crash(at: int):

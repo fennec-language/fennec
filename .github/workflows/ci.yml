@@ -479,7 +479,7 @@ jobs:
     name: Licenses, advisories and sources
     needs: changes
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -488,6 +488,14 @@ jobs:
         with:
           tool: cargo-deny@0.20.2
       - run: cargo deny --locked check
+      # The runtime ships inside every Fennec program, so its crates are held to more: an advisory
+      # of any kind fails, unmaintained, unsound or yanked as well as a vulnerability. And a crate
+      # it names has to be in `.github/runtime-crates.txt`, saying what it's for.
+      - name: The runtime's crates, which ship inside every program
+        run: |
+          cargo deny --locked --manifest-path crates/runtime/Cargo.toml --all-features --exclude-dev \
+            check -D warnings advisories
+          .github/scripts/runtime-crates.sh
 
   site:
     name: Website builds

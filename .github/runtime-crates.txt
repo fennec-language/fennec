@@ -1,0 +1,24 @@
+# The crates from outside Fennec that its runtime library names itself, with what each is for.
+# The runtime ships inside every Fennec program, so each is in every program anyone builds, with
+# everything it brings. `.github/scripts/runtime-crates.sh` fails when the runtime's own crates
+# name one that isn't here, or stop naming one that is, so adding a crate to every program is
+# seen in the pull request that does it. CI's `deny` job holds every crate in the runtime's graph
+# to no advisory of any kind, where the rest of the workspace has only vulnerabilities fail.
+#
+# crate | what the runtime uses it for
+cap-std | `fs` narrowed to a folder, with no way out of it
+corosensei | a parked task's own stack (through fennec-parked)
+crossbeam-deque | `parallel`'s work-stealing pool
+ctrlc | Ctrl-C on Windows
+getrandom | `Entropy`
+libm | float functions with the same bits on every system
+mimalloc | the allocator
+mio | waiting on sockets, for parked tasks and servers
+nix | waking a parked `process.run` when its program ends, through kqueue's process events on macOS (#1837)
+rusqlite | `std.sqlite`
+rustix | system calls on Unix
+rustls | TLS
+rustls-platform-verifier | the system's own certificates, for TLS
+same-file | telling whether two paths are one file, for `fs` and SQLite
+signal-hook | signals on Unix
+socket2 | a socket's send buffer size

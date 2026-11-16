@@ -22,7 +22,7 @@
 //! a test's does, the ranges' text is handed to it whole, by where each range starts.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use fennec_syntax::Diagnostic;
@@ -106,8 +106,14 @@ fn extent(state: &State, list: i64) -> Option<(usize, usize)> {
 /// One `parallel` call's ranges: where they stop, and the lowest failure.
 struct Run {
     chunk: usize,
-    /// The thread that started the call, whose runtime adopts what the ranges make.
-    caller: u16,
+    /// The thread that started the call, whose runtime adopts what the ranges make, when it waits
+    /// for them as a thread does, lending its own blocks. `None` for a launched task's call on the
+    /// pool: the task parks, and a range on any thread, its own worker's too, reads the copy the
+    /// task lent and hands over what it makes.
+    caller: Option<u16>,
+    /// What its ranges take with them from the code that made it, when they run elsewhere: they're
+    /// that code's, so what cuts its waits short cuts theirs.
+    calling: pool::Calling,
     /// Where the lowest range that failed so far starts. Ranges after it don't start, and
     /// ranges before it still run, since one of them failing is the failure passed up.
     stop: AtomicUsize,
@@ -195,6 +201,8 @@ struct Started {
     from: usize,
     /// The capture what was running before printed into, put back as the range ends.
     capture: Option<Arc<crate::fakes::Capture>>,
+    /// What ran on the thread before a range that runs off its caller's, put back as it ends.
+    before: Option<pool::BeforeRange>,
 }
 
 #[derive(Clone, Copy)]
@@ -208,7 +216,8 @@ impl Run {
     fn new(chunk: usize) -> Run {
         Run {
             chunk,
-            caller: super::threads::index(),
+            caller: Some(super::threads::index()),
+            calling: pool::Calling::here(),
             task: crate::replay::child(),
             capture: super::capture_here(),
             stop: AtomicUsize::new(usize::MAX),
@@ -229,6 +238,21 @@ impl Run {
     fn waiting(mut self, waiting: bool) -> Run {
         self.waiting = waiting;
         self
+    }
+
+    /// The same call, made by the launched task told to stop with `stop`, for the pool: its
+    /// ranges read `lent`, the copy of what they capture that the task made for them.
+    fn of_task(mut self, stop: Arc<AtomicU8>, lent: Arc<super::table::Table>) -> Run {
+        self.caller = None;
+        self.calling = self.calling.of_task(stop);
+        self.lent = RwLock::new(Some(lent));
+        self
+    }
+
+    /// Whether this thread is the one that made the call and waits for it, whose own blocks the
+    /// ranges read: a range it runs itself has nothing lent and hands nothing over.
+    fn on_caller(&self) -> bool {
+        self.caller == Some(super::threads::index())
     }
 
     /// Notes that the range starting at `from` failed, as its body's `code` says: with a value
@@ -262,19 +286,20 @@ impl Run {
     /// Starts the range at `from` on this thread, giving back where what it makes starts, and what
     /// was running before it, in a recording or a replay, for `keep_made` to put back.
     fn range_starts(&self, from: usize) -> Started {
-        if super::threads::index() != self.caller {
+        let before = (!self.on_caller()).then(|| {
             pool::range_starts(self.lent.read().unwrap_or_else(PoisonError::into_inner).clone());
-        }
+            pool::range_off_its_caller_starts(&self.calling)
+        });
         let mut was = crate::replay::range(self.task.as_ref(), from);
         crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();
         super::swap_capture(&mut capture);
-        Started { since: super::threads::made_scope_starts(), was, from, capture }
+        Started { since: super::threads::made_scope_starts(), was, from, capture, before }
     }
 
     /// Keeps what the range just run on this thread made since `since`, and how it changed the
     /// owners of the calling thread's blocks, when this thread is a worker.
-    fn keep_made(&self, Started { since, mut was, from, mut capture }: Started) {
+    fn keep_made(&self, Started { since, mut was, from, mut capture, before }: Started) {
         // In a recording or a replay, what the range printed goes out as its own, under its name,
         // before what was running is put back.
         if crate::replay::active() {
@@ -282,8 +307,11 @@ impl Run {
         }
         crate::replay::swap(&mut was);
         super::swap_capture(&mut capture);
-        super::threads::made_scope_ends(super::threads::index() == self.caller);
-        if super::threads::index() != self.caller {
+        super::threads::made_scope_ends(self.on_caller());
+        if let Some(before) = before {
+            pool::range_off_its_caller_ends(before);
+        }
+        if !self.on_caller() {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
             let made = super::threads::hand_over(since);
             if !made.is_empty() {
@@ -302,10 +330,42 @@ impl Run {
         }
     }
 
+    /// Runs a range's `body` on this thread, between its start and its end, and gives back how the
+    /// body ended. On a thread other than the one its caller waits on:
+    /// - A range of a launched task's call whose body may wait, that hasn't begun when the task is
+    ///   stopped, doesn't begin: it fails as stopped. The task is parked in that call, waiting for
+    ///   what its ranges wait for, and a stop cuts short the wait a task is in. So the call fails
+    ///   as stopped even if a higher range has failed with a value of its own, and the task ends
+    ///   quietly, as a stopped task does. A call whose body never waits is no wait: its ranges
+    ///   all run, as the task's own code would have run on to its next wait.
+    /// - A body that failed may have left the runtime holding temporaries of the call it was in,
+    ///   as one stopped while it waited does, and one may hold an owner of a block the range
+    ///   made. They're let go of here, while the block is still this thread's to count: once
+    ///   it's handed over, letting go of it would reach nothing, and the block would never go.
+    fn ran(&self, from: usize, body: impl FnOnce() -> i64) -> i64 {
+        let started = self.range_starts(from);
+        let off_its_caller = started.before.is_some();
+        let code = if off_its_caller && self.waiting && pool::cut_short() { 1 } else { body() };
+        if code != 0 && off_its_caller {
+            with(|state| {
+                state.temps.clear();
+                state.let_go();
+            });
+        }
+        self.keep_made(started);
+        code
+    }
+
     /// Passes the failure up, in the calling thread's runtime, after adopting what the ranges
     /// made: 1 if there was one, else 0.
     fn finish(self) -> i64 {
-        super::threads::adopt(self.made.into_inner().unwrap_or_else(PoisonError::into_inner));
+        let made = self.made.into_inner().unwrap_or_else(PoisonError::into_inner);
+        if self.calling.is_task_s() {
+            // A task's own, as what it makes itself is: listed, for it to hand over when it ends.
+            with(|state| state.heap.adopt_made(made));
+        } else {
+            super::threads::adopt(made);
+        }
         pool::settle(self.owners.into_inner().unwrap_or_else(PoisonError::into_inner));
         let mut printed = self.printed.into_inner().unwrap_or_else(PoisonError::into_inner);
         printed.sort_by_key(|(from, _)| *from);
@@ -338,9 +398,7 @@ impl Run {
             return;
         }
         if to - from <= self.chunk {
-            let since = self.range_starts(from);
-            let code = leaf(from, to, i64::from(super::threads::index()));
-            self.keep_made(since);
+            let code = self.ran(from, || leaf(from, to, i64::from(super::threads::index())));
             if code != 0 {
                 self.failed(from, code);
             }
@@ -384,9 +442,7 @@ impl Run {
     /// Runs one range of a loop or a comprehension on this thread, as it was split.
     fn leaf_on(&self, (from, to): (usize, usize), leaf: Leaf) {
         if from <= self.stop.load(Ordering::Relaxed) && from < to {
-            let since = self.range_starts(from);
-            let code = leaf.run(from, to, i64::from(super::threads::index()));
-            self.keep_made(since);
+            let code = self.ran(from, || leaf.run(from, to, i64::from(super::threads::index())));
             if code != 0 {
                 self.failed(from, code);
             }
@@ -462,10 +518,11 @@ impl Run {
         steps: (ReduceBody, Combine, i64),
     ) -> Option<i64> {
         let (_, combine, env) = steps;
+        // A half that failed leaves nothing to combine, and no range is started for it: one
+        // started and left unended would keep what was lent for the call on its thread.
+        let (left, right) = (left?, right?);
         let mut combined = 0;
-        let since = self.range_starts(from);
-        let code = combine(env, left?, right?, &mut combined);
-        self.keep_made(since);
+        let code = self.ran(from, || combine(env, left, right, &mut combined));
         if code != 0 {
             self.failed(from, code);
             return None;
@@ -482,9 +539,7 @@ impl Run {
         let thread = i64::from(super::threads::index());
         if to - from <= self.chunk {
             let mut partial = 0;
-            let since = self.range_starts(from);
-            let code = body(env, number(from), number(to), thread, &mut partial);
-            self.keep_made(since);
+            let code = self.ran(from, || body(env, number(from), number(to), thread, &mut partial));
             if code != 0 {
                 self.failed(from, code);
                 return None;
@@ -595,6 +650,9 @@ pub extern "C" fn parallel_map_heavy(list: i64, body: MapBody, env: i64, element
 fn run_map(list: i64, body: MapBody, env: i64, element: i64, weight: Weight) -> i64 {
     counted();
     let Some((length, words)) = with(|state| extent(state, list)) else { return 0 };
+    if let Some(made) = map_of_task((length, words), body, env, element, weight) {
+        return made;
+    }
     let out = super::lists::new(element, number(length));
     let run = Run::new(weight.chunk(length, words)).waiting(weight == Weight::Waiting);
     if run_each(run, length, words, Leaf::Map(body, env, out), weight) != 0 {
@@ -602,6 +660,87 @@ fn run_map(list: i64, body: MapBody, env: i64, element: i64, weight: Weight) -> 
         return 0;
     }
     out
+}
+
+/// A comprehension a launched task makes, whose body is heavy or may wait, of two items or more:
+/// its ranges go to the task's pool, as they do from the program's own thread, and the task parks
+/// until they've finished. `None` anywhere else, and where what the body captures can't be copied:
+/// the ranges then run here, one after another.
+///
+/// A thread that waits lends its ranges all its blocks. A task can't: the other tasks on its
+/// worker go on using them. So the ranges get a copy of what the body captures, in a table of its
+/// own, with the list they write into made in it too. When they've finished, the table's blocks
+/// are the task's, the list among them, and the copy is let go.
+fn map_of_task(
+    (length, words): (usize, usize),
+    body: MapBody,
+    env: i64,
+    element: i64,
+    weight: Weight,
+) -> Option<i64> {
+    // A light body stays here, as copying what it captures costs about what running it does: but
+    // not under `FENNEC_PARALLEL_STRESS`, which sends every call to the pool, a task's too.
+    if (weight == Weight::Light && !pool::stressed()) || length < 2 {
+        return None;
+    }
+    let (here, stop) = pool::for_task()?;
+    let (copy, table) = copied_to_lend(env)?;
+    with(|state| state.heap.enter_table(table, super::guarded::LENT_OWNER << super::heap::OWNER_SHIFT));
+    let out = super::lists::new(element, number(length));
+    let lent = Arc::new(*with(|state| state.heap.leave_table()));
+    let run = Run::new(weight.chunk(length, words))
+        .waiting(weight == Weight::Waiting)
+        .of_task(Arc::clone(&stop), Arc::clone(&lent));
+    let run = Arc::new(run);
+    pool::install_for_task(
+        here,
+        || run.each_on_start(here.0, length, Leaf::Map(body, copy, out)),
+        &run.done,
+        &stop,
+    );
+    if taken_back(alone(run), lent, copy) != 0 {
+        super::heap::free(out);
+        return Some(0);
+    }
+    Some(out)
+}
+
+/// A copy of the closure `env`, with all it captures, for a launched task's call to lend its
+/// ranges: its address, and the table it's in. An `env` of 0 captures nothing, and gets a table
+/// with nothing in it. `None` when something it captures can't be copied, as a generator can't.
+fn copied_to_lend(env: i64) -> Option<(i64, Box<super::table::Table>)> {
+    if env == 0 {
+        return Some((0, Box::new(super::table::Table::hashed())));
+    }
+    let (copy, table) = with(|state| super::guarded::copied_for_task(state, env.cast_unsigned()).ok())?;
+    Some((copy.cast_signed(), table))
+}
+
+/// Ends a launched task's call on the pool, its ranges all finished: what it lent them is the
+/// task's own now, with what they made and how they changed its owners, and the copy of what they
+/// captured is let go. Gives back what `Run::finish` does.
+fn taken_back(run: Run, lent: Arc<super::table::Table>, copy: i64) -> i64 {
+    run.lent.write().unwrap_or_else(PoisonError::into_inner).take();
+    let table = sole(lent);
+    with(|state| state.heap.adopt_made(table.into_blocks()));
+    let code = run.finish();
+    if copy != 0 {
+        with(|state| super::heap::release(state, copy.cast_unsigned()));
+    }
+    code
+}
+
+/// What a call lent, once the last range has let go of it, as `alone` waits for the call itself.
+fn sole(mut lent: Arc<super::table::Table>) -> super::table::Table {
+    loop {
+        match Arc::try_unwrap(lent) {
+            Ok(table) => return table,
+            Err(shared) => {
+                lent = shared;
+                std::thread::yield_now();
+            }
+        }
+    }
 }
 
 /// `fennec_parallel_reduce(list, body, combine, env, result) -> i64`: a reduction like
@@ -631,6 +770,11 @@ fn run_reduce(
     }
     // A reduction's leaves depend on the length alone, not on its items' sizes, so it combines
     // in the same order whatever the items are.
+    if (waiting || pool::stressed())
+        && let Some(code) = reduce_of_task(length, (body, combine, env), result, waiting)
+    {
+        return code;
+    }
     let run = Run::new(crate::builtins::REDUCE_LEAF).waiting(waiting);
     let steps = (body, combine, env);
     let pool = if waiting { pool::for_waiting() } else { pool::for_call(length * words) };
@@ -645,6 +789,39 @@ fn run_reduce(
         *result = reduced;
     }
     run.finish()
+}
+
+/// A reduction a launched task makes, whose body may wait, of more than one leaf: on the task's
+/// pool, as `map_of_task` runs a comprehension, lending a copy of what the body captures. `None`
+/// anywhere else, and the ranges then run here. Under `FENNEC_PARALLEL_STRESS` it's every
+/// reduction of more than one leaf that a task makes, `waiting` or not.
+fn reduce_of_task(
+    length: usize,
+    (body, combine, env): (ReduceBody, Combine, i64),
+    result: &mut i64,
+    waiting: bool,
+) -> Option<i64> {
+    // A reduction of one leaf runs on one thread wherever it is, so there's nothing to gain from
+    // copying what it captures.
+    if length <= crate::builtins::REDUCE_LEAF {
+        return None;
+    }
+    let (here, stop) = pool::for_task()?;
+    let (copy, table) = copied_to_lend(env)?;
+    let lent = Arc::new(*table);
+    let run =
+        Run::new(crate::builtins::REDUCE_LEAF).waiting(waiting).of_task(Arc::clone(&stop), Arc::clone(&lent));
+    let run = Arc::new(run);
+    let start = || {
+        let (pool, started) = (here.0, Arc::clone(&run));
+        pool.push(Box::new(move || started.reduce_on(pool, (0, length), None, (body, combine, copy))));
+    };
+    pool::install_for_task(here, start, &run.done, &stop);
+    let run = alone(run);
+    if let Some(reduced) = run.reduced.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        *result = reduced;
+    }
+    Some(taken_back(run, lent, copy))
 }
 
 // The `_waiting` entry points are for a body that may wait: a network call, a lock, a sleep, a
@@ -672,6 +849,31 @@ pub extern "C" fn parallel_reduce_waiting(
     result: &mut i64,
 ) -> i64 {
     run_reduce(list, (body, combine, env), result, true)
+}
+
+// The `_in_place` entry points are for `for mut x in parallel(list)`, which writes each item back
+// into its list where it is. The compiler makes the list the loop's alone first (`parallel.own`).
+// A plain `for` gives nothing back through what it captures, so its ranges could read a copy of
+// it, as a launched task's comprehension's do; a `for mut`'s can't, and the two are told apart by
+// which entry is called. Until the compiler calls these for `for mut`, both loops still come
+// through `fennec_parallel_for`, so neither is given a copy yet: a launched task runs a loop's
+// ranges itself, one after another, under either name (#1802).
+
+/// `fennec_parallel_for_in_place(list, body, env)`: `for mut x in parallel(list)`. Gives back 0,
+/// or 1 when the body failed.
+pub extern "C" fn parallel_for_in_place(list: i64, body: Body, env: i64) -> i64 {
+    run_for(list, body, env, Weight::Light)
+}
+
+/// `fennec_parallel_for_in_place_heavy`: `parallel_for_in_place`, for a body with a loop or a call
+/// in it.
+pub extern "C" fn parallel_for_in_place_heavy(list: i64, body: Body, env: i64) -> i64 {
+    run_for(list, body, env, Weight::Heavy)
+}
+
+/// `fennec_parallel_for_in_place_waiting`: `parallel_for_in_place`, for a body that may wait.
+pub extern "C" fn parallel_for_in_place_waiting(list: i64, body: Body, env: i64) -> i64 {
+    run_for(list, body, env, Weight::Waiting)
 }
 
 /// `fennec_parallel_stream_waiting`: `parallel_stream`, for a body that may wait.
@@ -712,6 +914,55 @@ mod pool {
     /// Without threads, native code only runs on the program's thread, whose limit it has.
     pub fn stack_limit() -> usize {
         0
+    }
+
+    /// Without threads, there are no launched tasks, and every range runs on its caller's thread,
+    /// so a call gives its ranges nothing to take with them.
+    #[derive(Clone, Copy)]
+    pub(super) struct Calling;
+
+    impl Calling {
+        pub(super) fn here() -> Calling {
+            Calling
+        }
+
+        pub(super) fn of_task(self, _stop: std::sync::Arc<std::sync::atomic::AtomicU8>) -> Calling {
+            self
+        }
+
+        #[expect(clippy::unused_self, reason = "it stands in for the threads build's")]
+        pub(super) fn is_task_s(self) -> bool {
+            false
+        }
+    }
+
+    pub(super) struct BeforeRange;
+
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "it stands in for the threads build's")]
+    pub(super) fn range_off_its_caller_starts(_calling: &Calling) -> BeforeRange {
+        BeforeRange
+    }
+
+    pub(super) fn range_off_its_caller_ends(_before: BeforeRange) {}
+
+    /// Without threads, there are no launched tasks, so no range is a stopped one's.
+    pub(super) fn cut_short() -> bool {
+        false
+    }
+
+    /// Without threads, there are no launched tasks to hand ranges to a pool.
+    pub(super) fn for_task() -> Option<((&'static Pool, usize), std::sync::Arc<std::sync::atomic::AtomicU8>)>
+    {
+        None
+    }
+
+    pub(super) fn install_for_task(
+        _here: (&'static Pool, usize),
+        start: impl FnOnce(),
+        _done: &Latch,
+        _stop: &std::sync::Arc<std::sync::atomic::AtomicU8>,
+    ) {
+        start();
     }
 
     /// Without threads, nothing is lent, so ranges have nothing to read or hand back.
@@ -1007,6 +1258,65 @@ mod tests {
         finish();
     }
 
+    /// A reduction's leaf that fails where it holds position 70,000, and counts its positions
+    /// anywhere else.
+    extern "C" fn fails_in_a_leaf(_env: i64, from: i64, to: i64, _thread: i64, partial: &mut i64) -> i64 {
+        if (from..to).contains(&70_000) {
+            attempt(|_: &mut State| -> Result<i64, Diagnostic> {
+                Err(Diagnostic::new("a leaf failed", Span::default()))
+            });
+            return 1;
+        }
+        *partial = to - from;
+        0
+    }
+
+    /// A reduction on the pool in which a leaf fails still ends every range it started, so the
+    /// calling thread has its blocks back, whole, when the call's over. The range that combines
+    /// two halves once started and was left unended when a half had failed: its worker went on
+    /// holding what was lent, and the calling thread could no longer take it back as its own.
+    #[test]
+    fn a_reduction_in_which_a_leaf_fails_gives_the_calling_thread_its_blocks_back() {
+        begin();
+        let list = lists::new(0, ITEMS);
+        let mut sum = 0;
+        assert_eq!(super::parallel_reduce(list, fails_in_a_leaf, add, 0, &mut sum), 1);
+        let own = with(|state| state.heap.holds_block(usize::try_from(list).unwrap()));
+        assert!(own, "the list isn't in its thread's own table after the call");
+        heap::free(list);
+        let (_, failure, _) = finish();
+        assert!(failure.is_some_and(|failure| failure.message == "a leaf failed"));
+    }
+
+    /// How many positions the ranges of each `for mut` entry's loop covered.
+    static IN_PLACE: [AtomicUsize; 3] = [AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0)];
+
+    extern "C" fn counts_positions(env: i64, from: i64, to: i64, _thread: i64) -> i64 {
+        let covered = usize::try_from(to - from).unwrap_or(0);
+        if let Some(count) = usize::try_from(env).ok().and_then(|entry| IN_PLACE.get(entry)) {
+            count.fetch_add(covered, Ordering::SeqCst);
+        }
+        0
+    }
+
+    /// `for mut` has entries of its own, which run a loop as the plain ones do: every position
+    /// once, whatever the body's weight.
+    #[test]
+    fn the_entries_for_a_loop_that_writes_back_cover_every_position_once() {
+        begin();
+        let list = lists::new(0, ITEMS);
+        assert_eq!(super::parallel_for_in_place(list, counts_positions, 0), 0);
+        assert_eq!(super::parallel_for_in_place_heavy(list, counts_positions, 1), 0);
+        heap::free(list);
+        let few = lists::new(0, 48);
+        assert_eq!(super::parallel_for_in_place_waiting(few, counts_positions, 2), 0);
+        heap::free(few);
+        let covered: Vec<usize> = IN_PLACE.iter().map(|count| count.load(Ordering::SeqCst)).collect();
+        let items = usize::try_from(ITEMS).unwrap();
+        assert_eq!(covered, [items, items, 48]);
+        finish();
+    }
+
     /// A server that answers each connection with a line, 300 ms after it's made, as a slow web
     /// service would, and counts the most connections it held open at once.
     fn slow_server() -> (u16, Arc<AtomicUsize>) {
@@ -1212,6 +1522,149 @@ mod tests {
         let took = CLOSING_TOOK.load(Ordering::SeqCst);
         let most = i64::try_from(crate::stdlib::net::LINGER.as_millis()).unwrap();
         assert!((100..most).contains(&took), "closing took {took} ms");
+        finish();
+    }
+
+    /// The listener the tasks below take a connection from by hand, the port it's on, whether the
+    /// one that takes waits with a timeout, and how each one's part ended: 1 for as it should.
+    static TAKEN_FROM: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static TAKEN_ON: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static TAKES_WITHIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static TOOK_ONE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static CONNECTED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// One of two tasks takes a connection from the listener by hand. The other connects to it.
+    extern "C" fn takes_or_connects(_env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        use crate::stdlib::net::{accepted_within, kept, shut};
+        if from == 0 {
+            let limit = TAKES_WITHIN.load(Ordering::SeqCst).then_some(WITHIN);
+            let taken = accepted_within(TAKEN_FROM.load(Ordering::SeqCst), limit);
+            TOOK_ONE.store(if taken.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+            shut(taken.unwrap_or(0));
+        } else {
+            let port = u16::try_from(TAKEN_ON.load(Ordering::SeqCst)).unwrap();
+            let connected = kept("127.0.0.1", port);
+            CONNECTED.store(if connected.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+            shut(connected.unwrap_or(0));
+        }
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        0
+    }
+
+    /// A task waiting in `server.accept()` parks, and the task on its worker that's about to
+    /// connect runs: with a timeout and without. It used to hold its worker, asleep 5 ms at a time
+    /// with a timeout and in the kernel without, so the task that would connect never ran: with a
+    /// timeout the wait ran out, and without it the two waited on each other for good.
+    #[test]
+    fn a_task_taking_a_connection_by_hand_parks_and_the_task_that_connects_runs() {
+        begin();
+        for within in [true, false] {
+            let (server, port) = crate::stdlib::net::listened();
+            TAKEN_FROM.store(server, Ordering::SeqCst);
+            TAKEN_ON.store(i64::from(port), Ordering::SeqCst);
+            TAKES_WITHIN.store(within, Ordering::SeqCst);
+            for slot in [&TOOK_ONE, &CONNECTED] {
+                slot.store(0, Ordering::SeqCst);
+            }
+            let pool = super::pool::with_threads(1);
+            let run = super::Run::new(1).waiting(true);
+            let ended = super::each_on_pool(run, pool, 2, super::Leaf::For(takes_or_connects, 0)).finish();
+            crate::stdlib::net::shut(server);
+            assert_eq!(ended, 0);
+            assert_eq!(TOOK_ONE.load(Ordering::SeqCst), 1, "the one that takes; with a timeout: {within}");
+            assert_eq!(
+                CONNECTED.load(Ordering::SeqCst),
+                1,
+                "the one that connects; with a timeout: {within}"
+            );
+        }
+        finish();
+    }
+
+    /// The UDP sockets the tasks below use, the port the first is on, and how each part ended.
+    static HEARS_ON: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static SAYS_FROM: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static HEARD_ON_PORT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static HEARD_IT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static SAID_IT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// One of two tasks waits for a packet. The other sends it one.
+    extern "C" fn hears_or_says(_env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        use crate::stdlib::net::{received_within, sent_to_port};
+        if from == 0 {
+            let heard = received_within(HEARS_ON.load(Ordering::SeqCst), WITHIN);
+            HEARD_IT.store(if heard == Ok(b"ping".to_vec()) { 1 } else { 2 }, Ordering::SeqCst);
+        } else {
+            let port = u16::try_from(HEARD_ON_PORT.load(Ordering::SeqCst)).unwrap();
+            let said = sent_to_port(SAYS_FROM.load(Ordering::SeqCst), b"ping", port);
+            SAID_IT.store(if said.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+        }
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        0
+    }
+
+    /// A task waiting for a UDP packet parks, and the task on its worker that sends it runs. It
+    /// used to hold its worker in the kernel, a tenth of a second at a time, so the sender never
+    /// ran and the wait ran out.
+    #[test]
+    fn a_task_waiting_for_a_packet_parks_and_the_task_that_sends_it_runs() {
+        begin();
+        let (hears, port) = crate::stdlib::net::udp_bound();
+        let (says, _) = crate::stdlib::net::udp_bound();
+        HEARS_ON.store(hears, Ordering::SeqCst);
+        SAYS_FROM.store(says, Ordering::SeqCst);
+        HEARD_ON_PORT.store(i64::from(port), Ordering::SeqCst);
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let ended = super::each_on_pool(run, pool, 2, super::Leaf::For(hears_or_says, 0)).finish();
+        for socket in [hears, says] {
+            crate::stdlib::net::shut(socket);
+        }
+        assert_eq!(ended, 0);
+        assert_eq!(SAID_IT.load(Ordering::SeqCst), 1, "the one that sends");
+        assert_eq!(HEARD_IT.load(Ordering::SeqCst), 1, "the one that waits");
+        finish();
+    }
+
+    /// The listener one of the tasks below waits on and the other closes, and how the wait ended.
+    static CLOSED_UNDER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static ENDED_AS_CLOSED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// One of two tasks waits for a connection that never comes. The other closes the listener
+    /// once the first is waiting.
+    extern "C" fn waits_or_closes_the_listener(_env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        use crate::stdlib::net::{Failure, accepted_within, shut, waiting_on_a_listener};
+        let server = CLOSED_UNDER.load(Ordering::SeqCst);
+        if from == 0 {
+            let ended = accepted_within(server, Some(WITHIN));
+            let closed = matches!(ended, Err(Failure::Other(_)));
+            ENDED_AS_CLOSED.store(if closed { 1 } else { 2 }, Ordering::SeqCst);
+        } else {
+            // On the one worker this runs only while the other task is parked, in its wait.
+            let started = std::time::Instant::now();
+            while waiting_on_a_listener(server) == 0 && started.elapsed() < WITHIN {
+                crate::embed::serve::yield_now();
+            }
+            shut(server);
+        }
+        0
+    }
+
+    /// Closing a listener from one task ends a wait for a connection another task is parked in,
+    /// at once and as closed, not when its time runs out.
+    #[test]
+    fn closing_a_listener_ends_a_task_parked_waiting_for_a_connection() {
+        begin();
+        let (server, _) = crate::stdlib::net::listened();
+        CLOSED_UNDER.store(server, Ordering::SeqCst);
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        let leaf = super::Leaf::For(waits_or_closes_the_listener, 0);
+        let started = std::time::Instant::now();
+        let ended = super::each_on_pool(run, pool, 2, leaf).finish();
+        assert_eq!(ended, 0);
+        assert_eq!(ENDED_AS_CLOSED.load(Ordering::SeqCst), 1, "the wait ended some other way");
+        assert!(started.elapsed() < WITHIN / 2, "it took {:?}", started.elapsed());
         finish();
     }
 

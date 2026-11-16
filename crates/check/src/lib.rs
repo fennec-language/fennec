@@ -851,6 +851,10 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         || !checked.std_calls.is_empty()
         || !checked.field_args.is_empty()
     {
+        // The callees of calls the checker sent to another function, like `crypto.blake3` given a
+        // list to `crypto.blake3_of_str_list`. A call is seen before its callee, so the name the
+        // callee was written with, which may be std's too, mustn't then replace where it was sent.
+        let mut sent: BTreeSet<(u32, u32)> = BTreeSet::new();
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
             let span = (expr.span.start, expr.span.end);
             if let Some(owner) = checked.cases.get(&span) {
@@ -860,12 +864,15 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
             if let Some(defaults) = checked.defaults.get(&span) {
                 fennec_syntax::visit::add_defaults(expr, defaults);
             }
-            if let Some(function) = checked.std_names.get(&span) {
+            if let Some(function) = checked.std_names.get(&span)
+                && !sent.contains(&span)
+            {
                 expr.kind = ExprKind::Name(function.clone());
             }
             if let Some(function) = checked.std_calls.get(&span)
                 && let ExprKind::Call { callee, .. } = &mut expr.kind
             {
+                sent.insert((callee.span.start, callee.span.end));
                 callee.kind = ExprKind::Name(function.clone());
             }
             if let ExprKind::Call { args, .. } = &mut expr.kind {

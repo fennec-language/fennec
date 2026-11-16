@@ -1897,7 +1897,9 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
 /// all. Now each file's names are its own:
 /// - `sha256` beside a kit's, `dumps` from JSON beside a kit's from TOML, and `pick` as `floor`
 ///   beside a kit's or another of the program's files' `pick` as `ceil`;
-/// - a name only a kit, or only another file, imports is refused where it isn't imported.
+/// - a name only a kit, or only another file, imports is refused where it isn't imported;
+/// - a hash given its chunks, imported by name or through its module, goes to std's function for
+///   chunks, as the checker sends it there.
 #[test]
 fn what_each_file_imports_is_its_own() {
     let dir = scratch("imports_by_file").unwrap();
@@ -1926,8 +1928,10 @@ fn what_each_file_imports_is_its_own() {
     let main = "from std.crypto import sha256\nfrom std.json import dumps\nfrom std.math import floor as pick\n\
         import escaping\nimport other\n\n\
         def main(stdout: Stdout):\n    stdout.print(sha256(\"abc\"), dumps({\"a\": 1}), pick(2.7))\n    \
-        stdout.print(escaping.own(), other.picked())\n";
-    let other = "from std.math import ceil as pick\n\n## Its own `pick`.\nexport def picked() -> int:\n    return pick(2.2)\n";
+        stdout.print(escaping.own(), other.picked())\n    \
+        stdout.print(sha256([\"a\", \"bc\"]) == sha256(\"abc\"), other.chunked())\n";
+    let other = "from std import crypto\nfrom std.math import ceil as pick\n\n## Its own `pick`.\nexport def picked() -> int:\n    return pick(2.2)\n\n\
+        ## Hashed in chunks.\nexport def chunked() -> bool:\n    return crypto.blake3([\"a\", \"bc\"]) == crypto.blake3(\"abc\")\n";
     write_kit(
         &app,
         "app",
@@ -1937,7 +1941,7 @@ fn what_each_file_imports_is_its_own() {
     .unwrap();
     assert_eq!(
         ran(&app),
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad {\"a\": 1} 2\n&lt;kit&gt; a = 1 3 3\n"
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad {\"a\": 1} 2\n&lt;kit&gt; a = 1 3 3\nTrue True\n"
     );
     // A name only a kit imports, or only another of the program's files.
     kit(

@@ -712,7 +712,9 @@ fn blocks_in_loops(function: &Function) -> HashSet<usize> {
         }
     }
     let mut found = HashSet::new();
-    for (from, start) in crate::emit::back_edges(function) {
+    let mut back: Vec<(usize, usize)> = crate::emit::back_edges(function).into_iter().collect();
+    back.sort_unstable();
+    for (from, start) in back {
         let mut seen = HashSet::from([start]);
         let mut waiting = vec![from];
         while let Some(at) = waiting.pop() {

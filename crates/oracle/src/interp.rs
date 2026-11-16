@@ -13,13 +13,16 @@ mod json;
 mod library;
 mod locks;
 mod methods;
+mod own_index;
 mod parallel;
 mod paths;
+mod saving;
 mod show;
 mod sources;
 pub(crate) mod stream;
 mod tables;
 mod tasks;
+mod typed;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -188,6 +191,8 @@ pub(crate) struct Frame {
     pub(crate) parent: Option<u64>,
     /// The type whose method this call runs, which `Self` names.
     pub(crate) owner: Option<String>,
+    /// What the type parameters of the function it runs stand for in this call.
+    pub(crate) types: typed::Bound,
 }
 
 pub(crate) struct Interp {
@@ -205,6 +210,15 @@ pub(crate) struct Interp {
     generators: HashMap<usize, bool>,
     /// How many `lock` blocks this thread is inside.
     pub(crate) holding: usize,
+    /// The parts read through a type's own `def []` to be changed, waiting to be written back
+    /// through its `def []=` once the change is done, the newest last.
+    pub(crate) write_backs: Vec<own_index::WriteBack>,
+    /// How many such parts this run has read, which names each one's hidden local.
+    pub(crate) parts_read: u64,
+    /// What each type's own `def serialize` running for `json.dumps` has saved, the newest last.
+    pub(crate) recordings: Vec<Option<json::write::Saved>>,
+    /// What each type's own `def deserialize` running for `json.loads` reads, the newest last.
+    pub(crate) loadings: Vec<json::read::Loading>,
 }
 
 /// How `main` ended.
@@ -230,6 +244,10 @@ impl Interp {
             constants: HashMap::new(),
             generators: HashMap::new(),
             holding: 0,
+            write_backs: Vec::new(),
+            parts_read: 0,
+            recordings: Vec::new(),
+            loadings: Vec::new(),
         }
     }
 
@@ -339,7 +357,7 @@ impl Interp {
         let owner = parent
             .and_then(|parent| self.frames.iter().rfind(|frame| frame.id == parent))
             .and_then(|frame| frame.owner.clone());
-        self.frames.push(Frame { id, vars, parent, owner });
+        self.frames.push(Frame { id, vars, parent, owner, types: typed::Bound::new() });
         let previous = self.cur;
         self.cur = self.frames.len() - 1;
         Ok(previous)
@@ -464,7 +482,7 @@ impl Interp {
             ExprKind::Index { object, index } => {
                 let Some(place) = self.place_of(object)? else { return Ok(None) };
                 let at = self.eval(index)?;
-                Ok(Some(place.then(Step::At(at))))
+                self.indexed_place(place, at, false, expr.span)
             }
             _ => Ok(None),
         }
@@ -741,18 +759,22 @@ impl Interp {
             }
             (ExprKind::Index { object, index }, _) => self.assign_indexed(object, index, op, value, span),
             _ => {
-                let Some(place) = self.place_of(target)? else {
-                    return unsupported("assigning to something that isn't a place");
-                };
-                let new = match op {
-                    Some(op) => {
-                        let old = self.read_place(&place, target.span)?;
-                        let right = self.eval(value)?;
-                        self.binary_values(op, old, right, target.span)?
-                    }
-                    None => self.eval(value)?,
-                };
-                self.write_place(&place, new, span)
+                let mark = self.write_backs.len();
+                let changed = (|| {
+                    let Some(place) = self.place_for_change(target)? else {
+                        return unsupported("assigning to something that isn't a place");
+                    };
+                    let new = match op {
+                        Some(op) => {
+                            let old = self.read_place(&place, target.span)?;
+                            let right = self.eval(value)?;
+                            self.binary_values(op, old, right, target.span)?
+                        }
+                        None => self.eval(value)?,
+                    };
+                    self.write_place(&place, new, span)
+                })();
+                self.settled(mark, changed, span)
             }
         }
     }
@@ -767,7 +789,20 @@ impl Interp {
         value: &'static Expr,
         span: Span,
     ) -> Run<()> {
-        let Some(place) = self.place_of(object)? else {
+        let mark = self.write_backs.len();
+        let assigned = self.assign_indexed_at(object, index, op, value, span);
+        self.settled(mark, assigned, span)
+    }
+
+    fn assign_indexed_at(
+        &mut self,
+        object: &'static Expr,
+        index: &'static Expr,
+        op: Option<BinOp>,
+        value: &'static Expr,
+        span: Span,
+    ) -> Run<()> {
+        let Some(place) = self.place_for_change(object)? else {
             return unsupported("assigning into something that isn't a place");
         };
         let own = self.peek_place(&place, span, |held| match held {
@@ -787,6 +822,21 @@ impl Interp {
             };
             return self.write_place(&place, new, span);
         };
+        // Through the `ref` form of `def []`, the position it gives is written where it is.
+        if matches!(key, Value::Int(_)) && self.program.method(&ty, "[]mut").is_some() {
+            let Some(item) = self.indexed_place(place, key, true, span)? else {
+                return unsupported(format!("a position of a {ty} its `def []` gives no place for"));
+            };
+            let new = match op {
+                Some(op) => {
+                    let old = self.read_place(&item, span)?;
+                    let right = self.eval(value)?;
+                    self.binary_values(op, old, right, span)?
+                }
+                None => self.eval(value)?,
+            };
+            return self.write_place(&item, new, span);
+        }
         let Some(setter) = self.program.method(&ty, "[]=") else {
             return unsupported(format!("assigning into a {ty}"));
         };
@@ -874,15 +924,20 @@ impl Interp {
             _ => (None, false, false),
         };
         let Some(place) = place else { return unsupported("`for ref` over something that isn't a place") };
-        let positions: Vec<Value> = match self.read_place(&place, iter.span)? {
-            Value::List(items) if !keyed => (0..items.len()).map(|at| Value::Int(as_int(at))).collect(),
-            Value::Dict(pairs) if keyed => pairs.into_iter().map(|(key, _)| key).collect(),
+        // A value of a type with positions of its own: each place its `ref` `def []` gives.
+        let own = self.peek_place(&place, iter.span, |held| match held {
+            Value::Instance(instance) => Some(instance.ty.clone()),
+            _ => None,
+        })?;
+        let positions: Vec<Value> = match (self.read_place(&place, iter.span)?, &own) {
+            (Value::Instance(_), Some(ty)) if !keyed => self.own_positions(&place, ty, iter.span)?,
+            (Value::List(items), _) if !keyed => (0..items.len()).map(|at| Value::Int(as_int(at))).collect(),
+            (Value::Dict(pairs), _) if keyed => pairs.into_iter().map(|(key, _)| key).collect(),
             // A `Table`'s items are reached by their `Id`s, in slot order.
-            Value::Table(table) if !keyed => table.live().map(|(id, _)| Value::Id(id)).collect(),
-            other => return unsupported(format!("`for ref` over a {}", other.kind())),
+            (Value::Table(table), _) if !keyed => table.live().map(|(id, _)| Value::Id(id)).collect(),
+            (other, _) => return unsupported(format!("`for ref` over a {}", other.kind())),
         };
         let item_name = names.last().map_or("_", String::as_str);
-        let _ = span;
         for (count, position) in positions.into_iter().enumerate() {
             let mark = self.mark();
             if numbered {
@@ -892,7 +947,20 @@ impl Interp {
                 let first = names.first().map_or("_", String::as_str);
                 self.bind(first, position.clone())?;
             }
-            self.bind_ref(item_name, place.then(Step::At(position)))?;
+            match &own {
+                Some(ty) => {
+                    // An empty position, as its type's `is_live` says, is skipped.
+                    if !self.live_at(&place, ty, &position, span)? {
+                        self.restore(mark);
+                        continue;
+                    }
+                    let Some(item) = self.indexed_place(place.clone(), position, false, span)? else {
+                        return unsupported("a position its type's `def []` gives no place for");
+                    };
+                    self.bind_ref(item_name, item)?;
+                }
+                None => self.bind_ref(item_name, place.then(Step::At(position)))?,
+            }
             let ran = self.stmts(body);
             self.restore(mark);
             match ran {

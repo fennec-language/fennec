@@ -906,7 +906,7 @@ impl Lowering<'_> {
     pub(super) fn is_range(&self, iter: &Expr) -> bool {
         let ExprKind::Call { callee, .. } = &iter.kind else { return false };
         matches!(&callee.kind, ExprKind::Name(name) if name == "range" && self.lookup(name).is_none())
-            && !self.context.functions.contains("range")
+            && !self.own_function("range")
     }
 }
 

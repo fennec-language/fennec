@@ -26,6 +26,16 @@
 //!   with what it came to, and a replay makes each task wait for its turn. So messages go to the
 //!   same receivers, and a receive that timed out times out again, without waiting.
 //!
+//! - **Stops:** a stop cuts short the wait its task is in, and the task fails as stopped. When it
+//!   comes depends on time, which a replay doesn't spend: its sleeps are over at once. So a wait a
+//!   stop cut short says so in the recording. A capability's call, like a sleep or a socket's read,
+//!   has a `cut short` entry right after its own, and a channel's send or receive comes to
+//!   "stopped" there. A task its stop finds waiting at its own `with launch` block's end, for a
+//!   task it launched, has a `stopped at its block's end` entry. A replay stops the task at that
+//!   wait, as the recorded run did. So a replay stops nothing by the clock: its block's ends wait
+//!   for their tasks without a deadline, and stop none when they fail, as the recording says
+//!   where each task was stopped.
+//!
 //! - **Locks:** a `shared` value is a place too, named as a channel is, as `0:s2`. Each time a task
 //!   takes its lock, to read or to write, it's logged once the lock is held, and a replay makes
 //!   each task wait its turn before it tries to take it. Native code takes a free lock without a
@@ -37,10 +47,12 @@
 //!   connection's reads and writes among them, and when they've all ended the server stops, as if
 //!   it had been stopped there, and says so.
 //!
-//! The log is `FENREPL2`, the header's length as four bytes and the header, then the entries. Each
+//! The log is `FENREPL4`, the header's length as four bytes and the header, then the entries. Each
 //! entry is its task's name and its call's name, each with its length as two bytes, then what it
 //! gave, with its length as four. All numbers are little-endian. A `FENREPL1` log, from before
-//! tasks were named, has no task names, and replays as `main`'s.
+//! tasks were named, has no task names, and replays as `main`'s. A `FENREPL3` log, from before
+//! stops were recorded, replays as it did then, saying so when it has tasks: a task stopped in it
+//! may not be stopped in its replay.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -54,7 +66,10 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::{Instance, Value};
 
-const MAGIC: &[u8; 8] = b"FENREPL3";
+const MAGIC: &[u8; 8] = b"FENREPL4";
+
+/// A log from before stops were recorded: a task stopped in it may go on in its replay.
+const MAGIC_BEFORE_STOPS: &[u8; 8] = b"FENREPL3";
 
 /// A log from before recordings were marked at their end: one cut short can't be told apart.
 const MAGIC_UNMARKED: &[u8; 8] = b"FENREPL2";
@@ -68,6 +83,18 @@ const MAGIC_UNNAMED: &[u8; 8] = b"FENREPL1";
 
 /// The entry that says how many workers the recorded run had, logged first, under no task.
 const WORKERS: &str = "workers";
+
+/// The entry that says a stop cut short the call logged just before it, in the same task: the
+/// task failed as stopped in it.
+const CUT_SHORT: &str = "cut short";
+
+/// The entry that says the task's stop found it waiting at its own `with launch` block's end, for
+/// a task it launched to end, and it failed as stopped there.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only launched tasks have blocks that wait for them")
+)]
+const STOPPED_AT_BLOCK_END: &str = "stopped at its block's end";
 
 enum Mode {
     Off,
@@ -372,6 +399,25 @@ pub(crate) fn swap(task: &mut Option<Task>) {
     TASK.with_borrow_mut(|running| std::mem::swap(running, task));
 }
 
+/// In a replay, at a wait its recording says a stop cut short: the running task is stopped here, as
+/// it was then, and fails as stopped. A replay doesn't wait, so the stop that cut the wait short
+/// hasn't come yet, and may never: without this the task would go on past the wait, doing what the
+/// recorded run never did. Its stop is set as well as its failure, so it ends quietly, as a stopped
+/// task does, and its `with launch` block ends as it did.
+pub(crate) fn stopped_as_recorded() {
+    #[cfg(any(test, feature = "threads"))]
+    {
+        if let Some(stop) = crate::embed::threads::task_stop() {
+            stop.fetch_max(crate::embed::threads::STOPPING, Ordering::AcqRel);
+        }
+        crate::embed::serve::fail_as_stopped();
+    }
+    // Without threads there are no tasks to stop, so no recording a runtime like this one made says
+    // a wait was cut short. One made with them that does still fails here, as it did.
+    #[cfg(not(any(test, feature = "threads")))]
+    crate::embed::fail_with(Diagnostic::new("this task was stopped", Span::default()));
+}
+
 /// Whether this run is a replay, whose outside inputs all come from its recording.
 pub(crate) fn replaying() -> bool {
     matches!(mode(), Mode::Replay(_))
@@ -428,18 +474,34 @@ fn playing(path: &Path) -> std::io::Result<Mode> {
     let log = std::fs::read(path)?;
     entries_start(&log).ok_or_else(|| std::io::Error::other("this isn't a recording"))?;
     let player = player_of(&log).ok_or_else(|| std::io::Error::other("this recording is damaged"))?;
+    if log.starts_with(MAGIC_BEFORE_STOPS) && player.has_tasks() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "warning: this recording was made before stops were recorded, so a task stopped in it \
+             may not be stopped in its replay: record it again to replay it exactly"
+        );
+    }
     Ok(Mode::Replay(Mutex::new(player)))
+}
+
+impl Player {
+    /// Whether the recording has entries of any task but `main`: of a launched task, a server's
+    /// round or a `parallel` call's range.
+    fn has_tasks(&self) -> bool {
+        self.streams.keys().any(|name| name != "0" && name != OUTPUT && !name.contains(':'))
+    }
 }
 
 /// A log's entries, each task's in a stream of its own: `None` if it's damaged.
 fn player_of(log: &[u8]) -> Option<Player> {
-    let named = log.starts_with(MAGIC) || log.starts_with(MAGIC_UNMARKED);
+    let named =
+        log.starts_with(MAGIC) || log.starts_with(MAGIC_BEFORE_STOPS) || log.starts_with(MAGIC_UNMARKED);
     let mut player = Player {
         streams: HashMap::new(),
         workers: None,
         orders_output: false,
         held: HashMap::new(),
-        whole: !log.starts_with(MAGIC),
+        whole: !(log.starts_with(MAGIC) || log.starts_with(MAGIC_BEFORE_STOPS)),
     };
     let mut reader = Entries { log, at: entries_start(log)? };
     while reader.at < log.len() {
@@ -504,7 +566,10 @@ pub fn header_of(path: &Path) -> std::io::Result<Vec<u8>> {
 
 fn entries_start(log: &[u8]) -> Option<usize> {
     let magic = log.get(..MAGIC.len())?;
-    if magic != MAGIC && magic != MAGIC_UNMARKED && magic != MAGIC_UNNAMED {
+    if ![MAGIC, MAGIC_BEFORE_STOPS, MAGIC_UNMARKED, MAGIC_UNNAMED]
+        .iter()
+        .any(|known| known.as_slice() == magic)
+    {
         return None;
     }
     let length = u32::from_le_bytes(log.get(MAGIC.len()..MAGIC.len() + 4)?.try_into().ok()?);
@@ -581,18 +646,23 @@ pub(crate) fn value(
     match mode() {
         Mode::Off => live(),
         Mode::Record(file) => {
+            let failing = crate::embed::failed();
             let result = live();
             let mut payload = Vec::new();
             encode_result(&result, &mut payload);
-            log(file, &running(), &call.to_string(), &payload);
+            let task = running();
+            log(file, &task, &call.to_string(), &payload);
+            note_cut_short(file, &task, failing);
             result
         }
         Mode::Replay(player) => {
             let call = call.to_string();
             let payload = replayed(player, &call).map_err(|why| Diagnostic::new(why, span))?;
-            decode_result(&payload, span).ok_or_else(|| {
+            let result = decode_result(&payload, span).ok_or_else(|| {
                 Diagnostic::new(format!("this replay's recording of `{call}` couldn't be read back"), span)
-            })?
+            })?;
+            stopped_if_cut_short(player);
+            result
         }
     }
 }
@@ -615,16 +685,88 @@ pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String
     match mode() {
         Mode::Off => Ok(live()),
         Mode::Record(file) => {
+            let failing = crate::embed::failed();
             let word = live();
-            log(file, &running(), call, &word.to_le_bytes());
+            let task = running();
+            log(file, &task, call, &word.to_le_bytes());
+            note_cut_short(file, &task, failing);
             Ok(word)
         }
         Mode::Replay(player) => {
             let payload = replayed(player, call)?;
             let bytes: [u8; 8] =
                 payload.try_into().map_err(|_| format!("this replay's recording of `{call}` is damaged"))?;
+            stopped_if_cut_short(player);
             Ok(i64::from_le_bytes(bytes))
         }
+    }
+}
+
+/// In a recording, after a call `task` made, which it made `failing` or not: if a stop cut the
+/// call short, and so it's failing now as a stopped task, logs that, for a replay to stop it there.
+fn note_cut_short(file: &Mutex<std::fs::File>, task: &str, failing: bool) {
+    #[cfg(any(test, feature = "threads"))]
+    if !failing && crate::embed::failed() && crate::embed::threads::stopped() {
+        log(file, task, CUT_SHORT, &[]);
+    }
+    #[cfg(not(any(test, feature = "threads")))]
+    let _ = (file, task, failing);
+}
+
+/// In a replay, after a call the running task made: if a stop cut it short in the recording, the
+/// task is stopped there now.
+fn stopped_if_cut_short(player: &Mutex<Player>) {
+    let task = running();
+    let cut = {
+        let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+        let stream = player.streams.get_mut(&*task);
+        let cut =
+            stream.as_ref().and_then(|stream| stream.front()).is_some_and(|(next, _)| next == CUT_SHORT);
+        if cut {
+            stream.and_then(VecDeque::pop_front);
+        }
+        cut
+    };
+    if cut {
+        stopped_as_recorded();
+    }
+}
+
+/// The running task's stop found it waiting at its own `with launch` block's end, and it's failing
+/// as stopped: in a recording, logged, for a replay to stop it there too.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only launched tasks have blocks that wait for them")
+)]
+pub(crate) fn stopped_at_block_end() {
+    if let Mode::Record(file) = mode() {
+        log(file, &running(), STOPPED_AT_BLOCK_END, &[]);
+    }
+}
+
+/// In a replay, at the running task's own `with launch` block's end, once the task it launched
+/// has ended: if its recording says its stop found it there, it's stopped now, as it was then.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only launched tasks have blocks that wait for them")
+)]
+pub(crate) fn stopped_at_block_end_as_recorded() {
+    let Mode::Replay(player) = mode() else { return };
+    let task = running();
+    let stopped = {
+        let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+        let stream = player.streams.get_mut(&*task);
+        let stopped = stream
+            .as_ref()
+            .and_then(|stream| stream.front())
+            .is_some_and(|(next, _)| next == STOPPED_AT_BLOCK_END);
+        if stopped {
+            stream.and_then(VecDeque::pop_front);
+        }
+        stopped
+    };
+    if stopped {
+        stopped_as_recorded();
     }
 }
 

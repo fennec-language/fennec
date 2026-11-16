@@ -21,7 +21,7 @@ A switch is for something permanent: an option a user or CI sets, or the way `fe
 - `FENNEC_DAEMON_IDLE`: how many seconds the daemon stays up with nothing to do; 600 by default.
 - `FENNEC_LLVM_BIN`: the folder holding LLVM's `opt` and `llc`.
 - `FENNEC_LLVM_KEEP`: keeps the folder of LLVM text a build writes, to read what was emitted.
-- `FENNEC_BUILD_JOBS`: how many functions a dev build compiles at once; the number of cores by default.
+- `FENNEC_BUILD_JOBS`: how many functions a dev build compiles at once; the number of cores by default. `.cargo/config.toml` sets it to 2 for everything Cargo runs, the tests among them, since they run many builds at once.
 
 ## For CI and the tests
 

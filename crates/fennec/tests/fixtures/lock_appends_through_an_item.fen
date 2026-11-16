@@ -1,0 +1,52 @@
+## Under a lock, a `ref self` method appends to a list held in a value: in a dict's value, in a
+## list's item, or in one bag the two share. The number of appends is the first argument, and what
+## it appends through the second: `named`, `row`, `shared-named` or `shared-row`, or
+## `together-row`, through a list's item with a second lock taken with the first. Run with
+## `FENNEC_COUNTS=1`, the copies it says are how many times the lock copied a list to change it.
+
+struct Bag:
+    items: list[str]
+
+struct Shelf:
+    named: dict[str, Bag]
+    rows: list[Bag]
+
+    def add_named(ref self, text: str):
+        self.named["one"].items.append(text)
+        return
+
+    def add_row(ref self, text: str):
+        self.rows[0].items.append(text)
+        return
+
+def shares(way: str) -> bool:
+    return way == "shared-named" or way == "shared-row"
+
+def by_name(way: str) -> bool:
+    return way == "named" or way == "shared-named"
+
+def main(args: Args, stdout: Stdout):
+    turns = int.parse(args[0]) except InvalidValue(): 300
+    way = args[1] else "row"
+    first = Bag(items=["first, a text long enough for a block of its own"])
+    second = Bag(items=["second, a text long enough for a block of its own"])
+    shared shelf = Shelf(named={"one": first}, rows=[first if shares(way) else second])
+    shared spare = Bag(items=["spare, a text long enough for a block of its own"])
+    if way == "together-row":
+        # Two locks taken together each keep a log: the row's bag is marked in the shelf's, and
+        # its list may be saved in the other's, which hands it on at its end.
+        lock shelf, spare as ref held, ref other:
+            for turn in range(turns):
+                held.add_row(f"by a method in turn {turn}, long enough for a block")
+            other.items.append("the spare's, a text long enough for a block of its own")
+    else:
+        lock shelf as ref held:
+            for turn in range(turns):
+                text = f"by a method in turn {turn}, long enough for a block"
+                if by_name(way):
+                    held.add_named(text)
+                else:
+                    held.add_row(text)
+    lock shelf as held:
+        stdout.print(len(held.named["one"].items), len(held.rows[0].items))
+    return

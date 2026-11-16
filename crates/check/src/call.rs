@@ -245,7 +245,7 @@ impl FnCx<'_> {
     }
 
     /// An argument's type, where a value of type `expected` goes, if that's known.
-    fn arg_as(&mut self, arg: &Arg, params: &[Type], expected: Option<&Type>) -> Type {
+    pub(crate) fn arg_as(&mut self, arg: &Arg, params: &[Type], expected: Option<&Type>) -> Type {
         if arg.is_mut {
             self.mut_place(&arg.value, MUT_ARG);
         }
@@ -402,8 +402,26 @@ impl FnCx<'_> {
         let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
         if !chosen.is_empty() {
             let types = chosen.iter().map(|chosen| chosen.ty.clone()).collect();
-            let call =
-                crate::generic_copies::Call { caller: self.key.clone(), callee: key.to_owned(), types };
+            // With no receiver, each type parameter but the ones it inherits is chosen, in order.
+            let program = &self.checker.program;
+            let names = program
+                .functions
+                .get(key)
+                .map(|entry| {
+                    let inherited: Vec<&str> =
+                        entry.inherited.iter().map(|generic| generic.name.as_str()).collect();
+                    let generics = program.generics_of(entry);
+                    let chosen =
+                        generics.into_iter().filter(|generic| !inherited.contains(&generic.name.as_str()));
+                    chosen.map(|generic| generic.name).collect()
+                })
+                .unwrap_or_default();
+            let call = crate::generic_copies::Call {
+                caller: self.key.clone(),
+                callee: key.to_owned(),
+                types,
+                names,
+            };
             self.checker.generic_calls.insert((span.start, span.end), call);
         }
         if let Some(what) = crate::waits::intrinsic_waits(key) {

@@ -21,4 +21,4 @@ rustls | TLS
 rustls-platform-verifier | the system's own certificates, for TLS
 same-file | telling whether two paths are one file, for `fs` and SQLite
 signal-hook | signals on Unix
-socket2 | a socket's send buffer size
+socket2 | a server's listen queue as long as the system allows, and on Windows a socket's send buffer size

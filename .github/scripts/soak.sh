@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # A real program run for a long time under its own scripted load, to see that what it holds levels
 # off: its resident memory, the runtime's count of live blocks, and the most any running task's list
-# of what it made holds (`task held`, #1794) are read every second, the lowest of each minute kept, and a line fitted through those after a warm-up has to rise by less than a
-# small part of where it started. The lowest, because a reading in the middle of a round holds what
-# that round has in flight, which comes and goes: what a leak leaves is the floor between rounds
-# creeping up.
+# of what it made holds (`task held`, #1794) are read every second, the lowest of each minute kept,
+# and a line fitted through those after a warm-up has to rise by less than a small part of where it
+# started. The lowest, because a reading in the middle of a round holds what that round has in
+# flight, which comes and goes: what a leak leaves is the floor between rounds creeping up.
 #
 #   .github/scripts/soak.sh target/release/fennec bench/realworld/game_server.fen soak.md [minutes]
 #

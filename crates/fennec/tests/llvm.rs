@@ -6358,6 +6358,54 @@ def main(args: Args, stdout: Stdout):
     )
 }
 
+/// A list whose items hold no blocks is cleared by its length alone, and filled again from its
+/// room: one shared before it's cleared keeps what it held, one cleared and grown past its old
+/// room, and lists of plain structs, of structs holding a text, and of lists, each cleared and
+/// used again. It prints what the reference evaluator prints, with nothing left.
+#[test]
+fn a_cleared_list_is_empty_and_fills_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("cleared_lists", CLEARED_LISTS, "[] [1, 2, 3] 0\n40 39\n[7]\n1 5\n1 b\n[]\n")?;
+    let counts = counts_of("cleared_lists_counts", CLEARED_LISTS)?;
+    assert!(counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
+const CLEARED_LISTS: &str = r#"struct Spot:
+    x: int
+    y: float
+
+struct Named:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    mut ints = [1, 2, 3]
+    shared = ints
+    ints.clear()
+    stdout.print(ints, shared, len(ints))
+    for turn in range(40):
+        ints.append(turn)
+    stdout.print(len(ints), ints[39])
+    ints.clear()
+    ints.append(7)
+    stdout.print(ints)
+    mut spots = [Spot(x=1, y=2.0), Spot(x=3, y=4.0)]
+    spots.clear()
+    spots.append(Spot(x=5, y=6.0))
+    stdout.print(len(spots), spots[0].x)
+    mut named = [Named(name="a long name that is held in a block", hp=3)]
+    named.clear()
+    named.append(Named(name="b", hp=4))
+    stdout.print(len(named), named[0].name)
+    mut grid = [[1, 2], [3]]
+    grid.clear()
+    stdout.print(grid)
+    return
+"#;
+
 /// `set.remove` of a key that isn't there fails as pinned.
 #[test]
 fn removing_what_a_set_lacks_fails_as_pinned() -> std::io::Result<()> {

@@ -21,6 +21,10 @@
 //!   how the threads interleave. How many workers the run had is logged first, and a replay has as
 //!   many, so its ranges are cut the same way.
 //!
+//! - **`parallel` calls that fail:** when a range fails, ranges after it that haven't begun don't
+//!   begin, and which had begun depends on timing. A recording logs, under the call, each range a
+//!   failure kept from starting, and a replay skips exactly those and runs every other.
+//!
 //! - **Where tasks meet:** a channel is a place, named by the task that made it, as `0.2:c1`. What
 //!   each task did there, send, receive, listen or close, is logged in the order it took effect,
 //!   with what it came to, and a replay makes each task wait for its turn. So messages go to the

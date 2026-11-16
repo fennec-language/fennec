@@ -180,9 +180,9 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> Result<bool, String
 fn options(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
         fennec: PathBuf::from("target/release/fennec"),
-        // As the nightly runs it. 50,000 lines and more ask for over 2,000 copies of generic
-        // functions, which a build refuses until #1896.
-        sizes: vec![20_000, 30_000],
+        // As the nightly runs it. At 100,000 lines and more, `fennec check` stops at the checker's
+        // own cap on copies of generic functions, until its part of #1896 lands.
+        sizes: vec![20_000, 50_000],
         seed: 1,
         runs: 1,
         budgets: PathBuf::from("bench/big-codebase.txt"),

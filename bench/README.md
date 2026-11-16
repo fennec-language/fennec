@@ -204,7 +204,7 @@ Each gives its wall time and the most memory one process held. Where counted, it
 - Between each size and the next, each step's growth is set against the program's: 1.00 is in step, and over 1.25 fails.
 - Instructions here move with the machine's load, since a dev build starts thousands of short `opt` and `llc` processes: the same 23,000-line build counted 1,352 G at load 2 and 1,822 G at load 117. Compare sizes measured at the same load, as one run measures them.
 - `bench/big-codebase.txt` holds each system's budgets: a step's wall time may go over its budget by half, its memory by a quarter, and its instructions by 5%. `--pin` writes this system's from what it measured.
-- The nightly `proofs.yml` runs it on CI's Linux runners at 20,000 and 30,000 lines. Their budgets come from its first nights. 50,000 lines and more ask for over 2,000 copies of generic functions, which a build refuses until #1896.
+- The nightly `proofs.yml` runs it on CI's Linux runners at 20,000 and 50,000 lines. Their budgets come from its first nights. At 100,000 lines and more, `fennec check` stops at the checker's own cap on copies of generic functions, until its part of #1896 lands.
 - `fennec-bench big-codebase generate DIR --lines N` writes the program alone, to look at.
 
 ## Adding a kernel

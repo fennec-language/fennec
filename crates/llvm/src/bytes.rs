@@ -47,8 +47,8 @@ impl Emit<'_, '_, '_> {
     }
 
     /// std's byte builder, which a binary format writes into: `bytes_builder()`, then
-    /// `bytes_push`, `bytes_push_word`, `bytes_push_text` and `bytes_push_bytes` at its end, and
-    /// `bytes_set` of a byte already written. Each writes in place, into a block only it holds with
+    /// `bytes_push`, `bytes_push_word`, `bytes_push_varint`, `bytes_push_text` and
+    /// `bytes_push_bytes` at its end, and `bytes_set` of a byte already written. Each writes in place, into a block only it holds with
     /// room enough, and the runtime makes one first when it isn't. Its room is worked out from its
     /// length, as the runtime's `builder_room` has it.
     pub(crate) fn byte_builder(
@@ -84,6 +84,10 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store i64 {bits}, ptr {at}, align 1"));
                 self.lengthen(&block, &length, "8");
             }
+            "intrinsics.bytes_push_varint" => {
+                let (n, _) = self.operand(given)?;
+                self.push_varint(&slot, &n);
+            }
             "intrinsics.bytes_push_text" | "intrinsics.bytes_push_bytes" => {
                 let (more, _) = self.operand(given)?;
                 let (from, size) = if name == "intrinsics.bytes_push_text" {
@@ -112,6 +116,41 @@ impl Emit<'_, '_, '_> {
             other => return Err(format!("it calls `{other}`, which this backend doesn't take yet")),
         }
         Ok(())
+    }
+
+    /// `bytes_push_varint`: `n` as unsigned, 7 bits a byte, low first, with the top bit of each
+    /// saying more come. A 64-bit number takes at most 10 bytes, so room for them is made once,
+    /// each byte is stored with nothing more to check, and the length is written once at the end.
+    /// Pushed a byte at a time, every byte checks the room and the owner and writes the length.
+    fn push_varint(&mut self, slot: &str, n: &str) {
+        let (block, length) = self.room_for(slot, "10");
+        let start = self.byte_place(&block, &length);
+        let entry = self.current.clone();
+        let (head, more, last) =
+            (self.label("varint"), self.label("varint_more"), self.label("varint_last"));
+        self.line(&format!("br label %{head}"));
+        self.start_block(&head);
+        let (at, rest, place, big) = (self.temp(), self.temp(), self.temp(), self.temp());
+        let (next_at, next_rest) = (self.temp(), self.temp());
+        self.line(&format!("{at} = phi i64 [ 0, %{entry} ], [ {next_at}, %{more} ]"));
+        self.line(&format!("{rest} = phi i64 [ {n}, %{entry} ], [ {next_rest}, %{more} ]"));
+        self.line(&format!("{place} = getelementptr inbounds i8, ptr {start}, i64 {at}"));
+        self.line(&format!("{big} = icmp ugt i64 {rest}, 127"));
+        self.line(&format!("br i1 {big}, label %{more}, label %{last}"));
+        self.start_block(&more);
+        let (low, marked) = (self.temp(), self.temp());
+        self.line(&format!("{low} = trunc i64 {rest} to i8"));
+        self.line(&format!("{marked} = or i8 {low}, -128"));
+        self.line(&format!("store i8 {marked}, ptr {place}"));
+        self.line(&format!("{next_at} = add nuw nsw i64 {at}, 1"));
+        self.line(&format!("{next_rest} = lshr i64 {rest}, 7"));
+        self.line(&format!("br label %{head}"));
+        self.start_block(&last);
+        let (small, count) = (self.temp(), self.temp());
+        self.line(&format!("{small} = trunc i64 {rest} to i8"));
+        self.line(&format!("store i8 {small}, ptr {place}"));
+        self.line(&format!("{count} = add nuw nsw i64 {at}, 1"));
+        self.lengthen(&block, &length, &count);
     }
 
     /// The builder in `slot`, made the caller's own with room for `extra` more bytes, and its length.

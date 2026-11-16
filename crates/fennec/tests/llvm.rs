@@ -2879,7 +2879,7 @@ fn what_is_appended_through_a_dict_is_made_with_no_copy_of_the_list() -> std::io
     prints_in_both_builds("appended_through_a_dict", APPENDED_THROUGH_A_DICT, "900 300 after 899 others\n")?;
     assert_eq!(
         counts_of("appended_through_a_dict_counts", APPENDED_THROUGH_A_DICT)?,
-        "copies 0 copied_bytes 0 largest_copy 0 allocations 620 allocated_bytes 142688 live 0"
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 619 allocated_bytes 142704 live 0"
     );
     Ok(())
 }

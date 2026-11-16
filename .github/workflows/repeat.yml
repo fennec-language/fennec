@@ -14,9 +14,16 @@ name: Repeat a test
 # of its binary. With `exact` off, `test` is a filter, as `cargo test` takes one, and each run runs
 # every test it matches, at once, as CI does: `-f exact=false -f test=replay::` runs the whole
 # replay module each time.
+#
+# `ref` tests another branch's code with this workflow, as a fix's branch that doesn't have it:
+# `-f ref=<branch>` checks that out and builds it, and the runs go as they do here.
+run-name: Repeat ${{ inputs.test }} on ${{ inputs.os }}${{ inputs.ref && format(' at {0}', inputs.ref) || '' }}
 on:
   workflow_dispatch:
     inputs:
+      ref:
+        description: The branch, tag or commit to test; empty for the one this workflow runs from
+        default: ""
       os:
         description: The system to run it on
         type: choice
@@ -89,6 +96,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       # As CI's test jobs set up: Fennec links programs with LLD and MinGW-w64's libraries on
       # Windows, and with LLVM's tools from the toolchain's own `llvm-tools` elsewhere.

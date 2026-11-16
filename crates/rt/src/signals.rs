@@ -92,8 +92,10 @@ fn install() {
     // waited for: Windows ends the program as soon as the handler returns.
     let _ = ctrlc::set_handler(|| {
         if ASKED.load(Ordering::SeqCst) {
-            // A second one ends the program at once, with the code a Ctrl-C's usually gives.
-            std::process::exit(130);
+            // A second one ends the program at once, with the code a Ctrl-C's usually gives, the
+            // way an executable ends: not through the C runtime's `exit`, whose teardown runs
+            // while the program's workers go on.
+            crate::embed::aot::end_at_once(130);
         }
         asked();
     });

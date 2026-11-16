@@ -245,7 +245,7 @@ impl FnCx<'_> {
     }
 
     /// An argument's type, where a value of type `expected` goes, if that's known.
-    fn arg_as(&mut self, arg: &Arg, params: &[Type], expected: Option<&Type>) -> Type {
+    pub(crate) fn arg_as(&mut self, arg: &Arg, params: &[Type], expected: Option<&Type>) -> Type {
         if arg.is_mut {
             self.mut_place(&arg.value, MUT_ARG);
         }

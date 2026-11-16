@@ -2534,6 +2534,31 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{both} = and i1 {minus_one}, {lowest}"));
             self.fail_if(&both, OVERFLOW, span);
         }
+        // By a positive number written out, the machine's remainder has the sign of what's divided,
+        // so it's below 0 exactly when the quotient rounded toward zero is one too many and the
+        // remainder `b` too few: a shift of the remainder's sign fixes both, with no compare.
+        if let Operand::Int(divisor @ 1..) = rhs {
+            let (quotient, remainder, sign) = (self.temp(), self.temp(), self.temp());
+            self.line(&format!("{quotient} = sdiv i64 {a}, {b}"));
+            self.line(&format!("{remainder} = srem i64 {a}, {b}"));
+            self.line(&format!("{sign} = ashr i64 {remainder}, 63"));
+            let result = self.temp();
+            if op == BinOp::FloorDiv {
+                self.line(&format!("{result} = add i64 {quotient}, {sign}"));
+            } else {
+                let more = self.temp();
+                self.line(&format!("{more} = and i64 {sign}, {divisor}"));
+                self.line(&format!("{result} = add i64 {remainder}, {more}"));
+                // The remainder is always from 0 up to the divisor: said to LLVM, a value worked
+                // out from it again, as in `x = x * k % m`, needs no fix-up for a sign it can't have.
+                let (low, high) = (self.temp(), self.temp());
+                self.line(&format!("{low} = icmp sge i64 {result}, 0"));
+                self.assumed(&low, "a remainder by a positive number isn't negative", span);
+                self.line(&format!("{high} = icmp slt i64 {result}, {divisor}"));
+                self.assumed(&high, "a remainder is below what it's by", span);
+            }
+            return result;
+        }
         let (quotient, remainder, signs, differ, nonzero, adjust) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{quotient} = sdiv i64 {a}, {b}"));
@@ -2551,16 +2576,6 @@ impl Emit<'_, '_, '_> {
             let more = self.temp();
             self.line(&format!("{more} = add i64 {remainder}, {b}"));
             self.line(&format!("{result} = select i1 {adjust}, i64 {more}, i64 {remainder}"));
-            // By a positive number, the remainder is always from 0 up to it: said to LLVM, a value
-            // worked out from it again, as in `x = x * k % m`, needs no fix-up for a sign it can't
-            // have, and is the machine's remainder alone.
-            if let Operand::Int(divisor @ 1..) = rhs {
-                let (low, high) = (self.temp(), self.temp());
-                self.line(&format!("{low} = icmp sge i64 {result}, 0"));
-                self.assumed(&low, "a remainder by a positive number isn't negative", span);
-                self.line(&format!("{high} = icmp slt i64 {result}, {divisor}"));
-                self.assumed(&high, "a remainder is below what it's by", span);
-            }
         }
         result
     }

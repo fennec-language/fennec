@@ -43,7 +43,9 @@ def one_round(process: Process, fs: Fs, clock: Clock, marker: str, number: int) 
             return outcome(() => process.run("true", [], input=big())?)
         case 5:
             # It ends at once, but what it started holds its outputs open.
-            return outcome(() => process.run("sh", ["-c", "sleep 30 &"], timeout=Duration.millis(300))?)
+            return outcome(
+                () => process.run("sh", ["-c", "sleep 30 &"], timeout=Duration.millis(300))?,
+            )
         case 6:
             return outcome(() => process.run("sh", ["-c", "echo oops >&2; exit 3"])?)
         case 7:
@@ -60,11 +62,20 @@ def one_round(process: Process, fs: Fs, clock: Clock, marker: str, number: int) 
         return f"couldn't write: {why}"
     return "wrote"
 
-def main(process: Process, fs: Fs, env: Env, clock: Clock, entropy: Entropy, stdout: Stdout) fails IoError:
+def main(
+    process: Process,
+    fs: Fs,
+    env: Env,
+    clock: Clock,
+    entropy: Entropy,
+    stdout: Stdout,
+) fails IoError:
     folder = env.get("TMPDIR") else "/tmp"
     marker = f"{folder}/fennec-process-parks-{entropy.bytes(8).hex()}"
     rounds = CASES + WAITERS + 1
-    seen = [one_round(process, fs, clock, marker, number=number) for number in parallel(range(rounds))]
+    seen = [
+        one_round(process, fs, clock, marker, number=number) for number in parallel(range(rounds))
+    ]
     if fs.exists(marker)?:
         fs.remove(marker)?
     for number in range(CASES):

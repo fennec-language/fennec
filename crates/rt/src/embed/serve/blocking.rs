@@ -13,7 +13,7 @@
 //! the program's blocking work would wait behind them.
 
 use std::collections::VecDeque;
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Condvar, LazyLock, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 /// Work that blocks its thread.
@@ -31,9 +31,26 @@ const IDLE: Duration = Duration::from_secs(5);
 /// The runtime's pool, started on first use.
 static POOL: Blocking = Blocking::new(KEPT, MOST, IDLE);
 
-/// Hands `job` to one of the runtime's blocking threads, as [`Blocking::run`] does.
-pub(super) fn run(job: Job) -> Result<(), Vec<Job>> {
-    POOL.run(job)
+/// The runtime's pool for blocking work.
+pub(super) fn pool() -> &'static Blocking {
+    &POOL
+}
+
+/// The most threads work that keeps a core busy for long gets at once.
+const MOST_HEAVY: usize = 8;
+
+/// The pool for work that keeps a core busy for long, as hashing a password does: a thread to a
+/// core, at most `MOST_HEAVY`, and none kept once idle. A hash takes tens of milliseconds and
+/// 19 MiB, so a burst of them runs a few at once and the rest wait their turn, their tasks parked,
+/// rather than taking every core, and as much memory as there are tasks hashing.
+static HEAVY: LazyLock<Blocking> = LazyLock::new(|| {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    Blocking::new(0, cores.min(MOST_HEAVY), IDLE)
+});
+
+/// The pool for work that keeps a core busy for long.
+pub(super) fn heavy() -> &'static Blocking {
+    &HEAVY
 }
 
 /// Starts a thread named `name` running `body`.

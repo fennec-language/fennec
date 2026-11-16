@@ -491,18 +491,21 @@ type Pure = fn(&str, &[Value], Span) -> Result<Value, Diagnostic>;
 /// `std.compress`'s or `std.unicode`'s, with the last `count` temporaries handed in as its
 /// arguments. `name` is a string block with its full name.
 pub extern "C" fn crypto_call(name: i64, count: i64, start: i64, end: i64) -> i64 {
-    attempt(|state: &mut State| {
-        let at = span(start, end);
-        let (name, given) = named_call(state, name, count, at)?;
-        let result = if name.starts_with("compress.") {
-            crate::stdlib::compress::run(&name, &given, at)?
-        } else if name.starts_with("unicode.") {
-            crate::stdlib::unicode::run(&name, &given, at)?
-        } else {
-            crate::stdlib::crypto::run(&name, &given, at)?
-        };
-        Ok(state.push(result))
-    })
+    let at = span(start, end);
+    let Some((name, given)) = attempt(|state: &mut State| named_call(state, name, count, at).map(Some))
+    else {
+        return 0;
+    };
+    // It runs with the runtime's state let go of, so one that waits, as hashing a password does,
+    // can park its task.
+    let result = if name.starts_with("compress.") {
+        crate::stdlib::compress::run(&name, &given, at)
+    } else if name.starts_with("unicode.") {
+        crate::stdlib::unicode::run(&name, &given, at)
+    } else {
+        crate::stdlib::crypto::run(&name, &given, at)
+    };
+    attempt(|state: &mut State| Ok(state.push(result?)))
 }
 
 /// A function of one module, by a name that has to start with `prefix`: what each of the three
@@ -520,7 +523,10 @@ fn pure_call(
     if !name.starts_with(prefix) {
         return not_this_exports(export, &name);
     }
-    attempt(|state: &mut State| Ok(state.push(run(&name, &given, at)?)))
+    // It runs with the runtime's state let go of, so one that waits, as hashing a password does,
+    // can park its task.
+    let result = run(&name, &given, at);
+    attempt(|state: &mut State| Ok(state.push(result?)))
 }
 
 /// `fennec_compress_call(name, count, start, end)`: `fennec_crypto_call` for `std.compress`.

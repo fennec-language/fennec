@@ -976,6 +976,7 @@ impl Emit<'_, '_, '_> {
         let asks = taking && self.asks_the_log();
         let dict = match taken {
             Some((root, path)) => {
+                self.save_for_take(root, &path)?;
                 let place = self.place_of(root, &path)?;
                 alone =
                     if asks { self.changeable_at(&place) } else { self.alone_at(&place, "fennec_unshare") };
@@ -1197,6 +1198,7 @@ impl Emit<'_, '_, '_> {
         field: &str,
         span: Span,
     ) -> Result<(), String> {
+        self.save_for_take(root, path)?;
         let place = self.place_of(root, path)?;
         let Kind::Dict(key_word, value_word) = self.place_kind(root, path)? else {
             return Err("a field of something else's value".to_owned());

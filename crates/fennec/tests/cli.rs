@@ -1096,6 +1096,33 @@ fn a_kit_without_main_can_be_tested_but_not_run() {
     assert!(text(&test.stdout).ends_with("1 passed, 0 failed\n"));
 }
 
+/// A kit's files are in `src/`. One whose only file is beside `kit.toml` has nothing in it, and
+/// checking, linting or testing it fails and says to move the file. It passed without a word
+/// before, so `fennec lint` there found none of the file's lints.
+#[test]
+fn a_kit_with_its_file_beside_kit_toml_says_to_move_it_to_src() {
+    let dir = scratch("file-beside").unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"beside\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(
+        dir.join("main.fen"),
+        "def shown(count: int) -> int:\n    return int(count) + 1\n\ndef main(stdout: Stdout):\n    stdout.print(shown(3))\n",
+    )
+    .unwrap();
+    let said: Vec<_> =
+        ["check", "lint", "test"].iter().map(|command| fennec_in(&dir, &[command], "").unwrap()).collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    for (command, output) in ["check", "lint", "test"].iter().zip(&said) {
+        let stderr = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
+        assert!(
+            stderr.starts_with("error: src/ has no .fen file, so there's nothing in this kit"),
+            "{command}: {stderr}"
+        );
+        assert!(stderr.contains("move main.fen to src/main.fen"), "{command}: {stderr}");
+    }
+}
+
 #[test]
 fn run_outside_a_kit_says_how_to_start_one() {
     let dir = scratch("no-kit").unwrap();
@@ -4574,9 +4601,12 @@ fn wide_program(methods: usize, kinds: usize) -> String {
     lines.join("\n")
 }
 
-/// The walk over copies of generic functions never stops counting: one that hands nothing over
-/// doesn't count towards its bound, and past the bound every kit may receive anything the program
-/// holds, which stops the check rather than passing it.
+/// The walk over copies of generic functions follows the rules lowering does, and never passes over
+/// what it can't follow. A kit's generic that comes back to itself with a bigger type each time is
+/// refused where it's written, since it can't be built. A chain of generics each asking for two
+/// copies of the next reaches the backstop, 16 copies for each function the program has, and past
+/// it every kit may receive anything the program holds, which stops the check rather than passing
+/// it.
 #[test]
 fn the_walk_never_passes_over_what_it_cant_follow() {
     let take = "export def take(fs: Fs) -> int:\n    return 7\n";
@@ -4596,11 +4626,35 @@ fn the_walk_never_passes_over_what_it_cant_follow() {
                 "def grow[T](value: T, left: int) -> int:\n    if left == 0:\n        return 0\n    return grow([value], left - 1)\n\n\
                  export struct Spin:\n    name: str\n\n    def go(self) -> int:\n        return grow(1, 3)\n\n\
                  export def take(fs: Fs) -> int:\n    return 7\n",
-                "past 2000 copies of generic functions",
+                "`grow` calls itself with a bigger type each time",
+            ),
+            (
+                "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(helper.take(fs))\n",
+                &doubling_chain(16),
+                "past the copies of generic functions a program of its size can ask for",
             ),
         ],
     )
     .unwrap();
+}
+
+/// A kit whose `Spin.go` starts a chain of `steps` generics, each asking for two copies of the next,
+/// one with a tuple and one with a list, beside a `take` that's handed an `Fs`: no type nests past
+/// `steps`, but the copies double at every step.
+fn doubling_chain(steps: usize) -> String {
+    let mut parts: Vec<String> = (0..steps)
+        .map(|step| {
+            let next = step + 1;
+            format!("def step{step}[T](value: T) -> int:\n    return step{next}((value, 1)) + step{next}([value])\n")
+        })
+        .collect();
+    parts.push(format!("def step{steps}[T](value: T) -> int:\n    return 1\n"));
+    parts.push(
+        "export struct Spin:\n    name: str\n\n    def go(self) -> int:\n        return step0(1)\n\n\
+         export def take(fs: Fs) -> int:\n    return 7\n"
+            .to_owned(),
+    );
+    parts.join("\n")
 }
 
 /// A generic type's method that only the standard library calls, as printing calls `str`, is

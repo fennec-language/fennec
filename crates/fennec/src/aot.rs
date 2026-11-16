@@ -926,11 +926,22 @@ const NO_DEBUG_INFO: &str = "-Wl,--strip-debug";
 #[cfg(windows)]
 const NO_DEBUG_INFO: &str = "--strip-debug";
 
+/// What a Mac's `cc` is told to link for: the architecture this `fennec` builds programs for. On
+/// its own, `cc` links for the one it runs as, and since macOS 27.2.1, whose Xcode has `clang`
+/// and `ld` for arm64 only, that's arm64 even when an x86-64 `fennec` starts it under Rosetta.
+#[cfg(target_os = "macos")]
+const LINKS_FOR: &[&str] = &["-arch", if cfg!(target_arch = "x86_64") { "x86_64" } else { "arm64" }];
+
+/// Elsewhere, `cc` links for the machine it runs on, which is the one `fennec` builds for.
+#[cfg(all(not(target_os = "macos"), not(windows)))]
+const LINKS_FOR: &[&str] = &[];
+
 /// The system's linker, set to link objects with a runtime library into an executable. On a Mac
 /// that's `cc` from Xcode's command line tools, which a Mac program links against.
 #[cfg(not(windows))]
 fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, tls: bool) -> Command {
     let mut command = Command::new("cc");
+    command.args(LINKS_FOR);
     name_objects(&mut command, objects);
     command
         .arg(runtime)

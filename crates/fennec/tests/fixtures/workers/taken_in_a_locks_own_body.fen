@@ -1,0 +1,48 @@
+# A task crashes inside a lock's own body after appending to a list in a dict's value and in a
+# list's item, written straight in the body, after 1, 40 and 300 appends, so the list has grown and
+# moved since the lock saved it: the lock's value is as it was before the lock, and nothing the
+# task made outlives it. Each also runs to the end.
+from std.concurrent import Crashed
+
+struct Bag:
+    items: list[str]
+    seen: int
+
+struct Shelf:
+    named: dict[str, Bag]
+    rows: list[Bag]
+
+def first_bag() -> Bag:
+    return Bag(items=["first, a text long enough for a block of its own"], seen=0)
+
+def appended(shelf: shared Shelf, count: int, limits: list[int], by_name: bool):
+    lock shelf as ref held:
+        for turn in range(count):
+            if by_name:
+                held.named["one"].items.append(f"named {turn}, a text long enough for a block")
+            else:
+                held.rows[0].items.append(f"row {turn}, a text long enough for a block")
+        held.named["one"].seen += limits[count]
+    return
+
+def ran(shelf: shared Shelf, count: int, by_name: bool) fails Crashed:
+    limits = [0, 1, 2]
+    with launch(() => appended(shelf, count=count, limits=limits, by_name=by_name)) as task:
+        pass
+    return
+
+def held_now(shelf: shared Shelf) -> str:
+    lock shelf as held:
+        named = held.named["one"]
+        row = held.rows[0]
+        return f"{len(named.items)} {named.seen} {named.items[-1]} | {len(row.items)} {row.items[-1]}"
+
+def main(stdout: Stdout):
+    shared shelf = Shelf(named={"one": first_bag()}, rows=[first_bag()])
+    for by_name in [True, False]:
+        for count in [1, 40, 2, 300, 1]:
+            ran(shelf, count=count, by_name=by_name) except Crashed():
+                stdout.print("crashed", by_name, count, held_now(shelf))
+                continue
+            stdout.print("went", by_name, count, held_now(shelf))
+    return

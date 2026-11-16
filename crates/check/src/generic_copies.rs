@@ -13,12 +13,13 @@ use crate::lend_lowering::{below_written, reserved, retype, retype_one, written_
 use crate::types::Type;
 
 /// A call to a generic function: the function it's made in, the one called, and the types the
-/// called one's type parameters are there, in order.
+/// called one's type parameters are there, in order, with their names.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Call {
     pub(crate) caller: String,
     pub(crate) callee: String,
     pub(crate) types: Vec<Type>,
+    pub(crate) names: Vec<String>,
 }
 
 /// Copies each generic function in `sourcing` for each type it's called with, and makes each such

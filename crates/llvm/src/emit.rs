@@ -3022,6 +3022,7 @@ impl Emit<'_, '_, '_> {
             "intrinsics.bytes_builder"
             | "intrinsics.bytes_push"
             | "intrinsics.bytes_push_word"
+            | "intrinsics.bytes_push_varint"
             | "intrinsics.bytes_push_text"
             | "intrinsics.bytes_push_bytes"
             | "intrinsics.bytes_set" => self.byte_builder(dest, name, args),

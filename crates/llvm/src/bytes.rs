@@ -47,8 +47,8 @@ impl Emit<'_, '_, '_> {
     }
 
     /// std's byte builder, which a binary format writes into: `bytes_builder()`, then
-    /// `bytes_push`, `bytes_push_word`, `bytes_push_text` and `bytes_push_bytes` at its end, and
-    /// `bytes_set` of a byte already written. Each writes in place, into a block only it holds with
+    /// `bytes_push`, `bytes_push_word`, `bytes_push_varint`, `bytes_push_text` and
+    /// `bytes_push_bytes` at its end, and `bytes_set` of a byte already written. Each writes in place, into a block only it holds with
     /// room enough, and the runtime makes one first when it isn't. Its room is worked out from its
     /// length, as the runtime's `builder_room` has it.
     pub(crate) fn byte_builder(
@@ -84,6 +84,10 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store i64 {bits}, ptr {at}, align 1"));
                 self.lengthen(&block, &length, "8");
             }
+            "intrinsics.bytes_push_varint" => {
+                let (n, _) = self.operand(given)?;
+                self.push_varint(&slot, &n);
+            }
             "intrinsics.bytes_push_text" | "intrinsics.bytes_push_bytes" => {
                 let (more, _) = self.operand(given)?;
                 let (from, size) = if name == "intrinsics.bytes_push_text" {
@@ -114,6 +118,102 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// `bytes_push_varint`: `n` as unsigned, 7 bits a byte, low first, with the top bit of each
+    /// saying more come. A number under 128 is one byte, pushed as `bytes_push` pushes it. A
+    /// bigger one takes 2 to 10 bytes. When the builder is the caller's alone and has room for 10
+    /// more, they're stored one after another with nothing more to check, and the length written
+    /// once at the end, where pushing them a byte at a time checks the room and the owner and
+    /// writes the length for each. When it hasn't, they're pushed a byte at a time: a builder's
+    /// room is worked out from its length, so growing it for 10 bytes and writing fewer would
+    /// leave it looking short of room again, and each number after would grow it once more.
+    fn push_varint(&mut self, slot: &str, n: &str) {
+        let (one, many, done) =
+            (self.label("varint_one"), self.label("varint_many"), self.label("varint_done"));
+        let small = self.temp();
+        self.line(&format!("{small} = icmp ult i64 {n}, 128"));
+        self.line(&format!("br i1 {small}, label %{one}, label %{many}"));
+        self.start_block(&one);
+        let (block, length) = self.room_for(slot, "1");
+        let (at, byte) = (self.byte_place(&block, &length), self.temp());
+        self.line(&format!("{byte} = trunc i64 {n} to i8"));
+        self.line(&format!("store i8 {byte}, ptr {at}"));
+        self.lengthen(&block, &length, "1");
+        self.line(&format!("br label %{done}"));
+        self.start_block(&many);
+        let (block, length, wanted) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{block} = load ptr, ptr {slot}"));
+        let length_at = self.offset(&block, 16);
+        self.line(&format!("{length} = load i64, ptr {length_at}"));
+        self.line(&format!("{wanted} = add i64 {length}, 10"));
+        let fits = self.room_test(&length, &wanted, "10");
+        let (alone, ready) = (self.alone(&block), self.temp());
+        self.line(&format!("{ready} = and i1 {alone}, {fits}"));
+        let (quick, bytewise) = (self.label("varint_room"), self.label("varint_bytewise"));
+        self.line(&format!("br i1 {ready}, label %{quick}, label %{bytewise}, !prof !8"));
+        self.start_block(&bytewise);
+        let (head, tail) = (self.label("varint_byte"), self.label("varint_byte_end"));
+        self.line(&format!("br label %{head}"));
+        self.start_block(&head);
+        let (rest, big, low, marked, byte, next) =
+            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{rest} = phi i64 [ {n}, %{bytewise} ], [ {next}, %{tail} ]"));
+        self.line(&format!("{big} = icmp ugt i64 {rest}, 127"));
+        self.line(&format!("{low} = trunc i64 {rest} to i8"));
+        self.line(&format!("{marked} = or i8 {low}, -128"));
+        self.line(&format!("{byte} = select i1 {big}, i8 {marked}, i8 {low}"));
+        let (held, held_length) = self.room_for(slot, "1");
+        let place = self.byte_place(&held, &held_length);
+        self.line(&format!("store i8 {byte}, ptr {place}"));
+        self.lengthen(&held, &held_length, "1");
+        self.line(&format!("{next} = lshr i64 {rest}, 7"));
+        self.line(&format!("br label %{tail}"));
+        self.start_block(&tail);
+        self.line(&format!("br i1 {big}, label %{head}, label %{done}"));
+        self.start_block(&quick);
+        let start = self.byte_place(&block, &length);
+        let last = self.label("varint_last");
+        // Byte 0 has more after it, since `n` is 128 or more. Each next one is the last when
+        // what's left is under 128; the 10th always is, with at most one bit left.
+        let mut rest = n.to_owned();
+        let mut ends = Vec::new();
+        for at in 0..10 {
+            if at > 0 && at < 9 {
+                let (big, more) = (self.temp(), self.label("varint_more"));
+                self.line(&format!("{big} = icmp ugt i64 {rest}, 127"));
+                self.line(&format!("br i1 {big}, label %{more}, label %{last}"));
+                ends.push((at, rest.clone(), self.current.clone()));
+                self.start_block(&more);
+            }
+            if at == 9 {
+                ends.push((at, rest.clone(), self.current.clone()));
+                break;
+            }
+            let (low, marked, place, next) = (self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{low} = trunc i64 {rest} to i8"));
+            self.line(&format!("{marked} = or i8 {low}, -128"));
+            self.line(&format!("{place} = getelementptr inbounds i8, ptr {start}, i64 {at}"));
+            self.line(&format!("store i8 {marked}, ptr {place}"));
+            self.line(&format!("{next} = lshr i64 {rest}, 7"));
+            rest = next;
+        }
+        self.line(&format!("br label %{last}"));
+        self.start_block(&last);
+        let (at, left) = (self.temp(), self.temp());
+        let from = |pick: fn(&(usize, String, String)) -> String| {
+            ends.iter().map(|end| format!("[ {}, %{} ]", pick(end), end.2)).collect::<Vec<_>>().join(", ")
+        };
+        self.line(&format!("{at} = phi i64 {}", from(|end| end.0.to_string())));
+        self.line(&format!("{left} = phi i64 {}", from(|end| end.1.clone())));
+        let (place, byte, count) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!("{place} = getelementptr inbounds i8, ptr {start}, i64 {at}"));
+        self.line(&format!("{byte} = trunc i64 {left} to i8"));
+        self.line(&format!("store i8 {byte}, ptr {place}"));
+        self.line(&format!("{count} = add nuw nsw i64 {at}, 1"));
+        self.lengthen(&block, &length, &count);
+        self.line(&format!("br label %{done}"));
+        self.start_block(&done);
+    }
+
     /// The builder in `slot`, made the caller's own with room for `extra` more bytes, and its length.
     fn room_for(&mut self, slot: &str, extra: &str) -> (String, String) {
         let block = self.temp();
@@ -121,31 +221,7 @@ impl Emit<'_, '_, '_> {
         let (length_at, length, wanted) = (self.offset(&block, 16), self.temp(), self.temp());
         self.line(&format!("{length} = load i64, ptr {length_at}"));
         self.line(&format!("{wanted} = add i64 {length}, {extra}"));
-        let fits = if extra == "1" {
-            // One more byte fits unless it's full: its length a power of two, at least 16.
-            let (less, shared_bits, uneven, short, fits) =
-                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
-            self.line(&format!("{less} = sub i64 {length}, 1"));
-            self.line(&format!("{shared_bits} = and i64 {length}, {less}"));
-            self.line(&format!("{uneven} = icmp ne i64 {shared_bits}, 0"));
-            self.line(&format!("{short} = icmp ult i64 {length}, 16"));
-            self.line(&format!("{fits} = or i1 {uneven}, {short}"));
-            fits
-        } else {
-            // The next power of two from its length, and at least 16.
-            self.declare("declare i64 @llvm.ctlz.i64(i64, i1)");
-            let (less, zeros, shift, big, small, room) =
-                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
-            self.line(&format!("{less} = sub i64 {length}, 1"));
-            self.line(&format!("{zeros} = call i64 @llvm.ctlz.i64(i64 {less}, i1 false)"));
-            self.line(&format!("{shift} = sub i64 64, {zeros}"));
-            self.line(&format!("{big} = shl i64 1, {shift}"));
-            self.line(&format!("{small} = icmp ule i64 {length}, 16"));
-            self.line(&format!("{room} = select i1 {small}, i64 16, i64 {big}"));
-            let fits = self.temp();
-            self.line(&format!("{fits} = icmp ule i64 {wanted}, {room}"));
-            fits
-        };
+        let fits = self.room_test(&length, &wanted, extra);
         let ready = self.temp();
         let alone = self.alone(&block);
         self.line(&format!("{ready} = and i1 {alone}, {fits}"));
@@ -163,6 +239,51 @@ impl Emit<'_, '_, '_> {
         let held = self.temp();
         self.line(&format!("{held} = phi ptr [ {block}, %{quick} ], [ {grown}, %{slow} ]"));
         (held, length)
+    }
+
+    /// Whether a builder `length` long has room for `wanted` bytes, `extra` more: its room is the
+    /// next power of two from its length, and at least 16, as the runtime's `builder_room` has it.
+    fn room_test(&mut self, length: &str, wanted: &str, extra: &str) -> String {
+        if extra == "1" {
+            // One more byte fits unless it's full: its length a power of two, at least 16.
+            let (less, shared_bits, uneven, short, fits) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{less} = sub i64 {length}, 1"));
+            self.line(&format!("{shared_bits} = and i64 {length}, {less}"));
+            self.line(&format!("{uneven} = icmp ne i64 {shared_bits}, 0"));
+            self.line(&format!("{short} = icmp ult i64 {length}, 16"));
+            self.line(&format!("{fits} = or i1 {uneven}, {short}"));
+            fits
+        } else if extra.parse::<u8>().is_ok_and(|more| (2..=16).contains(&more)) {
+            // A few more bytes fit when the room is 16 and they reach no further, or when the
+            // last of them is below the same power of two as the last byte held now: then
+            // `length - 1` and `wanted - 1` have the same top bit, and their `xor` is less than
+            // the first. That's the next power of two from the length, without counting its
+            // zeros.
+            let (less, last, mixed, same, short, fits) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{less} = sub i64 {length}, 1"));
+            self.line(&format!("{last} = sub i64 {wanted}, 1"));
+            self.line(&format!("{mixed} = xor i64 {less}, {last}"));
+            self.line(&format!("{same} = icmp ult i64 {mixed}, {less}"));
+            self.line(&format!("{short} = icmp ule i64 {wanted}, 16"));
+            self.line(&format!("{fits} = or i1 {same}, {short}"));
+            fits
+        } else {
+            // The next power of two from its length, and at least 16.
+            self.declare("declare i64 @llvm.ctlz.i64(i64, i1)");
+            let (less, zeros, shift, big, small, room) =
+                (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+            self.line(&format!("{less} = sub i64 {length}, 1"));
+            self.line(&format!("{zeros} = call i64 @llvm.ctlz.i64(i64 {less}, i1 false)"));
+            self.line(&format!("{shift} = sub i64 64, {zeros}"));
+            self.line(&format!("{big} = shl i64 1, {shift}"));
+            self.line(&format!("{small} = icmp ule i64 {length}, 16"));
+            self.line(&format!("{room} = select i1 {small}, i64 16, i64 {big}"));
+            let fits = self.temp();
+            self.line(&format!("{fits} = icmp ule i64 {wanted}, {room}"));
+            fits
+        }
     }
 
     /// Where byte `at` of a builder is.

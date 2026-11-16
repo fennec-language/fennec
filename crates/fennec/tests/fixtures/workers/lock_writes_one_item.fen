@@ -1,0 +1,209 @@
+# One write to one entry of a big `Table`, dict or list held by a `shared` value, under
+# `lock ... as ref`: written in the lock's own block, and through a `ref self` method called from
+# it. Each write is tried three ways: ending normally, failing after the write, and crashing after
+# it in a task. A write that ended stays, and one that failed or crashed leaves everything exactly
+# as it was, checked against the same writes made to a plain value with no lock.
+#
+# Run as `prog <entries> <rounds>`, with 40 entries or more. Every write is to one of the first 40,
+# so a round does the same at any size. The test runs it at two sizes for one round and for three,
+# and wants two rounds more to copy the same at both: a write to one entry must cost the same
+# however many entries there are.
+from std.collections import Id, Table
+from std.concurrent import Crashed
+
+WAYS = 20
+
+error Stop:
+    turn: int
+
+struct Session:
+    name: str
+    pending = 0
+    tags = list[str]()
+
+struct Lobby:
+    sessions = Table[Session]()
+    by_name = dict[str, Id[Session]]()
+    by_key = dict[str, Session]()
+    numbers = dict[str, int]()
+    queue = list[Session]()
+    groups = dict[str, list[int]]()
+
+    def ask_table(ref self, name: str, turn: int):
+        self.sessions[self.by_name[name]].pending = turn
+
+    def ask_dict(ref self, name: str, turn: int):
+        self.by_key[name].pending = turn
+
+    def set_number(ref self, name: str, turn: int):
+        self.numbers[name] = turn
+
+    def ask_queue(ref self, at: int, turn: int):
+        self.queue[at].pending = turn
+
+    def tag_table(ref self, name: str, turn: int):
+        self.sessions[self.by_name[name]].tags.append(f"tag {turn}")
+
+    def tag_dict(ref self, name: str, turn: int):
+        self.by_key[name].tags.append(f"tag {turn}")
+
+    def join_group(ref self, name: str, turn: int):
+        self.groups[name].append(turn)
+
+    def rename(ref self, name: str, turn: int):
+        self.sessions[self.by_name[name]].name = f"{name}, renamed on turn {turn}"
+
+    def replace(ref self, name: str, turn: int):
+        self.sessions[self.by_name[name]] = Session(name=f"{name} again", pending=turn)
+
+    def come_back(ref self, name: str, turn: int):
+        _ = self.sessions.remove(self.by_name[name])
+        self.by_name[name] = self.sessions.add(Session(name=name, pending=turn))
+
+## A lobby of `entries` sessions, each in the `Table`, both dicts and the list.
+def filled(entries: int) -> Lobby:
+    mut lobby = Lobby()
+    for number in range(entries):
+        name = f"player{number}"
+        lobby.by_name[name] = lobby.sessions.add(Session(name=name))
+        lobby.by_key[name] = Session(name=name)
+        lobby.numbers[name] = 0
+        lobby.queue.append(Session(name=name))
+        lobby.groups[name] = [number]
+    return lobby
+
+## One write, by its number: an even one is written here, where the lock is held when `current`
+## is a lock's value, and the odd one after it is the same write through a method.
+def written(ref current: Lobby, way: int, name: str, at: int, turn: int):
+    match way:
+        case 0:
+            current.sessions[current.by_name[name]].pending = turn
+        case 1:
+            current.ask_table(name, turn=turn)
+        case 2:
+            current.by_key[name].pending = turn
+        case 3:
+            current.ask_dict(name, turn=turn)
+        case 4:
+            current.numbers[name] = turn
+        case 5:
+            current.set_number(name, turn=turn)
+        case 6:
+            current.queue[at].pending = turn
+        case 7:
+            current.ask_queue(at, turn=turn)
+        case 8:
+            current.sessions[current.by_name[name]].tags.append(f"tag {turn}")
+        case 9:
+            current.tag_table(name, turn=turn)
+        case 10:
+            current.by_key[name].tags.append(f"tag {turn}")
+        case 11:
+            current.tag_dict(name, turn=turn)
+        case 12:
+            current.groups[name].append(turn)
+        case 13:
+            current.join_group(name, turn=turn)
+        case 14:
+            current.sessions[current.by_name[name]].name = f"{name}, renamed on turn {turn}"
+        case 15:
+            current.rename(name, turn=turn)
+        case 16:
+            current.sessions[current.by_name[name]] = Session(name=f"{name} again", pending=turn)
+        case 17:
+            current.replace(name, turn=turn)
+        case 18:
+            _ = current.sessions.remove(current.by_name[name])
+            current.by_name[name] = current.sessions.add(Session(name=name, pending=turn))
+        case _:
+            current.come_back(name, turn=turn)
+
+## The write under the lock, in the lock's own block for an even `way`. With `stop`, it fails once
+## the write is made.
+def locked(lobby: shared Lobby, way: int, name: str, at: int, turn: int, stop: bool) fails Stop:
+    lock lobby as ref current:
+        match way:
+            case 0:
+                current.sessions[current.by_name[name]].pending = turn
+            case 2:
+                current.by_key[name].pending = turn
+            case 4:
+                current.numbers[name] = turn
+            case 6:
+                current.queue[at].pending = turn
+            case 8:
+                current.sessions[current.by_name[name]].tags.append(f"tag {turn}")
+            case 10:
+                current.by_key[name].tags.append(f"tag {turn}")
+            case 12:
+                current.groups[name].append(turn)
+            case 14:
+                current.sessions[current.by_name[name]].name = f"{name}, renamed on turn {turn}"
+            case 16:
+                current.sessions[current.by_name[name]] = Session(
+                    name=f"{name} again",
+                    pending=turn,
+                )
+            case 18:
+                _ = current.sessions.remove(current.by_name[name])
+                current.by_name[name] = current.sessions.add(Session(name=name, pending=turn))
+            case _:
+                written(ref current, way=way, name=name, at=at, turn=turn)
+        if stop: fail Stop(turn=turn)
+
+## The same write under the lock, crashing once it's made.
+def crashing(lobby: shared Lobby, way: int, name: str, at: int, turn: int):
+    lock lobby as ref current:
+        written(ref current, way=way, name=name, at=at, turn=turn)
+        nothing: list[int] = []
+        current.numbers[name] = nothing[turn + 1]
+
+def launched(lobby: shared Lobby, way: int, name: str, at: int, turn: int) fails Crashed:
+    with launch(() => crashing(lobby, way=way, name=name, at=at, turn=turn)) as task:
+        pass
+
+## A number for a text, the same on every machine.
+def hashed(text: str) -> int:
+    mut hash = len(text)
+    for byte in text.encode():
+        hash = (hash * 31 + byte) % 1_000_000_007
+    return hash
+
+def main(args: Args, stdout: Stdout):
+    entries = int.parse(args[0]) except InvalidValue(): 40
+    rounds = int.parse(args[1]) except InvalidValue(): 3
+    shared lobby = filled(entries)
+    mut plain = filled(entries)
+    mut wrong = list[str]()
+    mut kept = 0
+    mut failed = 0
+    mut crashed = 0
+    mut turn = 0
+    for _ in range(rounds):
+        for way in range(WAYS):
+            for how in range(3):
+                turn += 1
+                at = (turn * 7) % 40
+                name = f"player{at}"
+                if how == 0:
+                    locked(lobby, way=way, name=name, at=at, turn=turn, stop=False) except Stop():
+                        wrong.append(f"way {way} failed with nothing to stop it")
+                    written(ref plain, way=way, name=name, at=at, turn=turn)
+                    kept += 1
+                elif how == 1:
+                    locked(lobby, way=way, name=name, at=at, turn=turn, stop=True) except Stop():
+                        failed += 1
+                else:
+                    launched(lobby, way=way, name=name, at=at, turn=turn) except Crashed():
+                        crashed += 1
+                mut now = ""
+                lock lobby as held:
+                    now = str(held)
+                if now != str(plain):
+                    wrong.append(f"way {way}, how {how}, turn {turn}")
+    for line in wrong:
+        stdout.print(line)
+    stdout.print("wrong", len(wrong), "kept", kept, "failed", failed, "crashed", crashed)
+    final = str(plain)
+    stdout.print("left", len(final), hashed(final))
+    return

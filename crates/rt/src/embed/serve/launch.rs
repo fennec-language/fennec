@@ -201,7 +201,7 @@ fn run(launched: &Launched, body: TaskBody, copy: Option<(u64, Box<crate::embed:
         state.temps.clear();
         state.let_go();
     });
-    let blocks = with(|state| state.heap.hand_over(0));
+    let blocks = with(|state| state.heap.hand_over_all());
     let (lent_owners, printed) = threads::range_ends();
     let outcome = Outcome { how, failure, blocks, lent_owners, printed };
     let mut end = launched.end.lock().unwrap_or_else(PoisonError::into_inner);
@@ -256,18 +256,31 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
     // thread's, and other tasks run on it while this one waits.
     let held = with(|state| state.failure.take());
     super::super::set_failed(0);
-    if failed != 0 || threads::stopped() {
+    // A replay stops nothing by the clock, nor at once: its recording says at which wait each task
+    // was stopped, and the task stops itself there. The clock would stop one where the recorded run
+    // didn't, or miss one it did, as a replay takes no time to sleep (#1831).
+    let replaying = crate::replay::replaying();
+    if !replaying && (failed != 0 || threads::stopped()) {
         stop(&launched, threads::STOPPING);
     }
     let deadline = u64::try_from(stop_after_ns)
         .ok()
-        .filter(|_| failed == 0)
+        .filter(|_| failed == 0 && !replaying)
         .map(|nanos| Instant::now() + Duration::from_nanos(nanos));
+    // What this thread printed comes out before it waits for its task, however long that is, as
+    // before any other wait: a program stopped while it waits here has said what it had to say.
+    super::super::write_kept_output();
     let outcome = wait_for(&launched, deadline);
     match held {
         Some(held) => super::super::fail_with(held),
-        // Stopped while it waited: it's cut short now its task has ended.
-        None => drop(super::cut_short()),
+        // Stopped while it waited, as its recording says.
+        None if replaying => crate::replay::stopped_at_block_end_as_recorded(),
+        // Stopped while it waited: it's cut short now its task has ended, which a recording notes.
+        None => {
+            if super::cut_short() {
+                crate::replay::stopped_at_block_end();
+            }
+        }
     }
     with(|state| {
         state.output.0.borrow_mut().extend(outcome.printed);
@@ -292,8 +305,8 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
 /// cleaning up after a crash, and at `threads::STOPPED_HARD`, whatever it's doing.
 fn stop(launched: &Arc<Launched>, level: u8) {
     launched.stop.fetch_max(level, Ordering::AcqRel);
-    // A read blocking the task's thread, as on Windows, hears of nothing run there: it's ended
-    // from here, by shutting its socket.
+    // A read blocking the task's thread, as one by a task that can't park does, hears of nothing
+    // run there: it's ended from here, by shutting its socket.
     crate::stdlib::net::cut_blocked_reads(&launched.stop);
     let stopping = Arc::clone(launched);
     launched.pool.run_on(

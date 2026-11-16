@@ -1,10 +1,10 @@
 source 8087b0aa7bf2d7d604fbae7964624e8226cf45037f91ebe71c77ac60d825ee2d
 code 0
-stdout 95
-True True False False True
-True False
-True False False True 1
-True False
-True False
+stdout 90
+True True True False False
+True True
+True True True True 0
+True True
+True True
 True False
 stderr 0

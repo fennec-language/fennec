@@ -36,6 +36,15 @@ const NEVER_SAVED: [(&str, &str, &str); 3] = [
     ),
 ];
 
+/// Of those, the ones a program may load: loading a `Secret` brings one in, as a password in a
+/// request's body, where saving one would let it out.
+const LOADED_ONLY: [&str; 1] = ["Secret"];
+
+/// Whether a type that's never saved may still be loaded.
+pub(crate) fn loaded_only(name: &str) -> bool {
+    LOADED_ONLY.contains(&name)
+}
+
 /// The capabilities, through which all I/O goes, each named as a message says it. A capability is
 /// handed down from `main`, never made: loading one from text would make one nobody handed over,
 /// and saving one means nothing.
@@ -79,37 +88,40 @@ pub(crate) fn generate(module: &mut Module) {
         return;
     }
     let mut checker = Checker::new(module);
-    let types: Vec<TypeDef> = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Struct(def) | Item::Enum(def) if !def.shared => Some(def.clone()),
-            _ => None,
-        })
-        .collect();
+    let types = program_types(module);
     let written = written_by_hand(module);
-    let mut generated: BTreeSet<String> = types
+    let generated = generated_among(&mut checker, &types, &written);
+    // What can't be saved but can be loaded, as a struct holding a `Secret` can, gets only its
+    // `deserialize`: what can't be loaded takes what holds it with it in the same way.
+    let mut load_only: BTreeSet<String> = types
         .iter()
-        .filter(|def| !written.contains(&def.name) && !has_method(def) && never_saved(&def.name).is_none())
+        .filter(|def| {
+            !written.contains(&def.name)
+                && !has_method(def)
+                && never_saved(&def.name).is_none()
+                && !generated.contains(&def.name)
+        })
         .map(|def| def.name.clone())
         .collect();
-    // What can't be saved takes what holds it with it, until nothing more goes.
     loop {
-        let before = generated.len();
+        let before = load_only.len();
         for def in &types {
-            if generated.contains(&def.name) && !all_saved(&mut checker, def, &generated) {
-                generated.remove(&def.name);
+            let loadable: BTreeSet<String> = generated.union(&load_only).cloned().collect();
+            if load_only.contains(&def.name) && !all_loaded(&mut checker, def, &loadable) {
+                load_only.remove(&def.name);
             }
         }
-        if generated.len() == before {
+        if load_only.len() == before {
             break;
         }
     }
     let mut unions = Unions::default();
     let mut written = Written::default();
     let mut made = Vec::new();
-    for (number, def) in types.iter().filter(|def| generated.contains(&def.name)).enumerate() {
-        if let Some(items) = pair_for((&mut checker, &mut unions, &mut written), number, def) {
+    let made_for = types.iter().filter(|def| generated.contains(&def.name) || load_only.contains(&def.name));
+    for (number, def) in made_for.enumerate() {
+        let saves = generated.contains(&def.name);
+        if let Some(items) = pair_for((&mut checker, &mut unions, &mut written), (number, saves), def) {
             made.extend(items);
         }
     }
@@ -122,6 +134,47 @@ pub(crate) fn generate(module: &mut Module) {
     // through, which are written last.
     if written.fill(&mut made).is_some() {
         module.items.extend(made);
+    }
+}
+
+/// The program's own types, a `shared` one's aside, which saving makes a pair for if it can.
+fn program_types(module: &Module) -> Vec<TypeDef> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(def) | Item::Enum(def) if !def.shared => Some(def.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The program's types `generate` makes a `serialize` and a `deserialize` for, or made them for
+/// already, which `saved` takes. Asked once they're made, it's those still to make, none, and
+/// `saved` finds the made ones by their methods, so `saved` answers the same before and after:
+/// what asks needn't come after `generate`.
+pub(crate) fn generated_types(checker: &mut Checker, module: &Module) -> BTreeSet<String> {
+    generated_among(checker, &program_types(module), &written_by_hand(module))
+}
+
+/// Of `types`, those that write neither method and aren't never saved, and whose fields can all
+/// be saved. What can't be saved takes what holds it with it, until nothing more goes.
+fn generated_among(checker: &mut Checker, types: &[TypeDef], written: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut generated: BTreeSet<String> = types
+        .iter()
+        .filter(|def| !written.contains(&def.name) && !has_method(def) && never_saved(&def.name).is_none())
+        .map(|def| def.name.clone())
+        .collect();
+    loop {
+        let before = generated.len();
+        for def in types {
+            if generated.contains(&def.name) && !all_saved(checker, def, &generated) {
+                generated.remove(&def.name);
+            }
+        }
+        if generated.len() == before {
+            return generated;
+        }
     }
 }
 
@@ -214,6 +267,45 @@ fn all_saved(checker: &mut Checker, def: &TypeDef, generated: &BTreeSet<String>)
         let ty = checker.field_type(&def.name, case, &field.name);
         saved(checker, &ty, generated)
     })
+}
+
+/// Whether every field of a type that's saved can be loaded, though not all may be saved.
+fn all_loaded(checker: &mut Checker, def: &TypeDef, loadable: &BTreeSet<String>) -> bool {
+    let fields = def.fields.iter().map(|field| (None, field));
+    let in_cases =
+        def.cases.iter().flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
+    let all: Vec<(Option<&str>, &Field)> = fields.chain(in_cases).collect();
+    all.into_iter().filter(|(_, field)| !skipped(field)).all(|(case, field)| {
+        let ty = checker.field_type(&def.name, case, &field.name);
+        loaded(checker, &ty, loadable)
+    })
+}
+
+/// Whether a value of this type can be loaded: as `saved` asks, but a `Secret` loads as what it
+/// holds, and a type whose own `deserialize` was made for it, without a `serialize`, loads too.
+fn loaded(checker: &Checker, ty: &Type, loadable: &BTreeSet<String>) -> bool {
+    match ty {
+        Type::List(inner) | Type::Set(inner) | Type::Optional(inner) | Type::Table(inner)
+            if !matches!(ty, Type::Set(_) | Type::Table(_)) || !holds_union(inner) =>
+        {
+            loaded(checker, inner, loadable)
+        }
+        Type::Dict(key, value) if !holds_union(key) => {
+            loaded(checker, key, loadable) && loaded(checker, value, loadable)
+        }
+        Type::Tuple(items) => {
+            items.len() > 1
+                && !items.iter().any(holds_union)
+                && items.iter().all(|item| loaded(checker, item, loadable))
+        }
+        Type::Named(name) | Type::Generic(name, _) if loaded_only(name) => {
+            ty.type_args().iter().all(|arg| loaded(checker, arg, loadable))
+        }
+        Type::Named(name) | Type::Generic(name, _) if loadable.contains(name) => {
+            ty.type_args().iter().all(|arg| loaded(checker, arg, loadable))
+        }
+        _ => saved(checker, ty, loadable),
+    }
 }
 
 /// Whether a value of this type can be saved and loaded. A type parameter is the extension's to
@@ -563,9 +655,10 @@ fn reads<'f>(
 
 /// The constant and the extension for the type numbered `number`, parsed, with their slots put in
 /// by `written` once every type's are written.
+/// `saves` says whether the type is saved too, or only loaded, as one holding a `Secret` is.
 fn pair_for(
     (checker, unions, written): (&mut Checker, &mut Unions, &mut Written),
-    number: usize,
+    (number, saves): (usize, bool),
     def: &TypeDef,
 ) -> Option<Vec<Item>> {
     let name = &def.name;
@@ -611,9 +704,13 @@ fn pair_for(
         );
         (saving, loading)
     };
-    let bounds = bounded(def, "Serializable");
-    let _ =
-        writeln!(text, "extend {OWNER}{bounds}:\n    def serialize(self, ref out__: Serializer):\n{saving}");
+    if saves {
+        let bounds = bounded(def, "Serializable");
+        let _ = writeln!(
+            text,
+            "extend {OWNER}{bounds}:\n    def serialize(self, ref out__: Serializer):\n{saving}"
+        );
+    }
     let bounds = bounded(def, "Deserializable");
     let _ = writeln!(
         text,
@@ -886,6 +983,14 @@ fn fill_in(parsed: &mut Module, written: &Written, def: &TypeDef) {
             *expr = default.clone();
         }
     });
+}
+
+/// Whether all that stops a type being saved is something that may still be loaded, as a `Secret`
+/// in it is: such a type has a `deserialize` and no `serialize`, and can't have both.
+pub(crate) fn loads_only(checker: &mut Checker, name: &str) -> bool {
+    let secret = LOADED_ONLY.iter().filter_map(|loaded| never_saved(loaded)).map(|(what, _)| what);
+    let stopped = what_stops_saving(checker, &Type::named(name));
+    stopped.is_some_and(|(_, what, _, _)| secret.clone().any(|loaded| loaded == what))
 }
 
 /// The first thing in a value of this type that stops it being saved: where it is, what it is, the

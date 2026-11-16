@@ -4,10 +4,10 @@
 use std::collections::HashMap;
 
 use fennec_check::Type;
-use fennec_syntax::{Expr, Field, Item, Module, TypeDef};
+use fennec_syntax::{Expr, Field, Item, Module, Span, TypeDef};
 
 use super::{Lowered, Lowering};
-use crate::Operand;
+use crate::{InstKind, LocalId, Operand, Terminator};
 
 /// A field by its type, its case for an enum, and its name.
 pub(super) type FieldKey<'a> = (&'a str, Option<&'a str>, &'a str);
@@ -81,6 +81,63 @@ impl Lowering<'_> {
         self.body = outer_body;
         self.scopes = outer_scopes;
         self.subst = outer_subst;
-        self.coerce(value?, ty, default.span)
+        let value = self.shared_when_empty(value?, default.span);
+        self.coerce(value, ty, default.span)
+    }
+
+    /// An empty list, dict or set a field defaults to, read as a constant: made once, and handed
+    /// to each value built with the default as one more owner of it. Making one for every value
+    /// cost an allocation each, for a field most values never write, like a response's headers.
+    /// The first write to one finds it shared and makes a block of its own then, as a write to
+    /// any shared value does, so nothing written shows in another value or in the constant.
+    fn shared_when_empty(&mut self, value: Operand, span: Span) -> Operand {
+        let Operand::Local(dest) = value else { return value };
+        let Some(ty) = self.locals.get(dest.0).map(|local| local.ty.clone()) else { return value };
+        if !matches!(ty, Type::List(_) | Type::Set(_) | Type::Dict(..)) {
+            return value;
+        }
+        // What made it, when that's the last thing done and it's made with nothing in it: `[]`,
+        // `{}` or `set()`, however the default was written. The constant is made the same way.
+        let last = self.blocks.get(self.current.0).and_then(|block| block.insts.last());
+        let made = |held: LocalId| match last.map(|inst| &inst.kind) {
+            Some(InstKind::MakeList { dest: made, items }) if *made == dest && items.is_empty() => {
+                Some(InstKind::MakeList { dest: held, items: Vec::new() })
+            }
+            Some(InstKind::MakeSet { dest: made, items }) if *made == dest && items.is_empty() => {
+                Some(InstKind::MakeSet { dest: held, items: Vec::new() })
+            }
+            Some(InstKind::MakeDict { dest: made, pairs }) if *made == dest && pairs.is_empty() => {
+                Some(InstKind::MakeDict { dest: held, pairs: Vec::new() })
+            }
+            Some(InstKind::Builtin { dest: Some(made), name, args, changes })
+                if *made == dest && name == "set" && args.is_empty() =>
+            {
+                Some(InstKind::Builtin {
+                    dest: Some(held),
+                    name: name.clone(),
+                    args: Vec::new(),
+                    changes: *changes,
+                })
+            }
+            _ => None,
+        };
+        if made(dest).is_none() {
+            return value;
+        }
+        let name = format!("empty {ty}");
+        if !self.context.empties.borrow().iter().any(|function| function.name == name) {
+            let instance = super::generics::FunctionInstance::plain(&name);
+            let mut constant = Lowering::new(&instance, self.context, self.body, ty.clone());
+            let held = constant.temporary(ty.clone());
+            let Some(kind) = made(held) else { return value };
+            constant.emit(kind, span);
+            constant.finish(Terminator::Return(Some(Operand::Local(held))));
+            self.context.empties.borrow_mut().extend(constant.finished(0, Vec::new()));
+        }
+        if let Some(block) = self.blocks.get_mut(self.current.0) {
+            block.insts.pop();
+        }
+        self.emit(InstKind::Constant { dest, name }, span);
+        value
     }
 }

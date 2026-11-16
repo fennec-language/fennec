@@ -107,6 +107,7 @@ impl FnCx<'_> {
         declare_mut: bool,
         written: Option<&TypeExpr>,
     ) {
+        self.note_written(target, value);
         match &target.kind {
             ExprKind::Name(name) => {
                 if !declare_mut
@@ -221,6 +222,7 @@ impl FnCx<'_> {
         if !self.checker.fits(&declared, ty) {
             self.error(mismatch(&format!("`{name}`"), &declared, ty, value));
         }
+        let ty = self.held_as(&declared, ty.clone());
         let binding = Binding {
             name: name.to_owned(),
             ty: ty.clone(),
@@ -228,9 +230,30 @@ impl FnCx<'_> {
             is_mut,
             origin: Origin::Local,
             mut_at: Some(at.start),
+            to_every: false,
         };
         self.declare_with(binding, at);
-        self.record(at, &self.checker.settled(ty));
+        self.record(at, &self.checker.settled(&ty));
+    }
+
+    /// What a name declared as `declared` holds once it's given a value of type `ty`: that type,
+    /// which can be narrower, as `int` for an `int?` given `5`, except for a function. One whose
+    /// type differs from a function type it's given where, as one giving back `str` where
+    /// `(int) -> str?` goes, is made to give back what that says, so the name holds that type:
+    /// what it holds can't be read back as the narrower function.
+    fn held_as(&mut self, declared: &Type, ty: Type) -> Type {
+        let Type::Arrow(..) = self.checker.settled(declared) else { return ty };
+        let given = match self.checker.settled(&ty) {
+            Type::Function(key) => match self.checker.signature(&key) {
+                Some(signature) => {
+                    let params = signature.params.iter().map(|param| param.ty.clone()).collect();
+                    Type::Arrow(params, Box::new(signature.returns))
+                }
+                None => return ty,
+            },
+            other => other,
+        };
+        if self.checker.settled(&given) == self.checker.settled(declared) { ty } else { declared.clone() }
     }
 
     fn assign_name(&mut self, name: &str, span: Span, op: Option<BinOp>, ty: Type, declare_mut: bool) {
@@ -285,6 +308,7 @@ impl FnCx<'_> {
             );
             return;
         }
+        let ty = self.held_as(&declared, ty);
         self.set_type(name, ty);
     }
 

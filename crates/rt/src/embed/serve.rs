@@ -778,7 +778,12 @@ impl Io {
                 None => Err(Deferred { run: Box::new(|| 0), accounts: Box::new(accounts), started }),
             };
         };
-        accounts.set_task(task);
+        // Its mark is its number's, or the next free one's if a task still alive here has that
+        // mark from the last time the marks came round.
+        let alive = &self.accounts;
+        let number =
+            super::heap::number_to_mark(task, |number| alive.values().any(|other| other.marked_as(number)));
+        accounts.set_task(number);
         // Named as a server's round is: a task's temporaries are swapped last, so they say who it is.
         if let Some(named) = accounts.take_replay() {
             self.temporaries.insert(task, super::Temporaries::of_task(named));
@@ -851,6 +856,8 @@ impl Io {
                 + self.waiting.len()
                 + self.ready.len()
                 + self.owners.len();
+            counts.task_held =
+                self.accounts.values().map(super::threads::Accounts::listed).max().unwrap_or(0);
             counts.connections = calls::connections();
             counts
         });
@@ -896,15 +903,11 @@ impl Io {
         if let Some(listener) = &mut here.listener {
             let _ = self.poll.registry().deregister(listener);
         }
-        // With nothing else to run here, what this worker still holds was left by a round: looked
-        // at while what the server lent can still be read.
-        if self.servers.is_empty()
-            && self.waiting.is_empty()
-            && self.ready.is_empty()
-            && self.accounts.is_empty()
-            && self.temporaries.is_empty()
-            && self.owners.is_empty()
-        {
+        // With no server left here, no round is: what this worker still holds that no task made
+        // was left by one. It's looked at now, while what the server lent can still be read, and
+        // whatever else is parked here: a launched task or a range that can wait keeps its own
+        // blocks apart, so a server run from inside a task is looked at as one run from `main` is.
+        if self.servers.is_empty() {
             super::aot::worker_stopped_serving();
         }
         let (owners, _) = super::threads::serving_ends();
@@ -1120,6 +1123,12 @@ impl Io {
     /// next message are woken, to end, before it drains as `break` does.
     fn drain_stopping(&mut self, id: u64) {
         super::live::stop_taken();
+        self.drain_waking(id);
+    }
+
+    /// Drains the server `id`, first waking its rounds here that wait for a next message, to end:
+    /// what a stop the program was asked for does, and what closing the server does.
+    fn drain_waking(&mut self, id: u64) {
         if let Some(here) = self.servers.get(&id) {
             let mut idle: Vec<usize> = IDLE_READS.with_borrow(|idle| idle.iter().copied().collect());
             // In the order they parked, not the set's.
@@ -1265,13 +1274,22 @@ fn timed_out(waiting: &HashMap<usize, (TaskId, Interest, Option<Instant>)>, now:
 
 /// Waits for each worker to leave a server. A task parks meanwhile, looking again now and then, as
 /// its own worker is one of those it waits for. Anything else blocks.
-fn wait_for_every_worker(left: &Latch) {
+///
+/// A task told to stop while it serves stops its server with `stop`, once: its rounds are cut
+/// short and the workers leave. It waits for them all the same, as its rounds read what it lent,
+/// and nothing else would ever end the wait: a server only stops when it's told to.
+fn wait_for_every_worker(left: &Latch, stop: impl Fn()) {
     if !can_park() {
         left.wait();
         return;
     }
+    let mut stopped = false;
     while !left.is_done() {
         let _ = park_on_token(next_token(), Some(Instant::now() + SERVER_END_LOOKS), false);
+        if !stopped && super::threads::stopped() {
+            stopped = true;
+            stop();
+        }
     }
 }
 
@@ -1327,22 +1345,145 @@ pub(crate) enum Parked {
 /// registered with the worker's poll for the wait, under a token of its own, and taken off after.
 /// Only for a task that `can_park`.
 #[cfg(unix)]
-pub(crate) fn park_on_fd(fd: std::os::fd::RawFd, interest: Interest, deadline: Option<Instant>) -> Parked {
+pub(crate) fn park_on_fd(
+    token: Token,
+    fd: std::os::fd::RawFd,
+    interest: Interest,
+    deadline: Option<Instant>,
+) -> Parked {
     if cut_short() {
         return Parked::Cancelled;
     }
-    let token = next_token();
     let mut source = mio::unix::SourceFd(&fd);
     let registered = REGISTRY.with_borrow(|registry| {
         registry.as_ref().is_some_and(|registry| registry.register(&mut source, token, interest).is_ok())
     });
     if !registered {
-        return Parked::Ready;
+        return parked_a_moment(token, deadline);
     }
     PARKING.set(Some((interest, deadline)));
     let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
     REGISTRY.with_borrow(|registry| registry.as_ref().map(|registry| registry.deregister(&mut source)));
     parked_as(woken)
+}
+
+/// A task about to park on this worker under a token, for whatever ends its wait from another
+/// thread to wake: closing a connection wakes the tasks waiting on it this way, as a worker's poll
+/// isn't told of a close made from this side on every system.
+pub(crate) struct ParkedTask {
+    pool: &'static Pool,
+    at: usize,
+    token: Token,
+}
+
+impl ParkedTask {
+    /// The task running here, which is about to park on `token`. Off a worker there's none.
+    pub(crate) fn here(token: Token) -> Option<ParkedTask> {
+        let (pool, at) = super::parallel::here()?;
+        Some(ParkedTask { pool, at, token })
+    }
+
+    /// Has it look again, if it's still parked on its token. One that's gone on isn't touched: a
+    /// worker's tokens are given out in turn, so no other wait of its has this one.
+    pub(crate) fn wake(&self) {
+        let token = self.token;
+        self.pool.run_on(self.at, Box::new(move |io: &mut Io| io.wake_token(token)));
+    }
+}
+
+/// For tests: how many waits have parked with a copy of their socket registered.
+#[cfg(test)]
+pub(crate) static PARKED_ON_COPIES: AtomicU64 = AtomicU64::new(0);
+
+/// Parks this task until `socket` may be ready for `interest`, or `deadline` passes, where a
+/// socket itself can't be handed to the worker's poll, as on Windows, where the poll takes only its
+/// own kind of socket: a copy of the socket is registered for the wait, under `token`, which
+/// nothing else on this worker waits on, and closed after. A copy is the same connection, so the
+/// poll says when the socket's ready. Only for a task that `can_park`.
+///
+/// **The copy is this call's, and nobody else's.** It's made here, lives in this call on the
+/// task's own stack, and is taken off the poll and closed before the call gives anything back,
+/// whichever way the wait ends: ready, out of time, stopped or cancelled. Each of those resumes
+/// the task, and a task is never dropped while it's parked (`fennec_parked`), so there's no way
+/// out that skips it. The socket stays its owner's throughout: closing a copy doesn't close the
+/// connection, and once the owner closes the socket nothing is left holding it open.
+///
+/// Without it a task's wait on a socket blocked its worker on Windows. A program that was its own
+/// client then waited for ever on one thread: the worker blocked reading an answer was the one
+/// that had to take the connection and give it.
+///
+/// Unix hands the poll the socket itself (`park_on_fd`) for one wait at a time. A second wait on
+/// the same connection, as when one task reads it while another writes to it, comes this way: a
+/// poll takes a descriptor once, and a copy has one of its own.
+pub(crate) fn park_on_copy(
+    token: Token,
+    socket: &std::net::TcpStream,
+    interest: Interest,
+    deadline: Option<Instant>,
+) -> Parked {
+    if cut_short() {
+        return Parked::Cancelled;
+    }
+    let copied = socket.try_clone().ok().map(TcpStream::from_std).and_then(|mut source| {
+        let registered = REGISTRY.with_borrow(|registry| {
+            registry.as_ref().is_some_and(|registry| registry.register(&mut source, token, interest).is_ok())
+        });
+        registered.then_some(source)
+    });
+    let Some(mut source) = copied else {
+        return parked_a_moment(token, deadline);
+    };
+    #[cfg(test)]
+    PARKED_ON_COPIES.fetch_add(1, Ordering::Relaxed);
+    PARKING.set(Some((interest, deadline)));
+    let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
+    REGISTRY.with_borrow(|registry| registry.as_ref().map(|registry| registry.deregister(&mut source)));
+    parked_as(woken)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// For tests: how many waits on this thread couldn't be registered, and parked a moment at a
+    /// time. A wait that looks again on a timer gets there in the end whatever's wrong with the
+    /// poll, so a test of waits that should be woken checks that none of them came this way.
+    static NOT_REGISTERED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// For tests: how many waits on this thread couldn't be registered.
+#[cfg(test)]
+pub(crate) fn waits_not_registered_here() -> u64 {
+    NOT_REGISTERED.get()
+}
+
+/// For tests: a wait on this thread, in a poll of its own, couldn't be registered.
+#[cfg(test)]
+pub(crate) fn a_wait_wasnt_registered() {
+    NOT_REGISTERED.set(NOT_REGISTERED.get() + 1);
+}
+
+/// How long a wait that couldn't be registered parks before it looks again.
+const LOOKS_AGAIN_AFTER: Duration = Duration::from_millis(1);
+
+/// What a wait on a socket does when the worker's poll wouldn't take the socket, or no copy of it
+/// could be made: it parks a moment on `token` alone, so its worker goes on with others and polls,
+/// and then says to look again, or that `deadline` has passed.
+///
+/// This is a retry, and it's what's left when the system is out of something: descriptors for a
+/// copy, or room in the poll. Nothing here can make more. Saying "ready" at once, as a wait
+/// through the socket itself did, had its task look again and again without its worker ever
+/// polling, and a wait with a deadline never ran out of time.
+fn parked_a_moment(token: Token, deadline: Option<Instant>) -> Parked {
+    #[cfg(test)]
+    NOT_REGISTERED.set(NOT_REGISTERED.get() + 1);
+    let now = Instant::now();
+    if deadline.is_some_and(|deadline| deadline <= now) {
+        return Parked::TimedOut;
+    }
+    let soon = now + LOOKS_AGAIN_AFTER;
+    match park_on_token(token, Some(deadline.map_or(soon, |deadline| deadline.min(soon))), true) {
+        Parked::Cancelled => Parked::Cancelled,
+        Parked::Ready | Parked::TimedOut => Parked::Ready,
+    }
 }
 
 /// A token for a wait on this thread that no other has.
@@ -1416,46 +1557,13 @@ pub(in crate::embed) use launch::launch_on;
 pub(in crate::embed) use launch::take_failed_with;
 pub use launch::{TaskBody, launch, launch_end, task_failed};
 
-/// Work the operating system can't be asked to say is ready for, run off this task's thread,
-/// a DNS lookup and a connect among them.
-type OffThread = Box<dyn FnOnce() + Send>;
-
-/// How many threads run blocking work for parked tasks. A few, as each holds only a lookup or a
-/// connect, and more of them waiting at once wait their turn.
-const OFF_THREADS: usize = 8;
-
-/// The threads that run blocking work for parked tasks, started on first use.
-fn off_threads() -> Option<&'static Mutex<std::sync::mpsc::Sender<OffThread>>> {
-    static SENDER: std::sync::OnceLock<Option<Mutex<std::sync::mpsc::Sender<OffThread>>>> =
-        std::sync::OnceLock::new();
-    SENDER
-        .get_or_init(|| {
-            let (sender, receiver) = std::sync::mpsc::channel::<OffThread>();
-            let receiver = Arc::new(Mutex::new(receiver));
-            for at in 0..OFF_THREADS {
-                let receiver = Arc::clone(&receiver);
-                let started =
-                    std::thread::Builder::new().name(format!("fennec-blocking-{at}")).spawn(move || {
-                        loop {
-                            let next = receiver.lock().unwrap_or_else(PoisonError::into_inner).recv();
-                            let Ok(work) = next else { return };
-                            work();
-                        }
-                    });
-                if started.is_err() && at == 0 {
-                    return None;
-                }
-            }
-            Some(Mutex::new(sender))
-        })
-        .as_ref()
-}
+mod blocking;
 
 /// Runs `work`, which blocks its thread, so that this task parks rather than holding its worker:
-/// on one of the blocking threads, which hands its result back and wakes the task through its
-/// worker's mail. Anywhere a wait can't park, it runs here.
+/// on one of the blocking threads (`serve/blocking.rs`), which hands its result back and wakes the
+/// task through its worker's mail. Anywhere a wait can't park, it runs here.
 pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
-    let (Some((pool, at)), Some(sender)) = (super::parallel::here(), off_threads()) else { return work() };
+    let Some((pool, at)) = super::parallel::here() else { return work() };
     if !can_park() {
         return work();
     }
@@ -1463,21 +1571,25 @@ pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 's
     NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
     let result: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
     let given = Arc::clone(&result);
-    let job: OffThread = Box::new(move || {
+    let job: blocking::Job = Box::new(move || {
         let done = work();
         *given.lock().unwrap_or_else(PoisonError::into_inner) = Some(done);
         // The worker takes its mail only after this task has parked, on that same thread.
         pool.run_on(at, Box::new(move |io: &mut Io| io.wake_token(token)));
     });
-    let sent = sender.lock().unwrap_or_else(PoisonError::into_inner).send(job);
-    match sent {
+    match blocking::run(job) {
         Ok(()) => {
             super::write_kept_output();
             PARKING.set(Some((Interest::READABLE, None)));
             let _ = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
         }
-        // No thread left to run it, so it runs here: its wake finds nothing parked.
-        Err(std::sync::mpsc::SendError(job)) => job(),
+        // No thread could be started to run them, so they run here: this job's wake finds nothing
+        // parked, and another task's job wakes that task through its worker's mail.
+        Err(jobs) => {
+            for job in jobs {
+                job();
+            }
+        }
     }
     loop {
         if let Some(done) = result.lock().unwrap_or_else(PoisonError::into_inner).take() {
@@ -1544,10 +1656,28 @@ impl Stopper {
         self.server.id
     }
 
+    /// Another stopper of the same server.
+    pub(super) fn again(&self) -> Stopper {
+        Stopper { server: Arc::clone(&self.server), pool: self.pool }
+    }
+
     pub fn stop(&self) {
         let id = self.server.id;
         for at in 0..self.pool.threads() {
             self.pool.run_on(at, Box::new(move |io: &mut Io| io.leave(id)));
+        }
+    }
+
+    /// Closes the server, as `server.close()` asks from inside the program, once: it takes no
+    /// more connections, its rounds waiting for a next message end where the server drains on a
+    /// stop, and those running finish. The loop over it then ends, as after a `break`.
+    pub(super) fn close(&self) {
+        if self.server.draining.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let id = self.server.id;
+        for at in 0..self.pool.threads() {
+            self.pool.run_on(at, Box::new(move |io: &mut Io| io.drain_waking(id)));
         }
     }
 
@@ -1618,7 +1748,8 @@ pub(super) fn serve(
         let stopping = Stopper { server: Arc::clone(&server), pool };
         crate::signals::on_stop(Box::new(move || stopping.drain_for(grace)))
     });
-    wait_for_every_worker(&server.left);
+    let stopping = Stopper { server: Arc::clone(&server), pool };
+    wait_for_every_worker(&server.left, || stopping.stop());
     if let Some(listening) = listening {
         crate::signals::forget(listening);
     }
@@ -1670,6 +1801,7 @@ pub(super) fn serve_replayed(
 
 mod calls;
 
+pub(crate) use calls::close_served;
 pub(super) use calls::served_call;
 pub use calls::{ConnBody, net_serve, net_serve_failure, stop_servers};
 

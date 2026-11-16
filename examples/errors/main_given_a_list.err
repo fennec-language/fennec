@@ -1,0 +1,7 @@
+error: `main` can't be given `args`: a program is started with its capabilities, and nothing else
+ --> examples/errors/main_given_a_list.fen:2:26
+  |
+2 | def main(stdout: Stdout, args: list[str]):
+  |                          ^^^^^^^^^^^^^^^
+  |
+  = help: `main` can take `stdout: Stdout`, `stderr: Stderr`, `stdin: Stdin`, `args: Args`, `fs: Fs`, `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net`, `env: Env` and `signals: Signals`, in any order

@@ -13,18 +13,50 @@ program. Fennec has no interpreter, on purpose. A test in this crate fails if an
 
 ## What it shares with the compiler
 
-It depends only on `fennec-syntax` and `fennec-check`. It uses the compiler's parser to read a
+Of Fennec's crates, it depends only on `fennec-syntax` and `fennec-check`, and besides them only
+on `libm`, below. It uses the compiler's parser to read a
 program and its checker to accept it and to type its expressions, where the source alone can't
 say what a value is, as for a leading-dot case like `.Circle`. So a bug in the parser or the
 checker can hide from it: both sides would see the same wrong tree. Everything after the checker,
 how values are held, copied, compared and printed, is modeled here on its own, from
 `docs/language.md` and the examples.
 
+Where a standard library module is written in Fennec, the oracle can run its own source, as
+`fennec-syntax` gives it to the compiler, and model only the functions the runtime writes in Rust
+beneath it. These are run this way (`RUN_FROM_SOURCE` in `src/load.rs`): `std.math`,
+`std.collections`, `std.time`, `std.string`, `std.env`, `std.base64`, `std.random`, `std.uuid`,
+`std.cli`, `std.crypto`, `std.csv`, `std.html`, `std.log`, `std.url`, `std.concurrent`,
+`std.postgres`, `std.re`, `std.template`, `std.sql`, `std.io`, `std.toml` and `std.json`. Each is
+loaded when the program imports from it, when a module loaded so imports from it, or, for `std.env`
+and `std.time`, when `main` takes the `Env` or the `Clock` whose types they declare. In `std.math`,
+the vectors, quaternions and matrices, `dot` and `lerp` are its Fennec code, and `sqrt`, `floor` and
+`ceil` are modeled here. In `std.collections`, `Deque`, `Heap`, `Counter`, `SortedMap`, `SortedSet`,
+`Grid`, `Packed`, `Tree` and the rest are its Fennec code. Its `extend`s of `Table` and `Id`, which
+the oracle models on its own, are left out. `std.time`'s `Duration`, `Instant` and `Time` are its
+Fennec code, and a duration written out, as `30s`, is its `Duration`. A template string, as
+`t"{name}"`, builds the core's own `Template`, whose `Template` and `Interpolation` are run from
+their source the same way. The intrinsics their code calls that only read, like `text_byte`,
+`text_size`, `text_part`, `text_escape_at` and `bytes_text`, are modeled here (`interp/library.rs`)
+from what `intrinsics.fen` says each does, and so is making a core error, like `InvalidValue`, by
+name. `std.random`'s draws, beneath its `Random`, are modeled here as `docs/language.md` pins them:
+SplitMix64, and a range by Lemire's method. The types of the modules' expressions are what the
+checker gave them as it checked the program. So the oracle still checks how the compiler and runtime
+run that code, but a mistake in the module's own Fennec would be the same on both sides. `std.json`
+is run for the helpers other modules call, like `float_text` and `quoted`, but its `dumps` and
+`loads` are modeled on their own, as below. `toml.dumps` and `toml.loads` are the runtime's, written
+in Rust, and `std.toml`'s own `native_dumps` and `native_loads`, written in Fennec, which the
+compiler uses for a type with its own `def serialize`, are run in their place, so the two are held
+to each other. `sin`, `cos`, `tan`, `acos`, `exp`, `log` and a float's `**` are computed with the
+`libm` crate, as `docs/language.md` says they are, at the version the workspace pins.
+
 ## How it models a program
 
 - Values are plain Rust values: `i64` ints checked on every operation, `f64` floats, `String`,
-  `Vec` for lists, sets and dicts (kept in the order their items went in), and structs, errors and
-  enum cases as their named fields.
+  `Vec<u8>` for `bytes`, `Vec` for lists, sets and dicts (kept in the order their items went in),
+  and structs, errors and enum cases as their named fields. `bytes` prints as `bytes([104, 105])`,
+  as a byte is an int; `bytes(items)` stops on an item past 0 to 255, `decode` fails with the words
+  the runtime gives, which are Rust's for bytes that aren't UTF-8, and `hex` and `fromhex` read and
+  write two hex digits a byte.
 - A function the program declares is equal only to itself.
 - A `Table` is a list of slots, each with the generation of its item and the item while it's
   there, and a tag of its own, which a copy keeps. An item goes in the lowest slot that's free, at
@@ -75,28 +107,57 @@ how values are held, copied, compared and printed, is modeled here on its own, f
   cuts its task short at once, a task that ends with messages left unread, which closes its inbox
   so that a send after that fails with `Closed` and one before it doesn't, and `stop_after=`.
 - `std.json`'s `dumps` and `loads[T]` are written here on their own, by the type the checker gave
-  the value, never by running the standard library's reader and writer. A struct is an object of
-  the fields it saves, under the names `@serialize(name=...)` and `names=` give them, and `@skip`
-  leaves a field out. A case is its name, or an object holding its fields under its name. A tuple
-  is an array, and a dict is an object when its first key is text or an int, and otherwise an
-  array of `[key, value]` pairs. A `Table` is a list of its items and an `Id` is where its item is
-  in it, so a load makes a new `Table`, with a tag of its own. `indent=` and `extra=` are modeled
-  too. Text is checked as JSON first, as `std.json` checks it, and a load that fails says what
-  `std.json` says: what's wrong with text that isn't JSON, by line and column, and otherwise where
-  in the value it doesn't fit, and how. A failure whose message the oracle can't be sure of is
-  refused, as `json.loads failing (...)`. A float JSON can't hold, or an `Id` that can't be saved,
-  stops the program. A union, bytes, the standard library's collections, a type with its own
-  `serialize` or `deserialize`, and `json.dump` and `json.load` are unsupported.
-- Standard output is real. `Args` and `Stdin` are empty. `Fs` is modeled, as below. A program that
-  takes any other capability is skipped.
+  the value, never by running the standard library's reader and writer. A struct is an object of the
+  fields it saves, under the names `@serialize(name=...)` and `names=` give them, and `@skip` leaves
+  a field out. A case is its name, or an object holding its fields under its name. A tuple is an
+  array, and a dict is an object when its first key is text or an int, and otherwise an array of
+  `[key, value]` pairs. A `Table` is a list of its items and an `Id` is where its item is in it, so
+  a load makes a new `Table`, with a tag of its own. `indent=` and `extra=` are modeled too. Text is
+  checked as JSON first, as `std.json` checks it, and a load that fails says what `std.json` says:
+  what's wrong with text that isn't JSON, by line and column, and otherwise where in the value it
+  doesn't fit, and how. A failure whose message the oracle can't be sure of is refused, as
+  `json.loads failing (...)`. A float JSON can't hold, or an `Id` that can't be saved, stops the
+  program. A type that writes its own `def serialize` and `def deserialize`, as the standard
+  library's collections do, runs them from their source, given a `Serializer` that keeps the one
+  value it's told to save, and a `Deserializer` that reads the whole value as the type the checker
+  gave the call, or says where the read is for a failure the type's code makes. One that saves or
+  reads through `record` and its fields, or more than one value, is refused. A union, bytes, and
+  `json.dump` and `json.load` are unsupported.
+- A value saved through a format a program writes, a type with `Serializer`'s methods, is saved as
+  `std.serialize` sets the calls out (`interp/saving.rs`), by the type the checker gave it:
+  `out.int` and the like for a plain value, `none` or `some` for an optional, `sequence` for a list
+  or a set, `map` for a dict's pairs, `record`, then `field` or `renamed` for each field it saves,
+  then `end` for a struct, and `enum_case`, or `case_record`, its fields and two `end`s, for an
+  enum's case. A type's own `def serialize` runs instead. A generic function runs once here, where
+  the compiler builds it for each set of types, so each call notes what its type parameters stand
+  for there (`interp/typed.rs`): `x.serialize(ref out)` of a `T` saves an `int?` holding 1 through
+  `some`, as the compiled program does. Loading through a format's `Deserializer` is modeled the
+  same way (`deserialize_from`): a plain value by its own method, an optional through `none` then
+  `value`, a list through `sequence`, a set through `sequence` with its repeats dropped, a dict
+  through `map_count` or `map`, a key that comes twice failing where `here` says, and a struct or a
+  case through `ordered`, or `record`, `next_field` and `field_at`, as the checker's `def
+  deserialize` reads it: a field left out takes its default, an optional one with none is `None`,
+  and any other fails with `missing`. A union, a tuple, a `Table`, an `Id` and a type with a `where`
+  rule, saved or loaded this way, are unsupported.
+- Standard output is real. `Args` and `Stdin` are empty. `Fs` is modeled, as below. Standard
+  error is written as the program writes it, and never compared. `Env` reads the variables the
+  oracle was started with, as the compiled program reads its own. No signal comes during a run, so
+  `Signals` never says to stop and waiting on one is refused. A `Clock` reads the system's clocks,
+  and its `sleep` moves them on without waiting, so a program sees the time it slept pass, and its
+  output can't depend on more than what comes before what. An `Entropy`'s bytes and seeds differ
+  every run, as the compiled program's do, so a program's output can't depend on them. `main` may
+  take `Net`, and any use of it is refused, so what a program prints without reaching the network,
+  as with no arguments, is still checked. A program that takes any other capability is skipped.
 - The file system an `Fs` reaches is modeled in memory, in `interp/disk.rs`. It starts as the
   folder the program runs in was: for `run` and `coverage`, the folder the oracle runs in, as the
   gate runs the examples from the checkout's root, and for `compare`, a fresh empty one, as the
   compiled program gets. What the program writes, makes and removes is held in memory, and the disk
   is never written. Where the folder isn't a fresh empty one, the oracle looks at the disk, a name
   at a time and never through a link, only for whether a file or a folder is there: reading a file
-  that was there before, its size, and what's in a folder that was there before are refused. A
-  path outside the folder is refused, but for the folders on the way to it, which are there.
+  that was there before, its size, and what's in a folder that was there before are refused.
+  Outside the folder the disk is looked at the same way, and only that way, so the compiled
+  program on the same machine sees the same: the root is there, a path through nothing fails as
+  not found, and reading, listing or changing anything that's there is refused.
 - Each of `Fs`'s methods fails as the runtime's does, with its case of `IoError` and its words, and
   a path goes through the folders on its way as the system goes, a `..` back up. An `Fs` narrowed
   with `only` reaches what's inside its folder, by the path's text with `.` and `..` worked out, and
@@ -109,6 +170,25 @@ how values are held, copied, compared and printed, is modeled here on its own, f
   folder's listing while a file is being made in it, under a hidden name holding the process's
   number, bytes, and on Windows what it reads its own way.
 - `std.path`'s `Path` is its text, and its methods only look at it, each written here on its own.
+- Places through a type's own `def []` are as `docs/decisions.md` sets them out
+  (`interp/own_index.rs`). Through the `ref` form, which the parser names `[]mut`, an int position
+  is a place inside the value: indexing, `=`, a `ref` argument, `for ref` and `parallel` reach it
+  where it is, and `for ref` and `parallel` skip the positions its `is_live` says are empty.
+  Through the plain form beside a `def []=`, a change reads the part with `[]`, changes that copy,
+  and writes it back with `[]=` once the change is done: once for `shelf[0].x += 1`, nested too,
+  and once for a call that takes it as `ref`, even one that changes it twice. A key that isn't an
+  int goes to the plain form, so a type can have both, as `Grid` does. A failure partway through
+  such a change writes the part back too, with what changed before it, since only
+  `lock ... as ref` rolls back. A `with` source given a `ref` through `[]=` is refused.
+- `value? from Context(...)` passes a failure up as the context, made only then. Native code
+  keeps what caused it with it, but nothing reads that yet.
+- An `array[T, N]` is held as the list it prints as, and `array[T, N]()` is `N` of `T`'s zero, as
+  the checker types it.
+- `std.crypto`'s `equal` compares two texts or two runs of bytes; its time, which depends only on
+  their lengths, isn't something a program can see. The intrinsics that write into a byte builder
+  through a `ref`, `bytes_push` and the rest, are modeled as `intrinsics.fen` says they work, and
+  `std.io`, run from its source, leaves out its `Stdout`, `Stdin` and `Stderr`, which the oracle
+  models as capabilities.
 - Anything it doesn't model it refuses, as `unsupported: <feature>`, rather than guess. A run has a
   budget of steps, items and nesting, and one that goes past it is unsupported too, as `ran too
   long`.

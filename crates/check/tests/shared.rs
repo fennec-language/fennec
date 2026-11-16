@@ -466,7 +466,7 @@ fn nothing_waits_inside_a_lock() {
              def ask(jobs: Channel[int]) -> int fails Closed | Timeout:\n    jobs.receive() else fail Closed()\n\n\
              def through[T: Napper](napper: T, clock: Clock, shared_scores: shared Scores):\n    \
              lock shared_scores as held:\n        napper.nap(clock)\n        _ = held\n\n\
-             def main(stdout: Stdout, clock: Clock, jobs: Channel[int]) fails Closed | Timeout:\n    \
+             def serve(stdout: Stdout, clock: Clock, jobs: Channel[int]) fails Closed | Timeout:\n    \
              shared scores = Scores()\n    lock scores as ref held:\n{body}"
         ))
         .into_iter()
@@ -567,7 +567,7 @@ fn a_function_value_called_inside_a_lock_is_followed_to_what_it_holds() {
         def nap(clock: Clock):\n    clock.sleep(1s)\n\n";
     let found = |body: &str| -> Vec<String> {
         problems(&format!(
-            "{declared}def main(stdout: Stdout, clock: Clock, sender: Sender[int]) fails Closed | Timeout:\n    shared scores = Scores()\n{body}"
+            "{declared}def serve(stdout: Stdout, clock: Clock, sender: Sender[int]) fails Closed | Timeout:\n    shared scores = Scores()\n{body}"
         ))
     };
     let empty: [&str; 0] = [];

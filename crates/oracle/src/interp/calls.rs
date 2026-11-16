@@ -5,7 +5,8 @@
 use fennec_check::Type;
 use fennec_syntax::{Arg, CompKind, Expr, ExprKind, Field, FnDef, Span};
 
-use super::{Binding, Flow, Interp, Place, Run, crash, unsupported};
+use super::typed::Bound;
+use super::{Binding, Flow, Interp, MOST_ITEMS, Place, Run, crash, unsupported};
 use crate::load::Kind;
 use crate::value::{Func, Value};
 
@@ -39,7 +40,18 @@ pub(crate) enum Target {
         def: &'static FnDef,
         parent: Option<u64>,
         receiver: Option<Receiver>,
+        /// What its type parameters stand for at this call.
+        types: Bound,
     },
+    /// `value.serialize(ref out)` of a value whose type has no `def serialize` of its own, which
+    /// the oracle models from the type, as `saving.rs` says.
+    Serialize {
+        value: Value,
+        ty: Type,
+    },
+    /// `T.deserialize(ref src)` of a type with no `def deserialize` of its own, as `saving.rs`
+    /// models it.
+    Deserialize(Type),
     Lambda {
         params: Vec<String>,
         body: &'static Expr,
@@ -67,9 +79,14 @@ pub(crate) enum Target {
 
 /// The built-in types' names, as `int.parse` names one.
 const BUILT_IN_TYPES: &[&str] = &[
-    "int", "float", "str", "bool", "list", "dict", "set", "i8", "i16", "i32", "i64", "u8", "u16", "u32",
-    "u64", "f32", "f64",
+    "int", "float", "str", "bool", "bytes", "list", "dict", "set", "i8", "i16", "i32", "i64", "u8", "u16",
+    "u32", "u64", "f32", "f64",
 ];
+
+/// The standard library's readers and writers the runtime has in Rust, each with the one
+/// written in Fennec beside it that the oracle runs in its place.
+const NATIVE_FORMATS: &[(&str, &str)] =
+    &[("std.toml.dumps", "std.toml.native_dumps"), ("std.toml.loads", "std.toml.native_loads")];
 
 /// The builtin functions the oracle models, and the ones it knows it doesn't.
 const BUILTINS: &[&str] = &[
@@ -122,8 +139,40 @@ impl Interp {
         if let Some(counted) = self.length_in_place(callee, args, expr.span)? {
             return Ok(counted);
         }
-        let (target, given) = self.prepare(expr, callee, args)?;
-        self.invoke(target, given, expr)
+        self.call_direct(expr, callee, args)
+    }
+
+    /// A call worked out and made, with any part read through a type's own `def []` to be
+    /// changed written back once it's done.
+    pub(crate) fn call_direct(
+        &mut self,
+        expr: &'static Expr,
+        callee: &'static Expr,
+        args: &'static [Arg],
+    ) -> Run<Value> {
+        let mark = self.write_backs.len();
+        match self.prepare(expr, callee, args) {
+            Ok((target, given)) => self.invoke_settled(mark, target, given, expr),
+            Err(failed) => self.settled(mark, Err(failed), expr.span),
+        }
+    }
+
+    /// Makes a call worked out since `mark`, and writes back what it changed through a type's
+    /// own `def []=`. A call that can't change what it reached writes nothing back, however it
+    /// ended.
+    pub(crate) fn invoke_settled(
+        &mut self,
+        mark: usize,
+        target: Target,
+        given: Vec<ArgVal>,
+        expr: &'static Expr,
+    ) -> Run<Value> {
+        let changes = changes_what_it_reaches(&target, &given);
+        let called = self.invoke(target, given, expr);
+        if !changes {
+            self.settle_write_backs(mark, false, expr.span)?;
+        }
+        self.settled(mark, called, expr.span)
     }
 
     /// Works out what a call calls and its arguments, left to right, without calling it.
@@ -177,6 +226,14 @@ impl Interp {
                 ExprKind::Name(name) if self.program.types.contains_key(&*self.type_named(name)) => {
                     Target::Construct { ty: self.type_named(name).into_owned(), case: None }
                 }
+                // `array[T, N]()`: N items, each T's zero, as the checker typed it. An array is
+                // held as the list it prints as.
+                ExprKind::Name(name) if name == "array" && args.is_empty() && !self.is_bound(name) => {
+                    match self.program.type_at(expr.span).cloned() {
+                        Some(ty @ Type::Array(..)) => Target::Given(self.zero_of(&ty, expr.span)?),
+                        _ => return unsupported("`array[...]()` whose type isn't known"),
+                    }
+                }
                 ExprKind::Name(name) if name == "Table" && args.is_empty() && self.is_the_table() => {
                     Target::Given(Value::Table(Box::new(crate::value::Table::new(self.shared.new_tag()))))
                 }
@@ -184,6 +241,10 @@ impl Interp {
                     Some(from) if !self.is_bound(name) && super::library::has_function(from) => {
                         Target::Builtin(from.clone())
                     }
+                    Some(from) if !self.is_bound(name) => match self.native_format(from) {
+                        Some(found) => self.named_target(&found, callee.span)?,
+                        None => return unsupported(from.clone()),
+                    },
                     Some(from) => return unsupported(from.clone()),
                     None => return unsupported(format!("`{name}[...]()`")),
                 },
@@ -194,12 +255,29 @@ impl Interp {
                 self.func_target(value)?
             }
         };
+        let target = self.bound_target(target, callee, args, expr);
         let lazy = matches!(target, Target::Builtin(_));
         let mut given = Vec::with_capacity(args.len());
         for arg in args {
             given.push(self.arg_value(arg, lazy)?);
         }
         Ok((target, given))
+    }
+
+    /// A call of a function the program wrote, with what its type parameters stand for here, from
+    /// the types where it's written.
+    fn bound_target(&self, target: Target, callee: &Expr, args: &[Arg], expr: &Expr) -> Target {
+        let Target::Def { def, parent, receiver, .. } = target else { return target };
+        let object = match &callee.kind {
+            ExprKind::Attr { object, .. } => Some(&**object),
+            ExprKind::Index { object: inner, .. } => match &inner.kind {
+                ExprKind::Attr { object, .. } => Some(&**object),
+                _ => None,
+            },
+            _ => None,
+        };
+        let types = self.bound_at_call(def, object, args, expr);
+        Target::Def { def, parent, receiver, types }
     }
 
     /// `len(place)`, counted where the value is rather than on a copy of it.
@@ -231,7 +309,7 @@ impl Interp {
 
     pub(crate) fn arg_value(&mut self, arg: &'static Arg, lazy: bool) -> Run<ArgVal> {
         if arg.is_mut {
-            let Some(place) = self.place_of(&arg.value)? else {
+            let Some(place) = self.place_for_change(&arg.value)? else {
                 return unsupported("a `ref` argument that isn't a place");
             };
             return Ok(ArgVal::Ref(arg.name.clone(), place));
@@ -248,7 +326,7 @@ impl Interp {
         }
         let name = &*self.type_named(name);
         if let Some(def) = self.program.functions.get(name) {
-            return Ok(Target::Def { def, parent: None, receiver: None });
+            return Ok(Target::Def { def, parent: None, receiver: None, types: Bound::new() });
         }
         if let Some(declared) = self.program.types.get(name) {
             if declared.kind == Kind::Enum || !declared.def.cases.is_empty() {
@@ -259,24 +337,59 @@ impl Interp {
         if BUILTINS.contains(&name) {
             return Ok(Target::Builtin(name.to_owned()));
         }
+        // A core error made by name, as the standard library's own code makes `InvalidValue`s.
+        if matches!(name, "InvalidValue" | "ParseError") {
+            return Ok(Target::Builtin(name.to_owned()));
+        }
+        // A function the standard library's own code calls that the oracle models in
+        // `library.rs`, an intrinsic or one of a module modeled on its own: a module run from its
+        // source names it `module.name`, as `intrinsics.text_byte` or `json.quoted`.
+        if let Some((module, function)) = name.split_once('.') {
+            let path = format!("std.{module}.{function}");
+            if super::library::has_function(&path) {
+                return Ok(Target::Builtin(path));
+            }
+        }
+        // An empty `StrWriter`, as the standard library's own code makes one to write into.
+        if name == "StrWriter" {
+            let parts = vec![("_parts".to_owned(), Value::List(Vec::new()))];
+            return Ok(Target::Given(Value::instance("StrWriter", None, parts)));
+        }
+        // A name imported from a module run from its own source, under the name it's run by.
+        if let Some(found) = self.program.std_name(name).filter(|found| *found != name) {
+            return self.named_target(found, span);
+        }
         if let Some(from) = self.program.imported.get(name) {
             if super::library::has_function(from) {
                 return Ok(Target::Builtin(from.clone()));
+            }
+            // `toml.loads` imported by name, run as `std.toml`'s own reader, as `attr_target` says.
+            if let Some(found) = self.native_format(from) {
+                return self.named_target(&found, span);
             }
             return unsupported(from.clone());
         }
         unsupported(format!("calling `{name}`"))
     }
 
+    /// What the tables call the reader or writer written in Fennec the oracle runs in place of
+    /// the runtime's `path`, as `NATIVE_FORMATS` pairs them, when its module is run from source.
+    fn native_format(&self, path: &str) -> Option<String> {
+        let (_, native) = NATIVE_FORMATS.iter().find(|(called, _)| *called == path)?;
+        self.program.from_std.get(*native).cloned()
+    }
+
     pub(crate) fn func_target(&self, value: Value) -> Run<Target> {
         match value {
             Value::Func(func) => match *func {
                 Func::Named(name) => match self.program.functions.get(name.as_str()) {
-                    Some(def) => Ok(Target::Def { def, parent: None, receiver: None }),
+                    Some(def) => Ok(Target::Def { def, parent: None, receiver: None, types: Bound::new() }),
                     None => unsupported(format!("calling `{name}`")),
                 },
                 Func::Builtin(name) => Ok(Target::Builtin(name)),
-                Func::Nested { def, frame } => Ok(Target::Def { def, parent: Some(frame), receiver: None }),
+                Func::Nested { def, frame } => {
+                    Ok(Target::Def { def, parent: Some(frame), receiver: None, types: Bound::new() })
+                }
                 Func::Lambda { params, body, captured } => Ok(Target::Lambda { params, body, captured }),
             },
             other => unsupported(format!("calling a {}", other.kind())),
@@ -296,6 +409,11 @@ impl Interp {
             && !self.is_bound(owner)
             && !self.program.constants.contains_key(owner.as_str())
         {
+            if name == "deserialize"
+                && let Some(target) = self.deserialize_target(owner)?
+            {
+                return Ok(Some(target));
+            }
             let owner = &self.type_named(owner).into_owned();
             if let Some(declared) = self.program.types.get(owner.as_str()) {
                 if declared.def.cases.iter().any(|case| case.name == name) {
@@ -303,7 +421,7 @@ impl Interp {
                 }
                 return match self.program.method(owner, name) {
                     Some(def) if !def.takes_self() => {
-                        Ok(Some(Target::Def { def, parent: None, receiver: None }))
+                        Ok(Some(Target::Def { def, parent: None, receiver: None, types: Bound::new() }))
                     }
                     _ => unsupported(format!("`{owner}.{name}`")),
                 };
@@ -316,6 +434,17 @@ impl Interp {
             }
             if let Some(from) = self.program.imported.get(owner.as_str()) {
                 let path = format!("{from}.{name}");
+                // `math.dot(...)`, of a module run from its own source.
+                if let Some(found) = self.program.from_std.get(&path) {
+                    return self.named_target(&found.clone(), expr.span).map(Some);
+                }
+                // `toml.dumps` and `toml.loads` are the runtime's, written in Rust; `std.toml`'s
+                // own reader and writer, written in Fennec, which the compiler uses for a type
+                // with its own `def serialize`, are run in their place, so the two are held to
+                // each other.
+                if let Some(found) = self.native_format(&path) {
+                    return self.named_target(&found, expr.span).map(Some);
+                }
                 if super::library::has_function(&path) {
                     return Ok(Some(Target::Builtin(path)));
                 }
@@ -326,7 +455,13 @@ impl Interp {
         if name == "expect" {
             return self.expected(object, args, expr).map(Some);
         }
-        let receiver = match self.place_of(object)? {
+        if name == "serialize"
+            && let Some(target) = self.serialize_target(object)?
+        {
+            return Ok(Some(target));
+        }
+        // A part read through a type's plain `def []` is written back when the call changes it.
+        let receiver = match self.place_for_change(object)? {
             Some(place) => Receiver::Place(place),
             None => Receiver::Value(self.eval(object)?),
         };
@@ -355,7 +490,12 @@ impl Interp {
             if !def.takes_self() {
                 return unsupported("calling a type's function on a value");
             }
-            return Ok(Some(Target::Def { def, parent: None, receiver: Some(receiver) }));
+            return Ok(Some(Target::Def {
+                def,
+                parent: None,
+                receiver: Some(receiver),
+                types: Bound::new(),
+            }));
         }
         let buffer = matches!(self.program.type_at(object_span), Some(Type::Buffer(_)));
         Ok(Some(Target::Method { receiver, name: name.to_owned(), buffer }))
@@ -364,10 +504,7 @@ impl Interp {
     /// `call().expect("reason")`: the call's value, or a stop with the reason if it fails.
     fn expected(&mut self, object: &'static Expr, args: &'static [Arg], expr: &'static Expr) -> Run<Target> {
         let ran = match &object.kind {
-            ExprKind::Call { callee, args } => {
-                let (target, given) = self.prepare(object, callee, args)?;
-                self.invoke(target, given, object)
-            }
+            ExprKind::Call { callee, args } => self.call_direct(object, callee, args),
             _ => self.eval(object),
         };
         match ran {
@@ -418,7 +555,22 @@ impl Interp {
     /// Calls what `prepare` worked out.
     pub(crate) fn invoke(&mut self, target: Target, given: Vec<ArgVal>, expr: &'static Expr) -> Run<Value> {
         match target {
-            Target::Def { def, parent, receiver } => self.call_def(def, parent, receiver, given, expr.span),
+            Target::Def { def, parent, receiver, types } => {
+                self.call_def_bound((def, types), parent, receiver, given, expr.span)
+            }
+            Target::Deserialize(ty) => {
+                let [ArgVal::Ref(_, src)] = given.as_slice() else {
+                    return unsupported("`deserialize` given something other than `ref` to a `Deserializer`");
+                };
+                self.deserialize_from(&ty, src, expr.span)
+            }
+            Target::Serialize { value, ty } => {
+                let [ArgVal::Ref(_, out)] = given.as_slice() else {
+                    return unsupported("`serialize` given something other than `ref` to a `Serializer`");
+                };
+                self.serialize_into(&value, &ty, out, expr.span)?;
+                Ok(Value::Unit)
+            }
             Target::Lambda { params, body, captured } => self.call_lambda(&params, body, captured, given),
             Target::Construct { ty, case } => self.construct(&ty, case.as_deref(), given, expr.span),
             Target::Builtin(name) => self.builtin(&name, given, expr),
@@ -482,6 +634,18 @@ impl Interp {
         given: Vec<ArgVal>,
         span: Span,
     ) -> Run<Value> {
+        self.call_def_bound((def, Bound::new()), parent, receiver, given, span)
+    }
+
+    /// `call_def`, with what the function's type parameters stand for in this call.
+    pub(crate) fn call_def_bound(
+        &mut self,
+        (def, types): (&'static FnDef, Bound),
+        parent: Option<u64>,
+        receiver: Option<Receiver>,
+        given: Vec<ArgVal>,
+        span: Span,
+    ) -> Run<Value> {
         if def.body.is_empty() {
             return unsupported(format!("the intrinsic `{}`", def.name));
         }
@@ -533,8 +697,11 @@ impl Interp {
             return self.generator_from_def(def, vars, shown);
         }
         let previous = self.push_frame(vars, parent)?;
-        if let (Some(owner), Some(frame)) = (self.program.owner_of(def), self.frames.get_mut(self.cur)) {
-            frame.owner = Some(owner.to_owned());
+        if let Some(frame) = self.frames.get_mut(self.cur) {
+            if let Some(owner) = self.program.owner_of(def) {
+                frame.owner = Some(owner.to_owned());
+            }
+            frame.types = types;
         }
         let ran = (|| {
             for (name, default) in defaults {
@@ -558,6 +725,30 @@ impl Interp {
         let value = self.eval(expr);
         self.pop_frame(previous);
         value
+    }
+
+    /// The zero an `array[T, N]()` fills its items with: `0`, `0.0`, `False`, `""`, `None`, an
+    /// array of zeros, or a struct made from its defaults, as `docs/language.md` says.
+    fn zero_of(&mut self, ty: &Type, span: Span) -> Run<Value> {
+        Ok(match ty {
+            Type::Int => Value::Int(0),
+            Type::Float => Value::Float(0.0),
+            Type::Bool => Value::Bool(false),
+            Type::Str | Type::LiteralStr => Value::Str(String::new()),
+            Type::Optional(_) => Value::None,
+            Type::Array(item, size) => {
+                let size = usize::try_from(*size).unwrap_or(usize::MAX);
+                let mut items = Vec::with_capacity(size.min(MOST_ITEMS));
+                for _ in 0..size {
+                    items.push(self.zero_of(item, span)?);
+                }
+                Value::List(items)
+            }
+            Type::Named(name) if self.program.types.contains_key(name.as_str()) => {
+                self.construct(name, None, Vec::new(), span)?
+            }
+            other => return unsupported(format!("the zero of a {other:?} in an array")),
+        })
     }
 
     /// Makes a struct, an error, or a case: values given by position go to the public fields in
@@ -718,4 +909,17 @@ fn type_names(ty: &Type, names: &mut Vec<String>) {
 /// A type as a generator prints it, with the program's own type names as they're written.
 pub(crate) fn shown_type(ty: &Type) -> String {
     ty.to_string().replace(fennec_syntax::rename::RENAMED, "")
+}
+
+/// Whether a call can change what it reaches through places: a method that takes `self` as a
+/// `ref`, a built-in method that changes its value, or a `ref` argument.
+fn changes_what_it_reaches(target: &Target, given: &[ArgVal]) -> bool {
+    let receiver_changes = match target {
+        Target::Def { def, receiver: Some(Receiver::Place(_)), .. } => super::own_index::takes_ref_self(def),
+        Target::Method { receiver: Receiver::Place(_), name, .. } => {
+            super::methods::CHANGES.contains(&name.as_str())
+        }
+        _ => false,
+    };
+    receiver_changes || given.iter().any(|arg| matches!(arg, ArgVal::Ref(..)))
 }

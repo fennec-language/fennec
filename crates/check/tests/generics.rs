@@ -428,6 +428,36 @@ fn a_programs_type_replaces_a_standard_library_type_of_the_same_name() {
     assert_eq!(problems(wrong), ["`Tree` has no method `len` @ len(Tree(size=1))"]);
 }
 
+/// A program's `main` is given its capabilities and nothing else, since that's all a program is
+/// started with. A parameter of any other type, as `args: list[str]`, is refused, naming what
+/// `main` can take, where before it checked, built, and was handed nothing, which crashed. Every
+/// capability the program's entry hands out is one `main` can take.
+#[test]
+fn main_is_given_capabilities_and_nothing_else() {
+    let every = "def main(stdout: Stdout, stderr: Stderr, stdin: Stdin, args: Args, fs: Fs, clock: Clock, \
+        process: Process, entropy: Entropy, net: Net, env: Env, signals: Signals):\n    pass\n";
+    assert_eq!(problems(every), Vec::<String>::new());
+    let fix = "`main` can take `stdout: Stdout`, `stderr: Stderr`, `stdin: Stdin`, `args: Args`, `fs: Fs`, \
+        `clock: Clock`, `process: Process`, `entropy: Entropy`, `net: Net`, `env: Env` and `signals: Signals`, in any order";
+    for (written, name) in [
+        ("args: list[str]", "args"),
+        ("count: int", "count"),
+        ("name = \"x\"", "name"),
+        ("stdout: Stdout, rest: list[str]", "rest"),
+    ] {
+        let program = format!("def main({written}):\n    pass\n");
+        let said = format!(
+            "`main` can't be given `{name}`: a program is started with its capabilities, and nothing else"
+        );
+        let at = written.rsplit(", ").next().unwrap_or(written);
+        assert_eq!(problems(&program), [format!("{said} @ {at}")], "{program}");
+        assert_eq!(helps(&program), [fix], "{program}");
+    }
+    let elsewhere = "def total(numbers: list[int]) -> int:\n    return sum(numbers)\n\n\
+        def main(stdout: Stdout):\n    stdout.print(total([1, 2]))\n";
+    assert_eq!(problems(elsewhere), Vec::<String>::new());
+}
+
 #[test]
 fn a_test_receives_capabilities_by_type() {
     let fine = "
@@ -994,6 +1024,52 @@ fn a_union_saves_when_its_members_are_named_types() {
             "`Keyed` isn't a `Deserializable`: `Keyed.by` is a dict[int | str, int], which can't be saved @ loaded[Keyed]()"
         ]
     );
+}
+
+/// A type's shape, which `pack` checks data against, holds its fields: a generic type's with its
+/// arguments filled in, so changing or moving a field of `Pair[T]` changes `Pair[int]`'s shape as
+/// it does a plain struct's. A generic enum's cases, a generic inside another, inside a plain
+/// struct and inside a list, a dict and a tuple are each shaped by their fields too. A type inside
+/// itself with the same arguments is written by its name the second time; with other arguments,
+/// it's another type, and shaped in full.
+#[test]
+fn a_generic_types_shape_holds_its_fields_with_its_arguments_filled_in() {
+    use fennec_check::Type;
+    let shapes = |source: &str, ty: &Type| {
+        let mut module = fennec_syntax::parse(source).unwrap();
+        fennec_check::check_and_resolve(&mut module).unwrap().shape(ty)
+    };
+    let declared = "struct Pair[T]:\n    first: T\n    second: T\n\n\
+        enum Maybe[T]:\n    Some(value: T, note: str)\n    Nothing\n\n\
+        struct Chain[T]:\n    value: T\n    links: list[Chain[T]]\n\n\
+        struct Holder:\n    pair: Pair[int]\n\ndef main():\n    pass\n";
+    let moved = declared.replace("    first: T\n    second: T", "    second: T\n    first: T");
+    let generic = |name: &str, args: Vec<Type>| Type::Generic(name.to_owned(), args);
+    let pair = generic("Pair", vec![Type::Int]);
+    assert_eq!(shapes(declared, &pair), "Pair[int]{first: int, second: int}");
+    assert_eq!(shapes(&moved, &pair), "Pair[int]{second: int, first: int}");
+    assert_eq!(
+        shapes(declared, &generic("Maybe", vec![Type::Str])),
+        "Maybe[str]<Some(value: str, note: str), Nothing>"
+    );
+    assert_eq!(
+        shapes(declared, &generic("Chain", vec![Type::Int])),
+        "Chain[int]{value: int, links: list[Chain[int]]}"
+    );
+    let holder = Type::Named("Holder".to_owned());
+    assert_eq!(shapes(declared, &holder), "Holder{pair: Pair[int]{first: int, second: int}}");
+    assert_ne!(shapes(declared, &holder), shapes(&moved, &holder));
+    let nested = generic("Pair", vec![generic("Pair", vec![Type::Str])]);
+    let inner = "Pair[str]{first: str, second: str}";
+    assert_eq!(shapes(declared, &nested), format!("Pair[{inner}]{{first: {inner}, second: {inner}}}"));
+    for held in [
+        Type::List(Box::new(pair.clone())),
+        Type::Dict(Box::new(Type::Str), Box::new(pair.clone())),
+        Type::Tuple(vec![pair.clone(), Type::Int]),
+    ] {
+        assert!(shapes(declared, &held).contains("Pair[int]{first: int, second: int}"), "{held}");
+        assert_ne!(shapes(declared, &held), shapes(&moved, &held), "{held}");
+    }
 }
 
 /// A tuple saves when each of its items does, but not one of a single item yet.

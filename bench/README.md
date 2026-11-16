@@ -115,6 +115,18 @@ with kernel time, and shows each language's startup, a hello-world's best run fr
 that prints something else is noted, and doesn't fail the run. Where a toolchain isn't
 installed, its column is left out.
 
+Three of the real programs have Go twins too: `api_handler.go`, `game_tick.go` and
+`chat_server.go`. They're written the way a Go programmer would write them, with the standard
+library only, built with plain `go build`, and run with Go's default garbage collector settings
+(no `GOGC` or `GOMEMLIMIT`). Where the Rust twin uses threads, they use goroutines and channels:
+the players and the grid's parts in `game_tick`, the hub and its four shards in `chat_server`.
+`game_tick` splits its grid into one part for each of `GOMAXPROCS`, as the Rust twin does for
+each of `FENNEC_THREADS`, so a run on one thread sets `GOMAXPROCS=1` beside `FENNEC_THREADS=1`.
+`api_handler` reads request bodies with `encoding/json`, refusing unknown fields. It writes its
+responses by hand, since `encoding/json` puts no space after a colon or a comma and they'd print
+other bytes. Unlike the Fennec and Rust readers, `encoding/json` matches a field's name in any
+case and keeps the last of a repeated field; the corpus sends neither.
+
 ## `parallel` against rayon
 
 `fennec-bench parallel` measures the kernels in `bench/parallel`, which run on threads, by wall clock at 1, 2, 4, 8 and 16 threads, as many of those as the machine has cores for, and at all its cores, each beside a twin using rayon. They cover each form `parallel` takes: `ecs` is a `for ref` loop of light work run 200 times, `mandel` one of heavy, uneven work, `collatz` a comprehension of uneven work, and `checksum` a reduction of even work. Each kernel's version without `parallel`, like `ecs_plain.fen`, runs beside plain Rust with no rayon, so each table says what `parallel` costs on one thread as well as what it gives on many.
@@ -128,6 +140,10 @@ installed, its column is left out.
 `fennec-bench realworld` measures `bench/realworld`: programs that use `std` the way a real program does, beside a Rust twin using the crates a Rust program would. `json_typed` loads JSON into typed structs through `std.json`, uses them and writes them back, against serde and serde_json. The `json` kernel in the suite is a parser written by hand on both sides, so it doesn't measure `std.json`.
 
 `game_server` is an MMO zone server and its load in one program. 48 clients connect over TCP and play 240 ticks in lockstep, speaking JSON a line at a time. Each connection's task keeps its player's session in a `shared` `Table`. A tick task moves 3,000 monsters with `parallel`, and a saver task writes snapshots to SQLite. Its twin uses a thread for each connection, `std::sync::mpsc`, a `Mutex`, rayon, serde_json and rusqlite. Its summary is the same on any number of threads, so the two sides can be compared.
+
+`router` is a web app's routes, 64 of them shaped like a REST API's, and two million requests through `std.net`'s `Router`. Seven in ten reach a handler, which parses an id, and the rest are 404s and 405s. Its twin routes with `matchit`, which axum routes with, decoding and parsing a parameter as `Captured` does.
+
+`web_backend` is a web backend and its load in one program. 32 clients sign up, sign in and write notes. They list the notes as JSON and search them through an HTML page made with `html.render`. Passwords are stretched with HMAC-SHA256 and sessions are HMAC-signed tokens, both from `std.crypto`. Users and notes are kept in SQLite. It reads and writes HTTP itself until `server.serve` can be stopped from inside a program. Its twin uses a thread for each connection, serde_json and rusqlite, with the runtime's own SHA-256, since Rust's standard library has none.
 
 - It's outside the locked suite, whose twins are one file each, and has no targets. Being slow never fails it: only printing something other than the twin does.
 - The twins are a small cargo project of their own in `bench/realworld/twin`, built with the same flags as the suite's, with their crates pinned in its lock file. serde is there only to be measured against, and nothing shipped depends on it.

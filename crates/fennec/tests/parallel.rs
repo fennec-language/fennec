@@ -987,6 +987,51 @@ fn a_launched_task_can_serve() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An HTTP request from a `parallel` round parks its task while it waits, so the worker it was on
+/// serves meanwhile: requests from rounds to a server in the same program, and a server whose
+/// rounds call another, are answered at any number of threads. A request once held its worker, so
+/// two rounds' requests to the program's own server timed out at 2 and 4 threads and hung at 1.
+#[test]
+fn http_requests_from_rounds_park_rather_than_hold_their_worker() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-http-rounds-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/http_requests_from_rounds.fen");
+    let built = build_on_threads(&dir, source, "http_requests_from_rounds")?;
+    let wanted = "from main: 200 the back's answer\n".to_owned()
+        + &"from a round: 200 the back's answer\n".repeat(4)
+        + &"through the front: 200 the front heard 200 the back's answer\n".repeat(4)
+        + "the front: 200 stopped\nthe back: 200 the back's answer\n";
+    matches_on_workers(&built, "http_requests_from_rounds", Some(0), &wanted)?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// Three hundred requests from `parallel` rounds to a server in the same program, whose handler
+/// makes a call that takes one of the runtime's blocking threads: all are answered, at any number
+/// of threads. A request holds a blocking thread only while its connection opens. It once held one
+/// until it was answered, so as many requests as there were blocking threads held them all, no
+/// handler got one, and every request ran out its time: eight were enough.
+#[test]
+fn requests_from_rounds_leave_the_blocking_threads_to_the_handlers_they_wait_for() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-http-posts-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/http_posts_while_handlers_block.fen");
+    let built = build_on_threads(&dir, source, "http_posts_while_handlers_block")?;
+    matches_on_workers(&built, "http_posts_while_handlers_block", Some(0), "300 of 300 answered\nstopped\n")?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A launched task can read every constant the program has, not only its strings.
 #[test]
 fn a_task_reads_the_programs_constants() -> std::io::Result<()> {

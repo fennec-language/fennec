@@ -24,6 +24,21 @@ impl Interp {
                 Some(Type::Sized(_)) => unsupported("f32"),
                 _ => Ok(Value::Float(*x)),
             },
+            // A duration written out, as `30s`, is `std.time`'s `Duration`, when that module runs here.
+            ExprKind::Duration(nanos)
+                if self
+                    .program
+                    .from_std
+                    .get("std.time.Duration")
+                    .is_some_and(|found| found == "Duration") =>
+            {
+                let duration = crate::value::Instance {
+                    ty: "Duration".to_owned(),
+                    case: None,
+                    fields: vec![("nanos".to_owned(), Value::Int(*nanos))],
+                };
+                Ok(Value::Instance(Box::new(duration)))
+            }
             ExprKind::Duration(_) => unsupported("durations"),
             ExprKind::Bytes(_) | ExprKind::Folder(_) => unsupported("embedded files"),
             ExprKind::Str(text) => Ok(Value::Str(text.clone())),
@@ -121,7 +136,15 @@ impl Interp {
             }
             ExprKind::Else { value, default, except } => self.else_expr(value, default, *except),
             ExprKind::Try { value, context: None } => self.eval(value),
-            ExprKind::Try { context: Some(_), .. } => unsupported("`? from`"),
+            // `value? from Context(...)`: a failure is passed up as the context, made only then. What
+            // caused it is kept with it in native code, but nothing reads that yet.
+            ExprKind::Try { value, context: Some(context) } => match self.eval(value) {
+                Err(Flow::Fail(_, _)) => {
+                    let wrapper = self.eval(context)?;
+                    Err(Flow::Fail(wrapper, expr.span))
+                }
+                other => other,
+            },
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Attr { object, name, optional } => {
                 if *optional {
@@ -196,15 +219,24 @@ impl Interp {
             return Ok(Value::Func(Box::new(Func::Builtin(name.to_owned()))));
         }
         if let Some(from) = self.program.imported.get(name) {
-            return Self::library_value(from);
+            return self.library_value(&from.clone());
         }
         unsupported(format!("the name `{name}`"))
     }
 
-    /// A name from the standard library, as a value: a constant, or a function the oracle models.
-    fn library_value(path: &str) -> Run<Value> {
+    /// A name from the standard library, as a value: a constant, a function the oracle models,
+    /// or one of a module run from its own source.
+    fn library_value(&mut self, path: &str) -> Run<Value> {
         if let Some(value) = super::library::constant(path) {
             return Ok(value);
+        }
+        if let Some(found) = self.program.from_std.get(path) {
+            if self.program.functions.contains_key(found) {
+                return Ok(Value::Func(Box::new(Func::Named(found.clone()))));
+            }
+            if let Some(value) = self.constant(&found.clone())? {
+                return Ok(value);
+            }
         }
         if super::library::has_function(path) {
             return Ok(Value::Func(Box::new(Func::Builtin(path.to_owned()))));
@@ -260,10 +292,7 @@ impl Interp {
             };
         }
         let ran = match &value.kind {
-            ExprKind::Call { callee, args } => {
-                let (target, given) = self.prepare(value, callee, args)?;
-                self.invoke(target, given, value)
-            }
+            ExprKind::Call { callee, args } => self.call_direct(value, callee, args),
             _ => self.eval(value),
         };
         match ran {
@@ -300,17 +329,20 @@ impl Interp {
                     let Some(target) = self.method_target(receiver, name, object.span)? else {
                         return Ok(None);
                     };
+                    let mark = self.write_backs.len();
                     let mut given = Vec::with_capacity(args.len());
                     for arg in args {
-                        given.push(self.arg_value(arg, false)?);
+                        match self.arg_value(arg, false) {
+                            Ok(given_one) => given.push(given_one),
+                            Err(failed) => return self.settled(mark, Err(failed), expr.span),
+                        }
                     }
-                    return match self.invoke(target, given, expr) {
+                    return match self.invoke_settled(mark, target, given, expr) {
                         Err(Flow::Fail(..)) => Ok(None),
                         other => other.map(Some),
                     };
                 }
-                let (target, given) = self.prepare(expr, callee, args)?;
-                match self.invoke(target, given, expr) {
+                match self.call_direct(expr, callee, args) {
                     Err(Flow::Fail(..)) => Ok(None),
                     other => other.map(Some),
                 }
@@ -360,6 +392,10 @@ impl Interp {
             }
             (Value::Float(a), Value::Float(b)) => float_arithmetic(op, a, b, span),
             (Value::Str(a), Value::Str(b)) if op == BinOp::Add => Ok(Value::Str(a + &b)),
+            (Value::Bytes(mut a), Value::Bytes(b)) if op == BinOp::Add => {
+                a.extend(b);
+                Ok(Value::Bytes(a))
+            }
             (Value::Str(a), Value::Int(times)) if op == BinOp::Mul => {
                 let times = usize::try_from(times).unwrap_or(0);
                 if a.len().saturating_mul(times) > MOST_ITEMS {
@@ -419,7 +455,8 @@ impl Interp {
             | ("bool", Value::Bool(_))
             | ("list", Value::List(_))
             | ("dict", Value::Dict(_))
-            | ("set", Value::Set(_)) => true,
+            | ("set", Value::Set(_))
+            | ("bytes", Value::Bytes(_)) => true,
             (_, Value::Sized(num, _)) => num.name() == name,
             (_, Value::Instance(instance)) => {
                 if let Some(members) = self.program.aliases.get(name) {
@@ -432,7 +469,7 @@ impl Interp {
                     instance.ty == name
                 }
             }
-            ("int" | "float" | "str" | "bool" | "list" | "dict" | "set", _) => false,
+            ("int" | "float" | "str" | "bool" | "list" | "dict" | "set" | "bytes", _) => false,
             _ if self.program.types.contains_key(name) => false,
             _ => return unsupported(format!("`is {name}`")),
         })
@@ -457,6 +494,11 @@ impl Interp {
             Value::Str(text) => match item {
                 Value::Str(part) => Ok(text.contains(part.as_str())),
                 other => unsupported(format!("looking for a {} in a str", other.kind())),
+            },
+            // A byte: an int, which is in `bytes` when one of its bytes is that number.
+            Value::Bytes(data) => match item {
+                Value::Int(byte) => Ok(data.iter().any(|held| i64::from(*held) == *byte)),
+                other => unsupported(format!("looking for a {} in bytes", other.kind())),
             },
             Value::Instance(instance) => match self.program.method(&instance.ty, "in") {
                 Some(def) => {
@@ -494,7 +536,7 @@ impl Interp {
                 return unsupported(format!("`{owner}.{name}`"));
             }
             if let Some(from) = self.program.imported.get(owner.as_str()) {
-                return Self::library_value(&format!("{from}.{name}"));
+                return self.library_value(&format!("{from}.{name}"));
             }
             return unsupported(format!("`{owner}.{name}`"));
         }
@@ -532,6 +574,14 @@ impl Interp {
                 let at = position(at, count, span)?;
                 Ok(Value::Str(text.chars().nth(at).map(String::from).unwrap_or_default()))
             }
+            // A byte of `bytes` is an int, 0 to 255.
+            (Value::Bytes(data), Value::Int(at)) => {
+                let at = position(at, data.len(), span)?;
+                data.get(at).map_or_else(
+                    || crash("index out of range", span),
+                    |byte| Ok(Value::Int(i64::from(*byte))),
+                )
+            }
             (Value::Dict(pairs), key) => match super::find_key(&pairs, &key)? {
                 Some(at) => pairs
                     .into_iter()
@@ -540,7 +590,13 @@ impl Interp {
                     .map_or_else(|| crash("no key", span), Ok),
                 None => crash(format!("{} isn't a key here", self.repr(&key)?), span),
             },
-            (Value::Instance(instance), key) => match self.program.method(&instance.ty, "[]") {
+            // A type's own `def []`, read for its value: the `ref` form for an int position where
+            // it has one, and otherwise the plain form, which may take another kind of key.
+            (Value::Instance(instance), key) => match (matches!(key, Value::Int(_))
+                .then(|| self.program.method(&instance.ty, "[]mut"))
+                .flatten())
+            .or_else(|| self.program.method(&instance.ty, "[]"))
+            {
                 Some(def) => {
                     let receiver = super::calls::Receiver::Value(Value::Instance(instance));
                     self.call_def(
@@ -915,32 +971,32 @@ fn float_arithmetic(op: BinOp, a: f64, b: f64, span: Span) -> Run<Value> {
         BinOp::Div => a / b,
         BinOp::FloorDiv => (a / b).floor(),
         BinOp::Mod => a - b * (a / b).floor(),
-        BinOp::Pow => float_power(a, b)?,
+        BinOp::Pow => float_power(a, b),
         _ => return unsupported(format!("`{}` on floats", op.symbol())),
     }))
 }
 
-/// `a ** b` on floats, for the powers the runtime works out without `libm`: any other one is
-/// `libm`'s, which the oracle doesn't have.
-fn float_power(a: f64, b: f64) -> Run<f64> {
+/// `a ** b` on floats: the powers the runtime works out without `libm`, each exact in IEEE 754,
+/// and any other by `libm`'s `pow`, as `docs/language.md` says.
+fn float_power(a: f64, b: f64) -> f64 {
     if b.to_bits() == 2.0_f64.to_bits() {
-        Ok(a * a)
+        a * a
     } else if b.to_bits() == 0.5_f64.to_bits() {
-        Ok(if a == 0.0 {
+        if a == 0.0 {
             0.0
         } else if a == f64::NEG_INFINITY {
             f64::INFINITY
         } else {
             a.sqrt()
-        })
+        }
     } else if b.to_bits() == 1.0_f64.to_bits() {
-        Ok(a)
+        a
     } else if b == 0.0 {
-        Ok(1.0)
+        1.0
     } else if b.to_bits() == (-1.0_f64).to_bits() {
-        Ok(1.0 / a)
+        1.0 / a
     } else {
-        unsupported("`**` on floats, which libm works out")
+        libm::pow(a, b)
     }
 }
 
@@ -975,6 +1031,11 @@ fn slice(object: Value, start: Option<Value>, end: Option<Value>) -> Run<Value> 
             let to = bound(end, count, count)?;
             Ok(Value::Str(text.chars().skip(from).take(to.saturating_sub(from)).collect()))
         }
+        Value::Bytes(data) => {
+            let from = bound(start, data.len(), 0)?;
+            let to = bound(end, data.len(), data.len())?;
+            Ok(Value::Bytes(data.into_iter().skip(from).take(to.saturating_sub(from)).collect()))
+        }
         other => unsupported(format!("slicing a {}", other.kind())),
     }
 }
@@ -985,6 +1046,7 @@ fn plain_contains(container: &Value, item: &Value) -> Run<Option<bool>> {
         (Value::Dict(pairs), key) => super::find_key(pairs, key)?.is_some(),
         (Value::Table(table), Value::Id(id)) => table.find(*id).is_some(),
         (Value::Str(text), Value::Str(part)) => text.contains(part.as_str()),
+        (Value::Bytes(data), Value::Int(byte)) => data.iter().any(|held| i64::from(*held) == *byte),
         (Value::List(items) | Value::Tuple(items) | Value::Set(items), item) => {
             let mut found = false;
             for held in items {

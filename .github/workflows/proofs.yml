@@ -12,7 +12,9 @@ name: Proofs
 # (`.github/scripts/tsan-programs.sh`). Every example and kit is built for a heap audit and run under
 # it too, with each block's owners counted again as it ends (`.github/scripts/audit.sh`). The
 # runtime's tests run under Miri, which stops on undefined behavior in the crates under it
-# (`.github/scripts/miri.sh`). The night's report is kept as `nightly-report`, which
+# (`.github/scripts/miri.sh`). The game server and the web backend each run for an hour under
+# their own load, and what they hold has to level off (`.github/scripts/soak.sh`). The night's
+# report is kept as `nightly-report`, which
 # `.github/scripts/nightly-report.sh` copies into the lanes' notes. No pull request waits on this.
 on:
   schedule:
@@ -95,6 +97,13 @@ jobs:
           status=0
           cargo test --workspace --locked --no-fail-fast > tests.txt 2>&1 || status=$?
           tail -40 tests.txt
+          # Each test that failed, by name, with where it panicked and why: on the run's page, and
+          # in the night's report, so a failed night reads in one line.
+          .github/scripts/failed-tests.sh tests.txt > failed-tests.txt
+          while read -r failed; do echo "::error::$failed"; done < failed-tests.txt
+          if [ -s failed-tests.txt ]; then
+            { echo "## Tests that failed"; echo; sed 's/^/- /' failed-tests.txt; echo; } >> report.md
+          fi
           if grep -q "proof broken" tests.txt; then
             echo "::error::a test's program broke a proof"
             grep -B4 -A8 "proof broken" tests.txt | head -200
@@ -119,6 +128,11 @@ jobs:
             echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
             echo
             echo "Builds: $BUILDS. Fuzzing LLVM: $FUZZ. Random programs: $PROGRAMS. Random programs under the heap audit: $AUDITED. Determinism: $DETERMINISM. Heap audit: $AUDIT. Formatting in proportion: $TIMING. Tests: $TESTS."
+            # The tests that failed by name, on a line of their own that `nightly-report.sh` reads.
+            if [ -s failed-tests.txt ]; then
+              echo
+              echo "Failed tests: $(sed 's/: .*//' failed-tests.txt | paste -sd ' ' - | sed 's/ /, /g')"
+            fi
             echo
             [ -f report.md ] && cat report.md
             echo
@@ -203,6 +217,54 @@ jobs:
             echo "What fuzzing found, and the whole output, are in the run's \`tsan-found\` artifact."
           } > issue.md
           gh issue create --title "ThreadSanitizer reported in the nightly run" --body-file issue.md --label "bug" --label "priority: now" --repo "$GITHUB_REPOSITORY"
+
+  # The two real programs that serve, each run for an hour under its own scripted load, round after
+  # round in one process, once with every round in one long task and once on its own thread: what
+  # they hold has to level off after a warm-up, and a round has to finish every minute. See
+  # `soak.sh`, whose curve for each, its start, end and slope, goes in the night's report.
+  soak:
+    name: Soak ${{ matrix.program }} for an hour, in ${{ matrix.in }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        program: [game_server, web_backend]
+        in: [task, main]
+        include:
+          # A `parallel` loop inside a task runs its pieces one after another, so the game server's
+          # 48 clients, which wait for one another, never all start in a task: it fails until #1796.
+          - program: game_server
+            in: task
+            waiting: "#1796"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LLVM's tools
+        run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build fennec and its runtimes
+        run: |
+          cargo build --release --locked -p fennec -p fennec-runtime
+          cargo build --release --locked -p fennec-runtime --features threads --target-dir target/threads
+          cp target/threads/release/libfennec_runtime.a target/release/libfennec_runtime_threads.a
+      - name: Run it for an hour, reading what it holds every minute
+        env:
+          PROGRAM: ${{ matrix.program }}
+          SOAK_IN: ${{ matrix.in }}
+          SOAK_WAITING: ${{ matrix.waiting }}
+        run: .github/scripts/soak.sh target/release/fennec "bench/realworld/$PROGRAM.fen" soak.md 60
+      - name: Show the curve on the run's summary page
+        if: always()
+        run: '[ -f soak.md ] && cat soak.md >> "$GITHUB_STEP_SUMMARY" || true'
+      # `nightly-report.sh` adds these to the night's report.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: soak-${{ matrix.program }}-${{ matrix.in }}
+          path: soak.md
+          if-no-files-found: ignore
 
   # The runtime's tests under Miri, each on its own, split eight ways: see `miri.sh`, which says
   # what Miri can't run and what checks it instead. Undefined behavior or a deadlock fails it, and

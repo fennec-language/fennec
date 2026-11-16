@@ -150,6 +150,12 @@ impl Table {
         self.len
     }
 
+    /// How many places looking through all of it reads (`all`): each page a region can have, and
+    /// each place on every page it has. Kept as it goes, so asking costs nothing.
+    pub(super) fn places_to_look_through(&self) -> usize {
+        self.regions.len() * PAGES + (self.kept + self.made) * PLACES
+    }
+
     /// How many pages it holds, for counting what's live.
     #[cfg(any(test, feature = "threads"))]
     pub(super) fn pages(&self) -> usize {
@@ -174,8 +180,9 @@ impl Table {
         (sizes, never_freed)
     }
 
-    /// Every block it holds, in no order, for the heap's audit to read where it lies.
-    #[cfg(any(test, feature = "audit"))]
+    /// Every block it holds, in no order: for the heap's audit to read where it lies, and for a
+    /// long task's end to find the blocks with its mark.
+    #[cfg(any(test, feature = "audit", feature = "threads"))]
     pub(super) fn all(&self) -> impl Iterator<Item = &[u64]> {
         let placed = self.regions.iter().flat_map(|(_, pages)| pages.iter().flatten());
         placed.flat_map(|page| page.iter().flatten()).chain(self.short.values()).map(|block| &**block)
@@ -184,6 +191,11 @@ impl Table {
     /// How many blocks it holds that can still be freed: all but those kept for the whole run, like
     /// literals and the cases with no fields made the first time they're asked for.
     pub(super) fn freeable(&self) -> usize {
+        self.freeable_where(|_| true)
+    }
+
+    /// How many of the blocks that can still be freed `which` picks.
+    pub(super) fn freeable_where(&self, which: impl Fn(&[u64]) -> bool) -> usize {
         let placed = self.regions.iter().flat_map(|(_, pages)| pages.iter().flatten());
         let never_freed = |block: &[u64]| {
             block
@@ -193,7 +205,7 @@ impl Table {
         placed
             .flat_map(|page| page.iter().flatten())
             .chain(self.short.values())
-            .filter(|block| !never_freed(block))
+            .filter(|block| !never_freed(block) && which(block))
             .count()
     }
 

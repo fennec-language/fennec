@@ -300,6 +300,8 @@ fn a_buffers_room_is_known_only_as_far_as_its_promised() {
         ));
         assert_eq!(ended, refused, "{after}");
     }
+}
+
 /// `std.pack` runs from its own source, and what it writes beside a value, the shape hash and the
 /// layout, is worked out as `docs/pack.md` pins it: each of the doc's test vectors, from the same
 /// program the LLVM test builds, is what the oracle writes too.

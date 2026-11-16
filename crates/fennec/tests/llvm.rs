@@ -2869,8 +2869,8 @@ fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::R
 /// Appends written straight in a lock's body, to a list in a dict's value and in a list's item, 300
 /// under one lock and one under each of 300: the dict's lists are changed where they are, taken
 /// out through the lock's handle and saved by its log first. Each of those 600 appends copied its
-/// whole list, and the program made 1,200 copies. The 600 left are the list items', which copy on
-/// every save of a marked list's item until #1895, which lowers that half's pin to none.
+/// whole list, and the program made 1,200 copies. With a list's item saved once a lock (#1895),
+/// it makes none.
 #[test]
 fn appends_in_a_locks_own_body_change_a_dicts_lists_where_they_are() -> std::io::Result<()> {
     if !ready() {
@@ -2901,11 +2901,11 @@ fn appends_in_a_locks_own_body_change_a_dicts_lists_where_they_are() -> std::io:
         counts_of("appended_in_a_locks_body_by_name", &by_name)?,
         "copies 0 copied_bytes 0 largest_copy 0 allocations 621 allocated_bytes 112664 live 0"
     );
-    // A list's item still copies its list on each set under a lock, in the runtime's
-    // `marked_set` (#1895), which takes this to none.
+    // A list's item is saved once a lock and what it holds marked (#1895), so its list grows
+    // where it is too.
     assert_eq!(
         counts_of("appended_in_a_locks_body_by_item", &by_item)?,
-        "copies 600 copied_bytes 2167200 largest_copy 7200 allocations 1207 allocated_bytes 3285704 live 0"
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 621 allocated_bytes 112584 live 0"
     );
     Ok(())
 }

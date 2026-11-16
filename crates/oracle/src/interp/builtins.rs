@@ -684,10 +684,29 @@ fn round_places(x: f64, places: i64) -> f64 {
     format!("{x:.digits$}").parse().unwrap_or(x)
 }
 
+/// `n` as `bytes_push_varint` writes it: as unsigned, 7 bits a byte, low first, with the top bit
+/// of each saying more come.
+fn varint(n: i64) -> Vec<u8> {
+    let mut rest = u64::from_le_bytes(n.to_le_bytes());
+    let mut out = Vec::new();
+    while rest >= 128 {
+        out.push(u8::try_from(rest & 127).unwrap_or(0) | 128);
+        rest >>= 7;
+    }
+    out.push(u8::try_from(rest).unwrap_or(0));
+    out
+}
+
 /// The intrinsics that write into a byte builder the standard library's own code holds, through
 /// a `ref`: each as `intrinsics.fen` says it works.
-const WRITES_BYTES: [&str; 5] =
-    ["bytes_push", "bytes_push_word", "bytes_push_text", "bytes_push_bytes", "bytes_set"];
+const WRITES_BYTES: [&str; 6] = [
+    "bytes_push",
+    "bytes_push_word",
+    "bytes_push_varint",
+    "bytes_push_text",
+    "bytes_push_bytes",
+    "bytes_set",
+];
 
 impl Interp {
     /// One of `WRITES_BYTES`, on the builder its first argument is the place of.
@@ -711,6 +730,7 @@ impl Interp {
                 None => return unsupported("`bytes_push` of something other than a byte"),
             },
             ("bytes_push_word", [Value::Int(bits)]) => bits.to_le_bytes().to_vec(),
+            ("bytes_push_varint", [Value::Int(n)]) => varint(*n),
             ("bytes_push_text", [Value::Str(text)]) => text.as_bytes().to_vec(),
             ("bytes_push_bytes", [Value::Bytes(data)]) => data.clone(),
             ("bytes_set", [Value::Int(at), value]) => {

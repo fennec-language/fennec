@@ -42,6 +42,7 @@ mod real {
 
     use super::failed;
     use crate::stdlib::fs::{blocking, io_error};
+    use crate::stdlib::turns::Held;
     use crate::value::Value;
 
     /// How long a query waits for another writer to finish before failing with `Busy`.
@@ -80,7 +81,7 @@ mod real {
     struct Opened {
         place: Place,
         /// The connection the database's own queries run on, one at a time.
-        main: Arc<Mutex<Connection>>,
+        main: Arc<Held<Connection>>,
         /// Connections transactions are done with, for the next ones to take.
         idle: Mutex<Vec<Connection>>,
     }
@@ -88,7 +89,7 @@ mod real {
     enum Entry {
         Database(Arc<Opened>),
         /// A transaction's connection, which holds the database's writer until it's done.
-        Transaction(Arc<Opened>, Arc<Mutex<Connection>>),
+        Transaction(Arc<Opened>, Arc<Held<Connection>>),
     }
 
     static OPEN: LazyLock<Mutex<HashMap<i64, Entry>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -306,7 +307,7 @@ mod real {
     fn open(place: Place) -> Result<i64, String> {
         let first = place.clone();
         let main = blocking(move || connect(&first).map_err(|err| err.to_string()))?;
-        let opened = Opened { place, main: Arc::new(Mutex::new(main)), idle: Mutex::new(Vec::new()) };
+        let opened = Opened { place, main: Arc::new(Held::new(main)), idle: Mutex::new(Vec::new()) };
         Ok(kept(Entry::Database(Arc::new(opened))))
     }
 
@@ -542,17 +543,20 @@ mod real {
     }
 
     /// `work` on `conn`, on a blocking thread in a task, tried again while another writer holds
-    /// the database, for up to `BUSY_WAIT`. Between tries, the task pauses with no thread held.
+    /// the database, for up to `BUSY_WAIT`. A task waits its turn at the connection parked, so the
+    /// blocking thread finds it free, and between tries it pauses with no thread held.
     fn on<T: Send + 'static>(
-        conn: &Arc<Mutex<Connection>>,
+        conn: &Arc<Held<Connection>>,
         work: impl Fn(&Connection) -> rusqlite::Result<T> + Send + Sync + 'static,
     ) -> rusqlite::Result<T> {
         let work = Arc::new(work);
         let started = Instant::now();
         let mut wait = Duration::from_millis(1);
         loop {
-            let (conn, work) = (Arc::clone(conn), Arc::clone(&work));
-            let done = blocking(move || work(&conn.lock().unwrap_or_else(PoisonError::into_inner)));
+            let turn = conn.turn();
+            let (held, work) = (Arc::clone(conn), Arc::clone(&work));
+            let done = blocking(move || work(&held.lock_for_work()));
+            drop(turn);
             match done {
                 Err(err) if busy(&err) && started.elapsed() < BUSY_WAIT => {
                     pause(wait);
@@ -616,7 +620,7 @@ mod real {
     }
 
     /// The connection a handle's queries run on, and its database.
-    fn connection_of(handle: i64) -> Option<(Arc<Opened>, Arc<Mutex<Connection>>)> {
+    fn connection_of(handle: i64) -> Option<(Arc<Opened>, Arc<Held<Connection>>)> {
         match OPEN.lock().unwrap_or_else(PoisonError::into_inner).get(&handle)? {
             Entry::Database(opened) => Some((Arc::clone(opened), Arc::clone(&opened.main))),
             Entry::Transaction(opened, conn) => Some((Arc::clone(opened), Arc::clone(conn))),
@@ -683,7 +687,7 @@ mod real {
             Ok(conn) => conn,
             Err(err) => return sql_failed(&err),
         };
-        let conn = Arc::new(Mutex::new(conn));
+        let conn = Arc::new(Held::new(conn));
         // `immediate` takes the writer now, so a transaction never finds it taken halfway through.
         match on(&conn, |conn| conn.execute_batch("begin immediate")) {
             Ok(()) => {
@@ -695,12 +699,11 @@ mod real {
     }
 
     /// A transaction is done: rolled back if `undo`, then its connection kept for the next.
-    fn finish(handle: i64, opened: &Arc<Opened>, conn: &Arc<Mutex<Connection>>, undo: bool) {
+    fn finish(handle: i64, opened: &Arc<Opened>, conn: &Arc<Held<Connection>>, undo: bool) {
         OPEN.lock().unwrap_or_else(PoisonError::into_inner).remove(&handle);
         let (opened, conn) = (Arc::clone(opened), Arc::clone(conn));
         blocking(move || {
-            let conn =
-                Arc::into_inner(conn).map(|conn| conn.into_inner().unwrap_or_else(PoisonError::into_inner));
+            let conn = Arc::into_inner(conn).map(Held::into_inner);
             let Some(conn) = conn else { return };
             if undo || !conn.is_autocommit() {
                 let _ = conn.execute_batch("rollback");

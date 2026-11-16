@@ -25068,15 +25068,56 @@ fn an_edit_recompiles_only_the_function_it_touches() -> std::io::Result<()> {
     };
     let (path, out) =
         (program.to_string_lossy().into_owned(), dir.join("edit").to_string_lossy().into_owned());
+    // What a build printed and, after it, what it said on standard error, where the cache says
+    // why it couldn't read or keep something.
     let build = |text: String| -> std::io::Result<String> {
         std::fs::write(&program, text)?;
         let built = fennec(&["build", "--llvm", &path, "-o", &out], &dir)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        Ok(String::from_utf8_lossy(&built.stdout).into_owned())
+        Ok(format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr)))
     };
-    assert!(build(source(""))?.contains("compiled 3 of 3"));
-    assert!(build(source("## nothing here\n\n"))?.contains("compiled 0 of 3"));
-    assert!(build(source("").replace("n * 33", "n * 34"))?.contains("compiled 1 of 3"));
+    let said = build(source(""))?;
+    assert!(said.contains("compiled 3 of 3"), "{said}");
+    let said = build(source("## nothing here\n\n"))?;
+    assert!(said.contains("compiled 0 of 3"), "{said}");
+    let said = build(source("").replace("n * 33", "n * 34"))?;
+    assert!(said.contains("compiled 1 of 3"), "{said}");
+    std::fs::remove_dir_all(&dir)
+}
+
+/// Whose Fennec folder it is, which decides whether its cache is used, comes from the user this
+/// process runs as. It once came from a file made in the temp folder, and a build that couldn't
+/// make one, as under heavy load, left the cache unused and compiled everything again. Here the
+/// temp folder isn't there at all, and the second build compiles nothing.
+#[test]
+fn the_cache_is_used_where_no_file_can_be_made_in_the_temp_folder() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("no_temp")?;
+    let program = dir.join("no_temp.fen");
+    std::fs::write(
+        &program,
+        "def twice(n: int) -> int:\n    return n * 2\n\ndef main(stdout: Stdout):\n    stdout.print(twice(4))\n",
+    )?;
+    let (path, out) =
+        (program.to_string_lossy().into_owned(), dir.join("no_temp").to_string_lossy().into_owned());
+    let build = || -> std::io::Result<String> {
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm", &path, "-o", &out])
+            .env("FENNEC_HOME", &dir)
+            .env("TMPDIR", dir.join("not-there"))
+            .output_before(FENNEC_DEADLINE)?;
+        let said =
+            format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
+        assert!(built.status.success(), "{said}");
+        Ok(said)
+    };
+    let first = build()?;
+    assert!(!first.contains("compiled 0 of"), "{first}");
+    let again = build()?;
+    assert!(again.contains("compiled 0 of"), "{again}");
+    assert!(!again.contains("warning"), "{again}");
     std::fs::remove_dir_all(&dir)
 }
 
@@ -25097,11 +25138,14 @@ fn text_added_above_a_function_that_can_fail_doesnt_compile_it_again() -> std::i
     let program = dir.join("edit_above.fen");
     let (path, out) =
         (program.to_string_lossy().into_owned(), dir.join("edit_above").to_string_lossy().into_owned());
-    let build = |text: String| -> std::io::Result<usize> {
+    let build = |text: String| -> std::io::Result<(usize, String)> {
         std::fs::write(&program, text)?;
         let built = fennec(&["build", "--llvm", &path, "-o", &out], &dir)?;
         assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
-        let said = String::from_utf8_lossy(&built.stdout).into_owned();
+        // What it printed and, after it, what it said on standard error, where the cache says why
+        // it couldn't read or keep something.
+        let said =
+            format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
         let ran = Command::new(&out).output_within()?;
         assert_eq!(
             String::from_utf8_lossy(&ran.stdout),
@@ -25111,26 +25155,26 @@ fn text_added_above_a_function_that_can_fail_doesnt_compile_it_again() -> std::i
             "{said}"
         );
         let compiled = said.split("compiled ").nth(1).and_then(|rest| rest.split(' ').next());
-        Ok(compiled.and_then(|count| count.parse().ok()).unwrap_or(usize::MAX))
+        Ok((compiled.and_then(|count| count.parse().ok()).unwrap_or(usize::MAX), said))
     };
-    assert!(build(EDIT_ABOVE.to_owned())? > 5, "the first build compiles everything");
-    assert_eq!(
-        build(format!(
-            "## nothing here
+    let (compiled, said) = build(EDIT_ABOVE.to_owned())?;
+    assert!(compiled > 5, "the first build compiles everything: {said}");
+    let (compiled, said) = build(format!(
+        "## nothing here
 
 {EDIT_ABOVE}"
-        ))?,
-        0,
-        "a comment added at the top"
-    );
+    ))?;
+    assert_eq!(compiled, 0, "a comment added at the top: {said}");
     let changed = EDIT_ABOVE.replace(
         "    return items[at]
 ",
         "    return items[at] + 0
 ",
     );
-    assert!(build(changed)? <= 2, "one function changed: it, and the caller that holds a copy of it");
-    assert_eq!(build(EDIT_ABOVE.to_owned())?, 0, "as it first was");
+    let (compiled, said) = build(changed)?;
+    assert!(compiled <= 2, "one function changed: it, and the caller that holds a copy of it: {said}");
+    let (compiled, said) = build(EDIT_ABOVE.to_owned())?;
+    assert_eq!(compiled, 0, "as it first was: {said}");
     std::fs::remove_dir_all(&dir)
 }
 

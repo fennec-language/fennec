@@ -40,10 +40,16 @@ ignore = true
 multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
+# Crates no build may take: TLS is rustls, in Rust, so there's no OpenSSL to link into programs or
+# keep patched on each system.
+deny = [
+    { crate = "openssl", reason = "TLS is rustls's: no OpenSSL in Fennec or its programs" },
+    { crate = "openssl-sys", reason = "TLS is rustls's: no OpenSSL in Fennec or its programs" },
+    { crate = "native-tls", reason = "TLS is rustls's, the same on every system" },
+]
 # Dependencies' own dependencies pull in older copies of these. Remove each once they catch up.
 skip = [
     { crate = "getrandom@0.2.17", reason = "ring, through rustls" },
-    { crate = "windows-sys@0.52.0", reason = "ring, through rustls" },
     { crate = "windows-sys@0.59.0", reason = "corosensei's Windows stacks, through fennec-parked" },
     { crate = "io-lifetimes@2.0.4", reason = "fs-set-times, through cap-std: its latest, 0.20.3, still asks for 2" },
 ]

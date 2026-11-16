@@ -939,6 +939,172 @@ fn ranges_that_wait_for_tasks_they_launched_all_end() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What `task_comprehensions.fen` prints for each place it makes its calls from, less the place.
+const TASK_COMPREHENSIONS: &str = "\
+[7, 0]\n\
+[\"a: 8 longer\", \"list: 2 longer\", \"of: 7 longer\", \"words: 1 longer\", \"that: 2 longer\", \"the: 5 longer\", \"pieces: 0 longer\", \"all: 5 longer\", \"read: 2 longer\"]\n\
+12 a greeting long enough to need a block of its own, name 11 12\n\
+8.583749889959188\n\
+TooFar(at=4)\n\
+TooFar(at=4)\n\
+[\"pieces\", \"words\", \"pieces\", \"words\", \"pieces\", \"words\", \"pieces\", \"words\", \"pieces\"]\n\
+piece 0\n\
+piece 1\n\
+piece 2\n\
+piece 3\n\
+piece 4\n\
+piece 5\n\
+[0, 1, 4, 9, 16, 25] [\"a\", \"list\", \"of\", \"words\", \"that\", \"the\", \"pieces\", \"all\", \"read\"] a greeting long enough to need a block of its own name 0\n";
+
+/// A launched task's comprehensions and waiting sums hand their pieces to the workers, as `main`'s
+/// do, while the task parks: the program makes the same calls on `main` and in a task, and prints
+/// the same for both, at 1, 4 and 16 threads, with the pieces cut as their lists give and cut down
+/// to an item each. Its first call's two pieces only both end when they run at once: the first
+/// waits for what the second sends. A task once ran its pieces itself, one after another, so that
+/// call hung.
+///
+/// The pieces read copies of what they capture, as a task can't lend its worker's blocks, so the
+/// program also prints what it captured after its calls: nothing comes back from a copy.
+#[test]
+fn a_task_s_comprehensions_run_their_pieces_at_once_as_main_s_do() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-task-comprehensions-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/task_comprehensions.fen");
+    let built = build_on_threads(&dir, source, "task_comprehensions")?;
+    for (threads, stressed) in
+        [("1", false), ("4", false), ("16", false), ("1", true), ("4", true), ("16", true)]
+    {
+        let mut run = Command::new(&built);
+        run.env("FENNEC_THREADS", threads).env("FENNEC_COUNTS", "1");
+        if stressed {
+            run.env("FENNEC_PARALLEL_STRESS", "1");
+        }
+        let ran = run.output_within()?;
+        let how = format!("on {threads} threads, stressed: {stressed}");
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(ran.status.code(), Some(0), "{how}: {said}");
+        // Nothing's left live: not the copies its pieces read, what failing pieces had made, nor
+        // the captured strings some pieces gave back.
+        assert!(said.contains(" live 0"), "{how} left blocks live: {said}");
+        let printed = String::from_utf8_lossy(&ran.stdout);
+        // What its pieces print comes out in any order, so each place's lines are compared sorted.
+        let from = |place: &str| {
+            let mut lines: Vec<&str> =
+                printed.lines().filter_map(|line| line.strip_prefix(place)?.strip_prefix(' ')).collect();
+            lines.sort_unstable();
+            lines.join("\n")
+        };
+        let mut wanted: Vec<&str> = TASK_COMPREHENSIONS.lines().collect();
+        wanted.sort_unstable();
+        assert_eq!(from("main"), wanted.join("\n"), "from main, {how}");
+        assert_eq!(from("task"), from("main"), "from a task, {how}");
+        assert!(printed.ends_with("done\n"), "{how}: {printed}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// The pieces of a comprehension take owners of what they capture while they hold a write lock,
+/// odd pieces one lock and even ones another, so two do it at once. From a task they read a copy
+/// the task made for them, and a piece holding a lock leaves that copy's counts to the runtime, as
+/// it does `main`'s blocks: every count comes out right, so nothing's left live at the end. A lent
+/// copy was once marked as what a lock guards is, which its holder counts in place: two pieces
+/// under two locks then wrote one count at once. `ThreadSanitizer` runs this program too.
+#[test]
+fn a_task_s_pieces_holding_write_locks_leave_lent_counts_to_the_runtime() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-two-locks-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/pieces_under_two_locks.fen");
+    let built = build_on_threads(&dir, source, "pieces_under_two_locks")?;
+    let wanted = include_str!("fixtures/workers/pieces_under_two_locks.out");
+    for (threads, stressed) in [("4", false), ("16", false), ("16", true)] {
+        let mut run = Command::new(&built);
+        run.env("FENNEC_THREADS", threads).env("FENNEC_COUNTS", "1");
+        if stressed {
+            run.env("FENNEC_PARALLEL_STRESS", "1");
+        }
+        let ran = run.output_within()?;
+        let (printed, said) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+        let how = format!("on {threads} threads, stressed: {stressed}");
+        assert_eq!(ran.status.code(), Some(0), "{how}: {said}");
+        assert_eq!(printed, wanted, "{how}");
+        assert!(said.contains(" live 0"), "{how} left blocks live: {said}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task that's stopped while it's parked in a comprehension passes the stop on to its pieces,
+/// which sleep on every worker: each sleep is cut short, the call ends, and the task with it. The
+/// pieces sleep for two hours, so a stop that only reached the task would leave the program
+/// waiting them out, past this test's limit.
+#[test]
+fn a_stop_reaches_the_pieces_a_task_s_comprehension_waits_for() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-task-stopped-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/task_comprehension_stopped.fen");
+    let built = build_on_threads(&dir, source, "task_comprehension_stopped")?;
+    for threads in ["1", "4", "16"] {
+        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
+        assert_eq!(
+            ran.status.code(),
+            Some(0),
+            "on {threads} threads: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "the stopped one is over\n", "on {threads} threads");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A crash of a task cuts short the waits of the code that launched it, so that code reaches its
+/// block's end, which says `Crashed`. When that code is waiting in a comprehension, the waits are
+/// its pieces', on other threads: they're cut short the same way, from `main` and from a task.
+/// From `main` they never were, and the program hung: the pieces waited for good on a channel while
+/// `main` waited for them.
+#[test]
+fn a_crash_of_a_launched_task_cuts_short_the_pieces_its_launcher_waits_for() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-crash-pieces-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/crash_while_pieces_wait.fen");
+    let built = build_on_threads(&dir, source, "crash_while_pieces_wait")?;
+    let wanted = "pieces gave [-1, -2]\nmain: Crashed(why=\"the task crashed\")\n\
+                  pieces gave [-1, -2]\ntask: Crashed(why=\"the task crashed\")\ndone\n";
+    for threads in ["1", "4", "16"] {
+        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
+        assert_eq!(
+            ran.status.code(),
+            Some(0),
+            "on {threads} threads: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "on {threads} threads");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A launched task can serve: its rounds read what it gave them, and other tasks on its worker go on
 /// meanwhile.
 #[test]

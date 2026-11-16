@@ -1,0 +1,15 @@
+from std.concurrent import Crashed
+
+def naps(number: int, clock: Clock) -> int:
+    clock.sleep(2h)
+    return number
+
+# Parked in a comprehension whose pieces sleep on every worker, until it's stopped.
+def waits(clock: Clock, stdout: Stdout):
+    slept = [naps(number, clock=clock) for number in parallel(range(8))]
+    stdout.print("never said", len(slept))
+
+def main(clock: Clock, stdout: Stdout) fails Crashed:
+    with launch(() => waits(clock, stdout=stdout), stop_after=20ms)?:
+        pass
+    stdout.print("the stopped one is over")

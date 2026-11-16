@@ -24,6 +24,9 @@ type Changes<'f> = &'f dyn Fn(&str) -> Vec<usize>;
 /// Whether a function might give its parameter at a place another owner.
 type Keeps<'f> = &'f dyn Fn(&str, usize) -> bool;
 
+/// Whether a dict of this type holds its values in its entries, as the program's layouts say.
+type InEntries<'f> = &'f dyn Fn(&Type) -> bool;
+
 /// What a slice used as a key is of: the string, and its start and end as slicing takes them.
 pub(crate) type SliceKey = (Operand, Option<Operand>, Option<Operand>);
 
@@ -537,6 +540,7 @@ fn analyze(
     changes: &dyn Fn(&str) -> Vec<usize>,
     keeps: &dyn Fn(&str, usize) -> bool,
     params: &[Range],
+    in_entries: InEntries<'_>,
 ) -> Analysis {
     let mut known = Analysis::empty(function.locals.len());
     known.param_ranges = given_ranges(function, params);
@@ -628,7 +632,7 @@ fn analyze(
     find_guarded_reads(function, (&facts, &multi), &mut known);
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
-    find_slice_keys(function, &mut known);
+    find_slice_keys(function, in_entries, &mut known);
     find_unmade_enumerates(function, &mut known);
     find_counts_inside(function, &mut known);
     known
@@ -1372,7 +1376,7 @@ fn write_range(
 
 /// `d.get(text[a:b])` and `d[text[a:b]] = v`, with the slice used for nothing else and what it
 /// was made from unchanged after: the runtime finds and adds those bytes where they are.
-fn find_slice_keys(function: &Function, known: &mut Analysis) {
+fn find_slice_keys(function: &Function, in_entries: InEntries<'_>, known: &mut Analysis) {
     let insts: Vec<&InstKind> =
         function.blocks.iter().flat_map(|block| &block.insts).map(|inst| &inst.kind).collect();
     let steady = |operand: &Operand, known: &Analysis| match operand {
@@ -1380,11 +1384,14 @@ fn find_slice_keys(function: &Function, known: &mut Analysis) {
         Operand::Int(_) => true,
         _ => false,
     };
+    // A dict that holds its values in its entries is left out: finding a slice's bytes where
+    // they are, and adding them, are written for an entry of a key and one word. Which dicts do
+    // is the layouts' to say: a tuple, an array or an `Id` is held in place as a struct is,
+    // whatever it's written as.
     let str_keyed = |dict: &Operand| match dict {
-        Operand::Local(local) => matches!(
-            function.locals.get(local.0).map(|local| &local.ty),
-            Some(Type::Dict(key, _)) if **key == Type::Str
-        ),
+        Operand::Local(local) => function.locals.get(local.0).is_some_and(|local| {
+            matches!(&local.ty, Type::Dict(key, _) if **key == Type::Str) && !in_entries(&local.ty)
+        }),
         _ => false,
     };
     for inst in &insts {
@@ -4026,10 +4033,20 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
     };
     let params = param_ranges(program, &changes, &keeps);
+    // Without layouts, which a program that builds always has, any dict that isn't of plain words
+    // may hold its values in its entries.
+    let layouts = crate::layouts_of(program).ok();
+    let in_entries = |dict: &Type| match &layouts {
+        Some(layouts) => matches!(
+            crate::kinds::Kind::of(layouts, dict),
+            Ok(crate::kinds::Kind::Dict(_, fennec_rt::embed::dicts::Word::InPlace(_)))
+        ),
+        None => fennec_layout::dict_values_in_place(),
+    };
     let analyses: HashMap<&str, Analysis> = every()
         .map(|function| {
             let given = params.get(function.name.as_str()).map_or(&[][..], Vec::as_slice);
-            (function.name.as_str(), analyze(function, &changes, &keeps, given))
+            (function.name.as_str(), analyze(function, &changes, &keeps, given, &in_entries))
         })
         .collect();
     let mut generators = HashMap::new();
@@ -4099,7 +4116,7 @@ mod tests {
         let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
-        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
         let at = function.locals.iter().position(|local| local.name.as_deref() == Some("unit"));
         Ok(known.taken_over_loop(LocalId(at.ok_or("no `unit`")?)))
     }
@@ -4129,7 +4146,7 @@ mod tests {
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
         let changes = |name: &str| if name == "counted" { vec![0] } else { Vec::new() };
-        let known = analyze(function, &changes, &|_, _| false, &[]);
+        let known = analyze(function, &changes, &|_, _| false, &[], &|_| false);
         let appended =
             function.blocks.iter().flat_map(|block| &block.insts).find_map(|inst| match &inst.kind {
                 InstKind::Builtin { name, args, .. } if name == "list.append" => match args.first() {
@@ -4170,7 +4187,7 @@ mod tests {
         let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
-        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
         Ok(!known.room_enough.is_empty())
     }
 
@@ -4201,7 +4218,7 @@ mod tests {
         let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
-        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
         Ok((0..function.locals.len()).filter(|at| known.is_taken(LocalId(*at))).count())
     }
 

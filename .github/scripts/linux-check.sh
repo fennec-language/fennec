@@ -18,7 +18,11 @@
 # - Each is held to what the VM holds, so a build too big is stopped in its own container.
 # - Every worktree shares one target volume and one of fetched crates. This kit's own crates are
 #   cleaned out before each check, so one worktree never takes another's build of them as fresh:
-#   every checkout is mounted at the same path, and cargo goes by the times files changed.
+#   every checkout is at the same path, and cargo goes by the times files changed.
+# - The checkout goes in as a copy, over a pipe, into a volume of the VM's own, never mounted: the
+#   VM keeps a file of the Mac's open for each one it has read through a mount, for as long as it
+#   runs, and one running all day held 140,000, every source file of 105 worktrees, 78 of them
+#   removed, near half of what the whole Mac may have open (fennec#1864).
 # - When the VM's disk is past 75% full, its `fennec-` volumes are removed first, and built again.
 set -euo pipefail
 root=$(git rev-parse --show-toplevel)
@@ -83,10 +87,12 @@ fi
 # What the VM holds, less an eighth for itself, in MiB.
 memory=$(docker --context "$context" info --format '{{.MemTotal}}')
 memory=$((memory * 7 / 8 / 1024 / 1024))m
-# Inside: the image's own Rust, rather than the exact patch release the toolchain file names,
-# which would be downloaded every time; this kit's crates cleaned out; then the check.
+# Inside: the checkout copied in, in place of the last one; the image's own Rust, rather than the
+# exact patch release the toolchain file names, which would be downloaded every time; this kit's
+# crates cleaned out; then the check.
 # shellcheck disable=SC2016
 inside='
+find /src -mindepth 1 -delete && tar -x -f - -C /src --warning=no-unknown-keyword || exit 1
 export RUSTUP_TOOLCHAIN="$(rustup default | cut -d" " -f1)"
 set --
 for manifest in crates/*/Cargo.toml; do
@@ -96,8 +102,11 @@ cargo clean --locked --quiet "$@" && exec cargo check --locked --workspace --tes
 '
 said=$(mktemp)
 status=0
-docker --context "$context" run --rm --memory "$memory" \
-  --volume "$root:/src:ro" \
+# The checkout as it is, but for what's built and git's own: macOS's tar leaves out its own
+# metadata, which Linux's tar has no use for.
+COPYFILE_DISABLE=1 tar -c --no-xattrs --no-mac-metadata --exclude ./target --exclude ./.git -C "$root" -f - . |
+docker --context "$context" run --rm --interactive --memory "$memory" \
+  --volume fennec-linux-check-src:/src \
   --volume fennec-linux-check-target:/target \
   --volume fennec-linux-check-registry:/usr/local/cargo/registry \
   --env CARGO_TARGET_DIR=/target \

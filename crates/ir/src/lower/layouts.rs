@@ -22,7 +22,7 @@
 
 use std::fmt::Write as _;
 
-use fennec_check::Type;
+use fennec_check::{SavedAs, Type};
 
 use super::Context;
 
@@ -103,26 +103,22 @@ impl Context<'_> {
         }
     }
 
-    /// A struct's or an enum's layout, or what one of the standard library's types saves as.
+    /// A struct's or an enum's layout, or, for a type that writes its own `serialize`, what it
+    /// saves as, which its shape goes by too.
     fn named_layout(&self, name: &str, open: &mut Vec<String>, out: &mut String) {
         let instance = self.type_instance(name);
         let base = instance.as_ref().map_or(name, |instance| instance.base.as_str());
         let subst = instance.as_ref().map(|instance| instance.subst.clone()).unwrap_or_default();
-        let args: Vec<Type> = self
-            .generic_types
-            .get(base)
-            .map(|def| def.generics.iter().filter_map(|generic| subst.get(&generic.name).cloned()).collect())
-            .unwrap_or_default();
-        let std_saves = self.library.contains(format!("{base}.serialize").as_str());
-        if std_saves && let Some(saved_as) = std_saved_as(base, &args) {
-            self.layout_into(&saved_as, open, out);
+        let saved_as = self.saved_as(base, &subst);
+        if let Some(SavedAs::Another(ty)) = &saved_as {
+            self.layout_into(ty, open, out);
             return;
         }
         if let Some(at) = open.iter().position(|seen| seen == name) {
             let _ = write!(out, "r {at} ");
             return;
         }
-        if self.saves_itself.contains(base) {
+        if saved_as == Some(SavedAs::Itself) {
             let _ = write!(out, "O {} ", name.replace(' ', ""));
             return;
         }
@@ -161,26 +157,25 @@ impl Context<'_> {
     }
 }
 
+impl Context<'_> {
+    /// How a value of `base`, given the type arguments in `subst`, is saved when its type writes
+    /// its own `serialize`, as the checker recorded it: the same answer its shape has.
+    fn saved_as(&self, base: &str, subst: &super::generics::Subst) -> Option<SavedAs> {
+        let args: Vec<Type> = self
+            .generic_types
+            .get(base)
+            .map(|def| def.generics.iter().filter_map(|generic| subst.get(&generic.name).cloned()).collect())
+            .unwrap_or_default();
+        self.signatures.saved_as(base, &args)
+    }
+}
+
 /// The name a field is saved under, when `@serialize(name=...)` gives it one.
 fn renamed(annotations: &[fennec_syntax::Annotation]) -> Option<&str> {
     let annotation = annotations.iter().find(|annotation| annotation.name == "serialize")?;
     annotation.args.iter().find_map(|arg| match &arg.value.kind {
         fennec_syntax::ExprKind::Str(name) if arg.name.as_deref() == Some("name") => Some(name.as_str()),
         _ => None,
-    })
-}
-
-/// What one of the standard library's types that saves itself writes, as a type that saves the
-/// same way: a `Deque` saves as a list of its items, a `Time` as its text.
-fn std_saved_as(base: &str, args: &[Type]) -> Option<Type> {
-    let first = || args.first().cloned().unwrap_or(Type::Unknown);
-    Some(match base {
-        "Deque" | "SortedSet" => Type::List(Box::new(first())),
-        "SortedMap" => Type::Dict(Box::new(first()), Box::new(args.get(1).cloned().unwrap_or(Type::Unknown))),
-        "Packed" | "Grid" => Type::List(Box::new(Type::List(Box::new(first())))),
-        "Uuid" | "Time" => Type::Str,
-        "Duration" => Type::Int,
-        _ => return None,
     })
 }
 
@@ -351,20 +346,12 @@ impl Context<'_> {
         let instance = self.type_instance(&name);
         let base = instance.as_ref().map_or(name.as_str(), |instance| instance.base.as_str()).to_owned();
         let subst = instance.as_ref().map(|instance| instance.subst.clone()).unwrap_or_default();
-        if open.contains(&name) || self.saves_itself.contains(&base) {
+        let saved_as = self.saved_as(&base, &subst);
+        if open.contains(&name) || saved_as == Some(SavedAs::Itself) {
             return;
         }
-        if self.library.contains(format!("{base}.serialize").as_str()) {
-            let args: Vec<Type> = self
-                .generic_types
-                .get(base.as_str())
-                .map(|def| {
-                    def.generics.iter().filter_map(|generic| subst.get(&generic.name).cloned()).collect()
-                })
-                .unwrap_or_default();
-            if let Some(saved_as) = std_saved_as(&base, &args) {
-                return self.loads_from(saved, &saved_as, path, open, found);
-            }
+        if let Some(SavedAs::Another(ty)) = saved_as {
+            return self.loads_from(saved, &ty, path, open, found);
         }
         open.push(name.clone());
         let signatures = self.signatures;

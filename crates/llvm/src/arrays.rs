@@ -55,6 +55,7 @@ impl Emit<'_, '_, '_> {
         // first when it's in a block, so the change can't show through a copy of it.
         let home = self.known.is_taken(dest).then(|| self.known.item_home(dest).cloned()).flatten();
         let base = if let Some((root, path)) = home {
+            self.save_for_take(root, &path)?;
             let place = self.place_of(root, &path)?;
             if shape.boxed {
                 let kind = self.place_kind(root, &path)?;

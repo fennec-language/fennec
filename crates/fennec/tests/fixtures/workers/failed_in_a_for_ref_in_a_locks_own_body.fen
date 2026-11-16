@@ -1,0 +1,57 @@
+# A `for ref` loop over a lock's list, appending to each item's list, failing or crashing partway:
+# a failure or a crash puts back what the body changed.
+from std.concurrent import Crashed
+
+error Tooth:
+    Bad(at: int)
+
+struct Bag:
+    items: list[str]
+    seen: int
+
+struct Shelf:
+    named: dict[str, Bag]
+    rows: list[Bag]
+
+def first_bag() -> Bag:
+    return Bag(items=["first, a text long enough for a block of its own"], seen=0)
+
+def checked(turn: int, limit: int) -> int fails Tooth:
+    if turn == limit:
+        fail .Bad(at=turn)
+    return turn
+
+def looped(shelf: shared Shelf, count: int, limit: int, limits: list[int]) fails Tooth:
+    lock shelf as ref held:
+        for turn in range(count):
+            held.named["one"].items.append(f"named {turn}, a text long enough for a block")
+            for ref bag in held.rows:
+                bag.items.append(f"looped {turn}, a text long enough for a block")
+                bag.seen += checked(turn, limit=limit)?
+                bag.seen += limits[turn]
+    return
+
+def ran(shelf: shared Shelf, count: int, limit: int) fails Crashed | Tooth:
+    limits = [0, 1, 2, 3, 4]
+    with launch(() => looped(shelf, count=count, limit=limit, limits=limits)?) as task:
+        pass
+    return
+
+def held_now(shelf: shared Shelf) -> str:
+    lock shelf as held:
+        named = held.named["one"]
+        row = held.rows[1]
+        return f"{len(named.items)} {named.items[-1]} | {len(row.items)} {row.seen} {row.items[-1]}"
+
+def main(stdout: Stdout):
+    shared shelf = Shelf(named={"one": first_bag()}, rows=[first_bag(), first_bag()])
+    for count, limit in [(2, 9), (4, 2), (3, 9), (8, 9), (1, 9)]:
+        ran(shelf, count=count, limit=limit) except why:
+            case .Bad(at):
+                stdout.print("failed", count, at, held_now(shelf))
+                continue
+            case Crashed():
+                stdout.print("crashed", count, held_now(shelf))
+                continue
+        stdout.print("went", count, held_now(shelf))
+    return

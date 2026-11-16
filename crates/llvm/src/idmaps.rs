@@ -1004,6 +1004,7 @@ impl Emit<'_, '_, '_> {
         let taken = self.known.is_taken(dest).then(|| self.known.item_home(dest).cloned()).flatten();
         let (block, alone) = match taken {
             Some((root, path)) => {
+                self.save_for_take(root, &path)?;
                 let place = self.place_of(root, &path)?;
                 (self.table_to_change(&place), true)
             }
@@ -1036,6 +1037,7 @@ impl Emit<'_, '_, '_> {
         field: &str,
         span: Span,
     ) -> Result<(), String> {
+        self.save_for_take(root, path)?;
         let place = self.place_of(root, path)?;
         let kind = self.place_kind(root, path)?;
         let parts = self.parts(&kind)?;

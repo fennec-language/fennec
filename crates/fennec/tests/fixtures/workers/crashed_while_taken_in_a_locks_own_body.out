@@ -1,0 +1,20 @@
+went False True 3 4 text 2, a text long enough for a block of its own 1 1 | 1 first, a text long enough for a block of its own 1 1
+went False True 2 6 text 1, a text long enough for a block of its own 1 1 | 1 first, a text long enough for a block of its own 1 1
+crashed False True 31 6 text 1, a text long enough for a block of its own 1 1 | 1 first, a text long enough for a block of its own 1 1
+went False True 1 7 text 0, a text long enough for a block of its own 1 1 | 1 first, a text long enough for a block of its own 1 1
+crashed False True 40 7 text 0, a text long enough for a block of its own 1 1 | 1 first, a text long enough for a block of its own 1 1
+went False False 3 7 text 0, a text long enough for a block of its own 1 1 | 4 text 2, a text long enough for a block of its own 1 1
+went False False 2 7 text 0, a text long enough for a block of its own 1 1 | 6 text 1, a text long enough for a block of its own 1 1
+crashed False False 31 7 text 0, a text long enough for a block of its own 1 1 | 6 text 1, a text long enough for a block of its own 1 1
+went False False 1 7 text 0, a text long enough for a block of its own 1 1 | 7 text 0, a text long enough for a block of its own 1 1
+crashed False False 40 7 text 0, a text long enough for a block of its own 1 1 | 7 text 0, a text long enough for a block of its own 1 1
+crashed True True 3 7 text 0, a text long enough for a block of its own 1 1 | 7 text 0, a text long enough for a block of its own 1 1
+went True True 2 7 text 0, a text long enough for a block of its own 3 4611686018427387904 | 7 text 0, a text long enough for a block of its own 1 1
+crashed True True 31 7 text 0, a text long enough for a block of its own 3 4611686018427387904 | 7 text 0, a text long enough for a block of its own 1 1
+went True True 1 7 text 0, a text long enough for a block of its own 4 0 | 7 text 0, a text long enough for a block of its own 1 1
+crashed True True 40 7 text 0, a text long enough for a block of its own 4 0 | 7 text 0, a text long enough for a block of its own 1 1
+crashed True False 3 7 text 0, a text long enough for a block of its own 4 0 | 7 text 0, a text long enough for a block of its own 1 1
+went True False 2 7 text 0, a text long enough for a block of its own 4 0 | 7 text 0, a text long enough for a block of its own 3 4611686018427387904
+crashed True False 31 7 text 0, a text long enough for a block of its own 4 0 | 7 text 0, a text long enough for a block of its own 3 4611686018427387904
+went True False 1 7 text 0, a text long enough for a block of its own 4 0 | 7 text 0, a text long enough for a block of its own 4 0
+crashed True False 40 7 text 0, a text long enough for a block of its own 4 0 | 7 text 0, a text long enough for a block of its own 4 0

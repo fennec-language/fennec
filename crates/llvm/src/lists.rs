@@ -489,6 +489,7 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         let index_operand = index;
         let (index, _) = self.operand(index)?;
+        self.save_for_take(root, list_path)?;
         let list = self.list_for_item_at(root, list_path, &index)?;
         let item_kind = self.place_kind(root, list_path)?;
         let Kind::List(item) = item_kind else { return Err("an item of something else".to_owned()) };
@@ -701,6 +702,32 @@ impl Emit<'_, '_, '_> {
             slot
         };
         self.line(&format!("store ptr {at}, ptr {slot}"));
+    }
+
+    /// In a build that checks proofs, before a failure has a lock put back what it changed: no
+    /// value is out of its place. The rollback puts back what the dicts and lists hold, and unlike
+    /// a crash's way out, a failure's doesn't put back what's taken out first. A failure leaves a
+    /// lock's body through a branch of its own, so none comes between a take and its put back,
+    /// which are in one block; this says so if that ever stops holding. Only the places taken out
+    /// earlier in the function's text are known here.
+    pub(crate) fn proof_nothing_out(&mut self) {
+        if !self.checks_proofs() {
+            return;
+        }
+        let mut slots: Vec<(usize, String)> =
+            self.places_out.iter().map(|(value, slot)| (*value, slot.clone())).collect();
+        slots.sort_unstable();
+        let span = self.here_span();
+        for (_, slot) in slots {
+            let (home, out) = (self.temp(), self.temp());
+            self.line(&format!("{home} = load ptr, ptr {slot}"));
+            self.line(&format!("{out} = icmp ne ptr {home}, null"));
+            self.proof_held(
+                &out,
+                "nothing is out of its place when a failure has a lock put back what it changed",
+                span,
+            );
+        }
     }
 
     /// Where a crash leaves the function: each place still out goes back, before what holds it is
@@ -1740,7 +1767,10 @@ impl Emit<'_, '_, '_> {
             Some((home, path)) if over_loop && path.is_empty() && !handed(self, *home) => {
                 self.unshared(*home)
             }
-            Some((home, path)) => self.list_for_item_at(*home, path, &index)?,
+            Some((home, path)) => {
+                self.save_for_take(*home, path)?;
+                self.list_for_item_at(*home, path, &index)?
+            }
             None => list,
         };
         let position = if inside {

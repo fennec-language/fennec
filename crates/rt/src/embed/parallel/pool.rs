@@ -419,23 +419,36 @@ pub(in crate::embed) fn with_setup(threads: usize, setup: &Setup) -> &'static Po
 }
 
 /// The pool a call's ranges run on: the shared one, when there are enough words of items to be
-/// worth it and workers can have runtimes. None means the calling thread runs every range
-/// itself, as a worker does with a call of its own, since it can't lend its blocks while it
-/// keeps working.
+/// worth it, workers can have runtimes, and it has more than one (`shares`). None means the
+/// calling thread runs every range itself, as a worker does with a call of its own, since it can't
+/// lend its blocks while it keeps working.
 pub(super) fn for_call(words: usize) -> Option<&'static Pool> {
     if WORKER.get() || !(words >= SEQUENTIAL_WORDS || stressed()) || SETUP.get().is_none() {
         return None;
     }
-    pool()
+    pool().and_then(shares)
+}
+
+/// `pool`, if a thread's call shares its ranges with its workers there. A pool of one worker
+/// doesn't: the thread only waits while its call runs, so the one worker would run the ranges one
+/// after another as the thread can itself, and then hand back every block they made, one at a
+/// time, for the thread to take in. `game_tick`'s 4,096 result lists cost it 27M instructions a
+/// run that way. So the ranges run on the thread, as a small call's do, cut into the same halves,
+/// and what they make is its own at once. A replay starts as many workers as its recording had,
+/// so it runs them where the recording did. `FENNEC_PARALLEL_STRESS` still sends every call to the
+/// pool, to test what bodies do on workers.
+pub(super) fn shares(pool: &'static Pool) -> Option<&'static Pool> {
+    (pool.threads() > 1 || stressed()).then_some(pool)
 }
 
 /// The pool a call whose body is heavy runs on, whenever it has two items to share: the shared
-/// one, set up, and None on a worker, whose own call runs its ranges itself.
+/// one, set up, with more than one worker (`shares`), and None on a worker, whose own call runs
+/// its ranges itself.
 pub(super) fn for_heavy(length: usize) -> Option<&'static Pool> {
     if WORKER.get() || length < 2 || SETUP.get().is_none() {
         return None;
     }
-    pool()
+    pool().and_then(shares)
 }
 
 /// The pool a call whose body may wait runs on, however few its items: the shared one, when workers

@@ -32,7 +32,7 @@
 //! as a program runs in the IR's evaluator (`crate::eval::check_ranges`), and a build that checks
 //! proofs checks them too.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use fennec_check::Type;
 use fennec_syntax::{BinOp, UnaryOp};
@@ -109,7 +109,7 @@ impl Float {
 
     /// Whether it can be the infinity of this sign.
     fn reaches(self, infinity: f64) -> bool {
-        !self.empty() && (self.low == infinity || self.high == infinity)
+        !self.empty() && (self.low.total_cmp(&infinity).is_eq() || self.high.total_cmp(&infinity).is_eq())
     }
 
     /// Whether it can be zero.
@@ -153,8 +153,7 @@ impl Fact {
     #[must_use]
     fn widen(&self, newer: &Fact) -> Fact {
         match (self, newer) {
-            (Fact::Unset, known) => known.clone(),
-            (known, Fact::Unset) => known.clone(),
+            (Fact::Unset, known) | (known, Fact::Unset) => known.clone(),
             (Fact::Int(low, high), Fact::Int(new_low, new_high)) => Fact::Int(
                 if new_low < low { i64::MIN } else { *low },
                 if new_high > high { i64::MAX } else { *high },
@@ -195,6 +194,17 @@ impl Fact {
         match self {
             Fact::Float(known) => Some(*known),
             _ => None,
+        }
+    }
+
+    /// What's known of a struct's field or a tuple's item, by its place.
+    fn part(&self, at: Option<usize>) -> Fact {
+        match (self, at) {
+            (Fact::Struct(parts) | Fact::Tuple(parts), Some(at)) => {
+                parts.get(at).cloned().unwrap_or(Fact::Any)
+            }
+            (Fact::Unset, _) => Fact::Unset,
+            _ => Fact::Any,
         }
     }
 
@@ -313,7 +323,7 @@ struct Leaves {
 /// What's known about the values of a program's ints and floats.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Ranges {
-    functions: HashMap<String, FunctionRanges>,
+    functions: BTreeMap<String, FunctionRanges>,
 }
 
 impl Ranges {
@@ -339,14 +349,14 @@ impl Ranges {
         let mut world = World {
             program,
             functions: &functions,
-            params: HashMap::new(),
-            returns: HashMap::new(),
-            leaves: HashMap::new(),
+            params: BTreeMap::new(),
+            returns: BTreeMap::new(),
+            leaves: BTreeMap::new(),
             sets_every: &sets_every,
             other_ways: &other_ways,
-            grew: HashMap::new(),
+            grew: BTreeMap::new(),
         };
-        let mut found = HashMap::new();
+        let mut found = BTreeMap::new();
         for _ in 0..MOST_ROUNDS {
             let mut next = Next::default();
             found.clear();
@@ -368,23 +378,23 @@ struct World<'p> {
     program: &'p Program,
     functions: &'p HashMap<&'p str, &'p Function>,
     /// What every call gives each parameter, by function.
-    params: HashMap<String, Vec<Fact>>,
+    params: BTreeMap<String, Vec<Fact>>,
     /// What every `return` gives back, by function.
-    returns: HashMap<String, Fact>,
+    returns: BTreeMap<String, Fact>,
     /// What each function leaves in each list it's lent with `ref`, by function and parameter.
-    leaves: HashMap<String, Vec<Option<Leaves>>>,
+    leaves: BTreeMap<String, Vec<Option<Leaves>>>,
     sets_every: &'p HashMap<&'p str, Vec<bool>>,
     other_ways: &'p HashSet<&'p str>,
     /// How many times each fact across functions has grown, by what it's of, for widening.
-    grew: HashMap<(String, usize, u8), usize>,
+    grew: BTreeMap<(String, usize, u8), usize>,
 }
 
 /// What one round found, for the next.
 #[derive(Default)]
 struct Next {
-    params: HashMap<String, Vec<Fact>>,
-    returns: HashMap<String, Fact>,
-    puts: HashMap<String, Vec<Fact>>,
+    params: BTreeMap<String, Vec<Fact>>,
+    returns: BTreeMap<String, Fact>,
+    puts: BTreeMap<String, Vec<Fact>>,
 }
 
 impl World<'_> {
@@ -459,7 +469,7 @@ impl World<'_> {
 }
 
 /// What's known about each list local where a block starts or ends.
-type Lists = HashMap<usize, Fact>;
+type Lists = BTreeMap<usize, Fact>;
 
 /// One function's walk, round after round until nothing moves.
 struct Walk<'w, 'p> {
@@ -474,15 +484,18 @@ struct Walk<'w, 'p> {
     /// What branches say in each block: the comparisons that came out each way on the only way in.
     narrowed: Vec<Vec<(BinOp, Operand, Operand, bool)>>,
     /// Each loop count's local, with its limit's and whether it counts down.
-    counts: HashMap<usize, (LocalId, bool)>,
+    counts: BTreeMap<usize, (LocalId, bool)>,
     /// What's known about each count's first value: every write to it but its step.
-    starts: HashMap<usize, Fact>,
+    starts: BTreeMap<usize, Fact>,
     found: FunctionRanges,
     /// What each call gives each callee's parameters, what's given back, and what's put in each
     /// list parameter lent with `ref`.
-    calls: HashMap<String, Vec<Fact>>,
+    calls: BTreeMap<String, Vec<Fact>>,
     returned: Fact,
     puts: Vec<Fact>,
+    /// Whether this is the last round, which notes what checks can be left out, what calls
+    /// give, and what's given back.
+    noting: bool,
 }
 
 impl<'w, 'p> Walk<'w, 'p> {
@@ -509,11 +522,12 @@ impl<'w, 'p> Walk<'w, 'p> {
             writes,
             narrowed: narrowings(function),
             counts: function.counts.iter().map(|count| (count.count.0, (count.stop, count.down))).collect(),
-            starts: HashMap::new(),
+            starts: BTreeMap::new(),
             found,
-            calls: HashMap::new(),
+            calls: BTreeMap::new(),
             returned: Fact::Unset,
             puts: vec![Fact::Unset; function.params],
+            noting: false,
         }
     }
 
@@ -526,6 +540,7 @@ impl<'w, 'p> Walk<'w, 'p> {
     /// calls give, and what's given back. Says whether anything moved.
     fn round(&mut self, last: bool) -> bool {
         let mut moved = false;
+        self.noting = last;
         if last {
             self.calls.clear();
             self.returned = Fact::Unset;
@@ -535,7 +550,7 @@ impl<'w, 'p> Walk<'w, 'p> {
             let Some(block) = self.function.blocks.get(at) else { continue };
             let mut lists = self.entering(at);
             for (place, inst) in block.insts.iter().enumerate() {
-                moved |= self.step(&inst.kind, &mut lists, (at, place), last);
+                moved |= self.step(&inst.kind, &mut lists, (at, place));
             }
             if last && let Terminator::Return(Some(value)) = &block.end {
                 let given = self.read(value, &lists, at);
@@ -643,9 +658,9 @@ impl<'w, 'p> Walk<'w, 'p> {
 
     /// Writes what's known about a local, joined with what was, widened once it's grown a few
     /// times. Says whether it moved.
-    fn write(&mut self, local: LocalId, fact: Fact) -> bool {
+    fn write(&mut self, local: LocalId, fact: &Fact) -> bool {
         let Some(old) = self.found.locals.get(local.0) else { return false };
-        let joined = old.join(&fact);
+        let joined = old.join(fact);
         if joined == *old {
             return false;
         }
@@ -691,116 +706,115 @@ impl<'w, 'p> Walk<'w, 'p> {
     }
 
     /// One instruction. Says whether what's known of a local moved.
-    fn step(&mut self, kind: &InstKind, lists: &mut Lists, place: Place, last: bool) -> bool {
+    fn step(&mut self, kind: &InstKind, lists: &mut Lists, place: Place) -> bool {
         let block = place.0;
         let mut moved = false;
         match kind {
-            InstKind::Copy { dest, value } => {
-                let given = self.read(value, lists, block);
-                if self.counts.contains_key(&dest.0) {
-                    let start =
-                        self.starts.get(&dest.0).map_or_else(|| given.clone(), |known| known.join(&given));
-                    if self.starts.get(&dest.0) != Some(&start) {
-                        self.starts.insert(dest.0, start);
-                        moved = true;
-                    }
-                }
-                if self.is_list(*dest) {
-                    Self::hold(lists, *dest, given.items(), true);
-                } else {
-                    moved |= self.write(*dest, given);
-                }
-            }
+            InstKind::Copy { dest, value } => moved |= self.copy(*dest, value, lists, block),
             InstKind::Unary { dest, op, value } => {
                 let given = self.read(value, lists, block);
-                moved |= self.write(*dest, unary(*op, &given));
+                moved |= self.write(*dest, &unary(*op, &given));
             }
             InstKind::Binary { dest, op, lhs, rhs } => {
                 let (left, right) = (self.read(lhs, lists, block), self.read(rhs, lists, block));
-                if last {
+                if self.noting {
                     self.note_binary(*op, &left, &right, place);
                 }
-                moved |= self.write(*dest, binary(*op, &left, &right));
+                moved |= self.write(*dest, &binary(*op, &left, &right));
             }
             InstKind::Make { dest, fields, .. } => {
                 let fields = fields.iter().map(|field| self.read(field, lists, block)).collect();
-                moved |= self.write(*dest, Fact::Struct(fields));
+                moved |= self.write(*dest, &Fact::Struct(fields));
             }
             InstKind::GetField { dest, object, field } => {
-                let known = self.read(object, lists, block);
-                let fact = match (&known, self.field_place(object, field)) {
-                    (Fact::Struct(fields), Some(at)) => fields.get(at).cloned().unwrap_or(Fact::Any),
-                    (Fact::Unset, _) => Fact::Unset,
-                    _ => Fact::Any,
-                };
-                moved |= self.put(*dest, fact, lists);
+                let fact = self.read(object, lists, block).part(self.field_place(object, field));
+                moved |= self.put(*dest, &fact, lists);
             }
             InstKind::SetField { object, path, value } => {
                 let value = self.read(value, lists, block);
                 let known = self.found.locals.get(object.0).cloned().unwrap_or(Fact::Any);
                 let changed = self.with_field(*object, &known, path, &value);
-                moved |= self.write(*object, changed);
+                moved |= self.write(*object, &changed);
             }
             InstKind::MakeTuple { dest, items } => {
                 let items = items.iter().map(|item| self.read(item, lists, block)).collect();
-                moved |= self.write(*dest, Fact::Tuple(items));
+                moved |= self.write(*dest, &Fact::Tuple(items));
             }
             InstKind::GetTupleItem { dest, value, at } => {
-                let fact = match self.read(value, lists, block) {
-                    Fact::Tuple(items) => items.get(*at).cloned().unwrap_or(Fact::Any),
-                    Fact::Unset => Fact::Unset,
-                    _ => Fact::Any,
-                };
-                moved |= self.put(*dest, fact, lists);
+                let fact = self.read(value, lists, block).part(Some(*at));
+                moved |= self.put(*dest, &fact, lists);
             }
             InstKind::MakeList { dest, items } => {
                 let held =
                     items.iter().fold(Fact::Unset, |held, item| held.join(&self.read(item, lists, block)));
                 // An `array` is made as a list is, but isn't followed as one.
-                moved |= self.put(*dest, Fact::List(Box::new(held)), lists);
+                moved |= self.put(*dest, &Fact::List(Box::new(held)), lists);
             }
             InstKind::GetIndex { dest, object, .. } => {
                 let fact = match object {
-                    Operand::Local(list) if self.is_list(*list) => {
-                        lists.get(&list.0).cloned().unwrap_or(Fact::Any)
+                    Operand::Local(held) if self.is_list(*held) => {
+                        lists.get(&held.0).cloned().unwrap_or(Fact::Any)
                     }
                     _ => Fact::Any,
                 };
-                moved |= self.put(*dest, fact, lists);
+                moved |= self.put(*dest, &fact, lists);
             }
             InstKind::SetIndex { object, path, value, .. } => {
                 let value = self.read(value, lists, block);
-                if self.is_list(*object) && path.is_empty() {
-                    Self::hold(lists, *object, value.clone(), false);
-                    self.note_put(*object, &value);
-                } else if self.is_list(*object) {
-                    Self::hold(lists, *object, Fact::Any, true);
-                    self.note_put(*object, &Fact::Any);
-                } else {
-                    moved |= self.write(*object, Fact::Any);
-                }
+                moved |= self.set_index(*object, path.is_empty(), &value, lists);
             }
             InstKind::Builtin { dest, name, args, changes } => {
-                moved |= self.builtin(*dest, name, args, *changes, lists, place, last);
+                let given: Vec<Fact> = args.iter().map(|arg| self.read(arg, lists, block)).collect();
+                if *changes {
+                    self.changed_by(name, args, &given, lists);
+                }
+                let fact = self.gives(name, &given, place);
+                moved |= dest.is_some_and(|dest| self.put(dest, &fact, lists));
             }
             InstKind::Call { dest, function, args } => {
-                moved |= self.call(*dest, function, args, lists, block, last);
+                moved |= self.call(*dest, function, args, lists, block);
             }
             InstKind::Constant { dest, name } => {
                 let fact = self.world.returns.get(name).cloned().unwrap_or(Fact::Any);
-                moved |= self.put(*dest, fact, lists);
+                moved |= self.put(*dest, &fact, lists);
             }
             other => {
                 if let Some(dest) = other.dest() {
-                    moved |= self.put(dest, Fact::Any, lists);
+                    moved |= self.put(dest, &Fact::Any, lists);
                 }
             }
         }
         moved
     }
 
+    /// A copy: a count's start joins what it's given, and the copy holds what was copied.
+    fn copy(&mut self, dest: LocalId, value: &Operand, lists: &mut Lists, block: usize) -> bool {
+        let given = self.read(value, lists, block);
+        let mut moved = false;
+        if self.counts.contains_key(&dest.0) {
+            let start = self.starts.get(&dest.0).map_or_else(|| given.clone(), |known| known.join(&given));
+            if self.starts.get(&dest.0) != Some(&start) {
+                self.starts.insert(dest.0, start);
+                moved = true;
+            }
+        }
+        moved | self.put(dest, &given, lists)
+    }
+
+    /// A write to an item: a list's own item joins what it holds, and anything deeper, or in
+    /// something that isn't a list, knows nothing after.
+    fn set_index(&mut self, object: LocalId, own_item: bool, value: &Fact, lists: &mut Lists) -> bool {
+        if !self.is_list(object) {
+            return self.write(object, &Fact::Any);
+        }
+        let item = if own_item { value } else { &Fact::Any };
+        Self::hold(lists, object, item.clone(), !own_item);
+        self.note_put(object, item);
+        false
+    }
+
     /// Writes a value to a local: a list's items to what it holds, anything else to its fact.
-    fn put(&mut self, dest: LocalId, fact: Fact, lists: &mut Lists) -> bool {
+    fn put(&mut self, dest: LocalId, fact: &Fact, lists: &mut Lists) -> bool {
         if self.is_list(dest) {
             Self::hold(lists, dest, fact.items(), true);
             false
@@ -839,50 +853,40 @@ impl<'w, 'p> Walk<'w, 'p> {
         }
     }
 
-    /// A builtin: what it gives, and what it changes. Says whether a local moved.
-    #[expect(clippy::too_many_arguments, reason = "one builtin's parts, as its instruction has them")]
-    fn builtin(
-        &mut self,
-        dest: Option<LocalId>,
-        name: &str,
-        args: &[Operand],
-        changes: bool,
-        lists: &mut Lists,
-        place: Place,
-        last: bool,
-    ) -> bool {
-        let block = place.0;
-        let given: Vec<Fact> = args.iter().map(|arg| self.read(arg, lists, block)).collect();
-        if changes && let Some(Operand::Local(first)) = args.first() {
-            if self.is_list(*first) {
-                match name {
-                    "list.append" => {
-                        let item = given.get(1).cloned().unwrap_or(Fact::Any);
-                        Self::hold(lists, *first, item.clone(), false);
-                        self.note_put(*first, &item);
-                    }
-                    kept if KEEPS_ITEMS.contains(&kept) => {}
-                    _ => {
-                        Self::hold(lists, *first, Fact::Any, true);
-                        self.note_put(*first, &Fact::Any);
-                    }
-                }
-            } else {
-                self.write(*first, Fact::Any);
+    /// What a builtin that changes its first argument does to it.
+    fn changed_by(&mut self, name: &str, args: &[Operand], given: &[Fact], lists: &mut Lists) {
+        let Some(Operand::Local(first)) = args.first() else { return };
+        if !self.is_list(*first) {
+            self.write(*first, &Fact::Any);
+            return;
+        }
+        match name {
+            "list.append" => {
+                let item = given.get(1).cloned().unwrap_or(Fact::Any);
+                Self::hold(lists, *first, item.clone(), false);
+                self.note_put(*first, &item);
+            }
+            kept if KEEPS_ITEMS.contains(&kept) => {}
+            _ => {
+                Self::hold(lists, *first, Fact::Any, true);
+                self.note_put(*first, &Fact::Any);
             }
         }
-        let Some(dest) = dest else { return false };
+    }
+
+    /// What a builtin gives back, from what it's given.
+    fn gives(&mut self, name: &str, given: &[Fact], place: Place) -> Fact {
         let numeric = ["int", "float", "min", "max", "abs", "math.sqrt"].contains(&name);
         if numeric && given.iter().any(|fact| matches!(fact, Fact::Unset)) {
-            return self.put(dest, Fact::Unset, lists);
+            return Fact::Unset;
         }
-        let fact = match (name, given.as_slice()) {
+        match (name, given) {
             ("list.len" | "len", _) => Fact::Int(0, i64::MAX),
             ("int", [Fact::Float(float)]) => {
                 let fits =
                     !float.nan && !float.empty() && float.low > -INT_CEILING && float.high < INT_CEILING;
                 if fits {
-                    if last {
+                    if self.noting {
                         self.found.fits.insert(place);
                     }
                     Fact::Int(truncated(float.low), truncated(float.high))
@@ -903,12 +907,16 @@ impl<'w, 'p> Walk<'w, 'p> {
             ("min" | "max", [first, second]) => extreme(name == "min", first, second),
             ("abs", [Fact::Int(low, high)]) => {
                 let (low, high) = (i128::from(*low), i128::from(*high));
-                let least = if low <= 0 && high >= 0 { 0 } else { low.abs().min(high.abs()) };
-                clamped(least, low.abs().max(high.abs()))
+                let smallest = if low <= 0 && high >= 0 { 0 } else { low.abs().min(high.abs()) };
+                clamped(smallest, low.abs().max(high.abs()))
             }
             ("abs", [Fact::Float(float)]) => {
-                let least = if float.holds_zero() { 0.0 } else { float.low.abs().min(float.high.abs()) };
-                Fact::Float(Float { low: least, high: float.low.abs().max(float.high.abs()), nan: float.nan })
+                let smallest = if float.holds_zero() { 0.0 } else { float.low.abs().min(float.high.abs()) };
+                Fact::Float(Float {
+                    low: smallest,
+                    high: float.low.abs().max(float.high.abs()),
+                    nan: float.nan,
+                })
             }
             ("math.sqrt", [Fact::Float(float)]) => {
                 let negative = float.empty() || float.low < 0.0;
@@ -919,8 +927,7 @@ impl<'w, 'p> Walk<'w, 'p> {
                 })
             }
             _ => Fact::Any,
-        };
-        self.put(dest, fact, lists)
+        }
     }
 
     /// A call by name: what it gives each parameter, what the lists it's lent hold after, and
@@ -932,10 +939,9 @@ impl<'w, 'p> Walk<'w, 'p> {
         args: &[Operand],
         lists: &mut Lists,
         block: usize,
-        last: bool,
     ) -> bool {
         let given: Vec<Fact> = args.iter().map(|arg| self.read(arg, lists, block)).collect();
-        if last {
+        if self.noting {
             let params = self.calls.entry(callee.to_owned()).or_default();
             if params.len() < given.len() {
                 params.resize(given.len(), Fact::Unset);
@@ -961,7 +967,7 @@ impl<'w, 'p> Walk<'w, 'p> {
                 let put = lists.get(&arg.0).cloned().unwrap_or(Fact::Any);
                 self.note_put(*arg, &put);
             } else {
-                moved |= self.write(*arg, Fact::Any);
+                moved |= self.write(*arg, &Fact::Any);
             }
         }
         let Some(dest) = dest else { return moved };
@@ -970,7 +976,7 @@ impl<'w, 'p> Walk<'w, 'p> {
         } else {
             Fact::Any
         };
-        moved | self.put(dest, fact, lists)
+        moved | self.put(dest, &fact, lists)
     }
 
     /// Puts what this function's calls gave, what it gave back and what it put in its lists in
@@ -1276,7 +1282,7 @@ fn comparison_along(from: &Block, to: usize) -> Option<(BinOp, Operand, Operand,
 /// function sets before it gives back: a count from 0 up to the list's length taken once, in a
 /// loop it always finishes, sets the item at the count on every round, and nothing else changes
 /// the list's length.
-pub fn sets_every_item(function: &Function) -> Vec<bool> {
+fn sets_every_item(function: &Function) -> Vec<bool> {
     (0..function.params)
         .map(|at| function.mut_params.contains(&at) && sets_every_item_of(function, LocalId(at)))
         .collect()

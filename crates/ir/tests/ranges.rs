@@ -10,19 +10,23 @@ use fennec_ir::ranges::{Place, Ranges};
 use fennec_ir::{InstKind, Program, lower, validate};
 use fennec_syntax::BinOp;
 
-fn lowered(source: &str) -> Program {
-    let mut module = fennec_syntax::parse(source).unwrap_or_else(|problem| panic!("{problem:?}\n{source}"));
-    let checked = fennec_check::check_and_resolve(&mut module)
-        .unwrap_or_else(|problems| panic!("{problems:?}\n{source}"));
+fn lowered(source: &str) -> Result<Program, String> {
+    let mut module = fennec_syntax::parse(source).map_err(|problem| format!("{problem:?}\n{source}"))?;
+    let checked =
+        fennec_check::check_and_resolve(&mut module).map_err(|problems| format!("{problems:?}\n{source}"))?;
     let program = lower(&module, &checked);
-    validate(&program).unwrap_or_else(|problems| panic!("{problems:?}\n{source}"));
-    program
+    validate(&program).map_err(|problems| format!("{problems:?}\n{source}"))?;
+    Ok(program)
 }
 
 /// The places in a function of the instructions `wanted` picks.
-fn places(program: &Program, function: &str, wanted: &dyn Fn(&InstKind) -> bool) -> Vec<Place> {
+fn places(
+    program: &Program,
+    function: &str,
+    wanted: &dyn Fn(&InstKind) -> bool,
+) -> Result<Vec<Place>, String> {
     let found = program.functions.iter().find(|found| found.name == function);
-    let found = found.unwrap_or_else(|| panic!("`{function}` wasn't lowered:\n{program}"));
+    let found = found.ok_or_else(|| format!("`{function}` wasn't lowered:\n{program}"))?;
     let mut places = Vec::new();
     for (at, block) in found.blocks.iter().enumerate() {
         for (place, inst) in block.insts.iter().enumerate() {
@@ -31,7 +35,7 @@ fn places(program: &Program, function: &str, wanted: &dyn Fn(&InstKind) -> bool)
             }
         }
     }
-    places
+    Ok(places)
 }
 
 fn is_division(kind: &InstKind) -> bool {
@@ -53,15 +57,15 @@ fn is_comparison(kind: &InstKind) -> bool {
 }
 
 /// For each `//` or `%` in a function, whether it's known unsigned.
-fn unsigned(program: &Program, ranges: &Ranges, function: &str) -> Vec<bool> {
-    let known = ranges.function(function).unwrap_or_else(|| panic!("no facts for `{function}`"));
-    places(program, function, &is_division).into_iter().map(|place| known.unsigned(place)).collect()
+fn unsigned(program: &Program, ranges: &Ranges, function: &str) -> Result<Vec<bool>, String> {
+    let known = ranges.function(function).ok_or_else(|| format!("no facts for `{function}`"))?;
+    Ok(places(program, function, &is_division)?.into_iter().map(|place| known.unsigned(place)).collect())
 }
 
 /// For each `int(x)` in a function, whether its float is known to fit.
-fn fits(program: &Program, ranges: &Ranges, function: &str) -> Vec<bool> {
-    let known = ranges.function(function).unwrap_or_else(|| panic!("no facts for `{function}`"));
-    places(program, function, &is_int).into_iter().map(|place| known.fits(place)).collect()
+fn fits(program: &Program, ranges: &Ranges, function: &str) -> Result<Vec<bool>, String> {
+    let known = ranges.function(function).ok_or_else(|| format!("no facts for `{function}`"))?;
+    Ok(places(program, function, &is_int)?.into_iter().map(|place| known.fits(place)).collect())
 }
 
 /// Runs `main`, checking every fact, and says how many checks were made.
@@ -80,13 +84,14 @@ fn physics_proves_its_conversions_and_divisions_and_not_its_nan_tests() {
     let source =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench/kernels/physics.fen"))
             .unwrap();
-    let program = lowered(&source);
+    let program = lowered(&source).unwrap();
     let ranges = Ranges::of(&program);
-    assert_eq!(fits(&program, &ranges, "cell_of"), [true, true, true]);
-    assert_eq!(unsigned(&program, &ranges, "collide"), [true, true, true, true]);
+    assert_eq!(fits(&program, &ranges, "cell_of").unwrap(), [true, true, true]);
+    assert_eq!(unsigned(&program, &ranges, "collide").unwrap(), [true, true, true, true]);
     for function in ["kept", "collide"] {
         let known = ranges.function(function).unwrap();
         let proven: Vec<Place> = places(&program, function, &is_comparison)
+            .unwrap()
             .into_iter()
             .filter(|place| known.not_nan(*place))
             .collect();
@@ -103,14 +108,14 @@ fn a_division_is_unsigned_when_every_call_gives_what_isnt_negative() {
     let source = "def part(n: int) -> int:\n    return n % 7\n\n\
                   def whole(n: int) -> int:\n    return (n % 7) // 2\n\n\
                   def main(stdout: Stdout):\n    stdout.print(part(3), part(10), whole(-4))\n";
-    let program = lowered(source);
+    let program = lowered(source).unwrap();
     let ranges = Ranges::of(&program);
-    assert_eq!(unsigned(&program, &ranges, "part"), [true]);
-    assert_eq!(unsigned(&program, &ranges, "whole"), [false, true]);
+    assert_eq!(unsigned(&program, &ranges, "part").unwrap(), [true]);
+    assert_eq!(unsigned(&program, &ranges, "whole").unwrap(), [false, true]);
     let negative = source.replace("part(10)", "part(-10)");
-    let program = lowered(&negative);
+    let program = lowered(&negative).unwrap();
     let ranges = Ranges::of(&program);
-    assert_eq!(unsigned(&program, &ranges, "part"), [false]);
+    assert_eq!(unsigned(&program, &ranges, "part").unwrap(), [false]);
     checked(&program, &ranges);
 }
 
@@ -122,16 +127,16 @@ fn a_float_kept_by_a_greater_than_test_is_never_nan() {
     let kept = "from std.math import NAN\n\n\
                 def clamp(at: float) -> float:\n    if at > 10.0:\n        return 10.0\n    if at < 0.0:\n        return 0.0\n    return at\n\n\
                 def main(stdout: Stdout):\n    stdout.print(int(clamp(NAN)), int(clamp(4.5)))\n";
-    let program = lowered(kept);
+    let program = lowered(kept).unwrap();
     let ranges = Ranges::of(&program);
-    assert_eq!(fits(&program, &ranges, "main"), [true, true]);
+    assert_eq!(fits(&program, &ranges, "main").unwrap(), [true, true]);
     checked(&program, &ranges);
     let half = "from std.math import NAN\n\n\
                 def floor_at_zero(at: float) -> float:\n    if at < 0.0:\n        return 0.0\n    return at\n\n\
                 def main(stdout: Stdout):\n    stdout.print(floor_at_zero(NAN), int(floor_at_zero(4.5)))\n";
-    let program = lowered(half);
+    let program = lowered(half).unwrap();
     let ranges = Ranges::of(&program);
-    assert_eq!(fits(&program, &ranges, "main"), [false]);
+    assert_eq!(fits(&program, &ranges, "main").unwrap(), [false]);
 }
 
 /// A list lent with `ref` to a function that sets every item, counting from 0 to its length, holds
@@ -142,16 +147,16 @@ fn a_call_that_sets_every_item_leaves_only_what_it_put_in() {
     let every = "from std.math import NAN\n\n\
                  def fill(ref values: list[float]):\n    for at in range(len(values)):\n        values[at] = 2.5\n    return\n\n\
                  def main(stdout: Stdout):\n    mut values = [NAN, NAN]\n    fill(ref values)\n    stdout.print(int(values[0]))\n";
-    let program = lowered(every);
+    let program = lowered(every).unwrap();
     let ranges = Ranges::of(&program);
-    assert_eq!(fits(&program, &ranges, "main"), [true]);
+    assert_eq!(fits(&program, &ranges, "main").unwrap(), [true]);
     checked(&program, &ranges);
     let most = every
         .replace("range(len(values))", "range(len(values) - 1)")
         .replace("int(values[0])", "int(values[1])");
-    let program = lowered(&most);
+    let program = lowered(&most).unwrap();
     let ranges = Ranges::of(&program);
-    assert_eq!(fits(&program, &ranges, "main"), [false]);
+    assert_eq!(fits(&program, &ranges, "main").unwrap(), [false]);
 }
 
 /// A function something other than a call by name may call, here a function passed as a value,
@@ -161,9 +166,9 @@ fn a_function_called_as_a_value_knows_nothing_of_its_parameters() {
     let source = "def whole(x: float) -> int:\n    return int(x)\n\n\
                   def apply(convert: (float) -> int, x: float) -> int:\n    return convert(x)\n\n\
                   def main(stdout: Stdout):\n    stdout.print(whole(1.5), apply(whole, 2.5))\n";
-    let program = lowered(source);
+    let program = lowered(source).unwrap();
     let ranges = Ranges::of(&program);
-    assert_eq!(fits(&program, &ranges, "whole"), [false]);
+    assert_eq!(fits(&program, &ranges, "whole").unwrap(), [false]);
 }
 
 const STEPS: u64 = 3_000_000;

@@ -401,7 +401,11 @@ pub extern "C" fn channel_close(channel: i64) {
 }
 
 /// `fennec_channel_free(channel)`: its `with` ends, so nothing holds it any more. What's still in it
-/// is let go of.
+/// is let go of, and anything still waiting on it wakes and finds it closed, as at `close`.
+///
+/// Nothing the checker lets through waits on a channel past its `with`, but a task a cancelled
+/// round left behind can be parked on one its round then frees. It used to wait on until its stop
+/// woke it; and a waiter nobody wakes would be a stuck wait for good to the deadlock check.
 pub extern "C" fn channel_free(channel: i64) {
     every::forget(channel);
     let Some(channel) = channels(|channels| channels.remove(&channel)) else { return };
@@ -409,7 +413,12 @@ pub extern "C" fn channel_free(channel: i64) {
     let mut queue = channel.queue();
     queue.closed = true;
     let left: Vec<Message> = queue.messages.drain(..).collect();
+    let senders = channel.take_notes(&mut queue, Side::Sending);
+    let receivers = channel.take_notes(&mut queue, Side::Receiving);
     drop(queue);
+    wake(senders);
+    wake(receivers);
+    channel.changed.notify_all();
     for message in left {
         let_go(Some(message));
     }

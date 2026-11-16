@@ -613,13 +613,7 @@ fn save_ref_in(state: &mut State, block: u64, word: usize, old: u64) {
     if known {
         return;
     }
-    // One look at the block says how it's saved.
-    let (fields, markable) = state.heap.block(old).map_or((false, false), |words| {
-        let unmarked =
-            words.first().is_some_and(|count| count & lists::MARKED == 0 && *count < heap::IMMORTAL);
-        let fields = unmarked && heap::is_plain_struct(state, words);
-        (fields, fields || lists::markable_block(state, words))
-    });
+    let (fields, markable) = marked_how(state, old);
     if markable {
         let saved = Saved { held: false, marked: true, ..saved };
         if push(saved) == Pushed::Added {
@@ -633,6 +627,18 @@ fn save_ref_in(state: &mut State, block: u64, word: usize, old: u64) {
     if push(saved) == Pushed::Added && saved.held {
         heap::retain(state, old);
     }
+}
+
+/// How the block a saved word holds is saved, in one look at it: whether it's a struct's, whose
+/// fields are saved as it's marked, and whether it's marked at all, as a list or a dict is too.
+/// One that isn't marked has an owner of the log's taken instead.
+fn marked_how(state: &State, old: u64) -> (bool, bool) {
+    state.heap.block(old).map_or((false, false), |words| {
+        let unmarked =
+            words.first().is_some_and(|count| count & lists::MARKED == 0 && *count < heap::IMMORTAL);
+        let fields = unmarked && heap::is_plain_struct(state, words);
+        (fields, fields || lists::markable_block(state, words))
+    })
 }
 
 /// Saves every field of a struct's block a log just marked, before anything changes it: a word that
@@ -1014,19 +1020,52 @@ pub(in crate::embed) fn set(list: u64, at: usize, words: Vec<u64>) -> bool {
 /// anyway. A word saved already holds what was made under the lock, which needs no saving.
 pub(in crate::embed) fn changing(state: &mut State, block: u64, word: usize, old: u64, holds: bool) {
     let saved = Saved { block, word, old, held: holds && old != 0, marked: false };
-    // Native code saves a dict's value word itself when it puts in place, so a word saved that way
-    // earlier in the lock is taken in first, and stays the one put back.
-    let pushed = with_logs(|logs| {
-        let Some(log) = marking(&mut logs.held, block) else { return Pushed::NoLog };
+    if push_where_marked(saved) == Pushed::Added && saved.held {
+        heap::retain(state, old);
+    }
+}
+
+/// The word at `word` in `block`, a dict a log marked, holds the block `old`, part of a value in
+/// the dict's entry that native code is about to take out and change where it is. It's saved in
+/// that log as `save_ref` saves a word, so that what the value holds is changed where it is too: a
+/// list, a dict or a struct's block is marked, a struct's fields saved then and there, and a crash
+/// undoes what was done to it. Of anything else, a string's block or a `shared` value, the log
+/// takes an owner of its own.
+///
+/// With an owner of the log's on a list, every lock that added an item to it copied the whole
+/// list first.
+pub(in crate::embed) fn changing_held(state: &mut State, block: u64, word: usize, old: u64) {
+    if old == 0 {
+        changing(state, block, word, old, false);
+        return;
+    }
+    let (fields, markable) = marked_how(state, old);
+    let saved = Saved { block, word, old, held: !markable, marked: markable };
+    if push_where_marked(saved) != Pushed::Added {
+        return;
+    }
+    if markable {
+        lists::mark(state, old);
+        if fields {
+            save_fields(state, old);
+        }
+    } else {
+        heap::retain(state, old);
+    }
+}
+
+/// Adds a save of a word of a dict a log marked to that log. Native code saves a dict's value word
+/// itself when it puts in place, so a word saved that way earlier in the lock is taken in first,
+/// and stays the one put back.
+fn push_where_marked(saved: Saved) -> Pushed {
+    with_logs(|logs| {
+        let Some(log) = marking(&mut logs.held, saved.block) else { return Pushed::NoLog };
         if !log.places.insert(place(&saved)) {
             return Pushed::Repeated;
         }
         log.saved.push(saved);
         Pushed::Added
-    });
-    if pushed == Pushed::Added && saved.held {
-        heap::retain(state, old);
-    }
+    })
 }
 
 /// Where a block holds others, or nowhere if it can't say.

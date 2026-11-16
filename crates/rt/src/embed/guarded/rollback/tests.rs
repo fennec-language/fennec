@@ -474,8 +474,14 @@ fn save_as_native_code(block: i64, word: usize, old: i64) {
         return;
     }
     LOGS.with_borrow_mut(|logs| {
-        let saved =
-            Saved { block: address(block), word, old: old.cast_unsigned(), held: false, marked: false };
+        let saved = Saved {
+            block: address(block),
+            word,
+            old: old.cast_unsigned(),
+            held: false,
+            marked: false,
+            by_item: false,
+        };
         logs.buffer.add_as_native_code(saved);
     });
 }
@@ -742,4 +748,181 @@ fn a_lock_inside_a_pending_one_makes_its_log_first_with_the_tables_it_began_with
     assert_eq!(word(inner, COUNT_AT), 5, "the inner kept its change");
     shared_leave(inner, 1);
     finish();
+}
+
+/// The shape number of a `Shelf`: a list of lists of strings, and a list of `Bag`s held in place.
+const SHELF: i64 = 0;
+/// Where a `Shelf`'s two lists are among its words.
+const ROWS_AT: usize = heap::HEADER_WORDS;
+const BAGS_AT: usize = heap::HEADER_WORDS + 1;
+/// The kinds of item: a string, a list of strings, and a `Bag` of one list of strings, in place.
+const ROW: i64 = 1;
+const BAG: i64 = 2;
+
+fn shelf_tables() -> Tables {
+    let strings = Rc::new(Element::Str);
+    let row = Rc::new(Element::List(Rc::clone(&strings)));
+    let bag = Element::Struct {
+        name: Rc::from("Bag"),
+        fields: vec![(Rc::from("items"), Element::List(Rc::clone(&strings)))],
+    };
+    let shelf = Element::Struct {
+        name: Rc::from("Shelf"),
+        fields: vec![
+            (Rc::from("rows"), Element::List(Rc::clone(&row))),
+            (Rc::from("bags"), Element::List(Rc::new(bag.clone()))),
+        ],
+    };
+    Tables {
+        shapes: vec![Rc::new(shelf), Rc::new(Element::Str)],
+        elements: vec![strings, row, Rc::new(bag)],
+        str_shape: 1,
+        ..Tables::default()
+    }
+}
+
+/// A `shared` `Shelf` whose rows and bags each hold one list with one line, locked to write with its
+/// log begun and the list at `field` saved, as `lock shelf as ref held` leaves it before a method
+/// changes `held.rows` or `held.bags`. Gives back the cell.
+fn locked_shelf(field: usize) -> i64 {
+    let cell = heap::alloc(SHELF);
+    for (at, kind) in [(ROWS_AT, ROW), (BAGS_AT, BAG)] {
+        let outer = lists::new(kind, 1);
+        set_word(outer, LIST_HEADER_WORDS, list(&["first, a line long enough for a block of its own"]));
+        set_word(cell, at, outer);
+    }
+    shared_new(cell);
+    shared_enter(cell, 1);
+    begin(cell);
+    let inside = word(cell, field);
+    save_ref(cell, i64::try_from(field).unwrap(), inside);
+    cell
+}
+
+/// What native code does for `held.rows[0].append(text)`, or `held.bags[0].items.append(text)`:
+/// asks for the item to change, appends to the list it holds, and puts that list back in the item
+/// where it now is.
+fn appended_through_the_item(outer: i64, text: &str) {
+    assert_eq!(lists::item_unshare(outer, 0), outer, "the marked list stays where it is");
+    let inner = word(outer, LIST_HEADER_WORDS);
+    let grown = lists::grow(inner);
+    let length = usize::try_from(word(grown, 2)).unwrap();
+    set_word(grown, LIST_HEADER_WORDS + length - 1, string(text));
+    set_word(outer, LIST_HEADER_WORDS, grown);
+}
+
+/// What native code does on a crash, for a `Shelf`'s two fields.
+fn crash_shelf(cell: i64) {
+    undo();
+    for at in [ROWS_AT, BAGS_AT] {
+        let back = undo_word(i64::try_from(at).unwrap(), word(cell, at), 1);
+        set_word(cell, at, back);
+    }
+}
+
+fn copies() -> u64 {
+    with(|state| state.heap.counts.copies)
+}
+
+/// Every block behind the lock is counted as many times as it's held, by the audit's own count.
+fn audited(cell: i64) {
+    let cell = address(cell);
+    let found = with(|state| heap::audit::audit(state, &[cell]));
+    let wrong: Vec<_> = found.wrong.into_iter().filter(|finding| finding.address != cell).collect();
+    assert_eq!(wrong, Vec::new());
+}
+
+/// Under a lock, a list held in a list's item, a row or a `Bag`'s list, is appended to 300 times,
+/// as a `ref self` method does: nothing's copied, the item's set is noted once, and a normal end
+/// keeps every line, with nothing else left. The item's set once noted every time, with an owner
+/// of the list it held, so every append copied the whole list and the log kept each copy (#1895).
+#[test]
+fn appends_to_a_list_in_a_lists_item_under_a_lock_copy_nothing_and_stay_at_an_end() {
+    for field in [ROWS_AT, BAGS_AT] {
+        start(shelf_tables(), crate::Inputs::default());
+        let cell = locked_shelf(field);
+        let (before, copied) = (blocks(), copies());
+        let outer = word(cell, field);
+        let first = word(outer, LIST_HEADER_WORDS);
+        let texts: Vec<String> =
+            (0..300).map(|turn| format!("by a method in turn {turn}, long enough")).collect();
+        for text in &texts {
+            appended_through_the_item(outer, text);
+        }
+        assert_eq!(copies(), copied, "field {field}: an append copied");
+        assert_ne!(word(outer, LIST_HEADER_WORDS), first, "field {field}: the list never had to move");
+        kept();
+        let inner = word(word(cell, field), LIST_HEADER_WORDS);
+        let mut wanted = vec!["first, a line long enough for a block of its own".to_owned()];
+        wanted.extend(texts.iter().cloned());
+        assert_eq!(lines(inner), wanted, "field {field}");
+        assert_eq!(count_of(inner), 1, "field {field}");
+        assert_eq!(blocks(), before + 300, "field {field}: the 300 lines are all that's new");
+        audited(cell);
+        shared_leave(cell, 1);
+        finish();
+    }
+}
+
+/// The same 300 appends, then a crash: the item holds its list as it was before the lock, with its
+/// one line, though the list moved to a bigger block under the lock, and everything the appends
+/// made is let go of. The item's set holds the list's old place, which a crash would have written
+/// back: it follows the list as it moves.
+#[test]
+fn appends_to_a_list_in_a_lists_item_under_a_lock_go_back_on_a_crash_though_it_moved() {
+    for field in [ROWS_AT, BAGS_AT] {
+        start(shelf_tables(), crate::Inputs::default());
+        let cell = locked_shelf(field);
+        let (before, copied) = (blocks(), copies());
+        let outer = word(cell, field);
+        let first = word(outer, LIST_HEADER_WORDS);
+        for turn in 0..300 {
+            appended_through_the_item(outer, &format!("by a method in turn {turn}, long enough"));
+        }
+        assert_ne!(word(outer, LIST_HEADER_WORDS), first, "field {field}: the list never had to move");
+        crash_shelf(cell);
+        let inner = word(word(cell, field), LIST_HEADER_WORDS);
+        assert_eq!(lines(inner), ["first, a line long enough for a block of its own"], "field {field}");
+        assert_eq!(count_of(inner), 1, "field {field}");
+        assert_eq!(copies(), copied, "field {field}");
+        assert_eq!(blocks(), before, "field {field}: what the appends made is let go of");
+        audited(cell);
+        shared_leave(cell, 1);
+        finish();
+    }
+}
+
+/// An item appended through, then replaced by another list: a crash puts back the item as it was
+/// before the lock, and a normal end keeps the new list, the old one let go of. Each with nothing
+/// left over.
+#[test]
+fn an_item_appended_through_then_replaced_goes_back_on_a_crash_and_stays_replaced_at_an_end() {
+    for crashes in [true, false] {
+        start(shelf_tables(), crate::Inputs::default());
+        let cell = locked_shelf(ROWS_AT);
+        let before = blocks();
+        let outer = word(cell, ROWS_AT);
+        appended_through_the_item(outer, "appended, a line long enough for a block of its own");
+        // `held.rows[0] = ["new"]`: the item asked for, the new list written, the old let go of.
+        assert_eq!(lists::item_unshare(outer, 0), outer);
+        let old = word(outer, LIST_HEADER_WORDS);
+        set_word(outer, LIST_HEADER_WORDS, list(&["new, a line long enough for a block of its own"]));
+        with(|state| heap::release(state, address(old)));
+        if crashes {
+            crash_shelf(cell);
+            let inner = word(word(cell, ROWS_AT), LIST_HEADER_WORDS);
+            assert_eq!(lines(inner), ["first, a line long enough for a block of its own"]);
+            assert_eq!(blocks(), before);
+        } else {
+            kept();
+            let inner = word(word(cell, ROWS_AT), LIST_HEADER_WORDS);
+            assert_eq!(lines(inner), ["new, a line long enough for a block of its own"]);
+            // The first list went with its line and the one appended under the lock, and the new
+            // list came with its line: as many as before, one made under the lock gone again.
+            assert_eq!(blocks(), before);
+        }
+        audited(cell);
+        shared_leave(cell, 1);
+        finish();
+    }
 }

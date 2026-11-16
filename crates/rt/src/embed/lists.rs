@@ -164,6 +164,10 @@ pub extern "C" fn item_unshare(list: i64, at: i64) -> i64 {
     with(|state| marked_set(state, list, at).or_else(|| grow_in(state, list, 0)).unwrap_or(list))
 }
 
+/// The item at `at` of a marked list with one owner, about to be set or changed where it is: the
+/// log keeps it as it is, the first time this lock sets it, for a crash to put back. A list, a dict
+/// or a struct's block the item holds is marked, so what changes it changes it where it is; the log
+/// holds an owner of anything else. `None` for any other list, which is copied as one shared is.
 fn marked_set(state: &mut State, list: i64, at: i64) -> Option<i64> {
     let address = u64::try_from(list).ok()?;
     let block = state.heap.block(address)?;
@@ -180,12 +184,40 @@ fn marked_set(state: &mut State, list: i64, at: i64) -> Option<i64> {
     }
     let start = LIST_HEADER_WORDS + at * stride;
     let words = block.get(start..start + stride)?.to_vec();
-    retain_items(state, &element, &words);
-    if !super::guarded::rollback::set(address, at, words.clone()) {
-        release_items(state, &element, &words);
+    if super::guarded::rollback::item_set_last(address, at)? {
+        // Set already, with nothing between: the log has it as it was before the lock.
+        return Some(list);
+    }
+    let mut marked = Vec::new();
+    let mut held = Vec::new();
+    for place in holding_places(&element, &words) {
+        let Some(&block) = words.get(place).filter(|block| **block != 0) else { continue };
+        if super::guarded::rollback::marked_for_an_item(state, address, block) {
+            marked.push(place);
+        } else {
+            super::heap::retain(state, block);
+            held.push(block);
+        }
+    }
+    if !super::guarded::rollback::set(address, at, words, marked) {
+        for block in held {
+            release(state, block);
+        }
         return None;
     }
     Some(list)
+}
+
+/// Which of an item's `words`, laid out as items of `element` are, hold a block.
+fn holding_places(element: &Element, words: &[u64]) -> Vec<usize> {
+    if owns_items(element) {
+        return (0..words.len()).collect();
+    }
+    let mut found = Vec::new();
+    if super::heap::holds_blocks(element) {
+        super::heap::boxed_words(element, words, &mut 0, &mut found);
+    }
+    found
 }
 
 /// After a crash, a marked list's item at `at` as it was before it was set, with the owners the log
@@ -247,10 +279,21 @@ pub(super) fn put_back(state: &mut State, address: u64, at: usize, words: &[u64]
     }
 }
 
-/// Lets go of the owners a log held of what a popped item's `words` hold, as items of `list`'s kind.
-pub(super) fn let_go_of_words(state: &mut State, list: u64, words: &[u64]) {
+/// Lets go of the owners a log held of what an item's `words` hold, as items of `list`'s kind: all
+/// but the blocks at `marked`, which it marked instead, and lets go of as marks.
+pub(super) fn let_go_of_words(state: &mut State, list: u64, words: &[u64], marked: &[usize]) {
     let Some(element) = state.heap.block(list).and_then(|block| element_of(state, block)) else { return };
-    release_items(state, &element, words);
+    if marked.is_empty() {
+        release_items(state, &element, words);
+        return;
+    }
+    let mut owned = words.to_vec();
+    for at in marked {
+        if let Some(word) = owned.get_mut(*at) {
+            *word = 0;
+        }
+    }
+    release_items(state, &element, &owned);
 }
 
 /// The shape of lists of the element numbered `element`.

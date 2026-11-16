@@ -3078,6 +3078,75 @@ fn a_write_under_a_lock_costs_the_same_however_much_the_lock_holds() -> std::io:
     Ok(())
 }
 
+/// Under a lock, a `ref self` method appends to a list held in a value, 300 times and 3,000: in a
+/// dict's value, in a list's item, and in a bag the two share at first. Through a list's item
+/// nothing is copied, through a dict's value or a shared bag one copy is made, whichever the
+/// count. It's built for a heap audit and run under it on 1 and 4 threads: what it prints, nothing
+/// live and nothing said.
+///
+/// Through a list's item every append once copied the whole list, and the lock's log kept each
+/// copy to the lock's end: 3,000 copies and 108 MB copied for 3,000 appends, 273 MB resident
+/// (#1895). The log noted the item's set again at every append, with an owner of the list it held.
+#[test]
+fn appends_through_a_lists_item_under_a_lock_copy_nothing_however_many() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("lock_appends_through_an_item")?;
+    let program = dir.join("lock_appends_through_an_item.fen");
+    std::fs::write(&program, include_str!("fixtures/lock_appends_through_an_item.fen"))?;
+    let executable = dir.join("lock_appends_through_an_item");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // The number after a label in what a run says it copied.
+    let said = |counts: &str, label: &str| -> Option<u64> {
+        counts.split_once(label).and_then(|(_, after)| after.split(' ').next()).and_then(|n| n.parse().ok())
+    };
+    for (way, copies) in [("row", 0), ("named", 1), ("shared-row", 1), ("shared-named", 1)] {
+        let mut bytes = Vec::new();
+        for turns in ["300", "3000"] {
+            for threads in ["1", "4"] {
+                let ran = Command::new(&executable)
+                    .args([turns, way])
+                    .env("FENNEC_AUDIT", "1")
+                    .env("FENNEC_COUNTS", "1")
+                    .env("FENNEC_THREADS", threads)
+                    .env_remove("FENNEC_AUDIT_SELFTEST")
+                    .output_within()?;
+                let (printed, errors) =
+                    (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+                let how = format!("{way}, {turns} appends, {threads} threads");
+                assert_eq!(ran.status.code(), Some(0), "{how}: {printed}{errors}");
+                let appended = format!("{}", turns.parse::<u32>().unwrap_or(0) + 1);
+                let wanted = if way.ends_with("named") {
+                    format!("{appended} 1\n")
+                } else {
+                    format!("1 {appended}\n")
+                };
+                assert_eq!(printed, wanted, "{how}");
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert_eq!(said(counts, "copies "), Some(copies), "{how}: {counts}");
+                assert!(counts.ends_with(" live 0"), "{how}: {counts}");
+                assert!(!errors.contains("heap audit"), "{how}: {errors}");
+                bytes.push(said(counts, "copied_bytes "));
+            }
+        }
+        assert!(
+            bytes.windows(2).all(|pair| pair[0] == pair[1]),
+            "{way}: what it copied, by count: {bytes:?}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A lock on a struct with a list, a dict and a string, changed in place: kept, failed, crashed in
 /// a launched task, and failing on every other parallel worker. Only what a normal end made stays.
 #[test]

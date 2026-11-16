@@ -1,0 +1,42 @@
+## Under a lock, a `ref self` method appends to a list held in a value: in a dict's value, in a
+## list's item, or in one bag the two share. The number of appends is the first argument, and what
+## it appends through the second: `named`, `row`, `shared-named` or `shared-row`. Run with
+## `FENNEC_COUNTS=1`, the copies it says are how many times the lock copied a list to change it.
+
+struct Bag:
+    items: list[str]
+
+struct Shelf:
+    named: dict[str, Bag]
+    rows: list[Bag]
+
+    def add_named(ref self, text: str):
+        self.named["one"].items.append(text)
+        return
+
+    def add_row(ref self, text: str):
+        self.rows[0].items.append(text)
+        return
+
+def shares(way: str) -> bool:
+    return way == "shared-named" or way == "shared-row"
+
+def by_name(way: str) -> bool:
+    return way == "named" or way == "shared-named"
+
+def main(args: Args, stdout: Stdout):
+    turns = int.parse(args[0]) except InvalidValue(): 300
+    way = args[1] else "row"
+    first = Bag(items=["first, a text long enough for a block of its own"])
+    second = Bag(items=["second, a text long enough for a block of its own"])
+    shared shelf = Shelf(named={"one": first}, rows=[first if shares(way) else second])
+    lock shelf as ref held:
+        for turn in range(turns):
+            text = f"by a method in turn {turn}, long enough for a block"
+            if by_name(way):
+                held.add_named(text)
+            else:
+                held.add_row(text)
+    lock shelf as held:
+        stdout.print(len(held.named["one"].items), len(held.rows[0].items))
+    return

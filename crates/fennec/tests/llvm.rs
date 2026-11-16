@@ -10560,7 +10560,7 @@ fn a_pop_or_remove_that_fails_changes_nothing_and_leaves_nothing() -> std::io::R
     prints_in_both_builds("failed_takes", FAILED_TAKES, FAILED_TAKES_PRINTS)?;
     assert_eq!(
         counts_of("failed_takes_counts", FAILED_TAKES)?,
-        "copies 20 copied_bytes 1104 largest_copy 80 allocations 91 allocated_bytes 11128 live 0"
+        "copies 20 copied_bytes 1104 largest_copy 80 allocations 87 allocated_bytes 10776 live 0"
     );
     Ok(())
 }
@@ -11108,7 +11108,7 @@ fn a_generator_that_fails_lets_go_of_its_failure_wherever_its_stopped() -> std::
     prints_in_both_builds("failed_generators", FAILED_GENERATORS, FAILED_GENERATORS_PRINTS)?;
     assert_eq!(
         counts_of("failed_generators_counts", FAILED_GENERATORS)?,
-        "copies 2 copied_bytes 80 largest_copy 40 allocations 13055 allocated_bytes 1228528 live 0"
+        "copies 2 copied_bytes 80 largest_copy 40 allocations 12044 allocated_bytes 1147456 live 0"
     );
     Ok(())
 }

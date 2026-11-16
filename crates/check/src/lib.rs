@@ -176,6 +176,14 @@ fn checked_typed_in(module: &Module, scope: checker::Scope) -> Result<Checked, V
 }
 
 /// The types a program declares with the same name as a standard library type, each with the
+/// name it's checked under, as `own_type_names` gives them: for what models a run with the
+/// checker's types, which name them so.
+#[must_use]
+pub fn renamed_own_types(module: &Module) -> BTreeMap<String, String> {
+    own_type_names(module)
+}
+
+/// The types a program declares with the same name as a standard library type, each with the
 /// name it's checked under, so the library's code still means its own.
 fn own_type_names(module: &Module) -> BTreeMap<String, String> {
     let library: HashSet<&str> = fennec_syntax::prelude_modules()

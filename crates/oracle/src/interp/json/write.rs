@@ -140,7 +140,6 @@ impl Interp {
     /// What a value of a type that writes its own `def serialize` saves: what that tells the
     /// `Serializer` it's given, which `saver_method` keeps.
     fn saved_through_own(&mut self, value: &Value, name: &str, args: &[Type]) -> Run<Saved> {
-        let name = fennec_syntax::rename::shown_type_name(name);
         let Some(def) = self.program.method(name, "serialize") else {
             return unsupported(format!("the `serialize` of a {name}"));
         };

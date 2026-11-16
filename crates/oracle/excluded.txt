@@ -1,0 +1,14 @@
+# The examples left out of the oracle's useful set, each with why and the check that covers what it
+# would add instead: `name | why | covered by`. Each tests an algorithm the runtime writes in Rust
+# to a published standard, which is checked against that standard's own answers rather than
+# modeled a second time here. `fennec-oracle coverage` counts the useful set without these and
+# without never.txt's, and names every other example it doesn't run as a gap to build.
+std_re.fen | std.re's regex engine is the runtime's, in Rust | the `regex` fuzz target, against Rust's `regex` crate
+std_re_hostile.fen | std.re's regex engine is the runtime's, in Rust | the `regex` fuzz target, against Rust's `regex` crate
+imports.fen | its `first_word` matches with std.re's `Regex`, the runtime's engine in Rust | the `regex` fuzz target, against Rust's `regex` crate
+std_compress.fen | DEFLATE, zlib and gzip are the runtime's, in Rust | crates/rt/src/compress.rs's tests: known answers, round trips at every level, broken data and bombs
+std_compress_hostile.fen | DEFLATE, zlib and gzip are the runtime's, in Rust | crates/rt/src/compress.rs's tests: known answers, round trips at every level, broken data and bombs
+std_unicode.fen | the Unicode tables are generated from the Unicode Character Database | crates/rt/src/unicode.rs's tests, against Python's `unicodedata`
+postgres_scram.fen | SCRAM needs HMAC-SHA256, the runtime's, in Rust | crates/rt/src/stdlib/crypto/sha256.rs's tests: FIPS 180-4 digests and RFC 4231's HMAC cases
+std_crypto.fen | BLAKE3 is the runtime's, in Rust | crates/blake3/tests/vectors.rs, BLAKE3's official test vectors
+std_passwords.fen | Argon2id is the runtime's, in Rust | crates/rt/src/stdlib/crypto/argon2.rs's `tags_match_rfc_9106`

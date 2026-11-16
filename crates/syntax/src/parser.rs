@@ -13,11 +13,54 @@ use crate::ast::{
 use crate::diagnostic::Diagnostic;
 use crate::lexer::lex;
 use crate::span::Span;
-use crate::token::{Kw, Punct, Tok, Token};
+use crate::token::{FPart, Kw, Punct, Tok, Token};
 
 /// Parses a whole `.fen` file, where only declarations may sit at the top level.
 pub fn parse(source: &str) -> Result<Module, Diagnostic> {
+    Parser::new(written_by_hand(lex(source, 0)?)?).module()
+}
+
+/// Parses text the compiler writes in, whose names may hold two underscores in a row, as no
+/// program's can.
+pub fn parse_written(source: &str) -> Result<Module, Diagnostic> {
     Parser::new(lex(source, 0)?).module()
+}
+
+/// Refuses a name with two underscores in a row in what a program writes: only names the compiler
+/// writes in have them, as `conn__lend1` or `SAVED__NAMES_0_`, so one written by hand would meet
+/// one of them, its own or another kit's. Gives back the tokens.
+fn written_by_hand(tokens: Vec<Token>) -> Result<Vec<Token>, Diagnostic> {
+    no_double_underscores(&tokens)?;
+    Ok(tokens)
+}
+
+/// The first name among `tokens` with two underscores in a row, refused, with what's inside an
+/// f-string's braces looked through too.
+fn no_double_underscores(tokens: &[Token]) -> Result<(), Diagnostic> {
+    for token in tokens {
+        match &token.tok {
+            Tok::Name(name) if name.contains("__") => {
+                let mut one = name.clone();
+                while one.contains("__") {
+                    one = one.replace("__", "_");
+                }
+                let message = format!(
+                    "`{name}` has two underscores in a row, which only names the compiler writes in have"
+                );
+                let help = format!("write it with one, as `{one}`");
+                return Err(Diagnostic::new(message, token.span).with_help(help).with_fix(token.span, one));
+            }
+            Tok::FStr(parts) | Tok::TStr(parts) => {
+                for part in parts {
+                    if let FPart::Expr { source, offset, .. } = part {
+                        no_double_underscores(&lex(source, *offset)?)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Parses a standard library source. Its spans start at `Span::PRELUDE`, so a mistake found
@@ -46,13 +89,13 @@ pub(crate) fn parse_prelude_at(source: &str, base: u32) -> Result<Module, Diagno
 /// Parses one file of a program with several, its spans starting at byte `base` so they
 /// don't overlap another file's. `Sources` turns them back into a file and line.
 pub fn parse_at(source: &str, base: u32) -> Result<Module, Diagnostic> {
-    Parser::new(lex(source, base)?).module()
+    Parser::new(written_by_hand(lex(source, base)?)?).module()
 }
 
 /// Parses statements standing alone, like the code in a doc example. They're indented as they
 /// are in `source`, and their spans start at byte `base`.
 pub(crate) fn parse_statements_at(source: &str, base: u32) -> Result<Vec<Stmt>, Diagnostic> {
-    let mut parser = Parser::new(lex(source, base)?);
+    let mut parser = Parser::new(written_by_hand(lex(source, base)?)?);
     parser.eat(&Tok::Newline);
     parser.eat(&Tok::Indent);
     let mut stmts = Vec::new();

@@ -90,6 +90,42 @@ fn no_name_std_keeps_is_reached_from_a_program() {
     }
 }
 
+/// A std module's function is keyed `module.name`, and a core file's own `core.file.name`, which
+/// a program's method or a function written inside another can spell: a type `path` with a method
+/// `is_device`, or a function `path` with one inside it. Std's code would then call the program's,
+/// so each is refused, naming it.
+#[test]
+fn no_method_or_inner_function_takes_a_name_std_has() {
+    let said = |key: &str, rest: &str| format!("`{key}` is the standard library's own name, so {rest}");
+    for (source, problem) in [
+        (
+            "struct path:\n    name: str\n\n    def is_device(name: str) -> bool:\n        return False\n",
+            said("path.is_device", "a type called `path` can't have a method called `is_device`"),
+        ),
+        (
+            "struct json:\n    name: str\n\n    def quoted(text: str) -> str:\n        return text\n",
+            said("json.quoted", "a type called `json` can't have a method called `quoted`"),
+        ),
+        (
+            "def path(name: str) -> bool:\n    def is_device(name: str) -> bool:\n        return False\n    return is_device(name)\n\n\
+             def main(stdout: Stdout):\n    stdout.print(path(\"a\"))\n",
+            said("path.is_device", "a function inside `path` can't be called `is_device`"),
+        ),
+        (
+            "struct core:\n    name: str\n\n    def str(self, ref out: StrWriter):\n        \
+             def padding(fill: str, count: int) -> str:\n            return fill\n        out.write(padding(\"x\", count=1))\n\n\
+             def main(stdout: Stdout):\n    stdout.print(core(name=\"n\"))\n",
+            said("core.str.padding", "a function inside `core.str` can't be called `padding`"),
+        ),
+    ] {
+        let found = crate::problems_as_written(source);
+        assert!(found.iter().any(|found| found.starts_with(&problem)), "{source}: {found:?}");
+    }
+    let apart = "from std.path import Path\n\nstruct path:\n    name: str\n\n    def shown(self) -> str:\n        return self.name\n\n\
+        def main(stdout: Stdout):\n    stdout.print(path(name=\"p\").shown(), Path(\"a\"))\n";
+    assert_eq!(crate::problems_as_written(apart), Vec::<String>::new());
+}
+
 #[test]
 fn reading_gives_back_a_result_of_the_type_asked_for() {
     let program = "

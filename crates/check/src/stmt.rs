@@ -595,6 +595,15 @@ impl FnCx<'_> {
         let own: Vec<String> = def.params.iter().map(|param| param.name.clone()).collect();
         self.note_closure(&def.name, &reads, &own);
         let key = format!("{}.{}", self.key, def.name);
+        // A function written inside another is keyed by both their names, which a std module's
+        // function can have, as `core.str.padding`: std's code would call the program's.
+        if self.report && self.checker.program.functions.get(&key).is_some_and(|entry| entry.prelude) {
+            let message = format!(
+                "`{key}` is the standard library's own name, so a function inside `{}` can't be called `{}`",
+                self.key, def.name
+            );
+            self.error(Diagnostic::new(message, def.span).with_help("call it something else"));
+        }
         let mut captured = self.visible();
         let function = Type::Function(key.clone());
         captured.push(Binding {

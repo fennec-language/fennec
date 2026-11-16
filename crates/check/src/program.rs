@@ -277,9 +277,15 @@ impl Program {
     }
 
     fn add_type<'m>(&mut self, def: &'m TypeDef, kind: TypeKind, prelude: bool, hold: &impl Holds<'m>) {
-        // A program's own type replaces a standard library type of the same name, methods too.
+        // A program's own type replaces a standard library type of the same name, methods too: only
+        // that type's, never a std module's functions, as `path.is_device` beside a `struct path`.
         let methods = format!("{}.", def.name);
-        self.functions.retain(|key, entry| !(!prelude && entry.prelude && key.starts_with(&methods)));
+        self.functions.retain(|key, entry| {
+            !(!prelude
+                && entry.prelude
+                && key.starts_with(&methods)
+                && entry.owner.as_deref() == Some(def.name.as_str()))
+        });
         for method in &def.methods {
             self.add_method(&def.name, method, prelude, &[], hold);
         }

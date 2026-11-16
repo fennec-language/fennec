@@ -398,7 +398,7 @@ fn adapter(name: &str, route: &Route) -> Option<FnDef> {
     let given: String = route.takes.iter().flat_map(|(param, _)| [", ", param.as_str(), "__given"]).collect();
     lines.push(format!("    return handler__route(request__route{given})"));
     let text = lines.join("\n") + "\n";
-    let module = fennec_syntax::parse(&text).ok()?;
+    let module = fennec_syntax::parse_written(&text).ok()?;
     let Some(Item::Function(mut def)) = module.items.into_iter().next() else { return None };
     // Spans of its own, in what lowering writes, so the types it's checked again with, found by
     // span, are never another's.

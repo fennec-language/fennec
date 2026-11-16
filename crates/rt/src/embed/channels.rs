@@ -243,7 +243,9 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
         }
         if queue.messages.len() < channel.size {
             met(&channel, "send", DONE);
-            queue.messages.extend(message.take());
+            if let Some(message) = message.take() {
+                queue.messages.push_back(message);
+            }
             let waiting = channel.take_notes(&mut queue, Side::Receiving);
             let asleep = queue.asleep.for_a_message;
             drop(queue);
@@ -343,7 +345,9 @@ enum Turn {
 /// Waits, in a replay, for the running task's turn to do `what` at `channel`. A replay that's
 /// diverged fails, as having found the channel closed.
 fn replayed(channel: &Channel, what: &str) -> Turn {
-    match crate::replay::turn(channel.replay.as_deref(), what) {
+    // A channel's named only in a recording or a replay: anywhere else nothing's waited for.
+    let Some(place) = channel.replay.as_deref() else { return Turn::Live };
+    match crate::replay::turn(Some(place), what) {
         Ok(None) => Turn::Live,
         Ok(Some(DONE)) => Turn::Goes,
         Ok(Some(STOPPED)) => {
@@ -373,7 +377,9 @@ fn stopped(channel: &Channel, what: &str) -> i64 {
 /// Says the running task did `what` at `channel`, coming to `outcome`: logged in a recording, and
 /// in a replay, the end of its turn.
 fn met(channel: &Channel, what: &str, outcome: i64) {
-    crate::replay::met(channel.replay.as_deref(), what, outcome);
+    if let Some(place) = channel.replay.as_deref() {
+        crate::replay::met(Some(place), what, outcome);
+    }
 }
 
 /// `fennec_channel_close(channel)`: no more can be sent. Receivers take what's left, then are told
@@ -386,10 +392,11 @@ pub extern "C" fn channel_close(channel: i64) {
     let mut queue = channel.queue();
     met(&channel, "close", DONE);
     queue.closed = true;
-    let mut waiting = channel.take_notes(&mut queue, Side::Sending);
-    waiting.append(&mut channel.take_notes(&mut queue, Side::Receiving));
+    let senders = channel.take_notes(&mut queue, Side::Sending);
+    let receivers = channel.take_notes(&mut queue, Side::Receiving);
     drop(queue);
-    wake(waiting);
+    wake(senders);
+    wake(receivers);
     channel.changed.notify_all();
 }
 
@@ -448,20 +455,29 @@ enum Side {
 impl Channel {
     /// Takes every note on a `side` out of `queue`, which is this channel's, for the tasks that
     /// left them to be woken, and counts that it did when there were any.
-    fn take_notes(&self, queue: &mut Queue, side: Side) -> Vec<Waiter> {
-        let notes = std::mem::take(match side {
+    ///
+    /// One note, the usual case, is taken out of its list and the list kept, room and all, for the
+    /// next wait to leave its note in: taking the whole list, as for several, let it go and had the
+    /// next wait make it again, which cost a send or a receive about as much as the channel's lock.
+    fn take_notes(&self, queue: &mut Queue, side: Side) -> Notes {
+        let notes = match side {
             Side::Sending => &mut queue.senders,
             Side::Receiving => &mut queue.receivers,
-        });
+        };
+        let taken = match notes.len() {
+            0 => return Notes::None,
+            1 => notes.pop().map_or(Notes::None, Notes::One),
+            _ => Notes::Several(std::mem::take(notes)),
+        };
         #[cfg(any(test, feature = "threads"))]
-        if !notes.is_empty() {
+        {
             // Only whoever holds the queue changes it, so it's read and written, not added to.
-            let taken = self.taken_on(side);
-            taken.store(taken.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+            let count = self.taken_on(side);
+            count.store(count.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
         }
         #[cfg(not(any(test, feature = "threads")))]
         let _: (&Channel, Side) = (self, side);
-        notes
+        taken
     }
 }
 
@@ -644,14 +660,37 @@ fn wait_parked(
     }
 }
 
-/// Wakes parked tasks that were waiting on a channel: each looks again.
-fn wake(waiting: Vec<Waiter>) {
-    #[cfg(any(test, feature = "threads"))]
-    for Waiter { pool, at, token } in waiting {
-        pool.run_on(at, Box::new(move |io: &mut super::serve::Io| io.wake_token(token)));
+/// The notes taken off one side of a channel, of parked tasks to wake.
+enum Notes {
+    None,
+    One(Waiter),
+    Several(Vec<Waiter>),
+}
+
+#[cfg(test)]
+impl Notes {
+    fn len(&self) -> usize {
+        match self {
+            Notes::None => 0,
+            Notes::One(_) => 1,
+            Notes::Several(several) => several.len(),
+        }
     }
+}
+
+/// Wakes parked tasks that were waiting on a channel: each looks again.
+fn wake(waiting: Notes) {
+    #[cfg(any(test, feature = "threads"))]
+    let wake_one = |Waiter { pool, at, token }: Waiter| {
+        pool.run_on(at, Box::new(move |io: &mut super::serve::Io| io.wake_token(token)));
+    };
     #[cfg(not(any(test, feature = "threads")))]
-    drop(waiting);
+    let wake_one = drop::<Waiter>;
+    match waiting {
+        Notes::None => {}
+        Notes::One(one) => wake_one(one),
+        Notes::Several(several) => several.into_iter().for_each(wake_one),
+    }
 }
 
 mod every;

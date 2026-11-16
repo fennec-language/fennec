@@ -10,8 +10,51 @@ from token import FPart, Tok, Token, is_reserved
 
 ## Parses a whole `.fen` file, where only declarations may sit at the top level.
 def parse(source: str) -> Module fails Diagnostic:
-    mut parser = Parser.over(lex(source, 0)?)
+    tokens = lex(source, 0)?
+    no_double_underscores(tokens)?
+    mut parser = Parser.over(tokens)
     return parser.module()?
+
+## Refuses a name with two underscores in a row in what a program writes: only names the compiler
+## writes in have them, as `conn__lend1` or `SAVED__NAMES_0_`, so one written by hand would meet
+## one of them, its own or another kit's.
+def no_double_underscores(tokens: list[Token]) fails Diagnostic:
+    for token in tokens:
+        match token.tok:
+            case .Name(name):
+                if "__" in name:
+                    mut one = name
+                    while "__" in one:
+                        one = one.replace("__", "_")
+                    fail Diagnostic(
+                        message=f"`{name}` has two underscores in a row, which only names the compiler writes in have",
+                        span=token.span,
+                        help=f"write it with one, as `{one}`",
+                    )
+            case .FStr(parts):
+                in_parts(parts)?
+            case .TStr(parts):
+                in_parts(parts)?
+            case _:
+                pass
+
+## What's inside an f-string's or a template's braces, held to the same rule.
+def in_parts(parts: list[FPart]) fails Diagnostic:
+    for part in parts:
+        match part:
+            case .Code(source, offset, _):
+                # Code that doesn't lex is the parser's to report, where it reads it.
+                code = interpolated_tokens(source, offset) except Diagnostic(): list[Token]()
+                no_double_underscores(code)?
+            case _:
+                pass
+
+## The tokens of the code inside an f-string's or a template's braces, lexed on its own. A leading
+## space would read as indentation, so it's left out, and the offset moved past it.
+def interpolated_tokens(source: str, offset: int) -> list[Token] fails Diagnostic:
+    code = source.lstrip()
+    skipped = byte_length(source[:len(source) - len(code)])
+    return lex(code, offset + skipped)?
 
 ## Tokens to a syntax tree, by recursive descent: declarations first, then statements,
 ## expressions, and `match` patterns.

@@ -299,8 +299,8 @@ struct Context<'a> {
     defaults: HashMap<defaults::FieldKey<'a>, &'a Expr>,
     /// The `where` rules of each struct, the standard library's included, in field order.
     rules: HashMap<&'a str, Vec<(&'a str, &'a Expr)>>,
-    /// What the module imports from the standard library.
-    imports: imports::Imports,
+    /// What each of the module's files imports from the standard library.
+    imports: imports::ByFile,
     /// What the standard library's own code imports.
     library_imports: imports::Imports,
     /// The keys of the standard library's functions and methods.

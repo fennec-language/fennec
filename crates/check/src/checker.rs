@@ -183,13 +183,8 @@ fn library_alone<'m>(
         program.add_with(prelude, true, hold);
         program.problems.extend(crate::privacy::top_level_underscores(prelude));
     }
-    program.prelude_imports = std::mem::take(&mut program.imports);
-    program.prelude_modules = std::mem::take(&mut program.modules);
-    // What a standard library module imports is its own: a program names it only by importing
-    // it too.
-    program.std_functions.clear();
-    program.std_constants.clear();
-    program.imported_types.clear();
+    // What a standard library module imports is its own, kept apart by where it's written: a
+    // program names it only by importing it too.
     program
 }
 

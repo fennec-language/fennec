@@ -83,11 +83,14 @@ classify() {
   # stops it and exits 124.
   if [ "$code" -eq 124 ] || grep -q SIGXCPU "$log"; then
     outcome=slow reason="over $seconds s of CPU"
-  # Miri's `fstatat` for macOS leaves `stat`'s spare fields unset, where the kernel zeroes them, so
-  # rustix's `assume_init` of one looks like undefined behavior on a Mac. On Linux, Miri has no
-  # `fstatat64` at all.
+  # An exception, until rustix is upgraded: rustix 1.1.6 calls `assume_init` on a `stat` whose
+  # spare fields the system isn't bound to set, which Miri's `fstatat` for macOS leaves unset, as
+  # https://github.com/rust-lang/miri/issues/5553 settled it should. A Mac's kernel does zero them,
+  # so no real run reads garbage. https://github.com/bytecodealliance/rustix/pull/1737 fixes it in
+  # rustix, not yet released; https://github.com/fennec-language/fennec/issues/1773 takes this out
+  # once a release with it is in Cargo.lock. On Linux, Miri has no `fstatat64` at all.
   elif grep -q 'apple::stat: at .st_[lq]spare' "$log"; then
-    outcome=unsupported reason="Miri's fstatat for macOS leaves stat's spare fields unset"
+    outcome=unsupported reason="rustix 1.1.6 assumes stat's spare fields are set (fennec#1773)"
   elif grep -q 'Undefined Behavior' "$log"; then
     outcome=UB reason=$(why 'Undefined Behavior')
   elif grep -q 'deadlocked' "$log"; then

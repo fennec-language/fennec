@@ -521,7 +521,7 @@ impl<'c> Walk<'c> {
             }
         }
         for test in &self.checker.program.tests {
-            queue.push((format!("test \"{}\"", test.name), Vec::new()));
+            queue.push((crate::program::test_key(&test.name), Vec::new()));
         }
         // Copies of generic functions go by the rules lowering's do (`crate::copies`): one it can't
         // make is never built, so it hands nothing over, and isn't followed. Past the backstop,
@@ -914,9 +914,7 @@ impl<'c> Walk<'c> {
         };
         if let Some(entry) = self.checker.program.functions.get(key) {
             fennec_syntax::read::in_function(&entry.def, &mut look);
-        } else if let Some(test) =
-            self.checker.program.tests.iter().find(|test| format!("test \"{}\"", test.name) == key)
-        {
+        } else if let Some(test) = self.checker.program.test(key) {
             fennec_syntax::read::in_stmts(&test.body, &mut look);
         }
         (spans, naming)

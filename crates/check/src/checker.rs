@@ -638,7 +638,7 @@ impl Checker {
         for test in &self.program.tests {
             problems.extend(crate::loops::check_arguments(&test.body));
             if !self.again {
-                let key = format!("test \"{}\"", test.name);
+                let key = crate::program::test_key(&test.name);
                 problems.extend(crate::plain::check_body(self, &key, &test.body, crate::plain::Passes::Test));
             }
         }
@@ -658,7 +658,7 @@ impl Checker {
                 .program
                 .tests
                 .iter()
-                .map(|test| (format!("test \"{}\"", test.name), test.body.clone()))
+                .map(|test| (crate::program::test_key(&test.name), test.body.clone()))
                 .collect();
             for (key, stmts) in tests {
                 let counted = crate::lost::counted(self, &key, &stmts);

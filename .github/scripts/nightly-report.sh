@@ -11,7 +11,7 @@
 # each entry whole under it, as `flakes-<date>.md`, so every flake the gates saw is there to read.
 #
 # It says too whether main's CI is green on every system, naming each job that isn't, with
-# `main-ci.sh`.
+# `main-ci.sh`, and warns when GitHub holds more than 25 branches.
 #
 # It needs `gh`, signed in. A night still running, or one with no report, is said so, and nothing
 # is written. It exits 1 when the night failed, or a job of main's CI is red on any system, so
@@ -44,6 +44,13 @@ repository=${2:-fennec-language/fennec}
 # report, the day it goes red.
 main_ci=0
 "$here/main-ci.sh" "$repository" || main_ci=1
+# The weekly sweep (`sweep-branches.yml`) deletes the branches nothing needs, so past 25 something
+# is keeping them, or it isn't running: a warning, not a failed night.
+branches=$(gh api --paginate "repos/$repository/branches?per_page=100" --jq 'length' 2> /dev/null \
+  | awk '{ total += $1 } END { print total + 0 }')
+if [ "$branches" -gt 25 ]; then
+  echo "warning: $repository has $branches branches, more than 25: https://github.com/$repository/branches"
+fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # The night's mutants, from the latest scheduled Mutation tests run, as `mutants-<date>.md`: each

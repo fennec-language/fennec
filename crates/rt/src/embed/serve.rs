@@ -122,6 +122,12 @@ fn read_onto(stream: &mut TcpStream, into: &mut Vec<u8>, limit: usize) -> std::i
     })
 }
 
+/// A wait that blocked its thread, as a blocking thread's on a lock another holds: counted with
+/// the network's that do.
+pub(crate) fn waited_blocked() {
+    BLOCKED_WAITS.fetch_add(1, Ordering::Relaxed);
+}
+
 /// How many waits have blocked their thread rather than parking.
 pub fn blocked_waits() -> u64 {
     BLOCKED_WAITS.load(Ordering::Relaxed)

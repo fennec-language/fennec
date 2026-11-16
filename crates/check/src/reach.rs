@@ -130,8 +130,7 @@ impl FnCx<'_> {
         // A module's constants listed with its builtins, like `math.INFINITY`, are imported as
         // its builtins are.
         let qualified = program
-            .std_constants
-            .get(name)
+            .imported_by(span, |imports| imports.constants.get(name))
             .or_else(|| {
                 program.imported(name, span).filter(|imported| program.constants.contains_key(*imported))
             })?

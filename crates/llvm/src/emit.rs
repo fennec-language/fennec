@@ -208,7 +208,8 @@ pub(crate) const HEADER_ACCESS: &str = ", !tbaa !4";
 pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";
 /// A boxed struct's or enum's fields never overlap a block's header or a list's items.
 pub(crate) const FIELD_ACCESS: &str = ", !tbaa !10";
-pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
+/// A length is always written, so it's never undefined or poison.
+pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7, !noundef !1";
 /// A struct's field wherever the struct is, which could be an item or a boxed field, but is
 /// never a block's header. So changing one, like a parser's place in its text, doesn't make a
 /// string's lengths read again.
@@ -1908,6 +1909,10 @@ impl Emit<'_, '_, '_> {
 
     /// Reads the length of a list whose length nothing in this function changes, where it's just
     /// been given its value, into the place it's kept (`%sl`, see `steady_lengths`).
+    ///
+    /// A length is loaded as `!noundef` (`LENGTH_ACCESS`): a kept length LLVM had to take as
+    /// maybe poison was frozen where a loop was split on it, which stopped it splitting the loop
+    /// further, as it does on a length read in the loop, and fannkuch ran 6% more instructions.
     fn keep_length(&mut self, local: LocalId) {
         let (list, slot) = (self.temp(), self.slot(local));
         self.line(&format!("{list} = load ptr, ptr {slot}"));
@@ -1936,7 +1941,7 @@ impl Emit<'_, '_, '_> {
     /// can have, or a build that checks proofs checks that.
     pub(crate) fn load_length(&mut self, dest: &str, at: &str) {
         if self.checks_proofs() {
-            self.line(&format!("{dest} = load i64, ptr {at}{HEADER_ACCESS}"));
+            self.line(&format!("{dest} = load i64, ptr {at}{HEADER_ACCESS}, !noundef !1"));
             let broken = self.temp();
             self.line(&format!("{broken} = icmp ugt i64 {dest}, {}", crate::analysis::MOST_ITEMS));
             self.proof_held_here(

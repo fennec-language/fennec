@@ -643,12 +643,14 @@ fn analyze(
     known
 }
 
-/// The list locals whose length nothing in the function can change, so it can be read once,
-/// where the local is given its value, and kept: a parameter at the start, any other local where
-/// its one write is. Left out is a list that's grown or shrunk here (`grown`: a builtin that
-/// changes it, or a call that changes what it's given), given its value more than once, handed to
-/// a closure, which may change what it's given, standing for or stood for by another local, or
-/// taken out of its place. A list made alone again before a change (`fennec_list_unshare`) keeps
+/// The list parameters whose length nothing in the function can change, so it can be read once,
+/// at the start, and kept. Only parameters: a list made here has its length written here, which
+/// LLVM sees and carries to every check itself; a kept copy of it only got in the way, and
+/// fannkuch, whose lists are all made in its function, ran 6% more instructions. A parameter's
+/// length is only ever in memory, behind calls LLVM can't see past. Left out is a list that's
+/// grown or shrunk here (`grown`: a builtin that changes it, or a call that changes what it's
+/// given), given another value, handed to a closure, which may change what it's given, standing
+/// for or stood for by another local, or taken out of its place. A list made alone again before a change (`fennec_list_unshare`) keeps
 /// its length, so it stays. A build that checks proofs checks each use of a kept length against
 /// the list's own.
 fn steady_lengths(function: &Function, grown: &HashSet<usize>, known: &Analysis) -> HashSet<usize> {
@@ -689,7 +691,8 @@ fn steady_lengths(function: &Function, grown: &HashSet<usize>, known: &Analysis)
         .filter(|at| {
             matches!(function.locals.get(*at).map(|local| &local.ty), Some(Type::List(_)))
                 && !grown.contains(at)
-                && known.writes.get(*at).copied() == Some(u32::from(*at >= function.params))
+                && *at < function.params
+                && known.writes.get(*at).copied() == Some(0)
                 && !handed.contains(at)
                 && !named_twice.contains(at)
                 && !known.taken.contains(at)
@@ -4317,14 +4320,15 @@ mod tests {
         Ok(names)
     }
 
-    /// A list only read and stored into in a loop keeps its length, a parameter, a `ref` parameter
-    /// or a local given its value once, so a check against it can leave the loop. One appended
-    /// to, popped, handed by `ref` to a call that changes it, or given a value twice, doesn't,
-    /// nor one read outside any loop, which gains nothing.
+    /// A list parameter only read and stored into in a loop keeps its length, a plain one or a
+    /// `ref` one, so a check against it can leave the loop. One appended to, popped, handed by
+    /// `ref` to a call that changes it, or given another value, doesn't, nor one read outside any
+    /// loop, which gains nothing, nor a list made in the function.
     #[test]
     fn a_list_only_read_and_stored_into_keeps_its_length() -> Result<(), String> {
         let kept = "def go(xs: list[int], ref ys: list[int]) -> int:\n    zs = [1, 2, 3]\n    mut total = 0\n    for at in range(len(xs)):\n        ys[at % len(ys)] = xs[at] + zs[at % 3]\n        total += xs[at]\n    return total\n";
-        assert_eq!(steady(kept)?, ["xs", "ys", "zs"]);
+        // `zs` is made here, with its length written where LLVM sees it, so it's left alone.
+        assert_eq!(steady(kept)?, ["xs", "ys"]);
         for (body, left_out) in [
             ("def go(ref xs: list[int]) -> int:\n    xs.append(1)\n    return xs[0]\n", "appended to"),
             ("def go(ref xs: list[int]) -> int:\n    _ = xs.pop()\n    return xs[0]\n", "popped"),

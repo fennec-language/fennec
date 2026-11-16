@@ -3078,6 +3078,78 @@ fn a_write_under_a_lock_costs_the_same_however_much_the_lock_holds() -> std::io:
     Ok(())
 }
 
+/// Under a lock, a `ref self` method appends to a list held in a value, 300 times and 3,000: in a
+/// dict's value, in a list's item, and in a bag the two share at first. Through a list's item
+/// nothing is copied, through a dict's value or a shared bag one copy is made, whichever the
+/// count, and through a list's item with a second lock taken with the first nothing is copied either.
+/// It's built for a heap audit and run under it on 1 and 4 threads: what it prints, nothing live and
+/// nothing said.
+///
+/// Through a list's item every append once copied the whole list, and the lock's log kept each
+/// copy to the lock's end: 3,000 copies and 108 MB copied for 3,000 appends, 273 MB resident
+/// (#1895). The log noted the item's set again at every append, with an owner of the list it held.
+#[test]
+fn appends_through_a_lists_item_under_a_lock_copy_nothing_however_many() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("lock_appends_through_an_item")?;
+    let program = dir.join("lock_appends_through_an_item.fen");
+    std::fs::write(&program, include_str!("fixtures/lock_appends_through_an_item.fen"))?;
+    let executable = dir.join("lock_appends_through_an_item");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    // The number after a label in what a run says it copied.
+    let said = |counts: &str, label: &str| -> Option<u64> {
+        counts.split_once(label).and_then(|(_, after)| after.split(' ').next()).and_then(|n| n.parse().ok())
+    };
+    for (way, copies) in
+        [("row", 0), ("named", 1), ("shared-row", 1), ("shared-named", 1), ("together-row", 0)]
+    {
+        let mut bytes = Vec::new();
+        for turns in ["300", "3000"] {
+            for threads in ["1", "4"] {
+                let ran = Command::new(&executable)
+                    .args([turns, way])
+                    .env("FENNEC_AUDIT", "1")
+                    .env("FENNEC_COUNTS", "1")
+                    .env("FENNEC_THREADS", threads)
+                    .env_remove("FENNEC_AUDIT_SELFTEST")
+                    .output_within()?;
+                let (printed, errors) =
+                    (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+                let how = format!("{way}, {turns} appends, {threads} threads");
+                assert_eq!(ran.status.code(), Some(0), "{how}: {printed}{errors}");
+                let appended = format!("{}", turns.parse::<u32>().unwrap_or(0) + 1);
+                let wanted = if way.ends_with("named") {
+                    format!("{appended} 1\n")
+                } else {
+                    format!("1 {appended}\n")
+                };
+                assert_eq!(printed, wanted, "{how}");
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert_eq!(said(counts, "copies "), Some(copies), "{how}: {counts}");
+                assert!(counts.ends_with(" live 0"), "{how}: {counts}");
+                assert!(!errors.contains("heap audit"), "{how}: {errors}");
+                bytes.push(said(counts, "copied_bytes "));
+            }
+        }
+        assert!(
+            bytes.windows(2).all(|pair| pair[0] == pair[1]),
+            "{way}: what it copied, by count: {bytes:?}"
+        );
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// A lock on a struct with a list, a dict and a string, changed in place: kept, failed, crashed in
 /// a launched task, and failing on every other parallel worker. Only what a normal end made stays.
 #[test]
@@ -12648,6 +12720,56 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
     Ok(())
 }
 
+/// A program of ordinary generics, each used with a few types, asks for more than 2,000 copies of
+/// them, as one of about 53,000 lines does, and builds and runs. Past 2,000 the copies were
+/// refused, and the build stopped at a call that "doesn't say what its types stand for", where
+/// `fennec check` said nothing (#1896). Built as a release, which builds it in a few seconds where
+/// a cold dev build takes ten times as long: the copies are made the same way in both.
+#[test]
+fn a_program_asking_for_thousands_of_generic_copies_builds_and_runs() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let (generics, parts) = (800, 8);
+    let mut source = String::new();
+    for at in 0..generics {
+        let _ = writeln!(source, "def kept_{at}[T](value: T) -> T:\n    return value\n");
+    }
+    for part in 0..parts {
+        let _ = writeln!(source, "def part_{part}() -> int:\n    mut total = 0");
+        for at in (part * generics / parts)..((part + 1) * generics / parts) {
+            let _ = writeln!(
+                source,
+                "    total += kept_{at}({at}) + len(kept_{at}(\"some text\")) + len(kept_{at}([{at}, {at}]))"
+            );
+        }
+        source.push_str("    return total\n\n");
+    }
+    let parts_added: Vec<String> = (0..parts).map(|part| format!("part_{part}()")).collect();
+    let _ = writeln!(source, "def main(stdout: Stdout):\n    stdout.print({})", parts_added.join(" + "));
+    let total: usize = (0..generics).map(|at| at + "some text".len() + 2).sum();
+    let dir = folder("thousands_of_copies")?;
+    let (program, executable) = (dir.join("copies.fen"), dir.join("copies"));
+    std::fs::write(&program, &source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", "--release"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        format!("{total}\n"),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed
 
 def kept_then_crash(at: int):
@@ -16764,13 +16886,18 @@ fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::
 /// a blocking thread. When each client's exchange held a blocking thread while it waited for its
 /// answer, eight clients took all of a fixed eight, the handlers queued behind them, and the
 /// clients failed at their 30-second timeout. Exchanges park on their sockets now (#1823), and the
-/// pool grows while every thread is busy, so the handlers get theirs at 300 clients too.
+/// pool grows while every thread is busy, so the handlers get theirs at 100 clients too.
+///
+/// A hundred is more than the pool's 64 blocking threads, so exchanges holding them would starve
+/// the handlers, and under the 128 connections the Mac keeps waiting for a server to take. With
+/// three hundred, a loaded machine left the server's accepts behind, the queue overflowed and the
+/// Mac reset the rest: 184 of 300 saved (#1903).
 ///
 /// Each run is built for a heap audit and run under it, on 1, 4 and 16 threads: it ends with
 /// what it should have printed, nothing live and nothing said.
 #[test]
 fn a_servers_blocking_work_isnt_starved_by_its_own_clients() -> std::io::Result<()> {
-    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32, 300])
+    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32, 100])
 }
 
 /// Builds `served_handler_blocks_while_clients_post.fen` for a heap audit, and runs it with each
@@ -26823,6 +26950,37 @@ def main(stdout: Stdout):
     stdout.print(count(x * 2 for x in range(10)), count(s for s in ["a", "b"]))
     stdout.print(count(f for f in [1.5, 2.5, 3.5]), last_of((w for w in ["p", "q"]), otherwise="none"))
 "#,
+    )
+}
+
+/// A generic function holding a `Buffer[T]` or an `array[T, N]`, or giving one back, has its copy
+/// made with `T` filled in. It kept `T` in them, so the copy wasn't lowered and the program didn't
+/// build, though `fennec check` passed and the reference evaluator ran it (#1897).
+#[test]
+fn a_generic_holding_a_buffer_or_an_array_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generic_buffers_and_arrays",
+        r#"def first_two[T](items: list[T]) -> array[T, 2]:
+    held: array[T, 2] = [items[0], items[1]]
+    return held
+
+def gathered[T](items: list[T]) -> int:
+    mut held = Buffer[T]()
+    for item in items:
+        held.push(item)
+    return len(held)
+
+def main(stdout: Stdout):
+    pair = first_two([3, 4])
+    stdout.print(pair[0] + pair[1])
+    words = first_two(["first, a text long enough for a block", "second"])
+    stdout.print(words[1], words[0])
+    stdout.print(gathered(["a", "b", "c"]), gathered([1.5]))
+"#,
+        "7\nsecond first, a text long enough for a block\n3 1\n",
     )
 }
 

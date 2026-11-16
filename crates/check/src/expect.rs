@@ -114,13 +114,14 @@ impl FnCx<'_> {
     }
 
     /// A list, set, dict or tuple literal written where one holding sized numbers or optionals
-    /// goes: each item goes where its own type does, so it takes that size, or becomes that
-    /// optional, and is checked to fit, as in `bytes: list[u8] = [1, 2, 255]`, `pair: (u8, int) =
-    /// (3, 1)` and `batch: dict[str, list[(int, Parcel?)]] = {"a": [(1, Parcel(...))]}`. `None` for
-    /// anything else.
+    /// goes, or holding a leading-dot case: each item goes where its own type does, so it takes
+    /// that size, becomes that optional, or is a case of that enum, and is checked to fit, as in
+    /// `bytes: list[u8] = [1, 2, 255]`, `pair: (u8, int) = (3, 1)`, `batch: dict[str, list[(int,
+    /// Parcel?)]] = {"a": [(1, Parcel(...))]}` and `lights: list[Light] = [.Broken("bulb")]`.
+    /// `None` for anything else.
     fn sized_collection(&mut self, expr: &Expr, expected: &Type) -> Option<Type> {
         let wanted = self.checker.settled(expected).without_none();
-        if !holds_sized(&wanted) && !holds_optional(&wanted) {
+        if !holds_sized(&wanted) && !holds_optional(&wanted) && !written_with_cases(expr) {
             return None;
         }
         match (&expr.kind, wanted) {
@@ -188,6 +189,25 @@ impl FnCx<'_> {
 
     /// The two sides of an operator. A number literal on one side, opposite a sized number,
     /// takes its size, as in `small + 1` or `2 * small`.
+    /// `x in items`: a leading-dot case on the left is a case of what the right side holds, as
+    /// `.Broken("bulb") in lights` is a `Light` for a `list[Light]`, a set's item or a dict's key.
+    pub(crate) fn contained(&mut self, lhs: &Expr, rhs: &Expr) -> (Type, Type) {
+        if !leading_dot(lhs) {
+            return self.operands(lhs, rhs);
+        }
+        let right = self.expr(rhs);
+        let held = match self.checker.settled(&right) {
+            Type::List(item) | Type::Set(item) => Some(*item),
+            Type::Dict(key, _) => Some(*key),
+            _ => None,
+        };
+        let left = match held {
+            Some(held) => self.expr_as(lhs, &held),
+            None => self.expr(lhs),
+        };
+        (left, right)
+    }
+
     pub(crate) fn operands(&mut self, lhs: &Expr, rhs: &Expr) -> (Type, Type) {
         if number_literal(lhs) && !number_literal(rhs) {
             let right = self.expr(rhs);
@@ -425,8 +445,19 @@ fn named_case(expr: &Expr) -> Option<(&Expr, &str)> {
     }
 }
 
+/// Whether a collection written out has a leading-dot case among its items, at any depth, as
+/// `[.Broken("bulb")]` or `{"hall": [.Off]}` do.
+pub(crate) fn written_with_cases(expr: &Expr) -> bool {
+    let held = |item: &Expr| leading_dot(item) || written_with_cases(item);
+    match &expr.kind {
+        ExprKind::List(items) | ExprKind::Set(items) | ExprKind::Tuple(items) => items.iter().any(held),
+        ExprKind::Dict(pairs) => pairs.iter().any(|(key, value)| held(key) || held(value)),
+        _ => false,
+    }
+}
+
 /// Whether an expression is a leading-dot case: `.Circle` or `.Circle(radius=1.0)`.
-fn leading_dot(expr: &Expr) -> bool {
+pub(crate) fn leading_dot(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Variant(_) => true,
         ExprKind::Call { callee, .. } => matches!(callee.kind, ExprKind::Variant(_)),

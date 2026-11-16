@@ -4601,9 +4601,12 @@ fn wide_program(methods: usize, kinds: usize) -> String {
     lines.join("\n")
 }
 
-/// The walk over copies of generic functions never stops counting: one that hands nothing over
-/// doesn't count towards its bound, and past the bound every kit may receive anything the program
-/// holds, which stops the check rather than passing it.
+/// The walk over copies of generic functions follows the rules lowering does, and never passes over
+/// what it can't follow. A kit's generic that comes back to itself with a bigger type each time is
+/// refused where it's written, since it can't be built. A chain of generics each asking for two
+/// copies of the next reaches the backstop, 16 copies for each function the program has, and past
+/// it every kit may receive anything the program holds, which stops the check rather than passing
+/// it.
 #[test]
 fn the_walk_never_passes_over_what_it_cant_follow() {
     let take = "export def take(fs: Fs) -> int:\n    return 7\n";
@@ -4623,11 +4626,35 @@ fn the_walk_never_passes_over_what_it_cant_follow() {
                 "def grow[T](value: T, left: int) -> int:\n    if left == 0:\n        return 0\n    return grow([value], left - 1)\n\n\
                  export struct Spin:\n    name: str\n\n    def go(self) -> int:\n        return grow(1, 3)\n\n\
                  export def take(fs: Fs) -> int:\n    return 7\n",
-                "past 2000 copies of generic functions",
+                "`grow` calls itself with a bigger type each time",
+            ),
+            (
+                "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(helper.take(fs))\n",
+                &doubling_chain(16),
+                "past the copies of generic functions a program of its size can ask for",
             ),
         ],
     )
     .unwrap();
+}
+
+/// A kit whose `Spin.go` starts a chain of `steps` generics, each asking for two copies of the next,
+/// one with a tuple and one with a list, beside a `take` that's handed an `Fs`: no type nests past
+/// `steps`, but the copies double at every step.
+fn doubling_chain(steps: usize) -> String {
+    let mut parts: Vec<String> = (0..steps)
+        .map(|step| {
+            let next = step + 1;
+            format!("def step{step}[T](value: T) -> int:\n    return step{next}((value, 1)) + step{next}([value])\n")
+        })
+        .collect();
+    parts.push(format!("def step{steps}[T](value: T) -> int:\n    return 1\n"));
+    parts.push(
+        "export struct Spin:\n    name: str\n\n    def go(self) -> int:\n        return step0(1)\n\n\
+         export def take(fs: Fs) -> int:\n    return 7\n"
+            .to_owned(),
+    );
+    parts.join("\n")
 }
 
 /// A generic type's method that only the standard library calls, as printing calls `str`, is

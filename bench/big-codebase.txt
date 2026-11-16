@@ -1,0 +1,6 @@
+# What `fennec-bench big-codebase` holds each step to, pinned by `fennec-bench big-codebase --pin`:
+# a system, a program's size in lines, a step, then the milliseconds it took, which a run may go
+# over by 50%, the most memory one process held in KB, by 25%, and the instructions it took, by 5%,
+# `-` where they weren't measured. linux-x86_64's are CI's runners, each night in `proofs.yml`,
+# and are pinned from its first nights. Until then a night is held only to growing in step with
+# the program.

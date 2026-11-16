@@ -439,7 +439,7 @@ fn unaccepted((kit, moved): (&str, bool), receipt: &Receipt, capabilities: &[&'s
         ),
         How::PastTheBound => (
             format!(
-                "`{kit}` would now receive anything the program holds, {listed}, {unlisted}: past {MOST_COPIES} copies of generic functions, here, what's handed where can't be followed"
+                "`{kit}` would now receive anything the program holds, {listed}, {unlisted}: past the copies of generic functions a program of its size can ask for, here, what's handed where can't be followed"
             ),
             false,
         ),
@@ -462,12 +462,6 @@ fn unaccepted((kit, moved): (&str, bool), receipt: &Receipt, capabilities: &[&'s
     };
     Diagnostic::new(message, receipt.span).with_help(help)
 }
-
-/// The most copies of generic functions followed that hand something over or make a function.
-const MOST_COPIES: usize = 2000;
-
-/// The most copies of generic functions looked at in all, those that hand nothing over included.
-const MOST_LOOKED_AT: usize = 50_000;
 
 /// The walk over every copy of every function the program checks.
 struct Walk<'c> {
@@ -529,32 +523,33 @@ impl<'c> Walk<'c> {
         for test in &self.checker.program.tests {
             queue.push((format!("test \"{}\"", test.name), Vec::new()));
         }
-        let (mut counted, mut looked_at) = (0, 0);
+        // Copies of generic functions go by the rules lowering's do (`crate::copies`): one it can't
+        // make is never built, so it hands nothing over, and isn't followed. Past the backstop,
+        // what's handed where can't be followed.
+        let mut copies = crate::copies::Copies::default();
+        let functions = self.checker.program.functions.len();
         while let Some((key, given)) = queue.pop() {
+            if !given.is_empty() {
+                let given_by_name = given.iter().map(|(name, ty)| (name, ty));
+                if copies.too_deep(&key, given_by_name).is_some() {
+                    continue;
+                }
+            }
             if !self.seen.insert((key.clone(), given.clone())) {
                 continue;
             }
-            // A generic function that calls itself with a bigger type makes copies without end. A
-            // copy that hands nothing over and makes no function can't give a kit anything, so
-            // only the others count towards the bound, but every copy counts towards a bigger one.
             if !given.is_empty() {
-                looked_at += 1;
-                if self.hands_over(&key) {
-                    counted += 1;
-                }
-                if counted > MOST_COPIES || looked_at > MOST_LOOKED_AT {
-                    self.past_the_bound(&key);
-                    return;
+                match copies.make(&key, functions) {
+                    Ok(()) => {}
+                    Err(crate::copies::Refusal::TooMany { .. }) => {
+                        self.past_the_bound(&key);
+                        return;
+                    }
+                    Err(_) => continue,
                 }
             }
             queue.extend(self.copy(&key, &given));
         }
-    }
-
-    /// Whether a function hands anything over, or makes a function.
-    fn hands_over(&self, key: &str) -> bool {
-        self.handovers.handed.get(key).is_some_and(|calls| !calls.is_empty())
-            || self.handovers.arrows.get(key).is_some_and(|arrows| !arrows.is_empty())
     }
 
     /// Past the bound, what's handed where can't be followed, so every kit may receive anything the

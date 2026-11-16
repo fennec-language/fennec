@@ -93,6 +93,38 @@ fn the_help_says_what_to_write() {
     assert_eq!(help, ["write it after the parameters: `def pair(n: int) -> (int, str):`"]);
 }
 
+/// A return type is written in only where its file can name every type in it. In a program of two
+/// files, the first imports `Deque` and the second doesn't, and each has a function giving back a
+/// `Deque[int]` with no return type. The first's fix writes it in. The second's says to write it,
+/// since `Deque` written there wouldn't be found. Once, a type any file imported counted, and the
+/// fix wrote a name the second file couldn't use.
+#[test]
+fn a_return_type_is_written_in_only_where_its_file_can_name_it() {
+    let first = "from std.collections import Deque\n\ndef made() -> Deque[int]:\n    return Deque.of([1, 2])\n\n\
+                 def here():\n    return made()\n";
+    let second = "def again():\n    return made()\n";
+    let mut sources = fennec_syntax::Sources::new();
+    let mut module = fennec_syntax::Module::default();
+    for (path, text) in [("first.fen", first), ("second.fen", second)] {
+        let base = sources.add(path, text);
+        module.items.extend(fennec_syntax::parse_at(text, base).unwrap().items);
+    }
+    module.files = sources.spans();
+    let help: Vec<String> = fennec_check::check(&module)
+        .err()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|said| said.help)
+        .collect();
+    assert_eq!(
+        help,
+        [
+            "write it after the parameters: `def here() -> Deque[int]:`",
+            "write the type it gives back after the parameters: `def again() -> <type>:`",
+        ]
+    );
+}
+
 #[test]
 fn a_generator_gives_back_an_iterator() {
     let program = "

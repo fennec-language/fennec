@@ -218,6 +218,10 @@ export struct Net:
 
     ## A server listening on `port`, or on a port the system picks for 0, lent for a `with` block
     ## and closed when it ends. With `tls=`, each connection is TLS, shown by that certificate.
+    ## Connections wait for the server to take them in a queue as long as the system allows:
+    ## 4,096 by default on Linux, where connections past it wait, and may time out, until there's
+    ## room, but 128 on macOS, where they're reset. `sudo sysctl kern.ipc.somaxconn=4096` raises
+    ## the Mac's.
     def listen(self, port: int, tls: Certificate? = None) -> with Server fails NetError:
         server = listened(self, port=port, tls=tls)?
         lend server except:
@@ -578,27 +582,32 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
         if text_byte(line, 0) == 32 or text_byte(line, 0) == 9 or has_control(line, True):
             return .Bad(status=400, reason="a header has a character it can't have")
         colon = line.find(":") else return .Bad(status=400, reason="a header has no `:`")
-        if not is_token(line[:colon]): return .Bad(status=400, reason="a header's name isn't one")
-        name = line[:colon].lower()
-        # Two of these would let two servers read two different requests from the same bytes.
+        # The name and the value are read where they are in the line, each cut out once.
+        if not is_token_part(line, start=0, end=colon):
+            return .Bad(status=400, reason="a header's name isn't one")
+        name = lowered_part(line, colon)
+        # Two of these would let two servers read two different requests from the same bytes. Only
+        # they're looked for before they're set, so any other header is looked up once.
         if (
-            name in headers
-            and (name == "content-length" or name == "transfer-encoding" or name == "host")
+            (name == "content-length" or name == "transfer-encoding" or name == "host")
+            and name in headers
         ):
             return .Bad(status=400, reason=f"there's more than one `{name}` header")
-        headers[name] = line[colon + 1:].strip()
-    if "transfer-encoding" in headers:
+        headers[name] = value_after(line, colon)
+    sent_length = headers.get("content-length")
+    coding = headers.get("transfer-encoding")
+    if coding is not None:
         # Both, or a coding that isn't plainly `chunked`, is where two servers in a row disagree on
         # where the body ends: one goes by the length and one by the chunks, and a request hides
         # in what's left.
-        if "content-length" in headers:
+        if sent_length is not None:
             return .Bad(status=400, reason="there's both a transfer-encoding and a content-length")
-        if headers["transfer-encoding"].lower() != "chunked":
+        if coding.lower() != "chunked":
             return .Bad(status=400, reason="the only transfer-encoding taken is `chunked`")
         return .Bad(status=501, reason="chunked bodies aren't taken yet")
     mut body = bytes([])
-    if "content-length" in headers:
-        written = headers["content-length"]
+    if sent_length is not None:
+        written = sent_length
         if not only_digits(written):
             return .Bad(status=400, reason="the content length isn't a number")
         length = int(written) except InvalidValue(): return .Bad(
@@ -645,9 +654,12 @@ def read_request(connection: Connection, timeout: Duration) -> RequestRead fails
 
 ## Whether `text` is what HTTP calls a token, as a method or a header's name has to be.
 def is_token(text: str) -> bool:
-    size = text_size(text)
-    if size == 0: return False
-    for at in range(size):
+    return is_token_part(text, start=0, end=text_size(text))
+
+## Whether the bytes of `text` from `start` up to `end` are a token, read where they are.
+def is_token_part(text: str, start: int, end: int) -> bool:
+    if end <= start: return False
+    for at in range(start, end):
         b = text_byte(text, at)
         letter = (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57)
         if (
@@ -672,6 +684,25 @@ def is_token(text: str) -> bool:
         ):
             return False
     return True
+
+## The first `end` bytes of `line`, a header's name, in lower case: cut out once, and made lower
+## only when it has a capital, as a name already lower, like one HTTP/2 sends, needs nothing more.
+def lowered_part(line: str, end: int) -> str:
+    for at in range(end):
+        b = text_byte(line, at)
+        if b >= 65 and b <= 90: return text_part(line, 0, end).lower()
+    return text_part(line, 0, end)
+
+## What follows `colon` in `line`, a header's value, with the spaces and tabs around it left out,
+## as HTTP has them: cut out once, where `strip` cut it out and then again.
+def value_after(line: str, colon: int) -> str:
+    mut start = colon + 1
+    mut end = text_size(line)
+    while start < end and (text_byte(line, start) == 32 or text_byte(line, start) == 9):
+        start += 1
+    while end > start and (text_byte(line, end - 1) == 32 or text_byte(line, end - 1) == 9):
+        end -= 1
+    return text_part(line, start, end)
 
 ## Whether `text` has a control character in it, which a tab isn't if `tab` says so.
 def has_control(text: str, tab: bool) -> bool:

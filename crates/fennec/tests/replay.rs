@@ -520,6 +520,169 @@ fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()>
     Ok(())
 }
 
+/// A task serves, `main` makes one request of it and closes the server: no stop comes into it.
+const SERVED_IN_A_TASK: &str = "from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def answered(request: Request) -> Response:
+    return Response(status=200, body=f\"hello {request.path}\".encode())
+
+def serving(server: Server, stdout: Stdout):
+    server.serve((request) => answered(request))
+    stdout.print(\"the server ended\")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => serving(server, stdout=stdout))?:
+            got = net.get(f\"http://127.0.0.1:{port}/one\")?
+            stdout.print(got.text())
+            server.close()
+    stdout.print(\"the server is over\")
+";
+
+/// A task serves, and its block's end stops it there, 20 ms after one request was answered.
+const SERVED_IN_A_TASK_AND_STOPPED: &str = "from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def answered(request: Request) -> Response:
+    return Response(status=200, body=f\"hello {request.path}\".encode())
+
+def serving(server: Server, stdout: Stdout):
+    server.serve((request) => answered(request))
+    stdout.print(\"the server never said\")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => serving(server, stdout=stdout), stop_after=20ms)?:
+            got = net.get(f\"http://127.0.0.1:{port}/one\")?
+            stdout.print(got.text())
+    stdout.print(\"the server is over\")
+";
+
+/// A client connects and sends nothing, so its round is waiting to read when the serving task's
+/// block ends and stops it.
+const SERVED_IN_A_TASK_STOPPED_WHILE_A_ROUND_READS: &str = "from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def answered(request: Request) -> Response:
+    return Response(status=200, body=f\"hello {request.path}\".encode())
+
+def serving(server: Server, stdout: Stdout):
+    server.serve((request) => answered(request))
+    stdout.print(\"the server never said\")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect(\"127.0.0.1\", port)? as quiet:
+            with launch(() => serving(server, stdout=stdout), stop_after=50ms)?:
+                got = net.get(f\"http://127.0.0.1:{port}/one\")?
+                stdout.print(got.text())
+            stdout.print(\"the block ended\", quiet.peer != \"\")
+    stdout.print(\"the server is over\")
+";
+
+/// One round's handler is asleep when the serving task's block ends and stops it.
+const SERVED_IN_A_TASK_STOPPED_WHILE_A_HANDLER_SLEEPS: &str = "from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def answered(request: Request, clock: Clock, stdout: Stdout) -> Response:
+    if request.path == \"/slow\":
+        stdout.print(\"the slow one began\")
+        clock.sleep(2h)
+        stdout.print(\"the slow one never said\")
+    return Response(status=200, body=f\"hello {request.path}\".encode())
+
+def serving(server: Server, clock: Clock, stdout: Stdout):
+    server.serve((request) => answered(request, clock=clock, stdout=stdout))
+    stdout.print(\"the server never said\")
+
+def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect(\"127.0.0.1\", port)? as slow:
+            slow.write(\"GET /slow HTTP/1.1\\r\\nhost: here\\r\\n\\r\\n\")?
+            with launch(() => serving(server, clock=clock, stdout=stdout), stop_after=100ms)?:
+                got = net.get(f\"http://127.0.0.1:{port}/one\")?
+                stdout.print(got.text())
+    stdout.print(\"the server is over\")
+";
+
+/// A task loops over a server's connections itself, and its block's end stops it there.
+const LOOPED_IN_A_TASK_AND_STOPPED: &str = "from std.concurrent import Crashed
+from std.net import NetError, Server
+
+def serving(server: Server, stdout: Stdout) fails NetError:
+    for conn in parallel(server):
+        line = conn.read_line()? else \"\"
+        conn.write(f\"{len(line)}\\n\")?
+    stdout.print(\"the loop never said\")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => serving(server, stdout=stdout)?, stop_after=50ms)?:
+            with net.connect(\"127.0.0.1\", port)? as first:
+                first.write(\"hello\\n\")?
+                stdout.print(first.read_line()? else \"nothing\")
+    stdout.print(\"the server is over\")
+";
+
+/// A server served from a launched task replays, closed or stopped, with a stop that races a round
+/// reading or asleep, and a task looping over its connections itself. A replayed server blocked its
+/// thread until its rounds ended, and a task's thread is a worker its rounds run on, so the replay
+/// never ended (#1832). Now it parks, as a live one does, and lends its rounds a copy of what
+/// they're given. A stop that ended it is recorded, and its replay fails as stopped there too.
+/// What a replay prints and how it ends are the recording's; a replayed server says on standard
+/// error where its recording ended.
+#[test]
+fn a_server_served_from_a_task_replays_closed_or_stopped() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("served-in-a-task")?;
+    for (name, source) in [
+        ("closed", SERVED_IN_A_TASK),
+        ("stopped", SERVED_IN_A_TASK_AND_STOPPED),
+        ("stopped-while-a-round-reads", SERVED_IN_A_TASK_STOPPED_WHILE_A_ROUND_READS),
+        ("stopped-while-a-handler-sleeps", SERVED_IN_A_TASK_STOPPED_WHILE_A_HANDLER_SLEEPS),
+        ("looped-and-stopped", LOOPED_IN_A_TASK_AND_STOPPED),
+    ] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        for recorded_threads in ["1", "4"] {
+            let log = dir.join(format!("{name}-{recorded_threads}.log"));
+            let mut record = fennec_command();
+            record.env("FENNEC_THREADS", recorded_threads);
+            record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+            let recorded = outcome(&record.output_before(DEADLINE)?);
+            assert_eq!(recorded.2, Some(0), "{name} recorded at {recorded_threads}: {}", recorded.1);
+            for round in 0..8 {
+                for threads in ["1", "4", "16"] {
+                    let replayed = outcome(
+                        &fennec_command()
+                            .env("FENNEC_THREADS", threads)
+                            .args(["replay", &log.to_string_lossy()])
+                            .current_dir(&dir)
+                            .output_before(DEADLINE)?,
+                    );
+                    let at = format!("{name} recorded at {recorded_threads}, replay {round} at {threads}");
+                    assert_eq!((&replayed.0, replayed.2), (&recorded.0, recorded.2), "{at}: {}", replayed.1);
+                    assert!(
+                        replayed.1.contains("the recording ends here, so the server is stopped"),
+                        "{at}: {}",
+                        replayed.1
+                    );
+                }
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A server that stops when the program's asked to, with 2 seconds' grace, and says so after.
 #[cfg(unix)]
 const STOPPING_SERVER: &str = "from std.net import Request, Response

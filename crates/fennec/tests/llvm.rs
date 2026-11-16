@@ -2866,6 +2866,167 @@ fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::R
     Ok(())
 }
 
+/// Appends written straight in a lock's body, to a list in a dict's value and in a list's item, 300
+/// under one lock and one under each of 300: the dict's lists are changed where they are, taken
+/// out through the lock's handle and saved by its log first. Each of those 600 appends copied its
+/// whole list, and the program made 1,200 copies. With a list's item saved once a lock (#1895),
+/// it makes none.
+#[test]
+fn appends_in_a_locks_own_body_change_a_dicts_lists_where_they_are() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "appended_in_a_locks_body",
+        APPENDED_IN_A_LOCKS_BODY,
+        "301 300 301\n301 301 locked 299, a text long enough for a block of its own\n",
+    )?;
+    // Each half is pinned on its own, so a change in one can't hide in the other: the program with
+    // only its appends through a dict's value, and with only those through a list's item.
+    let without = |lines: &[&str]| {
+        lines.iter().fold(APPENDED_IN_A_LOCKS_BODY.to_owned(), |program, line| {
+            assert_eq!(program.matches(line).count(), 1, "{line}");
+            program.replace(line, "")
+        })
+    };
+    let by_name = without(&[
+        "            held.rows[0].items.append(f\"row {turn}, a text long enough for a block of its own\")\n",
+        "            held.rows[1].items.append(f\"locked {turn}, a text long enough for a block of its own\")\n",
+    ]);
+    let by_item = without(&[
+        "            held.named[\"one\"].items.append(\n                f\"named {turn}, a text long enough for a block of its own\",\n            )\n",
+        "            held.named[\"two\"].items.append(\n                f\"locked {turn}, a text long enough for a block of its own\",\n            )\n",
+    ]);
+    assert_eq!(
+        counts_of("appended_in_a_locks_body_by_name", &by_name)?,
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 621 allocated_bytes 112664 live 0"
+    );
+    // A list's item is saved once a lock and what it holds marked (#1895), so its list grows
+    // where it is too.
+    assert_eq!(
+        counts_of("appended_in_a_locks_body_by_item", &by_item)?,
+        "copies 0 copied_bytes 0 largest_copy 0 allocations 621 allocated_bytes 112584 live 0"
+    );
+    Ok(())
+}
+
+const APPENDED_IN_A_LOCKS_BODY: &str = r#"# Appends written straight in a lock's body, to a list inside a dict's value and inside a list's
+# item, many times under one lock and once each under many locks: what each prints, and the copies
+# the run makes, which a copy of the whole list on every append would make grow with its square.
+struct Bag:
+    items: list[str]
+    seen: int
+
+struct Shelf:
+    named: dict[str, Bag]
+    rows: list[Bag]
+
+def first_bag() -> Bag:
+    return Bag(items=["first, a text long enough for a block of its own"], seen=0)
+
+def under_one_lock(shelf: shared Shelf, count: int):
+    lock shelf as ref held:
+        for turn in range(count):
+            held.named["one"].items.append(
+                f"named {turn}, a text long enough for a block of its own",
+            )
+            held.rows[0].items.append(f"row {turn}, a text long enough for a block of its own")
+            held.named["one"].seen += 1
+    return
+
+def one_each(shelf: shared Shelf, count: int):
+    for turn in range(count):
+        lock shelf as ref held:
+            held.named["two"].items.append(
+                f"locked {turn}, a text long enough for a block of its own",
+            )
+            held.rows[1].items.append(f"locked {turn}, a text long enough for a block of its own")
+    return
+
+def main(stdout: Stdout):
+    shared shelf = Shelf(
+        named={"one": first_bag(), "two": first_bag()},
+        rows=[first_bag(), first_bag()],
+    )
+    under_one_lock(shelf, count=300)
+    one_each(shelf, count=300)
+    lock shelf as held:
+        stdout.print(len(held.named["one"].items), held.named["one"].seen, len(held.rows[0].items))
+        stdout.print(len(held.named["two"].items), len(held.rows[1].items), held.rows[1].items[-1])
+    return
+"#;
+
+/// Lists taken out in a lock's own body go back before the lock's rollback runs, so the lock's
+/// value is as it was before the lock and nothing the task made outlives it:
+/// - a task crashing after appending to a list in a dict's value and in a list's item, written
+///   straight in the body, after 1, 40 and 300 appends, so the list has grown and moved since the
+///   lock saved it;
+/// - a task crashing while the list is out, between the take and the append, reading the
+///   appended text out of range or multiplying past an int's range;
+/// - a failure leaving the lock, after appends written straight in it and through a `ref` method
+///   failing partway;
+/// - a `for ref` loop over the lock's list, failing or crashing partway.
+///
+/// Each prints what the reference evaluator prints, dev and release, on one thread and on four,
+/// with nothing left.
+#[test]
+fn a_list_taken_in_a_locks_own_body_goes_back_on_a_crash_or_a_failure() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    for (name, source, wanted) in [
+        (
+            "taken_in_a_locks_own_body",
+            include_str!("fixtures/workers/taken_in_a_locks_own_body.fen"),
+            include_str!("fixtures/workers/taken_in_a_locks_own_body.out"),
+        ),
+        (
+            "crashed_while_taken_in_a_locks_own_body",
+            include_str!("fixtures/workers/crashed_while_taken_in_a_locks_own_body.fen"),
+            include_str!("fixtures/workers/crashed_while_taken_in_a_locks_own_body.out"),
+        ),
+        (
+            "failed_after_takes_in_a_locks_own_body",
+            include_str!("fixtures/workers/failed_after_takes_in_a_locks_own_body.fen"),
+            include_str!("fixtures/workers/failed_after_takes_in_a_locks_own_body.out"),
+        ),
+        (
+            "failed_in_a_for_ref_in_a_locks_own_body",
+            include_str!("fixtures/workers/failed_in_a_for_ref_in_a_locks_own_body.fen"),
+            include_str!("fixtures/workers/failed_in_a_for_ref_in_a_locks_own_body.out"),
+        ),
+    ] {
+        let dir = folder(name)?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let (program, executable) = (program.to_string_lossy().into_owned(), dir.join(name));
+        let output = executable.to_string_lossy().into_owned();
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let args: Vec<&str> = ["build"]
+                .into_iter()
+                .chain(how.iter().copied())
+                .chain([program.as_str(), "-o", &output])
+                .collect();
+            let built = fennec(&args, &dir)?;
+            assert!(built.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&built.stderr));
+            for threads in ["1", "4"] {
+                let ran = Command::new(&executable)
+                    .env("FENNEC_COUNTS", "1")
+                    .env("FENNEC_THREADS", threads)
+                    .output_within()?;
+                let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+                let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+                assert_eq!(printed, wanted, "{name} {how:?}, {threads} threads: {errors}");
+                assert!(ran.status.success(), "{name} {how:?}, {threads} threads: {errors}");
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert!(counts.ends_with(" live 0"), "{name} {how:?}, {threads} threads: {counts}");
+            }
+        }
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
 /// What's appended to a list inside a dict's value can be made in the call, a string, a call's
 /// result, a struct, something read from the list itself, and the list is still changed where it
 /// is: it's taken out when the append comes, not when it's read, so nothing is out of the dict

@@ -74,7 +74,7 @@ pub(crate) fn run_logged(
 /// What a run knows of its program's check.
 enum Checked {
     /// Checked and resolved for a build, with what the check found, when that's known.
-    Resolved(Option<fennec_check::Signatures>),
+    Resolved(Option<Box<fennec_check::Signatures>>),
     /// A kept image, the program as it was checked when it was kept: its files are the ones it was
     /// kept from, so it checks the same. It's checked again, which resolves it, only if it has to
     /// be built.
@@ -110,14 +110,14 @@ fn built_and_run(
     });
     if !ready {
         let checked = match checked {
-            Checked::Resolved(signatures) => signatures,
+            Checked::Resolved(signatures) => signatures.map(|signatures| *signatures),
             Checked::Kept => match fennec_check::check_to_build(&mut program.module) {
                 Ok(signatures) => signatures,
                 // A kept image that doesn't check as it did is passed over for the files.
                 Err(_) => match cache().map(|cache| loaded(path, &cache)) {
                     Some(Ok((loaded, Checked::Resolved(signatures), _))) => {
                         program = loaded;
-                        signatures
+                        signatures.map(|signatures| *signatures)
                     }
                     Some(Err(code)) => return Ok(code),
                     _ => return Err("its kept image couldn't be checked again".to_owned()),
@@ -401,7 +401,7 @@ fn loaded(
         crate::image::store(path, &cache, &files, &program);
     }
     match fennec_check::check_to_build(&mut program.module) {
-        Ok(signatures) => Ok((program, Checked::Resolved(signatures), None)),
+        Ok(signatures) => Ok((program, Checked::Resolved(signatures.map(Box::new)), None)),
         // Cutting it down missed something the whole program has.
         Err(_) => whole(path).map(|(program, _)| (program, Checked::Resolved(None), None)),
     }

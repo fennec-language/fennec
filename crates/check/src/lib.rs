@@ -32,6 +32,7 @@ mod expect;
 mod expr;
 mod extend;
 pub use crossing::Crossing;
+pub use shapes::SavedAs;
 pub use extend::method_key;
 mod fields;
 mod function;
@@ -1181,6 +1182,9 @@ pub struct Signatures {
     types: Types,
     lock_verdicts: BTreeMap<String, String>,
     crossing: Crossing,
+    /// The types that write their own `serialize`, by name, with whose it is: the shape and the
+    /// layout `pack` saves go by what those save rather than by their fields.
+    own_saving: BTreeMap<String, shapes::Writer>,
 }
 
 /// A struct's fields, with their types, in the order they're written.

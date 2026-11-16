@@ -20408,6 +20408,53 @@ fn pack_loads_a_generic_types_earlier_fields_by_their_names() -> std::io::Result
     Ok(())
 }
 
+/// A type that writes its own `serialize` is saved with the shape of what it saves, as its layout
+/// already was. A `Deque[int]` saves as a `list[int]`, so its bytes are a list's, and each loads
+/// as the other. A `Duration` saves as its nanoseconds, an int's bytes. A program's `Money`, which
+/// saves itself its own way, is shaped by its name alone: the hash after `FPK2` is `Money`'s. Since
+/// #1836 a `Deque`'s shape had held std's own fields, so how std keeps a ring changed the hash.
+#[test]
+fn pack_shapes_a_type_that_saves_itself_by_what_it_saves() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "saves_itself_shape",
+        r#"from std import pack
+from std.collections import Deque
+from std.time import Duration
+
+struct Money:
+    cents: int
+
+extend Money:
+    def serialize(self, ref out: Serializer):
+        out.int(self.cents)
+
+    def deserialize(ref src: Deserializer) -> Self fails ParseError:
+        return Money(cents=src.int()?)
+
+def main(stdout: Stdout) fails ParseError:
+    queue = Deque.of([1, 2, 3])
+    stdout.print(pack.dumps(queue) == pack.dumps([1, 2, 3]))
+    stdout.print(pack.loads[list[int]](pack.dumps(queue))?)
+    stdout.print(pack.loads[Deque[int]](pack.dumps([4, 5]))?.items())
+    stdout.print(pack.dumps(Duration.seconds(2.0)) == pack.dumps(2_000_000_000))
+    stdout.print(pack.dumps(Money(cents=5))[4:12])
+    stdout.print(pack.loads[Money](pack.dumps(Money(cents=7)))?.cents)
+"#,
+    )?;
+    // FNV-1a, as `shape_hash` takes it, of `Money`'s shape: its name.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in "Money".bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    let shape: Vec<String> = hash.to_le_bytes().iter().map(u8::to_string).collect();
+    assert_eq!(printed, format!("True\n[1, 2, 3]\n[4, 5]\nTrue\nbytes([{}])\n7\n", shape.join(", ")));
+    Ok(())
+}
+
 /// What the next test builds: many small values in one stream, read in order, by name, fed a
 /// byte at a time, cut off, and two `Packer`s' bytes one after the other.
 const PACK_STREAMS: &str = r#"from std import pack

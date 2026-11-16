@@ -4,6 +4,7 @@
 //! a `for ref` loop's name or a local `ref`, a place: a name in an older frame and the fields and
 //! positions under it. Reading a place copies what's there, and writing one writes there.
 
+mod actors;
 mod builtins;
 mod calls;
 pub(crate) mod disk;
@@ -105,6 +106,11 @@ pub(crate) struct Shared {
     /// moved the clock on, in nanoseconds, without waiting.
     pub(crate) started: std::time::Instant,
     pub(crate) slept: AtomicU64,
+    /// Who of `main` and the tasks it launched runs, and the channels they share.
+    pub(crate) sched: actors::Sched,
+    /// Whether standard error is left unwritten, as it is on every run but the first of a
+    /// program whose tasks' messages are tried in each order.
+    pub(crate) quiet: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
@@ -123,6 +129,8 @@ impl Shared {
             rounds_started: AtomicU64::new(0),
             started: std::time::Instant::now(),
             slept: AtomicU64::new(0),
+            sched: actors::Sched::default(),
+            quiet: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -219,6 +227,12 @@ pub(crate) struct Interp {
     pub(crate) recordings: Vec<Option<json::write::Saved>>,
     /// What each type's own `def deserialize` running for `json.loads` reads, the newest last.
     pub(crate) loadings: Vec<json::read::Loading>,
+    /// Which of `main`'s thread and the tasks it launched this runs as: 0 for `main`.
+    pub(crate) actor: usize,
+    /// The local `Buffer` a `reserve(n)` was just called on, by its frame and name, and the room
+    /// it promised: `n` more than it held. Any write anywhere forgets it, so it holds only until
+    /// the buffer, or anything else, changes.
+    pub(crate) reserved: Option<(usize, String, i64)>,
 }
 
 /// How `main` ended.
@@ -248,6 +262,8 @@ impl Interp {
             parts_read: 0,
             recordings: Vec::new(),
             loadings: Vec::new(),
+            actor: 0,
+            reserved: None,
         }
     }
 
@@ -280,7 +296,10 @@ impl Interp {
             };
             given.push(calls::ArgVal::Value(None, Value::Cap(cap)));
         }
-        match self.call_def(main, None, None, given, main.span) {
+        let ended = self.call_def(main, None, None, given, main.span);
+        // A task still waiting for its turn when `main` is done runs nothing more.
+        self.give_up();
+        match ended {
             Ok(value) => MainEnded::Returned(value),
             Err(Flow::Fail(error, span)) => MainEnded::Failed(error, span),
             Err(Flow::Crash(message, span)) => MainEnded::Crashed(message, span),
@@ -336,6 +355,7 @@ impl Interp {
     /// Writes text to standard output.
     pub(crate) fn print(&self, text: &str) -> Run<()> {
         self.reach_out(parallel::Outside::Printing)?;
+        self.outside_in_order(parallel::Outside::Printing)?;
         let Ok(mut out) = self.shared.out.lock() else { return unsupported("standard output was lost") };
         if out.len() + text.len() > MOST_OUTPUT {
             return unsupported("ran too long: it printed too much");
@@ -430,6 +450,7 @@ impl Interp {
 
     /// Gives a new name a value, hiding any it had.
     pub(crate) fn bind(&mut self, name: &str, value: Value) -> Run<()> {
+        self.reserved = None;
         if name != "_" {
             self.frame_mut()?.vars.push((name.to_owned(), Binding::Value(value)));
         }
@@ -437,6 +458,7 @@ impl Interp {
     }
 
     pub(crate) fn bind_ref(&mut self, name: &str, place: Place) -> Run<()> {
+        self.reserved = None;
         if name != "_" {
             self.frame_mut()?.vars.push((name.to_owned(), Binding::Ref(place)));
         }
@@ -446,6 +468,7 @@ impl Interp {
     /// Sets a name: a value it holds is replaced, a place it stands for is written, and a name
     /// it doesn't have yet is made.
     pub(crate) fn set_name(&mut self, name: &str, value: Value, span: Span) -> Run<()> {
+        self.reserved = None;
         if name == "_" {
             return Ok(());
         }
@@ -534,6 +557,7 @@ impl Interp {
         adding: bool,
         change: impl FnOnce(&mut Value) -> Run<R>,
     ) -> Run<R> {
+        self.reserved = None;
         let last = place.path.len().saturating_sub(1);
         let mut value = self.root_mut(place)?;
         for (at, step) in place.path.iter().enumerate() {

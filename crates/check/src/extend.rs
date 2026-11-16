@@ -109,6 +109,19 @@ impl Program {
         let first = self.functions.get(&plain).map(|existing| existing.def.clone());
         let key = method_key(type_name, method, first.as_deref());
         if let Some(existing) = self.functions.get(&key) {
+            // A std module's function has a key a program's type and method can spell: its own
+            // can't take it, or std's code would call the program's.
+            if !prelude && existing.prelude && existing.owner.is_none() {
+                let message = format!(
+                    "`{key}` is the standard library's own name, so a type called `{type_name}` can't have a method called `{}`",
+                    method.name
+                );
+                let help = format!(
+                    "call the type something else: `std.{type_name}`'s functions are named `{type_name}.` too"
+                );
+                self.problems.push(Diagnostic::new(message, method.span).with_help(help));
+                return;
+            }
             let problem = match operator_right(method) {
                 Some(right) => Diagnostic::new(
                     format!("`{type_name}` already has a `{}` taking {right} on its right", method.name),

@@ -24,7 +24,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -45,6 +45,9 @@ const RANGE_STACKS_KEPT: usize = 8;
 
 /// The most ranges of `parallel` calls a worker runs at once. Each has a stack of its own, and past
 /// a few thousand there's no room left for more, nor for the tasks they launch, which they wait for.
+/// Only ranges count: a launched task may live as long as the program, and a worker holding this
+/// many of those would otherwise never start a range, with whatever waits for the range waiting
+/// for good.
 const MOST_RANGES: usize = 1024;
 
 /// A range or task waiting for a stack: the work, its accounts, and what's told its number once it
@@ -706,6 +709,8 @@ pub(in crate::embed) struct Io {
     /// Ranges, and launched tasks, waiting for a stack, which they get as others end. Launched tasks
     /// go first: ranges may be waiting for them.
     deferred_ranges: VecDeque<Deferred>,
+    /// How many ranges are running here as tasks, of the tasks in `ranges`: the rest are launched.
+    live_ranges: usize,
     deferred_tasks: VecDeque<Deferred>,
     /// The runtime's temporaries and inputs each parked task holds, kept apart while it's parked:
     /// tasks take turns on the thread, so one's can't be left where another's truncating would
@@ -730,6 +735,7 @@ impl Io {
             servers: HashMap::new(),
             ranges: Scheduler::keeping(RANGE_STACK, RANGE_STACKS_KEPT),
             deferred_ranges: VecDeque::new(),
+            live_ranges: 0,
             deferred_tasks: VecDeque::new(),
             accounts: HashMap::new(),
             temporaries: HashMap::new(),
@@ -739,8 +745,9 @@ impl Io {
     /// Starts a range as a parked task on this worker, so it can park when it waits. If there's no
     /// stack for it, it runs here and now, as a range whose body can't wait does.
     pub(in crate::embed) fn start_range(&mut self, range: Box<dyn FnOnce() -> i64>) {
-        let deferred = Deferred { run: range, accounts: Box::default(), started: None };
-        if self.ranges.len() >= MOST_RANGES || !self.deferred_ranges.is_empty() {
+        let accounts = Box::new(super::threads::Accounts::for_range());
+        let deferred = Deferred { run: range, accounts, started: None };
+        if self.live_ranges >= MOST_RANGES || !self.deferred_ranges.is_empty() {
             self.deferred_ranges.push_back(deferred);
             return;
         }
@@ -784,6 +791,7 @@ impl Io {
         let number =
             super::heap::number_to_mark(task, |number| alive.values().any(|other| other.marked_as(number)));
         accounts.set_task(number);
+        self.live_ranges += usize::from(accounts.is_range_s());
         // Named as a server's round is: a task's temporaries are swapped last, so they say who it is.
         if let Some(named) = accounts.take_replay() {
             self.temporaries.insert(task, super::Temporaries::of_task(named));
@@ -821,7 +829,7 @@ impl Io {
                 return;
             }
         }
-        while self.ranges.len() < MOST_RANGES
+        while self.live_ranges < MOST_RANGES
             && let Some(deferred) = self.deferred_ranges.pop_front()
         {
             if let Err(deferred) = self.try_start(deferred) {
@@ -837,6 +845,22 @@ impl Io {
         if let Some(token) = token {
             self.waiting.remove(&token);
             self.ready.push_back((task, Wake::Ready(STOPPED)));
+        }
+    }
+
+    /// Cuts short the waits of the ranges parked here that are the task's told to stop with `stop`:
+    /// the ranges of a `parallel` call it made, which stop as it does. In the order they started,
+    /// so they're woken the same way each time.
+    pub(in crate::embed) fn cancel_ranges_of(&mut self, stop: &Arc<AtomicU8>) {
+        let mut ranges: Vec<TaskId> = self
+            .accounts
+            .iter()
+            .filter(|(_, accounts)| accounts.is_range_stopped_with(stop))
+            .map(|(task, _)| *task)
+            .collect();
+        ranges.sort_unstable();
+        for range in ranges {
+            self.cancel(range);
         }
     }
 
@@ -1053,6 +1077,7 @@ impl Io {
             }
             Step::Done(_) | Step::Unknown => {
                 debug_assert!(accounts.is_empty(), "a range ended with what it made not handed over");
+                self.live_ranges -= usize::from(accounts.is_range_s()).min(self.live_ranges);
                 self.start_deferred();
             }
         }
@@ -1415,16 +1440,31 @@ pub(crate) static PARKED_ON_COPIES: AtomicU64 = AtomicU64::new(0);
 /// Unix hands the poll the socket itself (`park_on_fd`) for one wait at a time. A second wait on
 /// the same connection, as when one task reads it while another writes to it, comes this way: a
 /// poll takes a descriptor once, and a copy has one of its own.
+#[cfg(test)]
 pub(crate) fn park_on_copy(
     token: Token,
     socket: &std::net::TcpStream,
     interest: Interest,
     deadline: Option<Instant>,
 ) -> Parked {
+    let copy = || socket.try_clone().ok().map(|copy| Box::new(TcpStream::from_std(copy)) as PollCopy);
+    park_on_a_copy(token, copy, interest, deadline)
+}
+
+/// A copy of a socket, of the kind a poll takes: a connection's, a listener's or a UDP socket's.
+pub(crate) type PollCopy = Box<dyn mio::event::Source>;
+
+/// `park_on_copy` for any kind of socket, with `copy` to make the copy of it.
+pub(crate) fn park_on_a_copy(
+    token: Token,
+    copy: impl FnOnce() -> Option<PollCopy>,
+    interest: Interest,
+    deadline: Option<Instant>,
+) -> Parked {
     if cut_short() {
         return Parked::Cancelled;
     }
-    let copied = socket.try_clone().ok().map(TcpStream::from_std).and_then(|mut source| {
+    let copied = copy().and_then(|mut source| {
         let registered = REGISTRY.with_borrow(|registry| {
             registry.as_ref().is_some_and(|registry| registry.register(&mut source, token, interest).is_ok())
         });
@@ -1500,6 +1540,13 @@ pub(crate) fn park_on(token: Token, deadline: Option<Instant>) -> Parked {
     park_on_token(token, deadline, true)
 }
 
+/// Parks this task on `token` until `wake_token` is sent it, whatever it's told meanwhile: a stop
+/// wakes it, as cancelled, without failing it. For a task waiting for work it handed to other
+/// threads, which read what it lent them until they've finished.
+pub(in crate::embed) fn park_through_a_stop(token: Token) -> Parked {
+    park_on_token(token, None, false)
+}
+
 /// `park_on`, which a stop cuts short only if `stoppable`. When it isn't, a stop wakes it, as
 /// cancelled, without failing it: for a task that must wait for another to end all the same.
 fn park_on_token(token: Token, deadline: Option<Instant>, stoppable: bool) -> Parked {
@@ -1563,10 +1610,40 @@ mod blocking;
 /// on one of the blocking threads (`serve/blocking.rs`), which hands its result back and wakes the
 /// task through its worker's mail. Anywhere a wait can't park, it runs here.
 pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    off_thread_on(blocking::pool(), work)
+}
+
+/// `off_thread` for work that keeps a core busy for long, as hashing a password does: on a pool of
+/// its own, a thread to a core and at most 8, so a burst of it runs a few at once while the rest
+/// wait their turn parked.
+pub(crate) fn off_thread_heavy<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    off_thread_on(blocking::heavy(), work)
+}
+
+/// `off_thread` on `threads`. A task whose work can't park, as inside a `lock`, runs it where it
+/// is, holding its worker meanwhile as a wait that blocks does, and is counted with those.
+fn off_thread_on<R: Send + 'static>(
+    threads: &'static blocking::Blocking,
+    work: impl FnOnce() -> R + Send + 'static,
+) -> R {
     let Some((pool, at)) = super::parallel::here() else { return work() };
     if !can_park() {
+        if fennec_parked::stack_low().is_some() {
+            BLOCKED_WAITS.fetch_add(1, Ordering::Relaxed);
+        }
         return work();
     }
+    // For a test to see, from another thread, whether this one has work on a blocking thread.
+    #[cfg(test)]
+    let work = {
+        let from = std::thread::current().id();
+        blocking_jobs_change(from, 1);
+        move || {
+            let done = work();
+            blocking_jobs_change(from, -1);
+            done
+        }
+    };
     let token = Token(NEXT_TOKEN.get());
     NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
     let result: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
@@ -1577,7 +1654,7 @@ pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 's
         // The worker takes its mail only after this task has parked, on that same thread.
         pool.run_on(at, Box::new(move |io: &mut Io| io.wake_token(token)));
     });
-    match blocking::run(job) {
+    match threads.run(job) {
         Ok(()) => {
             super::write_kept_output();
             PARKING.set(Some((Interest::READABLE, None)));
@@ -1598,6 +1675,28 @@ pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 's
         // Cancelled before it finished: the work runs to its end, and this waits for it.
         let _ = yield_task_always();
     }
+}
+
+/// For tests: how many pieces of work each thread's tasks have on the blocking threads, not yet
+/// done, and how many they've ever handed over.
+#[cfg(test)]
+static BLOCKING_JOBS: Mutex<Option<HashMap<std::thread::ThreadId, (i64, i64)>>> = Mutex::new(None);
+
+#[cfg(test)]
+fn blocking_jobs_change(from: std::thread::ThreadId, by: i64) {
+    let mut jobs = BLOCKING_JOBS.lock().unwrap_or_else(PoisonError::into_inner);
+    let (now, ever) = jobs.get_or_insert_with(HashMap::new).entry(from).or_default();
+    *now += by;
+    *ever += by.max(0);
+}
+
+/// How many pieces of work the tasks on `thread` have handed to the blocking threads that aren't
+/// done yet, and how many they've handed over in all: for a test to ask, from the other end of a
+/// connection or after the fact, whether a task held one.
+#[cfg(test)]
+pub(crate) fn blocking_jobs_of(thread: std::thread::ThreadId) -> (i64, i64) {
+    let jobs = BLOCKING_JOBS.lock().unwrap_or_else(PoisonError::into_inner);
+    jobs.as_ref().and_then(|jobs| jobs.get(&thread).copied()).unwrap_or((0, 0))
 }
 
 /// How long a task runs before it makes way for others on its worker, at the next tick.

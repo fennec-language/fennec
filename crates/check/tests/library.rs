@@ -80,7 +80,7 @@ fn no_name_std_keeps_is_reached_from_a_program() {
     );
     let body: String = names.iter().flat_map(|name| ["    _ = ", name.as_str(), "\n"]).collect();
     let problems = crate::problems_as_written(&format!("def main():\n{body}"));
-    let helps = crate::helps(&format!("def main():\n{body}"));
+    let helps = helps(&format!("def main():\n{body}"));
     assert_eq!(problems.len(), names.len(), "{problems:#?}");
     for ((name, problem), help) in names.iter().zip(&problems).zip(&helps) {
         let private = problem.starts_with(&format!("`{name}` is private to "));

@@ -1894,12 +1894,18 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
 fn a_run_with_another_output_switch_never_gets_the_program_built_without_it() {
     let dir = scratch("run_switches").unwrap();
     std::fs::write(dir.join("main.fen"), "def main(stdout: Stdout):\n    stdout.print(42)\n").unwrap();
-    // The programs the store holds: a file named for each root, beside its `.sum` and `.functions`.
+    // The programs the store holds, one a root: one written as bytes is a file named for the root,
+    // and one kept as the file that ran is named by the root's `.sum` file, beside the program.
     let stored = || {
         let mut found = 0;
         for version in std::fs::read_dir(dir.join("home/cache")).into_iter().flatten().flatten() {
             let programs = std::fs::read_dir(version.path().join("programs")).into_iter().flatten().flatten();
-            found += programs.filter(|entry| !entry.file_name().to_string_lossy().contains('.')).count();
+            found += programs
+                .filter(|entry| {
+                    let path = entry.path();
+                    path.extension().is_none_or(|ext| ext.eq_ignore_ascii_case("sum"))
+                })
+                .count();
         }
         found
     };
@@ -5321,12 +5327,11 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
             .flatten()
             .filter_map(|build| std::fs::read_dir(build.path().join("programs")).ok())
             .flat_map(Iterator::flatten)
-            // A program's hash and its list of functions are kept beside it, under its key.
+            // One a key: one written as bytes is a file named for the key, and one kept as the file
+            // that ran is named by the key's `.sum` file, beside the program.
             .filter(|entry| {
                 let path = entry.path();
-                !path.extension().is_some_and(|ext| {
-                    ext.eq_ignore_ascii_case("sum") || ext.eq_ignore_ascii_case("functions")
-                })
+                path.extension().is_none_or(|ext| ext.eq_ignore_ascii_case("sum"))
             })
             .count()
     };
@@ -5435,6 +5440,38 @@ fn a_release_built_anywhere_is_the_same_bytes() -> std::io::Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     assert!(dev_builds[0] == dev_builds[1], "a dev build in one folder came out different a second later");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A program is the same bytes whatever it's named and wherever it's written: built twice from
+/// nothing, each with a Fennec folder of its own, under two names in two folders, dev and release.
+/// macOS's linker made a program's UUID, and the signature over it, from the name it was written
+/// to, so a recorded run's program and its replay's, named apart, differed.
+#[test]
+fn a_program_is_the_same_bytes_whatever_its_named() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("same-bytes-named")?;
+    std::fs::write(dir.join("alone.fen"), "def main(stdout: Stdout):\n    stdout.print(42)\n    return\n")?;
+    std::fs::create_dir_all(dir.join("elsewhere/deeper"))?;
+    for how in [&[][..], &["--release"][..]] {
+        let mut made = Vec::new();
+        for (at, out) in ["first", "elsewhere/deeper/a-name-of-its-own"].into_iter().enumerate() {
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .args(["alone.fen", "-o", out])
+                .current_dir(&dir)
+                .env("FENNEC_HOME", dir.join(format!("home-{}-{at}", how.len())))
+                .output_within()?;
+            assert!(built.status.success(), "{how:?} {out}: {}", text(&built.stderr));
+            made.push(std::fs::read(dir.join(out))?);
+        }
+        assert!(made[0] == made[1], "{how:?}: one program built under two names came out different");
+    }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

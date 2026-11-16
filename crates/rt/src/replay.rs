@@ -35,8 +35,10 @@
 //!   stop cut short says so in the recording. A capability's call, like a sleep or a socket's read,
 //!   has a `cut short` entry right after its own, and a channel's send or receive comes to
 //!   "stopped" there. A task its stop finds waiting at its own `with launch` block's end, for a
-//!   task it launched, has a `stopped at its block's end` entry, and one its stop found serving has a
-//!   `stopped serving` entry. A replay stops the task at that
+//!   task it launched, has a `stopped at its block's end` entry, a server's round cancelled there a
+//!   `cancelled at its block's end` entry, and one its stop found serving a `stopped serving`
+//!   entry. A server's round is cancelled, not stopped, when its server stops, and its waits'
+//!   entries say they were cut short as a stopped task's do. A replay stops the task at that
 //!   wait, as the recorded run did. So a replay stops nothing by the clock: its block's ends wait
 //!   for their tasks without a deadline, and stop none when they fail, as the recording says
 //!   where each task was stopped.
@@ -111,6 +113,9 @@ const CUT_SHORT: &str = "cut short";
 pub(crate) enum StoppedIn {
     /// Its own `with launch` block's end, waiting for a task it launched to end.
     BlockEnd,
+    /// The same, for a server's round cancelled there as its server stopped, which leaves its task
+    /// behind, unwaited for: so a replay can let that task end quietly past its recording.
+    CancelledAtBlockEnd,
     /// A call serving, which a stop ends with its server.
     Serving,
 }
@@ -124,6 +129,7 @@ impl StoppedIn {
     fn entry(self) -> &'static str {
         match self {
             StoppedIn::BlockEnd => "stopped at its block's end",
+            StoppedIn::CancelledAtBlockEnd => "cancelled at its block's end",
             StoppedIn::Serving => "stopped serving",
         }
     }

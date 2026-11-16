@@ -1205,13 +1205,26 @@ fn requests_from_rounds_leave_the_blocking_threads_to_the_handlers_they_wait_for
 /// A server's round in each kind of wait, when the task serving it is stopped, and what each
 /// program prints: the round's first line, `main`'s answer, and the end. A round is cancelled when
 /// its server stops, and fails as stopped at whatever wait it's in, so it goes no further.
-pub(crate) const STOPPED_ROUNDS: [(&str, &str, &str); 8] = [
+///
+/// On Windows another program's run is a blocking job, which a stop doesn't cut (#1915's follow-up),
+/// and `sleep` is no program there, so that one is Unix only.
+pub(crate) fn stopped_rounds() -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut rounds = STOPPED_ROUNDS.to_vec();
+    #[cfg(unix)]
+    rounds.push((
+        "another program",
+        include_str!("fixtures/stopped_rounds/stopprocess.fen"),
+        "the slow one began",
+    ));
+    rounds
+}
+
+const STOPPED_ROUNDS: [(&str, &str, &str); 7] = [
     ("sleep", include_str!("fixtures/stopped_rounds/stophandler.fen"), "the slow one began"),
     ("sleeps in a loop", include_str!("fixtures/stopped_rounds/stopspin.fen"), "the slow one began"),
     ("sleeps for ever", include_str!("fixtures/stopped_rounds/stopforever.fen"), "the slow one began"),
     ("its own block's end", include_str!("fixtures/stopped_rounds/stoplaunch.fen"), "the slow one began"),
     ("a channel", include_str!("fixtures/stopped_rounds/stopchannel.fen"), "the slow one began"),
-    ("another program", include_str!("fixtures/stopped_rounds/stopprocess.fen"), "the slow one began"),
     (
         "a database another holds",
         include_str!("fixtures/stopped_rounds/stopsqlite.fen"),
@@ -1241,7 +1254,7 @@ fn a_round_stopped_in_any_wait_ends_there() -> std::io::Result<()> {
         std::env::temp_dir().join(format!("fennec-parallel-stopped-rounds-{}", std::process::id())),
     );
     std::fs::create_dir_all(&dir)?;
-    for (at, (name, source, first)) in STOPPED_ROUNDS.iter().enumerate() {
+    for (at, (name, source, first)) in stopped_rounds().into_iter().enumerate() {
         let built = build_on_threads(&dir, source, &format!("stopped_{at}"))?;
         for threads in ["1", "4"] {
             let ran =

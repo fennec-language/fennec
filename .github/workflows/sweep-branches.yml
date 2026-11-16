@@ -1,0 +1,78 @@
+name: Sweep old branches
+
+# Every week, the branches on GitHub nothing needs any more are deleted: those with no open pull
+# request and no commit in the last seven days, mostly what lanes pushed for a pull request that has
+# since merged, or for one CI run. main, staging, bench-history, Dependabot's branches and the merge
+# queue's are never touched. The run's summary lists every branch it deletes, with its last commit,
+# before it deletes any, so one taken by mistake can be pushed again from that commit. Run it by
+# hand from the Actions tab: `dry_run`, on by default there, lists them and deletes nothing.
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be deleted, deleting nothing
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: sweep-branches
+
+jobs:
+  sweep:
+    name: Delete the branches nothing needs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Checks out nothing, so no code from any branch runs with this.
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # A scheduled run deletes; one run by hand only lists, unless asked otherwise.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d '7 days ago' +%s)
+          open=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 1000 --json headRefName --jq '.[].headRefName')
+          old=()
+          while IFS=$'\t' read -r branch sha; do
+            case "$branch" in
+              main | staging | bench-history | dependabot/* | gh-readonly-queue/*) continue ;;
+            esac
+            if grep -qxF -- "$branch" <<< "$open"; then
+              continue
+            fi
+            when=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.commit.committer.date')
+            if [ "$(date -u -d "$when" +%s)" -lt "$cutoff" ]; then
+              old+=("$branch"$'\t'"$sha"$'\t'"$when")
+            fi
+          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/branches?per_page=100" --jq '.[] | [.name, .commit.sha] | @tsv')
+          {
+            echo "## Branches with no open pull request and no commit in seven days"
+            echo
+            if [ "${#old[@]}" -eq 0 ]; then
+              echo "None."
+            else
+              echo "$([ "$DRY_RUN" = true ] && echo "Would delete" || echo "Deleting") ${#old[@]}, each with its last commit:"
+              echo
+              for each in "${old[@]}"; do
+                IFS=$'\t' read -r branch sha when <<< "$each"
+                echo "- \`$branch\` at \`$sha\`, $when"
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$DRY_RUN" = true ] && exit 0
+          for each in "${old[@]}"; do
+            IFS=$'\t' read -r branch sha when <<< "$each"
+            if gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$branch" --silent; then
+              echo "deleted $branch, last at $sha"
+            else
+              echo "::warning::couldn't delete $branch"
+            fi
+          done

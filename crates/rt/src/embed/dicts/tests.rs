@@ -356,6 +356,40 @@ fn stops<T>(call: impl FnOnce() -> T) -> String {
     }
 }
 
+/// A dict made of a shape the runtime has no layout for stops the program, as a bug in Fennec:
+/// one for values held in place of a kind the run doesn't have, and one of a kind of no words,
+/// which the runtime refuses on purpose. Each was made of one-word entries, and lost every put
+/// of a wider value with nothing said: #1785's review found the second, made for a struct with
+/// no fields (#1878).
+#[test]
+fn a_dict_made_of_a_shape_that_is_no_dict_s_stops_the_program() {
+    let empty = named("Empty", vec![]);
+    let mut kinds = elements();
+    kinds.push(Rc::new(empty));
+    let of_no_words = u32::try_from(kinds.len() - 1).unwrap();
+    let tables = Tables {
+        shapes: vec![Rc::new(Element::Str)],
+        elements: kinds,
+        str_shape: 0,
+        text_headers: true,
+        ..Tables::default()
+    };
+    start(tables, crate::Inputs::default());
+    let before = live();
+    let said = "a dict was made of a shape that's no dict's: no kind of key and value has it";
+    for value in [Word::InPlace(of_no_words + 7), Word::InPlace(of_no_words)] {
+        let unknown = shape(0, Word::Int, value).unwrap();
+        assert_eq!(stops(|| with(|state| super::new_in(state, signed(unknown), 4))), said, "{value:?}");
+    }
+    // A shape that is a dict's is made as ever.
+    let points = shape(0, Word::Int, Word::InPlace(0)).unwrap();
+    let dict = unsigned(with(|state| super::new_in(state, signed(points), 4)));
+    assert_eq!(read(dict), dict_of(Vec::new()));
+    let_go(dict);
+    assert_eq!(live(), before);
+    finish();
+}
+
 #[test]
 fn a_call_for_one_word_values_on_a_dict_of_values_in_place_stops_the_program() {
     started();

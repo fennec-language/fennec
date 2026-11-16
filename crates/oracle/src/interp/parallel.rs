@@ -47,7 +47,7 @@ pub(crate) enum Outside {
 }
 
 impl Outside {
-    fn what(self) -> &'static str {
+    pub(crate) fn what(self) -> &'static str {
         match self {
             Outside::Printing => "printing",
             Outside::Disk => "the file system",
@@ -137,29 +137,17 @@ impl Interp {
         }
     }
 
-    /// Notes reaching outside the program, refusing it inside a `parallel` round, and in both a
-    /// launched task and its block, where its order isn't promised.
+    /// Notes reaching outside the program, refusing it inside a `parallel` round, where its order
+    /// isn't promised. A launched task's is held in order beside its block by `actors.rs`.
     pub(crate) fn reach_out(&self, outside: Outside) -> Run<()> {
-        let Ok(mut scopes) = self.shared.scopes.lock() else {
+        let Ok(scopes) = self.shared.scopes.lock() else {
             return unsupported("a `parallel` call was lost");
         };
-        for scope in scopes.iter_mut() {
-            match scope {
-                Scope::Rounds(_) => {
-                    return unsupported(format!(
-                        "{} inside a `parallel` round, whose order isn't promised",
-                        outside.what()
-                    ));
-                }
-                Scope::Launch(launched) => {
-                    if !launched.reach_out(outside) {
-                        return unsupported(format!(
-                            "{} in both a launched task and its `with` block, whose order isn't promised",
-                            outside.what()
-                        ));
-                    }
-                }
-            }
+        if scopes.iter().any(|scope| matches!(scope, Scope::Rounds(_))) {
+            return unsupported(format!(
+                "{} inside a `parallel` round, whose order isn't promised",
+                outside.what()
+            ));
         }
         Ok(())
     }
@@ -325,15 +313,34 @@ impl Interp {
         let Some(place) = self.place_of(call.source)? else {
             return unsupported("`for ref` over `parallel` of something that isn't a place");
         };
-        let positions: Vec<Value> = match self.read_place(&place, span)? {
-            Value::List(items) => (0..items.len()).map(|at| Value::Int(as_int(at))).collect(),
-            Value::Table(table) => table.live().map(|(id, _)| Value::Id(id)).collect(),
+        let (positions, own): (Vec<Value>, bool) = match self.read_place(&place, span)? {
+            Value::List(items) => ((0..items.len()).map(|at| Value::Int(as_int(at))).collect(), false),
+            Value::Table(table) => (table.live().map(|(id, _)| Value::Id(id)).collect(), false),
+            // A type with positions of its own splits by them, its empty ones left out, as
+            // `for ref` goes over them.
+            Value::Instance(instance) => {
+                let mut live = Vec::new();
+                for position in self.own_positions(&place, &instance.ty, span)? {
+                    if self.live_at(&place, &instance.ty, &position, span)? {
+                        live.push(position);
+                    }
+                }
+                (live, true)
+            }
             other => return unsupported(format!("`for ref` over `parallel` of a {}", other.kind())),
         };
         self.parallel_limit(call)?;
         let ran = self.rounds(positions.len(), &mut |interp, at, maybe| {
             let position = positions.get(at).cloned().unwrap_or(Value::Unit);
-            interp.ref_round(&place.then(Step::At(position)), name, body, maybe, span)
+            let item = if own {
+                match interp.indexed_place(place.clone(), position, false, span)? {
+                    Some(item) => item,
+                    None => return unsupported("a position its type's `def []` gives no place for"),
+                }
+            } else {
+                place.then(Step::At(position))
+            };
+            interp.ref_round(&item, name, body, maybe, span)
         })?;
         match ran.stop {
             None | Some(Flow::Break) => Ok(()),

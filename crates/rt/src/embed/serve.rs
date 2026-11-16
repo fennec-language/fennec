@@ -778,7 +778,12 @@ impl Io {
                 None => Err(Deferred { run: Box::new(|| 0), accounts: Box::new(accounts), started }),
             };
         };
-        accounts.set_task(task);
+        // Its mark is its number's, or the next free one's if a task still alive here has that
+        // mark from the last time the marks came round.
+        let alive = &self.accounts;
+        let number =
+            super::heap::number_to_mark(task, |number| alive.values().any(|other| other.marked_as(number)));
+        accounts.set_task(number);
         // Named as a server's round is: a task's temporaries are swapped last, so they say who it is.
         if let Some(named) = accounts.take_replay() {
             self.temporaries.insert(task, super::Temporaries::of_task(named));
@@ -851,6 +856,8 @@ impl Io {
                 + self.waiting.len()
                 + self.ready.len()
                 + self.owners.len();
+            counts.task_held =
+                self.accounts.values().map(super::threads::Accounts::listed).max().unwrap_or(0);
             counts.connections = calls::connections();
             counts
         });
@@ -1565,68 +1572,69 @@ pub(in crate::embed) use launch::launch_on;
 pub(in crate::embed) use launch::take_failed_with;
 pub use launch::{TaskBody, launch, launch_end, task_failed};
 
-/// Work the operating system can't be asked to say is ready for, run off this task's thread,
-/// a DNS lookup and a connect among them.
-type OffThread = Box<dyn FnOnce() + Send>;
-
-/// How many threads run blocking work for parked tasks. A few, as each holds only a lookup or a
-/// connect, and more of them waiting at once wait their turn.
-const OFF_THREADS: usize = 8;
-
-/// The threads that run blocking work for parked tasks, started on first use.
-fn off_threads() -> Option<&'static Mutex<std::sync::mpsc::Sender<OffThread>>> {
-    static SENDER: std::sync::OnceLock<Option<Mutex<std::sync::mpsc::Sender<OffThread>>>> =
-        std::sync::OnceLock::new();
-    SENDER
-        .get_or_init(|| {
-            let (sender, receiver) = std::sync::mpsc::channel::<OffThread>();
-            let receiver = Arc::new(Mutex::new(receiver));
-            for at in 0..OFF_THREADS {
-                let receiver = Arc::clone(&receiver);
-                let started =
-                    std::thread::Builder::new().name(format!("fennec-blocking-{at}")).spawn(move || {
-                        loop {
-                            let next = receiver.lock().unwrap_or_else(PoisonError::into_inner).recv();
-                            let Ok(work) = next else { return };
-                            work();
-                        }
-                    });
-                if started.is_err() && at == 0 {
-                    return None;
-                }
-            }
-            Some(Mutex::new(sender))
-        })
-        .as_ref()
-}
+mod blocking;
 
 /// Runs `work`, which blocks its thread, so that this task parks rather than holding its worker:
-/// on one of the blocking threads, which hands its result back and wakes the task through its
-/// worker's mail. Anywhere a wait can't park, it runs here.
+/// on one of the blocking threads (`serve/blocking.rs`), which hands its result back and wakes the
+/// task through its worker's mail. Anywhere a wait can't park, it runs here.
 pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
-    let (Some((pool, at)), Some(sender)) = (super::parallel::here(), off_threads()) else { return work() };
+    off_thread_on(blocking::pool(), work)
+}
+
+/// `off_thread` for work that keeps a core busy for long, as hashing a password does: on a pool of
+/// its own, a thread to a core and at most 8, so a burst of it runs a few at once while the rest
+/// wait their turn parked.
+pub(crate) fn off_thread_heavy<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    off_thread_on(blocking::heavy(), work)
+}
+
+/// `off_thread` on `threads`. A task whose work can't park, as inside a `lock`, runs it where it
+/// is, holding its worker meanwhile as a wait that blocks does, and is counted with those.
+fn off_thread_on<R: Send + 'static>(
+    threads: &'static blocking::Blocking,
+    work: impl FnOnce() -> R + Send + 'static,
+) -> R {
+    let Some((pool, at)) = super::parallel::here() else { return work() };
     if !can_park() {
+        if fennec_parked::stack_low().is_some() {
+            BLOCKED_WAITS.fetch_add(1, Ordering::Relaxed);
+        }
         return work();
     }
+    // For a test to see, from another thread, whether this one has work on a blocking thread.
+    #[cfg(test)]
+    let work = {
+        let from = std::thread::current().id();
+        blocking_jobs_change(from, 1);
+        move || {
+            let done = work();
+            blocking_jobs_change(from, -1);
+            done
+        }
+    };
     let token = Token(NEXT_TOKEN.get());
     NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
     let result: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
     let given = Arc::clone(&result);
-    let job: OffThread = Box::new(move || {
+    let job: blocking::Job = Box::new(move || {
         let done = work();
         *given.lock().unwrap_or_else(PoisonError::into_inner) = Some(done);
         // The worker takes its mail only after this task has parked, on that same thread.
         pool.run_on(at, Box::new(move |io: &mut Io| io.wake_token(token)));
     });
-    let sent = sender.lock().unwrap_or_else(PoisonError::into_inner).send(job);
-    match sent {
+    match threads.run(job) {
         Ok(()) => {
             super::write_kept_output();
             PARKING.set(Some((Interest::READABLE, None)));
             let _ = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
         }
-        // No thread left to run it, so it runs here: its wake finds nothing parked.
-        Err(std::sync::mpsc::SendError(job)) => job(),
+        // No thread could be started to run them, so they run here: this job's wake finds nothing
+        // parked, and another task's job wakes that task through its worker's mail.
+        Err(jobs) => {
+            for job in jobs {
+                job();
+            }
+        }
     }
     loop {
         if let Some(done) = result.lock().unwrap_or_else(PoisonError::into_inner).take() {
@@ -1635,6 +1643,28 @@ pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 's
         // Cancelled before it finished: the work runs to its end, and this waits for it.
         let _ = yield_task_always();
     }
+}
+
+/// For tests: how many pieces of work each thread's tasks have on the blocking threads, not yet
+/// done, and how many they've ever handed over.
+#[cfg(test)]
+static BLOCKING_JOBS: Mutex<Option<HashMap<std::thread::ThreadId, (i64, i64)>>> = Mutex::new(None);
+
+#[cfg(test)]
+fn blocking_jobs_change(from: std::thread::ThreadId, by: i64) {
+    let mut jobs = BLOCKING_JOBS.lock().unwrap_or_else(PoisonError::into_inner);
+    let (now, ever) = jobs.get_or_insert_with(HashMap::new).entry(from).or_default();
+    *now += by;
+    *ever += by.max(0);
+}
+
+/// How many pieces of work the tasks on `thread` have handed to the blocking threads that aren't
+/// done yet, and how many they've handed over in all: for a test to ask, from the other end of a
+/// connection or after the fact, whether a task held one.
+#[cfg(test)]
+pub(crate) fn blocking_jobs_of(thread: std::thread::ThreadId) -> (i64, i64) {
+    let jobs = BLOCKING_JOBS.lock().unwrap_or_else(PoisonError::into_inner);
+    jobs.as_ref().and_then(|jobs| jobs.get(&thread).copied()).unwrap_or((0, 0))
 }
 
 /// How long a task runs before it makes way for others on its worker, at the next tick.

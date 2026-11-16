@@ -44,6 +44,14 @@ impl Interp {
         if name.starts_with("std.json.") {
             return self.json_call(name, given, expr);
         }
+        if let Some(op) = name.strip_prefix("std.intrinsics.channel_") {
+            return self.channel_intrinsic(op, given, span);
+        }
+        if let Some(intrinsic) = name.strip_prefix("std.intrinsics.")
+            && WRITES_BYTES.contains(&intrinsic)
+        {
+            return self.write_bytes(intrinsic, given, span);
+        }
         if name.starts_with("std.") {
             let mut args = Vec::with_capacity(given.len());
             for arg in given {
@@ -65,6 +73,7 @@ impl Interp {
                     .checked_abs()
                     .map_or_else(|| crash("this calculation overflows an int", span), |n| Ok(Value::Int(n))),
                 Value::Float(x) => Ok(Value::Float(x.abs())),
+                Value::F32(x) => Ok(Value::F32(x.abs())),
                 Value::Sized(num, n) => sized(num, n.abs(), span),
                 Value::Instance(instance) => match self.program.method(&instance.ty, "abs") {
                     Some(def) => {
@@ -82,6 +91,7 @@ impl Interp {
             "int" | "i64" => match self.one(&mut given, name)? {
                 Value::Int(n) => Ok(Value::Int(n)),
                 Value::Float(x) => float_to_int(x, span).map(Value::Int),
+                Value::F32(x) => float_to_int(f64::from(x), span).map(Value::Int),
                 Value::Str(text) => parsed_int(&text, span),
                 Value::Sized(_, n) => match i64::try_from(n) {
                     Ok(n) => Ok(Value::Int(n)),
@@ -92,9 +102,18 @@ impl Interp {
             "float" | "f64" => match self.one(&mut given, name)? {
                 Value::Int(n) => Ok(Value::Float(text::int_as_float(n))),
                 Value::Float(x) => Ok(Value::Float(x)),
+                Value::F32(x) => Ok(Value::Float(f64::from(x))),
                 Value::Str(text) => parsed_float(&text, span),
                 Value::Sized(num, n) if !num.is_float() => Ok(Value::Float(super::expr::int128_as_float(n))),
                 other => unsupported(format!("`float` of a {}", other.kind())),
+            },
+            // `f32(x)`: the nearest `f32`.
+            "f32" => match self.one(&mut given, name)? {
+                Value::Int(n) => Ok(Value::F32(super::expr::as_f32(text::int_as_float(n)))),
+                Value::Float(x) => Ok(Value::F32(super::expr::as_f32(x))),
+                Value::F32(x) => Ok(Value::F32(x)),
+                Value::Sized(num, n) if !num.is_float() => Ok(Value::F32(int128_as_f32(n))),
+                other => unsupported(format!("`f32` of a {}", other.kind())),
             },
             "i8" | "i16" | "i32" | "u8" | "u16" | "u32" | "u64" => {
                 let Some(num) = Num::named(name) else { return unsupported(name.to_owned()) };
@@ -564,6 +583,12 @@ fn fitting(num: Num, n: i128, span: Span) -> Run<Value> {
     }
 }
 
+/// A sized int as the nearest `f32`, rounded once from its exact value.
+#[expect(clippy::cast_precision_loss, reason = "an f32 is the nearest one, as the language says")]
+fn int128_as_f32(n: i128) -> f32 {
+    n as f32
+}
+
 /// A float's whole part as an int, which has to be one.
 #[expect(clippy::cast_possible_truncation, reason = "the float is checked to be inside an int's range first")]
 pub(crate) fn float_to_int(x: f64, span: Span) -> Run<i64> {
@@ -654,4 +679,59 @@ fn round_places(x: f64, places: i64) -> f64 {
     }
     let digits = usize::try_from(places).unwrap_or(0);
     format!("{x:.digits$}").parse().unwrap_or(x)
+}
+
+/// The intrinsics that write into a byte builder the standard library's own code holds, through
+/// a `ref`: each as `intrinsics.fen` says it works.
+const WRITES_BYTES: [&str; 5] =
+    ["bytes_push", "bytes_push_word", "bytes_push_text", "bytes_push_bytes", "bytes_set"];
+
+impl Interp {
+    /// One of `WRITES_BYTES`, on the builder its first argument is the place of.
+    fn write_bytes(&mut self, intrinsic: &str, given: Vec<ArgVal>, span: Span) -> Run<Value> {
+        let mut given = given.into_iter();
+        let Some(ArgVal::Ref(_, place)) = given.next() else {
+            return unsupported(format!("`{intrinsic}` on something that isn't a place"));
+        };
+        let mut args = Vec::new();
+        for arg in given {
+            args.push(self.arg_as_value(arg)?);
+        }
+        // What's written, worked out before the builder is reached.
+        let byte = |value: &Value| match value {
+            Value::Int(n) => u8::try_from(*n).ok(),
+            _ => None,
+        };
+        let more: Vec<u8> = match (intrinsic, args.as_slice()) {
+            ("bytes_push", [value]) => match byte(value) {
+                Some(byte) => vec![byte],
+                None => return unsupported("`bytes_push` of something other than a byte"),
+            },
+            ("bytes_push_word", [Value::Int(bits)]) => bits.to_le_bytes().to_vec(),
+            ("bytes_push_text", [Value::Str(text)]) => text.as_bytes().to_vec(),
+            ("bytes_push_bytes", [Value::Bytes(data)]) => data.clone(),
+            ("bytes_set", [Value::Int(at), value]) => {
+                let (Ok(at), Some(byte)) = (usize::try_from(*at), byte(value)) else {
+                    return unsupported("`bytes_set` of a place or a byte out of range");
+                };
+                return self.change_place(&place, span, false, |held| match held {
+                    Value::Bytes(data) if at < data.len() => {
+                        if let Some(slot) = data.get_mut(at) {
+                            *slot = byte;
+                        }
+                        Ok(Value::Unit)
+                    }
+                    _ => unsupported("`bytes_set` past a builder's end"),
+                });
+            }
+            _ => return unsupported(format!("`{intrinsic}` given what it doesn't take")),
+        };
+        self.change_place(&place, span, false, |held| match held {
+            Value::Bytes(data) => {
+                data.extend(more);
+                Ok(Value::Unit)
+            }
+            other => unsupported(format!("`{intrinsic}` on a {}", other.kind())),
+        })
+    }
 }

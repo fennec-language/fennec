@@ -445,6 +445,11 @@ impl Emit<'_, '_, '_> {
     }
 
     pub(crate) fn get_field(&mut self, dest: LocalId, object: &Operand, field: &str) -> Result<(), String> {
+        // A field that's taken out only when its append comes isn't read where it's written: the
+        // item read just before has failed if it isn't there, and nothing is out meanwhile.
+        if self.known.path_waits(dest) && self.known.path_due(self.at).is_none_or(|(due, ..)| *due != dest) {
+            return Ok(());
+        }
         if let Some((root, list_path, index)) = self.known.path_home(dest).cloned() {
             let held = self.place_kind(root, &list_path)?;
             if self.is_id_map(&held) {
@@ -506,6 +511,9 @@ impl Emit<'_, '_, '_> {
             let at = self.item_address(&list, &memory, &position);
             let (offset, inner) = self.field(&held, field)?;
             let place = self.offset(&at, offset);
+            if self.left_out_at(self.at, dest) {
+                self.note_taken_out(dest, (&place, &inner, ITEM_ACCESS));
+            }
             let value = self.load_field(&inner, &place, ITEM_ACCESS);
             return self.assign(dest, &value);
         }
@@ -525,6 +533,9 @@ impl Emit<'_, '_, '_> {
         let (offset, inner) = self.field(&held, field)?;
         let fields = self.fields_at(&block, &held);
         let place = self.offset(&fields, offset);
+        if self.left_out_at(self.at, dest) {
+            self.note_taken_out(dest, (&place, &inner, FIELD_ACCESS));
+        }
         let value = self.load_field(&inner, &place, FIELD_ACCESS);
         self.assign(dest, &value)
     }
@@ -676,7 +687,7 @@ impl Emit<'_, '_, '_> {
     /// While a place is out, in a function a crash lets go of what it owns, where it goes back to
     /// is kept beside the function's locals, for the crash to put it back there: what holds it
     /// still has the address of what's been changed, maybe moved or freed, since.
-    fn note_place_out(&mut self, value: LocalId, at: &str) {
+    pub(crate) fn note_place_out(&mut self, value: LocalId, at: &str) {
         if !self.lets_go_after_crash() {
             return;
         }
@@ -697,7 +708,8 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn put_places_back_after_crash(&mut self) -> Result<(), String> {
         let mut out: Vec<(usize, String)> =
             self.places_out.iter().map(|(value, slot)| (*value, slot.clone())).collect();
-        out.sort_unstable();
+        // A value out of a dict or a list last, so what's out of it in turn is back in it by then.
+        out.sort_unstable_by_key(|(value, _)| (self.out_of_dicts.contains(value), *value));
         for (value, slot) in out {
             let (_, kind, access) = self.place_homes.get(&value).cloned().ok_or("a place never taken out")?;
             let (home, is_out) = (self.temp(), self.temp());
@@ -763,6 +775,10 @@ impl Emit<'_, '_, '_> {
         value: &Operand,
     ) -> Result<(), String> {
         let put_back = matches!(value, Operand::Local(local) if self.known.is_taken(*local));
+        if put_back {
+            // It's in what it's set in from here on, which goes back in its turn.
+            self.taken_is_back(value);
+        }
         let field_kind = self.place_kind(object, path)?;
         let (value, fresh) = self.value_for(value, &field_kind)?;
         let mut place = self.slot(object);
@@ -1746,6 +1762,11 @@ impl Emit<'_, '_, '_> {
             if let Some(step) = item_step(index_operand) {
                 self.taken_items.insert(dest.0, (home, path, step));
             }
+            // What goes back is the local the item's changed in, as for a dict's value.
+            let holder = self.holder_of(dest);
+            if self.left_out_at(self.at, holder) {
+                self.note_taken_out(holder, (&at, &held, ITEM_ACCESS));
+            }
         }
         self.read_into(dest, &held, &at, ITEM_ACCESS)
     }
@@ -2142,10 +2163,13 @@ impl Emit<'_, '_, '_> {
                 .rev()
                 .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
                 .map(|(_, _, entry)| entry.clone());
+            // In the store's own local the dict is the one the lookup searched; a field may hold
+            // another by now, so there the store looks first.
+            let for_store = found.clone().map(|entry| crate::dicts::Found { entry, sure: path.is_empty() });
             if let Operand::Local(sliced) = index
                 && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
             {
-                return self.slice_set(&place, (key, value_word), (&slice, found), value);
+                return self.slice_set(&place, (key, value_word), (&slice, for_store), value);
             }
             // In a function whose locks keep what they change ready to put back, where a dict the
             // lock marked is changed in place: a lookup on a local read from this place however
@@ -2165,7 +2189,7 @@ impl Emit<'_, '_, '_> {
                         .map(|(_, _, entry)| entry.clone())
                 })
             };
-            return self.dict_store_checked(&place, (key, value_word), index, value, (found, checked));
+            return self.dict_store_checked(&place, (key, value_word), index, value, (for_store, checked));
         }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
@@ -2234,6 +2258,9 @@ impl Emit<'_, '_, '_> {
             if !put_back {
                 self.retain_inline(&held, &at);
             }
+        }
+        if put_back {
+            self.taken_is_back(value_operand);
         }
         Ok(())
     }

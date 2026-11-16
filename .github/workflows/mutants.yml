@@ -2,15 +2,18 @@ name: Mutation tests
 
 # cargo-mutants changes the code in small ways (flipping a comparison, returning a default,
 # deleting a statement) and checks that some test fails each time. A change no test notices
-# is a gap in the tests. Pull requests check only the code they change; every week, and on
-# demand, the whole compiler is checked across shards.
+# is a gap in the tests. Pull requests check only the code they change. Every night, and on demand,
+# a sixtieth of each of the checker, the IR, the LLVM backend and the runtime is mutated, a
+# different sixtieth each night, so all of them are in two months: what no test caught is ranked
+# by file on the run's summary page and in the morning's nightly report. Survivors are reported,
+# never failed on.
 on:
   pull_request:
     # A draft is skipped, so it runs once the pull request is ready for review.
     types: [opened, synchronize, reopened, ready_for_review]
     paths: ["crates/**", "examples/**", "Cargo.*", ".github/workflows/mutants.yml"]
   schedule:
-    - cron: "17 6 * * 3"
+    - cron: "17 5 * * *"
   workflow_dispatch:
 
 permissions:
@@ -76,17 +79,18 @@ jobs:
           path: mutants.out
           retention-days: 14
 
-  everything:
-    name: Mutate everything (shard ${{ matrix.shard }} of 8)
+  nightly:
+    name: Mutate tonight's slice of ${{ matrix.crate }}
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    # Three hours of mutating, then the report.
+    timeout-minutes: 210
     strategy:
       fail-fast: false
-      # The same cap as on pull requests: a shard that waits is only later.
-      max-parallel: 3
+      # One runner a crate, at night, when few pull requests wait for one.
+      max-parallel: 4
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        crate: [fennec-check, fennec-ir, fennec-llvm, fennec-rt]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -96,27 +100,35 @@ jobs:
           tool: cargo-mutants@27.1.0
       - run: rustup component add llvm-tools-preview
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Mutate
+      # Each crate has thousands of mutants and each runs every test, about two and a half minutes
+      # here, so a night takes a sixtieth of each: the day's number since 1970, modulo 60.
+      - name: Pick tonight's slice
+        id: slice
+        run: echo "index=$(( $(date -u +%s) / 86400 % 60 ))" >> "$GITHUB_OUTPUT"
+      - name: Mutate it, for three hours at most
         env:
-          SHARD: ${{ matrix.shard }}
+          CRATE: ${{ matrix.crate }}
+          INDEX: ${{ steps.slice.outputs.index }}
         run: |
-          status=0
-          cargo mutants --shard "$SHARD/8" --baseline=skip --timeout 420 --jobs 2 || status=$?
-          # As above: hangs count as noticed, misses don't.
-          if [ "$status" -eq 3 ] && [ ! -s mutants.out/missed.txt ]; then status=0; fi
-          exit "$status"
-      - name: List what the tests missed on the run's summary page
+          # A slice still going at three hours is stopped as Ctrl-C stops it, keeping what it found:
+          # cargo-mutants writes each outcome as it comes. What the tests missed is reported, not
+          # failed on, and a hang counts as caught.
+          timeout --signal=INT --kill-after=120 10800 \
+            cargo mutants --package "$CRATE" --shard "$INDEX/60" --baseline=skip --timeout 420 --jobs 2 || true
+      - name: Rank what no test caught
         if: always()
+        env:
+          CRATE: ${{ matrix.crate }}
+          INDEX: ${{ steps.slice.outputs.index }}
         run: |
-          {
-            echo "## Mutations no test caught (shard ${{ matrix.shard }})"
-            echo '```'
-            cat mutants.out/missed.txt 2>/dev/null || echo "none"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          .github/scripts/mutants-ranked.sh mutants.out "$CRATE" "$INDEX/60" > ranked.md
+          cat ranked.md >> "$GITHUB_STEP_SUMMARY"
+      # `nightly-report.sh` reads these into the morning's report.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: mutants-shard-${{ matrix.shard }}
-          path: mutants.out
+          name: mutants-nightly-${{ matrix.crate }}
+          path: |
+            ranked.md
+            mutants.out
           retention-days: 14

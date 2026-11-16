@@ -57,6 +57,11 @@ pub extern "C" fn channel_new_every(size: i64) -> i64 {
         queue: Mutex::new(queue),
         changed: Condvar::new(),
         freed: std::sync::atomic::AtomicBool::new(false),
+        #[cfg(test)]
+        told: std::sync::atomic::AtomicI64::new(0),
+        to_every: true,
+        #[cfg(any(test, feature = "threads"))]
+        taken: Default::default(),
     };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));
@@ -169,7 +174,7 @@ pub(super) fn receive(channel: &Arc<Channel>, listener: i64, timeout_ns: i64, va
                 super::met(channel, "receive", TIMED_OUT);
                 return TIMED_OUT;
             }
-            Waited::Stopped => return DONE,
+            Waited::Stopped => return super::stopped(channel, "receive"),
             Waited::CutShort => {
                 super::met(channel, "receive", CLOSED);
                 return CLOSED;

@@ -60,6 +60,9 @@ pub struct Program {
     pub(crate) main: &'static FnDef,
     /// The type each method is of, by where its definition is.
     pub(crate) owners: HashMap<usize, String>,
+    /// The type parameters of the type or `extend` each method is in, by where its definition
+    /// is: `T` for a method of `struct Deque[T]` or of `extend list[T: Eq]`.
+    pub(crate) owner_generics: HashMap<usize, Vec<String>>,
     /// Whether any type has a `where` rule, which every write then checks.
     pub(crate) has_rules: bool,
     /// The type of each field of each struct the program declares, as the checker worked it out,
@@ -73,6 +76,11 @@ impl Program {
     /// The type a method is of, which `Self` names in it.
     pub(crate) fn owner_of(&self, def: &FnDef) -> Option<&str> {
         self.owners.get(&(std::ptr::from_ref(def) as usize)).map(String::as_str)
+    }
+
+    /// The type parameters of the type or `extend` a method is in.
+    pub(crate) fn owner_generics(&self, def: &FnDef) -> &[String] {
+        self.owner_generics.get(&(std::ptr::from_ref(def) as usize)).map_or(&[], Vec::as_slice)
     }
 
     /// The types of a struct's fields, or of an enum's case's, as the checker gave them.
@@ -139,12 +147,19 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
     // Every expression the checker typed: the program's own, and those of the standard library
     // code it reaches, which a module run from its own source needs.
     let mut types_at = HashMap::new();
-    let typed = typed_fields(&module, &checked.signatures);
     for (_, body) in checked.types.iter() {
         for (span, ty) in body.exprs() {
             types_at.insert((span.start, span.end), ty.clone());
         }
     }
+    // A program's own type with a standard library type's name is renamed as the checker renames
+    // it, so the library's code run from its source still means its own, and the types the
+    // checker gave are the program's.
+    let mut module = module;
+    let renamed = fennec_check::renamed_own_types(&module);
+    fennec_syntax::rename::rename_types(&mut module, &renamed);
+    // Each field's type, by the names the types are checked under, as the checker gave them.
+    let typed = typed_fields(&module, &checked.signatures);
     // The tree is kept for the rest of the process, since values and generators running on
     // other threads point into it.
     let module: &'static Module = Box::leak(Box::new(module));
@@ -156,7 +171,31 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
 /// The standard library's modules the oracle runs from their own Fennec source, as the compiler
 /// builds them. Only the functions the runtime writes in Rust beneath them are modeled here, in
 /// `interp/library.rs`, so a bug in one of these modules' own Fennec would show on both sides.
-const RUN_FROM_SOURCE: &[&str] = &["math", "collections", "env", "time", "string", "base64"];
+const RUN_FROM_SOURCE: &[&str] = &[
+    "math",
+    "collections",
+    "env",
+    "time",
+    "string",
+    "base64",
+    "random",
+    "uuid",
+    "cli",
+    "crypto",
+    "csv",
+    "html",
+    "log",
+    "url",
+    "concurrent",
+    "postgres",
+    "re",
+    "template",
+    "sql",
+    "io",
+    "toml",
+    "json",
+    "net",
+];
 
 /// The capabilities `main` may take whose type a module run from its own source declares, which
 /// that module is loaded for even when the program imports nothing from it: `Env` is
@@ -164,10 +203,17 @@ const RUN_FROM_SOURCE: &[&str] = &["math", "collections", "env", "time", "string
 /// `std.time`'s `Instant` and `Time`.
 const CAPABILITY_MODULES: &[(&str, &str)] = &[("Env", "env"), ("Clock", "time")];
 
-/// The types the oracle models on its own, whose methods a module run from its source adds in an
-/// `extend` are left out: `std.collections` extends `Table` and `Id`, which `interp/tables.rs`
-/// models.
-const MODELED_HERE: &[&str] = &["Table", "Id"];
+/// The core's types run from their own source, as `core_types` takes them in.
+const FROM_CORE: &[&str] = &["Template", "Interpolation"];
+
+/// The sized ints whose functions the core writes in Fennec, as `core_types` takes them in.
+const SIZED_FROM_CORE: &[&str] = &["i8", "i16", "i32", "u8", "u16", "u32", "u64"];
+
+/// The types the oracle models on its own, which a module run from its source declares or adds
+/// methods to in an `extend`: those are left out. `std.collections` extends `Table` and `Id`,
+/// which `interp/tables.rs` models, and `std.io` declares the capabilities `main` is given and
+/// the writer and reader `Stdout` and `Stdin` hand out, which `Cap` models or refuses.
+const MODELED_HERE: &[&str] = &["Table", "Id", "Stdout", "Stdin", "Stderr", "StdoutWriter", "StdinReader"];
 
 /// What the tables are made from: the program's own declarations, and those of each standard
 /// library module it imports that's run from its own source.
@@ -180,6 +226,8 @@ struct Gathered {
     aliases: HashMap<String, Vec<String>>,
     imported: HashMap<String, String>,
     from_std: HashMap<String, String>,
+    /// The type parameters of the `extend` each method is in, by where its definition is.
+    extended_generics: HashMap<usize, Vec<String>>,
 }
 
 impl Gathered {
@@ -192,6 +240,11 @@ impl Gathered {
                 self.functions.insert(def.name.clone(), def);
                 // A module's functions are named `module.function` when it's run.
                 std.zip(def.name.split_once('.')).map(|(module, (_, short))| (module, short, &def.name))
+            }
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def)
+                if std.is_some() && MODELED_HERE.contains(&def.name.as_str()) =>
+            {
+                None
             }
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
                 let kind = match item {
@@ -208,6 +261,11 @@ impl Gathered {
             }
             Item::Extend(extension) => {
                 self.extensions.entry(extension.name.clone()).or_default().extend(extension.methods.iter());
+                let generics: Vec<String> =
+                    extension.generics.iter().map(|generic| generic.name.clone()).collect();
+                for def in &extension.methods {
+                    self.extended_generics.insert(std::ptr::from_ref(def) as usize, generics.clone());
+                }
                 None
             }
             Item::Const { name, value, .. } => {
@@ -249,6 +307,31 @@ impl Gathered {
             }
             _ => Ok(()),
         }
+    }
+
+    /// Takes in the types of the standard library's core a program may make without an import
+    /// that the oracle runs from their own source: the `Template` a template string builds, and
+    /// its `Interpolation`. A program's own type of either name is its own.
+    fn core_types(&mut self) -> Result<(), Refused> {
+        let core =
+            fennec_syntax::core_to_run().map_err(|problem| Refused::Invalid(problem.message.clone()))?;
+        for item in core.iter().flat_map(|module| module.items.iter()) {
+            if let Item::Struct(def) = item
+                && FROM_CORE.contains(&def.name.as_str())
+                && !self.types.contains_key(&def.name)
+            {
+                self.types.insert(def.name.clone(), Declared { def, kind: Kind::Struct, ruled: ruled(def) });
+            }
+            // The sized ints' functions written in Fennec, as `u64.parse` and `u8.from`, but
+            // those that take `self`, which the oracle models as it does an int's other methods.
+            if let Item::Extend(extension) = item
+                && SIZED_FROM_CORE.contains(&extension.name.as_str())
+            {
+                let functions = extension.methods.iter().filter(|def| !def.takes_self());
+                self.extensions.entry(extension.name.clone()).or_default().extend(functions);
+            }
+        }
+        Ok(())
     }
 
     /// Whether `main` takes a capability whose type `module` declares.
@@ -317,11 +400,17 @@ fn tables(
         gathered.take(item, None)?;
     }
     gathered.std_modules()?;
-    let Gathered { functions, types, extensions, constants, aliases, imported, from_std } = gathered;
+    gathered.core_types()?;
+    let Gathered { functions, types, extensions, constants, aliases, imported, from_std, extended_generics } =
+        gathered;
     let mut owners = HashMap::new();
+    let mut owner_generics = extended_generics;
     for (name, declared) in &types {
+        let generics: Vec<String> =
+            declared.def.generics.iter().map(|generic| generic.name.clone()).collect();
         for def in &declared.def.methods {
             owners.insert(std::ptr::from_ref(def) as usize, name.clone());
+            owner_generics.insert(std::ptr::from_ref(def) as usize, generics.clone());
         }
     }
     for (name, methods) in &extensions {
@@ -345,6 +434,7 @@ fn tables(
         types_at,
         main,
         owners,
+        owner_generics,
         has_rules,
         field_types: HashMap::new(),
         case_types: HashMap::new(),
@@ -386,12 +476,16 @@ fn typed_fields(
 
 /// The capabilities `main` may take here: standard output and standard error, which are real,
 /// the arguments and standard input, which are empty, the file system, which is modeled, the
-/// environment, which is read, `Signals`, which never says to stop, and a `Clock`, read from the
-/// system's, whose `sleep` moves it on without waiting.
+/// environment, which is read, `Signals`, which never says to stop, a `Clock`, read from the
+/// system's, whose `sleep` moves it on without waiting, `Entropy`, and the network, any use of which
+/// is refused.
 fn given_to_main(main: &FnDef) -> Result<(), Refused> {
     for param in &main.params {
         let ty = param.ty.as_ref().map_or("", |ty| ty.name.as_str());
-        if !matches!(ty, "Stdout" | "Args" | "Stdin" | "Fs" | "Stderr" | "Signals" | "Env" | "Clock") {
+        if !matches!(
+            ty,
+            "Stdout" | "Args" | "Stdin" | "Fs" | "Stderr" | "Signals" | "Env" | "Clock" | "Entropy" | "Net"
+        ) {
             return Err(Refused::Unsupported(format!("the capability {ty}")));
         }
     }

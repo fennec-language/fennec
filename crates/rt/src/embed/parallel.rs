@@ -269,7 +269,7 @@ impl Run {
         crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();
         super::swap_capture(&mut capture);
-        Started { since: super::threads::made_so_far(), was, from, capture }
+        Started { since: super::threads::made_scope_starts(), was, from, capture }
     }
 
     /// Keeps what the range just run on this thread made since `since`, and how it changed the
@@ -282,6 +282,7 @@ impl Run {
         }
         crate::replay::swap(&mut was);
         super::swap_capture(&mut capture);
+        super::threads::made_scope_ends(super::threads::index() == self.caller);
         if super::threads::index() != self.caller {
             // Most ranges make nothing that outlives them, and every worker shares these locks.
             let made = super::threads::hand_over(since);
@@ -1433,8 +1434,7 @@ mod tests {
     fn requests_over_tls_made_in_tasks_park_for_room_and_for_their_answers() {
         begin();
         crate::stdlib::http::use_tls();
-        let trusting = crate::stdlib::net::tests::tls::trusting_the_tests();
-        let port = crate::stdlib::net::tests::tls::https_echoing(2);
+        let (port, trusting) = crate::stdlib::net::tests::tls::https_echoing(2);
         let pool = super::pool::with_threads(1);
         let run = super::Run::new(1).waiting(true);
         let run = super::each_on_pool(run, pool, 2, super::Leaf::For(posts_over_tls, i64::from(port)));
@@ -1443,6 +1443,180 @@ mod tests {
         assert_eq!(ended, 0);
         assert_eq!(ECHOED.load(Ordering::Relaxed), 2);
         finish();
+    }
+
+    /// How many clients connect to a server with TLS and never start their handshake.
+    const SLOW_CLIENTS: usize = 200;
+    /// The connections a server took, for the tasks that do their handshakes, in the order they came.
+    static TAKEN: Mutex<Vec<Option<std::net::TcpStream>>> = Mutex::new(Vec::new());
+    static SERVER_TLS: std::sync::OnceLock<Arc<dyn crate::stdlib::net::TlsServer>> =
+        std::sync::OnceLock::new();
+    /// How many handshakes had failed, and how many of those when the one client that shook hands
+    /// was answered: -1 until it was.
+    static HANDSHAKES_FAILED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static FAILED_WHEN_ANSWERED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+    /// Does a server's half of the handshake on the connection at `from`, as `server.accept()` does
+    /// in a task, and answers the client if the handshake's done. A blocking thread still does
+    /// its own work for the one it answers.
+    extern "C" fn shakes_hands_and_answers(_env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        let taken = usize::try_from(from).ok().and_then(|at| TAKEN.lock().unwrap().get_mut(at)?.take());
+        let (Some(stream), Some(tls)) = (taken, SERVER_TLS.get()) else { return 0 };
+        let here = std::thread::current().id();
+        let (_, handed_over_before) = crate::embed::serve::blocking_jobs_of(here);
+        match crate::stdlib::net::tests::tls::taken_by(tls, stream) {
+            Ok(handle) => {
+                // Its handshake's arithmetic was done on a blocking thread, not on this worker.
+                assert!(crate::embed::serve::blocking_jobs_of(here).1 > handed_over_before);
+                assert_eq!(crate::embed::serve::off_thread(|| 7), 7);
+                // Read before it answers: its client lets the slow ones go once it has its answer.
+                FAILED_WHEN_ANSWERED.store(HANDSHAKES_FAILED.load(Ordering::SeqCst), Ordering::SeqCst);
+                assert!(crate::stdlib::net::tests::tls::answered(handle));
+            }
+            Err(_) => {
+                HANDSHAKES_FAILED.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        // Each wait was the poll's, not a look again on a timer.
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        0
+    }
+
+    /// Two hundred clients connect to a server with TLS and never start their handshake, as a
+    /// stranger can. Each of the server's handshakes, done by a task as `server.accept()` does it,
+    /// parks on its socket and holds no thread: a client that does shake hands is answered while
+    /// all two hundred are still waiting, and blocking threads do work for it meanwhile, its
+    /// handshake's arithmetic among it.
+    ///
+    /// Each handshake once ran whole on one of the few blocking threads, for up to ten seconds, so
+    /// as many slow clients as there were threads held them all, and the client that shook hands,
+    /// and every file read and database call in the program, waited behind them.
+    #[test]
+    fn slow_handshakes_hold_no_thread_and_a_client_that_shakes_hands_is_answered_meanwhile() {
+        begin();
+        crate::stdlib::http::use_tls();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut slow = Vec::new();
+        let mut taken = Vec::new();
+        for _ in 0..SLOW_CLIENTS {
+            slow.push(std::net::TcpStream::connect(("127.0.0.1", port)).unwrap());
+            taken.push(Some(listener.accept().unwrap().0));
+        }
+        // The client that shakes hands holds the slow ones' sockets, and lets go of them once it's
+        // been answered or has given up, which ends their handshakes and so the test.
+        let client = std::thread::spawn(move || {
+            let heard = crate::stdlib::net::tests::tls::pinged(port);
+            drop(slow);
+            heard
+        });
+        taken.push(Some(listener.accept().unwrap().0));
+        *TAKEN.lock().unwrap() = taken;
+        let _ = SERVER_TLS.set(crate::stdlib::net::tests::tls::server_tls());
+        let pool = super::pool::with_threads(2);
+        let run = super::Run::new(1).waiting(true);
+        let serving = super::Leaf::For(shakes_hands_and_answers, 0);
+        let run = super::each_on_pool(run, pool, SLOW_CLIENTS + 1, serving);
+        assert_eq!(run.finish(), 0);
+        assert_eq!(client.join().unwrap(), Ok(b"pong\n".to_vec()));
+        let failed_by_then = FAILED_WHEN_ANSWERED.load(Ordering::SeqCst);
+        assert_eq!(
+            failed_by_then, 0,
+            "slow handshakes had ended before the client that shook hands was answered"
+        );
+        assert_eq!(HANDSHAKES_FAILED.load(Ordering::SeqCst), i64::try_from(SLOW_CLIENTS).unwrap());
+        finish();
+    }
+
+    /// The thread of the task that's connecting, in each of the two tests below, for its server
+    /// to ask about.
+    static CONNECTING_FROM: [Mutex<Option<std::thread::ThreadId>>; 2] = [Mutex::new(None), Mutex::new(None)];
+    static CONNECTED_AND_HEARD: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+    /// How many pieces of work the connecting task's thread has on the blocking threads.
+    fn connecting_task_s_blocking_work(test: usize) -> i64 {
+        let from = *CONNECTING_FROM[test].lock().unwrap();
+        from.map_or(-1, |from| crate::embed::serve::blocking_jobs_of(from).0)
+    }
+
+    fn plain_connector_s_blocking_work() -> i64 {
+        connecting_task_s_blocking_work(0)
+    }
+
+    fn secure_connector_s_blocking_work() -> i64 {
+        connecting_task_s_blocking_work(1)
+    }
+
+    /// Connects to the server on port `env` as `net.connect` does, by address, or by name with
+    /// TLS for the second test, and talks to it, as a parked task.
+    extern "C" fn connects_and_talks(env: i64, from: i64, _to: i64, _thread: i64) -> i64 {
+        let (test, secure) = (usize::from(from != 0), from != 0);
+        let port = u16::try_from(env).unwrap();
+        let here = std::thread::current().id();
+        *CONNECTING_FROM[test].lock().unwrap() = Some(here);
+        let host = if secure { "localhost" } else { "127.0.0.1" };
+        let (_, handed_over_before) = crate::embed::serve::blocking_jobs_of(here);
+        let heard = crate::stdlib::net::tests::tls::connected_and_pinged(host, port, secure);
+        assert_eq!(heard, Ok(b"pong\n".to_vec()));
+        assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
+        // By address and with no TLS, nothing at all is handed to a blocking thread. By name with
+        // TLS, the name's lookup is, and the handshake's arithmetic, in a piece or more.
+        let (_, handed_over) = crate::embed::serve::blocking_jobs_of(here);
+        if secure {
+            assert!(handed_over - handed_over_before >= 2);
+        } else {
+            assert_eq!(handed_over - handed_over_before, 0);
+        }
+        CONNECTED_AND_HEARD.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+
+    /// A task that connects by address hands nothing to a blocking thread: it starts the connect
+    /// and parks until the socket says how it went. The connect once ran whole on a blocking
+    /// thread, for as long as the network took.
+    #[test]
+    fn a_task_s_connect_holds_no_blocking_thread() {
+        begin();
+        let (port, server, _trusting) =
+            crate::stdlib::net::tests::tls::answering_and_looking(false, plain_connector_s_blocking_work);
+        let pool = super::pool::with_threads(1);
+        let run = super::Run::new(1).waiting(true);
+        // The range from 0 connects by address.
+        let run = super::each_on_pool(run, pool, 1, super::Leaf::For(connects_and_talks, i64::from(port)));
+        assert_eq!(run.finish(), 0);
+        assert_eq!(server.join().unwrap(), [0], "blocking work its task had as the connection came");
+        finish();
+    }
+
+    /// The same with TLS, by name. The name's lookup is done on a blocking thread, and it's over
+    /// before the connect starts. So is the handshake's arithmetic, each time the server has sent
+    /// something to work through, and never while the task waits for the server. The server finds
+    /// the task with no work on a blocking thread as the connection comes, when the task is
+    /// waiting for it, and again once it has the last of the client's handshake. The lookup, the
+    /// connect and the handshake once ran as one piece of work on a blocking thread, for as long
+    /// as the network and the server took.
+    #[test]
+    fn a_task_s_handshake_as_a_client_holds_no_blocking_thread() {
+        begin();
+        crate::stdlib::http::use_tls();
+        let (port, server, trusting) =
+            crate::stdlib::net::tests::tls::answering_and_looking(true, secure_connector_s_blocking_work);
+        let pool = super::pool::with_threads(1);
+        // A list of two with its ranges an item each, of which only the second is run here: the
+        // range from 1 connects by name, with TLS.
+        let run = super::Run::new(1).waiting(true);
+        let connecting = super::Leaf::For(second_connects_and_talks, i64::from(port));
+        let run = super::each_on_pool(run, pool, 2, connecting);
+        let ended = run.finish();
+        drop(trusting);
+        assert_eq!(ended, 0);
+        assert_eq!(server.join().unwrap(), [0, 0], "blocking work its task had, at each look");
+        finish();
+    }
+
+    /// `connects_and_talks`, for the range from 1 alone: the one from 0 has nothing to do.
+    extern "C" fn second_connects_and_talks(env: i64, from: i64, to: i64, thread: i64) -> i64 {
+        if from == 0 { 0 } else { connects_and_talks(env, from, to, thread) }
     }
 
     /// A server that takes two connections and answers neither until both have sent a line.

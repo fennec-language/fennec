@@ -694,6 +694,7 @@ impl<'p> Module<'_, 'p> {
             taken_items: HashMap::new(),
             place_homes: HashMap::new(),
             places_out: HashMap::new(),
+            out_of_dicts: BTreeSet::new(),
             at: (usize::MAX, usize::MAX),
             check_kind: None,
             inside_items: Vec::new(),
@@ -724,8 +725,18 @@ impl<'p> Module<'_, 'p> {
         // locks back and lets go of what the function owns, as a return does.
         let owns_any =
             (0..emit.kinds.len()).any(|at| emit.owns(LocalId(at)) || emit.owns_inline(LocalId(at)));
-        let leave_after_crash = ((!emit.on_crash.is_empty() || owns_any) && emit.failed != "unreachable")
-            .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
+        // So does one that may be left while a value is out of a dict or a list, or a place is
+        // out for a call, owning nothing or not: it goes back first, for whatever holds it to find
+        // it whole.
+        let left_out = emit.values_left_out();
+        let out_for_calls = function
+            .places
+            .iter()
+            .any(|place| emit.kind_of(place.value).is_ok_and(|kind| emit.holds_a_block(kind)));
+        let leave_after_crash =
+            ((!emit.on_crash.is_empty() || owns_any || !left_out.is_empty() || out_for_calls)
+                && emit.failed != "unreachable")
+                .then(|| std::mem::replace(&mut emit.failed, "br label %prop".to_owned()));
         emit.leave_after_crash = leave_after_crash;
         // A failure can let go of what's short-lived before `prop` when `prop` doesn't first put
         // back or roll back what's in a local's blocks. Locals whose blocks it does put things in,
@@ -735,6 +746,8 @@ impl<'p> Module<'_, 'p> {
         for place in &function.places {
             untracked.extend([place.root.0, place.value.0]);
         }
+        // What a value may be out of when a crash leaves is let go of only after it's back.
+        untracked.extend(left_out);
         emit.dying = emit.last_reads(&untracked);
         emit.back_edges = back_edges(function);
         emit.holding = holding(&emit, &untracked, emit.split);
@@ -849,6 +862,9 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) place_homes: HashMap<usize, (String, Kind, &'static str)>,
     /// For each place taken out to change, the stack slot saying where it goes back while it's out.
     pub(crate) places_out: HashMap<usize, String>,
+    /// Those of them that are values out of a dict or a list, which go back after the others: a
+    /// field out of such a value goes back into it first.
+    pub(crate) out_of_dicts: BTreeSet<usize>,
     /// The instruction being written: its block, and its place in it.
     pub(crate) at: (usize, usize),
     /// The handles of the `lock ... as ref` blocks whose changes are saved, for a crash to put
@@ -1167,6 +1183,11 @@ impl Emit<'_, '_, '_> {
                 }
                 self.forget_entries(&inst.kind);
                 self.take_waiting_places(&inst.kind, inst.span)?;
+                // A field that waited for this append is taken out now, with what's appended
+                // already worked out.
+                if let Some((field_local, item, field)) = self.known.path_due(self.at).cloned() {
+                    self.get_field(field_local, &Operand::Local(item), &field)?;
+                }
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
                     for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
                         if let Some(Operand::Local(given)) = args.get(param.0) {
@@ -3499,9 +3520,29 @@ impl Emit<'_, '_, '_> {
             self.found_entries.clear();
             return;
         }
-        self.found_entries.retain(|(dict, key, _)| {
-            !written.contains(dict) && !matches!(key, Operand::Local(local) if written.contains(local))
-        });
+        // A dict read out of a field, however deep, isn't the one that field holds once what it
+        // was read from is written.
+        let from_written = |dict: LocalId| {
+            let mut read_from = self.known.field_of(dict);
+            while let Some((from, _)) = read_from {
+                if written.contains(from) {
+                    return true;
+                }
+                read_from = self.known.field_of(*from);
+            }
+            false
+        };
+        let kept: Vec<bool> = self
+            .found_entries
+            .iter()
+            .map(|(dict, key, _)| {
+                !written.contains(dict)
+                    && !from_written(*dict)
+                    && !matches!(key, Operand::Local(local) if written.contains(local))
+            })
+            .collect();
+        let mut kept = kept.into_iter();
+        self.found_entries.retain(|_| kept.next().unwrap_or(false));
     }
 
     /// A local read once lets go of its value right after that, rather than when the function
@@ -4388,6 +4429,79 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A capability's method is called through its module's own export, so a program that reads
+    /// a file links no SQLite and no sockets. A program with a test built into it calls the export
+    /// that runs every module's, as a test's capabilities are fakes only that one asks.
+    #[test]
+    fn a_capability_method_goes_to_its_modules_export_unless_tests_are_built_in() -> Result<(), String> {
+        let source = "def adds() -> int:\n    return 1 + 1\n\ndef main(fs: Fs, stdout: Stdout):\n    text = fs.read_text(\"notes.txt\") except why:\n        f\"none: {why}\"\n    stdout.print(text, adds())\n    return\n";
+        let emitted = |program: &Program| -> Result<String, String> {
+            let (units, _, _) = emit(program)?;
+            Ok(units.iter().map(|unit| unit.text.as_str()).collect())
+        };
+        let mut program = lowered(source)?;
+        let plain = emitted(&program)?;
+        assert!(plain.contains("@fennec_fs_capability("), "{plain}");
+        assert!(!plain.contains("@fennec_native_capability("), "{plain}");
+        // A test is a function named `test:` and its number, as `fennec test` and `fennec run`
+        // build one in.
+        let mut test = program.functions.iter().find(|function| function.name == "adds").cloned();
+        if let Some(test) = test.as_mut() {
+            "test:0".clone_into(&mut test.name);
+        }
+        program.functions.extend(test);
+        let tested = emitted(&program)?;
+        assert!(tested.contains("@fennec_native_capability("), "{tested}");
+        assert!(!tested.contains("@fennec_fs_capability("), "{tested}");
+        Ok(())
+    }
+
+    /// `main` and a test are started by the runtime, which has a capability for each thing they
+    /// take and nothing for anything else. A parameter of another type stops the build: handed a
+    /// null in its place, `main` read a list at address 0 and the program died.
+    #[test]
+    fn what_the_runtime_starts_takes_capabilities_and_nothing_else() -> Result<(), String> {
+        // Neither reads `args`, so the body builds whatever its type is and only the entry differs.
+        let source = "def main(stdout: Stdout, args: Args):\n    stdout.print(1)\n    return\n";
+        let entries = |program: &Program| -> (Result<String, String>, Result<String, String>) {
+            let made = emit(program).and_then(|(_, shared, layouts)| {
+                let image = crate::entry::Image::of(&layouts, &shared)?;
+                Ok((shared, image))
+            });
+            match made {
+                Ok((shared, image)) => (
+                    crate::entry::entry(program, &shared, &image, &[]),
+                    crate::entry::tests_entry(program, &shared, &image, &[], &["test:0".to_owned()]),
+                ),
+                Err(why) => (Err(why.clone()), Err(why)),
+            }
+        };
+        // A test is a function named `test:` and its number, here one that takes `Args`.
+        let mut program = lowered(source)?;
+        let mut test = program.functions.iter().find(|function| function.name == "main").cloned();
+        if let Some(test) = test.as_mut() {
+            "test:0".clone_into(&mut test.name);
+        }
+        program.functions.extend(test);
+        let (main, tests) = entries(&program);
+        assert!(main?.contains("call i64 @fennec_capability_block(i64 3)"));
+        assert!(tests?.contains("call i64 @fennec_capability_block(i64 3)"));
+        // The same program as it would reach here had the checker let `args: list[str]` through.
+        for function in &mut program.functions {
+            if (function.name == "main" || function.name == "test:0")
+                && let Some(args) = function.locals.get_mut(1)
+            {
+                args.ty = fennec_check::Type::List(Box::new(fennec_check::Type::Str));
+            }
+        }
+        let (main, tests) = entries(&program);
+        let main = main.err().ok_or("`main` was started with a list")?;
+        assert!(main.contains("`main` takes `args`, a `list[str]`, which isn't a capability"), "{main}");
+        let tests = tests.err().ok_or("a test was started with a list")?;
+        assert!(tests.contains("`test:0` takes `args`, a `list[str]`, which isn't a capability"), "{tests}");
+        Ok(())
+    }
+
     /// A build that checks proofs writes the checks they left out, each saying which proof broke:
     /// a loop's count can't overflow, and its index is inside the list it goes through.
     #[test]
@@ -4614,6 +4728,32 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A function that does nothing but `stop` can fail, so it's built taking the failure flag.
+    /// The stop was missing from what can fail, so a helper whose whole body was one was taken as
+    /// unable to and refused. Only the standard library can write the call, so the program is
+    /// given one once it's lowered.
+    #[test]
+    fn a_function_that_only_stops_can_fail() -> Result<(), String> {
+        let source = "def halts(why: str):\n    return\n\ndef main(stdout: Stdout):\n    halts(\"nobody is left to send to\")\n    stdout.print(\"went on\")\n    return\n";
+        let mut program = lowered(source)?;
+        let halts = program.functions.iter_mut().find(|function| function.name == "halts");
+        let block = halts.and_then(|halts| halts.blocks.first_mut()).ok_or("no `halts`")?;
+        let stop = InstKind::Builtin {
+            dest: None,
+            name: "intrinsics.stop".to_owned(),
+            args: vec![Operand::Local(LocalId(0))],
+            changes: false,
+        };
+        block.insts.insert(0, fennec_ir::Inst { kind: stop, span: Span::default() });
+        let (units, shared, _) = emit(&program)?;
+        assert!(shared.can_fail.contains("halts"), "{:?}", shared.can_fail);
+        let text = units.into_iter().find(|unit| unit.function == "halts").map(|unit| unit.text);
+        let text = text.ok_or("`halts` wasn't built")?;
+        assert!(text.contains("call void @fennec_stop("), "{text}");
+        assert!(text.contains("ptr swifterror"), "{text}");
+        Ok(())
+    }
+
     /// A new struct key compared by its words goes into a dict that's alone, with room, by
     /// compiled code itself, and only to the runtime otherwise.
     #[test]
@@ -4763,7 +4903,7 @@ out:
 
 ";
 
-fn is_test(name: &str) -> bool {
+pub(crate) fn is_test(name: &str) -> bool {
     name.strip_prefix("test:")
         .is_some_and(|number| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
         || is_attempt(name)

@@ -29,6 +29,9 @@ use super::{State, attempt, guarded, heap, with};
 const DONE: i64 = 0;
 const CLOSED: i64 = 1;
 const TIMED_OUT: i64 = 2;
+/// What a send or receive a stop cut short came to, in a recording, which native code never sees:
+/// its task fails as stopped, and gets 0.
+const STOPPED: i64 = 3;
 
 /// One message waiting in a channel.
 enum Message {
@@ -46,11 +49,22 @@ struct Channel {
     /// Its name, in a recording or a replay, where what's done to it is logged and replayed in turn.
     replay: Option<Arc<str>>,
     queue: Mutex<Queue>,
-    /// For waits that block their thread.
+    /// For waits that block their thread: `Queue::asleep` says how many are in one.
     changed: Condvar,
     /// Whether it's been freed, and is gone from `CHANNELS`: a thread that found it before, and kept
     /// it to find again, takes it for gone as `CHANNELS` would.
     freed: std::sync::atomic::AtomicBool,
+    /// For tests: how many times it's told the threads asleep on it to look again.
+    #[cfg(test)]
+    told: AtomicI64,
+    /// Whether it gives every listener every message, as one made `to=.Every` does, rather than
+    /// each message to one receiver. Set as it's made, so it's read without the queue.
+    to_every: bool,
+    /// How many times the notes parked tasks left have been taken, to wake them: those waiting
+    /// for room, then those waiting for a message. Changed with the queue held. A wait that's
+    /// just woken reads it without the queue, and knows from it whether its note has gone.
+    #[cfg(any(test, feature = "threads"))]
+    taken: [std::sync::atomic::AtomicU64; 2],
 }
 
 #[derive(Default)]
@@ -60,8 +74,33 @@ struct Queue {
     /// Parked tasks waiting for room, and for a message, to wake when there may be one.
     senders: Vec<Waiter>,
     receivers: Vec<Waiter>,
+    /// How many threads are asleep on `changed`, waiting for room and for a message: a thread that
+    /// isn't a task can't park. Counted under this lock, by the wait itself as it starts and ends,
+    /// so whoever changes the queue knows whether there's anyone to tell, and tells nobody when
+    /// there isn't: on Linux telling is a system call, made or not.
+    asleep: Asleep,
     /// For a channel to `.Every`: where each listener's up to.
     every: Option<every::Listeners>,
+}
+
+/// The threads asleep on a channel, by what each waits for.
+#[derive(Clone, Copy, Default)]
+struct Asleep {
+    for_room: usize,
+    for_a_message: usize,
+}
+
+impl Channel {
+    /// Tells the threads asleep on it to look again, when `anyone` are: what a change to its queue
+    /// does once the queue's let go of, with what `asleep` said while it was held.
+    fn tell(&self, anyone: usize) {
+        if anyone == 0 {
+            return;
+        }
+        #[cfg(test)]
+        self.told.fetch_add(1, Ordering::Relaxed);
+        self.changed.notify_all();
+    }
 }
 
 /// A parked task to wake: the pool's worker it's on, and the token it's parked on.
@@ -141,6 +180,11 @@ pub extern "C" fn channel_new(size: i64) -> i64 {
         queue: Mutex::new(Queue::default()),
         changed: Condvar::new(),
         freed: std::sync::atomic::AtomicBool::new(false),
+        #[cfg(test)]
+        told: AtomicI64::new(0),
+        to_every: false,
+        #[cfg(any(test, feature = "threads"))]
+        taken: Default::default(),
     };
     let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));
@@ -189,20 +233,22 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
             // It never waits: the oldest message goes, if there's no room.
             met(&channel, "send", DONE);
             let dropped = every::push(&mut queue, message.take(), channel.size);
-            let waiting = std::mem::take(&mut queue.receivers);
+            let waiting = channel.take_notes(&mut queue, Side::Receiving);
+            let asleep = queue.asleep.for_a_message;
             drop(queue);
             let_go(dropped);
             wake(waiting);
-            channel.changed.notify_all();
+            channel.tell(asleep);
             return DONE;
         }
         if queue.messages.len() < channel.size {
             met(&channel, "send", DONE);
             queue.messages.extend(message.take());
-            let waiting = std::mem::take(&mut queue.receivers);
+            let waiting = channel.take_notes(&mut queue, Side::Receiving);
+            let asleep = queue.asleep.for_a_message;
             drop(queue);
             wake(waiting);
-            channel.changed.notify_all();
+            channel.tell(asleep);
             return DONE;
         }
         match wait(&channel, queue, deadline, Side::Sending) {
@@ -214,7 +260,7 @@ pub extern "C" fn channel_send(channel: i64, value: i64, is_block: i64, timeout_
             }
             Waited::Stopped => {
                 let_go(message);
-                return DONE;
+                return stopped(&channel, "send");
             }
             Waited::CutShort => {
                 met(&channel, "send", CLOSED);
@@ -235,6 +281,18 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
         return every::receive(&channel, listener, timeout_ns, value);
     }
     let Some(channel) = find(channel) else { return CLOSED };
+    // A channel to every listener has no one message to hand out: each listener has a place of its
+    // own in what's kept. Taking one here used to pull the oldest out from under them, and a
+    // listener that was caught up then never saw the message sent next, with nothing said.
+    // `std.concurrent` stops a program that asks, saying where; this is for whatever gets past it.
+    if channel.to_every {
+        super::fail_with(Diagnostic::new(
+            "this channel is to every listener, so it has no one next message to take: loop over it \
+             with `for message in channel`, or take an `inbox()` and receive from that",
+            Span::default(),
+        ));
+        return DONE;
+    }
     let timeout_ns = match replayed(&channel, "receive") {
         Turn::Live => timeout_ns,
         Turn::Goes => -1,
@@ -245,10 +303,11 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
         let mut queue = channel.queue();
         if let Some(message) = queue.messages.pop_front() {
             met(&channel, "receive", DONE);
-            let waiting = std::mem::take(&mut queue.senders);
+            let waiting = channel.take_notes(&mut queue, Side::Sending);
+            let asleep = queue.asleep.for_room;
             drop(queue);
             wake(waiting);
-            channel.changed.notify_all();
+            channel.tell(asleep);
             *value = i64::from_ne_bytes(taken(message).to_ne_bytes());
             return DONE;
         }
@@ -262,7 +321,7 @@ pub extern "C" fn channel_receive(channel: i64, timeout_ns: i64, value: &mut i64
                 met(&channel, "receive", TIMED_OUT);
                 return TIMED_OUT;
             }
-            Waited::Stopped => return DONE,
+            Waited::Stopped => return stopped(&channel, "receive"),
             Waited::CutShort => {
                 met(&channel, "receive", CLOSED);
                 return CLOSED;
@@ -287,6 +346,11 @@ fn replayed(channel: &Channel, what: &str) -> Turn {
     match crate::replay::turn(channel.replay.as_deref(), what) {
         Ok(None) => Turn::Live,
         Ok(Some(DONE)) => Turn::Goes,
+        Ok(Some(STOPPED)) => {
+            met(channel, what, STOPPED);
+            crate::replay::stopped_as_recorded();
+            Turn::Gives(DONE)
+        }
         Ok(Some(code)) => {
             // It changes nothing, so this is where its turn ends.
             met(channel, what, code);
@@ -297,6 +361,13 @@ fn replayed(channel: &Channel, what: &str) -> Turn {
             Turn::Gives(CLOSED)
         }
     }
+}
+
+/// A stop cut short the running task's wait to do `what` at `channel`, and it's failing: recorded,
+/// so a replay, which doesn't wait, stops it at the same wait.
+fn stopped(channel: &Channel, what: &str) -> i64 {
+    met(channel, what, STOPPED);
+    DONE
 }
 
 /// Says the running task did `what` at `channel`, coming to `outcome`: logged in a recording, and
@@ -315,8 +386,8 @@ pub extern "C" fn channel_close(channel: i64) {
     let mut queue = channel.queue();
     met(&channel, "close", DONE);
     queue.closed = true;
-    let mut waiting = std::mem::take(&mut queue.senders);
-    waiting.append(&mut queue.receivers);
+    let mut waiting = channel.take_notes(&mut queue, Side::Sending);
+    waiting.append(&mut channel.take_notes(&mut queue, Side::Receiving));
     drop(queue);
     wake(waiting);
     channel.changed.notify_all();
@@ -374,6 +445,73 @@ enum Side {
     Receiving,
 }
 
+impl Channel {
+    /// Takes every note on a `side` out of `queue`, which is this channel's, for the tasks that
+    /// left them to be woken, and counts that it did when there were any.
+    fn take_notes(&self, queue: &mut Queue, side: Side) -> Vec<Waiter> {
+        let notes = std::mem::take(match side {
+            Side::Sending => &mut queue.senders,
+            Side::Receiving => &mut queue.receivers,
+        });
+        #[cfg(any(test, feature = "threads"))]
+        if !notes.is_empty() {
+            // Only whoever holds the queue changes it, so it's read and written, not added to.
+            let taken = self.taken_on(side);
+            taken.store(taken.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+        }
+        #[cfg(not(any(test, feature = "threads")))]
+        let _: (&Channel, Side) = (self, side);
+        notes
+    }
+}
+
+#[cfg(any(test, feature = "threads"))]
+impl Channel {
+    fn taken_on(&self, side: Side) -> &std::sync::atomic::AtomicU64 {
+        let [for_room, for_a_message] = &self.taken;
+        match side {
+            Side::Sending => for_room,
+            Side::Receiving => for_a_message,
+        }
+    }
+
+    /// How many times the notes on a `side` have been taken.
+    fn taken(&self, side: Side) -> u64 {
+        self.taken_on(side).load(Ordering::Relaxed)
+    }
+
+    /// Takes back the note a parked wait left on its `side` when the notes there had been taken
+    /// `left_at` times, if it's still there. The wait is known by its pool, its worker and its
+    /// token there: a token is one worker's.
+    ///
+    /// Whoever wakes a wait through its note takes every note on that side and counts it. So a
+    /// count that's moved on says the note has gone, with no look for it and the queue not held,
+    /// which is how a wait nearly always ends. A wait woken another way, by its time running
+    /// out, a stop, or a crash of a task it launched, finds the count where it left it, and
+    /// takes its note out from among the others'. Left there, it was woken through for nothing
+    /// by the next change, and they piled up from a wait that times out in a loop.
+    fn take_back(
+        &self,
+        side: Side,
+        (pool, at, token): (&'static super::parallel::Pool, usize, mio::Token),
+        left_at: u64,
+    ) {
+        if self.taken(side) != left_at {
+            return;
+        }
+        let mut queue = self.queue();
+        // Looked at again with the queue held: a take may have come since the look without it.
+        if self.taken(side) != left_at {
+            return;
+        }
+        let notes = match side {
+            Side::Sending => &mut queue.senders,
+            Side::Receiving => &mut queue.receivers,
+        };
+        notes.retain(|note| !(std::ptr::eq(note.pool, pool) && note.at == at && note.token == token));
+    }
+}
+
 enum Waited {
     /// Look again: something may have changed.
     Again,
@@ -421,8 +559,10 @@ fn wait(
             Side::Sending => queue.senders.push(waiter),
             Side::Receiving => queue.receivers.push(waiter),
         }
+        let left_at = channel.taken(side);
         drop(queue);
         let parked = super::serve::park_on(token, deadline);
+        channel.take_back(side, (pool, at, token), left_at);
         super::threads::Launcher::waited_here();
         return match parked {
             // Stopped, it's failing. Cancelled, as by a server that's stopping, it can't wait any more
@@ -437,7 +577,7 @@ fn wait(
             super::serve::Parked::Ready => Waited::Again,
         };
     }
-    let _ = side;
+    let mut queue = queue;
     // A crash of a task this code launched wakes it: told with the queue held, so the crash can't
     // come between this last look and the wait.
     #[cfg(any(test, feature = "threads"))]
@@ -457,7 +597,15 @@ fn wait(
     // What this thread printed comes out first, as before anything else that waits. The queue stays
     // held, so no change is missed before the wait.
     super::write_kept_output();
-    let (_queue, timed_out) = match deadline {
+    // Counted as asleep from here to when it wakes, with the queue held at both ends. The wait
+    // lets go of the queue only as it goes to sleep, so whoever changes the queue next takes it
+    // after that, sees there's someone to tell, and tells them. Whoever changed it before had let
+    // go of it before this thread's last look, which saw the change.
+    match side {
+        Side::Sending => queue.asleep.for_room += 1,
+        Side::Receiving => queue.asleep.for_a_message += 1,
+    }
+    let (mut queue, timed_out) = match deadline {
         Some(deadline) => {
             let left = deadline.saturating_duration_since(Instant::now());
             let (queue, waited) =
@@ -466,6 +614,16 @@ fn wait(
         }
         None => (channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), false),
     };
+    // Awake again, however it was woken, with the queue held once more. It was counted above, so
+    // the count has it: one that didn't would mean a thread left asleep and uncounted, which a
+    // count held at nothing would hide.
+    let counted = match side {
+        Side::Sending => &mut queue.asleep.for_room,
+        Side::Receiving => &mut queue.asleep.for_a_message,
+    };
+    debug_assert!(*counted > 0, "a thread woke on a channel that didn't count it asleep");
+    *counted -= 1;
+    drop(queue);
     #[cfg(any(test, feature = "threads"))]
     super::threads::Launcher::waited_here();
     if timed_out { Waited::TimedOut } else { Waited::Again }

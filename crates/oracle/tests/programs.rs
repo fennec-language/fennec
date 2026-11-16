@@ -222,19 +222,19 @@ fn an_else_ends_a_chain_at_a_missing_or_failed_step() {
 #[test]
 fn what_it_doesnt_model_is_refused_by_name() {
     let (printed, ended) = ran("
-        from std import toml
+        from std import compress
 
         def main(stdout: Stdout):
             stdout.print('before')
-            stdout.print(toml.dumps({'a': 1}))
+            stdout.print(compress.gzip(bytes([1, 2])))
         ");
     assert_eq!(printed, "");
-    assert_eq!(ended, Ended::Unsupported("std.toml.dumps".to_owned()));
+    assert_eq!(ended, Ended::Unsupported("std.compress.gzip".to_owned()));
     let (_, ended) = ran("
-        def main(stdout: Stdout, net: Net):
+        def main(stdout: Stdout, process: Process):
             stdout.print('hi')
         ");
-    assert_eq!(ended, Ended::Unsupported("the capability Net".to_owned()));
+    assert_eq!(ended, Ended::Unsupported("the capability Process".to_owned()));
 }
 
 #[test]
@@ -498,8 +498,10 @@ fn std_math_runs_from_its_own_source() {
          2.5 4.0 0.8414709848078965 1.2311444133449163\n\
          [3, 2, 1] 2 1.5\n",
     );
-    // A program's own type with the name of one of the module's is refused, not mixed up with it.
-    let (_, ended) = ran("
+    // A program's own type with the name of one of the module's is its own, renamed as the checker
+    // renames it, never mixed up with the module's.
+    prints(
+        "
         from std.math import sqrt
 
         struct Vec3:
@@ -507,8 +509,9 @@ fn std_math_runs_from_its_own_source() {
 
         def main(stdout: Stdout):
             stdout.print(Vec3(x=sqrt(4.0)))
-        ");
-    assert_eq!(ended, Ended::Unsupported("`Vec3`, declared by the program and by std.math".to_owned()));
+        ",
+        "Vec3(x=2.0)\n",
+    );
 }
 
 /// `std.collections` runs from its own Fennec source too: a `Deque`, a `Heap` and a
@@ -535,6 +538,147 @@ fn std_collections_runs_from_its_own_source() {
             return
         ",
         "Deque([2, 3, 4]) 1 True\n1 2 2\nSortedMap({\"den\": 2, \"fox\": 1, \"kit\": 1}) [\"den\", \"fox\", \"kit\"]\n",
+    );
+}
+
+/// Places through a type's own `def []`, as `docs/decisions.md` sets them out. Through the plain
+/// form beside a `def []=`, a change reads the part, changes the copy and writes it back once,
+/// nested too, and once for a method that changes it twice. Through the `ref` form a position is
+/// a place, which `for ref`, `parallel`, a `ref` argument and `=` reach, its empty positions
+/// skipped. What it prints is what the compiled program printed.
+#[test]
+fn a_types_own_index_reads_writes_back_and_gives_positions() {
+    prints(
+        "
+        struct Part:
+            name: str
+            x = 0
+
+            def moved(ref self, by: int):
+                self.x += by
+                self.x += by
+
+        struct Shelf:
+            parts: list[Part]
+            writes = 0
+
+            def [](self, at: int) -> Part:
+                return self.parts[at]
+
+            def []=(ref self, at: int, part: Part):
+                self.parts[at] = part
+                self.writes += 1
+
+        struct Room:
+            shelf: Shelf
+
+            def [](self, name: str) -> Shelf:
+                return self.shelf
+
+            def []=(ref self, name: str, shelf: Shelf):
+                self.shelf = shelf
+
+        struct Slots:
+            items = list[int]()
+            alive = list[bool]()
+
+            def len(self) -> int:
+                return len(self.items)
+
+            def is_live(self, at: int) -> bool:
+                return self.alive[at]
+
+            def [](ref self, at: int) -> int:
+                return self.items[at]
+
+        def bumped(ref value: int):
+            value += 100
+
+        def main(stdout: Stdout):
+            mut shelf = Shelf(parts=[Part(name='bolt'), Part(name='nut')])
+            shelf[0].x += 3
+            shelf[1].moved(2)
+            stdout.print(shelf[0].name, shelf.parts, shelf.writes)
+            mut room = Room(shelf=shelf)
+            room['back'][1].x = 9
+            stdout.print(room.shelf.parts, room.shelf.writes, shelf.writes)
+            mut slots = Slots(items=[1, 2, 3], alive=[True, False, True])
+            for ref slot in slots:
+                slot *= 10
+            for ref slot in parallel(slots):
+                slot += 1
+            bumped(ref slots[1])
+            slots[0] = 7
+            stdout.print(slots.items, len(slots))
+            return
+        ",
+        "bolt [Part(name=\"bolt\", x=3), Part(name=\"nut\", x=4)] 2\n\
+         [Part(name=\"bolt\", x=3), Part(name=\"nut\", x=9)] 3 2\n\
+         [7, 102, 31] 3\n",
+    );
+}
+
+/// A change through a type's own `def []=` that fails partway keeps what it changed before the
+/// failure: the part is written back, since only `lock ... as ref` rolls back. What it prints is
+/// what the compiled program printed, built for dev and with `--release`.
+#[test]
+fn a_change_through_its_own_index_that_fails_partway_is_written_back() {
+    prints(
+        "
+        error Nope:
+            code: int
+
+        struct Part:
+            name: str
+            x: int
+            marks: list[int]
+
+            def shift(ref self, by: int) fails Nope:
+                self.x += by
+                self.marks.append(by)
+                if by > 5:
+                    fail Nope(code=by)
+                self.x += 100
+
+        struct Shelf:
+            parts: dict[str, Part]
+
+            def [](self, key: str) -> Part:
+                return self.parts[key]
+
+            def []=(ref self, key: str, part: Part):
+                self.parts[key] = part
+
+        struct Rack:
+            counts: list[int]
+
+            def [](self, at: int) -> int:
+                return self.counts[at]
+
+            def []=(ref self, at: int, count: int):
+                self.counts[at] = count
+
+        def failing(ref value: int, by: int) fails Nope:
+            value += by
+            fail Nope(code=by)
+
+        def main(stdout: Stdout):
+            mut shelf = Shelf(parts={'bolt': Part(name='bolt', x=1, marks=[])})
+            shelf['bolt'].shift(2) except why:
+                stdout.print('failed', why.code)
+            stdout.print(shelf['bolt'])
+            shelf['bolt'].shift(9) except why:
+                stdout.print('failed', why.code)
+            stdout.print(shelf['bolt'])
+            mut rack = Rack(counts=[1, 2])
+            failing(ref rack[1], by=40) except Nope():
+                stdout.print('failed', rack.counts)
+            return
+        ",
+        "Part(name=\"bolt\", x=103, marks=[2])\n\
+         failed 9\n\
+         Part(name=\"bolt\", x=112, marks=[2, 9])\n\
+         failed [1, 42]\n",
     );
 }
 
@@ -574,6 +718,520 @@ fn bytes_are_made_read_joined_and_decoded() {
     );
 }
 
+/// A template string builds the core's own `Template`, run from its source: its texts, values and
+/// expressions, and each `Interpolation` with its format spec. `is bytes` tells bytes from the
+/// other members of a union. What it prints is what the compiled program printed.
+#[test]
+fn a_template_string_builds_the_cores_template() {
+    prints(
+        "
+        type Field = int | bytes
+
+        def kind(value: Field) -> str:
+            if value is bytes:
+                return 'bytes ' + value.hex()
+            return 'int'
+
+        def main(stdout: Stdout):
+            row = 7
+            blob = bytes([1, 255])
+            query: Template[Field] = t'row = {row} and blob = {blob:x}'
+            stdout.print(query.strings, len(query.values), query.expressions)
+            for part in query.interpolations():
+                stdout.print(part.expression, part.format_spec, kind(part.value))
+            return
+        ",
+        "[\"row = \", \" and blob = \", \"\"] 2 [\"row\", \"blob\"]\n\
+         row  int\n\
+         blob x bytes 01ff\n",
+    );
+}
+
+/// The program of `a_format_of_its_own_is_told_what_each_value_saves`: a format that writes what
+/// it's told, and the values given it.
+const OWN_FORMAT: &str = "
+        from std.collections import Id
+
+        struct Shown:
+            parts = list[str]()
+
+            def int(ref self, value: int):
+                self.parts.append(str(value))
+
+            def float(ref self, value: float):
+                self.parts.append(str(value))
+
+            def bool(ref self, value: bool):
+                self.parts.append('yes' if value else 'no')
+
+            def text(ref self, value: str):
+                self.parts.append(f'<{value}>')
+
+            def bytes(ref self, value: bytes):
+                self.parts.append('bytes')
+
+            def none(ref self):
+                self.parts.append('nothing')
+
+            def value[T: Serializable](ref self, x: T):
+                x.serialize(ref self)
+
+            def sequence[T: Serializable](ref self, items: list[T]):
+                self.parts.append('(')
+                for item in items:
+                    item.serialize(ref self)
+                self.parts.append(')')
+
+            def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
+                for key, value in pairs:
+                    key.serialize(ref self)
+                    self.parts.append('=')
+                    value.serialize(ref self)
+
+            def record(ref self, name: str, count: int):
+                self.parts.append(f'{name}/{count}')
+
+            def field[T: Serializable](ref self, name: str, x: T):
+                self.parts.append(f'{name}:')
+                x.serialize(ref self)
+
+            def renamed[T: Serializable](ref self, name: str, x: T):
+                self.parts.append(f'as {name}:')
+                x.serialize(ref self)
+
+            def end(ref self):
+                self.parts.append('.')
+
+            def items(ref self, name: str, count: int):
+                self.parts.append('[')
+
+            def item[T: Serializable](ref self, x: T):
+                x.serialize(ref self)
+
+            def end_items(ref self):
+                self.parts.append(']')
+
+            def enum_case(ref self, name: str, case_name: str, at: int):
+                self.parts.append(f'{name}.{case_name}')
+
+            def case_record(ref self, name: str, case_name: str, at: int, count: int):
+                self.parts.append(f'{name}.{case_name}/{count}')
+
+            def member(ref self, name: str, at: int):
+                pass
+
+            def end_member(ref self):
+                pass
+
+            def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+                self.sequence(items)
+
+            def exact(self) -> bool:
+                return False
+
+            def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+                # Never asked for: `exact` says no.
+                pass
+
+            def id(ref self, kind: str, key: int, tag: int):
+                self.parts.append(f'Id[{kind}]')
+
+            def some[T: Serializable](ref self, x: T):
+                x.serialize(ref self)
+
+            def shown(self) -> str:
+                return ' '.join(self.parts)
+
+
+
+
+
+
+
+        enum Shape:
+            Dot
+            Box(width: int, height: int)
+
+        struct Pair[T]:
+            first: T
+            @serialize(name='other')
+            second: T
+            @skip
+            seen = 0
+
+        def shown[T: Serializable](x: T) -> str:
+            mut out = Shown()
+            out.value(x)
+            return out.shown()
+
+        def main(stdout: Stdout):
+            stdout.print(shown(Pair(first=Shape.Dot, second=.Box(width=2, height=3))))
+            maybes: list[int?] = [1, None]
+            stdout.print(shown(maybes), shown({'a': {2}}))
+            return
+        ";
+
+/// A format a program writes itself is told what each value saves, by the value's type: an
+/// optional's value through `some`, a list's items through `sequence`, a struct's fields between
+/// `record` and `end`, renamed or left out as their annotations say, and an enum's case through
+/// `enum_case` or `case_record`. A generic function's `T` is the type it's called with. What it
+/// prints is what the compiled program printed.
+#[test]
+fn a_format_of_its_own_is_told_what_each_value_saves() {
+    prints(
+        OWN_FORMAT,
+        "Pair/2 first: Shape.Dot as other: Shape.Box/2 width: 2 height: 3 . . .\n\
+         ( 1 nothing ) <a> = ( 2 )\n",
+    );
+}
+
+/// JSON saves and loads a standard library type through the `def serialize` and
+/// `def deserialize` it writes itself, run from its source: a `SortedMap` as an object, a
+/// `Grid` as its rows, and a failure the type's own code makes says where it is. What it prints is
+/// what the compiled program printed.
+#[test]
+fn json_runs_a_types_own_serialize_and_deserialize() {
+    prints(
+        "
+        from std import json
+        from std.collections import Grid, SortedMap
+
+        def failure[T](run: () -> T fails ParseError) -> str:
+            _ = run() except why:
+                return why.message
+            return 'loaded'
+
+        def main(stdout: Stdout):
+            mut ranks = SortedMap[int, str]()
+            ranks[10] = 'ten'
+            ranks[2] = 'two'
+            text = json.dumps(ranks)
+            stdout.print(text, json.loads[SortedMap[int, str]](text)?.items())
+            stdout.print(json.dumps(Grid.of([[1, 2], [3, 4]])))
+            stdout.print(failure(() => json.loads[Grid[int]]('[[1, 2], [3]]')?))
+            return
+        ",
+        "{\"2\": \"two\", \"10\": \"ten\"} [(2, \"two\"), (10, \"ten\")]\n\
+         [[1, 2], [3, 4]]\n\
+         `[1]` has 1 cell, but the first row has 2\n",
+    );
+}
+
+/// `toml.dumps` is the runtime's, written in Rust, and the oracle runs `std.toml`'s own writer,
+/// written in Fennec, in its place, through each value's `serialize`: so the two are held to each
+/// other. Floats are written by `std.json`'s helper, run from its source. What it prints is what
+/// the compiled program printed.
+#[test]
+fn toml_dumps_runs_std_tomls_own_writer() {
+    prints(
+        "
+        from std import toml
+
+        struct Limit:
+            name: str
+            most: float
+
+        struct Server:
+            name: str
+            port: int
+            tags: list[str]
+            limits: dict[str, float]
+            rules: list[Limit]
+            owner: Limit
+
+        def main(stdout: Stdout):
+            rules = [Limit(name='cpu', most=0.5), Limit(name='mem \\'hot\\'', most=2.0)]
+            server = Server(name='den', port=8080, tags=['a', 'b c'], limits={'cpu': 0.5, 'mem': 2.0}, rules=rules, owner=Limit(name='kit', most=1.0))
+            stdout.write(toml.dumps(server))
+            stdout.print('---')
+            stdout.write(toml.dumps({'title': 'fox \\'kit\\'', 'count': '3'}))
+            return
+        ",
+        "name = \"den\"\n\
+         port = 8080\n\
+         tags = [\"a\", \"b c\"]\n\
+         \n\
+         [limits]\n\
+         cpu = 0.5\n\
+         mem = 2.0\n\
+         \n\
+         [[rules]]\n\
+         name = \"cpu\"\n\
+         most = 0.5\n\
+         \n\
+         [[rules]]\n\
+         name = \"mem \\\"hot\\\"\"\n\
+         most = 2.0\n\
+         \n\
+         [owner]\n\
+         name = \"kit\"\n\
+         most = 1.0\n\
+         ---\n\
+         title = \"fox \\\"kit\\\"\"\n\
+         count = \"3\"\n",
+    );
+}
+
+/// An `f32` is rounded to 32 bits after each operation and prints as the shortest text that reads
+/// back as the same `f32`, as `docs/language.md` says: written out, converted from ints, floats
+/// and sized ints, added, multiplied, divided, compared, and back to a `float` and an `int`. What
+/// it prints is what the compiled program printed.
+#[test]
+fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
+    prints(
+        "
+        struct Body:
+            mass: f32
+            speed: f32
+
+        def main(stdout: Stdout):
+            tenth: f32 = 0.1
+            three = f32(3)
+            summed = tenth + tenth + tenth
+            stdout.print(tenth, three, summed, tenth * three, three / f32(7), -tenth, summed == f32(0.3), summed < three)
+            stdout.print(float(tenth), int(three / f32(2)), f32(16777217), f32(1e39), f32(2.5e-7), f32(123456789.0))
+            body = Body(mass=1.5, speed=f32(1) / f32(3))
+            stdout.print(body, [tenth, three], {tenth: 'tenth'}, f'{summed}')
+            mut total: f32 = 0.0
+            for step in range(10):
+                total += f32(step) * tenth
+            stdout.print(total, f32(u8(200)), f32(-0.0), f32(1e20))
+            return
+        ",
+        "0.1 3.0 0.3 0.3 0.42857143 -0.1 True True\n\
+         0.10000000149011612 1 16777216.0 inf 2.5e-07 123456790.0\n\
+         Body(mass=1.5, speed=0.33333334) [0.1, 3.0] {0.1: \"tenth\"} 0.3\n\
+         4.5 200.0 -0.0 1e+20\n",
+    );
+}
+
+/// `toml.loads` runs `std.toml`'s own reader, written in Fennec, in place of the runtime's,
+/// through the `def deserialize` the checker writes for each type, as the oracle models it: a
+/// field left out takes its default, an optional one is `None`, a `@skip` field keeps its
+/// default, and a missing field, a value of the wrong type, a key given twice and a key no field
+/// has each fail as the reader says. What it prints is what the compiled program printed.
+#[test]
+fn toml_loads_runs_std_tomls_own_reader_through_each_types_deserialize() {
+    prints(
+        "
+        from std import toml
+
+        struct Limit:
+            name: str
+            most = 1.0
+
+        struct Server:
+            name: str
+            tags: list[str]
+            note: str?
+            limits: dict[str, float]
+            rules: list[Limit]
+            port = 80
+            @skip
+            seen = 3
+
+        def failure(text: str) -> str:
+            _ = toml.loads[Server](text) except why:
+                return why.message
+            return 'loaded'
+
+        def main(stdout: Stdout):
+            text = 'name = \\'den\\'\\ntags = [\\'a\\']\\n\\n[limits]\\ncpu = 0.5\\n\\n[[rules]]\\nname = \\'cpu\\'\\n\\n[[rules]]\\nname = \\'mem\\'\\nmost = 2.5\\n'
+            server = toml.loads[Server](text)?
+            stdout.print(server)
+            again = toml.dumps(Limit(name='kit'))
+            stdout.print(again.strip(), toml.loads[Limit](again)? == Limit(name='kit'))
+            stdout.print(failure('tags = []\\n[limits]\\n'))
+            stdout.print(failure('name = 3\\ntags = []\\n[limits]\\n'))
+            stdout.print(failure('name = \\'x\\'\\ntags = []\\nport = 1\\nport = 2\\n[limits]\\n'))
+            stdout.print(failure('name = \\'x\\'\\ntags = []\\nextra = 1\\n[limits]\\n'))
+            stdout.print(failure('name = \\'x\\'\\nnote = \\'hi\\'\\ntags = [1]\\n[limits]\\n'))
+            counts = toml.loads[dict[str, list[int]]]('a = [1, 2]\\nb = []\\n')?
+            stdout.print(counts)
+            return
+        ",
+        "Server(name=\"den\", tags=[\"a\"], note=None, limits={\"cpu\": 0.5}, rules=[Limit(name=\"cpu\", most=1.0), Limit(name=\"mem\", most=2.5)], port=80, seen=3)\n\
+         name = \"kit\"\n\
+         most = 1.0 True\n\
+         `name` is missing\n\
+         `name` should be a str, but it's an int\n\
+         `port` is defined twice, at line 4, column 1\n\
+         `Server` has no field \"extra\", but the text has one\n\
+         `tags[0]` should be a str, but it's an int\n\
+         {\"a\": [1, 2], \"b\": []}\n",
+    );
+}
+
+/// The sized ints' `parse` and `from` are the core's, written in Fennec, run from their source:
+/// a `u64` past the largest int, a sign and the space around it, and each failure as they say
+/// it. What it prints is what the compiled program printed.
+#[test]
+fn sized_parse_and_from_run_the_cores_own_code() {
+    prints(
+        "
+        def parsed(text: str) -> str:
+            value = u64.parse(text) except why:
+                return why.message
+            return f'{value}'
+
+        def small(text: str) -> str:
+            value = i8.parse(text) except why:
+                return why.message
+            return f'{value}'
+
+        def fitted(number: int) -> str:
+            value = u16.from(number) except why:
+                return why.message
+            return f'{value}'
+
+        def main(stdout: Stdout):
+            for text in ['0', '18446744073709551615', '18446744073709551616', '-1', ' 42 ', '1_000', 'x']:
+                stdout.print(parsed(text))
+            for text in ['127', '-128', '128', '-129', '+5', '']:
+                stdout.print(small(text))
+            for number in [0, 65535, 65536, -1]:
+                stdout.print(fitted(number))
+            return
+        ",
+        "0\n\
+         18446744073709551615\n\
+         18446744073709551616 doesn't fit in u64, which holds 0 to 18446744073709551615\n\
+         -1 doesn't fit in u64, which holds 0 to 18446744073709551615\n\
+         42\n\
+         \"1_000\" isn't an int\n\
+         \"x\" isn't an int\n\
+         127\n\
+         -128\n\
+         128 doesn't fit in i8, which holds -128 to 127\n\
+         -129 doesn't fit in i8, which holds -128 to 127\n\
+         5\n\
+         \"\" isn't an int\n\
+         0\n\
+         65535\n\
+         65536 doesn't fit in u16, which holds 0 to 65535\n\
+         -1 doesn't fit in u16, which holds 0 to 65535\n",
+    );
+}
+
+/// Tasks launched with no `as` run beside their block, talking through `std.concurrent`'s
+/// channels: a task answering each job its block sends, and two listeners of a channel to every
+/// listener, each hearing every message sent from when its inbox was made. What it prints is
+/// what the compiled program printed.
+#[test]
+fn tasks_talk_through_channels_and_listeners() {
+    prints(
+        "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+        def doubled(jobs: Inbox[int], back: Sender[int], count: int) fails Closed:
+            for _ in range(count):
+                job = jobs.receive() else 0
+                back.send(job * 2)?
+
+        def summed(news: Inbox[int], back: Sender[int], count: int) fails Closed:
+            mut total = 0
+            mut heard = 0
+            for item in news:
+                total += item
+                heard += 1
+                if heard == count: break
+            back.send(total)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=2) as jobs, channel[int](size=4) as answers:
+                with launch(() => doubled(jobs.inbox(), back=answers.sender(), count=5)?)?:
+                    for job in range(1, 6):
+                        jobs.send(job)?
+                        stdout.print(answers.receive() else -1)
+            with channel[int](size=8, to=.Every) as news, channel[int](size=2) as totals:
+                first = news.inbox()
+                second = news.inbox()
+                with launch(() => summed(first, back=totals.sender(), count=3)?)?:
+                    with launch(() => summed(second, back=totals.sender(), count=3)?)?:
+                        for item in [3, 4, 5]:
+                            news.send(item)?
+                stdout.print(totals.receive() else -1, totals.receive() else -1)
+            return
+        ",
+        "2\n\
+         4\n\
+         6\n\
+         8\n\
+         10\n\
+         12 12\n",
+    );
+}
+
+/// Where which of several tasks' messages comes first changes what's printed, every order is
+/// tried, and the program is refused: what it prints hangs on time, from the line it parts at.
+#[test]
+fn messages_whose_order_changes_what_prints_are_refused() {
+    let (_, ended) = ran("
+        from std.concurrent import Closed, Crashed, Sender, channel
+
+        def told(back: Sender[int], what: int) fails Closed:
+            back.send(what)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=4) as answers:
+                with launch(() => told(answers.sender(), what=1)?)?:
+                    with launch(() => told(answers.sender(), what=2)?)?:
+                        stdout.print(answers.receive() else -1)
+                        stdout.print(answers.receive() else -1)
+            return
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "what it prints, or how it ends, hangs on the order its tasks' messages come in: \
+             line 1 is \"1\" in one order and \"2\" in another"
+                .to_owned()
+        )
+    );
+}
+
+/// A task waiting for its inbox to close, which closes only once the task's own `with launch`
+/// has ended, waits forever, as its block does for it: a hang, which is refused.
+#[test]
+fn tasks_that_all_wait_are_refused_as_a_hang() {
+    let (_, ended) = ran("
+        from std.concurrent import Closed, Crashed, Inbox, channel
+
+        def drained(jobs: Inbox[int]) -> int:
+            mut total = 0
+            for job in jobs:
+                total += job
+            return total
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=2) as jobs:
+                with launch(() => stdout.print(drained(jobs.inbox())))?:
+                    jobs.send(1)?
+            return
+        ");
+    assert_eq!(ended, Ended::Unsupported("every task waits on another, so the program hangs".to_owned()));
+}
+
+/// A wait given a timeout times out when nothing else can answer it. What it prints is what the
+/// compiled program printed.
+#[test]
+fn a_wait_times_out_when_nothing_can_answer_it() {
+    prints(
+        "
+        from std.concurrent import Closed, Timeout, channel
+
+        def main(stdout: Stdout) fails Closed:
+            with channel[int](size=1) as quiet:
+                got = quiet.receive_within(10ms) except Timeout():
+                    stdout.print('timed out')
+                    return
+                stdout.print(got)
+            return
+        ",
+        "timed out\n",
+    );
+}
+
 /// `main` may take `Env`, `Stderr`, `Signals` and a `Clock`. `Env` is `std.env`'s, run from its
 /// own source, with `get` reading the variables the oracle was started with and `secret`
 /// failing with `Missing`. Standard error is written and not compared, no signal ever comes, and
@@ -599,6 +1257,30 @@ fn main_takes_env_stderr_signals_and_a_clock() {
             return
         ",
         "True False ORACLE_TEST_VARIABLE_NEVER_SET is not set\nTrue 1min30s 16ms True\n",
+    );
+}
+
+/// `std.random`'s `Random` runs from its own source, its draws as `docs/language.md` pins them, so
+/// a seed gives the compiled program's numbers exactly. An `Entropy`'s bytes and seeds differ
+/// every run, so only what holds for any of them is printed. What it prints is what the compiled
+/// program printed.
+#[test]
+fn a_seeded_random_draws_the_compiled_numbers_and_entropy_seeds_one() {
+    prints(
+        "
+        from std.random import Random
+
+        def main(stdout: Stdout, entropy: Entropy):
+            mut dice = Random(seed=7)
+            rolls = [dice.randint(1, high=6) for _ in range(6)]
+            stdout.print(rolls, dice.choice(['fox', 'den', 'kit']), dice.random(), dice.uniform(2.0, high=4.0))
+            stdout.print(len(entropy.bytes(16)), entropy.bytes(0) == bytes())
+            mut drawn = Random(seed=entropy.seed())
+            roll = drawn.randint(1, high=6)
+            stdout.print(1 <= roll <= 6)
+            return
+        ",
+        "[3, 1, 6, 4, 3, 2] den 0.3280767391525029 2.2685165976168973\n16 True\nTrue\n",
     );
 }
 
@@ -946,12 +1628,43 @@ fn what_differs_from_one_system_to_another_is_refused() {
         "    fs.write_text('Notes.txt', 'a')?\n    stdout.print(fs.exists('notes.txt')?)\n",
         "the name `notes.txt` beside `Notes.txt`, which some systems take as the same name",
     );
-    refused("    stdout.print(fs.exists('/etc/hosts')?)\n", "a path outside the folder the program runs in");
+    refused(
+        "    fs.write_text('/made-by-the-oracle.txt', 'x')?\n",
+        "changing something outside the folder the program runs in",
+    );
     refused(
         "    stdout.print(fs.metadata('.')?.is_dir)\n    stdout.print(fs.metadata('.')?)\n",
         "a folder's size, which differs from one system to another",
     );
     refused("    _ = fs.read_bytes('a.bin')?\n", "bytes");
+}
+
+/// Outside the folder the program runs in, the disk is only looked at: whether a file or a folder
+/// is there. The root is, a path through nothing fails as not found, and reading a file that's
+/// there is refused, as it is inside for what was there before.
+#[test]
+fn outside_its_folder_the_disk_is_only_looked_at() {
+    let (printed, ended) = ran_in_work(
+        "
+        def failure(run: () -> str fails IoError) -> str:
+            _ = run() except why:
+                return why.message()
+            return 'read'
+
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            stdout.print(fs.exists('/')?, fs.exists('/no-such-fennec-folder')?)
+            stdout.print(failure(() => fs.read_text('/no-such-fennec-folder/settings.toml')?))
+        ",
+    );
+    assert_eq!(ended, Ended::Exited(0), "it printed:\n{printed}");
+    assert!(printed.starts_with("True False\n"), "{printed}");
+    let (_, ended) = ran_in_work(
+        "
+        def main(stdout: Stdout, fs: Fs) fails IoError:
+            stdout.print(fs.read_text('/')?)
+        ",
+    );
+    assert!(matches!(ended, Ended::Unsupported(_) | Ended::Stopped(_)), "{ended:?}");
 }
 
 /// In the folder the test runs in, the crate's own, the oracle sees what's there, reads none of
@@ -1047,6 +1760,51 @@ fn two_shared_values_are_equal_when_they_hold_equal_values() {
             stdout.print(first == second, first != second)
         ",
         "True True True\nFalse True\n",
+    );
+}
+
+/// An optional `shared` value that's there is equal to the cell it holds and never to one that's
+/// missing, either way round.
+#[test]
+fn an_optional_shared_value_is_never_equal_to_a_missing_one() {
+    prints(
+        "
+        struct Account:
+            total = 0
+
+        def picked(account: shared Account, there: bool) -> (shared Account)?:
+            if there:
+                return account
+            return None
+
+        def main(stdout: Stdout):
+            shared account = Account(total=1)
+            held = picked(account, there=True)
+            missing = picked(account, there=False)
+            stdout.print(held == missing, missing == held, held == account, missing == None)
+        ",
+        "False False True True\n",
+    );
+}
+
+/// A type's own `def ==` decides `==` on `shared` values even for a cell compared with itself:
+/// there's no shortcut for one cell, as native code has none (#597).
+#[test]
+fn a_shared_value_is_unequal_to_itself_when_its_def_eq_says_so() {
+    prints(
+        "
+        struct Never:
+            n = 0
+
+            def ==(self, other: Never) -> bool:
+                return False
+
+        def main(stdout: Stdout):
+            shared never = Never(n=1)
+            copy = never
+            stdout.print(never == never, never == copy, never != never)
+        ",
+        "False False True\n",
     );
 }
 
@@ -1198,7 +1956,10 @@ fn a_launched_task_reads_what_its_block_sent_and_its_failure_is_the_withs() {
         ",
         "crashed the task crashed\nPoint(x=245, y=5)\ntask 1\ntask 3\ntask 7\nrefused 7\n",
     );
-    let (_, ended) = ran("
+    // The block prints before it sends, and the task prints after it receives, so the order is
+    // promised.
+    prints(
+        "
         from std.concurrent import Closed, Crashed, Inbox, Timeout
 
         def echoing(inbox: Inbox[int], stdout: Stdout):
@@ -1209,11 +1970,25 @@ fn a_launched_task_reads_what_its_block_sent_and_its_failure_is_the_withs() {
             with launch((inbox) => echoing(inbox, stdout))? as sends:
                 stdout.print('block')
                 sends.send(1)?
+        ",
+        "block\ntask 1\n",
+    );
+    // Here nothing orders the task's first print and the block's.
+    let (_, ended) = ran("
+        from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+        def echoing(inbox: Inbox[int], stdout: Stdout):
+            stdout.print('task')
+            for number in inbox:
+                stdout.print('task', number)
+
+        def main(stdout: Stdout) fails Crashed | Closed | Timeout:
+            with launch((inbox) => echoing(inbox, stdout))? as sends:
+                stdout.print('block')
+                sends.send(1)?
         ");
     assert_eq!(
         ended,
-        Ended::Unsupported(
-            "printing in both a launched task and its `with` block, whose order isn't promised".to_owned()
-        )
+        Ended::Unsupported("printing in two tasks at once, whose order hangs on time".to_owned())
     );
 }

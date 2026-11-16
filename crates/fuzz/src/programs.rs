@@ -666,6 +666,96 @@ mod tests {
         assert!(found >= 3, "{found} programs plan and apply");
     }
 
+    /// The two shapes the review of #1785 found main wrong on, off in random programs until the
+    /// fixes land (`LOOKUPS_SWAPPED`, `PART_CRASHES`): every way of writing them checks, and the
+    /// evaluator prints what the oracle prints.
+    #[test]
+    fn the_review_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, SWAP_KEYS, ShelfPlace, Shelve, Shelving, Stmt, SwapField, Swapping};
+        let mut body = Vec::new();
+        let mut id = 0;
+        for field in [SwapField::Counts, SwapField::Lists] {
+            for key in 0..SWAP_KEYS.len() {
+                for ways in 0..8_u8 {
+                    id += 1;
+                    body.push(Stmt::Swapped(Swapping {
+                        id,
+                        base: 3,
+                        other_base: 101,
+                        field,
+                        key,
+                        fresh: 40,
+                        called: ways & 1 != 0,
+                        kept: ways & 2 != 0,
+                        owned: ways & 4 != 0,
+                        rounds: 2,
+                    }));
+                }
+            }
+        }
+        for (place, rounds) in [(ShelfPlace::Locked, 1), (ShelfPlace::Owned, 4), (ShelfPlace::Bare, 6)] {
+            for in_list in [false, true] {
+                id += 1;
+                let steps = vec![
+                    (9, Shelve::Fill),
+                    (0, Shelve::Fill),
+                    (1, Shelve::ByHand),
+                    (7, Shelve::ByHand),
+                    (0, Shelve::Direct),
+                    (8, Shelve::Direct),
+                    (1, Shelve::Handed),
+                    (4, Shelve::Handed),
+                    (0, Shelve::HandedByHand),
+                    (6, Shelve::HandedByHand),
+                ];
+                body.push(Stmt::Shelved(Shelving { id, in_list, seen: 2, place, rounds, steps }));
+            }
+        }
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
+    /// Every way of writing a `Listened` statement checks, and the evaluator is sure what it
+    /// prints: inboxes kept up or behind, read one at a time or in a loop, and a loop dropping
+    /// the oldest, with a message sent before any of them listens or not.
+    #[test]
+    fn listeners_of_a_channel_to_every_listener_check_and_the_evaluator_is_sure() {
+        use super::ast::{Listening, Program, Stmt};
+        let mut body = Vec::new();
+        let mut id = 0;
+        for size in 1..=4 {
+            for sent in [1, size, size + 1, 6] {
+                for ways in 0..4_u8 {
+                    id += 1;
+                    let (early, dropping) = (ways & 1 != 0, ways & 2 != 0);
+                    let inboxes = if dropping { vec![true] } else { vec![false, true] };
+                    body.push(Stmt::Listened(Listening { id, size, early, sent, dropping, inboxes }));
+                }
+            }
+        }
+        let program = Program { body, threadless: false };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert!(printed.contains("listened [3, 4, 5, 6]\n"), "{printed}");
+        assert!(printed.contains("behind\nbehind\n"), "{printed}");
+    }
+
     #[test]
     fn what_it_writes_is_a_program_that_builds() {
         for seed in 0_u8..=255 {

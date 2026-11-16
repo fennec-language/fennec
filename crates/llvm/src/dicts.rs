@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use fennec_ir::{LocalId, Operand};
+use fennec_ir::{InstKind, LocalId, Operand};
 use fennec_layout::Ty;
 use fennec_rt::embed::dicts::{DICT_HEADER_WORDS, ENTRY_WORDS, LONGEST_PROBE, Word};
 use fennec_rt::embed::layout::{TEXT, TEXT_BYTES, TEXT_CHARS};
@@ -11,6 +11,16 @@ use fennec_syntax::{BinOp, Span};
 
 use crate::emit::Emit;
 use crate::kinds::Kind;
+
+/// Where a lookup just before a store found the store's key.
+pub(crate) struct Found {
+    /// The key's entry, or null.
+    pub(crate) entry: String,
+    /// Whether the dict it searched is surely the one the store writes: the store's own local's,
+    /// which nothing has written since the lookup, or it would have been forgotten. A dict read
+    /// out of a field isn't: the store compares the block it searched with the one there now.
+    pub(crate) sure: bool,
+}
 
 const MIX: i64 = 0x9E37_79B9_7F4A_7C15_u64.cast_signed();
 /// Where a dict's count of keys, entries used and slots less one are.
@@ -515,7 +525,8 @@ impl Emit<'_, '_, '_> {
             Some(value) => self.operand(value)?.0,
             None => String::new(),
         };
-        self.dict_store_word(place, (key_word, value_word), &key, &held, (found.clone(), found))
+        let for_store = found.clone().map(|entry| Found { entry, sure: false });
+        self.dict_store_word(place, (key_word, value_word), &key, &held, (for_store, found))
     }
 
     /// [`Self::dict_store_at`] with a value, given apart where a lookup found the key for the store
@@ -526,7 +537,7 @@ impl Emit<'_, '_, '_> {
         (key_word, value_word): (Word, Word),
         key: &Operand,
         value: &Operand,
-        found: (Option<String>, Option<String>),
+        found: (Option<Found>, Option<String>),
     ) -> Result<(), String> {
         let key = self.key_value(key, key_word)?;
         let held = self.operand(value)?.0;
@@ -614,19 +625,52 @@ impl Emit<'_, '_, '_> {
         (searched, entry): (String, String),
         (key, key_word): (&Operand, Word),
     ) -> Result<String, String> {
+        let key = self.key_value(key, key_word)?;
+        Ok(self.found_or_searched(dict, (searched, entry), |emit| emit.find(dict, key_word, &key)))
+    }
+
+    /// What a lookup found, `entry`, when the block it searched, `searched`, is `dict`, and what
+    /// `search` finds in `dict` now otherwise.
+    fn found_or_searched(
+        &mut self,
+        dict: &str,
+        (searched, entry): (String, String),
+        search: impl FnOnce(&mut Self) -> String,
+    ) -> String {
         let (same, look, have) = (self.temp(), self.label("look"), self.label("have"));
         self.line(&format!("{same} = icmp eq ptr {dict}, {searched}"));
         let came = self.current.clone();
         self.line(&format!("br i1 {same}, label %{have}, label %{look}"));
         self.start_block(&look);
-        let key = self.key_value(key, key_word)?;
-        let looked = self.find(dict, key_word, &key);
+        let looked = search(self);
         let looked_from = self.current.clone();
         self.line(&format!("br label %{have}"));
         self.start_block(&have);
         let entry_now = self.temp();
         self.line(&format!("{entry_now} = phi ptr [ {entry}, %{came} ], [ {looked}, %{looked_from} ]"));
-        Ok(entry_now)
+        entry_now
+    }
+
+    /// Where a store's key is in the dict it's writing, `dict`: what a lookup just before found,
+    /// when the block that lookup searched is this one, and what `search` finds otherwise. A
+    /// lookup's entry is in the dict it read, and a field can hold another by the time of the
+    /// store with nothing written that names the lookup's own local, as after
+    /// `known = mine.visits.get(key)` and then `mine = other`: the store then wrote into the dict
+    /// `mine` had held, which the caller may still hold, or which is freed.
+    fn found_in(
+        &mut self,
+        dict: &str,
+        found: Option<Found>,
+        search: impl FnOnce(&mut Self) -> String,
+    ) -> String {
+        match found {
+            Some(Found { entry, sure: true }) => entry,
+            Some(Found { entry, sure: false }) => match self.searched.get(&entry).cloned() {
+                Some(searched) => self.found_or_searched(dict, (searched, entry), search),
+                None => search(self),
+            },
+            None => search(self),
+        }
     }
 
     /// As [`Self::dict_store_at`], with the key and value already worked out.
@@ -636,7 +680,7 @@ impl Emit<'_, '_, '_> {
         (key_word, value_word): (Word, Word),
         key: &str,
         held: &str,
-        (found, checked): (Option<String>, Option<String>),
+        (found, checked): (Option<Found>, Option<String>),
     ) -> Result<(), String> {
         let (key, held) = (key.to_owned(), held.to_owned());
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
@@ -659,11 +703,8 @@ impl Emit<'_, '_, '_> {
         };
         self.line(&format!("br i1 {alone}, label %{quick}, label %{slow}"));
         self.start_block(&quick);
-        // With the dict alone, it's the same block the lookup searched, unchanged since.
-        let entry = match found {
-            Some(entry) => entry,
-            None => self.find(&dict, key_word, &key),
-        };
+        // The lookup's entry, when this is the block it searched: alone, so unchanged since.
+        let entry = self.found_in(&dict, found, |emit| emit.find(&dict, key_word, &key));
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
         // A short new key held inline, or a plain key compared by its words, for values holding
@@ -866,7 +907,112 @@ impl Emit<'_, '_, '_> {
             }
             self.value_place(&value_kind, &value_at)
         };
+        // What goes back is the local the value's changed in, which `mut bag = bags[key]` copies
+        // it to straight away.
+        let holder = self.holder_of(dest);
+        if taking && self.left_out_at(self.at, holder) {
+            self.note_taken_out(holder, (&value_at, &value_kind, ""));
+        }
         self.read_into(dest, &value_kind, &value_at, "")
+    }
+
+    /// The local a value taken into `taken` is changed in and put back from: the `mut` local it
+    /// was copied out for, when there is one, and `taken` itself otherwise.
+    pub(crate) fn holder_of(&self, taken: LocalId) -> LocalId {
+        (0..self.function.locals.len())
+            .map(LocalId)
+            .find(|held| self.known.put_back_read(*held) == Some(taken))
+            .unwrap_or(taken)
+    }
+
+    /// Notes that `value` is out of the dict or list it was taken from, where it goes back to and
+    /// as what, for a crash that leaves the function before it's put back to put it back: what it
+    /// came out of still holds what was there when it was taken, which may have been changed,
+    /// moved or let go of since. Nothing can touch a dict or a list while a value's out of it, so
+    /// the address holds.
+    pub(crate) fn note_taken_out(
+        &mut self,
+        value: LocalId,
+        (home, kind, access): (&str, &Kind, &'static str),
+    ) {
+        if !self.lets_go_after_crash() || !self.holds_a_block(kind) {
+            return;
+        }
+        self.place_homes.insert(value.0, (home.to_owned(), kind.clone(), access));
+        self.out_of_dicts.insert(value.0);
+        self.note_place_out(value, home);
+    }
+
+    /// Whether a value of this kind holds a block anywhere. One that doesn't, a struct of numbers,
+    /// has nothing a crash could leak or leave dangling by finding it out: what it came out of
+    /// still holds words that are good, only older, and nothing reads them but a lock's rollback,
+    /// which puts back the ones from before the lock.
+    pub(crate) fn holds_a_block(&self, kind: &Kind) -> bool {
+        kind.counted()
+            || matches!(kind, Kind::Struct(id) | Kind::Enum(id) if self.module.layouts.holds_counted(*id))
+    }
+
+    /// A value that was out is back where it came from, or inside what goes back in its turn, so
+    /// a crash from here on has nothing of it to put back.
+    pub(crate) fn taken_is_back(&mut self, value: &Operand) {
+        if let Operand::Local(local) = value
+            && let Some(slot) = self.places_out.get(&local.0).cloned()
+        {
+            self.line(&format!("store ptr null, ptr {slot}"));
+        }
+    }
+
+    /// Whether anything between a take at `at` and the store that puts `taken` back could fail,
+    /// so the function could be left with it out. A take whose value is changed and put straight
+    /// back, as `counts[key].seen += 1` is, can't be, and keeps no note of where it goes.
+    pub(crate) fn left_out_at(&self, at: (usize, usize), taken: LocalId) -> bool {
+        let Some(block) = self.function.blocks.get(at.0) else { return true };
+        for inst in block.insts.iter().skip(at.1 + 1) {
+            match &inst.kind {
+                InstKind::SetIndex { value: Operand::Local(back), .. }
+                | InstKind::SetField { value: Operand::Local(back), .. }
+                    if *back == taken =>
+                {
+                    return false;
+                }
+                InstKind::SetField { .. } | InstKind::GetField { .. } | InstKind::Copy { .. } => {}
+                InstKind::Builtin { name, args, .. }
+                    if !crate::analysis::builtin_fails(self.function, name, args) => {}
+                _ => return true,
+            }
+        }
+        true
+    }
+
+    /// The locals a crash could find a value out of, and those values: each whole value or field
+    /// of one that holds a block, taken out of a dict or a list with something between that and
+    /// its going back that could fail.
+    pub(crate) fn values_left_out(&self) -> Vec<usize> {
+        let mut found = Vec::new();
+        for (at, block) in self.function.blocks.iter().enumerate() {
+            for (index, inst) in block.insts.iter().enumerate() {
+                let (dest, root, path) = match &inst.kind {
+                    InstKind::GetIndex { dest, .. } if self.known.is_taken(*dest) => {
+                        let Some((root, path)) = self.known.item_home(*dest) else { continue };
+                        (self.holder_of(*dest), *root, path)
+                    }
+                    InstKind::GetField { dest, .. } => {
+                        let Some((root, path, _)) = self.known.path_home(*dest) else { continue };
+                        (*dest, *root, path)
+                    }
+                    _ => continue,
+                };
+                let held_in = self.place_kind(root, path);
+                let holds = self.kind_of(dest).is_ok_and(|kind| self.holds_a_block(kind));
+                if matches!(held_in, Ok(Kind::Dict(..) | Kind::List(_)))
+                    && holds
+                    && self.left_out_at((at, index), dest)
+                {
+                    found.extend([root.0, dest.0]);
+                }
+            }
+        }
+        found
     }
 
     /// A value taken out of a dict to change, going back under the key it came from: the dict
@@ -909,6 +1055,7 @@ impl Emit<'_, '_, '_> {
         } else if value_kind != Kind::Unit {
             self.store_field(&value_kind, &held, &value_at, "");
         }
+        self.taken_is_back(value);
         Ok(())
     }
 
@@ -961,6 +1108,9 @@ impl Emit<'_, '_, '_> {
         let fields = self.offset(&block, crate::lists::FIELDS_OFFSET);
         let (offset, inner) = self.field(&value_kind, field)?;
         let at = self.offset(&fields, offset);
+        if self.left_out_at(self.at, dest) {
+            self.note_taken_out(dest, (&at, &inner, ""));
+        }
         let value = self.load_field(&inner, &at, "");
         self.assign(dest, &value)
     }
@@ -1530,7 +1680,7 @@ found:
         &mut self,
         place: &str,
         (key_word, value_word): (Word, Word),
-        (key, found): (&crate::analysis::SliceKey, Option<String>),
+        (key, found): (&crate::analysis::SliceKey, Option<Found>),
         value: &Operand,
     ) -> Result<(), String> {
         let value_kind = self.word_kind(value_word).ok_or("a dict value this backend doesn't take yet")?;
@@ -1540,10 +1690,7 @@ found:
         let dict = self.temp();
         self.line(&format!("{dict} = load ptr, ptr {place}"));
         // A key that's there, in a dict nothing else holds, just gets its new value.
-        let value_at = match found {
-            Some(value_at) => value_at,
-            None => self.slice_value_at(&dict, key_word, &sliced),
-        };
+        let value_at = self.found_in(&dict, found, |emit| emit.slice_value_at(&dict, key_word, &sliced));
         let alone = self.alone(&dict);
         let (there, quick) = (self.temp(), self.temp());
         self.line(&format!("{there} = icmp ne ptr {value_at}, null"));

@@ -21,7 +21,8 @@ impl Interp {
         match &expr.kind {
             ExprKind::Int(n) => self.int_literal(*n, expr.span),
             ExprKind::Float(x) => match self.program.type_at(expr.span) {
-                Some(Type::Sized(_)) => unsupported("f32"),
+                Some(Type::Sized(num)) if num.is_float() => Ok(Value::F32(as_f32(*x))),
+                Some(Type::Sized(_)) => unsupported("a float written where a sized int goes"),
                 _ => Ok(Value::Float(*x)),
             },
             // A duration written out, as `30s`, is `std.time`'s `Duration`, when that module runs here.
@@ -136,7 +137,15 @@ impl Interp {
             }
             ExprKind::Else { value, default, except } => self.else_expr(value, default, *except),
             ExprKind::Try { value, context: None } => self.eval(value),
-            ExprKind::Try { context: Some(_), .. } => unsupported("`? from`"),
+            // `value? from Context(...)`: a failure is passed up as the context, made only then. What
+            // caused it is kept with it in native code, but nothing reads that yet.
+            ExprKind::Try { value, context: Some(context) } => match self.eval(value) {
+                Err(Flow::Fail(_, _)) => {
+                    let wrapper = self.eval(context)?;
+                    Err(Flow::Fail(wrapper, expr.span))
+                }
+                other => other,
+            },
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Attr { object, name, optional } => {
                 if *optional {
@@ -189,7 +198,7 @@ impl Interp {
             ty = Some(inner);
         }
         match ty {
-            Some(Type::Sized(num)) if num.is_float() => unsupported("f32"),
+            Some(Type::Sized(num)) if num.is_float() => Ok(Value::F32(as_f32(text::int_as_float(n)))),
             Some(Type::Sized(num)) => sized(*num, i128::from(n), span),
             Some(Type::Float) => Ok(Value::Float(text::int_as_float(n))),
             _ => Ok(Value::Int(n)),
@@ -284,10 +293,7 @@ impl Interp {
             };
         }
         let ran = match &value.kind {
-            ExprKind::Call { callee, args } => {
-                let (target, given) = self.prepare(value, callee, args)?;
-                self.invoke(target, given, value)
-            }
+            ExprKind::Call { callee, args } => self.call_direct(value, callee, args),
             _ => self.eval(value),
         };
         match ran {
@@ -324,17 +330,20 @@ impl Interp {
                     let Some(target) = self.method_target(receiver, name, object.span)? else {
                         return Ok(None);
                     };
+                    let mark = self.write_backs.len();
                     let mut given = Vec::with_capacity(args.len());
                     for arg in args {
-                        given.push(self.arg_value(arg, false)?);
+                        match self.arg_value(arg, false) {
+                            Ok(given_one) => given.push(given_one),
+                            Err(failed) => return self.settled(mark, Err(failed), expr.span),
+                        }
                     }
-                    return match self.invoke(target, given, expr) {
+                    return match self.invoke_settled(mark, target, given, expr) {
                         Err(Flow::Fail(..)) => Ok(None),
                         other => other.map(Some),
                     };
                 }
-                let (target, given) = self.prepare(expr, callee, args)?;
-                match self.invoke(target, given, expr) {
+                match self.call_direct(expr, callee, args) {
                     Err(Flow::Fail(..)) => Ok(None),
                     other => other.map(Some),
                 }
@@ -383,6 +392,7 @@ impl Interp {
                 sized_arithmetic(op, num, a, b, span)
             }
             (Value::Float(a), Value::Float(b)) => float_arithmetic(op, a, b, span),
+            (Value::F32(a), Value::F32(b)) => f32_arithmetic(op, a, b, span),
             (Value::Str(a), Value::Str(b)) if op == BinOp::Add => Ok(Value::Str(a + &b)),
             (Value::Bytes(mut a), Value::Bytes(b)) if op == BinOp::Add => {
                 a.extend(b);
@@ -447,7 +457,9 @@ impl Interp {
             | ("bool", Value::Bool(_))
             | ("list", Value::List(_))
             | ("dict", Value::Dict(_))
-            | ("set", Value::Set(_)) => true,
+            | ("set", Value::Set(_))
+            | ("bytes", Value::Bytes(_))
+            | ("f32", Value::F32(_)) => true,
             (_, Value::Sized(num, _)) => num.name() == name,
             (_, Value::Instance(instance)) => {
                 if let Some(members) = self.program.aliases.get(name) {
@@ -460,7 +472,7 @@ impl Interp {
                     instance.ty == name
                 }
             }
-            ("int" | "float" | "str" | "bool" | "list" | "dict" | "set", _) => false,
+            ("int" | "float" | "str" | "bool" | "list" | "dict" | "set" | "bytes", _) => false,
             _ if self.program.types.contains_key(name) => false,
             _ => return unsupported(format!("`is {name}`")),
         })
@@ -581,7 +593,13 @@ impl Interp {
                     .map_or_else(|| crash("no key", span), Ok),
                 None => crash(format!("{} isn't a key here", self.repr(&key)?), span),
             },
-            (Value::Instance(instance), key) => match self.program.method(&instance.ty, "[]") {
+            // A type's own `def []`, read for its value: the `ref` form for an int position where
+            // it has one, and otherwise the plain form, which may take another kind of key.
+            (Value::Instance(instance), key) => match (matches!(key, Value::Int(_))
+                .then(|| self.program.method(&instance.ty, "[]mut"))
+                .flatten())
+            .or_else(|| self.program.method(&instance.ty, "[]"))
+            {
                 Some(def) => {
                     let receiver = super::calls::Receiver::Value(Value::Instance(instance));
                     self.call_def(
@@ -731,6 +749,19 @@ impl Interp {
         self.block_value(&arm.body).map(Some)
     }
 
+    /// The type or case a pattern names, for a value: `PoolError.Open(...)` names a case of the
+    /// type before its dot, which a value of another type never fits, and `physics.Hit(...)`, of
+    /// a module imported whole, names what's after it.
+    fn variant_named<'n>(&self, name: &'n str, value: &Value) -> Option<&'n str> {
+        let Some((owner, last)) = name.rsplit_once('.') else { return Some(name) };
+        match value {
+            Value::Instance(instance) if self.program.types.contains_key(owner) => {
+                (instance.ty == owner).then_some(last)
+            }
+            _ => Some(last),
+        }
+    }
+
     /// Whether a value fits a pattern, with the names it binds.
     fn fits(
         &mut self,
@@ -777,6 +808,7 @@ impl Interp {
                 Ok(false)
             }
             Pattern::Variant { name, args, fields, .. } => {
+                let Some(name) = self.variant_named(name, value) else { return Ok(false) };
                 let Value::Instance(instance) = value else {
                     return match value {
                         Value::None => Ok(false),
@@ -784,8 +816,8 @@ impl Interp {
                         _ => Ok(false),
                     };
                 };
-                let fits_case = instance.case.as_deref() == Some(name.as_str());
-                let fits_type = instance.ty == *name;
+                let fits_case = instance.case.as_deref() == Some(name);
+                let fits_type = instance.ty == name;
                 if !fits_case && !fits_type {
                     return Ok(false);
                 }
@@ -844,6 +876,7 @@ fn unary(op: UnaryOp, value: Value, span: Span) -> Run<Value> {
             n.checked_neg().map_or_else(|| overflow(span), |n| Ok(Value::Int(n)))
         }
         (UnaryOp::Neg, Value::Float(x)) => Ok(Value::Float(-x)),
+        (UnaryOp::Neg, Value::F32(x)) => Ok(Value::F32(-x)),
         (UnaryOp::Neg, Value::Sized(num, n)) => sized(num, -n, span),
         (UnaryOp::Not, Value::Bool(truth)) => Ok(Value::Bool(!truth)),
         (UnaryOp::BitNot, Value::Int(n)) => Ok(Value::Int(!n)),
@@ -943,6 +976,27 @@ fn sized_arithmetic(op: BinOp, num: Num, a: i128, b: i128, span: Span) -> Run<Va
 )]
 pub(crate) fn int128_as_float(n: i128) -> f64 {
     n as f64
+}
+
+/// A float as the nearest `f32`, as a conversion or an `f32` written out takes it.
+#[expect(clippy::cast_possible_truncation, reason = "an f32 is the nearest one, as the language says")]
+pub(crate) fn as_f32(x: f64) -> f32 {
+    x as f32
+}
+
+/// Arithmetic on `f32`s, each step rounded to 32 bits, as Rust's `f32` does it. `//`, `%` and
+/// `**` aren't modeled: what they're built from isn't pinned.
+fn f32_arithmetic(op: BinOp, a: f32, b: f32, span: Span) -> Run<Value> {
+    if b == 0.0 && op == BinOp::Div {
+        return crash("division by zero", span);
+    }
+    Ok(Value::F32(match op {
+        BinOp::Add => a + b,
+        BinOp::Sub => a - b,
+        BinOp::Mul => a * b,
+        BinOp::Div => a / b,
+        _ => return unsupported(format!("`{}` on f32s", op.symbol())),
+    }))
 }
 
 fn float_arithmetic(op: BinOp, a: f64, b: f64, span: Span) -> Run<Value> {

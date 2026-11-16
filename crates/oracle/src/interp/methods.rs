@@ -29,6 +29,9 @@ impl Interp {
                 None => args.push(value),
             }
         }
+        if let Some(done) = self.format_method(&receiver, name, (&args, &named), expr)? {
+            return Ok(done);
+        }
         // The standard library's own code has `len(x)` and `abs(x)` written as these methods
         // when it's parsed, which a program can't call on a built-in value.
         if matches!(name, "len" | "abs") && args.is_empty() && named.is_empty() {
@@ -96,6 +99,31 @@ impl Interp {
             },
             Value::Channel(end) => self.channel_method(&end, name, &args),
             other => unsupported(format!("the method `{name}` of a {}", other.kind())),
+        }
+    }
+
+    /// A method of JSON's `Serializer` or `Deserializer`, given to a type's own `def serialize`
+    /// or `def deserialize`, when that's what `receiver` holds.
+    fn format_method(
+        &mut self,
+        receiver: &Receiver,
+        name: &str,
+        (args, named): (&[Value], &[(String, Value)]),
+        expr: &'static Expr,
+    ) -> Run<Option<Value>> {
+        let format = match receiver {
+            Receiver::Place(place) => self.peek_place(place, expr.span, |held| match held {
+                Value::Cap(cap @ (Cap::Saver | Cap::Loader)) => Some(cap.clone()),
+                _ => None,
+            })?,
+            Receiver::Value(Value::Cap(cap @ (Cap::Saver | Cap::Loader))) => Some(cap.clone()),
+            Receiver::Value(_) => None,
+        };
+        match format {
+            Some(_) if !named.is_empty() => unsupported(format!("`{name}` with a named argument")),
+            Some(Cap::Saver) => self.saver_method(name, args, expr).map(Some),
+            Some(_) => self.loader_method(name, args, expr).map(Some),
+            None => Ok(None),
         }
     }
 
@@ -256,7 +284,9 @@ impl Interp {
                     if name == "write_line" {
                         text.push('\n');
                     }
-                    let _ = std::io::Write::write_all(&mut std::io::stderr(), text.as_bytes());
+                    if !self.shared.quiet.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = std::io::Write::write_all(&mut std::io::stderr(), text.as_bytes());
+                    }
                     Ok(Value::Unit)
                 }
                 _ => unsupported(format!("`stderr.{name}` of something other than text")),
@@ -292,6 +322,18 @@ impl Interp {
                 }
                 _ => unsupported("`clock.sleep` of something other than a Duration"),
             },
+            // Bytes and seeds that differ every run, as the compiled program's do, so its output
+            // can't depend on them. A count below 0 stops the program, as the runtime's does.
+            (Cap::Entropy, "bytes") => match args {
+                [Value::Int(count)] => match usize::try_from(*count) {
+                    Ok(count) => {
+                        Ok(Value::Bytes((0..count).map(|_| random_word().to_le_bytes()[0]).collect()))
+                    }
+                    Err(_) => crash(format!("`bytes` can't give {count} bytes"), span),
+                },
+                _ => unsupported("`entropy.bytes` of something other than an int"),
+            },
+            (Cap::Entropy, "seed") if args.is_empty() => Ok(Value::Int(random_word().cast_signed())),
             // No signal comes while the oracle runs a program, so it's never asked to stop.
             (Cap::Signals, "stopping") => Ok(Value::Bool(false)),
             (Cap::Signals, "wait") => unsupported("waiting for a signal, which never comes"),
@@ -343,7 +385,7 @@ impl Interp {
 }
 
 /// The methods that change a list, dict or set where it is.
-const CHANGES: &[&str] = &[
+pub(crate) const CHANGES: &[&str] = &[
     "append",
     "pop",
     "insert",
@@ -942,4 +984,15 @@ fn hex_problem(text: &str, at: usize) -> String {
             "`fromhex` needs two hex digits for each byte, but the text ends halfway through one".to_owned()
         }
     }
+}
+
+/// A word no run can know beforehand: hashed with keys `std` draws from the system for each new
+/// hasher, so it's new every time. It's for an `Entropy`'s bytes and seeds, which a program's
+/// output can't depend on, never for secrets.
+fn random_word() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static DRAWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(DRAWN.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    hasher.finish()
 }

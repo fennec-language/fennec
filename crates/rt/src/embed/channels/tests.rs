@@ -229,9 +229,148 @@ fn a_parked_receive_times_out_and_a_stop_cuts_one_short() {
     let task = launch(waits_for_nothing);
     let mut failure = 0;
     assert_eq!(launch_end(task, 20 * MILLISECOND, 0, &mut failure), 0, "stopped, quietly");
+    assert_eq!(noted(quiet), (0, 0), "the wait that timed out and the one stopped each took its note back");
     channel_free(quiet);
     assert_eq!(TIMED.load(Ordering::SeqCst), TIMED_OUT);
     assert_eq!(STOPPED.load(Ordering::SeqCst), 1, "the stop cut the wait short");
+    finish();
+}
+
+/// How many parked tasks have a note on `channel` to be woken through, waiting for room and for a
+/// message.
+fn noted(channel: i64) -> (usize, usize) {
+    let found = find(channel).unwrap();
+    let queue = found.queue();
+    (queue.senders.len(), queue.receivers.len())
+}
+
+/// How many times each of these tests' tasks waits and gives up.
+const TRIES: i64 = 50;
+/// What each test's task waits on: a quiet channel, a full one, and a listener nothing's sent to.
+static GIVEN_UP_ON: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+static GAVE_UP: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+
+/// Waits a millisecond for what never comes, `TRIES` times over: room to send if `sending`, and
+/// otherwise a message.
+fn gives_up(which: usize, sending: bool) -> i64 {
+    let on = GIVEN_UP_ON[which].load(Ordering::SeqCst);
+    let mut value = 0;
+    for _ in 0..TRIES {
+        let got = if sending {
+            channel_send(on, 7, 0, MILLISECOND)
+        } else {
+            channel_receive(on, MILLISECOND, &mut value)
+        };
+        GAVE_UP[which].fetch_add(i64::from(got == TIMED_OUT), Ordering::SeqCst);
+    }
+    0
+}
+
+extern "C" fn gives_up_receiving(_env: i64, _thread: i64) -> i64 {
+    gives_up(0, false)
+}
+
+extern "C" fn gives_up_sending(_env: i64, _thread: i64) -> i64 {
+    gives_up(1, true)
+}
+
+extern "C" fn gives_up_listening(_env: i64, _thread: i64) -> i64 {
+    gives_up(2, false)
+}
+
+/// A parked wait leaves a note on its channel to be woken through. One that runs out of time is
+/// woken another way, and used to leave the note behind: a task waiting with a timeout in a loop
+/// on a quiet channel added one each time, without end.
+#[test]
+fn a_parked_wait_that_runs_out_of_time_takes_its_note_back() {
+    begin();
+    let quiet = channel_new(1);
+    let full = channel_new(1);
+    assert_eq!(channel_send(full, 1, 0, FOREVER), DONE);
+    let every = channel_new_every(4);
+    let listener = channel_listen(every, 0);
+    for (which, on) in [quiet, full, listener].into_iter().enumerate() {
+        GIVEN_UP_ON[which].store(on, Ordering::SeqCst);
+        GAVE_UP[which].store(0, Ordering::SeqCst);
+    }
+    for task in [launch(gives_up_receiving), launch(gives_up_sending), launch(gives_up_listening)] {
+        assert_eq!(end(task), 0);
+    }
+    for gave_up in &GAVE_UP {
+        assert_eq!(gave_up.load(Ordering::SeqCst), TRIES, "every wait ran out of time");
+    }
+    assert_eq!(noted(quiet), (0, 0), "a receive");
+    assert_eq!(noted(full), (0, 0), "a send");
+    assert_eq!(noted(every), (0, 0), "a listener's receive");
+    for channel in [quiet, full, every] {
+        channel_free(channel);
+    }
+    finish();
+}
+
+/// A wait takes back only its own note. A token is one worker's, so two tasks on two workers can
+/// wait on one channel under the same token: the one whose time runs out leaves the other's note,
+/// which the next send still wakes it through. And once a take has moved the count on, the wait's
+/// note has gone with it, so it looks for nothing: a note left since under its name isn't its own.
+#[test]
+fn a_wait_takes_back_its_own_note_and_no_other_worker_s_under_the_same_token() {
+    begin();
+    let number = channel_new(1);
+    let channel = find(number).unwrap();
+    let token = mio::Token(5);
+    let left_at = {
+        let mut queue = channel.queue();
+        queue.receivers.push(Waiter { pool: pool(), at: 0, token });
+        queue.receivers.push(Waiter { pool: pool(), at: 1, token });
+        channel.taken(Side::Receiving)
+    };
+    channel.take_back(Side::Receiving, (pool(), 0, token), left_at);
+    let left: Vec<usize> = channel.queue().receivers.iter().map(|note| note.at).collect();
+    assert_eq!(left, [1], "the note of the task on the other worker");
+    let woken = {
+        let mut queue = channel.queue();
+        channel.take_notes(&mut queue, Side::Receiving)
+    };
+    assert_eq!(woken.len(), 1);
+    channel.queue().receivers.push(Waiter { pool: pool(), at: 1, token });
+    channel.take_back(Side::Receiving, (pool(), 1, token), left_at);
+    assert_eq!(noted(number), (0, 1), "a note left after the take isn't the earlier wait's");
+    channel.queue().receivers.clear();
+    channel_free(number);
+    finish();
+}
+
+static CUT: AtomicI64 = AtomicI64::new(0);
+static CUT_SHORT: AtomicI64 = AtomicI64::new(-1);
+
+extern "C" fn fails_at_once(_env: i64, _thread: i64) -> i64 {
+    crate::embed::fail_with(Diagnostic::new("the task failed", Span::default()));
+    0
+}
+
+/// Launches a task that fails, and waits for a message that never comes. The new task is put on
+/// this one's worker, so it runs, and fails, only once this one is parked.
+extern "C" fn waits_on_a_task_that_fails(_env: i64, _thread: i64) -> i64 {
+    let task = launch(fails_at_once);
+    let mut value = 0;
+    CUT_SHORT.store(channel_receive(CUT.load(Ordering::SeqCst), PATIENCE, &mut value), Ordering::SeqCst);
+    let mut failure = 0;
+    launch_end(task, FOREVER, 0, &mut failure);
+    0
+}
+
+/// A parked wait that's ended by a task it launched failing is woken by the failure, not through
+/// its note, and takes the note back too.
+#[test]
+fn a_parked_wait_cut_short_by_a_task_that_failed_takes_its_note_back() {
+    begin();
+    let quiet = channel_new(1);
+    CUT.store(quiet, Ordering::SeqCst);
+    let task = launch(waits_on_a_task_that_fails);
+    assert_eq!(end(task), 0);
+    assert_eq!(CUT_SHORT.load(Ordering::SeqCst), CLOSED, "the failure ended the wait as a close would");
+    assert_eq!(noted(quiet), (0, 0));
+    channel_free(quiet);
     finish();
 }
 
@@ -272,6 +411,41 @@ fn sending_never_waits_and_a_listener_that_falls_behind_fails_loudly() {
     let said = failure().unwrap_or_default();
     assert!(said.contains("missing 3 messages") && said.contains("when_behind=.DropOldest"), "{said}");
     crate::embed::clear_failure();
+    channel_free(channel);
+    finish();
+}
+
+/// A plain receive from a channel to every listener fails, saying what to do, and takes nothing:
+/// there's no one next message, as each listener has a place of its own in what's kept. It used
+/// to take the oldest kept message out from under them, after which a listener that was caught
+/// up never saw the next message sent, and nothing said so.
+#[test]
+fn a_plain_receive_from_a_channel_to_every_listener_fails_and_takes_nothing() {
+    begin();
+    let channel = channel_new_every(8);
+    let listener = channel_listen(channel, 0);
+    assert_eq!(channel_send(channel, 1, 0, FOREVER), DONE);
+    assert_eq!(receive(listener, FOREVER), (DONE, 1), "the listener's caught up");
+    for timeout in [FOREVER, MILLISECOND] {
+        assert!(!crate::embed::failed());
+        assert_eq!(receive(channel, timeout), (DONE, 0));
+        assert!(crate::embed::failed());
+        let said = failure().unwrap_or_default();
+        assert!(said.contains("to every listener") && said.contains("`inbox()`"), "{said}");
+        crate::embed::clear_failure();
+    }
+    // Nothing was taken, so the listener hears what's sent next, which it used to miss.
+    for word in [2, 3] {
+        assert_eq!(channel_send(channel, word, 0, FOREVER), DONE);
+    }
+    assert_eq!(receive(listener, FOREVER), (DONE, 2));
+    assert_eq!(receive(listener, FOREVER), (DONE, 3));
+    // A work queue is received from as ever.
+    let queue = channel_new(2);
+    assert_eq!(channel_send(queue, 9, 0, FOREVER), DONE);
+    assert_eq!(receive(queue, FOREVER), (DONE, 9));
+    assert!(!crate::embed::failed());
+    channel_free(queue);
     channel_free(channel);
     finish();
 }
@@ -440,5 +614,216 @@ fn a_channel_freed_while_another_thread_keeps_it_is_closed_to_that_thread() {
     assert_eq!(AFTER_FREE.load(Ordering::SeqCst), CLOSED);
     channel_free(ready);
     channel_free(go);
+    finish();
+}
+
+/// How many threads are asleep on `channel`, waiting for room and for a message, and how many
+/// times it's told them to look again.
+fn asleep(channel: i64) -> (usize, usize, i64) {
+    let found = find(channel).unwrap();
+    let queue = found.queue();
+    (queue.asleep.for_room, queue.asleep.for_a_message, found.told.load(Ordering::Relaxed))
+}
+
+/// Waits until `channel` has `room` threads asleep for room and `message` for a message, however
+/// long the machine takes to get there. A count that never comes fails the test after a minute.
+fn until_asleep(channel: i64, room: usize, message: usize) {
+    let started = Instant::now();
+    while asleep(channel).0 != room || asleep(channel).1 != message {
+        let waited = started.elapsed() < Duration::from_secs(60);
+        assert!(waited, "waited a minute for {room} and {message} asleep: {:?}", asleep(channel));
+        std::thread::yield_now();
+    }
+}
+
+/// A thread of its own with a runtime, as a thread that isn't a task has: its waits on a channel
+/// block it.
+fn thread<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> std::thread::JoinHandle<T> {
+    std::thread::spawn(move || {
+        begin();
+        let done = body();
+        finish();
+        done
+    })
+}
+
+/// A channel tells the threads asleep on it to look again only when there are some. It told them
+/// at every send and every receive, asleep or not, which on Linux is a system call each time. The
+/// count of who's asleep is kept under the queue's lock by the wait itself, so a thread that's
+/// about to sleep is counted before the queue can change, and a change never finds the count
+/// behind.
+#[test]
+fn a_channel_tells_the_threads_asleep_on_it_and_nobody_when_there_are_none() {
+    begin();
+    let channel = channel_new(8);
+    for round in 0..1_000 {
+        assert_eq!(channel_send(channel, round, 0, PATIENCE), DONE);
+        assert_eq!(receive(channel, PATIENCE), (DONE, round));
+    }
+    assert_eq!(asleep(channel), (0, 0, 0), "nobody was asleep, so nobody was told");
+    // A receive with nothing to take sleeps, and the send that comes tells it, once.
+    let waiting = thread(move || receive(channel, PATIENCE));
+    until_asleep(channel, 0, 1);
+    assert_eq!(channel_send(channel, 7, 0, PATIENCE), DONE);
+    assert_eq!(waiting.join().unwrap(), (DONE, 7), "it has the message well within its patience");
+    // Told once. A thread may wake by itself, and one that had just then was looking again, not
+    // asleep, when the send came: then it took the message untold.
+    let (for_room, for_a_message, told) = asleep(channel);
+    assert_eq!((for_room, for_a_message), (0, 0));
+    assert!(told <= 1, "{told}");
+    // A wait that runs out of time is no longer counted, and the send after it tells nobody.
+    assert_eq!(receive(channel, MILLISECOND), (TIMED_OUT, 0));
+    assert_eq!(channel_send(channel, 8, 0, PATIENCE), DONE);
+    assert_eq!(asleep(channel), (0, 0, told));
+    channel_free(channel);
+    finish();
+}
+
+/// Eight threads send through a channel with room for one message, so nearly every send sleeps
+/// until there's room, and none is left asleep: all 4,000 messages arrive, each once. A sender left
+/// asleep at the end shows as a send or a receive that runs out of time, not as a test that hangs.
+/// A wake lost along the way, and made up for by the next one, this can't see: that's what the test
+/// of the first free slot is for.
+#[test]
+fn many_threads_sending_through_a_channel_of_one_are_each_woken_for_room() {
+    const SENDERS: i64 = 8;
+    const EACH: i64 = 500;
+    begin();
+    let channel = channel_new(1);
+    let senders: Vec<_> = (0..SENDERS)
+        .map(|sender| {
+            thread(move || (0..EACH).all(|at| channel_send(channel, sender * EACH + at, 0, PATIENCE) == DONE))
+        })
+        .collect();
+    let mut seen = vec![false; usize::try_from(SENDERS * EACH).unwrap()];
+    for _ in 0..SENDERS * EACH {
+        let (got, value) = receive(channel, PATIENCE);
+        assert_eq!(got, DONE, "a message never came: {:?}", asleep(channel));
+        let at = usize::try_from(value).unwrap();
+        assert!(!std::mem::replace(&mut seen[at], true), "{value} came twice");
+    }
+    assert!(senders.into_iter().all(|sender| sender.join().unwrap()), "every send went");
+    assert_eq!(receive(channel, MILLISECOND), (TIMED_OUT, 0), "and nothing more");
+    let (for_room, for_a_message, told) = asleep(channel);
+    assert_eq!((for_room, for_a_message), (0, 0));
+    assert!(told > 0, "eight threads through room for one, and none ever slept");
+    channel_free(channel);
+    finish();
+}
+
+/// A thread asleep sending is woken at the first free slot, not once the channel has emptied
+/// some way. With room for four and four waiting, one receive is enough for the fifth to go.
+/// Waking it later would leave it asleep with room free, for ever if nothing more were received.
+#[test]
+fn a_thread_asleep_sending_is_woken_at_the_first_free_slot() {
+    begin();
+    let channel = channel_new(4);
+    for word in 1..=4 {
+        assert_eq!(channel_send(channel, word, 0, PATIENCE), DONE);
+    }
+    let fifth = thread(move || channel_send(channel, 5, 0, PATIENCE));
+    until_asleep(channel, 1, 0);
+    assert_eq!(receive(channel, PATIENCE), (DONE, 1));
+    assert_eq!(fifth.join().unwrap(), DONE, "one free slot was enough");
+    for word in 2..=5 {
+        assert_eq!(receive(channel, PATIENCE), (DONE, word));
+    }
+    channel_free(channel);
+    finish();
+}
+
+/// A thread asleep listening to a channel to every listener is woken by a send, as one asleep on
+/// a work queue is: a listener that isn't a task sleeps on the same count.
+#[test]
+fn a_thread_asleep_listening_is_woken_by_a_send() {
+    begin();
+    let channel = channel_new_every(8);
+    let listener = channel_listen(channel, 0);
+    let listening = thread(move || receive(listener, PATIENCE));
+    until_asleep(channel, 0, 1);
+    assert_eq!(channel_send(channel, 9, 0, PATIENCE), DONE);
+    assert_eq!(listening.join().unwrap(), (DONE, 9));
+    assert_eq!((asleep(channel).0, asleep(channel).1), (0, 0));
+    channel_free(channel);
+    finish();
+}
+
+/// Closing a channel wakes a thread asleep sending to it, and one asleep receiving from it: each
+/// is told it's closed, rather than left asleep.
+#[test]
+fn closing_a_channel_wakes_the_threads_asleep_sending_to_it_and_receiving_from_it() {
+    begin();
+    let full = channel_new(1);
+    assert_eq!(channel_send(full, 1, 0, PATIENCE), DONE);
+    let sending = thread(move || channel_send(full, 2, 0, PATIENCE));
+    until_asleep(full, 1, 0);
+    channel_close(full);
+    assert_eq!(sending.join().unwrap(), CLOSED);
+    assert_eq!(receive(full, PATIENCE), (DONE, 1), "what was sent before is still taken");
+    assert_eq!(receive(full, PATIENCE), (CLOSED, 0));
+    let empty = channel_new(1);
+    let receiving = thread(move || receive(empty, PATIENCE));
+    until_asleep(empty, 0, 1);
+    channel_close(empty);
+    assert_eq!(receiving.join().unwrap(), (CLOSED, 0));
+    channel_free(full);
+    channel_free(empty);
+    finish();
+}
+
+/// Four threads send and four receive through a channel of one, with some of the sends and
+/// receives giving up after a millisecond and trying again, so sleeping, being told, running out
+/// of time and closing all cross each other. Every message sent arrives once, every thread ends,
+/// and nobody's left counted asleep. Nothing waits for ever: a thread left asleep runs out of its
+/// patience and fails the test.
+#[test]
+fn senders_and_receivers_crossing_on_a_channel_of_one_all_finish() {
+    const SENDERS: i64 = 4;
+    const EACH: i64 = 5_000;
+    begin();
+    let channel = channel_new(1);
+    let senders: Vec<_> = (0..SENDERS)
+        .map(|sender| {
+            thread(move || {
+                (0..EACH).all(|at| {
+                    let value = sender * EACH + at;
+                    // Every third send tries with a millisecond first, and goes on if it has to.
+                    let quick =
+                        if at % 3 == 0 { channel_send(channel, value, 0, MILLISECOND) } else { TIMED_OUT };
+                    quick == DONE || channel_send(channel, value, 0, PATIENCE) == DONE
+                })
+            })
+        })
+        .collect();
+    let receivers: Vec<_> = (0..4)
+        .map(|receiver| {
+            thread(move || {
+                let (mut count, mut sum) = (0_i64, 0_i64);
+                loop {
+                    let patience = if (count + receiver) % 5 == 0 { MILLISECOND } else { PATIENCE };
+                    match receive(channel, patience) {
+                        (DONE, value) => {
+                            count += 1;
+                            sum += value;
+                        }
+                        (TIMED_OUT, _) if patience == MILLISECOND => {}
+                        (how, _) => return (count, sum, how),
+                    }
+                }
+            })
+        })
+        .collect();
+    // Closed whether or not every send went, so the receivers end either way.
+    let sent: Vec<bool> = senders.into_iter().map(|sender| sender.join().unwrap()).collect();
+    channel_close(channel);
+    let ended: Vec<(i64, i64, i64)> =
+        receivers.into_iter().map(|receiver| receiver.join().unwrap()).collect();
+    assert!(sent.iter().all(|went| *went), "every send went");
+    let all = SENDERS * EACH;
+    assert!(ended.iter().all(|(_, _, how)| *how == CLOSED), "each receiver ended at the close: {ended:?}");
+    assert_eq!(ended.iter().map(|(count, _, _)| count).sum::<i64>(), all);
+    assert_eq!(ended.iter().map(|(_, sum, _)| sum).sum::<i64>(), all * (all - 1) / 2);
+    assert_eq!((asleep(channel).0, asleep(channel).1), (0, 0));
+    channel_free(channel);
     finish();
 }

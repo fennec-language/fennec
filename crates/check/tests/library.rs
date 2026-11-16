@@ -1,7 +1,7 @@
 //! The standard library modules whose functions exist only once imported: `std.json`,
 //! `std.toml` and `std.path`.
 
-use crate::problems;
+use crate::{helps, problems};
 
 /// The problems in statements, in a `main` that can fail, after some imports.
 fn with_imports(imports: &str, body: &str) -> Vec<String> {
@@ -19,6 +19,75 @@ fn module_functions_need_importing() {
         stdout.print(loads[int]('1')?)
     ";
     assert_eq!(with_imports("from std.json import loads", program), Vec::<String>::new());
+}
+
+/// The standard library's own helpers and constants are its own: a program reaches an exported
+/// constant by importing it, as it does a function, and can't name what std keeps to itself, as
+/// str.fen's `padding` or std.net's `MOST_ROUTE_PARAMETERS`. A program's own of either name is
+/// its own, and std's code still means std's.
+#[test]
+fn std_keeps_its_own_helpers_and_constants() {
+    let reached = "
+        stdout.print(padding('x', count=2), MOST_ROUTE_PARAMETERS)
+    "
+    .replace('\'', "\"");
+    assert_eq!(
+        with_imports("", &reached),
+        [
+            "`padding` is private to the standard library @ padding",
+            "`MOST_ROUTE_PARAMETERS` is private to `std.net` @ MOST_ROUTE_PARAMETERS"
+        ]
+    );
+    let imported = "
+        stdout.print(INFINITY > 1.0, math.NAN.is_nan(), DIGITS)
+    ";
+    let imports = "from std import math\nfrom std.math import INFINITY\nfrom std.string import DIGITS";
+    assert_eq!(with_imports(imports, imported), Vec::<String>::new());
+    let own = "
+        stdout.print(padding(2), MOST_ROUTE_PARAMETERS, 'ab'.ljust(4))
+    "
+    .replace('\'', "\"");
+    let defined = "def padding(count: int) -> int:\n    return count\n\nMOST_ROUTE_PARAMETERS = 1\n";
+    assert_eq!(with_imports(defined, &own), Vec::<String>::new());
+}
+
+/// Every top-level function and constant the standard library's own files have is out of a
+/// program's reach by its bare name: what std keeps to itself is said to be private, and what a
+/// module exports needs importing. Only what the language gives everywhere, like `failure_of`, is
+/// there without an import.
+#[test]
+fn no_name_std_keeps_is_reached_from_a_program() {
+    let mut names = std::collections::BTreeSet::new();
+    for (file, source) in fennec_syntax::prelude_files() {
+        let module =
+            fennec_syntax::parse_prelude(source).unwrap_or_else(|problem| panic!("{file}: {problem:?}"));
+        for item in module.items {
+            match item {
+                fennec_syntax::Item::Function(def) => names.insert(def.name),
+                fennec_syntax::Item::Const { name, .. } => names.insert(name),
+                _ => false,
+            };
+        }
+    }
+    let everywhere = |name: &String| {
+        fennec_check::provided_everywhere(name) || fennec_check::reserved_name(name) || name == "failure_of"
+    };
+    let names: Vec<String> =
+        names.into_iter().filter(|name| !name.starts_with('_') && !everywhere(name)).collect();
+    assert!(
+        names.iter().any(|name| name == "padding")
+            && names.iter().any(|name| name == "MOST_ROUTE_PARAMETERS")
+    );
+    let body: String = names.iter().flat_map(|name| ["    _ = ", name.as_str(), "\n"]).collect();
+    let problems = crate::problems_as_written(&format!("def main():\n{body}"));
+    let helps = helps(&format!("def main():\n{body}"));
+    assert_eq!(problems.len(), names.len(), "{problems:#?}");
+    for ((name, problem), help) in names.iter().zip(&problems).zip(&helps) {
+        let private = problem.starts_with(&format!("`{name}` is private to "));
+        let imported =
+            problem.starts_with(&format!("`{name}` doesn't exist")) && help.starts_with("import it");
+        assert!(private || imported, "{name}: {problem} / {help}");
+    }
 }
 
 #[test]
@@ -322,7 +391,7 @@ fn an_unknown_module_in_an_import_is_reported_once() {
         ["there's no module called `std.compres` @ from std import compres, json, time"]
     );
     assert_eq!(
-        crate::helps(
+        helps(
             "from std import compres, json\n\ndef main(stdout: Stdout):\n    stdout.print(json.dumps(1))\n"
         ),
         ["did you mean `std.compress`?"]
@@ -440,6 +509,46 @@ fn a_channel_opens_through_its_generic_source() {
     );
     assert_eq!(made.len(), 1, "{made:?}");
     assert!(made[0].contains("`_channel`"), "{made:?}");
+}
+
+/// A channel to `.Every` has no one next message to take, since each listener has a place of its
+/// own in what's kept, so `receive` and `receive_within` on the name it's lent as are refused where
+/// `to=.Every` is written out: in the block, in a function written inside it, and in an arrow.
+/// Looping over it, listening, its inbox, sending, a work queue's receive, and a `to` that isn't
+/// written out are all fine, and so is the channel handed to a function, which the run-time stop
+/// catches.
+#[test]
+fn a_plain_receive_from_a_channel_to_every_listener_is_refused() {
+    let imports = "from std import concurrent\nfrom std.concurrent import Channel, Closed, Delivery, Timeout, channel\n\n";
+    let refused = "def main(stdout: Stdout) fails Closed | Timeout:\n    \
+        with channel[int](size=8, to=.Every) as hits:\n        hits.send(1)?\n        \
+        stdout.print(hits.receive() else -1, hits.receive_within(1ms)? else -1)\n        \
+        def later() -> int:\n            return hits.receive() else -1\n        stdout.print(later())\n    \
+        with concurrent.channel[int](size=8, to=.Every) as news, channel[int](size=8) as jobs:\n        \
+        heard = () => news.receive() else -1\n        stdout.print(heard(), jobs.receive() else -1)\n";
+    let said = |name: &str, at: &str| {
+        format!("`{name}` is a channel to every listener, so it has no one next message to take @ {at}")
+    };
+    assert_eq!(
+        problems(&format!("{imports}{refused}")),
+        [
+            said("hits", "hits.receive()"),
+            said("hits", "hits.receive_within(1ms)"),
+            said("hits", "hits.receive()"),
+            said("news", "news.receive()"),
+        ]
+    );
+    let help =
+        "loop over it with `for message in hits`, or take an inbox with `hits.inbox()` and receive from that";
+    assert_eq!(helps(&format!("{imports}{refused}")).first().map(String::as_str), Some(help));
+    let fine = "def take(queue: Channel[int]) -> int:\n    return queue.receive() else -1\n\n\
+        def main(stdout: Stdout) fails Closed | Timeout:\n    \
+        with channel[int](size=8, to=.Every) as hits:\n        box = hits.inbox()\n        hits.send(1)?\n        \
+        stdout.print(box.receive() else -1, box.receive_within(1ms)? else -1, take(hits))\n        \
+        for hit in hits:\n            stdout.print(hit)\n        for hit in hits.listen():\n            stdout.print(hit)\n    \
+        with channel[int](size=8) as jobs:\n        stdout.print(jobs.receive() else -1, jobs.receive_within(1ms)? else -1)\n    \
+        kind: Delivery? = None\n    with channel[int](size=8, to=kind) as plain:\n        stdout.print(plain.receive() else -1)\n";
+    assert_eq!(problems(&format!("{imports}{fine}")), Vec::<String>::new());
 }
 
 /// A static method called through a generic type with its type written: the type's parameters
@@ -573,4 +682,127 @@ fn a_connection_reads_lines_ending_in_crlf_and_writes_with_a_timeout() {
     let bad = "from std.net import Connection, NetError\n\ndef use(conn: Connection) fails NetError:\n    _ = conn.read_line(crlf=1)?\n";
     let module = fennec_syntax::parse(bad).unwrap();
     assert!(fennec_check::check(&module).is_err());
+}
+
+/// The handlers the route tests give a router: by the `Request`, then a route's parameters by name.
+const HANDLERS: &str = "from std.net import Router, Request, Response\n\nerror Nope:\n    why: str\n\n\
+    def show(request: Request, id: int) -> Response:\n    return Response(status=200)\n\n\
+    def pair(request: Request, name: str, id: u8) -> Response:\n    return Response(status=200)\n\n\
+    def keyed(request: Request, key: int) -> Response:\n    return Response(status=200)\n\n\
+    def floaty(request: Request, id: float) -> Response:\n    return Response(status=200)\n\n\
+    def bare(id: int) -> Response:\n    return Response(status=200)\n\n\
+    def text(request: Request, id: int) -> str:\n    return \"\"\n\n\
+    def failing(request: Request, id: int) -> Response fails Nope:\n    \
+    fail Nope(why=\"no\")\n\n";
+
+/// The problems in a `main` adding routes to `routes`, after the handlers.
+fn routed(body: &str) -> Vec<String> {
+    let body: String = body.lines().map(|line| ["    ", line, "\n"].concat()).collect();
+    problems(&format!("{HANDLERS}def main(stdout: Stdout):\n    mut routes = Router()\n{body}"))
+}
+
+/// `router.get(path, handler)` and the other methods are checked where they're written: the path
+/// is written out, starts at `/` and names each parameter once in a whole segment, at most eight,
+/// and the handler takes the `Request`, then those parameters, each as text or an integer, and
+/// gives back a `Response`. Once it checks, it's written in as a call to `handle`, which checks
+/// again.
+#[test]
+fn a_route_is_checked_against_its_handler_where_its_written() {
+    let fine = "routes.get(\"/\", (request) => Response(status=200))\n\
+        routes.get(\"/notes/{id}\", show)\n\
+        routes.post(\"/pairs/{id}/{name}\", pair)\n\
+        routes.put(\"/notes/{id}\", show)\n\
+        routes.patch(\"/notes/{id}/{name}\", pair)\n\
+        routes.delete(\"/tags/{tag}\", (request, tag) => Response(status=204, body=tag.encode()))\n\
+        routes.get(\"/notes/new/{id}\", show)\n";
+    assert_eq!(routed(fine), Vec::<String>::new());
+    let refused = [
+        (
+            "routes.get(\"/notes/\" + \"{id}\", show)",
+            "a route's path is written out, so it's checked against its handler here @ \"/notes/\" + \"{id}\"",
+        ),
+        ("routes.get(\"notes/{id}\", show)", "`notes/{id}` doesn't start with `/` @ \"notes/{id}\""),
+        (
+            "routes.get(\"/notes/x{id}\", show)",
+            "`x{id}` in `/notes/x{id}` isn't a parameter @ \"/notes/x{id}\"",
+        ),
+        ("routes.get(\"/notes/{Id}\", show)", "`{Id}` in `/notes/{Id}` isn't a parameter @ \"/notes/{Id}\""),
+        (
+            "routes.get(\"/notes/{id}/{id}\", show)",
+            "`/notes/{id}/{id}` has `{id}` twice @ \"/notes/{id}/{id}\"",
+        ),
+        (
+            "routes.get(\"/{a}/{b}/{c}/{d}/{e}/{f}/{g}/{h}/{i}\", show)",
+            "`/{a}/{b}/{c}/{d}/{e}/{f}/{g}/{h}/{i}` has 9 parameters, but a route has at most 8 @ \"/{a}/{b}/{c}/{d}/{e}/{f}/{g}/{h}/{i}\"",
+        ),
+        (
+            "routes.get(\"/notes/{id}\", floaty)",
+            "`floaty` takes `id` as a float, but a route's parameter is read as text or a number @ floaty",
+        ),
+        (
+            "routes.get(\"/notes/{id}\", bare)",
+            "`bare` takes `id` first, but a route's handler takes the `Request` first @ bare",
+        ),
+        (
+            "routes.get(\"/notes/{id}\", text)",
+            "`text` gives back a str, but a route's handler gives back a `Response` @ text",
+        ),
+        (
+            "routes.get(\"/notes/{id}\", failing)",
+            "`failing` can fail, but a route's handler answers every request it's given @ failing",
+        ),
+        (
+            "routes.get(\"/notes/{id}\", (request, id) => 5)",
+            "this arrow gives back an int, but a route's handler gives back a `Response` @ (request, id) => 5",
+        ),
+        ("routes.get(\"/notes/{id}\", 5)", "a route's handler is a function, but this is an int @ 5"),
+        (
+            "routes.get(\"/notes/{id}\")",
+            "`router.get` takes a route's path and its handler @ routes.get(\"/notes/{id}\")",
+        ),
+    ];
+    for (line, said) in refused {
+        assert_eq!(routed(line), [said], "{line}");
+    }
+    let source = format!(
+        "{HANDLERS}def main(stdout: Stdout):\n    mut routes = Router()\n{}",
+        fine.lines().map(|line| ["    ", line, "\n"].concat()).collect::<String>()
+    );
+    let mut module = fennec_syntax::parse(&source).unwrap();
+    let resolved = fennec_check::check_and_resolve(&mut module);
+    assert!(resolved.is_ok(), "{:?}", resolved.err());
+}
+
+/// A route's handler takes its parameters by their names in the path, and two routes on one
+/// router in one function don't clash: the same route twice, or a parameter in a place they share
+/// under two names. The router is held in a `mut` name, as adding a route changes it.
+#[test]
+fn a_route_names_its_handlers_parameters_and_clashes_with_none_before_it() {
+    assert_eq!(
+        routed("routes.get(\"/notes/{id}\", keyed)"),
+        [
+            "`/notes/{id}` has `{id}`, but `keyed` has no parameter called `id` @ keyed",
+            "`keyed` takes `key`, but `/notes/{id}` has no `{key}` @ keyed",
+        ]
+    );
+    assert_eq!(
+        routed("routes.get(\"/notes/{id}\", (request) => Response(status=200))"),
+        [
+            "`/notes/{id}` has `{id}`, but this arrow has no parameter called `id` @ (request) => Response(status=200)"
+        ]
+    );
+    let twice = "routes.get(\"/notes/{id}\", show)\nroutes.get(\"/notes/{key}\", keyed)\n";
+    assert_eq!(
+        routed(twice),
+        ["`GET /notes/{key}` is routed twice: `GET /notes/{id}` is the same route @ \"/notes/{key}\""]
+    );
+    let renamed = "routes.get(\"/notes/{id}\", show)\nroutes.put(\"/notes/{key}/edit\", keyed)\n";
+    assert_eq!(
+        routed(renamed),
+        [
+            "`/notes/{key}/edit` calls the parameter in this place `{key}`, but `/notes/{id}` calls it `{id}` @ \"/notes/{key}/edit\""
+        ]
+    );
+    let apart = "def main(stdout: Stdout):\n    routes = Router()\n    routes.get(\"/notes/{id}\", show)\n";
+    assert_eq!(problems(&format!("{HANDLERS}{apart}")), ["`routes` isn't mut @ routes"]);
 }

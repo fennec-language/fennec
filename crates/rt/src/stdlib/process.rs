@@ -228,7 +228,7 @@ pub(crate) fn run_program(program: &str, arguments: &[String], options: &Options
     let input = options.input.clone();
     let timeout = options.timeout.unwrap_or(TIMEOUT);
     let most = options.most_output.unwrap_or(MOST_OUTPUT);
-    match crate::stdlib::fs::blocking(move || run_limited(command, input, timeout, most)) {
+    match ended(command, input, timeout, most) {
         Ok(Ending::Done(done)) => {
             let status = done.status.code().map_or(-1, i64::from);
             let fields = vec![
@@ -302,6 +302,24 @@ fn quoted(argument: &str) -> String {
     out.push('"');
     out
 }
+
+/// Runs `command` within its limits: parked in a task on Unix, so the program's run holds no
+/// thread, and otherwise on a blocking thread when in a task, or here.
+fn ended(
+    command: std::process::Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    most: usize,
+) -> std::io::Result<Ending> {
+    #[cfg(all(unix, any(test, feature = "threads")))]
+    if crate::embed::serve::can_park() {
+        return parked::run(command, input, timeout, most);
+    }
+    crate::stdlib::fs::blocking(move || run_limited(command, input, timeout, most))
+}
+
+#[cfg(all(unix, any(test, feature = "threads")))]
+mod parked;
 
 /// How a program run within its limits ended.
 enum Ending {

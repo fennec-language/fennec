@@ -1573,6 +1573,17 @@ pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 's
     if !can_park() {
         return work();
     }
+    // For a test to see, from another thread, whether this one has work on a blocking thread.
+    #[cfg(test)]
+    let work = {
+        let from = std::thread::current().id();
+        blocking_jobs_change(from, 1);
+        move || {
+            let done = work();
+            blocking_jobs_change(from, -1);
+            done
+        }
+    };
     let token = Token(NEXT_TOKEN.get());
     NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
     let result: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
@@ -1604,6 +1615,28 @@ pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 's
         // Cancelled before it finished: the work runs to its end, and this waits for it.
         let _ = yield_task_always();
     }
+}
+
+/// For tests: how many pieces of work each thread's tasks have on the blocking threads, not yet
+/// done, and how many they've ever handed over.
+#[cfg(test)]
+static BLOCKING_JOBS: Mutex<Option<HashMap<std::thread::ThreadId, (i64, i64)>>> = Mutex::new(None);
+
+#[cfg(test)]
+fn blocking_jobs_change(from: std::thread::ThreadId, by: i64) {
+    let mut jobs = BLOCKING_JOBS.lock().unwrap_or_else(PoisonError::into_inner);
+    let (now, ever) = jobs.get_or_insert_with(HashMap::new).entry(from).or_default();
+    *now += by;
+    *ever += by.max(0);
+}
+
+/// How many pieces of work the tasks on `thread` have handed to the blocking threads that aren't
+/// done yet, and how many they've handed over in all: for a test to ask, from the other end of a
+/// connection or after the fact, whether a task held one.
+#[cfg(test)]
+pub(crate) fn blocking_jobs_of(thread: std::thread::ThreadId) -> (i64, i64) {
+    let jobs = BLOCKING_JOBS.lock().unwrap_or_else(PoisonError::into_inner);
+    jobs.as_ref().and_then(|jobs| jobs.get(&thread).copied()).unwrap_or((0, 0))
 }
 
 /// How long a task runs before it makes way for others on its worker, at the next tick.

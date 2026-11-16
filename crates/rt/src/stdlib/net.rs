@@ -184,8 +184,23 @@ pub(crate) trait TlsServer: Send + Sync {
     )]
     fn session(&self) -> Result<Box<dyn ServerSession>, Failure>;
     /// TLS over a connection `server.accept()` took, its handshake done in at most `timeout`.
-    fn accepted(&self, tcp: TcpStream, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure>;
+    ///
+    /// With `waits`, the socket doesn't block, and wherever the handshake can't go on it asks
+    /// `waits` to wait until the socket can be read or written. So a task that can park does the
+    /// handshake where it is, parked for as long as the other side takes, and holds no thread
+    /// for it: the other side decides how long a handshake lasts, and a stranger's slow ones
+    /// would otherwise each hold a blocking thread for the whole of `timeout`.
+    fn accepted(
+        &self,
+        tcp: TcpStream,
+        timeout: Duration,
+        waits: Option<Waits<'_>>,
+    ) -> Result<Box<dyn SecureStream>, Failure>;
 }
+
+/// Waits until a socket that doesn't block may be ready for what's wanted of it, and says true
+/// when there's no more waiting to do: the time allowed is up, or the task's been stopped.
+pub(crate) type Waits<'a> = &'a mut dyn FnMut(&TcpStream, Wanted) -> bool;
 
 /// A real UDP socket. Only one thread reads at a time, as how long a read waits is the socket's.
 struct Udp {
@@ -1131,27 +1146,115 @@ pub(crate) fn failed(failure: &Failure) -> Value {
 }
 
 fn connect(host: &str, port: u16, timeout: Duration, tls: bool) -> Result<Made, Failure> {
-    // A task parks while its lookup, connect and handshake wait, on a thread that may block,
-    // rather than holding its worker.
-    let opened = move |host: &str| {
-        let (stream, peer) = connected(host, port, timeout)?;
-        let secured = if tls { Some(secured(&stream, host, timeout)?) } else { None };
-        Ok::<_, Failure>((stream, peer, secured))
-    };
-    let (stream, peer, secured) = if task_parks() {
-        let host = host.to_owned();
-        off_thread(move || opened(&host))?
-    } else {
-        opened(host)?
-    };
+    // A task that can park does so while it connects and through its handshake, on a socket that
+    // doesn't block from the start: only a name's lookup holds a thread that may block. All
+    // three once ran on such a thread, for as long as the network and the other side took.
+    if task_parks() {
+        let (stream, peer) = connected_parked(host, port, timeout, None)?;
+        let secured = if tls {
+            let deadline = Instant::now() + timeout;
+            let mut waits = |socket: &TcpStream, wanted: Wanted| parked_out_on(socket, wanted, deadline);
+            Some(secured(&stream, host, timeout, Some(&mut waits))?)
+        } else {
+            None
+        };
+        let handle = keep_stream_made(stream, peer.clone(), secured, (false, true))?;
+        return Ok(connection_made((handle, peer)));
+    }
+    let (stream, peer) = connected(host, port, timeout)?;
+    let secured = if tls { Some(secured(&stream, host, timeout, None)?) } else { None };
     let handle = keep_stream(stream, peer.clone(), secured)?;
     Ok(connection_made((handle, peer)))
 }
 
-/// TLS over a connection just made, its certificate checked against what the system trusts.
-fn secured(stream: &TcpStream, host: &str, timeout: Duration) -> Result<Box<dyn SecureStream>, Failure> {
+/// TLS over a connection just made, its certificate checked against what the system trusts. With
+/// something to wait by, the connection's socket doesn't block, and the handshake waits that way.
+fn secured(
+    stream: &TcpStream,
+    host: &str,
+    timeout: Duration,
+    waits: Option<Waits<'_>>,
+) -> Result<Box<dyn SecureStream>, Failure> {
     let tcp = stream.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
-    http::raw_secured(tcp, host, timeout)
+    if waits.is_some() {
+        // On every system, the copy TLS reads and writes through doesn't block either.
+        tcp.set_nonblocking(true).map_err(|error| Failure::Other(error.to_string()))?;
+    }
+    http::raw_secured(tcp, host, timeout, waits)
+}
+
+/// A connection to `host` on `port` made by a task that can park, on a socket that doesn't block
+/// from the start. Each address gets `timeout`, or all of them share what's left until `by`.
+///
+/// Looking a name up can only be done by blocking, so that alone runs on a blocking thread; an
+/// address written out needs no looking up. Then the connect is started and the task parks until
+/// the socket says how it went.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn connected_parked(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    by: Option<Instant>,
+) -> Result<(TcpStream, String), Failure> {
+    let addresses: Vec<std::net::SocketAddr> = if let Ok(address) = host.parse::<std::net::IpAddr>() {
+        vec![std::net::SocketAddr::new(address, port)]
+    } else {
+        let name = host.to_owned();
+        off_thread(move || (name.as_str(), port).to_socket_addrs().map(Iterator::collect::<Vec<_>>))
+            .map_err(|_| Failure::NotFound(host.to_owned()))?
+    };
+    let mut failure = Failure::NotFound(host.to_owned());
+    for address in addresses {
+        let deadline = by.unwrap_or_else(|| Instant::now() + timeout);
+        match connected_by(address, deadline) {
+            Ok(stream) => {
+                let peer =
+                    stream.peer_addr().map_or_else(|_| format!("{host}:{port}"), |peer| peer.to_string());
+                return Ok((stream, peer));
+            }
+            Err(error) => {
+                failure = match error.kind() {
+                    ErrorKind::ConnectionRefused => Failure::Refused(host.to_owned(), i64::from(port)),
+                    ErrorKind::TimedOut | ErrorKind::WouldBlock => Failure::TimedOut(timeout),
+                    _ => Failure::Other(error.to_string()),
+                };
+            }
+        }
+    }
+    Err(failure)
+}
+
+/// Without threads no task parks, so nothing connects this way.
+#[cfg(not(any(test, feature = "threads")))]
+pub(crate) fn connected_parked(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    _by: Option<Instant>,
+) -> Result<(TcpStream, String), Failure> {
+    connected(host, port, timeout)
+}
+
+/// A connection to one address, made without blocking: the connect is started, and this task
+/// parks until the socket can be written, which is when a connect is over, or `deadline` passes.
+/// The socket then says whether it's connected, and why not.
+#[cfg(any(test, feature = "threads"))]
+fn connected_by(address: std::net::SocketAddr, deadline: Instant) -> std::io::Result<TcpStream> {
+    let socket = TcpStream::from(mio::net::TcpStream::connect(address)?);
+    loop {
+        if parked_out_on(&socket, Wanted::ToWrite, deadline) {
+            return Err(ErrorKind::TimedOut.into());
+        }
+        if let Some(error) = socket.take_error()? {
+            return Err(error);
+        }
+        match socket.peer_addr() {
+            Ok(_) => return Ok(socket),
+            // Woken with the connect still under way.
+            Err(error) if error.kind() == ErrorKind::NotConnected => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// `connection.start_tls(host)`: TLS over a connection that began plain, its certificate checked
@@ -1172,12 +1275,21 @@ fn upgrade(handle: i64, host: &str, timeout: Duration, shake: http::RawTls) -> R
     if !plain.buffer().is_empty() {
         return Err(Failure::Tls(SENT_BEFORE_TLS.to_owned()));
     }
-    let tcp = stream.socket.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
-    let host = host.to_owned();
-    let handshake = move || shake(tcp, &host, timeout);
-    // A task parks while the handshake waits, on a thread that may block, as `connect` does.
-    let secured = if task_parks() { off_thread(handshake)? } else { handshake()? };
-    *reader = Reading::Tls(secured);
+    let unusable = |error: std::io::Error| Failure::Other(error.to_string());
+    let tcp = stream.socket.try_clone().map_err(unusable)?;
+    // A task that can park does the handshake where it is, parked whenever it waits for the
+    // other side, on a socket that doesn't block from here on, as `connect` does.
+    if task_parks() {
+        never_blocking(&stream).map_err(unusable)?;
+        #[cfg(windows)]
+        tell_the_reader(&stream, &reader).map_err(unusable)?;
+        tcp.set_nonblocking(true).map_err(unusable)?;
+        let deadline = Instant::now() + timeout;
+        let mut waits = |socket: &TcpStream, wanted: Wanted| parked_out_on(socket, wanted, deadline);
+        *reader = Reading::Tls(shake(tcp, host, timeout, Some(&mut waits))?);
+        return Ok(());
+    }
+    *reader = Reading::Tls(shake(tcp, host, timeout, None)?);
     Ok(())
 }
 
@@ -1255,6 +1367,17 @@ fn keep_stream_as(
     secured: Option<Secured>,
     served: bool,
 ) -> Result<i64, Failure> {
+    keep_stream_made(socket, peer, secured, (served, false))
+}
+
+/// `keep_stream_as`, for a connection whose socket was made not to block already when
+/// `never_blocks`, as one whose handshake a task did parked is, its reader's copy included.
+fn keep_stream_made(
+    socket: TcpStream,
+    peer: String,
+    secured: Option<Secured>,
+    (served, never_blocks): (bool, bool),
+) -> Result<i64, Failure> {
     bound_send_buffer(&socket);
     // Each write goes out at once. What std writes, a request or a response, is its head and then
     // its body, and waiting to send the body until the head is acknowledged, which the other end
@@ -1279,9 +1402,9 @@ fn keep_stream_as(
         label: if served { next_label(0) } else { 0 },
         reads_by: Mutex::new(None),
         closed: AtomicBool::new(false),
-        never_blocks: AtomicBool::new(false),
+        never_blocks: AtomicBool::new(never_blocks),
         #[cfg(windows)]
-        reader_never_blocks: AtomicBool::new(false),
+        reader_never_blocks: AtomicBool::new(never_blocks),
         #[cfg(any(test, feature = "threads"))]
         parked: Mutex::new(Vec::new()),
     };
@@ -1581,7 +1704,8 @@ pub(crate) fn task_parks() -> bool {
     }
 }
 
-/// `work`, run on a thread that may block while this task parks, or here when it can't.
+/// `work`, run on a thread that may block while this task parks, or here when it can't. A name's
+/// lookup comes this way, and a handshake's arithmetic: every wait on a socket parks on the socket.
 pub(crate) fn off_thread<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
     #[cfg(any(test, feature = "threads"))]
     {
@@ -2114,26 +2238,50 @@ fn accept(handle: i64, timeout: Option<Duration>) -> Result<(i64, String), Failu
     };
     let (stream, peer) = accepted;
     stream.set_nonblocking(false).map_err(|error| Failure::Other(error.to_string()))?;
-    let peer = peer.to_string();
-    let secured = match &listening.tls {
-        Some(tls) => Some(accepted_securely(tls, &stream)?),
-        None => None,
+    kept_after_accept(listening.tls.as_ref(), stream, peer.to_string())
+}
+
+/// Keeps a connection a server just took, by its handle, with TLS over it first when the server
+/// has it: the server's half of the handshake is done here.
+fn kept_after_accept(
+    tls: Option<&Arc<dyn TlsServer>>,
+    stream: TcpStream,
+    peer: String,
+) -> Result<(i64, String), Failure> {
+    let (secured, never_blocks) = match tls {
+        Some(tls) => {
+            let (secured, never_blocks) = accepted_securely(tls, &stream)?;
+            (Some(secured), never_blocks)
+        }
+        None => (None, false),
     };
-    Ok((keep_stream_as(stream, peer.clone(), secured, true)?, peer))
+    Ok((keep_stream_made(stream, peer.clone(), secured, (true, never_blocks))?, peer))
 }
 
 /// How long a connection a server took has to finish its handshake.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The server's half of a handshake over a connection just taken, on a thread that may block when
-/// this is a task.
-fn accepted_securely(tls: &Arc<dyn TlsServer>, stream: &TcpStream) -> Result<Secured, Failure> {
-    let tcp = stream.try_clone().map_err(|error| Failure::Other(error.to_string()))?;
+/// The server's half of a handshake over a connection just taken, and whether the connection's
+/// socket was made not to block for it.
+///
+/// A task that can park does it where it is, on a socket that doesn't block from here on, parked
+/// on its worker's poll whenever the handshake waits for the other side. It once ran on a blocking
+/// thread, held until the handshake was done or `HANDSHAKE_TIMEOUT` was up: the other side
+/// decides which, so a stranger with as many slow handshakes as there are blocking threads held
+/// them all, and every file read and database call in the program waited behind them.
+fn accepted_securely(tls: &Arc<dyn TlsServer>, stream: &TcpStream) -> Result<(Secured, bool), Failure> {
+    let unusable = |error: std::io::Error| Failure::Other(error.to_string());
     if task_parks() {
-        let tls = Arc::clone(tls);
-        return off_thread(move || tls.accepted(tcp, HANDSHAKE_TIMEOUT));
+        // Before the copy is made, so on every system the copy doesn't block either.
+        stream.set_nonblocking(true).map_err(unusable)?;
+        let tcp = stream.try_clone().map_err(unusable)?;
+        tcp.set_nonblocking(true).map_err(unusable)?;
+        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        let mut waits = |socket: &TcpStream, wanted: Wanted| parked_out_on(socket, wanted, deadline);
+        return Ok((tls.accepted(tcp, HANDSHAKE_TIMEOUT, Some(&mut waits))?, true));
     }
-    tls.accepted(tcp, HANDSHAKE_TIMEOUT)
+    let tcp = stream.try_clone().map_err(unusable)?;
+    Ok((tls.accepted(tcp, HANDSHAKE_TIMEOUT, None)?, false))
 }
 
 /// The next connection a server takes, by its handle, for a server taking them one at a time.
@@ -2974,14 +3122,125 @@ pub(crate) mod tests {
                 whole
             });
             let tcp = connected_to(port);
-            let Ok(secured) =
-                handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config())
-            else {
+            let Ok(secured) = handshake(
+                tcp.try_clone().unwrap(),
+                "localhost",
+                Duration::from_secs(10),
+                client_config(),
+                None,
+            ) else {
                 panic!("the handshake failed");
             };
             let handle = keep_stream(tcp, "server".to_owned(), Some(secured)).ok().unwrap();
             assert!(write(handle, b"x").is_ok());
             (handle, server)
+        }
+
+        /// A server on a port of its own that takes one connection, with the tests' certificate
+        /// when `secure`, answers its one line with `pong`, and gives back what `looks` said each
+        /// time it looked: as the connection came, and, with TLS, once the handshake was done. So
+        /// a test sees, from the server's end, what its client was doing while it connected and
+        /// while it shook hands. Connections to its port trust the tests' authority while the
+        /// third thing it gives lives.
+        pub(crate) fn answering_and_looking(
+            secure: bool,
+            looks: fn() -> i64,
+        ) -> (u16, std::thread::JoinHandle<Vec<i64>>, http::tls::TrustedByTests) {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let trusting = trusting_the_tests(&listener);
+            let server = std::thread::spawn(move || {
+                let (mut tcp, _) = listener.accept().unwrap();
+                let mut seen = vec![looks()];
+                let mut line = String::new();
+                if !secure {
+                    let _ = BufReader::new(&tcp).read_line(&mut line);
+                    let _ = tcp.write_all(b"pong\n");
+                    return seen;
+                }
+                let chain: Vec<CertificateDer<'static>> =
+                    CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
+                let config = ServerConfig::builder_with_provider(provider())
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_single_cert(chain, PrivateKeyDer::from_pem_slice(KEY).unwrap())
+                    .unwrap();
+                let mut connection = ServerConnection::new(Arc::new(config)).unwrap();
+                while connection.is_handshaking() {
+                    if connection.complete_io(&mut tcp).is_err() {
+                        return seen;
+                    }
+                }
+                seen.push(looks());
+                let mut reader = BufReader::new(StreamOwned::new(connection, tcp));
+                let _ = reader.read_line(&mut line);
+                let _ = reader.get_mut().write_all(b"pong\n");
+                let _ = reader.get_mut().flush();
+                seen
+            });
+            (port, server, trusting)
+        }
+
+        /// Connects as `net.connect(host, port, tls=...)` does, says `ping`, and gives back the
+        /// line it hears.
+        pub(crate) fn connected_and_pinged(host: &str, port: u16, secure: bool) -> Result<Vec<u8>, Failure> {
+            let made = super::super::connect(host, port, Duration::from_secs(20), secure)?;
+            let handle = super::handle_of_made(&made);
+            let heard = match write(handle, b"ping\n") {
+                Ok(()) => read_line(handle, Some(Duration::from_secs(20))),
+                Err(failure) => Err(failure),
+            };
+            close(handle);
+            heard.map(Option::unwrap_or_default)
+        }
+
+        /// A server's TLS with the tests' own certificate for `localhost`.
+        pub(crate) fn server_tls() -> Arc<dyn super::super::TlsServer> {
+            let (chain, key) = (std::str::from_utf8(CHAIN).unwrap(), std::str::from_utf8(KEY).unwrap());
+            let Ok(server) = http::tls::server(chain, key) else {
+                panic!("the tests' certificate was refused")
+            };
+            server
+        }
+
+        /// What `accept` does with a connection it took for a server with TLS: the server's half of
+        /// the handshake, and the connection's handle.
+        pub(crate) fn taken_by(
+            tls: &Arc<dyn super::super::TlsServer>,
+            stream: TcpStream,
+        ) -> Result<i64, Failure> {
+            super::super::kept_after_accept(Some(tls), stream, "client".to_owned()).map(|(handle, _)| handle)
+        }
+
+        /// Reads a line from a connection a server took, answers `pong`, and closes it: whether a
+        /// line came.
+        pub(crate) fn answered(handle: i64) -> bool {
+            let heard = matches!(read_line(handle, Some(Duration::from_secs(30))), Ok(Some(_)));
+            let answered = heard && write(handle, b"pong\n").is_ok();
+            close(handle);
+            answered
+        }
+
+        /// A client that connects to `port`, shakes hands trusting the tests' certificate, says
+        /// `ping`, and gives back the line it hears.
+        pub(crate) fn pinged(port: u16) -> Result<Vec<u8>, String> {
+            let tcp = connected_to(port);
+            let copy = tcp.try_clone().map_err(|error| error.to_string())?;
+            let secured = handshake(copy, "localhost", Duration::from_secs(30), client_config(), None)
+                .map_err(|_| "the client's handshake failed".to_owned())?;
+            let handle = keep_stream(tcp, "server".to_owned(), Some(secured))
+                .map_err(|_| "the client's connection couldn't be kept".to_owned())?;
+            let heard = match write(handle, b"ping\n") {
+                Ok(()) => read_line(handle, Some(Duration::from_secs(30))),
+                Err(failure) => Err(failure),
+            };
+            close(handle);
+            match heard {
+                Ok(Some(line)) => Ok(line),
+                Ok(None) => Err("the server closed without answering".to_owned()),
+                Err(_) => Err("the client heard no answer".to_owned()),
+            }
         }
 
         /// While what this gives back lives, a connection made to the port `listener` is on trusts
@@ -3079,9 +3338,13 @@ pub(crate) mod tests {
                 std::thread::sleep(Duration::from_millis(200));
             });
             let tcp = connected_to(port);
-            let Ok(secured) =
-                handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config())
-            else {
+            let Ok(secured) = handshake(
+                tcp.try_clone().unwrap(),
+                "localhost",
+                Duration::from_secs(10),
+                client_config(),
+                None,
+            ) else {
                 panic!("the handshake failed");
             };
             let handle = keep_stream(tcp, "server".to_owned(), Some(secured)).ok().unwrap();
@@ -3122,7 +3385,7 @@ pub(crate) mod tests {
                 (line == Value::Ok(Rc::new(Value::str("ping"))), matches!(wrote, Value::Ok(_)))
             });
             let tcp = connected_to(u16::try_from(port).unwrap());
-            let Ok(mut secured) = handshake(tcp, "localhost", Duration::from_secs(10), client_config())
+            let Ok(mut secured) = handshake(tcp, "localhost", Duration::from_secs(10), client_config(), None)
             else {
                 panic!("the handshake failed");
             };
@@ -3157,8 +3420,9 @@ pub(crate) mod tests {
             tcp: TcpStream,
             host: &str,
             timeout: Duration,
+            waits: Option<super::super::Waits<'_>>,
         ) -> Result<Box<dyn crate::stdlib::net::SecureStream>, Failure> {
-            handshake(tcp, host, timeout, client_config())
+            handshake(tcp, host, timeout, client_config(), waits)
         }
 
         const WAIT: Option<Duration> = Some(Duration::from_secs(10));
@@ -3256,8 +3520,13 @@ pub(crate) mod tests {
         fn a_tls_connection_reads_and_writes_lines() {
             let (port, server) = serving();
             let tcp = connected_to(port);
-            let secured =
-                handshake(tcp.try_clone().unwrap(), "localhost", Duration::from_secs(10), client_config());
+            let secured = handshake(
+                tcp.try_clone().unwrap(),
+                "localhost",
+                Duration::from_secs(10),
+                client_config(),
+                None,
+            );
             let Ok(secured) = secured else { panic!("the handshake failed") };
             let handle = keep_stream(tcp, "server".to_owned(), Some(secured)).ok().unwrap();
             assert!(write(handle, b"ping\n").is_ok());
@@ -3272,8 +3541,13 @@ pub(crate) mod tests {
         #[test]
         fn a_certificate_for_another_name_is_refused() {
             let (port, server) = serving();
-            let got =
-                handshake(connected_to(port), "fennec.example", Duration::from_secs(10), client_config());
+            let got = handshake(
+                connected_to(port),
+                "fennec.example",
+                Duration::from_secs(10),
+                client_config(),
+                None,
+            );
             let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
             assert_eq!(reason, "the server's certificate isn't for `fennec.example`");
             drop(got);
@@ -3304,7 +3578,8 @@ pub(crate) mod tests {
                 .unwrap()
                 .with_root_certificates(roots)
                 .with_no_client_auth();
-            let got = handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config));
+            let got =
+                handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config), None);
             let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
             assert_eq!(reason, "the server's certificate has expired");
             drop(got);
@@ -3320,7 +3595,8 @@ pub(crate) mod tests {
                 .unwrap()
                 .with_root_certificates(RootCertStore::empty())
                 .with_no_client_auth();
-            let got = handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config));
+            let got =
+                handshake(connected_to(port), "localhost", Duration::from_secs(10), Arc::new(config), None);
             let Err(Failure::Tls(reason)) = &got else { panic!("the handshake didn't fail as TLS") };
             assert_eq!(reason, "the server's certificate isn't from an authority this system trusts");
             drop(got);

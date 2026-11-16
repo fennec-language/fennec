@@ -193,6 +193,7 @@ pub(crate) enum Binding {
 }
 
 /// One call's names.
+#[derive(Clone)]
 pub(crate) struct Frame {
     pub(crate) id: u64,
     pub(crate) vars: Vec<(String, Binding)>,
@@ -211,7 +212,7 @@ pub(crate) struct Interp {
     /// The frame names are read and written in: the newest, except while a `with` block runs
     /// inside its source.
     pub(crate) cur: usize,
-    next_id: u64,
+    pub(crate) next_id: u64,
     pub(crate) lends: Vec<sources::Lending>,
     pub(crate) yields: Option<stream::YieldSide>,
     depth: usize,
@@ -234,6 +235,9 @@ pub(crate) struct Interp {
     /// its own to the channels it uses, as it runs on a thread of its own in the compiled
     /// program, and gets the number they know it by the first time it uses one.
     pub(crate) rounds_as: Vec<Option<usize>>,
+    /// The `parallel` calls whose rounds this thread runs, the innermost last, each with whether
+    /// the rounds after the one running now were handed to a thread of their own.
+    pub(crate) handing: Vec<parallel::Handing>,
     /// The local `Buffer` a `reserve(n)` was just called on, by its frame and name, and the room
     /// it promised: `n` more than it held. Any write anywhere forgets it, so it holds only until
     /// the buffer, or anything else, changes.
@@ -269,6 +273,7 @@ impl Interp {
             loadings: Vec::new(),
             actor: 0,
             rounds_as: Vec::new(),
+            handing: Vec::new(),
             reserved: None,
         }
     }

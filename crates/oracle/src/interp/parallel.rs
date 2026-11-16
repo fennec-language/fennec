@@ -5,10 +5,12 @@
 //! list's order, a stream `(f(x) for x in parallel(xs))` is read in that order, and the failure a
 //! call passes up is the first round's that fails, by position, since the runtime keeps the lowest
 //! range's. Rounds after one that fails or breaks out may run or not, so they run here too, as
-//! rounds that may not run, and anything they'd change is refused, as is one failing after a
-//! `break`. What a round does that another round, or a stream's reader, could see in another
-//! order is refused: printing, which follows real call order, the file system, a `shared` value
-//! one round changes and another reaches, and a generator made outside the round. An int `sum` is
+//! rounds that may not run, and anything they'd change, or a channel they'd use, is refused, as
+//! is one failing after a `break`. What a round does that another round, or a stream's reader,
+//! could see in another order is refused: printing, which follows real call order, the file
+//! system, a `shared` value one round changes and another reaches, and a generator made outside
+//! the round. Each round is one of its own to the channels it uses (`actors.rs`), so which
+//! round's message comes first is tried every way, as two tasks' is. An int `sum` is
 //! refused where some way of splitting it could overflow, and a float `sum` outright, since it
 //! adds in a tree of its own.
 
@@ -152,6 +154,18 @@ impl Interp {
         Ok(())
     }
 
+    /// Refuses a channel's send, receive or close in a `parallel` round that may not run: whether
+    /// it happened at all hangs on time.
+    pub(crate) fn may_use_channels(&self) -> Run<()> {
+        let Ok(scopes) = self.shared.scopes.lock() else {
+            return unsupported("a `parallel` call was lost");
+        };
+        if scopes.iter().any(|scope| matches!(scope, Scope::Rounds(call) if call.maybe)) {
+            return unsupported("a `parallel` round that may not run using a channel");
+        }
+        Ok(())
+    }
+
     /// Notes a `lock` on the `shared` value `cell`, to change it or not, in everything running
     /// side by side now, refusing one whose outcome depends on the order they run in.
     pub(crate) fn note_lock(&self, cell: u64, writes: bool) -> Run<()> {
@@ -255,10 +269,15 @@ impl Interp {
     ) -> Run<Ran<T>> {
         let mut made = Vec::with_capacity(count);
         let mut stop: Option<Flow> = None;
+        // The numbers of the rounds that used a channel, each one of its own to them.
+        let mut numbered = Vec::new();
         for at in 0..count {
             let maybe = stop.is_some();
             self.start_round(at, maybe)?;
-            match each(self, at, maybe) {
+            self.rounds_as.push(None);
+            let ran = each(self, at, maybe);
+            numbered.extend(self.rounds_as.pop().flatten());
+            match ran {
                 Ok(value) => made.push(Some(value)),
                 Err(flow @ (Flow::Unsupported(_) | Flow::Abandoned)) => return Err(flow),
                 Err(Flow::Return(_)) => return unsupported("a `return` inside a `parallel` round"),
@@ -274,6 +293,7 @@ impl Interp {
                 }
             }
         }
+        self.rounds_ended(&numbered)?;
         Ok(Ran { made, stop })
     }
 
@@ -484,8 +504,11 @@ impl Interp {
         let items = self.parallel_items(call)?;
         for (at, item) in items.into_iter().enumerate() {
             self.push_call(true)?;
+            self.rounds_as.push(None);
             let made = self.start_round(at, false).and_then(|()| self.made_from(elem, names, item, cond));
+            let numbered: Vec<usize> = self.rounds_as.pop().flatten().into_iter().collect();
             self.pop_scope();
+            self.rounds_ended(&numbered)?;
             if let Some(made) = made? {
                 self.yield_value(made)?;
             }

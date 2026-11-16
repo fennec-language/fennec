@@ -468,7 +468,7 @@ mod tests {
         std::fs::write(&first, b"a program").unwrap();
         cache.keep_file("programs", "root", &first).unwrap();
         std::fs::remove_file(&first).unwrap();
-        let kept = cache.path("programs", "root");
+        let kept = cache.kept_program("programs", "root").unwrap();
         std::fs::File::open(&kept).unwrap().set_modified(hours_ago).unwrap();
         // A second run puts it out, and is about to start it, when a third, about to start its
         // own, sweeps.

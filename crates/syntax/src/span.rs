@@ -11,6 +11,10 @@ impl Span {
     /// Where the standard library's spans start, well past any program's own source.
     pub const PRELUDE: u32 = 1 << 31;
 
+    /// Where the spans of what the compiler writes in start, below the standard library's. A
+    /// program's own text ends before it, or what it wrote would read as the compiler's.
+    pub const WRITTEN: u32 = Span::PRELUDE - (1 << 28);
+
     /// Whether this points into the standard library rather than the program.
     pub fn in_prelude(self) -> bool {
         self.start >= Span::PRELUDE

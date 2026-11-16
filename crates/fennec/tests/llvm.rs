@@ -19108,6 +19108,25 @@ fn shows_its_arguments(name: &str) -> std::io::Result<(fennec_temp::Temp, String
     Ok((dir, path))
 }
 
+/// A program's own type named as a std module is, `path`, with methods of its own, leaves std.path
+/// its functions: `Path.inside` still refuses `NUL`. Before, the program's type took every std
+/// function whose key started `path.`, as a std type's methods are, and std's code didn't build.
+#[test]
+fn a_programs_type_named_like_a_std_module_leaves_it_its_functions() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let printed = printed_by(
+        "type_named_path",
+        "from std.path import Path\n\nstruct path:\n    name: str\n\n    def shown(self) -> str:\n        return self.name\n\n\
+         def main(stdout: Stdout):\n    stdout.print(path(name=\"p\").shown())\n    \
+         safe = Path(\"uploads\").inside(\"NUL\") except why:\n        stdout.print(f\"refused: {why}\")\n        return\n    \
+         stdout.print(\"accepted\", safe)\n",
+    )?;
+    assert_eq!(printed, "p\nrefused: InvalidValue(message=\"`NUL` can't be a path inside `uploads`\")\n");
+    Ok(())
+}
+
 /// Small things that gave a wrong answer rather than saying so: a `Path` going up from `..`, text
 /// base64 can't have written, a day a month doesn't have, and a delimiter that could never match.
 /// `Path.inside` joins a path from outside so it can't leave the folder.

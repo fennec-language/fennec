@@ -38,7 +38,7 @@ pub const MARKED: u64 = 1 << 40;
 /// lives for the whole run.
 pub(super) fn markable_block(state: &State, block: &[u64]) -> bool {
     block.first().is_some_and(|count| count & MARKED == 0 && *count < super::heap::IMMORTAL)
-        && (element_number(state, block).is_some_and(|at| at < state.tables.elements.len())
+        && (element_number(state, block).is_some_and(|at| state.tables.is_element(at))
             || super::dicts::is_dict(state, block))
 }
 
@@ -261,12 +261,12 @@ fn shape(state: &State, element: usize) -> u64 {
 /// The kind of item a block holds, when it's a list's.
 pub(super) fn element_of(state: &State, block: &[u64]) -> Option<Rc<Element>> {
     let at = shape_word(block)?.checked_sub(state.tables.str_shape + 1 + super::dicts::SHAPES)?;
-    state.tables.elements.get(usize::try_from(at).ok()?).cloned()
+    state.tables.element(usize::try_from(at).ok()?).cloned()
 }
 
 /// `element_of`, borrowed.
 pub(super) fn element_in<'a>(state: &'a State, block: &[u64]) -> Option<&'a Element> {
-    state.tables.elements.get(element_number(state, block)?).map(AsRef::as_ref)
+    state.tables.element(element_number(state, block)?).map(AsRef::as_ref)
 }
 
 /// The number of the kind of item a list's block holds.
@@ -286,14 +286,14 @@ fn item_words(state: &State, element: i64) -> Option<(usize, usize)> {
     let at = usize::try_from(element).ok()?;
     let words = match state.heap.item_words(at) {
         Some(words) => words,
-        None => state.tables.elements.get(at)?.words(),
+        None => state.tables.element(at)?.words(),
     };
     Some((at, words))
 }
 
 fn element(state: &State, element: i64) -> Option<(usize, Rc<Element>)> {
     let at = usize::try_from(element).ok()?;
-    Some((at, Rc::clone(state.tables.elements.get(at)?)))
+    Some((at, Rc::clone(state.tables.element(at)?)))
 }
 
 /// Whether a list of this kind of item owns a block for each.
@@ -391,9 +391,15 @@ pub extern "C" fn with_room(element: i64, room: i64) -> i64 {
 /// native code to fill: the same block when it had one owner and room, or else a copy
 /// with room to double.
 pub extern "C" fn grow(list: i64) -> i64 {
-    super::made_with("fennec_list_grow", |state| {
-        marked_append(state, list, 1).or_else(|| grow_in(state, list, 1)).unwrap_or(list)
-    })
+    super::made_with("fennec_list_grow", |state| with_one_more(state, list).unwrap_or(list))
+}
+
+/// What `fennec_list_grow` does, for a list the runtime adds to itself: takes over the list's
+/// owner and gives back one with a zeroed item more on the end. That's the same block when it had
+/// one owner and room, a list a lock's log marked changed where it is with the append noted for a
+/// crash to undo, and otherwise a copy with room to double.
+pub(super) fn with_one_more(state: &mut State, list: i64) -> Option<i64> {
+    marked_append(state, list, 1).or_else(|| grow_in(state, list, 1))
 }
 
 /// Takes over a list's owner and gives back a block only that owner holds, copying the
@@ -1137,11 +1143,24 @@ pub extern "C" fn contains(list: i64, word: i64) -> i8 {
     with(|state| i8::from(place_of(state, u64::try_from(list).unwrap_or(0), word.cast_unsigned()).is_some()))
 }
 
-/// `buffer.reserve(room)`: takes over a list's owner and gives back one only that owner holds,
-/// with room for at least `room` items, the same block when it had one owner and the room.
-pub extern "C" fn reserve(list: i64, room: i64) -> i64 {
+/// `buffer.reserve(more)`: takes over a list's owner and gives back one only that owner holds,
+/// with room for at least `more` items beyond those it holds, as Rust's `Vec::reserve` gives: the
+/// same block when it had one owner and the room. So whoever is about to add `more` items never
+/// pays for growing. It once made room for `more` in all, which for a buffer already holding that
+/// many made none.
+///
+/// The two are added with a check: a sum past what a number can hold is the most room there is to
+/// ask for, which stops the program as any room too big does, where a wrapped sum would have asked
+/// for a little.
+pub extern "C" fn reserve(list: i64, more: i64) -> i64 {
     super::made_with("fennec_list_reserve", |state| {
-        grow_to(state, list, 0, usize::try_from(room).unwrap_or(0)).unwrap_or(list)
+        let held = u64::try_from(list)
+            .ok()
+            .and_then(|address| state.heap.block(address))
+            .and_then(|block| usize::try_from(*block.get(2)?).ok())
+            .unwrap_or(0);
+        let room = held.saturating_add(usize::try_from(more).unwrap_or(0));
+        grow_to(state, list, 0, room).unwrap_or(list)
     })
 }
 
@@ -1254,15 +1273,84 @@ fn number_of_element(state: &mut State, element: &Rc<Element>) -> usize {
     if let Some((_, at)) = tables.found_elements.iter().find(|(known, _)| known == element) {
         return *at;
     }
-    let at = tables.elements.iter().position(|known| known == element).unwrap_or_else(|| {
-        tables.elements.push(Rc::clone(element));
-        tables.elements.len() - 1
-    });
+    let at = tables
+        .elements
+        .iter()
+        .position(|known| known == element)
+        .unwrap_or_else(|| tables.elements.len() + added_number(element));
     if tables.found_elements.len() == KEPT {
         tables.found_elements.remove(0);
     }
     tables.found_elements.push((Rc::clone(element), at));
     at
+}
+
+/// The kinds of item the runtime numbered itself, past those the program described, as their
+/// bytes, in the order they were numbered: one numbering for every thread of the run. Each thread
+/// numbered its own before, so a list made on one, like an error's notes made on `main`, read as a
+/// kind another didn't know, or as another kind, on a task's thread (#1843).
+static ADDED_KINDS: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+
+/// How many kinds the runtime numbers itself at most: far past the few a program needs.
+const MOST_ADDED_KINDS: usize = 4096;
+
+/// A thread's copies of the kinds of item the runtime numbered itself, by number past those the
+/// program described, each read from [`ADDED_KINDS`] the first time this thread meets it. Each is
+/// written once and never moved, so it can be read with the runtime's state only borrowed.
+#[derive(Default)]
+pub struct AddedKinds(std::cell::OnceCell<Box<[std::cell::OnceCell<Rc<Element>>]>>);
+
+impl super::Tables {
+    /// The kind of item numbered `number`: one the program described, or one the runtime numbered
+    /// itself, on any thread.
+    #[inline]
+    pub(super) fn element(&self, number: usize) -> Option<&Rc<Element>> {
+        match self.elements.get(number) {
+            Some(element) => Some(element),
+            None => self.added_element(number.checked_sub(self.elements.len())?),
+        }
+    }
+
+    /// Whether `number` is a kind of item's.
+    pub(super) fn is_element(&self, number: usize) -> bool {
+        self.element(number).is_some()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn added_element(&self, at: usize) -> Option<&Rc<Element>> {
+        let slots = self
+            .added_elements
+            .0
+            .get_or_init(|| (0..MOST_ADDED_KINDS).map(|_| std::cell::OnceCell::new()).collect());
+        let slot = slots.get(at)?;
+        if let Some(element) = slot.get() {
+            return Some(element);
+        }
+        let bytes = ADDED_KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(at)?.clone();
+        let element = <Element as super::codec::Decode>::decode(&mut super::codec::Reader::new(&bytes))?;
+        Some(slot.get_or_init(|| Rc::new(element)))
+    }
+}
+
+/// The number past the kinds the program described of a kind it didn't, numbered now if no thread
+/// has numbered it yet.
+#[cold]
+#[inline(never)]
+fn added_number(element: &Element) -> usize {
+    let mut writer = super::codec::Writer::default();
+    super::codec::Encode::encode(element, &mut writer);
+    let bytes = writer.into_bytes();
+    let mut added = ADDED_KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(at) = added.iter().position(|known| *known == bytes) {
+        return at;
+    }
+    if added.len() >= MOST_ADDED_KINDS {
+        drop(added);
+        super::heap::runtime_bug("the runtime made lists of more kinds of item than it can number");
+    }
+    added.push(bytes);
+    added.len() - 1
 }
 
 /// A new block owned once with a value's items, if it's a list of the kind of item given.
@@ -1299,10 +1387,12 @@ pub(super) fn list_of_texts(state: &mut State, items: &[u64]) -> i64 {
         Element::Str => !headers,
         _ => false,
     });
-    let at = found.unwrap_or_else(|| {
-        state.tables.elements.push(super::text::string_element(state));
-        state.tables.elements.len() - 1
-    });
+    let at = if let Some(at) = found {
+        at
+    } else {
+        let element = super::text::string_element(state);
+        number_of_element(state, &element)
+    };
     let stride = if headers { Element::Text.words() } else { Element::Str.words() };
     let block = build(state, at, stride, items, 0);
     state.heap.insert(block)

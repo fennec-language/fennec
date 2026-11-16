@@ -498,8 +498,10 @@ fn std_math_runs_from_its_own_source() {
          2.5 4.0 0.8414709848078965 1.2311444133449163\n\
          [3, 2, 1] 2 1.5\n",
     );
-    // A program's own type with the name of one of the module's is refused, not mixed up with it.
-    let (_, ended) = ran("
+    // A program's own type with the name of one of the module's is its own, renamed as the checker
+    // renames it, never mixed up with the module's.
+    prints(
+        "
         from std.math import sqrt
 
         struct Vec3:
@@ -507,8 +509,9 @@ fn std_math_runs_from_its_own_source() {
 
         def main(stdout: Stdout):
             stdout.print(Vec3(x=sqrt(4.0)))
-        ");
-    assert_eq!(ended, Ended::Unsupported("`Vec3`, declared by the program and by std.math".to_owned()));
+        ",
+        "Vec3(x=2.0)\n",
+    );
 }
 
 /// `std.collections` runs from its own Fennec source too: a `Deque`, a `Heap` and a
@@ -969,6 +972,39 @@ fn toml_dumps_runs_std_tomls_own_writer() {
     );
 }
 
+/// An `f32` is rounded to 32 bits after each operation and prints as the shortest text that reads
+/// back as the same `f32`, as `docs/language.md` says: written out, converted from ints, floats
+/// and sized ints, added, multiplied, divided, compared, and back to a `float` and an `int`. What
+/// it prints is what the compiled program printed.
+#[test]
+fn an_f32_is_rounded_after_each_step_and_prints_shortest() {
+    prints(
+        "
+        struct Body:
+            mass: f32
+            speed: f32
+
+        def main(stdout: Stdout):
+            tenth: f32 = 0.1
+            three = f32(3)
+            summed = tenth + tenth + tenth
+            stdout.print(tenth, three, summed, tenth * three, three / f32(7), -tenth, summed == f32(0.3), summed < three)
+            stdout.print(float(tenth), int(three / f32(2)), f32(16777217), f32(1e39), f32(2.5e-7), f32(123456789.0))
+            body = Body(mass=1.5, speed=f32(1) / f32(3))
+            stdout.print(body, [tenth, three], {tenth: 'tenth'}, f'{summed}')
+            mut total: f32 = 0.0
+            for step in range(10):
+                total += f32(step) * tenth
+            stdout.print(total, f32(u8(200)), f32(-0.0), f32(1e20))
+            return
+        ",
+        "0.1 3.0 0.3 0.3 0.42857143 -0.1 True True\n\
+         0.10000000149011612 1 16777216.0 inf 2.5e-07 123456790.0\n\
+         Body(mass=1.5, speed=0.33333334) [0.1, 3.0] {0.1: \"tenth\"} 0.3\n\
+         4.5 200.0 -0.0 1e+20\n",
+    );
+}
+
 /// `toml.loads` runs `std.toml`'s own reader, written in Fennec, in place of the runtime's,
 /// through the `def deserialize` the checker writes for each type, as the oracle models it: a
 /// field left out takes its default, an optional one is `None`, a `@skip` field keeps its
@@ -1023,6 +1059,176 @@ fn toml_loads_runs_std_tomls_own_reader_through_each_types_deserialize() {
          `Server` has no field \"extra\", but the text has one\n\
          `tags[0]` should be a str, but it's an int\n\
          {\"a\": [1, 2], \"b\": []}\n",
+    );
+}
+
+/// The sized ints' `parse` and `from` are the core's, written in Fennec, run from their source:
+/// a `u64` past the largest int, a sign and the space around it, and each failure as they say
+/// it. What it prints is what the compiled program printed.
+#[test]
+fn sized_parse_and_from_run_the_cores_own_code() {
+    prints(
+        "
+        def parsed(text: str) -> str:
+            value = u64.parse(text) except why:
+                return why.message
+            return f'{value}'
+
+        def small(text: str) -> str:
+            value = i8.parse(text) except why:
+                return why.message
+            return f'{value}'
+
+        def fitted(number: int) -> str:
+            value = u16.from(number) except why:
+                return why.message
+            return f'{value}'
+
+        def main(stdout: Stdout):
+            for text in ['0', '18446744073709551615', '18446744073709551616', '-1', ' 42 ', '1_000', 'x']:
+                stdout.print(parsed(text))
+            for text in ['127', '-128', '128', '-129', '+5', '']:
+                stdout.print(small(text))
+            for number in [0, 65535, 65536, -1]:
+                stdout.print(fitted(number))
+            return
+        ",
+        "0\n\
+         18446744073709551615\n\
+         18446744073709551616 doesn't fit in u64, which holds 0 to 18446744073709551615\n\
+         -1 doesn't fit in u64, which holds 0 to 18446744073709551615\n\
+         42\n\
+         \"1_000\" isn't an int\n\
+         \"x\" isn't an int\n\
+         127\n\
+         -128\n\
+         128 doesn't fit in i8, which holds -128 to 127\n\
+         -129 doesn't fit in i8, which holds -128 to 127\n\
+         5\n\
+         \"\" isn't an int\n\
+         0\n\
+         65535\n\
+         65536 doesn't fit in u16, which holds 0 to 65535\n\
+         -1 doesn't fit in u16, which holds 0 to 65535\n",
+    );
+}
+
+/// Tasks launched with no `as` run beside their block, talking through `std.concurrent`'s
+/// channels: a task answering each job its block sends, and two listeners of a channel to every
+/// listener, each hearing every message sent from when its inbox was made. What it prints is
+/// what the compiled program printed.
+#[test]
+fn tasks_talk_through_channels_and_listeners() {
+    prints(
+        "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+        def doubled(jobs: Inbox[int], back: Sender[int], count: int) fails Closed:
+            for _ in range(count):
+                job = jobs.receive() else 0
+                back.send(job * 2)?
+
+        def summed(news: Inbox[int], back: Sender[int], count: int) fails Closed:
+            mut total = 0
+            mut heard = 0
+            for item in news:
+                total += item
+                heard += 1
+                if heard == count: break
+            back.send(total)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=2) as jobs, channel[int](size=4) as answers:
+                with launch(() => doubled(jobs.inbox(), back=answers.sender(), count=5)?)?:
+                    for job in range(1, 6):
+                        jobs.send(job)?
+                        stdout.print(answers.receive() else -1)
+            with channel[int](size=8, to=.Every) as news, channel[int](size=2) as totals:
+                first = news.inbox()
+                second = news.inbox()
+                with launch(() => summed(first, back=totals.sender(), count=3)?)?:
+                    with launch(() => summed(second, back=totals.sender(), count=3)?)?:
+                        for item in [3, 4, 5]:
+                            news.send(item)?
+                stdout.print(totals.receive() else -1, totals.receive() else -1)
+            return
+        ",
+        "2\n\
+         4\n\
+         6\n\
+         8\n\
+         10\n\
+         12 12\n",
+    );
+}
+
+/// Where which of several tasks' messages comes first changes what's printed, every order is
+/// tried, and the program is refused: what it prints hangs on time, from the line it parts at.
+#[test]
+fn messages_whose_order_changes_what_prints_are_refused() {
+    let (_, ended) = ran("
+        from std.concurrent import Closed, Crashed, Sender, channel
+
+        def told(back: Sender[int], what: int) fails Closed:
+            back.send(what)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=4) as answers:
+                with launch(() => told(answers.sender(), what=1)?)?:
+                    with launch(() => told(answers.sender(), what=2)?)?:
+                        stdout.print(answers.receive() else -1)
+                        stdout.print(answers.receive() else -1)
+            return
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "what it prints, or how it ends, hangs on the order its tasks' messages come in: \
+             line 1 is \"1\" in one order and \"2\" in another"
+                .to_owned()
+        )
+    );
+}
+
+/// A task waiting for its inbox to close, which closes only once the task's own `with launch`
+/// has ended, waits forever, as its block does for it: a hang, which is refused.
+#[test]
+fn tasks_that_all_wait_are_refused_as_a_hang() {
+    let (_, ended) = ran("
+        from std.concurrent import Closed, Crashed, Inbox, channel
+
+        def drained(jobs: Inbox[int]) -> int:
+            mut total = 0
+            for job in jobs:
+                total += job
+            return total
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=2) as jobs:
+                with launch(() => stdout.print(drained(jobs.inbox())))?:
+                    jobs.send(1)?
+            return
+        ");
+    assert_eq!(ended, Ended::Unsupported("every task waits on another, so the program hangs".to_owned()));
+}
+
+/// A wait given a timeout times out when nothing else can answer it. What it prints is what the
+/// compiled program printed.
+#[test]
+fn a_wait_times_out_when_nothing_can_answer_it() {
+    prints(
+        "
+        from std.concurrent import Closed, Timeout, channel
+
+        def main(stdout: Stdout) fails Closed:
+            with channel[int](size=1) as quiet:
+                got = quiet.receive_within(10ms) except Timeout():
+                    stdout.print('timed out')
+                    return
+                stdout.print(got)
+            return
+        ",
+        "timed out\n",
     );
 }
 
@@ -1750,7 +1956,10 @@ fn a_launched_task_reads_what_its_block_sent_and_its_failure_is_the_withs() {
         ",
         "crashed the task crashed\nPoint(x=245, y=5)\ntask 1\ntask 3\ntask 7\nrefused 7\n",
     );
-    let (_, ended) = ran("
+    // The block prints before it sends, and the task prints after it receives, so the order is
+    // promised.
+    prints(
+        "
         from std.concurrent import Closed, Crashed, Inbox, Timeout
 
         def echoing(inbox: Inbox[int], stdout: Stdout):
@@ -1761,11 +1970,25 @@ fn a_launched_task_reads_what_its_block_sent_and_its_failure_is_the_withs() {
             with launch((inbox) => echoing(inbox, stdout))? as sends:
                 stdout.print('block')
                 sends.send(1)?
+        ",
+        "block\ntask 1\n",
+    );
+    // Here nothing orders the task's first print and the block's.
+    let (_, ended) = ran("
+        from std.concurrent import Closed, Crashed, Inbox, Timeout
+
+        def echoing(inbox: Inbox[int], stdout: Stdout):
+            stdout.print('task')
+            for number in inbox:
+                stdout.print('task', number)
+
+        def main(stdout: Stdout) fails Crashed | Closed | Timeout:
+            with launch((inbox) => echoing(inbox, stdout))? as sends:
+                stdout.print('block')
+                sends.send(1)?
         ");
     assert_eq!(
         ended,
-        Ended::Unsupported(
-            "printing in both a launched task and its `with` block, whose order isn't promised".to_owned()
-        )
+        Ended::Unsupported("printing in two tasks at once, whose order hangs on time".to_owned())
     );
 }

@@ -197,6 +197,9 @@ pub struct Tables {
     /// `elements`, which never changes once given: a list of strings `split` makes finds its
     /// number here, however many kinds a program describes before strings.
     pub found_elements: Vec<(Rc<crate::packed::Element>, usize)>,
+    /// The kinds of item the runtime numbered itself, past `elements`, as this thread has read them
+    /// (see `lists::AddedKinds`).
+    pub added_elements: lists::AddedKinds,
 }
 
 impl Tables {
@@ -998,16 +1001,25 @@ pub mod temps {
     /// gives back otherwise as the exit code. The result is the last temporary, so it's
     /// dropped, leaving none behind.
     pub extern "C" fn main_result(value: i64, start: i64, end: i64) {
+        // The failure's call chain, which native code keeps among the error's notes.
+        let mut chain = Vec::new();
         attempt(|state: &mut State| {
             let result = state.take(value);
             if let Ok(at) = usize::try_from(value) {
                 state.temps.truncate(at);
             }
             match result {
-                Value::Err(error) => Err(Diagnostic::new(
-                    format!("`main` failed: {}", crate::format::failure(&error)),
-                    span(start, end),
-                )),
+                Value::Err(error) => {
+                    if let Value::Instance(instance) = error.as_ref()
+                        && let Some(notes) = &instance.notes
+                    {
+                        chain = super::notes::chain_in(notes);
+                    }
+                    Err(Diagnostic::new(
+                        format!("`main` failed: {}", crate::format::failure(&error)),
+                        span(start, end),
+                    ))
+                }
                 Value::Ok(given) => {
                     if let Value::Int(code) = given.as_ref() {
                         super::main_exit(*code);
@@ -1021,6 +1033,9 @@ pub mod temps {
                 _ => Ok(()),
             }
         });
+        // Said where it was raised, with its call chain under it, as a `main` that gives nothing
+        // back says its failure: with no chain, where `main` is.
+        super::notes::said_where_raised(&chain);
     }
 
     /// Whether a value is a failed result.

@@ -11,8 +11,8 @@
 # Linux check is unavailable and the gate goes on: CI's Linux jobs still check.
 #
 # - The VM is started when a check needs it, without making it Docker's context, and stopped
-#   after 30 minutes with no check, so its memory isn't held around the clock. Starting it is
-#   part of the step's time.
+#   after 30 minutes with no check and no container running, so its memory isn't held around the
+#   clock. Starting it is part of the step's time.
 # - One check runs at a time, whichever worktree's gate starts it, under a lock this script takes
 #   and runs itself again under: two building SQLite at once had the compiler killed for memory.
 # - Each is held to what the VM holds, so a build too big is stopped in its own container.
@@ -41,12 +41,15 @@ if [ -z "${FENNEC_LINUX_CHECK_HELD:-}" ]; then
     "$lock" "$0" "$@"
 fi
 # However it ends, the VM is stopped once 30 minutes pass with no check after this one: a stopper
-# of its own sleeps that long, and stops it only if no check has run since and none holds the lock.
-# Run through `eval` by the stopper below.
+# of its own sleeps that long, and stops it only if no check has run since, none holds the lock,
+# and no container is running in it, as another lane's profiling or TSan build may be, which a
+# stop killed on 2026-11-16. Run through `eval` by the stopper below.
 # shellcheck disable=SC2016,SC2034
 stop_when_idle='
 sleep "$(($3 * 60))"
 [ -n "$(find "$1" -mmin "-$3" 2> /dev/null)" ] && exit 0
+running=$(docker --context "$4" ps --quiet 2> /dev/null) || exit 0
+[ -n "$running" ] && exit 0
 exec perl -MFcntl=:flock -e "open(my \$held, \">>\", shift) or exit 1; flock(\$held, LOCK_EX | LOCK_NB) or exit 0; exec @ARGV" "$2" colima stop fennec
 '
 # Run on exit, by the trap below.
@@ -55,7 +58,7 @@ stopper() {
   touch "$used"
   [ "$context" = colima-fennec ] && command -v colima > /dev/null || return 0
   # Without the lock's descriptor, or it would hold the lock as long as it sleeps.
-  eval "nohup sh -c \"\$stop_when_idle\" sh \"\$used\" \"\$lock\" 30 > /dev/null 2>&1 ${FENNEC_LINUX_CHECK_HELD}>&- &"
+  eval "nohup sh -c \"\$stop_when_idle\" sh \"\$used\" \"\$lock\" 30 \"\$context\" > /dev/null 2>&1 ${FENNEC_LINUX_CHECK_HELD}>&- &"
 }
 trap stopper EXIT
 command -v docker > /dev/null || unavailable "there's no docker"

@@ -16327,6 +16327,27 @@ fn a_bare_carriage_return_isnt_taken_off_a_line() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A request line longer than a whole head may be is a 414, as HTTP/1.1 has a server answer a
+/// target longer than it takes, on either runtime: one of 20 KB, and one longer than the runtime
+/// reads into a line, sent with no end. One with no headers after it was taken up to a mebibyte,
+/// and past that was a 431, the status for headers too big. Found by fuzzing the server with large
+/// requests.
+#[test]
+fn a_request_line_too_long_is_a_414() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let long_target = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(20_000));
+    let unending = "G".repeat(1_100_000);
+    for threads in ["0", "1"] {
+        for (name, asked) in [("target", long_target.as_bytes()), ("unending", unending.as_bytes())] {
+            let said = served_on(threads, &format!("long_request_line_{name}_{threads}"), asked)?;
+            assert!(said.starts_with("HTTP/1.1 414 URI Too Long\r\n"), "{name}, threads {threads}: {said}");
+        }
+    }
+    Ok(())
+}
+
 /// A failure leaving `lock ... as ref`, by `fail` or `?`, puts back everything the block changed,
 /// as a crash does: one value, or all those locked together, and on `parallel`'s threads too. What
 /// the failure says keeps what the block saw. A local changed in the block keeps its change, and

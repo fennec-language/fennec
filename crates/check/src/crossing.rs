@@ -327,6 +327,8 @@ struct Walk<'c> {
     types: BTreeSet<Type>,
     /// Set when a type that crosses has a type parameter no copy placed.
     unplaced: bool,
+    /// Where every `with launch`'s task is, made once.
+    tasks: BTreeSet<(u32, u32)>,
 }
 
 impl<'c> Walk<'c> {
@@ -343,6 +345,7 @@ impl<'c> Walk<'c> {
                 methods.entry(owner.clone()).or_default().push(key.clone());
             }
         }
+        let tasks = checker.launches.values().map(|launch| at(&launch.task)).collect();
         Walk {
             checker,
             reached,
@@ -353,6 +356,7 @@ impl<'c> Walk<'c> {
             arrows: BTreeMap::new(),
             types: BTreeSet::new(),
             unplaced: false,
+            tasks,
         }
     }
 
@@ -447,14 +451,16 @@ impl<'c> Walk<'c> {
                     });
                     spots.nested = Some(reads);
                 }
-            } else if let Some(test) =
-                self.checker.program.tests.iter().find(|test| format!("test \"{}\"", test.name) == key)
-            {
+            } else if let Some(test) = self.checker.program.test(key) {
                 spots_in(&test.body, &mut spots);
             }
-            for launch in self.checker.launches.values() {
-                if self.checker.typed.get(key).is_some_and(|body| body.expr(launch.task.span).is_some()) {
-                    spots.whole.push(at(&launch.task));
+            if let Some(body) = self.checker.typed.get(key) {
+                // Whichever is fewer is looked through, the tasks or the body's expressions, so
+                // neither many launches nor long functions pay for every pair of the two.
+                if self.tasks.len() <= body.exprs.len() {
+                    spots.whole.extend(self.tasks.iter().filter(|task| body.exprs.contains_key(task)));
+                } else {
+                    spots.whole.extend(body.exprs.keys().filter(|span| self.tasks.contains(span)));
                 }
             }
             self.spots.insert(key.to_owned(), spots);

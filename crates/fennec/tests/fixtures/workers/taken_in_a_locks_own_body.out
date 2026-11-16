@@ -1,0 +1,10 @@
+went True 1 2 1 named 0, a text long enough for a block | 1 first, a text long enough for a block of its own
+crashed True 40 2 1 named 0, a text long enough for a block | 1 first, a text long enough for a block of its own
+went True 2 4 3 named 1, a text long enough for a block | 1 first, a text long enough for a block of its own
+crashed True 300 4 3 named 1, a text long enough for a block | 1 first, a text long enough for a block of its own
+went True 1 5 4 named 0, a text long enough for a block | 1 first, a text long enough for a block of its own
+went False 1 5 5 named 0, a text long enough for a block | 2 row 0, a text long enough for a block
+crashed False 40 5 5 named 0, a text long enough for a block | 2 row 0, a text long enough for a block
+went False 2 5 7 named 0, a text long enough for a block | 4 row 1, a text long enough for a block
+crashed False 300 5 7 named 0, a text long enough for a block | 4 row 1, a text long enough for a block
+went False 1 5 8 named 0, a text long enough for a block | 5 row 0, a text long enough for a block

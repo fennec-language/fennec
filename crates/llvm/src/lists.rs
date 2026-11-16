@@ -482,7 +482,9 @@ impl Emit<'_, '_, '_> {
         (root, list_path, index): (LocalId, &[String], &Operand),
         field: &str,
     ) -> Result<(), String> {
-        let list = self.alone_list(root, list_path)?;
+        let index_operand = index;
+        let (index, _) = self.operand(index)?;
+        let list = self.list_for_item_at(root, list_path, &index)?;
         let item_kind = self.place_kind(root, list_path)?;
         let Kind::List(item) = item_kind else { return Err("an item of something else".to_owned()) };
         let held = self.item_kind(item)?;
@@ -491,8 +493,6 @@ impl Emit<'_, '_, '_> {
         }
         // The item was read at this index just before, so it's inside the list, counting from
         // the end if it's negative.
-        let index_operand = index;
-        let (index, _) = self.operand(index)?;
         let length = self.list_length(&list);
         let (negative, from_end, position) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{negative} = icmp slt i64 {index}, 0"));
@@ -506,6 +506,9 @@ impl Emit<'_, '_, '_> {
             let at = self.item_address(&list, &memory, &position);
             let (offset, inner) = self.field(&held, field)?;
             let place = self.offset(&at, offset);
+            if self.left_out_at(self.at, dest) {
+                self.note_taken_out(dest, (&place, &inner, ITEM_ACCESS));
+            }
             let value = self.load_field(&inner, &place, ITEM_ACCESS);
             return self.assign(dest, &value);
         }
@@ -525,6 +528,9 @@ impl Emit<'_, '_, '_> {
         let (offset, inner) = self.field(&held, field)?;
         let fields = self.fields_at(&block, &held);
         let place = self.offset(&fields, offset);
+        if self.left_out_at(self.at, dest) {
+            self.note_taken_out(dest, (&place, &inner, FIELD_ACCESS));
+        }
         let value = self.load_field(&inner, &place, FIELD_ACCESS);
         self.assign(dest, &value)
     }
@@ -630,8 +636,13 @@ impl Emit<'_, '_, '_> {
                 }
                 PlaceStep::Item(index_operand) => {
                     let list = match (taking, along.is_empty()) {
+                        // A list handed in to change may be one a lock's log marked.
+                        (true, true) if self.asks_the_log() && self.is_mut_param(root) => {
+                            let (index, _) = self.operand(index_operand)?;
+                            self.item_to_set(&at, &index)
+                        }
                         (true, true) => self.unshared(root),
-                        (true, false) if !self.saving.is_empty() => {
+                        (true, false) if self.asks_the_log() => {
                             let (index, _) = self.operand(index_operand)?;
                             self.item_to_set(&at, &index)
                         }
@@ -671,7 +682,7 @@ impl Emit<'_, '_, '_> {
     /// While a place is out, in a function a crash lets go of what it owns, where it goes back to
     /// is kept beside the function's locals, for the crash to put it back there: what holds it
     /// still has the address of what's been changed, maybe moved or freed, since.
-    fn note_place_out(&mut self, value: LocalId, at: &str) {
+    pub(crate) fn note_place_out(&mut self, value: LocalId, at: &str) {
         if !self.lets_go_after_crash() {
             return;
         }
@@ -692,7 +703,8 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn put_places_back_after_crash(&mut self) -> Result<(), String> {
         let mut out: Vec<(usize, String)> =
             self.places_out.iter().map(|(value, slot)| (*value, slot.clone())).collect();
-        out.sort_unstable();
+        // A value out of a dict or a list last, so what's out of it in turn is back in it by then.
+        out.sort_unstable_by_key(|(value, _)| (self.out_of_dicts.contains(value), *value));
         for (value, slot) in out {
             let (_, kind, access) = self.place_homes.get(&value).cloned().ok_or("a place never taken out")?;
             let (home, is_out) = (self.temp(), self.temp());
@@ -758,6 +770,10 @@ impl Emit<'_, '_, '_> {
         value: &Operand,
     ) -> Result<(), String> {
         let put_back = matches!(value, Operand::Local(local) if self.known.is_taken(*local));
+        if put_back {
+            // It's in what it's set in from here on, which goes back in its turn.
+            self.taken_is_back(value);
+        }
         let field_kind = self.place_kind(object, path)?;
         let (value, fresh) = self.value_for(value, &field_kind)?;
         let mut place = self.slot(object);
@@ -1712,13 +1728,16 @@ impl Emit<'_, '_, '_> {
             .item_home(dest)
             .filter(|(_, path)| held.counted() || holds_counted || !path.is_empty() || over_loop)
             .cloned();
-        let list = match &taken {
-            Some((home, path)) if over_loop && path.is_empty() => self.unshared(*home),
-            Some((home, path)) => self.alone_list(*home, path)?,
-            None => list,
-        };
         let index_operand = index;
         let (index, _) = self.operand(index)?;
+        let handed = |emit: &Self, home: LocalId| emit.asks_the_log() && emit.is_mut_param(home);
+        let list = match &taken {
+            Some((home, path)) if over_loop && path.is_empty() && !handed(self, *home) => {
+                self.unshared(*home)
+            }
+            Some((home, path)) => self.list_for_item_at(*home, path, &index)?,
+            None => list,
+        };
         let position = if inside {
             let proof =
                 if guarded { "index inside its list, by the guard before" } else { "index inside its list" };
@@ -1737,6 +1756,11 @@ impl Emit<'_, '_, '_> {
             self.taken_at.insert(dest.0, at.clone());
             if let Some(step) = item_step(index_operand) {
                 self.taken_items.insert(dest.0, (home, path, step));
+            }
+            // What goes back is the local the item's changed in, as for a dict's value.
+            let holder = self.holder_of(dest);
+            if self.left_out_at(self.at, holder) {
+                self.note_taken_out(holder, (&at, &held, ITEM_ACCESS));
             }
         }
         self.read_into(dest, &held, &at, ITEM_ACCESS)
@@ -1775,7 +1799,7 @@ impl Emit<'_, '_, '_> {
     /// The list at `place`, ready for its item at `index` to be set, under a lock that saves what it
     /// changes. A list the lock's log marked stays where it is, the item noted for a crash to put
     /// back, so every set asks the runtime, and the list is never taken as alone after.
-    fn item_to_set(&mut self, place: &str, index: &str) -> String {
+    pub(crate) fn item_to_set(&mut self, place: &str, index: &str) -> String {
         self.declare("declare ptr @fennec_list_item_unshare(ptr, i64) nounwind");
         let list = self.temp();
         let (ok, shared) = (self.label("alone"), self.label("shared"));
@@ -1862,6 +1886,18 @@ impl Emit<'_, '_, '_> {
     }
 
     /// The list at a field path from a local, with no other owner, nor anything it's inside.
+    /// The list at a field path from a local, for its item at `index` to be changed: with no
+    /// other owner, as [`Self::alone_list`] gives it, or, in a function that asks a lock's log
+    /// first, one the log marked where it is, the item noted as it was. Making a marked list alone
+    /// copies every item of it for the one that changes.
+    fn list_for_item_at(&mut self, object: LocalId, path: &[String], index: &str) -> Result<String, String> {
+        if !self.asks_the_log() || (path.is_empty() && !self.is_mut_param(object)) {
+            return self.alone_list(object, path);
+        }
+        let place = if path.is_empty() { self.slot(object) } else { self.list_place(object, path)? };
+        Ok(self.item_to_set(&place, index))
+    }
+
     fn alone_list(&mut self, object: LocalId, path: &[String]) -> Result<String, String> {
         if path.is_empty() {
             return Ok(self.check_alone(object));
@@ -1910,7 +1946,7 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{block} = load ptr, ptr {place}"));
             return block;
         }
-        if !self.saving.is_empty() {
+        if self.asks_the_log() {
             return self.changeable_along((root, path), place);
         }
         self.alone_along((root, path), place, "fennec_unshare")
@@ -1924,6 +1960,16 @@ impl Emit<'_, '_, '_> {
         if self.alone_fields.contains(&key) {
             return self.load_block(place);
         }
+        let resolved = self.changeable_at(place);
+        self.alone_fields.push(key);
+        resolved
+    }
+
+    /// The block at `place`, ready to change, in a function that asks a lock's log first. One with
+    /// another owner is asked for: the log gives back one it marked where it is, its fields saved
+    /// when it was marked, and a copy of any other. It may still have the mark, so nothing here
+    /// says it's alone.
+    pub(crate) fn changeable_at(&mut self, place: &str) -> String {
         self.declare("declare ptr @fennec_lock_to_change(ptr) nounwind");
         let block = self.temp();
         let (ok, shared) = (self.label("alone"), self.label("shared"));
@@ -1937,7 +1983,6 @@ impl Emit<'_, '_, '_> {
         ));
         self.start_block(&ok);
         self.line(&format!("{resolved} = phi ptr [ {block}, %{came_from} ], [ {copy}, %{shared} ]"));
-        self.alone_fields.push(key);
         resolved
     }
 
@@ -2113,10 +2158,13 @@ impl Emit<'_, '_, '_> {
                 .rev()
                 .find(|(dict, looked_up, _)| same_dict(*dict) && looked_up == index)
                 .map(|(_, _, entry)| entry.clone());
+            // In the store's own local the dict is the one the lookup searched; a field may hold
+            // another by now, so there the store looks first.
+            let for_store = found.clone().map(|entry| crate::dicts::Found { entry, sure: path.is_empty() });
             if let Operand::Local(sliced) = index
                 && let Some(slice) = self.known.slice_keys.get(&sliced.0).cloned()
             {
-                return self.slice_set(&place, (key, value_word), (&slice, found), value);
+                return self.slice_set(&place, (key, value_word), (&slice, for_store), value);
             }
             // In a function whose locks keep what they change ready to put back, where a dict the
             // lock marked is changed in place: a lookup on a local read from this place however
@@ -2136,7 +2184,7 @@ impl Emit<'_, '_, '_> {
                         .map(|(_, _, entry)| entry.clone())
                 })
             };
-            return self.dict_store_checked(&place, (key, value_word), index, value, (found, checked));
+            return self.dict_store_checked(&place, (key, value_word), index, value, (for_store, checked));
         }
         let item = list_item(&kind)?;
         let held = self.item_kind(item)?;
@@ -2161,10 +2209,11 @@ impl Emit<'_, '_, '_> {
         let at = if let Some(at) = from_here {
             at
         } else {
-            let list = if path.is_empty() {
+            let handed = path.is_empty() && self.asks_the_log() && self.is_mut_param(object);
+            let list = if path.is_empty() && !handed {
                 self.unshared(object)
-            } else if !self.saving.is_empty() {
-                // Under a lock that saves what it changes, a list its log marked is set in place.
+            } else if self.asks_the_log() {
+                // Where a change asks a lock's log first, a list the log marked is set in place.
                 let place = self.list_place(object, path)?;
                 self.item_to_set(&place, &index)
             } else {
@@ -2204,6 +2253,9 @@ impl Emit<'_, '_, '_> {
             if !put_back {
                 self.retain_inline(&held, &at);
             }
+        }
+        if put_back {
+            self.taken_is_back(value_operand);
         }
         Ok(())
     }

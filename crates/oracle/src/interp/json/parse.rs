@@ -7,7 +7,7 @@ use std::fmt::Write;
 const MOST_DEEP: usize = 500;
 
 /// A JSON value, as the text writes it.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum Node {
     Null,
     Bool(bool),
@@ -19,7 +19,7 @@ pub(crate) enum Node {
 }
 
 /// One of an object's entries.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Entry {
     /// The key as the text writes it, from its opening quote up to the `:`, which is how a path
     /// into a dict names it.

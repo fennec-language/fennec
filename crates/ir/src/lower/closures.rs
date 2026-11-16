@@ -147,14 +147,89 @@ impl Lowering<'_> {
     /// The type of a callee that's a value rather than a function by name.
     pub(super) fn closure_callee(&self, callee: &Expr) -> Option<Type> {
         let ty = match &callee.kind {
-            // An optional closure known not to be `None` here is read as the closure.
+            // An optional closure known not to be `None` here is read as the closure, and so is a
+            // union a `match` or an `is` narrowed to its function member.
             ExprKind::Name(name) => match self.local_type(self.lookup(name)?) {
-                Type::Optional(_) => self.type_at(callee.span)?,
+                Type::Optional(_) | Type::Union(_) => self.type_at(callee.span)?,
                 held => held,
             },
             _ => self.type_at(callee.span)?,
         };
         matches!(ty, Type::Arrow(..)).then_some(ty)
+    }
+
+    /// A closure where one of another type goes, which the checker has shown fits: it takes what
+    /// the other takes, and what it gives back fits what the other gives, as an `Answer` where
+    /// `(int) -> Answer?` goes. It's held by a closure of the wanted type, which hands on what
+    /// it's given, calls it, and makes what it gives back fit.
+    pub(super) fn fitted_closure(
+        &mut self,
+        value: Operand,
+        from: &Type,
+        to: &Type,
+        span: Span,
+    ) -> Lowered<Operand> {
+        let (Type::Arrow(held, gives), Type::Arrow(wanted, returns)) = (from, to) else {
+            return Err(format!("it gives {from} where {to} goes"));
+        };
+        // Numbered among this function's, as its arrows are, so text added above it renames nothing.
+        let prefix = format!("{}.fitted#", self.name);
+        let number = self.lifted.iter().filter(|function| function.name.starts_with(&prefix)).count();
+        let key = format!("{prefix}{number}");
+        let instance =
+            FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
+        let mut lifted = Lowering::new(&instance, self.context, self.body, *returns.clone());
+        // No name a program can write, so nothing it's handed is hidden by one.
+        let closure = lifted.declare("\0fitted", from.clone());
+        let mut args = Vec::with_capacity(wanted.len());
+        for (at, (wanted, held)) in wanted.iter().zip(held).enumerate() {
+            let handed = lifted.declare(&format!("\0handed {at}"), wanted.clone());
+            args.push(lifted.coerce(Operand::Local(handed), held, span)?);
+        }
+        lifted.scopes.push(std::collections::HashMap::new());
+        let dest = (**gives != Type::Unit).then(|| lifted.temporary(*gives.clone()));
+        lifted.emit(InstKind::CallClosure { dest, closure: Operand::Local(closure), args }, span);
+        match dest {
+            Some(back) => {
+                let fitted = lifted.coerce(Operand::Local(back), returns, span)?;
+                lifted.leave(Some(fitted), span)?;
+            }
+            None => lifted.end_function(span)?,
+        }
+        self.lifted.extend(lifted.finished(1 + wanted.len(), Vec::new()));
+        // What's captured is a local: a function named where a closure goes is one already.
+        let held = match value {
+            Operand::Local(local) => local,
+            other => {
+                let local = self.temporary(from.clone());
+                self.emit(InstKind::Copy { dest: local, value: other }, span);
+                local
+            }
+        };
+        let captures = vec![("\0fitted".to_owned(), held)];
+        Ok(Operand::Local(self.make_closure(key, &captures, to.clone(), span)))
+    }
+
+    /// An argument where a parameter of type `wanted` goes. An arrow function written right
+    /// there, giving back something narrower than the parameter's does, is lowered as giving the
+    /// wider thing, so it's the closure wanted with nothing between: what its body gives is made
+    /// to fit as it leaves.
+    pub(super) fn expr_where(&mut self, expr: &Expr, wanted: &Type) -> Lowered<Operand> {
+        let own = self.type_at(expr.span).and_then(|ty| self.held(&ty));
+        let retype = matches!(expr.kind, ExprKind::Lambda { .. })
+            && matches!(
+                (&own, wanted),
+                (Some(Type::Arrow(held, gives)), Type::Arrow(params, returns))
+                    if held == params && gives != returns && **gives != Type::Unit
+            )
+            && self.context.holds(wanted);
+        if !retype {
+            return self.expr(expr);
+        }
+        self.retyped.push((expr.span, wanted.clone()));
+        let lowered = self.expr(expr);
+        self.retyped.pop();
+        lowered
     }
 
     /// A call to a closure. Its arguments are positional, since its type has no names.
@@ -175,7 +250,7 @@ impl Lowering<'_> {
             if arg.name.is_some() || arg.is_mut {
                 return Err("its call to a closure has a named or `mut` argument".to_owned());
             }
-            let value = self.expr(&arg.value)?;
+            let value = self.expr_where(&arg.value, param)?;
             let value = self.coerce(value, param, arg.value.span)?;
             reads.add(self, value);
         }

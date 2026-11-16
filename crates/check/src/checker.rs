@@ -89,6 +89,10 @@ pub(crate) struct Checker {
     pub(crate) generic_sources: BTreeSet<String>,
     /// Each call to a generic function, by its span, with the types its type parameters are there.
     pub(crate) generic_calls: BTreeMap<(u32, u32), crate::generic_copies::Call>,
+    /// What each generic function writes or reads with a format, by its type parameters: the
+    /// function, the type, the format and the interface it's written or read through. Each call's
+    /// own type is checked once every function is.
+    pub(crate) format_params: BTreeSet<(String, Type, String, String)>,
     /// Each `with` source called on a union, by the call's span, written in for each member.
     pub(crate) union_sources: BTreeMap<(u32, u32), crate::union_sources::Dispatch>,
     /// The `with`s that open several handles, by their values' span, which lowering nests one
@@ -96,6 +100,9 @@ pub(crate) struct Checker {
     pub(crate) opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, by the call's span, which lowering writes in as a source.
     pub(crate) launches: BTreeMap<(u32, u32), crate::launch::Launch>,
+    /// Each route written with a method, as `router.get(...)`, by the call's span, which lowering
+    /// writes in as a call to `handle`.
+    pub(crate) routes: BTreeMap<(u32, u32), crate::routes::Route>,
     /// Each `match` with a `ref` case, by its span: for each of its cases, the fields of the case
     /// it matches when it has a `ref`, which lowering puts back where the case ends.
     pub(crate) ref_matches: BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
@@ -141,6 +148,14 @@ pub(crate) struct Checker {
     /// What's followed through function values: which function parameters are called, what's
     /// passed for them, and what each arrow function waits on.
     pub(crate) values: crate::waits::Values,
+    /// What the program's code hands from kit to kit, which is held to what `kit.lock` says each
+    /// kit holds.
+    pub(crate) handovers: crate::holds::Handovers,
+    /// What `kit.lock` says each kit holds.
+    pub(crate) holds: fennec_syntax::Holds,
+    /// What each kit is handed, by kit and capability, where it's first handed over, when the
+    /// module asks only for that to be worked out.
+    pub(crate) worked_out: BTreeMap<String, BTreeMap<String, Span>>,
     /// Which types can cross to another task, once every function is checked.
     pub(crate) crossing: crate::Crossing,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -173,6 +188,7 @@ fn library_alone<'m>(
     // What a standard library module imports is its own: a program names it only by importing
     // it too.
     program.std_functions.clear();
+    program.std_constants.clear();
     program.imported_types.clear();
     program
 }
@@ -227,9 +243,11 @@ impl Checker {
             widened_values: BTreeMap::new(),
             generic_sources: BTreeSet::new(),
             generic_calls: BTreeMap::new(),
+            format_params: BTreeSet::new(),
             union_sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
             launches: BTreeMap::new(),
+            routes: BTreeMap::new(),
             ref_matches: BTreeMap::new(),
             live_refs: BTreeMap::new(),
             ref_items: BTreeMap::new(),
@@ -247,6 +265,9 @@ impl Checker {
             lock_calls: Vec::new(),
             lock_verdicts: BTreeMap::new(),
             values: crate::waits::Values::default(),
+            handovers: crate::holds::Handovers::default(),
+            holds: module.holds.clone(),
+            worked_out: BTreeMap::new(),
             crossing: crate::Crossing::default(),
             diagnostics,
         }
@@ -298,12 +319,18 @@ impl Checker {
         self.check_function_annotations();
         self.check_shared_types();
         self.check_dels();
+        crate::stdlib::formats::formats_at_calls(&mut self);
         self.settle_typed();
         if self.diagnostics.is_empty() {
             self.unknowns_left();
         }
         if self.diagnostics.is_empty() {
             self.body_rules(scope);
+        }
+        // What a program as lowering rewrote it hands over is what it handed as written.
+        if self.diagnostics.is_empty() && !self.again {
+            let refused = crate::holds::refused(&mut self);
+            self.diagnostics.extend(refused);
         }
         if self.diagnostics.is_empty() {
             self.crossing = crate::crossing::crossing(&mut self);
@@ -401,12 +428,14 @@ impl Checker {
             union_sources: self.union_sources,
             opened_apart: self.opened_apart,
             launches,
+            routes: self.routes,
             ref_matches: self.ref_matches,
             live_refs: self.live_refs,
             ref_items: self.ref_items,
             native_formats: self.native_formats,
             native_json_bodies: self.native_json_bodies,
             saved_types,
+            holds: self.worked_out,
         }
     }
 
@@ -1056,7 +1085,10 @@ impl Checker {
     /// Every struct's fields and their types, in the order they're written.
     fn structs(&mut self, kind: TypeKind) -> BTreeMap<String, crate::Struct> {
         type Annotations = BTreeMap<String, Vec<fennec_syntax::Annotation>>;
-        let structs: Vec<(String, Vec<String>, (bool, Annotations))> = self
+        // Each struct's name, type parameters and fields' names, whether a field has a rule, and
+        // what's written above each field.
+        type Found = (String, Vec<String>, Vec<String>, (bool, Annotations));
+        let structs: Vec<Found> = self
             .program
             .types
             .values()
@@ -1071,12 +1103,13 @@ impl Checker {
                     .filter(|field| !field.annotations.is_empty())
                     .map(|field| (field.name.clone(), field.annotations.clone()))
                     .collect();
-                (info.def.name.clone(), names, (rules, annotations))
+                let generics = info.def.generics.iter().map(|generic| generic.name.clone()).collect();
+                (info.def.name.clone(), generics, names, (rules, annotations))
             })
             .collect();
         structs
             .into_iter()
-            .map(|(name, fields, (rules, annotations))| {
+            .map(|(name, generics, fields, (rules, annotations))| {
                 let fields = fields
                     .into_iter()
                     .map(|field| {
@@ -1084,7 +1117,7 @@ impl Checker {
                         (field, ty)
                     })
                     .collect();
-                (name, crate::Struct { fields, rules, annotations })
+                (name, crate::Struct { generics, fields, rules, annotations })
             })
             .collect()
     }
@@ -1113,7 +1146,8 @@ impl Checker {
                     .collect();
                 cases.push((case.name.clone(), fields));
             }
-            found.insert(def.name.clone(), crate::Enum { cases, rules });
+            let generics = def.generics.iter().map(|generic| generic.name.clone()).collect();
+            found.insert(def.name.clone(), crate::Enum { generics, cases, rules });
         }
         found
     }

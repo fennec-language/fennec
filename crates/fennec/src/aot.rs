@@ -394,7 +394,7 @@ fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::t
         compiled.runtime,
         runtime_in,
         compiled.tls,
-        compiled.statically,
+        (compiled.statically, compiled.release),
     )?;
     if let Some(Stored { cache, root, functions, .. }) = &compiled.stored {
         // A store that can't be written only means linking it again next time. A run's program
@@ -510,6 +510,8 @@ struct Compiled {
     /// Whether it links on its own, against the runtime built for musl, which its runtime was
     /// chosen for, so it's linked that way too.
     statically: bool,
+    /// Whether it's a release build, which is linked without the runtime's debug information.
+    release: bool,
     /// Its place in the store, when there's one to use.
     stored: Option<Stored>,
 }
@@ -747,6 +749,7 @@ fn compile_emitted(
             runtime,
             tls,
             statically,
+            release,
             stored,
         });
     }
@@ -775,6 +778,7 @@ fn compile_emitted(
         runtime,
         tls,
         statically,
+        release,
         stored,
     })
 }
@@ -788,7 +792,7 @@ fn link_objects(
     runtime: Runtime,
     runtime_in: bool,
     tls: bool,
-    statically: bool,
+    (statically, release): (bool, bool),
 ) -> Result<std::time::Duration, String> {
     let runtime = runtime_library(runtime, statically)?;
     let work = crate::own_temp("link");
@@ -805,10 +809,18 @@ fn link_objects(
     }
     let started = Instant::now();
     let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
+    // Linked under one name always, then moved where it goes: macOS's linker makes a program's
+    // UUID, and the signature over it, from the name it's written to, so the same program built
+    // to two names, as a recorded run and its replay are, came out 48 bytes apart.
+    let linked_at = work.join(format!("program{}", std::env::consts::EXE_SUFFIX));
     let mut command = if statically {
-        static_linker(&paths, &runtime, output)
+        static_linker(&paths, &runtime, &linked_at, release)
     } else {
-        linker(&paths, &runtime, output, tls)
+        let mut command = linker(&paths, &runtime, &linked_at, tls);
+        if release {
+            command.arg(NO_DEBUG_INFO);
+        }
+        command
     };
     // `FENNEC_LINK_KEEP` keeps the objects linked, in the folder it names, for a test to link them
     // another way and compare.
@@ -829,7 +841,13 @@ fn link_objects(
     if let Some(kept) = kept {
         keep_objects(&paths, &kept)?;
     }
+    let moved = if linked.as_ref().is_ok_and(|linked| linked.status.success()) {
+        moved_into_place(&linked_at, output)
+    } else {
+        Ok(())
+    };
     let _ = std::fs::remove_dir_all(&work);
+    moved.map_err(|err| format!("couldn't put the program at {}: {err}", output.display()))?;
     let linked = linked.map_err(|err| {
         if cfg!(target_os = "macos") && err.kind() == std::io::ErrorKind::NotFound {
             NO_XCODE_TOOLS.to_owned()
@@ -842,6 +860,15 @@ fn link_objects(
     }
     made_new(output);
     Ok(took)
+}
+
+/// Moves a program just linked to where it goes: renamed, or copied where it's on another disk,
+/// with its permissions, as a copy keeps them.
+fn moved_into_place(linked: &Path, output: &Path) -> std::io::Result<()> {
+    if std::fs::rename(linked, output).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(linked, output).map(|_| ())
 }
 
 /// Adds `path` to the file `FENNEC_NEW_EXECUTABLES` names, a line each, when it's set. It's called
@@ -885,6 +912,18 @@ fn keep_objects(paths: &[PathBuf], folder: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// What has the linker leave the runtime's debug information out of a release program: on Linux and
+/// Windows it's most of a small program's file, 5 MB of a hello world's 6.3. Nothing a release
+/// program says needs it: a failure, and the calls it came through, are named from the program's own
+/// table of where in its source each call is. A dev build keeps it, for a debugger. On a Mac the
+/// linker leaves DWARF in the object files anyway; this leaves out the table that points to them.
+#[cfg(target_os = "macos")]
+const NO_DEBUG_INFO: &str = "-Wl,-S";
+#[cfg(all(not(target_os = "macos"), not(windows)))]
+const NO_DEBUG_INFO: &str = "-Wl,--strip-debug";
+#[cfg(windows)]
+const NO_DEBUG_INFO: &str = "--strip-debug";
+
 /// The system's linker, set to link objects with a runtime library into an executable. On a Mac
 /// that's `cc` from Xcode's command line tools, which a Mac program links against.
 #[cfg(not(windows))]
@@ -924,7 +963,7 @@ fn musl_folder() -> Option<PathBuf> {
 /// it runs on: no C library, and no loader. It's LLD, beside LLVM's other tools, so building needs
 /// no C compiler either; where there's none, as in a checkout whose Rust has no `rust-lld`, it's the
 /// system's compiler driving its own linker.
-fn static_linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command {
+fn static_linker(objects: &[PathBuf], runtime: &Path, output: &Path, release: bool) -> Command {
     let musl = musl_folder().unwrap_or_default().join("self-contained");
     let lld = fennec_llvm::Tools::find()
         .ok()
@@ -964,6 +1003,10 @@ fn static_linker(objects: &[PathBuf], runtime: &Path, output: &Path) -> Command 
         .arg(format!("{pass}--undefined={}", crate::notices::SYMBOL))
         .arg("-o")
         .arg(output);
+    // As `NO_DEBUG_INFO` says.
+    if release {
+        command.arg(format!("{pass}--strip-debug"));
+    }
     command
 }
 

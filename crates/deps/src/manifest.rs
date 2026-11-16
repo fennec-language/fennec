@@ -238,6 +238,12 @@ fn dependency(name: &str, value: &str) -> Result<Dependency, (String, String)> {
             format!("for now a kit comes from git or a path: {DEPENDENCY_HELP}"),
         ));
     }
+    if has_gets(value) {
+        return Err((
+            format!("`{name}`'s capabilities aren't written in kit.toml"),
+            "the compiler works out what each kit is handed, and `fennec update` shows it and records it in kit.lock: take `gets` out".to_owned(),
+        ));
+    }
     let Some(pairs) = inline_table(value) else {
         return Err((format!("`{name}` should be a table in braces"), DEPENDENCY_HELP.to_owned()));
     };
@@ -296,6 +302,30 @@ fn dependency(name: &str, value: &str) -> Result<Dependency, (String, String)> {
         }
     };
     Ok(Dependency { name: name.to_owned(), source })
+}
+
+/// Whether a dependency's line has a `gets` key, outside any string: what a kit is handed isn't
+/// written in kit.toml, as the compiler works it out.
+fn has_gets(value: &str) -> bool {
+    let mut in_string = false;
+    // The last character outside a string: a key starts after `{` or `,`.
+    let mut before = '{';
+    for (at, c) in value.char_indices() {
+        if c == '"' {
+            in_string = !in_string;
+        }
+        let rest = value.get(at..).unwrap_or_default();
+        if !in_string
+            && matches!(before, '{' | ',')
+            && rest.strip_prefix("gets").is_some_and(|after| after.trim_start().starts_with('='))
+        {
+            return true;
+        }
+        if !in_string && !c.is_whitespace() {
+            before = c;
+        }
+    }
+    false
 }
 
 /// Whether a commit is named by its whole hash: 40 lowercase hex digits, or 64 in a repository

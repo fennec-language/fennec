@@ -162,6 +162,35 @@ examples() {
       failed=1
     fi
   done
+  # Every workers fixture with a pinned output, as CI's jobs on Linux run them: built natively with
+  # the threads runtime, run with no arguments at 1 and 4 threads, and holding to its `.out`, sorted,
+  # or the hash in its `.sorted.sha256`. A fixture with neither is driven by its own test. Without
+  # this, one that ran only with an argument passed the gate and failed three of CI's jobs (#1769).
+  local fixture wanted threads
+  for fixture in crates/fennec/tests/fixtures/workers/*.fen; do
+    if [ -f "${fixture%.fen}.out" ]; then
+      wanted=$(LC_ALL=C sort "${fixture%.fen}.out" | shasum -a 256 | cut -d' ' -f1)
+    elif [ -f "${fixture%.fen}.sorted.sha256" ]; then
+      wanted=$(cut -d' ' -f1 "${fixture%.fen}.sorted.sha256")
+    else
+      continue
+    fi
+    if ! FENNEC_THREADS_RUNTIME=1 fennec_ok build "$fixture" -o "$logs/worker" > /dev/null 2> "$said"; then
+      cat "$said" >&2
+      echo "workers:$fixture" >> "$names"
+      failed=1
+      continue
+    fi
+    for threads in 1 4; do
+      if ! FENNEC_THREADS=$threads .github/scripts/within.sh 120 "$logs/worker" < /dev/null > "$printed" 2> "$said" \
+        || [ "$(LC_ALL=C sort "$printed" | shasum -a 256 | cut -d' ' -f1)" != "$wanted" ]; then
+        echo "$fixture at $threads threads printed something other than it should, or failed:" >&2
+        cat "$said" >&2
+        echo "workers:$fixture@$threads" >> "$names"
+        failed=1
+      fi
+    done
+  done
   # The oracle (crates/oracle) runs each example a second way, from its source. One it runs has
   # to print what the example's `.out` says and end with 0; one it doesn't model, which it says
   # by ending with 3, is skipped. A difference is named `oracle:<path>`.
@@ -198,6 +227,8 @@ oracle_agrees() {
 # - The ratchet of unchecked runtime calls, `crates/llvm/unchecked_runtime_calls.txt`, holds.
 # - Each benchmark kernel makes exactly the copies `bench/copies.txt` says.
 # - The ThreadSanitizer suppressions keep to their rules, and the known failures' file to its form.
+# - A hello world and a program using only `fs` link no SQLite, TLS or cryptography beyond what
+#   `.github/linkage-known.txt` lists.
 # - The workflows pass actionlint and zizmor, where they're installed.
 quick() {
   local failed=0 program said="$logs/quick.txt"
@@ -230,6 +261,7 @@ quick() {
   fi
   .github/scripts/tsan-suppressions-check.sh || { echo "tsan-suppressions-check" >> "$names"; failed=1; }
   .github/scripts/test-known-failures.sh > /dev/null || { echo "test-known-failures" >> "$names"; failed=1; }
+  .github/scripts/linkage-check.sh target/debug/fennec || { echo "linkage-check" >> "$names"; failed=1; }
   if command -v actionlint > /dev/null && ! actionlint; then
     echo "actionlint" >> "$names"
     failed=1

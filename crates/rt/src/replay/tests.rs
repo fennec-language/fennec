@@ -96,6 +96,19 @@ fn a_recording_cut_short_is_said_to_be_cut_short() {
     assert!(why.contains("its recording had nothing more"), "{why}");
 }
 
+/// A log from before stops were recorded still reads, whole when it ends with its mark, and a
+/// replay can tell whether it has tasks, to say a stopped one may not be stopped in it.
+#[test]
+fn a_log_from_before_stops_were_recorded_still_reads() {
+    let mut log = log_of(&[("0.0", "Clock.now", &5_i64.to_le_bytes())]);
+    log.splice(..MAGIC.len(), MAGIC_BEFORE_STOPS.iter().copied());
+    let player = player_of(&log).unwrap();
+    assert!(player.whole);
+    assert!(player.has_tasks());
+    let alone = player_of(&log_of(&[("0", "Clock.now", &5_i64.to_le_bytes())])).unwrap();
+    assert!(!alone.has_tasks());
+}
+
 /// A recorded value nested deeper than anything a capability gives back reads as damaged, rather
 /// than taking `fennec replay` down with it.
 #[test]
@@ -229,6 +242,50 @@ fn tasks_take_their_turns_at_a_place_in_the_recorded_order() {
     receiving.join().unwrap();
     sending.join().unwrap();
     assert_eq!(*order.lock().unwrap(), [("0.1", 0), ("0.0", 0), ("0.0", 2)]);
+}
+
+/// What a replay's tasks write comes out as the bursts that were recorded, in their order and
+/// each as long as it was, however the replay's tasks happened to cut their output: all at once
+/// where the recording had two bursts, or a byte at a time. Where a burst ends depends on when its
+/// task waited, which a replay doesn't repeat, so a replay that went by how many times a task
+/// wrote ended with a burst the recording had and it hadn't asked for.
+#[test]
+fn a_replay_writes_the_recorded_bursts_however_its_tasks_cut_their_output() {
+    let (three, two) = (3_u64.to_le_bytes(), 2_u64.to_le_bytes());
+    let recorded: &[(&str, &str, &[u8])] =
+        &[(OUTPUT, "0 write", &three), (OUTPUT, "0.1 write", &two), (OUTPUT, "0 write", &three)];
+    let written = RefCell::new(Vec::new());
+    let write = |bytes: &[u8]| {
+        written.borrow_mut().push(bytes.to_vec());
+        Ok(())
+    };
+    let whole = |player: &Player| player.held.values().all(VecDeque::is_empty) && left_over(player).is_none();
+
+    // Both of a task's bursts written as one: the first goes out, and the second waits for the
+    // other task's, which was recorded between them.
+    let mut at_once = player_of(&log_of(recorded)).unwrap();
+    at_once.takes_output("0", b"aaabbb", write).unwrap();
+    assert_eq!(*written.borrow(), [b"aaa".to_vec()]);
+    assert!(!whole(&at_once));
+    at_once.takes_output("0.1", b"cc", write).unwrap();
+    assert_eq!(*written.borrow(), [b"aaa".to_vec(), b"cc".to_vec(), b"bbb".to_vec()]);
+    assert!(whole(&at_once));
+
+    // A byte at a time, the tasks taking turns: the same three bursts.
+    written.borrow_mut().clear();
+    let mut in_bytes = player_of(&log_of(recorded)).unwrap();
+    for (task, byte) in [("0", b'a'), ("0.1", b'c'), ("0", b'a'), ("0", b'a'), ("0", b'b'), ("0.1", b'c')] {
+        in_bytes.takes_output(task, &[byte], write).unwrap();
+    }
+    assert_eq!(*written.borrow(), [b"aaa".to_vec(), b"cc".to_vec()]);
+    in_bytes.takes_output("0", b"bb", write).unwrap();
+    assert_eq!(*written.borrow(), [b"aaa".to_vec(), b"cc".to_vec(), b"bbb".to_vec()]);
+    assert!(whole(&in_bytes));
+
+    // More than was recorded is kept back, for the replay's end to say.
+    in_bytes.takes_output("0", b"x", write).unwrap();
+    assert_eq!(written.borrow().len(), 3);
+    assert!(!whole(&in_bytes));
 }
 
 /// A task asking for something the recording didn't do there has diverged.

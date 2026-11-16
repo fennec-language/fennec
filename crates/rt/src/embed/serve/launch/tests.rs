@@ -95,6 +95,194 @@ fn a_task_gets_its_own_copy_and_its_failure_comes_out_where_its_block_ends() {
     finish();
 }
 
+/// What each of the two tests' long tasks kept: a list from before it had made many blocks, and
+/// one from after.
+static KEPT_EARLY: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+static KEPT_LATE: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+/// The longest its list of what it had made was, each time it looked, and the longest its heap
+/// said the list could get, then: as long as a look through its thread's table.
+static MOST_LISTED: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+static MOST_ALLOWED: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+/// Whether it had let its list go by the time it had made them all.
+static LET_GO: [AtomicBool; 3] = [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false)];
+/// How many times it makes a list and lets it go, at most: each is two blocks. It stops once its
+/// list has been let go and it's made as many again.
+const CHURNED: usize = 2_000_000;
+
+/// Makes a list and lets it go, `CHURNED` times over, as a task that runs for long does. It keeps
+/// one from the start and one from the end, and fails with a third.
+fn makes_and_frees_many(test: usize) -> i64 {
+    KEPT_EARLY[test].store(list(&["kept from the start"]), Ordering::SeqCst);
+    let mut after_letting_go = 0;
+    for round in 0..CHURNED {
+        heap::free(list(&["made and let go of"]));
+        if round % 1000 == 0 {
+            let (listed, allowed, let_go) =
+                with(|state| (state.heap.made_so_far(), state.heap.most_listed(), state.heap.made_let_go()));
+            MOST_LISTED[test].fetch_max(i64::try_from(listed).unwrap_or(i64::MAX), Ordering::SeqCst);
+            MOST_ALLOWED[test].fetch_max(i64::try_from(allowed).unwrap_or(i64::MAX), Ordering::SeqCst);
+            LET_GO[test].store(let_go, Ordering::SeqCst);
+            after_letting_go += usize::from(let_go);
+        }
+        if after_letting_go > 100 {
+            break;
+        }
+    }
+    KEPT_LATE[test].store(list(&["kept from the end"]), Ordering::SeqCst);
+    task_failed(list(&["failed after it all"]));
+    FAILED
+}
+
+extern "C" fn runs_long_alone(_env: i64, _thread: i64) -> i64 {
+    makes_and_frees_many(0)
+}
+
+extern "C" fn runs_long_beside_another(_env: i64, _thread: i64) -> i64 {
+    makes_and_frees_many(1)
+}
+
+/// A task that makes blocks for a long time keeps no list of them all. It used to list every
+/// block it made, freed or not, until it ended: a word each, without end in a task that runs as
+/// long as its program. Now its list is never longer than a look through its thread's table would
+/// be, however many it makes: past that it lets the list go. What it still holds when it ends is
+/// found by its mark and handed to its launcher all the same: what it made before it let the list
+/// go, what it made after, and its failure.
+#[test]
+fn a_task_that_makes_blocks_for_a_long_time_keeps_a_short_list_and_hands_over_what_it_holds() {
+    begin();
+    let task = launch(runs_long_alone, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), FAILED);
+    let (most, allowed) = (MOST_LISTED[0].load(Ordering::SeqCst), MOST_ALLOWED[0].load(Ordering::SeqCst));
+    assert!(most <= allowed, "its list reached {most} blocks while it ran, past the {allowed} it may");
+    assert!(LET_GO[0].load(Ordering::SeqCst), "it never let its list go, having listed {most}");
+    for (kept, text) in [(&KEPT_EARLY[0], "kept from the start"), (&KEPT_LATE[0], "kept from the end")] {
+        let kept = kept.load(Ordering::SeqCst);
+        assert_eq!(lines(kept), [text]);
+        assert_eq!(owner_of(kept), 0, "what it kept is the launcher's own now: {text}");
+        heap::free(kept);
+    }
+    assert_eq!(lines(failure), ["failed after it all"]);
+    assert_eq!(owner_of(failure), 0);
+    heap::free(failure);
+    finish();
+}
+
+/// What the task that makes its blocks in ranges kept from inside one, after its list was let go.
+static KEPT_IN_A_RANGE: AtomicI64 = AtomicI64::new(0);
+/// The longest its list was between two ranges once it had been let go.
+static LISTED_ONCE_LET_GO: AtomicI64 = AtomicI64::new(0);
+/// How many ranges it runs at most, each making a hundred lists: it stops once its list has been
+/// let go and it's run a hundred more.
+const RANGES: usize = 20_000;
+
+/// Makes every block inside a range it runs itself, as a task does whose `parallel` call's pieces
+/// run on its own thread: each range marks the list as it starts, and ends with what it made kept
+/// here, none of it handed over. It keeps a list from before any range, one from inside a range
+/// after its list was let go, and fails with a third.
+extern "C" fn makes_blocks_in_its_own_ranges(_env: i64, _thread: i64) -> i64 {
+    KEPT_EARLY[2].store(list(&["kept from the start"]), Ordering::SeqCst);
+    let mut after_letting_go = 0;
+    for _ in 0..RANGES {
+        let _marked = threads::made_scope_starts();
+        for _ in 0..100 {
+            heap::free(list(&["made in a range and let go of"]));
+        }
+        if after_letting_go == 50 {
+            KEPT_IN_A_RANGE.store(list(&["kept from inside a range"]), Ordering::SeqCst);
+        }
+        threads::made_scope_ends(true);
+        let (listed, allowed, let_go) =
+            with(|state| (state.heap.made_so_far(), state.heap.most_listed(), state.heap.made_let_go()));
+        let listed = i64::try_from(listed).unwrap_or(i64::MAX);
+        MOST_LISTED[2].fetch_max(listed, Ordering::SeqCst);
+        MOST_ALLOWED[2].fetch_max(i64::try_from(allowed).unwrap_or(i64::MAX), Ordering::SeqCst);
+        LET_GO[2].store(let_go, Ordering::SeqCst);
+        if let_go {
+            LISTED_ONCE_LET_GO.fetch_max(listed, Ordering::SeqCst);
+            after_letting_go += 1;
+        }
+        if after_letting_go > 100 {
+            break;
+        }
+    }
+    KEPT_LATE[2].store(list(&["kept from the end"]), Ordering::SeqCst);
+    task_failed(list(&["failed after it all"]));
+    FAILED
+}
+
+/// A task whose blocks are all made in ranges it runs itself keeps a short list too. Its list
+/// used to grow for as long as it ran, in two ways. A look at the list that came while a range
+/// was running couldn't let it go, and every look did, as every block was made in a range. And a
+/// list let go already was kept again for each range and never dropped after, so what each range
+/// made stayed listed. Now a range that ends on the thread that called it has the list looked
+/// at, and one let go is emptied: between ranges it's never longer than it may be, and holds
+/// nothing once it's been let go. What the task still holds at its end, from inside a range as
+/// from outside, is found by its mark and handed to its launcher.
+#[test]
+fn a_task_that_makes_its_blocks_in_ranges_it_runs_itself_keeps_a_short_list() {
+    begin();
+    let task = launch(makes_blocks_in_its_own_ranges, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), FAILED);
+    let (most, allowed) = (MOST_LISTED[2].load(Ordering::SeqCst), MOST_ALLOWED[2].load(Ordering::SeqCst));
+    assert!(most <= allowed, "its list reached {most} blocks between ranges, past the {allowed} it may");
+    assert!(LET_GO[2].load(Ordering::SeqCst), "it never let its list go, having listed {most}");
+    assert_eq!(LISTED_ONCE_LET_GO.load(Ordering::SeqCst), 0, "blocks stayed listed after it was let go");
+    let kept = [
+        (KEPT_EARLY[2].load(Ordering::SeqCst), "kept from the start"),
+        (KEPT_IN_A_RANGE.load(Ordering::SeqCst), "kept from inside a range"),
+        (KEPT_LATE[2].load(Ordering::SeqCst), "kept from the end"),
+    ];
+    for (kept, text) in kept {
+        assert_eq!(lines(kept), [text]);
+        assert_eq!(owner_of(kept), 0, "what it kept is the launcher's own now: {text}");
+        heap::free(kept);
+    }
+    assert_eq!(lines(failure), ["failed after it all"]);
+    assert_eq!(owner_of(failure), 0);
+    heap::free(failure);
+    finish();
+}
+
+static BESIDE_POOL: std::sync::OnceLock<&'static Pool> = std::sync::OnceLock::new();
+static LONG_ONE_ENDED: AtomicBool = AtomicBool::new(false);
+/// What the task beside the long one read of its own list once the long one had ended: 1 if it
+/// was all there.
+static BESIDE_READ: AtomicI64 = AtomicI64::new(0);
+
+/// Makes a list, sleeps until the long task on its worker has ended, and reads its list again.
+extern "C" fn keeps_a_list_beside_a_long_task(_env: i64, _thread: i64) -> i64 {
+    let mine = list(&["the other task's own"]);
+    while !LONG_ONE_ENDED.load(Ordering::SeqCst) {
+        clock_sleep(SECONDS / 1000);
+    }
+    let whole = lines(mine) == ["the other task's own"];
+    BESIDE_READ.store(if whole { 1 } else { 2 }, Ordering::SeqCst);
+    heap::free(mine);
+    ENDED
+}
+
+/// A long task's end takes what has its mark and nothing else: another task on the same worker,
+/// parked while the long one ran and ended, still has every block it made.
+#[test]
+fn a_long_tasks_end_leaves_the_blocks_of_the_task_beside_it() {
+    begin();
+    let pool = one_worker(&BESIDE_POOL);
+    let beside = launch_on(pool, keeps_a_list_beside_a_long_task, 0);
+    let long = launch_on(pool, runs_long_beside_another, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(long, -1, 0, &mut failure), FAILED);
+    heap::free(failure);
+    for kept in [&KEPT_EARLY[1], &KEPT_LATE[1]] {
+        heap::free(kept.load(Ordering::SeqCst));
+    }
+    LONG_ONE_ENDED.store(true, Ordering::SeqCst);
+    assert_eq!(launch_end(beside, -1, 0, &mut failure), ENDED);
+    assert_eq!(BESIDE_READ.load(Ordering::SeqCst), 1, "the task beside it lost a block");
+    finish();
+}
+
 extern "C" fn crashes(_env: i64, _thread: i64) -> i64 {
     super::super::super::fail_with(Diagnostic::new("the task crashed", Span::default()));
     CRASHED
@@ -189,6 +377,82 @@ fn a_stop_cuts_a_socket_read_short() {
     let mut failure = 0;
     assert_eq!(launch_end(task, SECONDS / 20, 0, &mut failure), ENDED);
     assert_eq!(READ.load(Ordering::SeqCst), 1, "the read was cut short");
+    drop(listener);
+    finish();
+}
+
+static READ_THROUGH_A_COPY: AtomicI64 = AtomicI64::new(0);
+static SILENT_TO_A_COPY: AtomicI64 = AtomicI64::new(0);
+
+/// Reads a line from a server that never sends one, for the test that waits through a copy.
+extern "C" fn reads_silence_through_a_copy(_env: i64, _thread: i64) -> i64 {
+    let port = u16::try_from(SILENT_TO_A_COPY.load(Ordering::SeqCst)).unwrap_or(0);
+    let read = crate::stdlib::net::fetch_line("127.0.0.1", port);
+    let how = if read.is_err() && super::super::super::failed() { 1 } else { 2 };
+    READ_THROUGH_A_COPY.store(how, Ordering::SeqCst);
+    ENDED
+}
+
+/// A stop cuts short a read that waits through a copy of its socket, as every task's does on
+/// Windows: the task fails as stopped, and goes on to close its connection, whose other side hears
+/// the end. That a wait's copy is closed is the serve tests' to show, since closing a connection
+/// shuts it down whatever copies are left.
+#[test]
+fn a_stop_cuts_short_a_socket_read_that_waits_through_a_copy() {
+    use crate::embed::serve::PARKED_ON_COPIES;
+    begin();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    SILENT_TO_A_COPY.store(i64::from(listener.local_addr().unwrap().port()), Ordering::SeqCst);
+    let before = PARKED_ON_COPIES.load(Ordering::Relaxed);
+    let on_copies = crate::stdlib::net::OnCopies::begin();
+    let task = launch(reads_silence_through_a_copy, 0);
+    // The stop comes once a wait has parked through a copy, so it lands in the wait and not
+    // before it, however long the task takes to get there. Another test's wait can let it by
+    // early: the stop is then tried before the wait, which ends the read the same way.
+    let started = Instant::now();
+    while PARKED_ON_COPIES.load(Ordering::Relaxed) == before && started.elapsed() < Duration::from_secs(30) {
+        std::thread::yield_now();
+    }
+    let mut failure = 0;
+    let ended = if task == 0 { 0 } else { launch_end(task, SECONDS / 20, 0, &mut failure) };
+    drop(on_copies);
+    assert_eq!(ended, ENDED);
+    assert_eq!(READ_THROUGH_A_COPY.load(Ordering::SeqCst), 1, "the read was cut short");
+    let (mut made, _) = listener.accept().unwrap();
+    made.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut rest = Vec::new();
+    assert_eq!(std::io::Read::read_to_end(&mut made, &mut rest).ok(), Some(0), "{rest:?}");
+    drop(listener);
+    finish();
+}
+
+static WRITE_ENDED: AtomicI64 = AtomicI64::new(0);
+static NEVER_READ: AtomicI64 = AtomicI64::new(0);
+
+/// Writes to a server that never reads, on a connection made not to block, until a write fails.
+extern "C" fn writes_to_nobody(_env: i64, _thread: i64) -> i64 {
+    use crate::stdlib::net::{Failure, kept, shut, written_until_it_fails};
+    let port = u16::try_from(NEVER_READ.load(Ordering::SeqCst)).unwrap_or(0);
+    let Ok(handle) = kept("127.0.0.1", port) else { return ENDED };
+    let failed = written_until_it_fails(handle, &vec![7_u8; 64 * 1024]);
+    WRITE_ENDED.store(if matches!(failed, Failure::TimedOut(_)) { 1 } else { 2 }, Ordering::SeqCst);
+    shut(handle);
+    ENDED
+}
+
+/// A stop ends a write that's waiting for room, as it ends a read. The wait for room threw away
+/// what its park came to, so a stopped task's write tried again at once, for ever: it never
+/// waited and never ended, and its block's end never came back.
+#[test]
+fn a_stop_ends_a_write_thats_waiting_for_room() {
+    begin();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    NEVER_READ.store(i64::from(listener.local_addr().unwrap().port()), Ordering::SeqCst);
+    let task = launch(writes_to_nobody, 0);
+    assert_ne!(task, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, SECONDS / 20, 0, &mut failure), ENDED);
+    assert_eq!(WRITE_ENDED.load(Ordering::SeqCst), 1, "the write gave up as a stopped read does");
     drop(listener);
     finish();
 }

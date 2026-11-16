@@ -61,12 +61,14 @@ impl FnCx<'_> {
                 self.construct_with(name, (args, &types), expr.span)
             }
             // `step: (int) -> int = n => n + 1`: an arrow takes its parameters' types from the
-            // function type expected of it.
+            // function type expected of it, or a union's one function member.
             ExprKind::Lambda { params, body }
-                if let Type::Arrow(types, _) = self.checker.settled(expected).without_none() =>
+                if let Some(arrow @ Type::Arrow(..)) =
+                    self.checker.settled(expected).without_none().arrow_member()
+                    && let Type::Arrow(types, _) = &arrow =>
             {
-                let ty = self.lambda(params, body, &types, expr.span);
-                match self.widened_arrow(&ty, Some(&self.checker.settled(expected).without_none())) {
+                let ty = self.lambda(params, body, types, expr.span);
+                match self.widened_arrow(&ty, Some(&arrow)) {
                     Some(widened) => {
                         self.record(expr.span, &widened);
                         widened
@@ -227,7 +229,7 @@ impl FnCx<'_> {
     /// The types for a generic struct's parameters, where `name` builds one and `expected` is
     /// one of the same struct, like `Box[int | str]` where `Box(value=1)` goes.
     fn expected_generics(&mut self, name: &str, expected: &Type) -> Option<Vec<Type>> {
-        if self.lookup(name).is_some() || self.checker.program.functions.contains_key(name) {
+        if self.lookup(name).is_some() || self.names_function(name) {
             return None;
         }
         let Type::Generic(wanted, types) = self.checker.settled(expected).without_none() else {

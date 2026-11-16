@@ -9,7 +9,10 @@ use super::ast::{
     KEYS, Kept, LEDGER, Leave, Nested, Op, Place, Program, ROOMS, Reading, RefPlace, STARTING, Stmt,
     StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
-use super::ast::{Calling, Field, FieldCall, FieldCalls, Waking, Yielding};
+use super::ast::{
+    Calling, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField,
+    Swapping, Waking, Yielding,
+};
 
 /// What every program starts with, for its body to use.
 const HEADER: &str = "from std.collections import Table
@@ -539,10 +542,14 @@ pub(crate) fn source(program: &Program) -> String {
     writer.block(&program.body, 1);
     writer.line(1, "stdout.print(\"done\")");
     let tasks = if program.threadless { "" } else { TASKS };
-    // Only a `Yielded` statement's task sends back over a channel, so only a program holding one
-    // imports what that takes, and every other program is written as it always was.
-    let channels =
-        if writer.helpers.contains("Sender[") { "from std.concurrent import Sender, channel\n" } else { "" };
+    // Only a `Yielded` statement's task sends back over a channel, and only a `Listened` statement
+    // takes a channel whole, so only a program holding one imports what that takes, and every
+    // other program is written as it always was.
+    let channels = match (writer.helpers.contains("Channel["), writer.helpers.contains("Sender[")) {
+        (true, _) => "from std.concurrent import Channel, Sender, channel\n",
+        (false, true) => "from std.concurrent import Sender, channel\n",
+        (false, false) => "",
+    };
     format!("{channels}{HEADER}{tasks}{}def main(stdout: Stdout):\n{}", writer.helpers, writer.out)
 }
 
@@ -620,6 +627,231 @@ fn woken_written(waking: &Waking) -> String {
          for number in range({count}):\n                sends.send(number)?\n                \
          got = replies.receive() else break\n                stdout.print(\"got\", got)\n    return\n\n"
     )
+}
+
+/// `swaps{id}`, the function a `Swapped` calls, after the struct and the functions it uses.
+fn swapped_written(swapping: &Swapping) -> String {
+    let Swapping { id, base, other_base, field, key, fresh, called, kept, owned, rounds } = *swapping;
+    let lists = field == SwapField::Lists;
+    let field = if lists { "lists" } else { "counts" };
+    let key = SWAP_KEYS.get(key).copied().unwrap_or("a");
+    let other = if called {
+        format!("desk{id}({other_base})")
+    } else {
+        format!("Desk{id}(counts={{\"c\": {other_base}}}, lists={{\"c\": [{other_base}]}})")
+    };
+    let stored = if lists { "[fresh]" } else { "fresh" };
+    let after_store = if kept {
+        format!("    if known is not None:\n        mine.{field}[\"known\"] = known\n")
+    } else if lists {
+        format!("    mine.{field}[\"found\"] = [1] if known is not None else [0]\n")
+    } else {
+        format!("    mine.{field}[\"found\"] = 1 if known is not None else 0\n")
+    };
+    let call = if owned {
+        format!(
+            "        given = desk{id}({base} + turn)\n        after = swapped{id}(given, key=\"{key}\", fresh={fresh})\n        \
+             stdout.print(given, after)\n"
+        )
+    } else {
+        format!(
+            "        after = swapped{id}(desk{id}({base} + turn), key=\"{key}\", fresh={fresh})\n        stdout.print(after)\n"
+        )
+    };
+    format!(
+        "struct Desk{id}:\n    counts: dict[str, int]\n    lists: dict[str, list[int]]\n\n\
+         def desk{id}(base: int) -> Desk{id}:\n    \
+         return Desk{id}(counts={{\"a\": base, \"b\": base + 1}}, lists={{\"a\": [base, 1], \"b\": [base + 2]}})\n\n\
+         def swapped{id}(given: Desk{id}, key: str, fresh: int) -> Desk{id}:\n    mut mine = given\n    \
+         other = {other}\n    known = mine.{field}.get(key)\n    mine = other\n    mine.{field}[key] = {stored}\n\
+         {after_store}    return mine\n\n\
+         def swaps{id}(stdout: Stdout):\n    for turn in range({rounds}):\n{call}    return\n\n"
+    )
+}
+
+/// `shelved{id}`, the function a `Shelved` calls, after the types and the functions it uses.
+fn shelved_written(shelving: &Shelving) -> String {
+    let Shelving { id, in_list, seen, place, rounds, ref steps } = *shelving;
+    let (held, at, made) = if in_list {
+        (
+            format!("list[Pouch{id}]"),
+            "0",
+            format!("[Pouch{id}(items=[\"first, {LONG_PIECE}\"], seen={seen})]"),
+        )
+    } else {
+        (
+            format!("dict[str, Pouch{id}]"),
+            "\"one\"",
+            format!("{{\"one\": Pouch{id}(items=[\"first, {LONG_PIECE}\"], seen={seen})}}"),
+        )
+    };
+    let steps: Vec<String> = steps
+        .iter()
+        .map(|(value, how)| {
+            let how = match how {
+                Shelve::Fill => 0,
+                Shelve::ByHand => 1,
+                Shelve::Direct => 2,
+                Shelve::Handed => 3,
+                Shelve::HandedByHand => 4,
+            };
+            format!("({value}, {how})")
+        })
+        .collect();
+    let steps = steps.join(", ");
+    let types = format!(
+        "struct Pouch{id}:\n    items: list[str]\n    seen: int\n\n    \
+         def add(ref self, value: int, limits: list[int]):\n        for turn in range({rounds}):\n            \
+         self.items.append(f\"added {{value}} {{turn}}, {LONG_PIECE}\")\n            \
+         self.items.append(f\"again {{value}} {{turn}}, {LONG_PIECE}\")\n        self.seen += limits[value]\n\n\
+         struct Shelf{id}:\n    pouches: {held}\n\n    \
+         def fill(ref self, value: int, limits: list[int]):\n        self.pouches[{at}].add(value, limits=limits)\n\n    \
+         def by_hand(ref self, value: int, limits: list[int]):\n        mut pouch = self.pouches[{at}]\n        \
+         for turn in range({rounds}):\n            pouch.items.append(f\"by hand {{value}} {{turn}}, {LONG_PIECE}\")\n        \
+         pouch.seen += limits[value]\n        \
+         self.pouches[{at}] = pouch\n\n\
+         def added{id}(ref pouches: {held}, value: int, limits: list[int]):\n    \
+         pouches[{at}].add(value, limits=limits)\n\n\
+         def by_hand{id}(ref pouches: {held}, value: int, limits: list[int]):\n    mut pouch = pouches[{at}]\n    \
+         for turn in range({rounds}):\n        pouch.items.append(f\"by hand {{value}} {{turn}}, {LONG_PIECE}\")\n    \
+         pouch.seen += limits[value]\n    \
+         pouches[{at}] = pouch\n\n"
+    );
+    // Each way of changing the pouch, as the step's `how` picks it, through a shelf named `held`,
+    // each line at `indent`.
+    let through_shelf = |indent: &str| -> String {
+        [
+            "if how == 0:\n    held.fill(value, limits=limits)".to_owned(),
+            "if how == 1:\n    held.by_hand(value, limits=limits)".to_owned(),
+            format!("if how == 2:\n    held.pouches[{at}].add(value, limits=limits)"),
+            format!("if how == 3:\n    added{id}(ref held.pouches, value=value, limits=limits)"),
+            format!("if how == 4:\n    by_hand{id}(ref held.pouches, value=value, limits=limits)"),
+        ]
+        .iter()
+        .flat_map(|lines| lines.lines().map(|line| format!("{indent}{line}\n")).collect::<Vec<_>>())
+        .collect()
+    };
+    match place {
+        ShelfPlace::Locked => format!(
+            "{types}def filled{id}(shelf: shared Shelf{id}, value: int, limits: list[int], how: int):\n    \
+             lock shelf as ref held:\n{}\n\
+             def tried{id}(shelf: shared Shelf{id}, value: int, how: int) fails Crashed:\n    limits = [1, 2]\n    \
+             with launch(() => filled{id}(shelf, value, limits=limits, how=how)) as task:\n        pass\n\n\
+             def shelf_shown{id}(shelf: shared Shelf{id}) -> str:\n    lock shelf as held:\n        \
+             return f\"{{held.pouches}}\"\n\n\
+             def shelved{id}(stdout: Stdout):\n    shared shelf = Shelf{id}(pouches={made})\n    \
+             for value, how in [{steps}]:\n        tried{id}(shelf, value=value, how=how) except Crashed():\n            \
+             stdout.print(\"crashed\")\n        stdout.print(shelf_shown{id}(shelf))\n    return\n\n",
+            through_shelf("        ")
+        ),
+        ShelfPlace::Owned | ShelfPlace::Bare => {
+            let (making, changing, shown) = if place == ShelfPlace::Owned {
+                (format!("mut held = Shelf{id}(pouches={made})"), through_shelf("    "), "held.pouches")
+            } else {
+                (
+                    format!("mut pouches = {made}"),
+                    format!(
+                        "    if how == 0 or how == 2:\n        pouches[{at}].add(value, limits=limits)\n    \
+                         if how == 1:\n        mut pouch = pouches[{at}]\n        \
+                         for turn in range({rounds}):\n            \
+                         pouch.items.append(f\"by hand {{value}} {{turn}}, {LONG_PIECE}\")\n        \
+                         pouch.seen += limits[value]\n        pouches[{at}] = pouch\n    \
+                         if how == 3:\n        added{id}(ref pouches, value=value, limits=limits)\n    \
+                         if how == 4:\n        by_hand{id}(ref pouches, value=value, limits=limits)\n"
+                    ),
+                    "pouches",
+                )
+            };
+            format!(
+                "{types}def filled{id}(value: int, limits: list[int], how: int, stdout: Stdout):\n    \
+                 {making}\n{changing}    stdout.print(f\"{{{shown}}}\")\n\n\
+                 def tried{id}(value: int, how: int, stdout: Stdout) fails Crashed:\n    limits = [1, 2]\n    \
+                 with launch(() => filled{id}(value, limits=limits, how=how, stdout=stdout)) as task:\n        pass\n\n\
+                 def shelved{id}(stdout: Stdout):\n    for value, how in [{steps}]:\n        \
+                 tried{id}(value, how=how, stdout=stdout) except Crashed():\n            \
+                 stdout.print(\"crashed\")\n    return\n\n"
+            )
+        }
+    }
+}
+
+/// `listened{id}`, the function a `Listened` calls, after the functions it uses.
+fn listened_written(listening: &Listening) -> String {
+    let Listening { id, size, early, sent, dropping, ref inboxes } = *listening;
+    let mut out = format!(
+        "def read{id}(hits: Inbox[int], count: int, looping: bool, stdout: Stdout):\n    \
+         mut got: list[int] = []\n    if looping:\n        for hit in hits:\n            got.append(hit)\n            \
+         if len(got) == count:\n                break\n        stdout.print(f\"looped {{got}}\")\n        return\n    \
+         for _ in range(count):\n        got.append(hits.receive() else -1)\n    stdout.print(f\"took {{got}}\")\n\n\
+         def reading{id}(hits: Inbox[int], count: int, looping: bool, stdout: Stdout) fails Crashed:\n    \
+         with launch(() => read{id}(hits, count=count, looping=looping, stdout=stdout)) as task:\n        pass\n\n"
+    );
+    if dropping {
+        let _ = write!(
+            out,
+            "def dropping{id}(hits: Channel[int], replies: Sender[int], gate: Channel[int], last: int, stdout: Stdout) \
+             fails Closed:\n    mut waited = False\n    mut got: list[int] = []\n    \
+             for hit in hits.listen(when_behind=.DropOldest):\n        if hit < 0:\n            if not waited:\n                \
+             replies.send(-1)?\n                waited = True\n                _ = gate.receive() else fail Closed()\n            \
+             continue\n        got.append(hit)\n        if hit == last:\n            break\n    \
+             stdout.print(f\"listened {{got}}\")\n    replies.send(0)?\n\n\
+             def until_heard{id}(hits: Channel[int], replies: Channel[int]) fails Closed | Timeout:\n    while True:\n        \
+             hits.send(-1)?\n        heard = replies.receive_within(2ms) except Timeout(): continue\n        \
+             if heard is not None:\n            return\n\n"
+        );
+    }
+    let (takes, passes) = if dropping {
+        (
+            "hits: Channel[int], replies: Channel[int], gate: Channel[int], stdout: Stdout",
+            "hits, replies=replies, gate=gate, stdout=stdout",
+        )
+    } else {
+        ("hits: Channel[int], stdout: Stdout", "hits, stdout=stdout")
+    };
+    let _ = writeln!(out, "def heard{id}({takes}) fails Closed:");
+    for at in 0..inboxes.len() {
+        let _ = writeln!(out, "    inbox{at} = hits.inbox()");
+    }
+    let _ = writeln!(out, "    for hit in range(1, {sent} + 1):\n        hits.send(hit)?");
+    if dropping {
+        out.push_str("    gate.send(1)?\n    _ = replies.receive() else fail Closed()\n");
+    }
+    for (at, looping) in inboxes.iter().enumerate() {
+        let looping = if *looping { "True" } else { "False" };
+        let _ = writeln!(
+            out,
+            "    reading{id}(inbox{at}, count={sent}, looping={looping}, stdout=stdout) except Crashed():\n        \
+             stdout.print(\"behind\")"
+        );
+    }
+    let _ = write!(
+        out,
+        "    return\n\ndef listened{id}(stdout: Stdout) fails Closed | Crashed | Timeout:\n    \
+         with channel[int](size={size}, to=.Every) as hits:\n"
+    );
+    let mut indent = "        ".to_owned();
+    if dropping {
+        let _ = write!(
+            out,
+            "{indent}with channel[int](size=4) as replies:\n{indent}    with channel[int](size=1) as gate:\n"
+        );
+        indent.push_str("        ");
+    }
+    if early {
+        let _ = writeln!(out, "{indent}hits.send(100)?");
+    }
+    if dropping {
+        let _ = write!(
+            out,
+            "{indent}with launch(\n{indent}    () => dropping{id}(\n{indent}        hits,\n{indent}        \
+             replies=replies.sender(),\n{indent}        gate=gate,\n{indent}        last={sent},\n{indent}        \
+             stdout=stdout,\n{indent}    )?,\n{indent})?:\n{indent}    until_heard{id}(hits, replies=replies)?\n{indent}    "
+        );
+    } else {
+        out.push_str(&indent);
+    }
+    let _ = write!(out, "heard{id}({passes})?\n\n");
+    out
 }
 
 /// A piece of text past the 23 bytes a str holds in place, with letters past ASCII.
@@ -1889,6 +2121,23 @@ impl Writer {
                     self.line(indent + 1, &format!("case {case}:"));
                     self.line(indent + 2, then);
                 }
+            }
+            Stmt::Swapped(swapping) => {
+                let _ = write!(self.helpers, "{}", swapped_written(swapping));
+                self.line(indent, &format!("swaps{}(stdout)", swapping.id));
+            }
+            Stmt::Shelved(shelving) => {
+                let _ = write!(self.helpers, "{}", shelved_written(shelving));
+                self.line(indent, &format!("shelved{}(stdout)", shelving.id));
+            }
+            Stmt::Listened(listening) => {
+                let _ = write!(self.helpers, "{}", listened_written(listening));
+                self.stopped(
+                    indent,
+                    &format!("listened{}(stdout)", listening.id),
+                    &["Crashed", "Closed", "Timeout"],
+                    "crashed",
+                );
             }
             Stmt::Yielded(yielding) => {
                 let _ = write!(self.helpers, "{}", yielded_written(yielding));

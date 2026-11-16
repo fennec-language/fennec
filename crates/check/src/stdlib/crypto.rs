@@ -1,5 +1,5 @@
-//! `std.crypto`: hashes of text or bytes as hex strings, HMAC, and comparing secrets in time
-//! that doesn't depend on where they differ.
+//! `std.crypto`: hashes of text or bytes as hex strings, or as bytes from the `_digest` forms,
+//! HMAC, and comparing secrets in time that doesn't depend on where they differ.
 
 use super::{Function, Module, no_checks, no_methods, takes};
 use crate::function::FnCx;
@@ -13,22 +13,30 @@ pub(crate) const MODULE: Module = Module {
     construct: no_checks,
 };
 
-const FUNCTIONS: [Function; 9] = [
+const FUNCTIONS: [Function; 17] = [
     takes("crypto._add", (2, 2)),
+    takes("crypto._check_password", (2, 2)),
     takes("crypto._end", (1, 1)),
+    takes("crypto._end_digest", (1, 1)),
+    takes("crypto._hash_password", (2, 2)),
+    takes("crypto._password_problem", (1, 1)),
     takes("crypto._start", (1, 1)),
     takes("crypto.blake3", (1, 1)),
+    takes("crypto.blake3_digest", (1, 1)),
     takes("crypto.derive_key", (2, 2)),
     takes("crypto.equal", (2, 2)),
     takes("crypto.hmac_sha256", (2, 2)),
+    takes("crypto.hmac_sha256_digest", (2, 2)),
     takes("crypto.keyed_blake3", (2, 2)),
+    takes("crypto.keyed_blake3_digest", (2, 2)),
     takes("crypto.sha256", (1, 1)),
+    takes("crypto.sha256_digest", (1, 1)),
 ];
 
 /// What each argument is, for messages, or nothing for what's hashed or signed. A BLAKE3 key
 /// and a derive context are text; the rest can be text, taken as its UTF-8 bytes, or bytes.
 fn arguments(name: &str) -> [(Option<&'static str>, bool); 2] {
-    match name {
+    match name.strip_suffix("_digest").unwrap_or(name) {
         "crypto.keyed_blake3" => [(Some("key"), false), (None, true)],
         "crypto.derive_key" => [(Some("context"), false), (Some("key material"), true)],
         "crypto.hmac_sha256" => [(Some("key"), true), (None, true)],
@@ -42,12 +50,14 @@ fn pieces(name: &str) -> Type {
     match name {
         "crypto._start" => Type::Int,
         "crypto._add" => Type::Unit,
+        "crypto._check_password" => Type::Bool,
+        "crypto._end_digest" => Type::Bytes,
         _ => Type::Str,
     }
 }
 
 /// The function in `crypto.fen` that hashes `ty`'s chunks, when it's a list or an iterator of
-/// text or bytes, like `crypto.blake3_of_bytes_chunks`.
+/// text or bytes, like `crypto.blake3_of_bytes_chunks` or `crypto.sha256_digest_of_str_list`.
 fn of_chunks(cx: &mut FnCx<'_>, name: &str, ty: &Type) -> Option<String> {
     let (item, form) = match cx.checker.settled(ty) {
         Type::List(item) => (*item, "list"),
@@ -66,12 +76,14 @@ fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], span: Span) -> 
     if name.starts_with("crypto._") {
         return pieces(name);
     }
-    if matches!(name, "crypto.blake3" | "crypto.sha256")
+    // A `_digest` form gives the digest's own bytes, and the plain one gives it as hex.
+    let given = if name.ends_with("_digest") { Type::Bytes } else { Type::Str };
+    if matches!(name, "crypto.blake3" | "crypto.sha256" | "crypto.blake3_digest" | "crypto.sha256_digest")
         && let [(ty, _)] = plain
         && let Some(written) = of_chunks(cx, name, ty)
     {
         cx.checker.std_calls.insert((span.start, span.end), written);
-        return Type::Str;
+        return given;
     }
     for ((ty, at), (what, bytes_too)) in plain.iter().zip(arguments(name)) {
         let ty = cx.checker.settled(ty);
@@ -79,7 +91,9 @@ fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], span: Span) -> 
         if !fits {
             let short = name.trim_start_matches("crypto.");
             let wanted = match (bytes_too, short) {
-                (true, "blake3" | "sha256") => "a str or bytes, or a list or iterator of them",
+                (true, "blake3" | "sha256" | "blake3_digest" | "sha256_digest") => {
+                    "a str or bytes, or a list or iterator of them"
+                }
                 (true, _) => "a str or bytes",
                 (false, _) => "a str",
             };
@@ -90,5 +104,5 @@ fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], span: Span) -> 
             cx.error(Diagnostic::new(message, *at));
         }
     }
-    if name == "crypto.equal" { Type::Bool } else { Type::Str }
+    if name == "crypto.equal" { Type::Bool } else { given }
 }

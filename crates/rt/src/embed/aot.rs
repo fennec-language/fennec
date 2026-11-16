@@ -373,19 +373,21 @@ pub fn native_live(change: i64) {
 }
 
 /// With `FENNEC_TRACE_FILE` set, writes what each place in the source cost there, for
-/// `fennec dev trace` to read: a line of numbers for each place.
-pub(super) fn report_sites(sites: &std::collections::HashMap<u32, heap::Counts>) {
+/// `fennec dev trace` to read: a line of numbers for each place and kind of thread it ran on, the
+/// kind's number last.
+pub(super) fn report_sites(sites: &heap::Sites) {
     let Some(file) = std::env::var_os("FENNEC_TRACE_FILE") else { return };
     let mut lines = String::new();
-    for (site, counts) in sites {
+    for ((site, ran_on), counts) in sites {
         let _ = writeln!(
             lines,
-            "{site} {} {} {} {} {}",
+            "{site} {} {} {} {} {} {}",
             counts.allocations,
             counts.allocated_bytes,
             counts.copies,
             counts.copied_bytes,
-            counts.largest_copy
+            counts.largest_copy,
+            ran_on.number()
         );
     }
     let _ = std::fs::write(file, lines);

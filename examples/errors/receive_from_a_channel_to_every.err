@@ -1,0 +1,7 @@
+error: `hits` is a channel to every listener, so it has no one next message to take
+ --> examples/errors/receive_from_a_channel_to_every.fen:6:22
+  |
+6 |         stdout.print(hits.receive() else 0)
+  |                      ^^^^^^^^^^^^^^
+  |
+  = help: loop over it with `for message in hits`, or take an inbox with `hits.inbox()` and receive from that

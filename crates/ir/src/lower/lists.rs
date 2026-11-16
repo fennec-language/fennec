@@ -284,10 +284,22 @@ impl Lowering<'_> {
             ) => owner_name(ty).unwrap_or_default().to_owned(),
             _ => return Err(format!("it uses `{}` on a type of its own", op.symbol())),
         };
-        if let Some(Type::List(held)) = self.type_at(items.span)
-            && self.context.signatures.own_equality(&held)
+        // A list of `shared` values, or of a type with its own `==`, is asked item by item, each
+        // compared as `==` compares it.
+        if let Some(Type::List(held)) = self.type_at(items.span).and_then(|ty| self.held(&ty))
+            && (self.context.signatures.own_equality(&held) || self.holds_shared(&held))
         {
-            return Err(super::operators::OWN_EQUALITY.to_owned());
+            let sought = self.expr(item)?;
+            let sought = self.coerce(sought, &held, item.span)?;
+            let (sought, list) = self.both(sought, |lowering| lowering.expr(items), span)?;
+            let found = self.list_holds(list.clone(), sought.clone(), &held, span)?;
+            if op == BinOp::In {
+                return Ok((Operand::Local(found), sought, list));
+            }
+            let flipped = self.temporary(Type::Bool);
+            let value = Operand::Local(found);
+            self.emit(InstKind::Unary { dest: flipped, op: UnaryOp::Not, value }, span);
+            return Ok((Operand::Local(flipped), sought, list));
         }
         let mut item_at = self.expr(item)?;
         // A member sought among a union's values is made one of them.
@@ -343,14 +355,25 @@ impl Lowering<'_> {
 
     /// Whether a value of this type is a `Secret` or has one in it. `seen` are the types looked at.
     pub(super) fn holds_secret(&self, held: &Type, seen: &mut Vec<Type>) -> bool {
+        self.holds(held, seen, &|_, ty| ty.to_string().starts_with("Secret["))
+    }
+
+    /// Whether a value of this type is a `shared` value or has one in it.
+    pub(super) fn holds_shared(&self, held: &Type) -> bool {
+        self.holds(held, &mut Vec::new(), &|lowering, ty| lowering.context.is_handle(ty))
+    }
+
+    /// Whether a value of this type is one `wanted` picks, or has one in it, however deep. `seen`
+    /// are the types looked at.
+    fn holds(&self, held: &Type, seen: &mut Vec<Type>, wanted: &dyn Fn(&Self, &Type) -> bool) -> bool {
         match held {
             Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) => {
-                return self.holds_secret(item, seen);
+                return self.holds(item, seen, wanted);
             }
             Type::Dict(first, second) | Type::Result(first, second) => {
-                return self.holds_secret(first, seen) || self.holds_secret(second, seen);
+                return self.holds(first, seen, wanted) || self.holds(second, seen, wanted);
             }
-            Type::Tuple(items) => return items.iter().any(|item| self.holds_secret(item, seen)),
+            Type::Tuple(items) => return items.iter().any(|item| self.holds(item, seen, wanted)),
             Type::Named(_) | Type::Generic(..) => {}
             _ => return false,
         }
@@ -360,7 +383,7 @@ impl Lowering<'_> {
         }
         seen.push(held.clone());
         let name = held.to_string();
-        if name.starts_with("Secret[") {
+        if wanted(self, &held) {
             return true;
         }
         let mut within: Vec<Type> = self
@@ -370,7 +393,7 @@ impl Lowering<'_> {
         if let Some(found) = self.context.enums.get(name.as_str()) {
             within.extend(found.cases.iter().flat_map(|case| case.fields.iter().map(|(_, ty)| ty.clone())));
         }
-        within.iter().any(|ty| self.holds_secret(ty, seen))
+        within.iter().any(|ty| self.holds(ty, seen, wanted))
     }
 
     /// Has a function made for each type that writes its own text within a value of type `held`,
@@ -883,7 +906,7 @@ impl Lowering<'_> {
     pub(super) fn is_range(&self, iter: &Expr) -> bool {
         let ExprKind::Call { callee, .. } = &iter.kind else { return false };
         matches!(&callee.kind, ExprKind::Name(name) if name == "range" && self.lookup(name).is_none())
-            && !self.context.functions.contains("range")
+            && !self.own_function("range")
     }
 }
 

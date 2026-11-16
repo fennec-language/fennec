@@ -706,25 +706,16 @@ impl Resolver<'_> {
         }
         // A dependency reaches its own kit's names, what it imports and the language's. The
         // program's own names have no prefix in the merged module, so one a dependency writes
-        // without defining it would be read as the program's, private ones included.
+        // without defining it would be read as the program's, private ones included. A name the
+        // language gives everywhere, like `round`, is the language's in a dependency, whatever
+        // the program defines: the checker and lowering never reach the program's from there.
         if self.kit.is_dependency(self.file)
             && let Some(&owner) = self.kit.owners.get(name)
             && self.kit.apart(self.file, owner)
+            && !fennec_check::provided_everywhere(name)
+            && !fennec_check::reserved_name(name)
         {
-            // The program's own `len` hides the language's from a dependency too, which can only
-            // be mended in the program.
-            let problem = if fennec_check::provided_everywhere(name) || fennec_check::reserved_name(name) {
-                Diagnostic::new(
-                    format!("`{name}` here would be the program's own `{name}`, not the language's"),
-                    span,
-                )
-                .with_help(format!(
-                    "rename the program's `{name}`: it hides the language's from the kits it uses"
-                ))
-            } else {
-                Diagnostic::new(format!("`{name}` doesn't exist"), span)
-            };
-            self.errors.push(problem);
+            self.errors.push(Diagnostic::new(format!("`{name}` doesn't exist"), span));
         }
     }
 

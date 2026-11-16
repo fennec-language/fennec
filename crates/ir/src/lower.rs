@@ -94,11 +94,7 @@ fn lower_from(
         signatures,
         errors: errors.iter().map(|def| def.name.as_str()).collect(),
         enums: enums.iter().map(|def| (def.name.as_str(), def)).collect(),
-        functions: functions
-            .iter()
-            .map(|(key, _)| key.as_str())
-            .chain(reachable_later.keys().map(String::as_str))
-            .collect(),
+        functions: every_key(&functions, &reachable_later),
         structs: defs.iter().map(|def| def.name.as_str()).collect(),
         constants: constants::written(module),
         defaults: defaults::written(module),
@@ -106,10 +102,13 @@ fn lower_from(
         imports: imports::written(module),
         library_imports: imports::of_library(library),
         library: reachable_later.keys().map(String::as_str).collect(),
+        compilers: compilers(&functions),
         generic_types: generic_types(&modules),
         instances: generics::Instances::default(),
         generator_defs: std::cell::RefCell::default(),
         own_texts: std::cell::RefCell::default(),
+        equals: std::cell::RefCell::default(),
+        empties: std::cell::RefCell::default(),
         layouts: std::cell::RefCell::default(),
         layout_problems: std::cell::RefCell::default(),
         // A library's yield methods too, which a loop over one can copy in.
@@ -151,9 +150,7 @@ fn lower_from(
     let (mut defs, mut enums) = (defs.clone(), enums.iter().map(|def| (*def).clone()).collect::<Vec<_>>());
     structs::add_copies(&context, &mut defs, &mut enums);
     take_what_was_found(&mut program, &context);
-    program.structs = defs;
-    program.enums = enums;
-    program.errors = errors;
+    (program.structs, program.enums, program.errors) = (defs, enums, errors);
     crate::arrays::spill_big_arrays(&mut program);
     program
 }
@@ -161,6 +158,17 @@ fn lower_from(
 /// The functions in `every` that `keep` picks.
 /// The program's types whose `def serialize` it writes itself: one the checker generated is in
 /// the prelude's spans.
+/// The keys of the program's functions and of the library's it may reach later.
+fn every_key<'a>(functions: &'a [(String, &FnDef)], later: &'a HashMap<String, &FnDef>) -> HashSet<&'a str> {
+    functions.iter().map(|(key, _)| key.as_str()).chain(later.keys().map(String::as_str)).collect()
+}
+
+/// The functions the checker wrote into the program, like a type's saving functions.
+fn compilers<'a>(functions: &'a [(String, &FnDef)]) -> HashSet<&'a str> {
+    let written = functions.iter().filter(|(_, def)| fennec_check::compiler_written(def.span));
+    written.map(|(key, _)| key.as_str()).collect()
+}
+
 fn saves_itself(functions: &[(String, &FnDef)]) -> HashSet<String> {
     functions
         .iter()
@@ -174,6 +182,8 @@ fn saves_itself(functions: &[(String, &FnDef)]) -> HashSet<String> {
 fn take_what_was_found(program: &mut Program, context: &Context<'_>) {
     program.generators = context.generator_defs.take();
     program.own_texts = context.own_texts.take();
+    program.constants.extend(context.empties.take());
+    program.constants.sort_by(|first, second| first.name.cmp(&second.name));
     program.layouts = context.layouts.take();
     program.layout_problems = context.layout_problems.take();
 }
@@ -304,6 +314,9 @@ struct Context<'a> {
     library_imports: imports::Imports,
     /// The keys of the standard library's functions and methods.
     library: HashSet<&'a str>,
+    /// The keys of the functions the checker wrote into the program, like a type's saving
+    /// functions: the compiler's, as std's are, which any code reaches by name.
+    compilers: HashSet<&'a str>,
     /// The generic structs and enums, the standard library's included.
     generic_types: HashMap<&'a str, &'a fennec_syntax::TypeDef>,
     /// The copies of generics a program uses.
@@ -316,6 +329,12 @@ struct Context<'a> {
     generator_defs: std::cell::RefCell<Vec<crate::GeneratorDef>>,
     /// The types whose own text is asked for by printing something that holds them.
     own_texts: std::cell::RefCell<Vec<crate::OwnText>>,
+    /// The structs and enums a function comparing two of them part by part is made for, or is
+    /// being made for: by its name, `Tree.equal`.
+    equals: std::cell::RefCell<HashSet<String>>,
+    /// The empty lists, dicts and sets that fields default to, each a constant: the function
+    /// giving it, which a value built with the default reads rather than make one of its own.
+    empties: std::cell::RefCell<Vec<Function>>,
     /// The layout of each type `std.pack` saves, as `layout[T]()` gives them.
     layouts: std::cell::RefCell<Vec<crate::SavedLayout>>,
     /// Why a type can't load a layout its kit's `pack.lock` holds for it.
@@ -1029,11 +1048,15 @@ impl<'a> Lowering<'a> {
         if let Some(empty) = typed_empty(expr) {
             return self.expr(&empty).map(Some);
         }
+        // `array[int, 8]()` still as written, where the checker hasn't written its zero in.
+        if let Some(filled) = self.filled_array(expr, callee, args) {
+            return self.expr(&filled).map(Some);
+        }
         // `copy(value, field=new)` copies with fields changed. `replace` was its old name.
         if let ExprKind::Name(name) = &callee.kind
             && (name == "replace" || name == "copy" && args.len() > 1)
             && self.lookup(name).is_none()
-            && !self.context.functions.contains(name.as_str())
+            && !self.own_function(name)
         {
             return self.replace(args, expr.span).map(Some);
         }
@@ -1041,6 +1064,32 @@ impl<'a> Lowering<'a> {
             return Ok(Some(value));
         }
         self.written_result(expr, callee, args)
+    }
+
+    /// Whether `name`, written bare at `span`, is one of the program's own functions this code
+    /// reaches. A program's function of the same name as a builtin is its own: std's code and a
+    /// dependency's still mean the builtin.
+    pub(super) fn own_function(&self, name: &str) -> bool {
+        let compilers = self.context.library.contains(name) || self.context.compilers.contains(name);
+        self.context.functions.contains(name)
+            && fennec_check::reaches(&self.name, self.in_library(), name, compilers)
+    }
+
+    /// Whether the function being lowered is the standard library's code: one of std's functions
+    /// or methods, a constant's value, or what's lifted out of one, as an arrow or a nested `def`.
+    /// What the checker wrote into a program's function is the program's, though its text was
+    /// parsed as std's is.
+    pub(super) fn in_library(&self) -> bool {
+        let base = self.context.base_key(&self.name);
+        fennec_check::std_code(&base, &|name| {
+            if self.context.library.contains(name) {
+                Some(true)
+            } else if self.context.functions.contains(name) {
+                Some(false)
+            } else {
+                self.context.constants.get(name).map(constants::Written::prelude)
+            }
+        })
     }
 
     /// A name's value: its local as what's known of it here, or else a constant.
@@ -1142,7 +1191,7 @@ impl<'a> Lowering<'a> {
     /// `copy(value)`: values are copies here, so it's the value in a local of its own.
     fn copy_call(&mut self, expr: &Expr, callee: &Expr, args: &[Arg]) -> Lowered<Option<Operand>> {
         let (ExprKind::Name(name), [arg]) = (&callee.kind, args) else { return Ok(None) };
-        if name != "copy" || self.lookup(name).is_some() || self.context.functions.contains("copy") {
+        if name != "copy" || self.lookup(name).is_some() || self.own_function(name) {
             return Ok(None);
         }
         let value = self.expr(&arg.value)?;

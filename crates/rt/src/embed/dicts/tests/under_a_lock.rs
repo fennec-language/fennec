@@ -256,3 +256,108 @@ fn a_dict_that_has_to_grow_under_a_lock_goes_back_on_a_crash_and_stays_at_an_end
         finish();
     }
 }
+
+/// The address of the entry `key` is at in `dict`, as native code holds it after a lookup, and
+/// the word its value starts at.
+fn entry_of(dict: u64, key: u64) -> (i64, usize) {
+    with(|state| {
+        let block = state.heap.block(dict)?;
+        let layout = super::super::layout(state, block)?;
+        let hash = super::super::hash_key(state, layout.key, &[key], super::super::Hashing::of(block));
+        let super::super::Probe::Found(entry) = super::super::find(state, block, layout, &[key], hash) else {
+            return None;
+        };
+        let mask = usize::try_from(*block.get(4)?).ok()?;
+        let word = super::super::DICT_HEADER_WORDS + mask + 1 + entry * layout.width();
+        Some((signed(dict + 8 * u64::try_from(word).ok()?), word + layout.value_at()))
+    })
+    .unwrap()
+}
+
+/// What native code does to a value it changes where it is: writes each new word, which hands the
+/// entry the owners the new words hold, and lets go of what the old words held.
+fn changed_in_place(dict: u64, place: usize, to: &Value) {
+    with(|state| {
+        let element = point();
+        let mut new = Vec::new();
+        heap::write(state, &element, to, &mut new)?;
+        let old = state.heap.block(dict)?.get(place..place + new.len())?.to_vec();
+        state.heap.block_mut(dict)?.get_mut(place..place + new.len())?.copy_from_slice(&new);
+        let mut held = Vec::new();
+        heap::held_addresses(&element, &old, &mut held);
+        for address in held {
+            heap::release(state, address);
+        }
+        Some(())
+    })
+    .unwrap();
+}
+
+/// A value held in the entry of a marked dict, changed where it is by native code: the entry is
+/// saved first, with `fennec_lock_save_entry`. A crash puts the value back as it was, with what
+/// it held, and a normal end keeps the change and lets what it held go. Saving the entry again,
+/// as native code does at every take of the value, saves nothing more. An address that's no
+/// entry of the dict, and a dict no log marked, save nothing.
+#[test]
+fn a_value_changed_in_its_entry_under_a_lock_goes_back_on_a_crash_and_stays_at_an_end() {
+    for crashes in [true, false] {
+        started_holding(0);
+        let start_with = dict_of(vec![
+            (Value::Int(5), a_point(1, LONG, &[1, 2])),
+            (Value::Int(6), a_point(2, "short", &[])),
+        ]);
+        let after = a_point(99, "another name long enough for a block", &[7, 8, 9]);
+        let then = a_point(100, "short", &[]);
+        let (cell, inside) = locked(made_held(0, &start_with));
+        let before = blocks();
+        let (entry, place) = entry_of(inside, 5);
+        // Neither of these is an entry to save: nothing changes, and nothing is held for them.
+        super::super::save_entry(signed(inside), entry + 8);
+        super::super::save_entry(signed(inside), 0);
+        super::super::save_entry(signed(inside), entry);
+        changed_in_place(inside, place, &after);
+        // Taken again to change again: what's there now was made under the lock.
+        super::super::save_entry(signed(inside), entry);
+        changed_in_place(inside, place, &then);
+        if crashes {
+            crash(cell);
+            assert_eq!(read(word(cell, TABLE_AT)), start_with);
+            assert_eq!(blocks(), before);
+        } else {
+            kept();
+            let changed =
+                dict_of(vec![(Value::Int(5), then.clone()), (Value::Int(6), a_point(2, "short", &[]))]);
+            assert_eq!(read(word(cell, TABLE_AT)), changed);
+            // The long name and the list the value held at first are gone, and it holds an
+            // empty list now.
+            assert_eq!(blocks(), before - 1);
+        }
+        audited_behind(cell);
+        shared_leave(signed(cell), 1);
+        finish();
+    }
+}
+
+/// Every block behind the lock is counted as many times as it's held, by the audit's own count.
+/// The cell's own count is its lock's to keep, another way.
+fn audited_behind(cell: u64) {
+    let found = with(|state| heap::audit::audit(state, &[cell]));
+    let wrong: Vec<_> = found.wrong.into_iter().filter(|finding| finding.address != cell).collect();
+    assert_eq!(wrong, Vec::new());
+}
+
+/// A dict no log marked isn't saved: native code copies one that's shared before it changes it,
+/// and one that's alone and unmarked is changed with nothing to put back.
+#[test]
+fn an_entry_of_a_dict_no_log_marked_is_not_saved() {
+    started();
+    let dict = made(Word::Int, 0, &points());
+    let before = live();
+    let (entry, _) = entry_of(dict, 7);
+    super::super::save_entry(signed(dict), entry);
+    assert_eq!(live(), before);
+    assert_eq!(read(dict), points());
+    audited(&[dict]);
+    let_go(dict);
+    finish();
+}

@@ -25,6 +25,7 @@ mod constants;
 mod crossing;
 mod effects;
 mod enumerate_lowering;
+mod every;
 mod except;
 mod except_fix;
 mod expect;
@@ -38,6 +39,7 @@ pub use fields::{each_field_type, fields_of};
 mod generic;
 mod generic_copies;
 mod gone;
+mod holds;
 mod imports;
 mod index;
 mod infer;
@@ -59,8 +61,10 @@ mod plain;
 mod privacy;
 mod program;
 mod protocols;
+mod reach;
 mod ref_lowering;
 mod results_fix;
+mod routes;
 mod rules;
 mod saving;
 mod secrets;
@@ -87,6 +91,24 @@ pub use named::add_pattern_fixes;
 pub use privacy::add_rename_fixes;
 pub use results_fix::result_fixes;
 pub use tuple_lowering::tuple_function;
+
+pub use reach::std_code;
+
+/// Whether a top-level item declared at `span` is the compiler's: the standard library's, or one
+/// the checker wrote into the program, like a type's saving functions. Any code reaches those by
+/// name, as it reaches std's; only what a program wrote is kept from std's code and a dependency's.
+#[must_use]
+pub fn compiler_written(span: Span) -> bool {
+    lend_lowering::not_written_by_hand(span)
+}
+
+/// Whether code in the function `caller` reaches the top-level function or constant `name` by
+/// writing it bare: std's code reaches only std's names, and a dependency's never the program's
+/// own. `caller_std` says whether the caller is std's code, and `std` whether `name` is std's.
+#[must_use]
+pub fn reaches(caller: &str, caller_std: bool, name: &str, std: bool) -> bool {
+    reach::Code::of(caller, caller_std).reaches(name, std)
+}
 pub use types::{Num, Type};
 
 /// Checks a parsed module. Returns the signature of every function and method, or every
@@ -117,6 +139,22 @@ fn refuse_old_forms(module: &Module, checked: &Checked) -> Result<(), Vec<Diagno
 /// reaches them, or lowering uses them without the program naming them.
 pub fn check_to_emit(module: &Module) -> Result<Signatures, Vec<Diagnostic>> {
     checked_typed_in(module, checker::Scope::ReachedWithFields).map(Checked::into_signatures)
+}
+
+/// What each kit a program depends on is handed, worked out from the whole program as written, by
+/// kit and capability, with where each is first handed over: what `fennec update` records in
+/// `kit.lock`'s `holds` lines, which checking a program holds it to.
+///
+/// # Errors
+///
+/// What the checker finds wrong with the program, besides any kit being handed what `kit.lock`
+/// doesn't list for it.
+pub fn holds_worked_out(
+    module: &Module,
+) -> Result<BTreeMap<String, BTreeMap<String, Span>>, Vec<Diagnostic>> {
+    let mut working = module.clone();
+    working.holds.only_worked_out = true;
+    checked_typed_in(&working, checker::Scope::Reached).map(|checked| checked.holds)
 }
 
 /// Checks a parsed module. Returns the signatures and the type of every expression and
@@ -258,6 +296,13 @@ pub fn provided_everywhere(name: &str) -> bool {
     (builtins::is_builtin(name) && !name.contains('.'))
         || program::BUILT_IN_TYPES.contains(&name)
         || program::BUILT_IN_INTERFACES.contains(&name)
+}
+
+/// The functions the language provides everywhere, called bare, as `round` and `len`. A program may
+/// name a function of its own after one that isn't reserved, and it's the program's own: the
+/// standard library's code and a dependency's still mean the builtin.
+pub fn builtin_function_names() -> impl Iterator<Item = &'static str> {
+    builtins::names()
 }
 
 /// Whether the engines provide a function of this name, like `sum` or `math.sqrt`.
@@ -669,10 +714,6 @@ enum Round {
     Done,
 }
 
-/// What starts the name a library function goes under in a program's items while it's rewritten:
-/// no name a program writes starts with it.
-const STD_AT: &str = "\0std:";
-
 /// Puts into the program's items, under hidden names, the library's functions it runs that hold
 /// a `with` over a source or a `launch`, and those rewritten already, so a round rewrites them as
 /// it does the program's own. Says whether any was new, which the check after takes up.
@@ -704,7 +745,7 @@ fn std_rewritten_in(module: &mut Module, checked: &Checked) -> bool {
         }
     }
     for (key, mut def) in std::mem::take(&mut module.std_rewritten) {
-        def.name = format!("{STD_AT}{key}\0{}", def.name);
+        def.name = format!("{}{key}\0{}", reach::STD_AT, def.name);
         module.items.push(Item::Function(def));
     }
     new
@@ -715,8 +756,8 @@ fn std_rewritten_out(module: &mut Module) {
     let items = std::mem::take(&mut module.items);
     for item in items {
         match item {
-            Item::Function(mut def) if def.name.starts_with(STD_AT) => {
-                let marked = def.name.trim_start_matches(STD_AT).to_owned();
+            Item::Function(mut def) if def.name.starts_with(reach::STD_AT) => {
+                let marked = def.name.trim_start_matches(reach::STD_AT).to_owned();
                 let (key, name) = marked.split_once('\0').unwrap_or((marked.as_str(), marked.as_str()));
                 name.clone_into(&mut def.name);
                 module.std_rewritten.push((key.to_owned(), def));
@@ -819,7 +860,8 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     }
     imports_for_std_calls(module, checked.std_calls.values());
     imports_for_cases(module, &checked.cases);
-    if sources_copied(module, checked) || widened_values(module, &checked.widened_values) {
+    let rewritten = sources_copied(module, checked) || widened_values(module, &checked.widened_values);
+    if rewritten || routes::lower(module, &checked.routes) {
         return Round::Again;
     }
     // `shared T` and `lock` written in as today's `shared` types and `with` blocks are checked
@@ -1019,6 +1061,9 @@ pub struct Checked {
     opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, which lowering writes in as a source.
     launches: BTreeMap<(u32, u32), launch::Launch>,
+    /// Each route written with a method, as `router.get(...)`, which lowering writes in as a call
+    /// to `handle`.
+    routes: BTreeMap<(u32, u32), routes::Route>,
     /// Each `match` with a `ref` case, with the fields each such case puts back.
     ref_matches: BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
     /// Each `for ref` whose body reads what it loops over, written in to go by position.
@@ -1031,6 +1076,9 @@ pub struct Checked {
     native_json_bodies: BTreeSet<(u32, u32)>,
     /// Every type asked whether it saves or loads.
     saved_types: BTreeSet<Type>,
+    /// What each kit the program depends on is handed, by kit and capability, with where it's
+    /// first handed over: worked out only when the module asks for it, for `fennec update`.
+    holds: BTreeMap<String, BTreeMap<String, Span>>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     not_equals: BTreeSet<(u32, u32)>,
     /// The calls `len(x)` and `abs(x)`, which become `x.len()` and `x.abs()`.
@@ -1138,6 +1186,8 @@ pub struct Signatures {
 /// A struct's fields, with their types, in the order they're written.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Struct {
+    /// Its type parameters' names, in order: `T` for `Pair[T]`, which its fields' types name.
+    pub generics: Vec<String>,
     pub fields: Vec<(String, Type)>,
     /// Whether any field has a `where` rule, checked whenever a value is made.
     pub rules: bool,
@@ -1149,6 +1199,8 @@ pub struct Struct {
 /// An enum's cases, in the order they're written, each with its fields and their types.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Enum {
+    /// Its type parameters' names, in order, which its cases' fields' types name.
+    pub generics: Vec<String>,
     pub cases: Vec<(String, Vec<(String, Type)>)>,
     /// Whether any field has a `where` rule, checked whenever a value is made.
     pub rules: bool,

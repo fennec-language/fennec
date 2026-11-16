@@ -24,6 +24,8 @@ pub(crate) enum Value {
     /// A `float`, which is an `f64`.
     Float(f64),
     Str(String),
+    /// `bytes`: a byte string, printed as `bytes([104, 105])`.
+    Bytes(Vec<u8>),
     List(Vec<Value>),
     Tuple(Vec<Value>),
     /// A set's items, in the order they went in.
@@ -95,6 +97,21 @@ pub(crate) enum Cap {
     Args,
     Stdin,
     Fs(Reach),
+    /// Standard error, which the oracle writes to as the program would, and never compares.
+    Stderr,
+    /// Whether the program's been asked to stop, which it never is while the oracle runs it.
+    Signals,
+    /// The system's clock, which `sleep` moves on without waiting.
+    Clock,
+    /// Random bytes and seeds, which differ every run, as the compiled program's do.
+    Entropy,
+    /// The network, which `main` may take, and any use of which is refused: what a program prints
+    /// when it never reaches the network, as with no arguments, is still checked.
+    Net,
+    /// JSON's `Serializer`, as a type's own `def serialize` is given it by `json.dumps`.
+    Saver,
+    /// JSON's `Deserializer`, as a type's own `def deserialize` is given it by `json.loads`.
+    Loader,
 }
 
 /// What an `Fs` reaches: everything, as the one `main` is given does, or less, once `only` or
@@ -127,6 +144,7 @@ impl Value {
             Value::Sized(..) => "sized number",
             Value::Float(_) => "float",
             Value::Str(_) => "str",
+            Value::Bytes(_) => "bytes",
             Value::List(_) => "list",
             Value::Tuple(_) => "tuple",
             Value::Set(_) => "set",

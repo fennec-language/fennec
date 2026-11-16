@@ -52,7 +52,8 @@ impl Checker {
         for (name, span) in names {
             let has = |checker: &Self, method: &str| checker.program.method(&name, method).is_some();
             let (saves, loads) = (has(self, "serialize"), has(self, "deserialize"));
-            if saves != loads {
+            // A type holding a `Secret` loads and is never saved, so it has only `deserialize`.
+            if saves != loads && !(loads && crate::saving::loads_only(self, &name)) {
                 let (written, missing) =
                     if saves { ("serialize", "deserialize") } else { ("deserialize", "serialize") };
                 self.diagnostics.push(

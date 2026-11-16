@@ -9,6 +9,7 @@
 //! as a block whose shape names what it captured, so the runtime can copy and free it like any
 //! other. See [`runtime_holds_closures`].
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use fennec_check::Type;
@@ -28,6 +29,9 @@ const CAPTURES: u32 = 32;
 /// optional, a tuple or another value, in a field, in a generator's block, or as a launched task,
 /// which the runtime copies. A closure only ever
 /// held by a local, given as an argument or returned stays with generated code.
+///
+/// A field counts only in a type the program holds a value of ([`held_types`]). Every type of the
+/// standard library is in every program, and one that nothing holds keeps no closure anywhere.
 pub(crate) fn runtime_holds_closures(program: &Program) -> bool {
     let functions = program.functions.iter().chain(&program.constants);
     let locals = functions.clone().flat_map(|function| function.locals.iter().map(|local| &local.ty));
@@ -35,9 +39,13 @@ pub(crate) fn runtime_holds_closures(program: &Program) -> bool {
     if locals.chain(returns).any(holds_one) {
         return true;
     }
-    let structs = program.structs.iter().chain(&program.errors).flat_map(|def| &def.fields);
-    let cases = program.enums.iter().flat_map(|def| &def.cases).flat_map(|case| &case.fields);
-    if structs.chain(cases).any(|(_, ty)| has_one(ty)) {
+    let held = held_types(program);
+    let structs =
+        program.structs.iter().chain(&program.errors).filter(|def| held.contains(def.name.as_str()));
+    let cases =
+        program.enums.iter().filter(|def| held.contains(def.name.as_str())).flat_map(|def| &def.cases);
+    let fields = structs.flat_map(|def| &def.fields).chain(cases.flat_map(|case| &case.fields));
+    if fields.into_iter().any(|(_, ty)| has_one(ty)) {
         return true;
     }
     // A launched task's closure is copied for it by the runtime, by its block's shape.
@@ -48,6 +56,65 @@ pub(crate) fn runtime_holds_closures(program: &Program) -> bool {
             .any(|inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if name == "intrinsics.launch"))
     });
     launches || program.generators.iter().any(|def| has_one(&def.item) || def.slots.iter().any(has_one))
+}
+
+/// The names of the structs, enums and errors a program holds a value of: those its functions'
+/// locals, what they give back and its generators' blocks mention, and what those types hold in
+/// turn. A value of a type is made into a local of that type before anything else holds it, so a
+/// type none of these reaches has no value anywhere.
+fn held_types(program: &Program) -> HashSet<&str> {
+    let mut fields: HashMap<&str, Vec<&Type>> = HashMap::new();
+    for def in program.structs.iter().chain(&program.errors) {
+        fields.entry(def.name.as_str()).or_default().extend(def.fields.iter().map(|(_, ty)| ty));
+    }
+    for def in &program.enums {
+        let cases = def.cases.iter().flat_map(|case| &case.fields);
+        fields.entry(def.name.as_str()).or_default().extend(cases.map(|(_, ty)| ty));
+    }
+    let mut waiting: Vec<&Type> = Vec::new();
+    for function in program.functions.iter().chain(&program.constants) {
+        waiting.push(&function.returns);
+        waiting.extend(function.locals.iter().map(|local| &local.ty));
+    }
+    for def in &program.generators {
+        waiting.push(&def.item);
+        waiting.extend(&def.slots);
+    }
+    let mut held = HashSet::new();
+    let mut names = Vec::new();
+    while let Some(ty) = waiting.pop() {
+        named_in(ty, &mut names);
+        for name in names.drain(..) {
+            if held.insert(name) {
+                waiting.extend(fields.get(name).into_iter().flatten().copied());
+            }
+        }
+    }
+    held
+}
+
+/// The declared types a type names, however deep, a closure's parameters and what it gives back
+/// among them.
+fn named_in<'p>(ty: &'p Type, names: &mut Vec<&'p str>) {
+    let inner: Vec<&Type> = match ty {
+        Type::Named(name) => {
+            names.push(name);
+            Vec::new()
+        }
+        Type::Errors(errors) => {
+            names.extend(errors.iter().map(String::as_str));
+            Vec::new()
+        }
+        Type::Arrow(params, returns) => params.iter().chain(std::iter::once(&**returns)).collect(),
+        Type::Generic(name, items) => {
+            names.push(name);
+            items.iter().collect()
+        }
+        other => inside(other),
+    };
+    for ty in inner {
+        named_in(ty, names);
+    }
 }
 
 /// Whether a value of this type holds a closure inside it, rather than being one.
@@ -89,7 +156,7 @@ pub(crate) fn layout_name(function: &str, captured: usize) -> String {
 /// The layouts of every closure a program makes, by what it captures, for when the runtime holds
 /// closures.
 pub(crate) fn closure_layouts(program: &Program, blocks: Option<&Layouts>) -> Vec<(String, Written)> {
-    let functions: std::collections::HashMap<&str, &fennec_ir::Function> =
+    let functions: HashMap<&str, &fennec_ir::Function> =
         program.functions.iter().map(|function| (function.name.as_str(), function)).collect();
     let mut made = std::collections::BTreeMap::new();
     let insts = program.functions.iter().flat_map(|function| &function.blocks).flat_map(|block| &block.insts);
@@ -393,5 +460,62 @@ impl Emit<'_, '_, '_> {
             }
             _ => Ok(()),
         }
+    }
+}
+
+// Windows has no target here yet, as `fennec build` doesn't link there.
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    fn held_by_runtime(source: &str) -> Result<bool, String> {
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        Ok(runtime_holds_closures(&fennec_ir::lower(&module, &checked)))
+    }
+
+    const TYPES: &str = "\
+type Change = (int) -> int
+
+struct Holder:
+    handlers = list[Change]()
+
+struct Outer:
+    inner = Holder()
+    name = \"\"
+
+enum Step:
+    Stay
+    Move(change: Change)
+
+error Refused:
+    again: Change
+
+def twice(value: int, change: Change) -> int:
+    return change(change(value))
+
+def same(value: int) -> int:
+    return value
+";
+
+    /// A type with a closure in a field makes every closure a block of the runtime's only in a
+    /// program that holds a value of it. Every type of the standard library is in every program,
+    /// so one that holds closures, used by few, would otherwise change them all.
+    #[test]
+    fn a_type_holding_closures_counts_only_where_a_value_of_it_is_held() -> Result<(), String> {
+        let with = |rest: &str| held_by_runtime(&format!("{TYPES}\n{rest}"));
+        let main = "def main(stdout: Stdout):\n    stdout.print(twice(10, (n) => n + 1))\n    return\n";
+        assert!(!with(main)?, "no value of a type holding closures is made");
+        // Held as a local, as a struct's, an enum's and an error's.
+        for made in ["Holder()", "Step.Stay", "Refused(again=same)"] {
+            let held = format!("def made():\n    _ = {made}\n    return\n\n{main}");
+            assert!(with(&held)?, "{made}");
+        }
+        // Held only inside another type, which a function is handed and gives back.
+        for through in ["Outer", "list[Outer]", "dict[str, Outer]", "Outer?", "(Outer) -> int"] {
+            let held = format!("def passed(given: {through}) -> {through}:\n    return given\n\n{main}");
+            assert!(with(&held)?, "{through}");
+        }
+        Ok(())
     }
 }

@@ -52,30 +52,25 @@ tools = { path = "../tools" }
 - A dependency can't be named `std`, `fennec`, `main`, `lib` or `test`.
 - A kit from a path isn't pinned, since it's work in progress. A kit from git can't name a path.
 
-#### What a dependency gets
+#### What a dependency holds
 
-A dependency gets no capability unless its line in `kit.toml` says so, with `gets`:
+A dependency holds only what your code hands it, and the compiler works that out: you never write it. `kit.lock` records what each kit holds, one line for each that holds anything:
 
-```toml
-[dependencies]
-# calls the payment API
-http = { git = "https://git.example.com/ada/http", commit = "...", gets = ["Net"] }
-# keeps saved carts
-saves = { path = "../saves", gets = ["Fs", "Clock"] }
-# no `gets`: it gets nothing
-shapes = { git = "https://git.example.com/ada/shapes", commit = "..." }
+```
+holds http git:https://example.com/http.git folder:http Net
+holds saves path:../saves Clock Fs
 ```
 
-- **No `gets` means nothing.** Most lines should look like that.
-- **`gets = []` is an error.** Its fix takes it out, so there's one way to write nothing.
-- **Entries are capability types, as code writes them:** `"Fs"`, `"Net"`, `"Clock"`, `"Database"`.
-- **What a kit gets is a person's decision.** No tool writes `gets`: not `fennec fix`, not `fennec update`, and no error's help or fix.
-- **It's checked wherever one kit hands a value to another.** The handing kit's line for the receiver has to list every capability the value holds. A kit hands on only what it holds, so the main kit's lines bound everything below them. Every `kit.toml` speaks for its own kit: in `http`'s, `tls = { ..., gets = ["Net"] }` says what `http` lets `tls` have.
-- **`kit.lock` records `holds`:** what the compiler saw each kit hold, beside what a person wrote. An update that holds more stops until you approve it.
+- **A kit handed something new stops the build.** Every check, run, build and test stops where a kit would now receive a capability `kit.lock` doesn't list for it: "`http` would now receive an `Fs` here, which kit.lock doesn't list for it".
+- **Only `fennec update --accept` accepts it.** It lists each change, as "`http` now holds `Fs`, first handed over at src/main.fen:12:25", and writes it into `kit.lock`, where it's reviewed with the code that made it. Plain `fennec update` lists the same, as "would now hold", and fails, so a version bump never brings in a new grant unseen. No tool accepts one during a build, and no fix does.
+- **What a kit holds belongs to where it comes from.** Each line names the kit's source: its path, or its git URL and the folder in the repository, as a word of its own. Point a dependency somewhere else, another path, URL or fork, and it holds nothing until `fennec update --accept` lists and accepts its grants again, even when the name and the grants are the same.
+- **Handing a kit less never stops anything.** `fennec update` narrows the lock, and says so.
+- **`fennec update --check` is for CI.** It fails when `kit.lock` isn't what the code hands over, either way. It reaches no network and writes nothing.
+- **Every kit counts,** the ones your dependencies depend on too: the compiler sees the whole program.
+- **It counts however a capability is held:** passed to a kit's function or operator, held in a struct or a list you hand it, written into a kit's value after it's built, or captured by a function or an iterator you hand it. Through a generic function, a value is what it is in the copy your program makes. A function whose making can't be seen, as one you were handed, may hold anything your program holds: write it where you hand it over, and only what it reads counts.
+- **A capability is one of the ten, `Net`, or an open handle: a `File`, a `Server`, a `Connection`, a `UdpSocket` or a `Database`.** A `Secret` isn't: it carries no authority.
 
-Narrowing comes later, as an entry that's a table from the type to how it's narrowed, in the narrowing method's words: `gets = ["Clock", { Fs = { only = "saves/" } }]`. A plain `"Fs"` keeps meaning the whole of it.
-
-Not built yet: today `kit.toml` doesn't read `gets`, and nothing is checked.
+`kit.toml` has no `gets`: what a kit is handed is worked out, and accepted in `kit.lock`.
 
 `import physics` reaches the kit's `src/lib.fen`, and `import physics.shapes` its `src/shapes.fen`, and `from physics import Body` works as it does for a kit's own files. A kit imports only what its own `kit.toml` names, so a dependency's dependencies stay its own.
 
@@ -385,7 +380,7 @@ When the block ends, the task's inbox closes, the task sums what it was sent and
 
 ## Hashing
 
-`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above. A password or a key goes in a `Secret`, as `Secret.of(text)`: printing it, putting it in an f-string and saving it are compile errors, and `expose_secret()` is the one way to read it, so a search for that name finds every use. `==` on two secrets compares them in constant time, as `equal` does, so checking a password or a token is just `==`.
+`std.crypto` gives `blake3` and `sha256` as lowercase hex, for text or `bytes`, plus `keyed_blake3`, `hmac_sha256`, `derive_key` and `equal`, which compares secrets in constant time. Each hash has a `_digest` form, `blake3_digest`, `sha256_digest`, `keyed_blake3_digest` and `hmac_sha256_digest`, which gives the digest's own bytes rather than hex, for keying another HMAC or building on the hash, as Python's `digest()` beside `hexdigest()`. The same bytes give the same hash on every machine, so a hash names its content, as `name_of` does above. A password or a key goes in a `Secret`, as `Secret.of(text)`: printing it, putting it in an f-string and saving it are compile errors, and `expose_secret()` is the one way to read it, so a search for that name finds every use. `==` on two secrets compares them in constant time, as `equal` does, so checking a password or a token is just `==`. A password to keep goes through `hash_password(password, entropy)`, Argon2id at OWASP's floor of 19 MiB and two passes under a fresh salt, which gives text to store, and `check_password(password, stored)` says whether a password is the one it was made from. A stored hash that isn't one, or whose settings are below that floor or past what's worth checking, 256 MiB, 8 passes or 4 lanes, fails with `PasswordError` rather than being checked: a hash made with settings that high elsewhere is refused. For a name nobody has, check against a made-up hash, so a missing name takes as long to refuse as a wrong password.
 
 `blake3` and `sha256` also take a list or an iterator of text or `bytes`, and hash the chunks in turn, so a large file hashes as it's read, never in memory whole:
 

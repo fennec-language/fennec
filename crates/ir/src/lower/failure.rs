@@ -65,6 +65,11 @@ impl Lowering<'_> {
     /// be. The checker has shown it fits, so anything else isn't lowered yet.
     pub(super) fn coerce(&mut self, value: Operand, to: &Type, span: Span) -> Lowered<Operand> {
         let from = type_in(&self.locals, &value).ok_or("a value has no type")?;
+        // What an arrow giving back `None` gives holds nothing, so where an optional goes it's the
+        // `None` written there, which is laid out as the optional is. A local of type `None` isn't.
+        if from == Type::None && matches!(to, Type::Optional(_)) {
+            return Ok(Operand::None);
+        }
         if fits(to, &from) {
             return Ok(value);
         }
@@ -78,7 +83,16 @@ impl Lowering<'_> {
         }
         match to {
             Type::Optional(inner) => {
-                let value = self.coerce(value, inner, span)?;
+                let mut value = self.coerce(value, inner, span)?;
+                // An error where an optional set of errors goes is made one of the set first: a set
+                // is laid out with a case for each of its errors, and an optional holds it as it is.
+                if matches!(**inner, Type::Errors(_))
+                    && type_in(&self.locals, &value).is_some_and(|held| held != **inner)
+                {
+                    let widened = self.temporary((**inner).clone());
+                    self.emit(InstKind::Copy { dest: widened, value }, span);
+                    value = Operand::Local(widened);
+                }
                 let dest = self.temporary(to.clone());
                 self.emit(InstKind::MakeSome { dest, value }, span);
                 Ok(Operand::Local(dest))
@@ -115,6 +129,11 @@ impl Lowering<'_> {
                 let dest = self.temporary(to.clone());
                 self.emit(InstKind::MakeTuple { dest, items }, span);
                 Ok(Operand::Local(dest))
+            }
+            // A function where one giving back something wider goes, as one giving an `Answer`
+            // where `(int) -> Answer?` goes.
+            Type::Arrow(wanted, _) if matches!(&from, Type::Arrow(held, _) if held.len() == wanted.len()) => {
+                self.fitted_closure(value, &from, to, span)
             }
             _ => Err(format!("it gives {from} where {to} goes")),
         }
@@ -181,6 +200,13 @@ impl Lowering<'_> {
             {
                 Ok(value)
             }
+            // An error from a set the checker narrowed to some of it, as what `except why:`'s
+            // `case _:` holds after earlier cases took the rest.
+            (Type::Errors(members), Type::Errors(left))
+                if left.iter().all(|member| members.contains(member)) =>
+            {
+                Ok(self.errors_narrowed(&value, &left, expr.span))
+            }
             // An error from a set the checker narrowed to one, as a `match` whose earlier cases
             // took the others.
             (Type::Errors(members), Type::Named(read)) if members.contains(&read) => {
@@ -195,6 +221,31 @@ impl Lowering<'_> {
             }
             (from, read) => Err(format!("it reads {from} as {read}")),
         }
+    }
+
+    /// An error from a set read as one of fewer errors, which the checker showed it is. A set is
+    /// laid out with a case for each of its errors, so each it may be is tested for, read as
+    /// itself, and put in the smaller set.
+    fn errors_narrowed(&mut self, value: &Operand, left: &[String], span: Span) -> Operand {
+        let dest = self.temporary(Type::Errors(left.to_vec()));
+        let join = self.new_block();
+        for member in left {
+            let is = self.temporary(Type::Bool);
+            let type_name = member.clone();
+            self.emit(InstKind::IsError { dest: is, value: value.clone(), type_name }, span);
+            let (this, next) = (self.new_block(), self.new_block());
+            self.finish(Terminator::Branch { cond: Operand::Local(is), then: this, otherwise: next });
+            self.current = this;
+            let one = self.temporary(Type::Named(member.clone()));
+            self.emit(InstKind::AsError { dest: one, value: value.clone() }, span);
+            self.emit(InstKind::Copy { dest, value: Operand::Local(one) }, span);
+            self.finish(Terminator::Jump(join));
+            self.current = next;
+        }
+        // The checker showed it's one of those.
+        self.finish(Terminator::Unreachable);
+        self.current = join;
+        Operand::Local(dest)
     }
 
     /// A tuple read item by item as the tuple the checker narrowed it to: an optional item it
@@ -457,9 +508,11 @@ impl Lowering<'_> {
     }
 
     /// Leaves with a failure written in this function: from a `parallel` loop's round that's
-    /// lowered as an ordinary loop it's one whose block hasn't run its cleanup yet.
+    /// lowered as an ordinary loop it's one whose block hasn't run its cleanup yet, and from a
+    /// `with` block's cleanup, it's one the block around that one cleans up after. A `with`
+    /// block's own failures leave it to its cleanup in what's written, so none reaches here.
     fn leave_with_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
-        if self.plain_rounds > 0 {
+        if self.plain_rounds > 0 || !self.on_failure.is_empty() {
             return self.pass_up_error(error, span);
         }
         self.return_error(error, span)

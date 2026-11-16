@@ -29,6 +29,20 @@ impl Interp {
                 None => args.push(value),
             }
         }
+        if let Some(done) = self.format_method(&receiver, name, (&args, &named), expr)? {
+            return Ok(done);
+        }
+        // The standard library's own code has `len(x)` and `abs(x)` written as these methods
+        // when it's parsed, which a program can't call on a built-in value.
+        if matches!(name, "len" | "abs") && args.is_empty() && named.is_empty() {
+            let value = match &receiver {
+                Receiver::Place(place) => self.read_place(place, span)?,
+                Receiver::Value(value) => value.clone(),
+            };
+            if !matches!(value, Value::Instance(_)) {
+                return self.builtin(name, vec![ArgVal::Value(None, value)], expr);
+            }
+        }
         let is_table = match &receiver {
             Receiver::Place(place) => self.peek_place(place, span, |held| matches!(held, Value::Table(_)))?,
             Receiver::Value(value) => matches!(value, Value::Table(_)),
@@ -71,6 +85,7 @@ impl Interp {
         match value {
             Value::Cap(Cap::Fs(reach)) => self.fs_method(&reach, name, &args, &named, span),
             Value::Str(text) => str_method(&text, name, &args, &named, span),
+            Value::Bytes(data) if named.is_empty() => bytes_method(&data, name, &args, span),
             Value::List(items) => self.list_method(receiver, items, name, (&args, named), expr),
             // The methods below take no named argument.
             _ if !named.is_empty() => unsupported(format!("the method `{name}` with a named argument")),
@@ -84,6 +99,31 @@ impl Interp {
             },
             Value::Channel(end) => self.channel_method(&end, name, &args),
             other => unsupported(format!("the method `{name}` of a {}", other.kind())),
+        }
+    }
+
+    /// A method of JSON's `Serializer` or `Deserializer`, given to a type's own `def serialize`
+    /// or `def deserialize`, when that's what `receiver` holds.
+    fn format_method(
+        &mut self,
+        receiver: &Receiver,
+        name: &str,
+        (args, named): (&[Value], &[(String, Value)]),
+        expr: &'static Expr,
+    ) -> Run<Option<Value>> {
+        let format = match receiver {
+            Receiver::Place(place) => self.peek_place(place, expr.span, |held| match held {
+                Value::Cap(cap @ (Cap::Saver | Cap::Loader)) => Some(cap.clone()),
+                _ => None,
+            })?,
+            Receiver::Value(Value::Cap(cap @ (Cap::Saver | Cap::Loader))) => Some(cap.clone()),
+            Receiver::Value(_) => None,
+        };
+        match format {
+            Some(_) if !named.is_empty() => unsupported(format!("`{name}` with a named argument")),
+            Some(Cap::Saver) => self.saver_method(name, args, expr).map(Some),
+            Some(_) => self.loader_method(name, args, expr).map(Some),
+            None => Ok(None),
         }
     }
 
@@ -160,6 +200,10 @@ impl Interp {
                 Ok(x) => Ok(Value::Float(x)),
                 Err(_) => Err(not_a_number(text, "a float", span)),
             },
+            ("bytes", "fromhex", [Value::Str(text)]) => match from_hex(text) {
+                Ok(data) => Ok(Value::Bytes(data)),
+                Err(at) => Err(invalid(hex_problem(text, at), span)),
+            },
             ("str", "from_code", [Value::Int(code)]) => {
                 match u32::try_from(*code).ok().and_then(char::from_u32) {
                     Some(c) => Ok(Value::Str(c.to_string())),
@@ -181,6 +225,16 @@ impl Interp {
         span: Span,
     ) -> Option<Run<Value>> {
         let ty = instance.ty.as_str();
+        // `std.env`'s `Env`, run from its own source: its `get` is written in Rust. It reads the
+        // variables the oracle was started with, as the compiled program reads its own.
+        if ty == "Env" && self.program.from_std.get("std.env.Env").is_some_and(|found| found == "Env") {
+            return Some(match (name, args) {
+                ("get", [Value::Str(variable)]) if named.is_empty() => {
+                    Ok(std::env::var(variable).map_or(Value::None, Value::Str))
+                }
+                _ => unsupported(format!("the Env method `{name}`")),
+            });
+        }
         if !matches!(ty, "Path" | "File" | "IoError") || !self.is_std_type(ty) {
             return None;
         }
@@ -223,6 +277,64 @@ impl Interp {
             (Cap::Stdin, "lines") => Ok(Value::List(Vec::new())),
             (Cap::Stdin, "read_line") => Ok(Value::None),
             (Cap::Args, "len") => Ok(Value::Int(0)),
+            // Standard error is written as the program writes it, and never compared.
+            (Cap::Stderr, "write_line" | "write_text") => match args {
+                [Value::Str(text)] => {
+                    let mut text = text.clone();
+                    if name == "write_line" {
+                        text.push('\n');
+                    }
+                    let _ = std::io::Write::write_all(&mut std::io::stderr(), text.as_bytes());
+                    Ok(Value::Unit)
+                }
+                _ => unsupported(format!("`stderr.{name}` of something other than text")),
+            },
+            (Cap::Stderr, "flush") => Ok(Value::Unit),
+            // The system's clocks, as `std.time`'s `Instant` and `Time`, each moved on by every
+            // `sleep` so far, which takes no time here. What they read can't be known, so a
+            // program's output can't depend on more than their order.
+            (Cap::Clock, "now" | "time") if args.is_empty() => {
+                let slept = self.shared.slept.load(std::sync::atomic::Ordering::Relaxed);
+                let (ty, read) = if name == "now" {
+                    ("Instant", self.shared.started.elapsed().as_nanos())
+                } else {
+                    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+                    ("Time", since.map_or(0, |since| since.as_nanos()))
+                };
+                let nanos = i64::try_from(read.saturating_add(u128::from(slept))).unwrap_or(i64::MAX);
+                let moment = crate::value::Instance {
+                    ty: ty.to_owned(),
+                    case: None,
+                    fields: vec![("nanos".to_owned(), Value::Int(nanos))],
+                };
+                Ok(Value::Instance(Box::new(moment)))
+            }
+            (Cap::Clock, "sleep") => match args {
+                [Value::Instance(duration)] if duration.ty == "Duration" => {
+                    let Some(Value::Int(nanos)) = duration.field("nanos") else {
+                        return unsupported("a Duration without its nanoseconds");
+                    };
+                    let nanos = u64::try_from(*nanos).unwrap_or(0);
+                    self.shared.slept.fetch_add(nanos, std::sync::atomic::Ordering::Relaxed);
+                    Ok(Value::Unit)
+                }
+                _ => unsupported("`clock.sleep` of something other than a Duration"),
+            },
+            // Bytes and seeds that differ every run, as the compiled program's do, so its output
+            // can't depend on them. A count below 0 stops the program, as the runtime's does.
+            (Cap::Entropy, "bytes") => match args {
+                [Value::Int(count)] => match usize::try_from(*count) {
+                    Ok(count) => {
+                        Ok(Value::Bytes((0..count).map(|_| random_word().to_le_bytes()[0]).collect()))
+                    }
+                    Err(_) => crash(format!("`bytes` can't give {count} bytes"), span),
+                },
+                _ => unsupported("`entropy.bytes` of something other than an int"),
+            },
+            (Cap::Entropy, "seed") if args.is_empty() => Ok(Value::Int(random_word().cast_signed())),
+            // No signal comes while the oracle runs a program, so it's never asked to stop.
+            (Cap::Signals, "stopping") => Ok(Value::Bool(false)),
+            (Cap::Signals, "wait") => unsupported("waiting for a signal, which never comes"),
             _ => {
                 let _ = span;
                 unsupported(format!("the capability method `{name}`"))
@@ -271,7 +383,7 @@ impl Interp {
 }
 
 /// The methods that change a list, dict or set where it is.
-const CHANGES: &[&str] = &[
+pub(crate) const CHANGES: &[&str] = &[
     "append",
     "pop",
     "insert",
@@ -334,6 +446,7 @@ fn str_method(text: &str, name: &str, args: &[Value], named: &[(String, Value)],
     let chars = |text: &str| as_int(text.chars().count());
     Ok(match (name, args.len()) {
         ("upper", 0) => Value::Str(text.to_uppercase()),
+        ("encode", 0) => Value::Bytes(text.as_bytes().to_vec()),
         ("lower", 0) => Value::Str(text.to_lowercase()),
         ("strip", 0) => Value::Str(text.trim().to_owned()),
         ("lstrip", 0) => Value::Str(text.trim_start().to_owned()),
@@ -819,4 +932,65 @@ fn padding(fill: &str, count: i64, span: Span) -> Run<String> {
     }
     let Ok(count) = usize::try_from(count) else { return Ok(String::new()) };
     Ok(fill.chars().cycle().take(count).collect())
+}
+
+/// A method of `bytes`: `decode()`, its UTF-8 text or a failure saying why it isn't, and `hex()`
+/// or `hex(sep)`, two lowercase hex digits a byte, with `sep` between bytes.
+fn bytes_method(data: &[u8], name: &str, args: &[Value], span: Span) -> Run<Value> {
+    match (name, args) {
+        ("decode", []) => match std::str::from_utf8(data) {
+            Ok(text) => Ok(Value::Str(text.to_owned())),
+            Err(error) => Err(invalid(format!("these bytes aren't UTF-8 text: {error}"), span)),
+        },
+        ("hex", []) => Ok(Value::Str(hex(data, ""))),
+        ("hex", [Value::Str(sep)]) => Ok(Value::Str(hex(data, sep))),
+        _ => unsupported(format!("the bytes method `{name}`")),
+    }
+}
+
+/// Each byte as two lowercase hex digits, with `sep` between bytes.
+fn hex(data: &[u8], sep: &str) -> String {
+    let digits: Vec<String> = data.iter().map(|byte| format!("{byte:02x}")).collect();
+    digits.join(sep)
+}
+
+/// The bytes that pairs of hex digits spell, with ASCII whitespace allowed between pairs, or the
+/// place, in characters, of what doesn't fit.
+fn from_hex(text: &str) -> Result<Vec<u8>, usize> {
+    let mut data = Vec::new();
+    let mut chars = text.chars().enumerate();
+    while let Some((at, c)) = chars.next() {
+        if c.is_ascii_whitespace() {
+            continue;
+        }
+        let high = c.to_digit(16).ok_or(at)?;
+        let Some((next, low)) = chars.next() else { return Err(at + 1) };
+        let low = low.to_digit(16).ok_or(next)?;
+        data.push(u8::try_from(high * 16 + low).map_err(|_| at)?);
+    }
+    Ok(data)
+}
+
+/// What `bytes.fromhex` fails with, stopped at `at`.
+fn hex_problem(text: &str, at: usize) -> String {
+    match text.chars().nth(at) {
+        Some(c) => format!(
+            "`fromhex` needs two hex digits for each byte, but found {} at {at}",
+            crate::text::quoted(&c.to_string())
+        ),
+        None => {
+            "`fromhex` needs two hex digits for each byte, but the text ends halfway through one".to_owned()
+        }
+    }
+}
+
+/// A word no run can know beforehand: hashed with keys `std` draws from the system for each new
+/// hasher, so it's new every time. It's for an `Entropy`'s bytes and seeds, which a program's
+/// output can't depend on, never for secrets.
+fn random_word() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    static DRAWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(DRAWN.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    hasher.finish()
 }

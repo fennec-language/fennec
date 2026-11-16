@@ -563,6 +563,88 @@ fn except_handles_a_failure_in_each_form() -> std::io::Result<()> {
     )
 }
 
+/// `case _: fail why` passes up only what the earlier cases left, the set of errors made smaller:
+/// two of three left, and one error left once each case of an error with cases is taken.
+const EXCEPT_NARROWS: &str = r#"error Finished:
+    at: int
+
+error Gone:
+    path: str
+
+error Bad:
+    line: int
+
+error Net:
+    Closed
+    Timeout(seconds: int)
+
+def load(n: int) -> int fails Finished | Gone | Bad:
+    if n == 1:
+        fail Finished(at=1)
+    if n == 2:
+        fail Gone(path="x")
+    if n == 3:
+        fail Bad(line=3)
+    return n
+
+def read(n: int) -> int fails Net | Bad:
+    if n == 1:
+        fail .Closed
+    if n == 2:
+        fail .Timeout(seconds=2)
+    if n == 3:
+        fail Bad(line=3)
+    return n
+
+def first(n: int) -> int fails Gone | Bad:
+    x = load(n) except why:
+        case Finished(at):
+            at * 10
+        case _:
+            fail why
+    return x
+
+def cases(n: int) -> int fails Bad:
+    x = read(n) except why:
+        case .Closed:
+            0
+        case .Timeout(seconds):
+            seconds
+        case _:
+            fail why
+    return x
+
+def main(stdout: Stdout):
+    for n in range(5):
+        got = first(n) except why:
+            case Gone(path):
+                stdout.print(f"gone {path}")
+                -1
+            case Bad(line):
+                stdout.print(f"bad {line}")
+                -2
+        stdout.print(got)
+        more = cases(n) except why:
+            stdout.print(f"cases failed: {why.line}")
+            -3
+        stdout.print(more)
+    return
+"#;
+
+/// A failure `except why:`'s earlier cases left is passed up as the smaller set it is, and the
+/// caller's cases each find their own error in it.
+#[test]
+fn what_earlier_except_cases_left_is_failed_with_as_the_smaller_set() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "except_narrows",
+        EXCEPT_NARROWS,
+        "0\n0\n10\n0\ngone x\n-1\n2\nbad 3\n-2\ncases failed: 3\n-3\n4\n4\n",
+    )
+}
+
 /// Built with every type that doesn't contain itself in place and with `FENNEC_BOXED_TYPES=1`, in
 /// dev and release, a program prints `wanted` each way and ends with nothing held.
 fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
@@ -586,6 +668,24 @@ fn same_in_place_and_boxed(name: &str, source: &str, wanted: &str) -> std::io::R
         }
     }
     Ok(())
+}
+
+/// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
+/// `mine.visits`, `mine = other` and then `mine.visits[key] = fresh` wrote where the lookup had
+/// found the key: in the dict `mine` held before, which the caller still had, so the caller's
+/// value changed and the new dict never got the key. For a struct's value and a plain word, and
+/// where nothing else held the first dict, so the entry written was in a block already let go of.
+/// It prints what the reference evaluator prints, and what's left at the end is nothing.
+#[test]
+fn a_store_after_its_struct_is_replaced_goes_into_the_dict_there_now() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_in_place_and_boxed(
+        "store_after_dict_replaced",
+        include_str!("fixtures/store_after_dict_replaced.fen"),
+        include_str!("fixtures/store_after_dict_replaced.out"),
+    )
 }
 
 /// A struct holding a `u64`, an `f32`, `bytes`, a set, a text, a `str?` and a dict is held in place,
@@ -1288,6 +1388,79 @@ def main(stdout: Stdout):
         stdout.print(why.why)
     _ = sized
 "#;
+
+/// Three `with` blocks inside each other, over a source whose cleanup says it ran, left from the
+/// innermost every way it can be: falling out, `return`, `break`, a `?`, a `fail`, a `fail` in a
+/// loop of its own, `continue`, and a launched task's failure. Each cleanup runs once, innermost
+/// first, on every way out, as it did before a block's cleanup was written once and failures
+/// left it to that.
+const EVERY_WAY_OUT: &str = r#"from std.concurrent import Closed, Crashed
+
+error Shut:
+    name: str
+
+def guarded(name: str, stdout: Stdout) -> with str fails Shut:
+    stdout.print("open", name)
+    lend name except:
+        stdout.print("failed out of", name)
+    stdout.print("closed", name)
+
+def checked(n: int) -> int fails Shut:
+    if n == 3:
+        fail Shut(name="checked")
+    return n
+
+def task_fails() fails Shut:
+    fail Shut(name="task")
+
+def through(way: int, stdout: Stdout) -> int fails Shut | Closed | Crashed:
+    for round in range(2):
+        with guarded("a", stdout)? as a:
+            with guarded("b", stdout)? as b:
+                with guarded("c", stdout)? as c:
+                    if way == 1:
+                        return 1
+                    if way == 2:
+                        break
+                    if way == 3:
+                        got = checked(3)?
+                        stdout.print("not here", got)
+                    if way == 4:
+                        fail Shut(name="block")
+                    if way == 5:
+                        for k in range(3):
+                            if k == 1:
+                                fail Shut(name="loop")
+                    if way == 6 and round == 0:
+                        continue
+                    if way == 7:
+                        with launch(() => task_fails()?)?:
+                            stdout.print("in", a, b, c)
+                    stdout.print("end of block", round)
+        stdout.print("round", round)
+    return 0
+
+def main(stdout: Stdout):
+    for way in range(8):
+        stdout.print("way", way)
+        got = through(way, stdout) except why:
+            stdout.print("failed", why)
+            -1
+        stdout.print("gave", got)
+    return
+"#;
+
+#[test]
+fn every_way_out_of_nested_with_blocks_cleans_up_innermost_first() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "every_way_out",
+        EVERY_WAY_OUT,
+        "way 0\nopen a\nopen b\nopen c\nend of block 0\nclosed c\nclosed b\nclosed a\nround 0\nopen a\nopen b\nopen c\nend of block 1\nclosed c\nclosed b\nclosed a\nround 1\ngave 0\nway 1\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\ngave 1\nway 2\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\ngave 0\nway 3\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"checked\")\ngave -1\nway 4\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"block\")\ngave -1\nway 5\nopen a\nopen b\nopen c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"loop\")\ngave -1\nway 6\nopen a\nopen b\nopen c\nclosed c\nclosed b\nclosed a\nopen a\nopen b\nopen c\nend of block 1\nclosed c\nclosed b\nclosed a\nround 1\ngave 0\nway 7\nopen a\nopen b\nopen c\nin a b c\nfailed out of c\nfailed out of b\nfailed out of a\nfailed Shut(name=\"task\")\ngave -1\n",
+    )
+}
 
 /// Leaving a `with` block from a `case` arm under `except why:`, or from the one case of
 /// `except Case():`, runs its source's cleanup as leaving from anywhere else in the block does:
@@ -2596,6 +2769,181 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
         include_str!("fixtures/workers/lock_undo_by_crash.fen"),
         "wrong 0 crashed True kept True\n",
     )
+}
+
+/// A value that's out of the list or dict holding it goes back when a crash leaves the function,
+/// before anything looks at what it came out of. Taken out by a method on it or by hand, in the
+/// function that made the list or dict, in one handed it by `ref`, in a struct through `ref self`,
+/// and in a function handed part of what a lock holds, a task then crashing partway:
+/// - **Under a lock** the value is as it was before the lock. The rollback found the list or dict
+///   still holding what was there when the value came out, let go of that a second time, and left
+///   the lock's value holding a block that was gone.
+/// - **With no lock** nothing the task made outlives it. What the value had come to hold was never
+///   let go of.
+///
+/// It prints what the reference evaluator prints, on one thread and on four, with nothing left.
+#[test]
+fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("taken_out_when_a_task_crashes")?;
+    let program = dir.join("taken_out_when_a_task_crashes.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/taken_out_when_a_task_crashes.fen"))?;
+    let (program, executable) =
+        (program.to_string_lossy().into_owned(), dir.join("taken_out_when_a_task_crashes"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .output_within()?;
+            let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+            let wanted = include_str!("fixtures/workers/taken_out_when_a_task_crashes.out");
+            let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(printed, wanted, "{how:?}, {threads} threads: {errors}");
+            assert!(ran.status.success(), "{how:?}, {threads} threads: {errors}");
+            let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+            assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads: {counts}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A struct's field defaulting to an empty list, dict or set reads one made once, so a value
+/// nothing writes to makes no block: a thousand more values built and only read make exactly as
+/// many blocks as ten, on one thread and on four. Each default made a block of its own for every
+/// value, two for every HTTP response.
+///
+/// What's written goes nowhere else. A value written to gets a block of its own at the first
+/// write, with the values built before and after it still empty, as are a second holder of the
+/// same value, a default that's a struct with defaults of its own, each copy of a generic struct,
+/// an enum case's and an error's, a value changed under a lock that fails, and values built and
+/// written on a task while `main` writes its own. Nothing is left at the end.
+#[test]
+fn a_field_defaulting_to_an_empty_collection_makes_nothing_until_written() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("empty_defaults_shared")?;
+    let program = dir.join("empty_defaults_shared.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/empty_defaults_shared.fen"))?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("empty_defaults_shared"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let mut made_by = Vec::new();
+            for made in ["10", "1010"] {
+                let ran = Command::new(&executable)
+                    .arg(made)
+                    .env("FENNEC_COUNTS", "1")
+                    .env("FENNEC_THREADS", threads)
+                    .output_within()?;
+                let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+                let wanted = include_str!("fixtures/workers/empty_defaults_shared.out");
+                assert_eq!(printed, wanted, "{how:?}, {threads} threads, {made} made");
+                let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads, {made} made: {counts}");
+                made_by.push((count(counts, "allocations"), count(counts, "copies")));
+            }
+            assert!(made_by.iter().all(|(blocks, _)| blocks.is_some()), "{how:?}: {made_by:?}");
+            assert_eq!(
+                made_by.first(),
+                made_by.last(),
+                "{how:?}, {threads} threads: the blocks made and the copies, with 10 values only read and with 1010"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// One write to one entry of a `Table`, a dict or a list that a `shared` value holds, under
+/// `lock ... as ref`: an item's field, a list inside it, the item whole, and a `Table`'s remove and
+/// add. Each is written in the lock's own block and through a `ref self` method, and ends
+/// normally, by failing, and by crashing in a task. What's left is what the writes that ended make
+/// of a plain value, at 40 entries and at 400.
+///
+/// And a write costs the same however much the lock holds: two rounds more of every write copy
+/// exactly as much at 400 entries as at 40. The lock's log can change a `Table`, a list or a dict
+/// it marked where it is, the one item saved, but only when the write asks it for that item. A
+/// `Table`'s writes never did, and nothing called from a lock's block did, so each copied the
+/// whole `Table` or dict: 4.2 MB for these two rounds at 400 entries, where 15 KB is copied now.
+#[test]
+fn a_write_under_a_lock_costs_the_same_however_much_the_lock_holds() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("lock_writes_one_item")?;
+    let program = dir.join("lock_writes_one_item.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/lock_writes_one_item.fen"))?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("lock_writes_one_item"));
+    let output = executable.to_string_lossy().into_owned();
+    // The number after a label in what a run says it copied.
+    let said = |counts: &str, label: &str| -> u64 {
+        counts
+            .split_once(label)
+            .and_then(|(_, after)| after.split(' ').next())
+            .and_then(|number| number.parse().ok())
+            .unwrap_or(u64::MAX)
+    };
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let mut two_rounds_more = Vec::new();
+        for (entries, left) in [("40", "left 8382 228270906"), ("400", "left 84162 617508521")] {
+            let mut copied = Vec::new();
+            for rounds in ["1", "3"] {
+                let ran = Command::new(&executable)
+                    .args([entries, rounds])
+                    .env("FENNEC_COUNTS", "1")
+                    .output_within()?;
+                let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+                if rounds == "3" {
+                    let wanted = format!("wrong 0 kept 60 failed 60 crashed 60\n{left}\n");
+                    assert_eq!(printed, wanted, "{how:?}, {entries} entries");
+                } else {
+                    let ended = printed.starts_with("wrong 0 kept 20 failed 20 crashed 20\n");
+                    assert!(ended, "{how:?}, {entries} entries: {printed}");
+                }
+                let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+                let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+                assert!(counts.ends_with(" live 0"), "{how:?}, {entries} entries: {counts}");
+                copied.push((said(counts, "copies "), said(counts, "copied_bytes ")));
+            }
+            let [(first, first_bytes), (third, third_bytes)] = copied[..] else { unreachable!() };
+            two_rounds_more.push((third - first, third_bytes - first_bytes));
+        }
+        assert_eq!(
+            two_rounds_more.first(),
+            two_rounds_more.last(),
+            "{how:?}: what two rounds more copy, and its bytes, at 40 entries and at 400"
+        );
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 /// A lock on a struct with a list, a dict and a string, changed in place: kept, failed, crashed in
@@ -6321,8 +6669,9 @@ fn walking_a_map_in_a_cell_while_another_name_changes_it() -> std::io::Result<()
     same_as_expected_in_both_builds("shared_map_walked", include_str!("fixtures/shared_map_walked.fen"))
 }
 
-/// `==` on `shared` values, alone and inside other values: the same only if they're one value, as
-/// comparing what two hold would take a second lock while one is held.
+/// `==` on `shared` values, alone and inside other values: a struct, a list, `in`, `index`, an
+/// enum's case and an optional. They're equal when what they hold is, as decided on 2026-11-14.
+/// Until then they were the same only if they were one value, which is what this pinned.
 const SHARED_SAME: &str = "struct Account:
     total = 0
 
@@ -6350,12 +6699,14 @@ def main(stdout: Stdout):
 ";
 
 #[test]
-fn shared_values_are_the_same_only_if_they_are_one_value() -> std::io::Result<()> {
+fn shared_values_inside_other_values_are_equal_when_what_they_hold_is() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
+    // What the reference evaluator prints for it too.
     let (printed, ..) = pinned_outcome("shared_same_said", SHARED_SAME)?;
-    let wanted = "True True False False True\nTrue False\nTrue False False True 1\nTrue False\nTrue False\nTrue False\n";
+    let wanted =
+        "True True True False False\nTrue True\nTrue True True True 0\nTrue True\nTrue True\nTrue False\n";
     assert_eq!(printed, wanted);
     same_as_expected_in_both_builds("shared_same", SHARED_SAME)?;
     // A type's own `def ==` still decides, wherever it's written.
@@ -6486,6 +6837,65 @@ def main(stdout: Stdout):
     lock log as lines:
         stdout.print(lines)
 ";
+
+/// A function giving back something narrower fits where one giving the wider thing goes, as one
+/// giving an `Answer` where `(int) -> Answer?` goes, natively: an arrow written at the call, a
+/// function named there, a nested function, either of those kept in a struct's field, and a
+/// function taking an `Answer?` where `(Answer) -> int` goes. It wasn't lowered: "it gives
+/// (int) -> Answer where (int) -> Answer? goes".
+#[test]
+fn a_function_giving_something_narrower_fits_where_a_wider_one_goes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "arrow_fitted",
+        r#"struct Answer:
+    status: int
+    body: str
+
+struct Route:
+    name: str
+    respond: (int) -> Answer?
+
+def first(found: list[int], make: (int) -> Answer?) -> Answer?:
+    for number in found:
+        answer = make(number)
+        if answer is not None:
+            return answer
+    return None
+
+def plain(number: int) -> Answer:
+    return Answer(status=number, body="from a function named where the closure goes")
+
+def loose(answer: Answer?) -> int:
+    if answer is None:
+        return -1
+    return answer.status
+
+def statuses(answers: list[Answer], read: (Answer) -> int) -> list[int]:
+    return [read(answer) for answer in answers]
+
+def main(stdout: Stdout):
+    offset = 40
+    always = first([1, 2], (number) => Answer(status=number + offset, body="made"))
+    maybe = first([1, 2], (number) => Answer(status=number, body="even") if number % 2 == 0 else None)
+    named = first([3, 4], plain)
+    def nested(number: int) -> Answer:
+        return Answer(status=number + offset, body="nested")
+    kept = first([5, 6], nested)
+    route = Route(name="nested", respond=nested)
+    other = Route(name="named", respond=plain)
+    stdout.print(always, maybe, named, kept)
+    respond = route.respond
+    again = other.respond
+    stdout.print(respond(7), again(8), route.name, other.name)
+    stdout.print(statuses([Answer(status=9, body="a")], loose))
+    return
+"#,
+        "Answer(status=41, body=\"made\") Answer(status=2, body=\"even\") Answer(status=3, body=\"from a function named where the closure goes\") Answer(status=45, body=\"nested\")\nAnswer(status=47, body=\"nested\") Answer(status=8, body=\"from a function named where the closure goes\") nested named\n[9]\n",
+    )
+}
 
 /// An arrow failing fewer ways than the function type it's given for, as one failing with
 /// `Refused` where `() -> str fails Refused | Shut` goes, is made as failing all of them, natively:
@@ -9471,14 +9881,17 @@ fn the_examples_it_takes_print_what_they_should() -> std::io::Result<()> {
             Ok(_) if not_native_yet(path) => now_native.push(path),
             Err(_) if not_native_yet(path) => {}
             Err(why) => failed.push(format!("{}: {why}", path.display())),
-            Ok(printed) if printed != std::fs::read_to_string(path.with_extension("out"))? => {
-                wrong.push(path);
+            Ok(printed) => {
+                // What it printed is shown, since a platform only CI runs on can't be asked.
+                let should = std::fs::read_to_string(path.with_extension("out"))?;
+                if printed != should {
+                    wrong.push(format!("{}: printed {printed:?}, not {should:?}", path.display()));
+                }
             }
-            Ok(_) => {}
         }
     }
     assert!(now_native.is_empty(), "these build natively now: take them off NOT_NATIVE_YET: {now_native:?}");
-    assert!(wrong.is_empty(), "printed the wrong thing: {wrong:?}");
+    assert!(wrong.is_empty(), "printed the wrong thing:\n{}", wrong.join("\n"));
     assert!(failed.is_empty(), "these didn't build through LLVM, or failed:\n{}", failed.join("\n"));
     Ok(())
 }
@@ -12545,6 +12958,71 @@ fn a_trace_counts_what_a_plain_build_counts() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A trace counts what tasks and `parallel`'s workers cost too, where a server's or a worker
+/// pool's cost is, and says which kind of thread each place's cost was on.
+#[test]
+fn a_trace_counts_what_tasks_and_parallel_workers_cost_and_says_where() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = "\
+from std.concurrent import Crashed
+
+struct Said:
+    total: int
+
+def built(n: int) -> int:
+    pair = [n, n + 1]
+    return pair[0]
+
+def summed(n: int) -> int:
+    mut total = 0
+    for i in range(3):
+        total += built(n + i)
+    return total
+
+def tasked(said: shared Said):
+    mut total = 0
+    for i in range(20):
+        total += built(i)
+    lock said as ref held:
+        held.total += total
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    shared said = Said(total=0)
+    # A loop in its body sends it to the pool, however few its items.
+    workers = sum([summed(n) for n in parallel(range(30))])
+    with launch(() => tasked(said))?:
+        pass
+    lock said as held:
+        stdout.print(workers, held.total)
+    return
+";
+    let dir = folder("trace_threads")?;
+    let program = dir.join("threads.fen");
+    std::fs::write(&program, source)?;
+    let path = program.to_string_lossy().into_owned();
+    let traced = fennec(&["dev", "trace", &path], &dir)?;
+    let (said, errors) = (String::from_utf8_lossy(&traced.stdout), String::from_utf8_lossy(&traced.stderr));
+    assert!(traced.status.success(), "{errors}");
+    // The list each call makes, counted where each call ran: none of them on the main thread.
+    let at = |on: &str| {
+        said.lines().find(|line| line.contains(".fen:7:") && line.contains(on)).unwrap_or_default()
+    };
+    assert!(at(", in a task:").contains("20 allocations"), "{said}");
+    assert!(at(", on a parallel worker:").contains("90 allocations"), "{said}");
+    assert!(at(", on main:").is_empty(), "{said}");
+    assert!(said.lines().any(|line| line.starts_with("  in a task: ")), "{said}");
+
+    let json = fennec(&["dev", "trace", "--json", &path], &dir)?;
+    let json = String::from_utf8_lossy(&json.stdout);
+    assert!(json.contains("\"ran_on\":\"task\"") && json.contains("\"ran_on\":\"parallel\""), "{json}");
+    assert!(json.contains("\"by_thread\":{"), "{json}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 #[test]
 fn looping_one_list_of_a_packed_copies_and_allocates_nothing() -> std::io::Result<()> {
     if !ready() {
@@ -12796,6 +13274,49 @@ fn json_dumps_grows_its_text_in_place() -> std::io::Result<()> {
     // item made it sixteen times.
     assert!(big_bytes < small_bytes * 6, "{small_bytes} bytes, then {big_bytes}");
     Ok(())
+}
+
+/// A generic function writes a `T: Serializable` as JSON, and reads a `T: Deserializable`, each
+/// copy natively as its own type: a struct, a struct holding a list, a list of ints, a list of
+/// structs, and a struct read back.
+const GENERIC_JSON: &str = r#"from std import json
+
+struct Account:
+    name: str
+
+struct Note:
+    title: str
+    tags: list[str]
+
+def answer[T: Serializable](status: int, value: T) -> str:
+    return f"{status} {json.dumps(value)}"
+
+def many[T: Serializable](values: list[T]) -> str:
+    return json.dumps(values)
+
+def back[T: Deserializable](text: str) -> T fails ParseError:
+    return json.loads[T](text)?
+
+def main(stdout: Stdout) fails ParseError:
+    stdout.print(answer(201, value=Account(name="ash")))
+    stdout.print(answer(200, value=Note(title="hi", tags=["a", "b"])))
+    stdout.print(answer(200, value=[1, 2, 3]))
+    stdout.print(many([Account(name="a"), Account(name="b")]))
+    note = back[Note]("{\"title\": \"x\", \"tags\": [\"t\"]}")?
+    stdout.print(note.title, len(note.tags))
+    return
+"#;
+
+#[test]
+fn a_type_parameter_bounded_to_be_saved_is_written_and_read_as_json_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generic_json",
+        GENERIC_JSON,
+        "201 {\"name\": \"ash\"}\n200 {\"title\": \"hi\", \"tags\": [\"a\", \"b\"]}\n200 [1, 2, 3]\n[{\"name\": \"a\"}, {\"name\": \"b\"}]\nx 1\n",
+    )
 }
 
 #[test]
@@ -14425,6 +14946,65 @@ fn process_options_called_natively_match_what_was_pinned() -> std::io::Result<()
     Ok(())
 }
 
+/// `process.run` in a task parks while its program runs, holding no thread: each of its cases
+/// runs in a `parallel` round as `run` promises, and 70 programs wait at once, past the blocking
+/// threads there are, for a file another round writes. Held on a blocking thread each, as they
+/// were, the waiters took every one, the write waited behind them, and they waited for it until
+/// their 20-second timeouts (#1791).
+///
+/// It's built for a heap audit and run under it on 1, 4 and 16 threads, each run cut off at two
+/// minutes: it ends with what it should have printed, nothing live and nothing said.
+#[test]
+#[cfg(unix)]
+fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("process-runs-parked")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "process_runs_parked_in_tasks";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    let wanted = "0: status 0, out a b|*|, 0 bytes on stderr\n\
+                  1: status 0, out 1048576, 0 bytes on stderr\n\
+                  2: timed out\n\
+                  3: too much output, past 1000\n\
+                  4: status 0, out , 0 bytes on stderr\n\
+                  5: timed out\n\
+                  6: status 3, out , 5 bytes on stderr\n\
+                  7: status 0, out , 0 bytes on stderr\n\
+                  70 waiters: status 0, out here, 0 bytes on stderr\n\
+                  wrote\n";
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("TMPDIR", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, wanted, "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
 /// listed and not gone into, and through an `Fs` narrowed to one folder.
 #[cfg(unix)]
@@ -15788,6 +16368,136 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A server can be stopped from inside its program, each way there is. Served from a launched
+/// task, nothing could end it: closing it did nothing, as its listener is with its workers while
+/// it's served and not among the open sockets, and a task told to stop while it served went on
+/// waiting for its server. So a program that served in a task could never end.
+///
+/// - `server.close()` ends a loop over the server, and `serve`, as their docs say: it takes no more
+///   connections, the rounds running finish, and the task goes on past the loop. A task can
+///   close a server `main` serves the same way.
+/// - Failing out of the block that launched the task stops the task, and its server with it.
+/// - So does the block's `stop_after`, when the block ends with the task still serving.
+///
+/// Each program is its own client, and each is built for a heap audit and run under it: it ends
+/// with what it should have printed, nothing live and nothing said. A task prints beside `main`,
+/// so the lines are compared in any order.
+#[test]
+fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("server-stopped-inside")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shapes: [(&str, &[&str]); 5] = [
+        ("server_closed_while_served", &["closed", "hello", "stopped", "the loop ended"]),
+        ("server_served_by_main_closed_by_a_task", &["hello", "stopped", "the loop ended"]),
+        (
+            "http_server_closed_while_served",
+            &["200 hello /burrow", "200 hello /den", "serve returned", "stopped"],
+        ),
+        ("server_stopped_by_a_failed_block", &["200 hello /den", "finished after 1", "stopped"]),
+        ("server_stopped_by_stop_after", &["200 hello /den", "stopped"]),
+    ];
+    for (shape, wanted) in shapes {
+        let program = dir.join(format!("{shape}.fen"));
+        std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+        let executable = dir.join(shape);
+        let built = crate::executables::fennec_command()
+            .args(["build", "--llvm"])
+            .arg(&program)
+            .arg("-o")
+            .arg(&executable)
+            .env("FENNEC_HOME", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_NO_DAEMON", "1")
+            .env_remove("FENNEC_THREADS_RUNTIME")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4", "16"] {
+            let how = format!("{shape} on {threads} threads");
+            // A server that isn't stopped waits for ever, spending nothing: two minutes by the
+            // clock says so, where these take under a second.
+            let ended = Command::new(&executable)
+                .env("FENNEC_AUDIT", "1")
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .env_remove("FENNEC_AUDIT_SELFTEST")
+                .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+            let (printed, said) =
+                (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+            assert_eq!(ended.status.code(), Some(0), "{how}: {printed}{said}");
+            let mut lines: Vec<&str> = printed.lines().collect();
+            lines.sort_unstable();
+            assert_eq!(lines, wanted, "{how}: {said}");
+            assert!(said.contains(" live 0"), "{how}: {said}");
+            assert!(!said.contains("heap audit"), "{how}: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
+/// A server's blocking work isn't starved by clients waiting on that same server. Clients in
+/// `parallel` rounds `net.post` to a server served from a task, whose handler writes to SQLite on
+/// a blocking thread. When each client's exchange held a blocking thread while it waited for its
+/// answer, eight clients took all of a fixed eight, the handlers queued behind them, and the
+/// clients failed at their 30-second timeout. Exchanges park on their sockets now (#1823), and the
+/// pool grows while every thread is busy, so the handlers get theirs at 300 clients too.
+///
+/// Each run is built for a heap audit and run under it, on 1, 4 and 16 threads: it ends with
+/// what it should have printed, nothing live and nothing said.
+#[test]
+fn a_servers_blocking_work_isnt_starved_by_its_own_clients() -> std::io::Result<()> {
+    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32, 300])
+}
+
+/// Builds `served_handler_blocks_while_clients_post.fen` for a heap audit, and runs it with each
+/// number of `clients` on 1, 4 and 16 threads. Every client's answer has to be saved.
+fn served_while_its_clients_post(name: &str, clients: &[usize]) -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder(name)?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "served_handler_blocks_while_clients_post";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for &count in clients {
+        for threads in ["1", "4", "16"] {
+            let how = format!("{count} clients on {threads} threads");
+            // A starved server fails its clients at their 30-second timeout, in waves: two minutes
+            // by the clock says so, where these take under a second.
+            let ended = Command::new(&executable)
+                .env("CLIENTS", count.to_string())
+                .env("TMPDIR", &dir)
+                .env("FENNEC_AUDIT", "1")
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .env_remove("FENNEC_AUDIT_SELFTEST")
+                .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+            let (printed, said) =
+                (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+            assert_eq!(ended.status.code(), Some(0), "{how}: {printed}{said}");
+            assert_eq!(printed, format!("{count} of {count} saved\n{count} rows kept\n"), "{how}: {said}");
+            assert!(said.contains(" live 0"), "{how}: {said}");
+            assert!(!said.contains("heap audit"), "{how}: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// Runs the echo server at `executable` under a heap audit on two workers, has it serve five
 /// lines and a stop, six rounds, and gives how it ended and what it said. `selftest` is what
 /// `FENNEC_AUDIT_SELFTEST` is set to, if anything.
@@ -15933,7 +16643,17 @@ fn a_block_a_round_leaves_is_found_wherever_the_server_runs() -> std::io::Result
                     Some(how) => command.env("FENNEC_AUDIT_SELFTEST", how),
                     None => command.env_remove("FENNEC_AUDIT_SELFTEST"),
                 };
-                let ended = command.output_within()?;
+                // Each takes under a second, and one that waits for something that never comes
+                // spends nothing: a minute by the clock says so, and which program it was. On
+                // Windows the second one's clients, in a task, blocked the one worker that had to
+                // answer them, and the test took its ten minutes to say only that something hung.
+                let ended = command
+                    .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(60))
+                    .map_err(|error| {
+                        let leaving = if selftest.is_some() { ", leaving a block a round" } else { "" };
+                        let said = format!("{shape} on {threads} threads{leaving}: {error}");
+                        std::io::Error::new(error.kind(), said)
+                    })?;
                 Ok((ended.status.code(), String::from_utf8_lossy(&ended.stderr).into_owned()))
             };
             let how = format!("{shape} on {threads} threads");
@@ -16553,6 +17273,70 @@ fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()>
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "done\n", "{}", String::from_utf8_lossy(&ran.stderr));
     Ok(())
+}
+
+/// What `main` printed comes out before the end of a `with launch` block waits for its task. A
+/// task writes what it printed before it parks or waits, and this wait on the program's own
+/// thread didn't: a program waiting there for a task that goes on, a server say, showed nothing
+/// of what it had printed, and lost it if it was stopped.
+///
+/// The task ends only when a line comes on standard input, so the program is surely waiting at
+/// its block's end when its first line is read, and the test then gives it the line. Built for a
+/// heap audit and run under it, on 1, 4 and 16 threads: it ends with nothing live and nothing said.
+#[test]
+fn what_main_printed_comes_out_before_a_block_end_waits_for_its_task() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("printed-before-waiting")?;
+    let program = dir.join("printed.fen");
+    std::fs::write(&program, include_str!("fixtures/printed_before_a_block_end_waits.fen"))?;
+    let executable = dir.join("printed");
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let mut command = Command::new(&executable);
+        command
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut waiting = Running(command.spawn()?);
+        // Read while the task still waits for its line: nothing has been given it yet.
+        assert_eq!(waiting.first_line()?, "printed before the block's end", "on {threads} threads");
+        let mut told = waiting.0.stdin.take().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        told.write_all(b"go\n")?;
+        drop(told);
+        let deadline = std::time::Instant::now() + crate::executables::WALL_DEADLINE;
+        let ended = loop {
+            if let Some(status) = waiting.0.try_wait()? {
+                break status;
+            }
+            assert!(std::time::Instant::now() < deadline, "it went on after its task was given a line");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let mut said = String::new();
+        if let Some(mut errors) = waiting.0.stderr.take() {
+            errors.read_to_string(&mut said)?;
+        }
+        assert_eq!(ended.code(), Some(0), "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
 }
 
 /// A channel to `.Every` gives every listener every message. One that falls behind fails loudly
@@ -17645,6 +18429,138 @@ def main(stdout: Stdout) fails Nope:
     )
 }
 
+/// A union with a function member, as a server's `Router | (Request) -> Response`: a struct, an
+/// arrow, a named function and an arrow given to a name of the union's type each go in, and the
+/// function is called once `case _:` or `is` leaves only it.
+#[test]
+fn a_union_with_a_function_member_calls_it_once_narrowed_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_function",
+        r#"struct Table:
+    rows: int
+
+type Answerer = Table | (int) -> str
+
+def twice(number: int) -> str:
+    return str(number * 2)
+
+def use(answer: Answerer) -> str:
+    match answer:
+        case Table(rows):
+            return str(rows)
+        case _:
+            return answer(3)
+
+def also(answer: Answerer) -> str:
+    if answer is Table:
+        return f"table {answer.rows}"
+    return answer(5)
+
+def main(stdout: Stdout):
+    stdout.print(use(Table(rows=2)))
+    stdout.print(use((number) => str(number * 2)))
+    stdout.print(use(twice))
+    held: Answerer = (number) => f"held {number}"
+    stdout.print(also(held), also(Table(rows=7)))
+    return
+"#,
+        "2\n6\n6\nheld 5 table 7\n",
+    )
+}
+
+/// Routes added with `router.get` and the other methods, written in as calls to `handle`, answer
+/// natively: a handler taking its parameters in another order than the path's, a sized int that
+/// doesn't hold what's in the path answering 404, as text that isn't a number does, an arrow
+/// taking its parameter as text, and routes added through a field and a `ref` parameter.
+#[test]
+fn routes_added_with_their_methods_answer_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "checked_routes",
+        r#"from std.net import Router, Request, Response
+
+struct App:
+    router: Router
+    greeting: str
+
+    def add(ref self):
+        self.router.get("/hello/{who}", (request, who) => Response(status=200, body=f"{self.greeting} {who}".encode()))
+
+def home(request: Request) -> Response:
+    return Response(status=200, body="home".encode())
+
+def show(request: Request, id: int) -> Response:
+    return Response(status=200, body=f"note {id + 1}".encode())
+
+def pair(request: Request, name: str, id: u8) -> Response:
+    return Response(status=200, body=f"{name} {id}".encode())
+
+def more(ref router: Router, prefix: str):
+    router.delete("/tags/{tag}", (request, tag) => Response(status=204, body=f"{prefix}{tag}".encode()))
+
+def main(stdout: Stdout):
+    mut app = App(router=Router(), greeting="hi")
+    app.router.get("/", home)
+    app.router.get("/notes/{id}", show)
+    app.router.post("/pairs/{id}/{name}", pair)
+    app.add()
+    more(ref app.router, "tag ")
+    asked = [("GET", "/"), ("GET", "/notes/41"), ("GET", "/notes/abc"), ("POST", "/pairs/7/ann"), ("POST", "/pairs/300/ann"), ("GET", "/hello/bo"), ("DELETE", "/tags/x"), ("GET", "/tags/x")]
+    for method, path in asked:
+        response = app.router.respond(Request(method=method, path=path))
+        text = response.body.decode() except InvalidValue(): "?"
+        stdout.print(f"{method} {path} {response.status} {text}")
+    return
+"#,
+        "GET / 200 home\nGET /notes/41 200 note 42\nGET /notes/abc 404 there's nothing here\n\
+         POST /pairs/7/ann 200 ann 7\nPOST /pairs/300/ann 404 there's nothing here\nGET /hello/bo 200 hi bo\n\
+         DELETE /tags/x 204 tag x\nGET /tags/x 405 this takes DELETE\n",
+    )
+}
+
+/// A function where a function type giving back something wider is written, held in a name of
+/// that type: an arrow giving back `str` where `(int) -> str?` and `(int) -> str | int` go, a named
+/// function where `(int) -> str | int` goes, an arrow giving back `None` given to a `mut` name of
+/// it later, and one where `(int) -> str | (str) -> str` goes, which gives back `str` or a function.
+/// Each is held as the type written, and reads and calls as that.
+#[test]
+fn a_function_held_where_a_wider_function_type_is_written_calls_as_that_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "wider_function_held",
+        r#"type Two = (int) -> str | (str) -> str
+
+def twice(number: int) -> str:
+    return f"{number}{number}"
+
+def keep(answer: Two) -> Two:
+    return answer
+
+def main(stdout: Stdout):
+    maybe: (int) -> str? = (number) => f"maybe {number}"
+    either: (int) -> str | int = (number) => f"either {number}"
+    named: (int) -> str | int = twice
+    mut later: (int) -> str? = twice
+    stdout.print(maybe(1) else "none", either(2), named(3), later(4) else "none")
+    later = (number) => None
+    stdout.print(later(5) else "none")
+    held = keep((number) => f"held {number}")
+    given = held(6)
+    if given is str:
+        stdout.print(given)
+    return
+"#,
+        "maybe 1 either 2 33 44\nnone\nheld 6\n",
+    )
+}
+
 /// What's left of a three-member union after `if store is Lite: return` is the other two, read
 /// natively as the union it was: its members told apart with `is` and `match`, each one's
 /// fields read once it's narrowed to it, a method all of them have called on it, and it given
@@ -18334,6 +19250,176 @@ fn a_secret_stays_hidden_in_what_a_failure_says() -> std::io::Result<()> {
     let main_said = String::from_utf8_lossy(&ran.stderr).into_owned();
     assert!(main_said.contains("Refused.Denied(token=Secret(hidden))"), "{main_said}");
     assert!(!main_said.contains("hunter2"), "{main_said}");
+    Ok(())
+}
+
+/// What the next test builds: `shared` values compared every way.
+const SHARED_EQUAL: &str = r#"from std.concurrent import Crashed
+
+struct Account:
+    total = 0
+
+struct Bank:
+    accounts: list[shared Account]
+
+struct Money:
+    cents: int
+    note: str
+
+    def ==(self, other: Money) -> bool:
+        return self.cents == other.cents
+
+# A type that holds itself, compared through a type's own `==` however deep.
+struct Tree:
+    cost: Money
+    kids: list[Tree]
+
+struct Branch:
+    name: str
+    account: shared Account
+
+def compare_many(first: shared Account, second: shared Account) -> int:
+    mut equal = 0
+    for _ in range(2000):
+        if first == second:
+            equal += 1
+    return equal
+
+def found(accounts: list[shared Account], at: int) -> shared Account?:
+    if at < len(accounts): return accounts[at]
+    return None
+
+def main(stdout: Stdout) fails Crashed:
+    shared ana = Account(total=1)
+    shared ben = Account(total=1)
+    shared cora = Account(total=2)
+    stdout.print(ana == ana, ana == ben, ana == cora, Bank(accounts=[ana]) == Bank(accounts=[ben]))
+    stdout.print(ana != ben, ana != cora, [ana, ben] == [ben, ana], [ana, ben] == [ana, cora], [ana] == [ana, ben])
+    stdout.print((1, ana) == (1, ben), (1, ana) == (1, cora), (2, ana) == (1, ana))
+    everyone = [ana, ben, cora]
+    stdout.print(
+        found(everyone, 0) == found(everyone, 1),
+        found(everyone, 0) == found(everyone, 2),
+        found(everyone, 0) == found(everyone, 9),
+        found(everyone, 9) == found(everyone, 8),
+    )
+    lock cora as ref changed:
+        changed.total = 1
+    stdout.print(ana == cora, Bank(accounts=[ana, ben]) == Bank(accounts=[cora, cora]))
+    one = [Money(cents=1, note="first")]
+    stdout.print(
+        one == [Money(cents=1, note="second")],
+        one == [Money(cents=2, note="first")],
+        one != [Money(cents=1, note="other")],
+    )
+    leaf = Tree(cost=Money(cents=1, note="leaf"), kids=[])
+    grown = Tree(cost=Money(cents=2, note="grown"), kids=[leaf, leaf])
+    stdout.print(grown == Tree(cost=Money(cents=2, note="other"), kids=[leaf, leaf]), grown == leaf, grown.kids == [leaf])
+    # One value on both sides takes its lock once, alone, in a list and inside another `shared` value.
+    shared north = Branch(name="north", account=ana)
+    shared south = Branch(name="north", account=ana)
+    stdout.print(ana in [ana], [ana] == [ana], [ana, ana] == [ana, ben], north == north, north == south, north in [south])
+    # `ana == ben` on one task and `ben == ana` on another, many times over: never ana deadlock.
+    mut here = 0
+    with launch(() => compare_many(ana, second=ben)) as task:
+        here = compare_many(ben, second=ana)
+    stdout.print(here, "done")
+    return
+"#;
+
+/// `==` on two `shared` values compares what they hold, as printing one shows what it holds, and
+/// not which cell each is: equal when what they hold is, one equal to itself, and a change made
+/// under a lock seen by the next comparison. So are a struct, a list, a tuple and an optional
+/// holding one compared, part by part, and a list of a type with its own `==`, which wasn't
+/// lowered, and a type that holds itself, which is compared through a function of its own. Both
+/// locks are held to read while two are compared, taken in the order of their cells: one task
+/// comparing `ana == ben` 2,000 times while `main` compares `ben == ana` ends, on one thread and
+/// on eight. One value on both sides takes its lock once: alone, in a list, and inside another
+/// `shared` value. Native code compared the cells.
+#[test]
+fn shared_values_are_equal_when_what_they_hold_is() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("shared_equal")?;
+    let program = dir.join("shared_equal.fen");
+    std::fs::write(&program, SHARED_EQUAL)?;
+    let (program, executable) = (program.to_string_lossy().into_owned(), dir.join("shared_equal"));
+    let output = executable.to_string_lossy().into_owned();
+    let wanted = "True True False True\nFalse True True False False\nTrue False False\nTrue False False True\nTrue True\nTrue False False\nTrue False False\nTrue True True True True True\n2000 done\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "8"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_THREADS", threads)
+                .env("FENNEC_COUNTS", "1")
+                .output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{how:?}, {threads} threads: {said}");
+            assert!(said.lines().any(|line| line.ends_with(" live 0")), "{how:?}, {threads} threads: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// What the next test builds: failed asserts, each with a `shared` value on a side.
+const SHARED_SHOWN: &str = r#"struct Account:
+    total = 0
+
+struct Bank:
+    name: str
+    first: shared Account
+
+test "the shared value itself"():
+    shared account = Account(total=1)
+    shared other = Account(total=2)
+    assert account == other
+
+test "in a list"():
+    shared account = Account(total=1)
+    assert [account] == []
+
+test "in a tuple"():
+    shared account = Account(total=1)
+    assert (1, account) == (2, account)
+
+test "in a struct"():
+    shared account = Account(total=1)
+    assert Bank(name="a", first=account) == Bank(name="b", first=account)
+"#;
+
+/// A failed `assert` shows a `shared` value on either side as what it holds, as printing it does:
+/// by itself, in a list, in a tuple and in a struct. It showed the cell lowering keeps it in,
+/// `Shared__Account(value=Account(total=1))`.
+#[test]
+fn a_failed_assert_shows_what_a_shared_value_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("shared_shown_in_asserts")?;
+    let program = dir.join("shared_shown_in_asserts.fen");
+    std::fs::write(&program, SHARED_SHOWN)?;
+    let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    let said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    assert!(said.contains("0 passed, 4 failed"), "{said}");
+    assert!(!said.contains("Shared__"), "{said}");
+    for sides in [
+        "the left side is Account(total=1) and the right side is Account(total=2)",
+        "the left side is [Account(total=1)] and the right side is []",
+        "the left side is (1, Account(total=1)) and the right side is (2, Account(total=1))",
+        "the left side is Bank(name=\"a\", first=Account(total=1)) and the right side is Bank(name=\"b\", first=Account(total=1))",
+    ] {
+        assert!(said.contains(sides), "{sides}: {said}");
+    }
     Ok(())
 }
 
@@ -19214,6 +20300,110 @@ fn pack_loads_an_earlier_version_of_a_type_by_its_names() -> std::io::Result<()>
     assert_eq!(
         printed,
         "ana 7.0 1 [\"a\", \"b\"] (5, \"five\") text c-1\n[(1, 2, 0), (3, 4, 0)]\n[\"a\", \"b\", \"c\"] 0\nangry 3 none\nTrue\n`rank` isn't in the data, and has no default, at byte 282\n`name` was saved as text, not an int, at byte 234\n`mood` was saved as `NoAngry.Angry`, a case `NoAngry` doesn't have now, at byte 244\n`code` isn't in the type now, and holds a `Code`, which saves itself its own way, so where it ends can't be found, at byte 267\n`pair` was saved as a tuple of 2 items, not 3, at byte 255\nloaded this was packed from a different `After`, at byte 4\n282 60\n"
+    );
+    Ok(())
+}
+
+/// What the next test packs with the first version of its generic types: each value's bytes, a
+/// line each.
+const GENERIC_PACK_FIRST: &str = r#"from std import pack
+
+struct Pair[T]:
+    first: T
+    second: T
+
+struct Box[T]:
+    held: T
+    count: int
+
+enum Maybe[T]:
+    Some(value: T, note: str)
+    Nothing
+
+struct Holder:
+    pair: Pair[int]
+    label: str
+
+## A value's bytes as numbers apart by commas.
+def shown(data: bytes) -> str:
+    return ",".join([f"{data[at]}" for at in range(len(data))])
+
+def main(stdout: Stdout):
+    boxes: Pair[Box[int]] = Pair(first=Box(held=3, count=4), second=Box(held=5, count=6))
+    maybe: Maybe[int] = .Some(value=7, note="seven")
+    stdout.print(shown(pack.dumps(Pair(first=1, second=2))))
+    stdout.print(shown(pack.dumps(boxes)))
+    stdout.print(shown(pack.dumps(maybe)))
+    stdout.print(shown(pack.dumps(Holder(pair=Pair(first=8, second=9), label="h"))))
+    stdout.print(shown(pack.dumps([Pair(first=10, second=11)])))
+    stdout.print(shown(pack.dumps({"k": Pair(first=12, second=13)})))
+    stdout.print(shown(pack.dumps((Pair(first=14, second=15), 16))))
+"#;
+
+/// The next version of those types, each with its fields moved, loading what the first saved.
+const GENERIC_PACK_NEXT: &str = r#"from std import pack
+
+struct Pair[T]:
+    second: T
+    first: T
+
+struct Box[T]:
+    count: int
+    held: T
+
+enum Maybe[T]:
+    Some(note: str, value: T)
+    Nothing
+
+struct Holder:
+    pair: Pair[int]
+    label: str
+
+## The bytes numbers apart by commas stand for.
+def bytes_of(text: str) -> bytes:
+    mut items = list[int]()
+    for part in text.split(","):
+        number = int.parse(part) except InvalidValue(): 0
+        items.append(number)
+    return bytes(items)
+
+def main(stdout: Stdout) fails ParseError:
+    saved = [SAVED]
+    pair = pack.loads[Pair[int]](bytes_of(saved[0]))?
+    stdout.print(pair.first, pair.second)
+    boxes = pack.loads[Pair[Box[int]]](bytes_of(saved[1]))?
+    stdout.print(boxes.first.held, boxes.first.count, boxes.second.held, boxes.second.count)
+    match pack.loads[Maybe[int]](bytes_of(saved[2]))?:
+        case .Some(note, value):
+            stdout.print(value, note)
+        case .Nothing:
+            stdout.print("nothing")
+    holder = pack.loads[Holder](bytes_of(saved[3]))?
+    stdout.print(holder.pair.first, holder.pair.second, holder.label)
+    listed = pack.loads[list[Pair[int]]](bytes_of(saved[4]))?
+    stdout.print(listed[0].first, listed[0].second)
+    keyed = pack.loads[dict[str, Pair[int]]](bytes_of(saved[5]))?
+    stdout.print(keyed["k"].first, keyed["k"].second)
+    paired = pack.loads[(Pair[int], int)](bytes_of(saved[6]))?
+    stdout.print(paired[0].first, paired[0].second, paired[1])
+"#;
+
+/// A generic type's shape holds its fields with its arguments filled in, so data saved by an
+/// earlier version of `Pair[T]`, with its fields in another order, is read by their names rather
+/// than by place, as a plain struct's is. Before, `Pair[int]`'s shape was its name alone, and the
+/// next version read `first` as `second`. The same for a generic inside a generic, a generic
+/// enum's case, a generic inside a plain struct, and one inside a list, a dict and a tuple.
+#[test]
+fn pack_loads_a_generic_types_earlier_fields_by_their_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let saved = printed_by("generic_pack_first", GENERIC_PACK_FIRST)?;
+    let lines: Vec<String> = saved.lines().map(|line| format!("\"{line}\"")).collect();
+    let next = GENERIC_PACK_NEXT.replace("SAVED", &lines.join(", "));
+    assert_eq!(
+        printed_by("generic_pack_next", &next)?,
+        "1 2\n3 4 5 6\n7 seven\n8 9 h\n10 11\n12 13\n14 15 16\n"
     );
     Ok(())
 }

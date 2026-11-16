@@ -1,8 +1,10 @@
-//! `std.crypto`: hashes of text or bytes, as lowercase hex digits. Text is hashed as its UTF-8
-//! bytes. A BLAKE3 key is written as hex too, so a derived key can be used as a key directly.
-//! `equal` compares two secrets in time that depends only on their lengths, so it can't tell
-//! an attacker how much of a guess was right.
+//! `std.crypto`: hashes of text or bytes, as lowercase hex digits, or as the digest's own bytes
+//! from the `_digest` forms. Text is hashed as its UTF-8 bytes. A BLAKE3 key is written as hex
+//! too, so a derived key can be used as a key directly. `equal` compares two secrets in time that
+//! depends only on their lengths, so it can't tell an attacker how much of a guess was right.
 
+mod argon2;
+mod blake2b;
 mod sha256;
 
 use std::collections::HashMap;
@@ -19,6 +21,11 @@ fn bytes_of(value: &Value) -> Option<&[u8]> {
         Value::Bytes(data) => Some(data),
         _ => None,
     }
+}
+
+/// A digest as its own bytes, for the `_digest` forms.
+fn digest(bytes: &[u8]) -> Value {
+    Value::Bytes(std::rc::Rc::from(bytes))
 }
 
 fn hex(bytes: &[u8]) -> Value {
@@ -69,26 +76,85 @@ fn hashing(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic
             }
             Ok(Value::Unit)
         }
-        ("crypto._end", [Value::Int(handle)]) => match open.remove(handle) {
-            Some(Hashing::Blake3(hasher)) => Ok(hex(hasher.finalize().as_bytes())),
-            Some(Hashing::Sha256(hasher)) => Ok(hex(&hasher.finish())),
-            None => Err(wrong()),
-        },
+        ("crypto._end" | "crypto._end_digest", [Value::Int(handle)]) => {
+            let written = if name == "crypto._end" { hex } else { digest };
+            match open.remove(handle) {
+                Some(Hashing::Blake3(hasher)) => Ok(written(hasher.finalize().as_bytes())),
+                Some(Hashing::Sha256(hasher)) => Ok(written(&hasher.finish())),
+                None => Err(wrong()),
+            }
+        }
+        _ => Err(wrong()),
+    }
+}
+
+/// Writes over `bytes` with zeros, through `black_box`, so a copy of a password is gone once it's
+/// used rather than left for the allocator to hand out again.
+pub(super) fn wipe(bytes: &mut [u8]) {
+    for byte in bytes.iter_mut() {
+        *byte = 0;
+    }
+    std::hint::black_box(bytes);
+}
+
+/// `work` on a thread that may block while this task parks, as a password's hash takes tens of
+/// milliseconds and 19 MiB, or here outside a task.
+fn off_worker<R: Send + 'static>(work: impl FnOnce() -> R + Send + 'static) -> R {
+    #[cfg(any(test, feature = "threads"))]
+    if crate::embed::serve::can_park() {
+        return crate::embed::serve::off_thread(work);
+    }
+    work()
+}
+
+/// `crypto._hash_password(password, salt)`, `crypto._password_problem(stored)` and
+/// `crypto._check_password(password, stored)`: Argon2id, which `crypto.fen` wraps.
+fn passwords(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    let wrong = || Diagnostic::new(format!("`{name}` was called with the wrong arguments"), span);
+    match (name, values) {
+        ("crypto._hash_password", [Value::Str(password), Value::Bytes(salt)]) => {
+            let (mut password, salt) = (password.as_bytes().to_vec(), salt.to_vec());
+            Ok(Value::str(&off_worker(move || {
+                let stored = argon2::hash_password(&password, &salt);
+                wipe(&mut password);
+                stored
+            })))
+        }
+        ("crypto._password_problem", [Value::Str(stored)]) => {
+            Ok(Value::str(&argon2::read(stored).err().unwrap_or_default()))
+        }
+        ("crypto._check_password", [Value::Str(password), Value::Str(stored)]) => {
+            let stored = argon2::read(stored).map_err(|_| wrong())?;
+            let mut password = password.as_bytes().to_vec();
+            Ok(Value::Bool(off_worker(move || {
+                let right = argon2::matches(&password, &stored);
+                wipe(&mut password);
+                right
+            })))
+        }
         _ => Err(wrong()),
     }
 }
 
 /// One of these functions, by its full name.
 pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Diagnostic> {
+    if matches!(name, "crypto._hash_password" | "crypto._password_problem" | "crypto._check_password") {
+        return passwords(name, values, span);
+    }
     if name.starts_with("crypto._") {
         return hashing(name, values, span);
     }
     let wrong = || Diagnostic::new(format!("`{name}` takes text or bytes"), span);
     let data = |at: usize| values.get(at).and_then(bytes_of).ok_or_else(wrong);
+    // A `_digest` form gives the same digest as its own bytes, where the plain one gives hex.
+    let (name, written): (&str, fn(&[u8]) -> Value) = match name.strip_suffix("_digest") {
+        Some(plain) => (plain, digest),
+        None => (name, hex),
+    };
     match name {
-        "crypto.blake3" => Ok(hex(fennec_blake3::hash(data(0)?).as_bytes())),
-        "crypto.sha256" => Ok(hex(&sha256::digest(data(0)?))),
-        "crypto.hmac_sha256" => Ok(hex(&sha256::hmac(data(0)?, data(1)?))),
+        "crypto.blake3" => Ok(written(fennec_blake3::hash(data(0)?).as_bytes())),
+        "crypto.sha256" => Ok(written(&sha256::digest(data(0)?))),
+        "crypto.hmac_sha256" => Ok(written(&sha256::hmac(data(0)?, data(1)?))),
         "crypto.equal" => Ok(Value::Bool(equal(data(0)?, data(1)?))),
         "crypto.keyed_blake3" => {
             let Some(Value::Str(key)) = values.first() else { return Err(wrong()) };
@@ -96,7 +162,7 @@ pub(crate) fn run(name: &str, values: &[Value], span: Span) -> Result<Value, Dia
                 Diagnostic::new("a BLAKE3 key is 64 hex digits", span)
                     .with_help("make one with `derive_key(context, secret)`")
             })?;
-            Ok(hex(fennec_blake3::keyed_hash(key.as_bytes(), data(1)?).as_bytes()))
+            Ok(written(fennec_blake3::keyed_hash(key.as_bytes(), data(1)?).as_bytes()))
         }
         "crypto.derive_key" => {
             let Some(Value::Str(context)) = values.first() else { return Err(wrong()) };

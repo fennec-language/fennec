@@ -127,7 +127,7 @@ impl Copies {
 /// Each generic function of a program's or a kit's that comes back to itself, through its own
 /// calls, with a bigger type each time, as `grow[T]` calling `grow([value])` does: lowering would
 /// need a copy for every size, so the check refuses it where it's written, at the call that makes
-/// the type bigger. One for each such set of functions. The standard library's own code isn't
+/// the type bigger, once for each function that does it. The standard library's own code isn't
 /// looked at: it's not the program's to change.
 pub(crate) fn growing(checker: &crate::checker::Checker) -> Vec<fennec_syntax::Diagnostic> {
     let mut graph = Graph::default();
@@ -156,24 +156,23 @@ pub(crate) fn growing(checker: &crate::checker::Checker) -> Vec<fennec_syntax::D
             }
         }
     }
-    let component = graph.components();
     let mut said = HashSet::new();
     let mut found = Vec::new();
     for edge in &graph.edges {
-        let looped = component.get(edge.from) == component.get(edge.to);
-        if edge.depth == 0 || !looped || !said.insert(component.get(edge.from).copied()) {
+        // A call that makes a type bigger can't be built when what it calls comes back to it.
+        if edge.depth == 0 || !graph.reaches(edge.to, edge.from) || !said.insert(edge.call.0.clone()) {
             continue;
         }
-        let (caller, callee) =
+        let (from, through) =
             (fennec_syntax::without_kits(&edge.call.0), fennec_syntax::without_kits(&edge.call.1));
         let message = if edge.call.0 == edge.call.1 {
             format!(
-                "`{caller}` calls itself with a bigger type each time: here its `{}` is `{}`, so it would need a copy for every size, and can't be built",
+                "`{from}` calls itself with a bigger type each time: here its `{}` is `{}`, so it would need a copy for every size, and can't be built",
                 edge.name, edge.ty
             )
         } else {
             format!(
-                "`{caller}` comes back to itself through `{callee}` with a bigger type each time: here `{callee}`'s `{}` is `{}`, so it would need a copy for every size, and can't be built",
+                "`{from}` comes back to itself through `{through}` with a bigger type each time: here `{through}`'s `{}` is `{}`, so it would need a copy for every size, and can't be built",
                 edge.name, edge.ty
             )
         };
@@ -223,75 +222,18 @@ impl Graph {
         *self.nodes.entry((function.to_owned(), param.to_owned())).or_insert(next)
     }
 
-    /// Which strongly connected component each node is in, by Tarjan's algorithm: two nodes share
-    /// one when each reaches the other.
-    fn components(&self) -> Vec<usize> {
-        let count = self.nodes.len();
-        let mut next: Vec<Vec<usize>> = vec![Vec::new(); count];
-        for edge in &self.edges {
-            if let Some(out) = next.get_mut(edge.from) {
-                out.push(edge.to);
+    /// Whether `goal` can be reached from `start` along the calls.
+    fn reaches(&self, start: usize, goal: usize) -> bool {
+        let mut seen = HashSet::new();
+        let mut waiting = vec![start];
+        while let Some(node) = waiting.pop() {
+            if node == goal {
+                return true;
+            }
+            if seen.insert(node) {
+                waiting.extend(self.edges.iter().filter(|edge| edge.from == node).map(|edge| edge.to));
             }
         }
-        let mut tarjan = Tarjan {
-            next,
-            index: vec![None; count],
-            low: vec![0; count],
-            on_stack: vec![false; count],
-            stack: Vec::new(),
-            counter: 0,
-            component: vec![0; count],
-            components: 0,
-        };
-        for node in 0..count {
-            if tarjan.index.get(node).is_some_and(Option::is_none) {
-                tarjan.visit(node);
-            }
-        }
-        tarjan.component
-    }
-}
-
-/// Tarjan's walk for strongly connected components.
-struct Tarjan {
-    next: Vec<Vec<usize>>,
-    index: Vec<Option<usize>>,
-    low: Vec<usize>,
-    on_stack: Vec<bool>,
-    stack: Vec<usize>,
-    counter: usize,
-    component: Vec<usize>,
-    components: usize,
-}
-
-impl Tarjan {
-    fn visit(&mut self, node: usize) {
-        let at = self.counter;
-        self.counter += 1;
-        self.index[node] = Some(at);
-        self.low[node] = at;
-        self.stack.push(node);
-        self.on_stack[node] = true;
-        let next = self.next[node].clone();
-        for to in next {
-            match self.index[to] {
-                None => {
-                    self.visit(to);
-                    self.low[node] = self.low[node].min(self.low[to]);
-                }
-                Some(index) if self.on_stack[to] => self.low[node] = self.low[node].min(index),
-                Some(_) => {}
-            }
-        }
-        if self.low[node] == at {
-            while let Some(member) = self.stack.pop() {
-                self.on_stack[member] = false;
-                self.component[member] = self.components;
-                if member == node {
-                    break;
-                }
-            }
-            self.components += 1;
-        }
+        false
     }
 }

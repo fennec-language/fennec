@@ -4,8 +4,9 @@
 //! of the change that made dicts hold values in place.
 
 use super::*;
-use crate::embed::guarded::rollback::{begin, kept, save_ref, undo, undo_word};
+use crate::embed::guarded::rollback::{begin, kept, save_ref, to_change, undo, undo_word};
 use crate::embed::guarded::{shared_enter, shared_leave, shared_new};
+use crate::embed::lists::{self, LIST_HEADER_WORDS};
 
 /// Where a `Holder`'s dict is among its words.
 const TABLE_AT: usize = heap::HEADER_WORDS;
@@ -50,7 +51,12 @@ fn started_holding(element: u32) {
 }
 
 fn made_held(element: u32, value: &Value) -> u64 {
-    let shape = shape(1, Word::Int, Word::InPlace(element)).unwrap();
+    made_held_past(1, element, value)
+}
+
+/// `made_held`, in a run whose string's shape is number `strings`.
+fn made_held_past(strings: u64, element: u32, value: &Value) -> u64 {
+    let shape = shape(strings, Word::Int, Word::InPlace(element)).unwrap();
     with(|state| super::super::write(state, shape, value).and_then(|at| u64::try_from(at).ok())).unwrap()
 }
 
@@ -332,6 +338,160 @@ fn a_value_changed_in_its_entry_under_a_lock_goes_back_on_a_crash_and_stays_at_a
             // empty list now.
             assert_eq!(blocks(), before - 1);
         }
+        audited_behind(cell);
+        shared_leave(signed(cell), 1);
+        finish();
+    }
+}
+
+/// Which of a `Point`'s words in place holds its list, `near`: after its number and its name's
+/// header.
+const NEAR_IN_A_POINT: usize = 4;
+
+/// How many times a shared value has been copied so that one owner could change it.
+fn copies() -> u64 {
+    with(|state| state.heap.counts.copies)
+}
+
+/// Locks `cell` to write again, as `locked` leaves a new one, and gives the dict as it's held
+/// inside.
+fn locked_again(cell: u64) -> u64 {
+    shared_enter(signed(cell), 1);
+    begin(signed(cell));
+    let inside = word(cell, TABLE_AT);
+    save_ref(signed(cell), i64::try_from(TABLE_AT).unwrap(), signed(inside));
+    inside
+}
+
+/// What native code does to add `item` to the list in the `Point` at `entry`: saves the entry,
+/// takes the list out of it, asks the runtime for an item's room, fills it, and puts the list back
+/// where it now is.
+fn added_in_its_entry(dict: u64, entry: i64, place: usize, item: u64) {
+    super::super::save_entry(signed(dict), entry);
+    let list = word(dict, place + NEAR_IN_A_POINT);
+    let grown = unsigned(lists::grow(signed(list)));
+    let length = usize::try_from(word(grown, 2)).unwrap();
+    set_word(grown, LIST_HEADER_WORDS + length - 1, item);
+    set_word(dict, place + NEAR_IN_A_POINT, grown);
+}
+
+/// A list in a value held in its entry, added to under one lock after another, an item a lock.
+/// The save marks the list, so each item goes on where the list is, which moves when it needs
+/// room, and nothing is copied. A lock that adds a hundred more and crashes leaves it as it was
+/// before that lock, though it moved under it.
+///
+/// The save once took an owner of the list for the log, so every lock's first append copied the
+/// whole list: a copy a lock, each as long as the list had got.
+#[test]
+fn a_list_in_a_value_in_its_entry_is_added_to_where_it_is_under_lock_after_lock() {
+    started_holding(0);
+    let with_near = |near: &[i64]| {
+        dict_of(vec![(Value::Int(5), a_point(1, LONG, near)), (Value::Int(6), a_point(2, "short", &[]))])
+    };
+    let (cell, mut inside) = locked(made_held(0, &with_near(&[1, 2])));
+    let (before, copied) = (blocks(), copies());
+    for item in 3..=40 {
+        let (entry, place) = entry_of(inside, 5);
+        added_in_its_entry(inside, entry, place, item);
+        kept();
+        shared_leave(signed(cell), 1);
+        inside = locked_again(cell);
+    }
+    let all: Vec<i64> = (1..=40).collect();
+    assert_eq!(copies(), copied, "a lock's append copied the list");
+    assert_eq!(read(word(cell, TABLE_AT)), with_near(&all));
+    assert_eq!(blocks(), before);
+    let (entry, place) = entry_of(inside, 5);
+    let list_before = word(inside, place + NEAR_IN_A_POINT);
+    for item in 41..=140 {
+        added_in_its_entry(inside, entry, place, item);
+    }
+    assert_ne!(word(inside, place + NEAR_IN_A_POINT), list_before, "the list didn't have to move");
+    crash(cell);
+    assert_eq!(read(word(cell, TABLE_AT)), with_near(&all));
+    assert_eq!(copies(), copied);
+    assert_eq!(blocks(), before);
+    audited_behind(cell);
+    shared_leave(signed(cell), 1);
+    finish();
+}
+
+/// A run whose shapes are a `Holder` of one dict, a `Tally` and the string's. The dict has int
+/// keys and holds `Kept`s in place, each a number and a `Tally` in a block of its own.
+fn started_holding_a_tally() {
+    let tally = named("Tally", vec![("count", Element::Int), ("seen", Element::List(Rc::new(Element::Int)))]);
+    let kept_one = named("Kept", vec![("id", Element::Int), ("tally", Element::Boxed(1))]);
+    let table = shape(2, Word::Int, Word::InPlace(0)).unwrap();
+    let holder = named("Holder", vec![("table", Element::Boxed(usize::try_from(table).unwrap()))]);
+    let tables = Tables {
+        shapes: vec![Rc::new(holder), Rc::new(tally), Rc::new(Element::Str)],
+        elements: vec![Rc::new(kept_one)],
+        str_shape: 2,
+        text_headers: true,
+        ..Tables::default()
+    };
+    start(tables, crate::Inputs::default());
+}
+
+fn a_kept(id: i64, count: i64, seen: &[i64]) -> Value {
+    let instance = |name: &str, fields: Vec<(Rc<str>, Value)>| {
+        Value::Instance(Rc::new(Instance {
+            type_name: Rc::from(name),
+            case: None,
+            fields,
+            is_error: false,
+            cause: None,
+            notes: None,
+        }))
+    };
+    let tally = instance(
+        "Tally",
+        vec![
+            (Rc::from("count"), Value::Int(count)),
+            (Rc::from("seen"), Value::list(seen.iter().map(|n| Value::Int(*n)).collect())),
+        ],
+    );
+    instance("Kept", vec![(Rc::from("id"), Value::Int(id)), (Rc::from("tally"), tally)])
+}
+
+/// A struct held by a block of its own, in a value held in its entry. The save marks the block
+/// and saves its fields, and marks the list it holds, so native code changes a field and adds to
+/// the list where they are, with nothing copied. A crash puts both back, and a normal end keeps
+/// them.
+///
+/// With an owner of the log's on the struct's block, native code's ask before the change copied it.
+#[test]
+fn a_struct_s_block_in_a_value_in_its_entry_is_changed_where_it_is_under_a_lock() {
+    for crashes in [true, false] {
+        started_holding_a_tally();
+        let start_with = dict_of(vec![(Value::Int(5), a_kept(1, 10, &[1, 2]))]);
+        let (cell, inside) = locked(made_held_past(2, 0, &start_with));
+        let (before, copied) = (blocks(), copies());
+        let (entry, place) = entry_of(inside, 5);
+        super::super::save_entry(signed(inside), entry);
+        // The tally's block is the value's second word. Native code asks before it changes a
+        // struct's block it doesn't hold alone: a marked one stays where it is.
+        let tally = word(inside, place + 1);
+        assert_eq!(unsigned(to_change(signed(tally))), tally, "the struct's block was copied");
+        set_word(tally, heap::HEADER_WORDS, 11);
+        let seen = word(tally, heap::HEADER_WORDS + 1);
+        let grown = unsigned(lists::grow(signed(seen)));
+        set_word(grown, LIST_HEADER_WORDS + 2, 3);
+        set_word(tally, heap::HEADER_WORDS + 1, grown);
+        // Taken again to change again: nothing more is saved, and it's still changed in place.
+        super::super::save_entry(signed(inside), entry);
+        assert_eq!(unsigned(to_change(signed(tally))), tally);
+        set_word(tally, heap::HEADER_WORDS, 12);
+        assert_eq!(copies(), copied, "crashes: {crashes}");
+        if crashes {
+            crash(cell);
+            assert_eq!(read(word(cell, TABLE_AT)), start_with);
+        } else {
+            kept();
+            let changed = dict_of(vec![(Value::Int(5), a_kept(1, 12, &[1, 2, 3]))]);
+            assert_eq!(read(word(cell, TABLE_AT)), changed);
+        }
+        assert_eq!(blocks(), before, "crashes: {crashes}");
         audited_behind(cell);
         shared_leave(signed(cell), 1);
         finish();

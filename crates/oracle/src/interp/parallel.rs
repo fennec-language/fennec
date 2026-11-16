@@ -10,7 +10,9 @@
 //! could see in another order is refused: printing, which follows real call order, the file
 //! system, a `shared` value one round changes and another reaches, and a generator made outside
 //! the round. Each round is one of its own to the channels it uses (`actors.rs`), so which
-//! round's message comes first is tried every way, as two tasks' is. An int `sum` is
+//! round's message comes first is tried every way, as two tasks' is; of a channel made outside
+//! it, a receive while rounds after it haven't run, which could send first, and a close are
+//! refused, as is any use in a stream's item. An int `sum` is
 //! refused where some way of splitting it could overflow, and a float `sum` outright, since it
 //! adds in a tree of its own.
 
@@ -73,6 +75,19 @@ pub(crate) struct Call {
     /// The number the first `shared` value made in the round running now got: one made in it is
     /// its own, which nothing else reaches.
     first_cell: u64,
+    /// How many rounds it has.
+    count: usize,
+    /// The number the first channel made in the round running now got: one made in it is its own
+    /// too.
+    first_channel: i64,
+}
+
+/// What a round does with a channel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChannelUse {
+    Send,
+    Receive,
+    Close,
 }
 
 /// The earliest a generator read now may have been made, inside what runs side by side now, or
@@ -154,14 +169,38 @@ impl Interp {
         Ok(())
     }
 
-    /// Refuses a channel's send, receive or close in a `parallel` round that may not run: whether
-    /// it happened at all hangs on time.
-    pub(crate) fn may_use_channels(&self) -> Run<()> {
+    /// Refuses what a `parallel` round does with `channel`, made outside it, where what runs
+    /// beside it in the compiled program could come first, or not, as time has it: anything at
+    /// all in a round that may not run, or in a stream's item, which runs alongside its reader; a
+    /// receive while rounds after it haven't run here, whose messages could be the next; and a
+    /// close, which other rounds' sends could come before or after.
+    pub(crate) fn channel_in_rounds(&self, channel: i64, used: ChannelUse) -> Run<()> {
         let Ok(scopes) = self.shared.scopes.lock() else {
             return unsupported("a `parallel` call was lost");
         };
-        if scopes.iter().any(|scope| matches!(scope, Scope::Rounds(call) if call.maybe)) {
-            return unsupported("a `parallel` round that may not run using a channel");
+        for scope in scopes.iter() {
+            let Scope::Rounds(call) = scope else { continue };
+            if channel >= call.first_channel {
+                continue;
+            }
+            if call.maybe {
+                return unsupported("a `parallel` round that may not run using a channel");
+            }
+            if call.streamed {
+                return unsupported(
+                    "a channel used in a `parallel` stream's item, which runs alongside its reader",
+                );
+            }
+            if used == ChannelUse::Receive && call.round + 1 < call.count {
+                return unsupported(
+                    "a receive in a `parallel` round before the rounds after it have run, whose messages could come first",
+                );
+            }
+            if used == ChannelUse::Close {
+                return unsupported(
+                    "closing a channel in a `parallel` round, which other rounds' sends could come before or after",
+                );
+            }
         }
         Ok(())
     }
@@ -213,8 +252,17 @@ impl Interp {
         Ok(())
     }
 
-    fn push_call(&self, streamed: bool) -> Run<()> {
-        let call = Call { round: 0, maybe: false, streamed, locked: Vec::new(), started: 0, first_cell: 0 };
+    fn push_call(&self, streamed: bool, count: usize) -> Run<()> {
+        let call = Call {
+            round: 0,
+            maybe: false,
+            streamed,
+            locked: Vec::new(),
+            started: 0,
+            first_cell: 0,
+            count,
+            first_channel: 0,
+        };
         self.push_scope(Scope::Rounds(call))
     }
 
@@ -234,6 +282,7 @@ impl Interp {
 
     fn start_round(&self, round: usize, maybe: bool) -> Run<()> {
         let started = self.shared.rounds_started.fetch_add(1, Ordering::SeqCst) + 1;
+        let first_channel = self.channels_made()?;
         let Ok(mut scopes) = self.shared.scopes.lock() else {
             return unsupported("a `parallel` call was lost");
         };
@@ -244,6 +293,7 @@ impl Interp {
         call.maybe = maybe;
         call.started = started;
         call.first_cell = self.shared.cells_made();
+        call.first_channel = first_channel;
         Ok(())
     }
 
@@ -256,7 +306,7 @@ impl Interp {
         count: usize,
         each: &mut dyn FnMut(&mut Interp, usize, bool) -> Run<T>,
     ) -> Run<Ran<T>> {
-        self.push_call(false)?;
+        self.push_call(false, count)?;
         let ran = self.each_round(count, each);
         self.pop_scope();
         ran
@@ -502,8 +552,9 @@ impl Interp {
         cond: Option<&'static Expr>,
     ) -> Run<()> {
         let items = self.parallel_items(call)?;
+        let count = items.len();
         for (at, item) in items.into_iter().enumerate() {
-            self.push_call(true)?;
+            self.push_call(true, count)?;
             self.rounds_as.push(None);
             let made = self.start_round(at, false).and_then(|()| self.made_from(elem, names, item, cond));
             let numbered: Vec<usize> = self.rounds_as.pop().flatten().into_iter().collect();

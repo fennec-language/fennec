@@ -106,7 +106,9 @@ says they are, at the version the workspace pins.
   they run here too, and are refused if they'd change a `shared` value or their item, use a
   channel, or fail after a `break`. Each round is one of its own to the channels it uses, as a
   task is, so which round's message comes first is tried every way, and two rounds taking from
-  one channel are refused. A stream, `(f(x) for x in parallel(xs))`, works out each item as its reader
+  one channel are refused. Of a channel made outside a round, refused as what runs beside it could
+  come first: a receive while rounds after it haven't run here, a close, and any use in a stream's
+  item. A stream, `(f(x) for x in parallel(xs))`, works out each item as its reader
   asks, and an item's failure is the reader's when it gets there. Refused, as their order isn't
   promised: printing or the file system inside a round, a `shared` value one round changes and
   another reaches, any `lock` in a stream's item, and a generator made outside a round, read in

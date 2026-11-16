@@ -41,7 +41,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use fennec_syntax::{Span, Stmt, WithName};
 
 use super::calls::ArgVal;
-use super::parallel::Scope;
+use super::parallel::{ChannelUse, Scope};
 use super::tasks::Launched;
 use super::{Flow, Interp, Run, unsupported};
 use crate::value::{Channel, Value, same};
@@ -315,6 +315,11 @@ fn who(rounds_as: &mut [Option<usize>], actor: usize, state: &mut State) -> Run<
 impl Interp {
     fn sched_state(&self) -> Run<MutexGuard<'_, State>> {
         lock_state(&self.shared)
+    }
+
+    /// The number the next channel made gets, so one made since is told apart.
+    pub(crate) fn channels_made(&self) -> Run<i64> {
+        Ok(self.sched_state()?.next_number)
     }
 
     /// Takes in what the rounds of a `parallel` call that used channels did, by their numbers,
@@ -629,7 +634,7 @@ impl Interp {
                 Ok(got)
             }
             ("close", [Value::Int(number)]) => {
-                self.may_use_channels()?;
+                self.channel_in_rounds(*number, ChannelUse::Close)?;
                 let mut state = self.sched_state()?;
                 let Some(chan) = state.channels.get_mut(number) else { return Ok(Value::Unit) };
                 if !chan.waiting_sends.is_empty() {
@@ -652,7 +657,7 @@ impl Interp {
 
     /// `channel_send`: 0 sent, 1 closed, 2 timed out.
     pub(crate) fn channel_send(&mut self, number: i64, message: &Value, timeout: i64) -> Run<Value> {
-        self.may_use_channels()?;
+        self.channel_in_rounds(number, ChannelUse::Send)?;
         let me = self.actor;
         loop {
             let sender = {
@@ -714,7 +719,8 @@ impl Interp {
     /// `channel_receive`: the message, or `None`, and why: 0 a message, 1 closed and empty, 2
     /// timed out.
     pub(crate) fn channel_receive(&mut self, number: i64, timeout: i64) -> Run<(Value, i64)> {
-        self.may_use_channels()?;
+        let channel = self.sched_state()?.listeners.get(&number).map_or(number, |listener| listener.channel);
+        self.channel_in_rounds(channel, ChannelUse::Receive)?;
         let me = self.actor;
         // Whatever else can go on goes first, so every message that could be the next one has
         // been sent or is waiting to be.

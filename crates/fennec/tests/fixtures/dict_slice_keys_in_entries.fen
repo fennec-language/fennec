@@ -1,0 +1,49 @@
+# A slice of a text used as a dict's key, stored and read with no string made for it, where the
+# dict's values are held in its entries and where they're one word each. A tuple is held in an
+# entry as a struct is, whatever it's written as.
+struct Seen:
+    first: int
+    last: int
+
+def fill(
+    text: str,
+    start: int,
+    stop: int,
+    value: tuple[int, int],
+    counts: dict[str, tuple[int, int]],
+) -> dict[str, tuple[int, int]]:
+    mut made = counts
+    made[text[start:stop]] = value
+    return made
+
+def main(stdout: Stdout):
+    text = "alpha beta gamma delta, with a tail long enough for a block of its own"
+    mut pairs = dict[str, tuple[int, int]]()
+    pairs["alpha"] = (1, 2)
+    pairs["beta"] = (3, 4)
+    for number in range(3):
+        pairs[text[0:5]] = (10 + number, 20 + number)
+    pairs[text[11:16]] = (5, 6)
+    stdout.print(len(pairs), pairs["alpha"], pairs["beta"], pairs["gamma"])
+    mut handed = dict[str, tuple[int, int]]()
+    handed = fill(text, start=0, stop=5, value=(1, 2), counts=handed)
+    handed = fill(text, start=6, stop=10, value=(3, 4), counts=handed)
+    for number in range(30):
+        handed[f"key {number}"] = (number, number * 2)
+    handed = fill(text, start=0, stop=5, value=(7, 8), counts=handed)
+    handed = fill(text, start=24, stop=70, value=(9, 10), counts=handed)
+    stdout.print(
+        len(handed),
+        handed["alpha"],
+        handed["beta"],
+        handed["key 29"],
+        handed["with a tail long enough for a block of its own"],
+    )
+    mut seen = dict[str, Seen]()
+    for number in range(4):
+        seen[text[6:10]] = Seen(first=number, last=number * 3)
+    stdout.print(len(seen), seen["beta"].first, seen["beta"].last)
+    mut counts = dict[str, int]()
+    for start in [0, 6, 0, 11, 6, 0]:
+        counts[text[start:start + 4]] = (counts.get(text[start:start + 4]) else 0) + 1
+    stdout.print(counts)

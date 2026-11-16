@@ -697,6 +697,26 @@ fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result
     )
 }
 
+/// A slice of a text used as a dict's key is found and added with no string made for it only in a
+/// dict of one-word values. Which dicts hold their values in their entries is the layouts' to say:
+/// a tuple is held in an entry as a struct is, and a dict of tuples took the one-word way, which
+/// read a tuple's first word as a value's block and stopped the program with a segmentation fault.
+/// A dict of tuples held locally and handed to a function, a dict of structs, and a dict of ints,
+/// which keeps the way with no string made. It prints what the reference evaluator prints, in
+/// entries and boxed, with nothing left.
+#[test]
+fn a_slice_key_into_a_dict_of_tuples_is_made_a_string_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_slice_keys_in_entries",
+        include_str!("fixtures/dict_slice_keys_in_entries.fen"),
+        include_str!("fixtures/dict_slice_keys_in_entries.out"),
+    )
+}
+
 /// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
 /// `mine.visits`, `mine = other` and then `mine.visits[key] = fresh` wrote where the lookup had
 /// found the key: in the dict `mine` held before, which the caller still had, so the caller's

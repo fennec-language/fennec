@@ -2984,19 +2984,23 @@ pub(crate) mod tests {
             (handle, server)
         }
 
-        /// While what this gives back lives, the HTTP client trusts the tests' own certificate
-        /// authority, and nothing else: for a request to `https_echoing`.
-        pub(crate) fn trusting_the_tests() -> http::tls::TrustedByTests {
-            http::tls::TrustedByTests::begin(client_config())
+        /// While what this gives back lives, a connection made to the port `listener` is on trusts
+        /// the tests' own certificate authority, and nothing else: for a test's own server there.
+        /// Every other connection goes by what the system trusts. It holds a copy of the listener,
+        /// so the port is the server's for as long.
+        fn trusting_the_tests(listener: &TcpListener) -> http::tls::TrustedByTests {
+            http::tls::TrustedByTests::begin(listener.try_clone().unwrap(), client_config())
         }
 
         /// An HTTPS server on a port of its own, with the tests' certificate for `localhost`, for
         /// `count` requests. It waits a moment before it reads each one's body, so a long one has to
         /// wait for room, and answers none until all have come whole, each with its own body back.
-        pub(crate) fn https_echoing(count: usize) -> u16 {
+        /// Requests to that port trust the tests' authority while the second thing it gives lives.
+        pub(crate) fn https_echoing(count: usize) -> (u16, http::tls::TrustedByTests) {
             use std::io::Read as _;
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let port = listener.local_addr().unwrap().port();
+            let trusting = trusting_the_tests(&listener);
             let chain: Vec<CertificateDer<'static>> =
                 CertificateDer::pem_slice_iter(CHAIN).map(Result::unwrap).collect();
             let config = ServerConfig::builder_with_provider(provider())
@@ -3041,7 +3045,7 @@ pub(crate) mod tests {
                     });
                 }
             });
-            port
+            (port, trusting)
         }
 
         /// A TLS connection's handle, to a server that answers its one line only once `ready` is

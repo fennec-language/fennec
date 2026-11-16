@@ -29,6 +29,9 @@ impl Interp {
                 None => args.push(value),
             }
         }
+        if let Some(done) = self.format_method(&receiver, name, (&args, &named), expr)? {
+            return Ok(done);
+        }
         // The standard library's own code has `len(x)` and `abs(x)` written as these methods
         // when it's parsed, which a program can't call on a built-in value.
         if matches!(name, "len" | "abs") && args.is_empty() && named.is_empty() {
@@ -96,6 +99,31 @@ impl Interp {
             },
             Value::Channel(end) => self.channel_method(&end, name, &args),
             other => unsupported(format!("the method `{name}` of a {}", other.kind())),
+        }
+    }
+
+    /// A method of JSON's `Serializer` or `Deserializer`, given to a type's own `def serialize`
+    /// or `def deserialize`, when that's what `receiver` holds.
+    fn format_method(
+        &mut self,
+        receiver: &Receiver,
+        name: &str,
+        (args, named): (&[Value], &[(String, Value)]),
+        expr: &'static Expr,
+    ) -> Run<Option<Value>> {
+        let format = match receiver {
+            Receiver::Place(place) => self.peek_place(place, expr.span, |held| match held {
+                Value::Cap(cap @ (Cap::Saver | Cap::Loader)) => Some(cap.clone()),
+                _ => None,
+            })?,
+            Receiver::Value(Value::Cap(cap @ (Cap::Saver | Cap::Loader))) => Some(cap.clone()),
+            Receiver::Value(_) => None,
+        };
+        match format {
+            Some(_) if !named.is_empty() => unsupported(format!("`{name}` with a named argument")),
+            Some(Cap::Saver) => self.saver_method(name, args, expr).map(Some),
+            Some(_) => self.loader_method(name, args, expr).map(Some),
+            None => Ok(None),
         }
     }
 

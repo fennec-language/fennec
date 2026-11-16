@@ -709,6 +709,7 @@ impl FnCx<'_> {
             }
             Type::Result(..) => self.unusable(unhandled_result(object.span), args),
             Type::Named(name) | Type::Generic(name, _) if self.checker.program.type_info(name).is_some() => {
+                self.receive_from_every(object, method, span);
                 match self.checker.program.method(name, method) {
                     Some((key, entry)) => {
                         let takes_self = entry.def.takes_self();

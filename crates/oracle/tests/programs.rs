@@ -222,14 +222,14 @@ fn an_else_ends_a_chain_at_a_missing_or_failed_step() {
 #[test]
 fn what_it_doesnt_model_is_refused_by_name() {
     let (printed, ended) = ran("
-        from std import toml
+        from std import compress
 
         def main(stdout: Stdout):
             stdout.print('before')
-            stdout.print(toml.dumps({'a': 1}))
+            stdout.print(compress.gzip(bytes([1, 2])))
         ");
     assert_eq!(printed, "");
-    assert_eq!(ended, Ended::Unsupported("std.toml.dumps".to_owned()));
+    assert_eq!(ended, Ended::Unsupported("std.compress.gzip".to_owned()));
     let (_, ended) = ran("
         def main(stdout: Stdout, process: Process):
             stdout.print('hi')
@@ -741,6 +741,288 @@ fn a_template_string_builds_the_cores_template() {
         "[\"row = \", \" and blob = \", \"\"] 2 [\"row\", \"blob\"]\n\
          row  int\n\
          blob x bytes 01ff\n",
+    );
+}
+
+/// The program of `a_format_of_its_own_is_told_what_each_value_saves`: a format that writes what
+/// it's told, and the values given it.
+const OWN_FORMAT: &str = "
+        from std.collections import Id
+
+        struct Shown:
+            parts = list[str]()
+
+            def int(ref self, value: int):
+                self.parts.append(str(value))
+
+            def float(ref self, value: float):
+                self.parts.append(str(value))
+
+            def bool(ref self, value: bool):
+                self.parts.append('yes' if value else 'no')
+
+            def text(ref self, value: str):
+                self.parts.append(f'<{value}>')
+
+            def bytes(ref self, value: bytes):
+                self.parts.append('bytes')
+
+            def none(ref self):
+                self.parts.append('nothing')
+
+            def value[T: Serializable](ref self, x: T):
+                x.serialize(ref self)
+
+            def sequence[T: Serializable](ref self, items: list[T]):
+                self.parts.append('(')
+                for item in items:
+                    item.serialize(ref self)
+                self.parts.append(')')
+
+            def map[K: Serializable, V: Serializable](ref self, pairs: list[(K, V)]):
+                for key, value in pairs:
+                    key.serialize(ref self)
+                    self.parts.append('=')
+                    value.serialize(ref self)
+
+            def record(ref self, name: str, count: int):
+                self.parts.append(f'{name}/{count}')
+
+            def field[T: Serializable](ref self, name: str, x: T):
+                self.parts.append(f'{name}:')
+                x.serialize(ref self)
+
+            def renamed[T: Serializable](ref self, name: str, x: T):
+                self.parts.append(f'as {name}:')
+                x.serialize(ref self)
+
+            def end(ref self):
+                self.parts.append('.')
+
+            def items(ref self, name: str, count: int):
+                self.parts.append('[')
+
+            def item[T: Serializable](ref self, x: T):
+                x.serialize(ref self)
+
+            def end_items(ref self):
+                self.parts.append(']')
+
+            def enum_case(ref self, name: str, case_name: str, at: int):
+                self.parts.append(f'{name}.{case_name}')
+
+            def case_record(ref self, name: str, case_name: str, at: int, count: int):
+                self.parts.append(f'{name}.{case_name}/{count}')
+
+            def member(ref self, name: str, at: int):
+                pass
+
+            def end_member(ref self):
+                pass
+
+            def table[T: Serializable](ref self, kind: str, tag: int, ids: list[Id[T]], items: list[T]):
+                self.sequence(items)
+
+            def exact(self) -> bool:
+                return False
+
+            def slots[T: Serializable](ref self, kind: str, tag: int, slots: list[int], items: list[T]):
+                # Never asked for: `exact` says no.
+                pass
+
+            def id(ref self, kind: str, key: int, tag: int):
+                self.parts.append(f'Id[{kind}]')
+
+            def some[T: Serializable](ref self, x: T):
+                x.serialize(ref self)
+
+            def shown(self) -> str:
+                return ' '.join(self.parts)
+
+
+
+
+
+
+
+        enum Shape:
+            Dot
+            Box(width: int, height: int)
+
+        struct Pair[T]:
+            first: T
+            @serialize(name='other')
+            second: T
+            @skip
+            seen = 0
+
+        def shown[T: Serializable](x: T) -> str:
+            mut out = Shown()
+            out.value(x)
+            return out.shown()
+
+        def main(stdout: Stdout):
+            stdout.print(shown(Pair(first=Shape.Dot, second=.Box(width=2, height=3))))
+            maybes: list[int?] = [1, None]
+            stdout.print(shown(maybes), shown({'a': {2}}))
+            return
+        ";
+
+/// A format a program writes itself is told what each value saves, by the value's type: an
+/// optional's value through `some`, a list's items through `sequence`, a struct's fields between
+/// `record` and `end`, renamed or left out as their annotations say, and an enum's case through
+/// `enum_case` or `case_record`. A generic function's `T` is the type it's called with. What it
+/// prints is what the compiled program printed.
+#[test]
+fn a_format_of_its_own_is_told_what_each_value_saves() {
+    prints(
+        OWN_FORMAT,
+        "Pair/2 first: Shape.Dot as other: Shape.Box/2 width: 2 height: 3 . . .\n\
+         ( 1 nothing ) <a> = ( 2 )\n",
+    );
+}
+
+/// JSON saves and loads a standard library type through the `def serialize` and
+/// `def deserialize` it writes itself, run from its source: a `SortedMap` as an object, a
+/// `Grid` as its rows, and a failure the type's own code makes says where it is. What it prints is
+/// what the compiled program printed.
+#[test]
+fn json_runs_a_types_own_serialize_and_deserialize() {
+    prints(
+        "
+        from std import json
+        from std.collections import Grid, SortedMap
+
+        def failure[T](run: () -> T fails ParseError) -> str:
+            _ = run() except why:
+                return why.message
+            return 'loaded'
+
+        def main(stdout: Stdout):
+            mut ranks = SortedMap[int, str]()
+            ranks[10] = 'ten'
+            ranks[2] = 'two'
+            text = json.dumps(ranks)
+            stdout.print(text, json.loads[SortedMap[int, str]](text)?.items())
+            stdout.print(json.dumps(Grid.of([[1, 2], [3, 4]])))
+            stdout.print(failure(() => json.loads[Grid[int]]('[[1, 2], [3]]')?))
+            return
+        ",
+        "{\"2\": \"two\", \"10\": \"ten\"} [(2, \"two\"), (10, \"ten\")]\n\
+         [[1, 2], [3, 4]]\n\
+         `[1]` has 1 cell, but the first row has 2\n",
+    );
+}
+
+/// `toml.dumps` is the runtime's, written in Rust, and the oracle runs `std.toml`'s own writer,
+/// written in Fennec, in its place, through each value's `serialize`: so the two are held to each
+/// other. Floats are written by `std.json`'s helper, run from its source. What it prints is what
+/// the compiled program printed.
+#[test]
+fn toml_dumps_runs_std_tomls_own_writer() {
+    prints(
+        "
+        from std import toml
+
+        struct Limit:
+            name: str
+            most: float
+
+        struct Server:
+            name: str
+            port: int
+            tags: list[str]
+            limits: dict[str, float]
+            rules: list[Limit]
+            owner: Limit
+
+        def main(stdout: Stdout):
+            rules = [Limit(name='cpu', most=0.5), Limit(name='mem \\'hot\\'', most=2.0)]
+            server = Server(name='den', port=8080, tags=['a', 'b c'], limits={'cpu': 0.5, 'mem': 2.0}, rules=rules, owner=Limit(name='kit', most=1.0))
+            stdout.write(toml.dumps(server))
+            stdout.print('---')
+            stdout.write(toml.dumps({'title': 'fox \\'kit\\'', 'count': '3'}))
+            return
+        ",
+        "name = \"den\"\n\
+         port = 8080\n\
+         tags = [\"a\", \"b c\"]\n\
+         \n\
+         [limits]\n\
+         cpu = 0.5\n\
+         mem = 2.0\n\
+         \n\
+         [[rules]]\n\
+         name = \"cpu\"\n\
+         most = 0.5\n\
+         \n\
+         [[rules]]\n\
+         name = \"mem \\\"hot\\\"\"\n\
+         most = 2.0\n\
+         \n\
+         [owner]\n\
+         name = \"kit\"\n\
+         most = 1.0\n\
+         ---\n\
+         title = \"fox \\\"kit\\\"\"\n\
+         count = \"3\"\n",
+    );
+}
+
+/// `toml.loads` runs `std.toml`'s own reader, written in Fennec, in place of the runtime's,
+/// through the `def deserialize` the checker writes for each type, as the oracle models it: a
+/// field left out takes its default, an optional one is `None`, a `@skip` field keeps its
+/// default, and a missing field, a value of the wrong type, a key given twice and a key no field
+/// has each fail as the reader says. What it prints is what the compiled program printed.
+#[test]
+fn toml_loads_runs_std_tomls_own_reader_through_each_types_deserialize() {
+    prints(
+        "
+        from std import toml
+
+        struct Limit:
+            name: str
+            most = 1.0
+
+        struct Server:
+            name: str
+            tags: list[str]
+            note: str?
+            limits: dict[str, float]
+            rules: list[Limit]
+            port = 80
+            @skip
+            seen = 3
+
+        def failure(text: str) -> str:
+            _ = toml.loads[Server](text) except why:
+                return why.message
+            return 'loaded'
+
+        def main(stdout: Stdout):
+            text = 'name = \\'den\\'\\ntags = [\\'a\\']\\n\\n[limits]\\ncpu = 0.5\\n\\n[[rules]]\\nname = \\'cpu\\'\\n\\n[[rules]]\\nname = \\'mem\\'\\nmost = 2.5\\n'
+            server = toml.loads[Server](text)?
+            stdout.print(server)
+            again = toml.dumps(Limit(name='kit'))
+            stdout.print(again.strip(), toml.loads[Limit](again)? == Limit(name='kit'))
+            stdout.print(failure('tags = []\\n[limits]\\n'))
+            stdout.print(failure('name = 3\\ntags = []\\n[limits]\\n'))
+            stdout.print(failure('name = \\'x\\'\\ntags = []\\nport = 1\\nport = 2\\n[limits]\\n'))
+            stdout.print(failure('name = \\'x\\'\\ntags = []\\nextra = 1\\n[limits]\\n'))
+            stdout.print(failure('name = \\'x\\'\\nnote = \\'hi\\'\\ntags = [1]\\n[limits]\\n'))
+            counts = toml.loads[dict[str, list[int]]]('a = [1, 2]\\nb = []\\n')?
+            stdout.print(counts)
+            return
+        ",
+        "Server(name=\"den\", tags=[\"a\"], note=None, limits={\"cpu\": 0.5}, rules=[Limit(name=\"cpu\", most=1.0), Limit(name=\"mem\", most=2.5)], port=80, seen=3)\n\
+         name = \"kit\"\n\
+         most = 1.0 True\n\
+         `name` is missing\n\
+         `name` should be a str, but it's an int\n\
+         `port` is defined twice, at line 4, column 1\n\
+         `Server` has no field \"extra\", but the text has one\n\
+         `tags[0]` should be a str, but it's an int\n\
+         {\"a\": [1, 2], \"b\": []}\n",
     );
 }
 

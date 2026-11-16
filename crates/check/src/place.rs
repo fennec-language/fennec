@@ -230,6 +230,7 @@ impl FnCx<'_> {
             is_mut,
             origin: Origin::Local,
             mut_at: Some(at.start),
+            to_every: false,
         };
         self.declare_with(binding, at);
         self.record(at, &self.checker.settled(&ty));

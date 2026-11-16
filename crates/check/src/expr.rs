@@ -87,6 +87,10 @@ impl FnCx<'_> {
             {
                 self.is_member(lhs, member, rhs.span)
             }
+            ExprKind::Binary { op: op @ (BinOp::In | BinOp::NotIn), lhs, rhs } => {
+                let (left, right) = self.contained(lhs, rhs);
+                self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let (left, right) = self.operands(lhs, rhs);
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))

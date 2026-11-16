@@ -597,12 +597,12 @@ impl Program {
         Ok(if written.optional { Type::optional(ty) } else { ty })
     }
 
-    /// Whether a program can write a type's name where it is: it's built in, declared in the
-    /// program, or imported from the standard library.
-    pub(crate) fn can_name(&self, name: &str) -> bool {
+    /// Whether a program can write a type's name at `at`: it's built in, declared in the program,
+    /// or imported from the standard library by the file `at` is in.
+    pub(crate) fn can_name(&self, name: &str, at: Span) -> bool {
         fennec_syntax::importable_type(name).is_none()
             || self.types.get(name).is_some_and(|info| !info.prelude)
-            || self.file_imports.iter().any(|imports| imports.types.contains(name))
+            || self.imported_by(at, |imports| imports.types.get(name)).is_some()
     }
 
     /// Whether a name is an interface: one the program declares, or a built-in one.

@@ -1177,11 +1177,15 @@ fn http_requests_from_rounds_park_rather_than_hold_their_worker() -> std::io::Re
     Ok(())
 }
 
-/// Three hundred requests from `parallel` rounds to a server in the same program, whose handler
-/// makes a call that takes one of the runtime's blocking threads: all are answered, at any number
-/// of threads. A request holds a blocking thread only while its connection opens. It once held one
+/// A hundred requests from `parallel` rounds to a server in the same program, whose handler makes
+/// a call that takes one of the runtime's blocking threads: all are answered, at any number of
+/// threads. A request holds a blocking thread only while its connection opens. It once held one
 /// until it was answered, so as many requests as there were blocking threads held them all, no
 /// handler got one, and every request ran out its time: eight were enough.
+///
+/// A hundred is more than the 64 blocking threads and under the 128 connections the Mac keeps
+/// waiting for a server to accept. With three hundred, a loaded machine left the server's accepts
+/// behind, the queue overflowed and the Mac reset the rest: 37 and 126 of 300 in two runs (#1903).
 #[test]
 fn requests_from_rounds_leave_the_blocking_threads_to_the_handlers_they_wait_for() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
@@ -1193,7 +1197,7 @@ fn requests_from_rounds_leave_the_blocking_threads_to_the_handlers_they_wait_for
     std::fs::create_dir_all(&dir)?;
     let source = include_str!("fixtures/workers/http_posts_while_handlers_block.fen");
     let built = build_on_threads(&dir, source, "http_posts_while_handlers_block")?;
-    matches_on_workers(&built, "http_posts_while_handlers_block", Some(0), "300 of 300 answered\nstopped\n")?;
+    matches_on_workers(&built, "http_posts_while_handlers_block", Some(0), "100 of 100 answered\nstopped\n")?;
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

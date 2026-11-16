@@ -114,14 +114,20 @@ jobs:
         run: |
           if [ -n "$TARGET" ]; then which=(--test "$TARGET"); else which=(--lib); fi
           cargo test --locked -p "$PACKAGE" "${which[@]}" --no-run
-      # On Windows, a full dump of every program that crashes, from Windows Error Reporting, into
-      # this share's folder, for the stack where it did.
-      - name: Keep a dump of each program that crashes
+      # On Windows, every program that crashes is caught where it crashed: the debugger, `cdb`, set
+      # as the one Windows starts on a crash, writes each thread's stack and a full dump into this
+      # share's folder. Windows Error Reporting's own dumps are asked for too, but the runner's
+      # image turns its reporting off, so they never came: what's set says so on the log.
+      - name: Catch each program that crashes
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $dumps = Join-Path $env:GITHUB_WORKSPACE "repeat-$env:SHARE\dumps"
           New-Item -ItemType Directory -Force -Path $dumps | Out-Null
+          foreach ($key in 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting') {
+            "$key :"; Get-ItemProperty -Path $key -ErrorAction SilentlyContinue | Format-List | Out-String
+          }
+          Get-Service WerSvc | Format-List Name, Status, StartType | Out-String
           $reporting = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting'
           New-ItemProperty -Path $reporting -Name Disabled -PropertyType DWord -Value 0 -Force | Out-Null
           $local = "$reporting\LocalDumps"
@@ -129,6 +135,16 @@ jobs:
           New-ItemProperty -Path $local -Name DumpFolder -PropertyType ExpandString -Value $dumps -Force | Out-Null
           New-ItemProperty -Path $local -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
           New-ItemProperty -Path $local -Name DumpCount -PropertyType DWord -Value 10 -Force | Out-Null
+          $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
+          if (Test-Path $cdb) {
+            $debugger = '"' + $cdb + '" -p %ld -e %ld -g -logo "' + $dumps + '\crash-%ld.txt" -c ".dump /ma /u ' + $dumps + '\crash.dmp; !analyze -v; ~*k 40; q"'
+            $aedebug = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AeDebug'
+            New-ItemProperty -Path $aedebug -Name Debugger -PropertyType String -Value $debugger -Force | Out-Null
+            New-ItemProperty -Path $aedebug -Name Auto -PropertyType String -Value '1' -Force | Out-Null
+            "cdb is the debugger Windows starts on a crash"
+          } else {
+            "::warning::there's no cdb at $cdb, so only Windows Error Reporting can keep a dump"
+          }
       # This share's runs are those numbered SHARE, SHARE + SHARES and on, up to TIMES, so each
       # run's number is its own across the shares. Each says how long it took, so a share stopped
       # partway still says how far it got. Each run has a temporary folder of its own, and a test
@@ -176,6 +192,10 @@ jobs:
         shell: pwsh
         run: |
           $dumps = Join-Path $env:GITHUB_WORKSPACE "repeat-$env:SHARE\dumps"
+          foreach ($said in @(Get-ChildItem -Path $dumps -Filter crash-*.txt -ErrorAction SilentlyContinue)) {
+            "== $($said.Name), as cdb caught it"
+            Get-Content $said.FullName -Tail 120
+          }
           $found = @(Get-ChildItem -Path $dumps -Filter *.dmp -ErrorAction SilentlyContinue)
           "$($found.Count) dumps"
           if ($found.Count -eq 0) { exit 0 }

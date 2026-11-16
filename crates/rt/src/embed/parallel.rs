@@ -1148,6 +1148,19 @@ mod tests {
         }
     }
 
+    /// A thread's call shares its ranges with a pool of two workers or more, and keeps them with a
+    /// pool of one, whose worker only ran them one after another while the thread waited, then
+    /// handed back each block they made: `game_tick`'s 4,096 result lists a tick, at one thread.
+    /// Under `FENNEC_PARALLEL_STRESS` every call goes to the pool, so there's nothing to check.
+    #[test]
+    fn a_threads_call_shares_its_ranges_only_with_a_pool_of_more_than_one_worker() {
+        if super::pool::stressed() {
+            return;
+        }
+        assert!(super::pool::shares(super::pool::with_threads(1)).is_none(), "a pool of one took it");
+        assert!(super::pool::shares(super::pool::with_threads(2)).is_some(), "a pool of two didn't");
+    }
+
     fn begin() {
         super::set_worker_setup(Box::new(|| {
             start(tables(), crate::Inputs::default());

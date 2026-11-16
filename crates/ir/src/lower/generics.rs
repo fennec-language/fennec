@@ -345,6 +345,15 @@ impl Lowering<'_> {
         self.resolve_written(key, &[], given, returns)
     }
 
+    /// What a call to `key` says when its copy can't be made: why it was refused, or that the
+    /// call doesn't say what its types stand for.
+    pub(super) fn unresolved(&self, key: &str) -> String {
+        match self.context.instances.take_refusal() {
+            Some(why) => format!("its call to `{key}` {why}"),
+            None => format!("its call to `{key}` doesn't say what its types stand for"),
+        }
+    }
+
     /// The same, with the types written in brackets at the call, which come first.
     pub(super) fn resolve_written(
         &self,

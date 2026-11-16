@@ -1,6 +1,7 @@
 //! Lowering checked programs to the IR: the printed form is pinned for a few functions, and
 //! everything lowered from every example has to pass the validator.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -2294,11 +2295,12 @@ fn a_chain_of_generics_doubling_their_copies_stops_at_the_backstop() {
     let mut source = String::new();
     for step in 0..steps {
         let next = step + 1;
-        source.push_str(&format!(
-            "def step_{step}[T](x: T) -> int:\n    return step_{next}((x, 1)) + step_{next}([x])\n\n"
-        ));
+        let _ = writeln!(
+            source,
+            "def step_{step}[T](x: T) -> int:\n    return step_{next}((x, 1)) + step_{next}([x])\n"
+        );
     }
-    source.push_str(&format!("def step_{steps}[T](x: T) -> int:\n    return 1\n\n"));
+    let _ = writeln!(source, "def step_{steps}[T](x: T) -> int:\n    return 1\n");
     source.push_str("def f() -> int:\n    return step_0(1)\n");
     let program = lowered(&source).unwrap();
     let said = refusals(&program);
@@ -2314,13 +2316,12 @@ fn a_chain_of_generics_doubling_their_copies_stops_at_the_backstop() {
 fn a_program_asking_for_thousands_of_copies_has_them_all() {
     let mut source = String::new();
     for at in 0..800 {
-        source.push_str(&format!("def kept_{at}[T](x: T) -> T:\n    return x\n\n"));
+        let _ = writeln!(source, "def kept_{at}[T](x: T) -> T:\n    return x\n");
     }
     source.push_str("def f() -> int:\n    mut total = 0\n");
     for at in 0..800 {
-        source.push_str(&format!(
-            "    total += kept_{at}({at}) + len(kept_{at}(\"t\")) + len(kept_{at}([{at}]))\n"
-        ));
+        let _ =
+            writeln!(source, "    total += kept_{at}({at}) + len(kept_{at}(\"t\")) + len(kept_{at}([{at}]))");
     }
     source.push_str("    return total\n");
     let program = lowered(&source).unwrap();

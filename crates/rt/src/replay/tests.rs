@@ -96,6 +96,19 @@ fn a_recording_cut_short_is_said_to_be_cut_short() {
     assert!(why.contains("its recording had nothing more"), "{why}");
 }
 
+/// A log from before stops were recorded still reads, whole when it ends with its mark, and a
+/// replay can tell whether it has tasks, to say a stopped one may not be stopped in it.
+#[test]
+fn a_log_from_before_stops_were_recorded_still_reads() {
+    let mut log = log_of(&[("0.0", "Clock.now", &5_i64.to_le_bytes())]);
+    log.splice(..MAGIC.len(), MAGIC_BEFORE_STOPS.iter().copied());
+    let player = player_of(&log).unwrap();
+    assert!(player.whole);
+    assert!(player.has_tasks());
+    let alone = player_of(&log_of(&[("0", "Clock.now", &5_i64.to_le_bytes())])).unwrap();
+    assert!(!alone.has_tasks());
+}
+
 /// A recorded value nested deeper than anything a capability gives back reads as damaged, rather
 /// than taking `fennec replay` down with it.
 #[test]

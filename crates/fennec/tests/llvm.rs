@@ -7677,11 +7677,77 @@ fn a_crash_s_cleanup_ends_where_an_else_as_block_or_a_question_mark_from_fails()
     Ok(())
 }
 
-/// Not built yet: a crash's cleanup with a `?` inside a comprehension, which can't end the cleanup
-/// from where it is, doesn't run at all, as before any `?` could be in one. The program builds and
-/// crashes as it would with no cleanup. Turning the comprehension into a loop would let it run.
+/// A source's `except:` cleanup holding a `with launch`, a source whose block's end fails, a
+/// `lock`, a `parallel` sum or a `?` in a comprehension builds, and runs as it's written when the
+/// caller's block crashes. A failure out of it, from the inner source's end or the comprehension,
+/// ends it and is noted under the crash. Before, a `with launch` there stopped the compiler, the
+/// inner source's failure was noted as `False`, and a `?` in a comprehension left the whole
+/// cleanup out. When the block fails instead, each cleanup runs, and a `?` that isn't
+/// `x = f()?` still passes its failure up in place of the block's, as docs/language.md says.
 #[test]
-fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_is_left_out() -> std::io::Result<()> {
+fn a_crash_runs_a_cleanup_as_its_written_whatever_is_in_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash_cleanup_as_written")?;
+    let program = dir.join("written.fen");
+    std::fs::write(&program, include_str!("fixtures/crash_cleanup_as_written.fen"))?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("written"));
+    let output = output.to_string_lossy().into_owned();
+    let block_failed = "Shut(why=\"the block failed\")";
+    // Each case: what its cleanup prints, the failure noted under a crash, and the failure `main`
+    // says when the block fails.
+    let wanted = [
+        ("1", "cleanup 1\ntask ran\ncleanup done 1\n", None, block_failed),
+        (
+            "2",
+            "cleanup 2\ninside 1\nguard closing\n",
+            Some("Shut(why=\"closing failed\")"),
+            "Shut(why=\"closing failed\")",
+        ),
+        ("3", "cleanup 3\ntotal 10\ncleanup done 3\n", None, block_failed),
+        ("4", "cleanup 4\nsum 12\ncleanup done 4\n", None, block_failed),
+        ("5", "cleanup 5\n", Some("Shut(why=\"2 over 1\")"), "Shut(why=\"2 over 1\")"),
+    ];
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for (which, out, noted, failed) in wanted {
+            let ran = Command::new(&output).args([which, "crash"]).output_within()?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), out, "{how:?} {which} crash: {err}");
+            assert!(!ran.status.success(), "{how:?} {which} crash");
+            let crashed = format!("error: index {which} is out of range for length 1\n");
+            let said = noted.map(|failure| format!("{crashed}note: the cleanup failed: {failure}\n"));
+            assert!(err.contains(said.as_deref().unwrap_or(&crashed)), "{how:?} {which} crash: {err}");
+            assert_eq!(
+                err.matches("note: ").count(),
+                usize::from(noted.is_some()),
+                "{how:?} {which} crash: {err}"
+            );
+            let ran = Command::new(&output).args([which, "fail"]).output_within()?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), out, "{how:?} {which} fail: {err}");
+            assert!(
+                err.contains(&format!("error: `main` failed: {failed}\n")),
+                "{how:?} {which} fail: {err}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A crash's cleanup with a `?` inside a comprehension runs, as it's written: the cleanup is a
+/// function of its own, which the `?` passes up from. Before, the cleanup's rewrite couldn't end
+/// it from inside a comprehension, and a crash left the whole cleanup out.
+#[test]
+fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_runs() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -7694,7 +7760,7 @@ fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_is_left_out() -> st
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&output).output_within()?;
     let err = String::from_utf8_lossy(&ran.stderr);
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "", "{err}");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "cleanup 4\nkept 3\n", "{err}");
     assert!(err.contains("index 4 is out of range for length 1"), "{err}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -25189,11 +25255,15 @@ fn a_failure_passed_up_says_its_chain_however_long() -> std::io::Result<()> {
     let again = "error Deep:\n    left: int\n\ndef down(left: int) -> int fails Deep:\n    \
                  if left == 0: fail Deep(left=left)\n    return down(left - 1)? + 1\n\n\
                  def main(stdout: Stdout) fails Deep:\n    stdout.print(down(50)?)\n";
-    let turns = "error Deep:\n    left: int\n\ndef ping(left: int) -> int fails Deep:\n    \
-                 if left == 0: fail Deep(left=left)\n    return pong(left - 1)? + 1\n\n\
-                 def pong(left: int) -> int fails Deep:\n    if left == 0: fail Deep(left=left)\n    \
-                 return ping(left - 1)? + 1\n\ndef main(stdout: Stdout) fails Deep:\n    \
-                 stdout.print(ping(81)?)\n";
+    let turns = |depth: u32| {
+        format!(
+            "error Deep:\n    left: int\n\ndef ping(left: int) -> int fails Deep:\n    \
+             if left == 0: fail Deep(left=left)\n    return pong(left - 1)? + 1\n\n\
+             def pong(left: int) -> int fails Deep:\n    if left == 0: fail Deep(left=left)\n    \
+             return ping(left - 1)? + 1\n\ndef main(stdout: Stdout) fails Deep:\n    \
+             stdout.print(ping({depth})?)\n"
+        )
+    };
     let given = "error Missing:\n    name: str\n\ndef find(name: str) -> int fails Missing:\n    \
                  if name == \"\": fail Missing(name=\"nobody\")\n    return len(name)\n\n\
                  def look(name: str) -> int fails Missing:\n    return find(name)? + 1\n\n\
@@ -25221,16 +25291,31 @@ fn a_failure_passed_up_says_its_chain_however_long() -> std::io::Result<()> {
             )),
             "{how:?}: {said}"
         );
-        let (_, said, code) = both_built_unpinned("turns_chain", turns, how)?;
-        assert_eq!(code, Some(1));
-        let calls: Vec<&str> = said.lines().filter(|line| line.contains("called from")).collect();
-        assert_eq!(calls.len(), 2 * 16, "{how:?}: {said}");
-        assert_eq!(said.lines().filter(|line| *line == "  = ... more calls").count(), 1, "{how:?}: {said}");
-        assert!(said.contains("  = in `pong`\n  = called from `ping` at "), "{how:?}: {said}");
-        assert!(
-            said.ends_with(&format!("  = called from `main` at {at}turns_chain.fen:13:18\n")),
-            "{how:?}: {said}"
-        );
+        // Each end keeps 16 places: the near one where it was raised, said above the chain, and
+        // the 15 calls after it, then the far one's 16. Whichever function it's raised in, no
+        // place from after the calls left out comes before them or is joined to one that does.
+        for (depth, raised_in) in [(81, "pong"), (80, "ping")] {
+            let (_, said, code) = both_built_unpinned("turns_chain", &turns(depth), how)?;
+            assert_eq!(code, Some(1));
+            let chain: Vec<&str> = said.lines().skip_while(|line| !line.starts_with("  = in `")).collect();
+            let calls = chain.iter().filter(|line| line.contains("called from")).count();
+            assert_eq!(calls, 15 + 16, "{how:?} {depth}: {said}");
+            assert_eq!(
+                chain.iter().position(|line| *line == "  = ... more calls"),
+                Some(16),
+                "{how:?} {depth}: {said}"
+            );
+            assert!(!said.contains("more than once"), "{how:?} {depth}: {said}");
+            let other = if raised_in == "pong" { "ping" } else { "pong" };
+            assert!(
+                said.contains(&format!("  = in `{raised_in}`\n  = called from `{other}` at ")),
+                "{how:?}: {said}"
+            );
+            assert!(
+                said.ends_with(&format!("  = called from `main` at {at}turns_chain.fen:13:18\n")),
+                "{how:?} {depth}: {said}"
+            );
+        }
         let (printed, said, code) = both_built_unpinned("given_chain", given, how)?;
         assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
         assert_eq!(

@@ -15505,6 +15505,47 @@ fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> 
     std::fs::remove_dir_all(&dir)
 }
 
+/// A parked `process.run` whose program ends at once never waits out its timeout: 400 runs of
+/// `true` in `parallel` rounds, each giving up after 10 seconds, all end, on 1, 4 and 16 threads.
+/// On macOS kqueue says a program has exited a moment before it can be reaped, and a run whose
+/// outputs had already closed then waited out its timeout, as nothing said the end again: 600 s
+/// unless the run set one, which ran `process_runs_in_tasks_park_while_their_programs_run` past
+/// its two minutes in two gates on a loaded Mac (#1954). It shows most under load; quiet, a run
+/// rarely meets it.
+#[test]
+#[cfg(unix)]
+fn process_runs_that_end_at_once_in_tasks_never_wait_out_their_timeouts() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("process-runs-ended-at-once")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "process_runs_that_end_at_once_in_tasks";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("FENNEC_THREADS", threads)
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, "400 ended, 0 timed out\n", "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// Hashing a password in a task parks the task while a thread of its own does the work: a
 /// launched task hashes and checks one, and a server's handler one for each of 12 clients at
 /// once. The call into `std.crypto` held the runtime's state, so no task could park there, and

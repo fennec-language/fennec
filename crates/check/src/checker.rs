@@ -89,6 +89,9 @@ pub(crate) struct Checker {
     pub(crate) generic_sources: BTreeSet<String>,
     /// Each call to a generic function, by its span, with the types its type parameters are there.
     pub(crate) generic_calls: BTreeMap<(u32, u32), crate::generic_copies::Call>,
+    /// Each call to a method with type parameters, its type's or its own, by its span, with the
+    /// types they are there: what `copies::growing` follows beside `generic_calls`.
+    pub(crate) generic_method_calls: BTreeMap<(u32, u32), crate::generic_copies::Call>,
     /// What each generic function writes or reads with a format, by its type parameters: the
     /// function, the type, the format and the interface it's written or read through. Each call's
     /// own type is checked once every function is.
@@ -238,6 +241,7 @@ impl Checker {
             widened_values: BTreeMap::new(),
             generic_sources: BTreeSet::new(),
             generic_calls: BTreeMap::new(),
+            generic_method_calls: BTreeMap::new(),
             format_params: BTreeSet::new(),
             union_sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),

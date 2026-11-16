@@ -37,6 +37,13 @@ impl Sources {
         self.files.iter().map(|file| Span { start: file.base, end: file.end() }).collect()
     }
 
+    /// Whether the files reach where what the compiler writes in starts: a program that long, past
+    /// 1.75 GiB, would have its own text read as the compiler's.
+    #[must_use]
+    pub fn too_long(&self) -> bool {
+        self.files.last().is_some_and(|file| file.end() >= Span::WRITTEN)
+    }
+
     /// Adds a file, shown as `path` in messages. Returns the base offset to parse it at.
     pub fn add(&mut self, path: impl Into<String>, text: impl Into<String>) -> u32 {
         // One byte of room after each file, so a span at its very end stays in it.

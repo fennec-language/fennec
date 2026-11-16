@@ -36,8 +36,7 @@ pub fn private_folder(folder: &Path) -> Result<(), Refused> {
                 "{shown} is a link or a file, not a folder: set FENNEC_HOME to a folder of your own"
             )));
         }
-        let me = crate::trust::own_uid().ok_or_else(|| Refused("this user can't be told".to_owned()))?;
-        if found.uid() != me {
+        if found.uid() != crate::trust::own_uid() {
             return Err(Refused(format!(
                 "{shown} is another user's: set FENNEC_HOME to a folder of your own"
             )));

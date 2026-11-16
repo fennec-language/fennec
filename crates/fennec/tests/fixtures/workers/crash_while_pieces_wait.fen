@@ -1,0 +1,27 @@
+from std.concurrent import Channel, Crashed, channel
+
+# Crashes a moment after it starts, while the code that launched it waits.
+def child(clock: Clock):
+    clock.sleep(20ms)
+    nothing: list[int] = []
+    assert nothing[3] == 0
+
+def waits(number: int, between: Channel[int]) -> int:
+    return between.receive() else -1 - number
+
+# Launches a task, then waits in a comprehension for messages that never come.
+def both(between: Channel[int], clock: Clock, stdout: Stdout) fails Crashed:
+    with launch(() => child(clock))?:
+        got = [waits(number, between=between) for number in parallel(range(2))]
+        stdout.print("pieces gave", got)
+
+def said(place: str, between: Channel[int], clock: Clock, stdout: Stdout):
+    both(between, clock=clock, stdout=stdout) except why:
+        stdout.print(f"{place}: {why}")
+
+def main(clock: Clock, stdout: Stdout) fails Crashed:
+    with channel[int](size=1) as between:
+        said("main", between=between, clock=clock, stdout=stdout)
+        with launch(() => said("task", between=between, clock=clock, stdout=stdout))?:
+            pass
+    stdout.print("done")

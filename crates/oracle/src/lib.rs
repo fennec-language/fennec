@@ -104,9 +104,75 @@ fn on_a_big_stack(work: impl FnOnce() -> Outcome + Send + 'static) -> Outcome {
     }
 }
 
-/// Runs a loaded program on this thread.
+/// The most orders of its tasks' messages a run tries, each a run of its own.
+const MOST_ORDERS: usize = 256;
+
+/// Runs a loaded program on this thread: once, or, where which of several tasks' messages comes
+/// next hangs on time, once for each order, depth first, each of which has to print the same and
+/// end the same.
 fn run_here(program: &'static Program, most_steps: u64, workdir: &Workdir) -> Outcome {
+    let mut script = Vec::new();
+    let mut first: Option<Outcome> = None;
+    for tried in 0..MOST_ORDERS {
+        let (outcome, mut made) = run_once(program, most_steps, workdir, script, tried > 0);
+        if matches!(outcome.ended, Ended::Unsupported(_)) {
+            return outcome;
+        }
+        match &first {
+            None => first = Some(outcome),
+            Some(seen) if seen.stdout != outcome.stdout || seen.ended != outcome.ended => {
+                return Outcome::unsupported(format!(
+                    "what it prints, or how it ends, hangs on the order its tasks' messages come in: {}",
+                    first_difference(seen, &outcome)
+                ));
+            }
+            Some(_) => {}
+        }
+        // The next order, depth first: the last choice that has another way, taken that way.
+        while let Some((chosen, count)) = made.pop() {
+            if chosen + 1 < count {
+                made.push((chosen + 1, count));
+                break;
+            }
+        }
+        if made.is_empty() {
+            return first.unwrap_or_else(|| Outcome::unsupported("no run".to_owned()));
+        }
+        script = made.into_iter().map(|(chosen, _)| chosen).collect();
+    }
+    Outcome::unsupported(format!("more than {MOST_ORDERS} orders of its tasks' messages to try"))
+}
+
+/// Where two orders' runs part: the first line one prints differently from the other, or how
+/// each ended.
+fn first_difference(one: &Outcome, other: &Outcome) -> String {
+    let lines = |out: &[u8]| String::from_utf8_lossy(out).lines().map(str::to_owned).collect::<Vec<_>>();
+    let (mine, theirs) = (lines(&one.stdout), lines(&other.stdout));
+    let at = mine.iter().zip(&theirs).take_while(|(a, b)| a == b).count();
+    match (mine.get(at), theirs.get(at)) {
+        (None, None) => format!("one ends {:?}, another {:?}", one.ended, other.ended),
+        (a, b) => {
+            let shown =
+                |line: Option<&String>| line.map_or_else(|| "nothing".to_owned(), |line| format!("{line:?}"));
+            format!("line {} is {} in one order and {} in another", at + 1, shown(a), shown(b))
+        }
+    }
+}
+
+/// One run, making the choices of `script` where messages could come in more than one order,
+/// and giving back the choices it made. `quiet` keeps standard error to the first run.
+fn run_once(
+    program: &'static Program,
+    most_steps: u64,
+    workdir: &Workdir,
+    script: Vec<usize>,
+    quiet: bool,
+) -> (Outcome, Vec<(usize, usize)>) {
     let shared = Arc::new(interp::Shared::new(program, most_steps, workdir));
+    shared.quiet.store(quiet, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut orders) = shared.sched.orders.lock() {
+        orders.script = script;
+    }
     let mut runner = interp::Interp::new(Arc::clone(&shared), None);
     let ended = match runner.run_main() {
         interp::MainEnded::Returned(value) => match value {
@@ -126,11 +192,14 @@ fn run_here(program: &'static Program, most_steps: u64, workdir: &Workdir) -> Ou
     drop(runner);
     let refused = shared.refused.lock().ok().and_then(|refused| refused.clone());
     let stdout = shared.out.lock().map(|out| out.clone()).unwrap_or_default();
+    let made =
+        shared.sched.orders.lock().map(|mut orders| std::mem::take(&mut orders.made)).unwrap_or_default();
     // A run the oracle couldn't finish is skipped, and what it printed on the way isn't shown.
-    match (refused, ended) {
+    let outcome = match (refused, ended) {
         (_, Ended::Unsupported(why)) | (Some(why), _) => Outcome::unsupported(why),
         (None, ended) => Outcome { stdout, ended },
-    }
+    };
+    (outcome, made)
 }
 
 /// What the program says on standard error as it stops: the message, pointing at where.

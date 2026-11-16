@@ -258,6 +258,7 @@ oracle_agrees() {
 # - The examples pass the linter.
 # - The uses of `unsafe` are what `.github/unsafe-allowed.txt` lists.
 # - The ratchet of unchecked runtime calls, `crates/llvm/unchecked_runtime_calls.txt`, holds.
+# - The crates from outside Fennec the runtime names are what `.github/runtime-crates.txt` lists.
 # - Each benchmark kernel makes exactly the copies `bench/copies.txt` says.
 # - The ThreadSanitizer suppressions keep to their rules, and the known failures' file to its form.
 # - A hello world and a program using only `fs` link no SQLite, TLS or cryptography beyond what
@@ -292,6 +293,7 @@ quick() {
     .github/scripts/known-failures.sh tests-failed "$said" >> "$names"
     failed=1
   fi
+  .github/scripts/runtime-crates.sh || { echo "runtime-crates" >> "$names"; failed=1; }
   .github/scripts/tsan-suppressions-check.sh || { echo "tsan-suppressions-check" >> "$names"; failed=1; }
   .github/scripts/test-known-failures.sh > /dev/null || { echo "test-known-failures" >> "$names"; failed=1; }
   .github/scripts/linkage-check.sh target/debug/fennec || { echo "linkage-check" >> "$names"; failed=1; }

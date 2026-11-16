@@ -2,13 +2,47 @@
 //! wrote. Each struct's fields, in order, with their names and the shapes of their types, and
 //! each enum's cases, in order, with theirs. Two types with the same shape read each other's
 //! data; any change to a field, its type or its place changes the shape.
+//!
+//! A type that writes its own `serialize` is shaped by what it saves, as its layout is: a
+//! standard library type that saves as another takes that type's shape, a `Deque[int]` a
+//! `list[int]`'s, and one that saves itself its own way is its name and type arguments alone.
+//! Its fields are its own business, so the shape changes only when what's saved does.
 
 use std::fmt::Write as _;
 
 use crate::Signatures;
 use crate::types::Type;
 
+/// How a value is saved when its type writes its own `serialize`, rather than field by field.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SavedAs {
+    /// As a value of another type is: a standard library `Deque[int]` as a `list[int]`, a
+    /// `Time` as its text.
+    Another(Type),
+    /// Its own way, which only its `serialize` knows: a program's type that writes one.
+    Itself,
+}
+
+/// Whose `serialize` a type that writes its own has.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Writer {
+    /// The standard library's, for one of its own types.
+    Library,
+    /// A program's or a kit's, written by hand.
+    Program,
+}
+
 impl Signatures {
+    /// How a value of `name` given `args` is saved when its type writes its own `serialize`, and
+    /// `None` when it's saved field by field, through what the checker writes for it. The shape
+    /// and the layout `pack` saves both go by this.
+    #[must_use]
+    pub fn saved_as(&self, name: &str, args: &[Type]) -> Option<SavedAs> {
+        let writer = self.own_saving.get(name)?;
+        let another = (*writer == Writer::Library).then(|| library_saved_as(name, args)).flatten();
+        Some(another.map_or(SavedAs::Itself, SavedAs::Another))
+    }
+
     /// The shape of `ty`, written out. A struct or enum inside itself, as in a tree of nodes, is
     /// written by its name the second time.
     pub fn shape(&self, ty: &Type) -> String {
@@ -77,8 +111,13 @@ impl Signatures {
 
     /// A struct's or an enum's shape: its name and type arguments, then its fields or cases, a
     /// generic one's with its arguments filled in, as `Pair[int]{first: int, second: int}`. Only
-    /// the same type with the same arguments inside itself is written by its name alone.
+    /// the same type with the same arguments inside itself is written by its name alone, as is a
+    /// type that saves itself its own way. One that saves as another type is that type's shape.
     fn named_shape(&self, name: &str, args: &[Type], open: &mut Vec<String>, out: &mut String) {
+        let saved_as = self.saved_as(name, args);
+        if let Some(SavedAs::Another(ty)) = &saved_as {
+            return self.shape_into(ty, open, out);
+        }
         let start = out.len();
         out.push_str(name);
         if !args.is_empty() {
@@ -86,7 +125,7 @@ impl Signatures {
             self.wrapped(("[", "]"), &args, open, out);
         }
         let instance = out.get(start..).unwrap_or(name).to_owned();
-        if open.contains(&instance) {
+        if saved_as == Some(SavedAs::Itself) || open.contains(&instance) {
             return;
         }
         open.push(instance);
@@ -150,5 +189,20 @@ fn filled(ty: &Type, generics: &[String], args: &[Type]) -> Type {
             args.get(at).cloned()
         }
         _ => None,
+    })
+}
+
+/// What one of the standard library's types that writes its own `serialize` saves as, as a type
+/// that saves the same way: a `Deque` saves as a list of its items, a `Time` as its text. `None`
+/// for one that saves itself its own way.
+fn library_saved_as(name: &str, args: &[Type]) -> Option<Type> {
+    let first = || args.first().cloned().unwrap_or(Type::Unknown);
+    Some(match name {
+        "Deque" | "SortedSet" => Type::List(Box::new(first())),
+        "SortedMap" => Type::Dict(Box::new(first()), Box::new(args.get(1).cloned().unwrap_or(Type::Unknown))),
+        "Packed" | "Grid" => Type::List(Box::new(Type::List(Box::new(first())))),
+        "Uuid" | "Time" => Type::Str,
+        "Duration" => Type::Int,
+        _ => return None,
     })
 }

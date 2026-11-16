@@ -33,6 +33,7 @@ mod expr;
 mod extend;
 pub use crossing::Crossing;
 pub use extend::method_key;
+pub use shapes::SavedAs;
 mod fields;
 mod function;
 pub use fields::{each_field_type, fields_of};
@@ -211,6 +212,14 @@ fn checked_typed_in(module: &Module, scope: checker::Scope) -> Result<Checked, V
 }
 
 /// The types a program declares with the same name as a standard library type, each with the
+/// name it's checked under, as `own_type_names` gives them: for what models a run with the
+/// checker's types, which name them so.
+#[must_use]
+pub fn renamed_own_types(module: &Module) -> BTreeMap<String, String> {
+    own_type_names(module)
+}
+
+/// The types a program declares with the same name as a standard library type, each with the
 /// name it's checked under, so the library's code still means its own.
 fn own_type_names(module: &Module) -> BTreeMap<String, String> {
     let library: HashSet<&str> = fennec_syntax::prelude_modules()
@@ -385,7 +394,7 @@ pub enum Routed {
     Changed,
     /// Nothing changed. When routing had to check the module to find that out, these are the
     /// signatures `check_to_emit` would give for it, so it needn't be checked again.
-    Unchanged(Option<Signatures>),
+    Unchanged(Option<Box<Signatures>>),
 }
 
 /// Routes a checked, resolved and trimmed module's sorts and formats to std's code written in
@@ -407,7 +416,7 @@ pub fn route_natively(module: &mut Module) -> Routed {
     if sorted.is_some() || formatted {
         Routed::Changed
     } else {
-        Routed::Unchanged(Some(checked.into_signatures()))
+        Routed::Unchanged(Some(Box::new(checked.into_signatures())))
     }
 }
 
@@ -1230,6 +1239,9 @@ pub struct Signatures {
     types: Types,
     lock_verdicts: BTreeMap<String, String>,
     crossing: Crossing,
+    /// The types that write their own `serialize`, by name, with whose it is: the shape and the
+    /// layout `pack` saves go by what those save rather than by their fields.
+    own_saving: BTreeMap<String, shapes::Writer>,
 }
 
 /// A struct's fields, with their types, in the order they're written.

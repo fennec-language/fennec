@@ -499,18 +499,7 @@ impl FnCx<'_> {
         let mut start = None;
         let mut position = 0;
         for arg in args {
-            // A leading-dot case, or a collection written with one, is a case of the enum its
-            // parameter's type says, as `.Broken("bulb")` is for a `list[Light]`'s `append`.
-            let expected = match arg.name {
-                None => {
-                    position += 1;
-                    params.get(position - 1)
-                }
-                Some(_) => None,
-            };
-            let cased =
-                crate::expect::leading_dot(&arg.value) || crate::expect::written_with_cases(&arg.value);
-            let ty = self.arg_as(arg, receives, expected.filter(|_| cased));
+            let ty = self.arg_as(arg, receives, cased_param(arg, params, &mut position));
             match arg.name.as_deref() {
                 Some("key") if !named.contains(&"key") => {
                     let message = format!("`{name}` doesn't take `key`");
@@ -1020,4 +1009,16 @@ fn named_help(given: &str, options: &[&str], otherwise: &str) -> String {
     }
     let shown: Vec<String> = options.iter().map(|option| format!("`{option}=`")).collect();
     format!("{otherwise}{}", shown.join(", "))
+}
+
+/// The parameter's type a builtin method's argument is given, for a leading-dot case or a
+/// collection written with one, which is a case of the enum that type says, as `.Broken("bulb")`
+/// is for a `list[Light]`'s `append`. Counts `position` along the positional arguments.
+fn cased_param<'p>(arg: &Arg, params: &'p [Type], position: &mut usize) -> Option<&'p Type> {
+    if arg.name.is_some() {
+        return None;
+    }
+    *position += 1;
+    let cased = crate::expect::leading_dot(&arg.value) || crate::expect::written_with_cases(&arg.value);
+    params.get(*position - 1).filter(|_| cased)
 }

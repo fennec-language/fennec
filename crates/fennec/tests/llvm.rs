@@ -7605,11 +7605,77 @@ fn a_crash_s_cleanup_ends_where_an_else_as_block_or_a_question_mark_from_fails()
     Ok(())
 }
 
-/// Not built yet: a crash's cleanup with a `?` inside a comprehension, which can't end the cleanup
-/// from where it is, doesn't run at all, as before any `?` could be in one. The program builds and
-/// crashes as it would with no cleanup. Turning the comprehension into a loop would let it run.
+/// A source's `except:` cleanup holding a `with launch`, a source whose block's end fails, a
+/// `lock`, a `parallel` sum or a `?` in a comprehension builds, and runs as it's written when the
+/// caller's block crashes. A failure out of it, from the inner source's end or the comprehension,
+/// ends it and is noted under the crash. Before, a `with launch` there stopped the compiler, the
+/// inner source's failure was noted as `False`, and a `?` in a comprehension left the whole
+/// cleanup out. When the block fails instead, each cleanup runs, and a `?` that isn't
+/// `x = f()?` still passes its failure up in place of the block's, as docs/language.md says.
 #[test]
-fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_is_left_out() -> std::io::Result<()> {
+fn a_crash_runs_a_cleanup_as_its_written_whatever_is_in_it() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("crash_cleanup_as_written")?;
+    let program = dir.join("written.fen");
+    std::fs::write(&program, include_str!("fixtures/crash_cleanup_as_written.fen"))?;
+    let (program, output) = (program.to_string_lossy().into_owned(), dir.join("written"));
+    let output = output.to_string_lossy().into_owned();
+    let block_failed = "Shut(why=\"the block failed\")";
+    // Each case: what its cleanup prints, the failure noted under a crash, and the failure `main`
+    // says when the block fails.
+    let wanted = [
+        ("1", "cleanup 1\ntask ran\ncleanup done 1\n", None, block_failed),
+        (
+            "2",
+            "cleanup 2\ninside 1\nguard closing\n",
+            Some("Shut(why=\"closing failed\")"),
+            "Shut(why=\"closing failed\")",
+        ),
+        ("3", "cleanup 3\ntotal 10\ncleanup done 3\n", None, block_failed),
+        ("4", "cleanup 4\nsum 12\ncleanup done 4\n", None, block_failed),
+        ("5", "cleanup 5\n", Some("Shut(why=\"2 over 1\")"), "Shut(why=\"2 over 1\")"),
+    ];
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for (which, out, noted, failed) in wanted {
+            let ran = Command::new(&output).args([which, "crash"]).output_within()?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), out, "{how:?} {which} crash: {err}");
+            assert!(!ran.status.success(), "{how:?} {which} crash");
+            let crashed = format!("error: index {which} is out of range for length 1\n");
+            let said = noted.map(|failure| format!("{crashed}note: the cleanup failed: {failure}\n"));
+            assert!(err.contains(said.as_deref().unwrap_or(&crashed)), "{how:?} {which} crash: {err}");
+            assert_eq!(
+                err.matches("note: ").count(),
+                usize::from(noted.is_some()),
+                "{how:?} {which} crash: {err}"
+            );
+            let ran = Command::new(&output).args([which, "fail"]).output_within()?;
+            let err = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(String::from_utf8_lossy(&ran.stdout), out, "{how:?} {which} fail: {err}");
+            assert!(
+                err.contains(&format!("error: `main` failed: {failed}\n")),
+                "{how:?} {which} fail: {err}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A crash's cleanup with a `?` inside a comprehension runs, as it's written: the cleanup is a
+/// function of its own, which the `?` passes up from. Before, the cleanup's rewrite couldn't end
+/// it from inside a comprehension, and a crash left the whole cleanup out.
+#[test]
+fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_runs() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
@@ -7622,7 +7688,7 @@ fn a_crash_s_cleanup_with_a_question_mark_in_a_comprehension_is_left_out() -> st
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
     let ran = Command::new(&output).output_within()?;
     let err = String::from_utf8_lossy(&ran.stderr);
-    assert_eq!(String::from_utf8_lossy(&ran.stdout), "", "{err}");
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "cleanup 4\nkept 3\n", "{err}");
     assert!(err.contains("index 4 is out of range for length 1"), "{err}");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
@@ -12582,6 +12648,56 @@ fn a_huge_function_calling_a_generic_links_in_a_release() -> std::io::Result<()>
     Ok(())
 }
 
+/// A program of ordinary generics, each used with a few types, asks for more than 2,000 copies of
+/// them, as one of about 53,000 lines does, and builds and runs. Past 2,000 the copies were
+/// refused, and the build stopped at a call that "doesn't say what its types stand for", where
+/// `fennec check` said nothing (#1896). Built as a release, which builds it in a few seconds where
+/// a cold dev build takes ten times as long: the copies are made the same way in both.
+#[test]
+fn a_program_asking_for_thousands_of_generic_copies_builds_and_runs() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let (generics, parts) = (800, 8);
+    let mut source = String::new();
+    for at in 0..generics {
+        let _ = writeln!(source, "def kept_{at}[T](value: T) -> T:\n    return value\n");
+    }
+    for part in 0..parts {
+        let _ = writeln!(source, "def part_{part}() -> int:\n    mut total = 0");
+        for at in (part * generics / parts)..((part + 1) * generics / parts) {
+            let _ = writeln!(
+                source,
+                "    total += kept_{at}({at}) + len(kept_{at}(\"some text\")) + len(kept_{at}([{at}, {at}]))"
+            );
+        }
+        source.push_str("    return total\n\n");
+    }
+    let parts_added: Vec<String> = (0..parts).map(|part| format!("part_{part}()")).collect();
+    let _ = writeln!(source, "def main(stdout: Stdout):\n    stdout.print({})", parts_added.join(" + "));
+    let total: usize = (0..generics).map(|at| at + "some text".len() + 2).sum();
+    let dir = folder("thousands_of_copies")?;
+    let (program, executable) = (dir.join("copies.fen"), dir.join("copies"));
+    std::fs::write(&program, &source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm", "--release"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        format!("{total}\n"),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    Ok(())
+}
+
 const CRASHING_PARTWAY: &str = r#"from std.concurrent import Crashed
 
 def kept_then_crash(at: int):
@@ -16698,13 +16814,18 @@ fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::
 /// a blocking thread. When each client's exchange held a blocking thread while it waited for its
 /// answer, eight clients took all of a fixed eight, the handlers queued behind them, and the
 /// clients failed at their 30-second timeout. Exchanges park on their sockets now (#1823), and the
-/// pool grows while every thread is busy, so the handlers get theirs at 300 clients too.
+/// pool grows while every thread is busy, so the handlers get theirs at 100 clients too.
+///
+/// A hundred is more than the pool's 64 blocking threads, so exchanges holding them would starve
+/// the handlers, and under the 128 connections the Mac keeps waiting for a server to take. With
+/// three hundred, a loaded machine left the server's accepts behind, the queue overflowed and the
+/// Mac reset the rest: 184 of 300 saved (#1903).
 ///
 /// Each run is built for a heap audit and run under it, on 1, 4 and 16 threads: it ends with
 /// what it should have printed, nothing live and nothing said.
 #[test]
 fn a_servers_blocking_work_isnt_starved_by_its_own_clients() -> std::io::Result<()> {
-    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32, 300])
+    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32, 100])
 }
 
 /// Builds `served_handler_blocks_while_clients_post.fen` for a heap audit, and runs it with each
@@ -25117,11 +25238,15 @@ fn a_failure_passed_up_says_its_chain_however_long() -> std::io::Result<()> {
     let again = "error Deep:\n    left: int\n\ndef down(left: int) -> int fails Deep:\n    \
                  if left == 0: fail Deep(left=left)\n    return down(left - 1)? + 1\n\n\
                  def main(stdout: Stdout) fails Deep:\n    stdout.print(down(50)?)\n";
-    let turns = "error Deep:\n    left: int\n\ndef ping(left: int) -> int fails Deep:\n    \
-                 if left == 0: fail Deep(left=left)\n    return pong(left - 1)? + 1\n\n\
-                 def pong(left: int) -> int fails Deep:\n    if left == 0: fail Deep(left=left)\n    \
-                 return ping(left - 1)? + 1\n\ndef main(stdout: Stdout) fails Deep:\n    \
-                 stdout.print(ping(81)?)\n";
+    let turns = |depth: u32| {
+        format!(
+            "error Deep:\n    left: int\n\ndef ping(left: int) -> int fails Deep:\n    \
+             if left == 0: fail Deep(left=left)\n    return pong(left - 1)? + 1\n\n\
+             def pong(left: int) -> int fails Deep:\n    if left == 0: fail Deep(left=left)\n    \
+             return ping(left - 1)? + 1\n\ndef main(stdout: Stdout) fails Deep:\n    \
+             stdout.print(ping({depth})?)\n"
+        )
+    };
     let given = "error Missing:\n    name: str\n\ndef find(name: str) -> int fails Missing:\n    \
                  if name == \"\": fail Missing(name=\"nobody\")\n    return len(name)\n\n\
                  def look(name: str) -> int fails Missing:\n    return find(name)? + 1\n\n\
@@ -25149,16 +25274,31 @@ fn a_failure_passed_up_says_its_chain_however_long() -> std::io::Result<()> {
             )),
             "{how:?}: {said}"
         );
-        let (_, said, code) = both_built_unpinned("turns_chain", turns, how)?;
-        assert_eq!(code, Some(1));
-        let calls: Vec<&str> = said.lines().filter(|line| line.contains("called from")).collect();
-        assert_eq!(calls.len(), 2 * 16, "{how:?}: {said}");
-        assert_eq!(said.lines().filter(|line| *line == "  = ... more calls").count(), 1, "{how:?}: {said}");
-        assert!(said.contains("  = in `pong`\n  = called from `ping` at "), "{how:?}: {said}");
-        assert!(
-            said.ends_with(&format!("  = called from `main` at {at}turns_chain.fen:13:18\n")),
-            "{how:?}: {said}"
-        );
+        // Each end keeps 16 places: the near one where it was raised, said above the chain, and
+        // the 15 calls after it, then the far one's 16. Whichever function it's raised in, no
+        // place from after the calls left out comes before them or is joined to one that does.
+        for (depth, raised_in) in [(81, "pong"), (80, "ping")] {
+            let (_, said, code) = both_built_unpinned("turns_chain", &turns(depth), how)?;
+            assert_eq!(code, Some(1));
+            let chain: Vec<&str> = said.lines().skip_while(|line| !line.starts_with("  = in `")).collect();
+            let calls = chain.iter().filter(|line| line.contains("called from")).count();
+            assert_eq!(calls, 15 + 16, "{how:?} {depth}: {said}");
+            assert_eq!(
+                chain.iter().position(|line| *line == "  = ... more calls"),
+                Some(16),
+                "{how:?} {depth}: {said}"
+            );
+            assert!(!said.contains("more than once"), "{how:?} {depth}: {said}");
+            let other = if raised_in == "pong" { "ping" } else { "pong" };
+            assert!(
+                said.contains(&format!("  = in `{raised_in}`\n  = called from `{other}` at ")),
+                "{how:?}: {said}"
+            );
+            assert!(
+                said.ends_with(&format!("  = called from `main` at {at}turns_chain.fen:13:18\n")),
+                "{how:?} {depth}: {said}"
+            );
+        }
         let (printed, said, code) = both_built_unpinned("given_chain", given, how)?;
         assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
         assert_eq!(
@@ -26738,6 +26878,37 @@ def main(stdout: Stdout):
     stdout.print(count(x * 2 for x in range(10)), count(s for s in ["a", "b"]))
     stdout.print(count(f for f in [1.5, 2.5, 3.5]), last_of((w for w in ["p", "q"]), otherwise="none"))
 "#,
+    )
+}
+
+/// A generic function holding a `Buffer[T]` or an `array[T, N]`, or giving one back, has its copy
+/// made with `T` filled in. It kept `T` in them, so the copy wasn't lowered and the program didn't
+/// build, though `fennec check` passed and the reference evaluator ran it (#1897).
+#[test]
+fn a_generic_holding_a_buffer_or_an_array_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generic_buffers_and_arrays",
+        r#"def first_two[T](items: list[T]) -> array[T, 2]:
+    held: array[T, 2] = [items[0], items[1]]
+    return held
+
+def gathered[T](items: list[T]) -> int:
+    mut held = Buffer[T]()
+    for item in items:
+        held.push(item)
+    return len(held)
+
+def main(stdout: Stdout):
+    pair = first_two([3, 4])
+    stdout.print(pair[0] + pair[1])
+    words = first_two(["first, a text long enough for a block", "second"])
+    stdout.print(words[1], words[0])
+    stdout.print(gathered(["a", "b", "c"]), gathered([1.5]))
+"#,
+        "7\nsecond first, a text long enough for a block\n3 1\n",
     )
 }
 

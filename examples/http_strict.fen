@@ -44,6 +44,28 @@ test "a content-length that isn't only digits is refused"(net: Net):
 test "a space before a header's colon is refused"(net: Net):
     assert status_of(net, f"POST / HTTP/1.1\r\ncontent-length : 2\r\n{END}hi")? == BAD
 
+## The `x-a` header a request has, between brackets, so the spaces around it show.
+def bracketed(request: Request) -> Response:
+    value = request.headers.get("x-a") else ""
+    return Response(status=200, body=f"[{value}]".encode())
+
+## The `x-a` header a server read from `raw`, as its handler answers it.
+def header_read(net: Net, raw: str) -> str fails NetError:
+    with net.listen(0)? as server:
+        with net.connect("localhost", server.port)? as client:
+            client.write(raw)?
+            server.serve(bracketed)
+            return list(client.lines()?)[-1]
+    return ""
+
+test "a header's value is what's between the spaces and tabs around it"(net: Net):
+    assert header_read(net, f"GET / HTTP/1.1\r\nX-A: \t one two \t\r\n{END}")? == "[one two]"
+    # Only spaces and tabs, as HTTP has it: any other character around the value stays.
+    assert (
+        header_read(net, f"GET / HTTP/1.1\r\nx-a: \u00a0kept\u00a0\r\n{END}")?
+        == "[\u00a0kept\u00a0]"
+    )
+
 test "a folded header is refused"(net: Net):
     assert status_of(net, f"GET / HTTP/1.1\r\nx-a: 1\r\n  folded: 2\r\n{END}")? == BAD
 

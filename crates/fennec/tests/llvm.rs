@@ -24951,11 +24951,15 @@ fn a_failure_passed_up_says_its_chain_however_long() -> std::io::Result<()> {
     let again = "error Deep:\n    left: int\n\ndef down(left: int) -> int fails Deep:\n    \
                  if left == 0: fail Deep(left=left)\n    return down(left - 1)? + 1\n\n\
                  def main(stdout: Stdout) fails Deep:\n    stdout.print(down(50)?)\n";
-    let turns = "error Deep:\n    left: int\n\ndef ping(left: int) -> int fails Deep:\n    \
-                 if left == 0: fail Deep(left=left)\n    return pong(left - 1)? + 1\n\n\
-                 def pong(left: int) -> int fails Deep:\n    if left == 0: fail Deep(left=left)\n    \
-                 return ping(left - 1)? + 1\n\ndef main(stdout: Stdout) fails Deep:\n    \
-                 stdout.print(ping(81)?)\n";
+    let turns = |depth: u32| {
+        format!(
+            "error Deep:\n    left: int\n\ndef ping(left: int) -> int fails Deep:\n    \
+             if left == 0: fail Deep(left=left)\n    return pong(left - 1)? + 1\n\n\
+             def pong(left: int) -> int fails Deep:\n    if left == 0: fail Deep(left=left)\n    \
+             return ping(left - 1)? + 1\n\ndef main(stdout: Stdout) fails Deep:\n    \
+             stdout.print(ping({depth})?)\n"
+        )
+    };
     let given = "error Missing:\n    name: str\n\ndef find(name: str) -> int fails Missing:\n    \
                  if name == \"\": fail Missing(name=\"nobody\")\n    return len(name)\n\n\
                  def look(name: str) -> int fails Missing:\n    return find(name)? + 1\n\n\
@@ -24983,16 +24987,31 @@ fn a_failure_passed_up_says_its_chain_however_long() -> std::io::Result<()> {
             )),
             "{how:?}: {said}"
         );
-        let (_, said, code) = both_built_unpinned("turns_chain", turns, how)?;
-        assert_eq!(code, Some(1));
-        let calls: Vec<&str> = said.lines().filter(|line| line.contains("called from")).collect();
-        assert_eq!(calls.len(), 2 * 16, "{how:?}: {said}");
-        assert_eq!(said.lines().filter(|line| *line == "  = ... more calls").count(), 1, "{how:?}: {said}");
-        assert!(said.contains("  = in `pong`\n  = called from `ping` at "), "{how:?}: {said}");
-        assert!(
-            said.ends_with(&format!("  = called from `main` at {at}turns_chain.fen:13:18\n")),
-            "{how:?}: {said}"
-        );
+        // Each end keeps 16 places: the near one where it was raised, said above the chain, and
+        // the 15 calls after it, then the far one's 16. Whichever function it's raised in, no
+        // place from after the calls left out comes before them or is joined to one that does.
+        for (depth, raised_in) in [(81, "pong"), (80, "ping")] {
+            let (_, said, code) = both_built_unpinned("turns_chain", &turns(depth), how)?;
+            assert_eq!(code, Some(1));
+            let chain: Vec<&str> = said.lines().skip_while(|line| !line.starts_with("  = in `")).collect();
+            let calls = chain.iter().filter(|line| line.contains("called from")).count();
+            assert_eq!(calls, 15 + 16, "{how:?} {depth}: {said}");
+            assert_eq!(
+                chain.iter().position(|line| *line == "  = ... more calls"),
+                Some(16),
+                "{how:?} {depth}: {said}"
+            );
+            assert!(!said.contains("more than once"), "{how:?} {depth}: {said}");
+            let other = if raised_in == "pong" { "ping" } else { "pong" };
+            assert!(
+                said.contains(&format!("  = in `{raised_in}`\n  = called from `{other}` at ")),
+                "{how:?}: {said}"
+            );
+            assert!(
+                said.ends_with(&format!("  = called from `main` at {at}turns_chain.fen:13:18\n")),
+                "{how:?} {depth}: {said}"
+            );
+        }
         let (printed, said, code) = both_built_unpinned("given_chain", given, how)?;
         assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
         assert_eq!(

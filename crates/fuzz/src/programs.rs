@@ -266,15 +266,17 @@ mod tests {
     }
 
     /// Local `ref`s name list items, fields, a holder's items, its list and its tag, and items
-    /// under a lock, and pass themselves on as `ref` arguments, often enough to matter.
+    /// under a lock, and pass themselves on as `ref` arguments, often enough to matter. The
+    /// rarest, a `ref` to a holder's item, comes up in about one program in fifty. So the inputs
+    /// are drawn from the fuzzer's own random numbers, uniform as a run's are, and are enough for
+    /// each kind to come up dozens of times. Patterned bytes drew that kind 2 to 6 times in 512,
+    /// so any change to how the generator spends its bytes could tip it under the bar.
     #[test]
     fn it_writes_local_refs_of_every_kind() {
         let mut found = [0_usize; 6];
-        // Two lengths of input, since some kinds are rare.
-        for (seed, length) in (0_u8..=255).flat_map(|seed| [(seed, 160_u8), (seed, 96)]) {
-            let bytes: Vec<u8> = (0_u8..length)
-                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
-                .collect();
+        for number in 0..2048 {
+            let mut drawn = crate::mutate::Rng::new(1, number);
+            let bytes: Vec<u8> = (0..20).flat_map(|_| drawn.next().to_le_bytes()).collect();
             let source = source::source(&generate::program(&bytes));
             let body = source.split("def main").last().unwrap_or_default();
             let refs: Vec<&str> =
@@ -294,7 +296,7 @@ mod tests {
                 *count += usize::from(kind);
             }
         }
-        assert!(found.iter().all(|count| *count >= 3), "{found:?}");
+        assert!(found.iter().all(|count| *count >= 16), "{found:?}");
     }
 
     /// One program in four has no other threads anywhere, which `Named` needs to be made of

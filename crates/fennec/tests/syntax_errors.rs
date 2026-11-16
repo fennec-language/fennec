@@ -115,3 +115,53 @@ fn the_old_failure_forms_are_refused_with_their_fixes() {
         assert!(fennec_syntax::parse(fixed).is_ok(), "{fixed}");
     }
 }
+
+/// A name with two underscores in a row is the compiler's: only names it writes in have them, as
+/// `conn__lend1` or `SAVED__NAMES_0_`, so one written by hand, anywhere a name goes, an f-string's
+/// braces included, would meet one of them. It's refused, with the name written with one. Text holding
+/// two is text, and what the compiler parses for itself keeps its own.
+#[test]
+fn a_name_with_two_underscores_in_a_row_is_the_compilers() {
+    for (source, name) in [
+        ("conn__lend1 = 1", "conn__lend1"),
+        ("def route__1():\n    pass", "route__1"),
+        ("def f(a__b: int):\n    pass", "a__b"),
+        ("struct Point:\n    x__y: int", "x__y"),
+        ("x = point.x__y", "x__y"),
+        ("x = f(a__b=1)", "a__b"),
+        ("x = (a__b) => a__b", "a__b"),
+        ("SAVED__NAMES_0_ = [\"evil\"]", "SAVED__NAMES_0_"),
+        ("x = f\"{held__lock}\"", "held__lock"),
+        ("x = f\"{len(a__b)}\"", "a__b"),
+        ("x = f\"{ a} { a__b:>3}\"", "a__b"),
+        ("x = t\"{ a__b}\"", "a__b"),
+        ("x = __init__", "__init__"),
+    ] {
+        let error = fennec_syntax::parse(&format!("{source}\n")).err();
+        let said =
+            format!("`{name}` has two underscores in a row, which only names the compiler writes in have");
+        assert_eq!(
+            error.as_ref().map(|diagnostic| diagnostic.message.as_str()),
+            Some(said.as_str()),
+            "{source}"
+        );
+        let one = name.replace("__", "_");
+        assert_eq!(
+            error.and_then(|diagnostic| diagnostic.help),
+            Some(format!("write it with one, as `{one}`")),
+            "{source}"
+        );
+    }
+    assert!(fennec_syntax::parse("x = \"a__b is text\"\n").is_ok());
+    // What's in braces is read as the parser reads it, past a leading space, and pointed at there.
+    assert!(fennec_syntax::parse("x = f\"{ a} { b:>3}\"\n").is_ok());
+    let spaced = "x = f\"{  a__b}\"\n";
+    let at = spaced.find("a__b").and_then(|at| u32::try_from(at).ok());
+    assert_eq!(fennec_syntax::parse(spaced).err().map(|diagnostic| diagnostic.span.start), at);
+    assert!(
+        fennec_syntax::parse_written(
+            "def route__1(request__route: int) -> int:\n    return request__route\n"
+        )
+        .is_ok()
+    );
+}

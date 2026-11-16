@@ -712,6 +712,12 @@ impl<'a> Loader<'a> {
 
     /// Checks names across the kits' files and merges them into one module.
     fn finish(mut self, manifest: Option<Manifest>) -> Result<Program, Problems> {
+        // Past this, a program's own text would be read as what the compiler writes in.
+        if self.sources.too_long() {
+            let message = "the program and its kits are more than 1.75 GiB of source together";
+            let help = "a program this size isn't one Fennec builds: split it into programs of their own";
+            self.errors.push(Diagnostic::new(message, Span::default()).with_help(help));
+        }
         if !self.unplaced.is_empty() {
             return Err(Problems {
                 sources: self.sources,

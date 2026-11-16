@@ -619,6 +619,25 @@ fn checked_in(module: &mut Module, scope: checker::Scope) -> Result<Signatures, 
     resolved(module, checked, scope)
 }
 
+/// A name written in as the standard library's own, as `sha256` imported from std.crypto is
+/// `crypto.sha256`, and a call the checker sent to another of std's functions, as `crypto.blake3`
+/// given a list goes to `crypto.blake3_of_str_list`. A call is seen before its callee, so `sent`
+/// holds each such callee: the name it was written with, which may be std's too, mustn't then
+/// replace where it was sent.
+fn std_written(expr: &mut Expr, checked: &Checked, span: (u32, u32), sent: &mut BTreeSet<(u32, u32)>) {
+    if let Some(function) = checked.std_names.get(&span)
+        && !sent.contains(&span)
+    {
+        expr.kind = ExprKind::Name(function.clone());
+    }
+    if let Some(function) = checked.std_calls.get(&span)
+        && let ExprKind::Call { callee, .. } = &mut expr.kind
+    {
+        sent.insert((callee.span.start, callee.span.end));
+        callee.kind = ExprKind::Name(function.clone());
+    }
+}
+
 /// A call the checker sent to a standard library function, like `sum` of a list of floats to
 /// `math.fixed_sum`, needs that function's module where it runs, though the program may never have
 /// imported it: it's imported under a name of its own, which nothing written can reach or clash
@@ -852,9 +871,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
         || !checked.std_calls.is_empty()
         || !checked.field_args.is_empty()
     {
-        // The callees of calls the checker sent to another function, like `crypto.blake3` given a
-        // list to `crypto.blake3_of_str_list`. A call is seen before its callee, so the name the
-        // callee was written with, which may be std's too, mustn't then replace where it was sent.
+        // The callees of calls the checker sent to another function, which `std_written` keeps.
         let mut sent: BTreeSet<(u32, u32)> = BTreeSet::new();
         fennec_syntax::visit::exprs_mut(module, &mut |expr| {
             let span = (expr.span.start, expr.span.end);
@@ -865,17 +882,7 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
             if let Some(defaults) = checked.defaults.get(&span) {
                 fennec_syntax::visit::add_defaults(expr, defaults);
             }
-            if let Some(function) = checked.std_names.get(&span)
-                && !sent.contains(&span)
-            {
-                expr.kind = ExprKind::Name(function.clone());
-            }
-            if let Some(function) = checked.std_calls.get(&span)
-                && let ExprKind::Call { callee, .. } = &mut expr.kind
-            {
-                sent.insert((callee.span.start, callee.span.end));
-                callee.kind = ExprKind::Name(function.clone());
-            }
+            std_written(expr, checked, span, &mut sent);
             if let ExprKind::Call { args, .. } = &mut expr.kind {
                 for arg in args.iter_mut().filter(|arg| arg.name.is_none()) {
                     if let Some(field) = checked.field_args.get(&(arg.value.span.start, arg.value.span.end)) {

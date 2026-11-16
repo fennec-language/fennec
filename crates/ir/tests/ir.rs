@@ -2246,52 +2246,24 @@ fn refusals(program: &Program) -> Vec<String> {
     program.not_lowered.iter().map(|skipped| format!("{}: {}", skipped.function, skipped.why)).collect()
 }
 
-/// A generic that calls itself with a bigger type each time would need a copy for every size. It's
-/// stopped once the type is nested past 32, and the call says so, naming the copy and how deep. A
-/// generic function that does it is refused by the check first, at the call that makes the type
-/// bigger; a generic type's method that does it is stopped here.
+/// A generic that calls itself with a bigger type each time would need a copy for every size, and
+/// one that does it with two bigger types would double its copies with each size. The check
+/// refuses both where they're written, at the call that makes the type bigger, whether it's a
+/// generic function's or a generic type's method's, so lowering never meets one in a program that
+/// checks. Lowering still stops past 32 deep, by the rules `fennec_check::copies` tests, for what
+/// the check doesn't look at.
 #[test]
-fn a_generic_that_calls_itself_with_a_bigger_type_stops() {
-    let source = "struct Boxed[T]:
-    value: T
-
-    def grow(self, n: int) -> int:
-        if n == 0:
-            return 0
-        return Boxed(value=[self.value]).grow(n - 1)
-
-def f() -> int:
-    return Boxed(value=1).grow(3)
-";
-    let program = lowered(source).unwrap();
-    let said = refusals(&program);
-    assert!(said.iter().any(|why| why.contains("a type nested 33 deep")), "{said:?}");
-    assert!(program.functions.len() <= 40, "{}", program.functions.len());
-}
-
-/// One that calls itself with two bigger types would double its copies with each size: once one
-/// of them runs past the depth, no more copies of it are made, so it stops after a few dozen, each
-/// call that asked for one saying why. Every branch used to go on down to the depth, and a build
-/// said so ten thousand times.
-#[test]
-fn a_generic_that_doubles_its_copies_stops_at_the_first_too_deep() {
-    let source = "struct Boxed[T]:
-    value: T
-
-    def fan(self, n: int) -> int:
-        if n == 0:
-            return 0
-        return Boxed(value=[self.value]).fan(n - 1) + Boxed(value=(self.value, 1)).fan(n - 1)
-
-def f() -> int:
-    return Boxed(value=1).fan(3)
-";
-    let program = lowered(source).unwrap();
-    let said = refusals(&program);
-    assert!(said.iter().any(|why| why.contains("a type nested 33 deep")), "{said:?}");
-    assert!(said.iter().any(|why| why.contains("would need another copy of `Boxed.fan`")), "{said:?}");
-    assert!(said.len() <= 70, "{}", said.len());
-    assert!(program.functions.len() <= 70, "{}", program.functions.len());
+fn a_generic_that_calls_itself_with_a_bigger_type_is_refused_before_lowering() {
+    for source in [
+        "def grow[T](x: T, n: int) -> int:\n    if n == 0:\n        return 0\n    return grow([x], n - 1)\n\n\
+         def f() -> int:\n    return grow(1, 3)\n",
+        "struct Boxed[T]:\n    value: T\n\n    def fan(self, n: int) -> int:\n        if n == 0:\n            return 0\n        \
+         return Boxed(value=[self.value]).fan(n - 1) + Boxed(value=(self.value, 1)).fan(n - 1)\n\n\
+         def f() -> int:\n    return Boxed(value=1).fan(3)\n",
+    ] {
+        let refused = lowered(source).err().unwrap_or_default();
+        assert!(refused.contains("calls itself with a bigger type each time"), "{refused}");
+    }
 }
 
 /// A chain of generics, each asking for copies of the next with two types, doubles them at every

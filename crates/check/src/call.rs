@@ -399,23 +399,9 @@ impl FnCx<'_> {
             self.ignore_args(args);
             return Type::Unknown;
         }
-        let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
+        let (signature, chosen, given) = self.instantiate(key, &signature, None, types, span);
         if !chosen.is_empty() {
-            let types = chosen.iter().map(|chosen| chosen.ty.clone()).collect();
-            // With no receiver, each type parameter but the ones it inherits is chosen, in order.
-            let program = &self.checker.program;
-            let names = program
-                .functions
-                .get(key)
-                .map(|entry| {
-                    let inherited: Vec<&str> =
-                        entry.inherited.iter().map(|generic| generic.name.as_str()).collect();
-                    let generics = program.generics_of(entry);
-                    let chosen =
-                        generics.into_iter().filter(|generic| !inherited.contains(&generic.name.as_str()));
-                    chosen.map(|generic| generic.name).collect()
-                })
-                .unwrap_or_default();
+            let (names, types) = given.into_iter().unzip();
             let call = crate::generic_copies::Call {
                 caller: self.key.clone(),
                 callee: key.to_owned(),

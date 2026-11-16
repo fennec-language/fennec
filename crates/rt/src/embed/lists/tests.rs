@@ -259,9 +259,10 @@ fn a_powers_fast_paths_are_exact() {
     assert_eq!(super::float_power(1.5, 2.7).to_bits(), libm::pow(1.5, 2.7).to_bits());
 }
 
-/// Clearing a list of ints keeps its block and its room, with what it held zeroed, so the appends
-/// after it go into the same block: items that hold nothing are only zeroed, not copied out to be
-/// let go of.
+/// Clearing a list of ints keeps its block and its room, and only sets its length to 0: what it held
+/// stays in the room, past the length, so the appends after it go into the same block, and growing
+/// into the room zeroes the item it adds, whatever was there. Items that hold nothing are neither
+/// copied out to be let go of nor zeroed.
 #[test]
 fn a_cleared_list_of_ints_keeps_its_room() {
     let tables = Tables { elements: vec![Rc::new(Element::Int)], ..Tables::default() };
@@ -278,8 +279,15 @@ fn a_cleared_list_of_ints_keeps_its_room() {
     super::clear(numbers);
     let cleared = words(numbers);
     assert_eq!((cleared[2], cleared[3]), (0, room), "no items, and the same room");
-    assert!(cleared[super::LIST_HEADER_WORDS..].iter().all(|word| *word == 0), "what it held is zeroed");
+    assert_eq!(
+        &cleared[super::LIST_HEADER_WORDS..super::LIST_HEADER_WORDS + 3],
+        [7, 8, 9],
+        "left in the room"
+    );
     assert_eq!(super::grow(numbers), numbers, "an append after it goes into the same block");
+    let grown = words(numbers);
+    assert_eq!(grown[2], 1);
+    assert_eq!(grown[super::LIST_HEADER_WORDS], 0, "the item an append adds starts at 0");
     heap::free(numbers);
     assert_eq!(with(|state| state.heap.live()), before);
     finish();

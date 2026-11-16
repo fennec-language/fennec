@@ -114,9 +114,26 @@ jobs:
         run: |
           if [ -n "$TARGET" ]; then which=(--test "$TARGET"); else which=(--lib); fi
           cargo test --locked -p "$PACKAGE" "${which[@]}" --no-run
+      # On Windows, a full dump of every program that crashes, from Windows Error Reporting, into
+      # this share's folder, for the stack where it did.
+      - name: Keep a dump of each program that crashes
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dumps = Join-Path $env:GITHUB_WORKSPACE "repeat-$env:SHARE\dumps"
+          New-Item -ItemType Directory -Force -Path $dumps | Out-Null
+          $reporting = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting'
+          New-ItemProperty -Path $reporting -Name Disabled -PropertyType DWord -Value 0 -Force | Out-Null
+          $local = "$reporting\LocalDumps"
+          New-Item -Path $local -Force | Out-Null
+          New-ItemProperty -Path $local -Name DumpFolder -PropertyType ExpandString -Value $dumps -Force | Out-Null
+          New-ItemProperty -Path $local -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
+          New-ItemProperty -Path $local -Name DumpCount -PropertyType DWord -Value 10 -Force | Out-Null
       # This share's runs are those numbered SHARE, SHARE + SHARES and on, up to TIMES, so each
       # run's number is its own across the shares. Each says how long it took, so a share stopped
-      # partway still says how far it got.
+      # partway still says how far it got. Each run has a temporary folder of its own, and a test
+      # that fails keeps its folder there (`FENNEC_KEEP_FAILED`), the programs it built in it, which
+      # a failed run keeps beside what it printed.
       - name: Run it, again and again
         shell: bash
         run: |
@@ -129,10 +146,15 @@ jobs:
           for run in $(seq "$SHARE" "$SHARES" "$TIMES"); do
             started=$SECONDS
             said="repeat-$SHARE/run-$run.txt"
-            if ! cargo test --locked -q -p "$PACKAGE" "${which[@]}" -- "${filter[@]}" > "$said" 2>&1; then
+            temporary="$RUNNER_TEMP/run-$run"
+            mkdir -p "$temporary"
+            if [ "$RUNNER_OS" = Windows ]; then temporary=$(cygpath -w "$temporary"); fi
+            if ! FENNEC_KEEP_FAILED=1 TMPDIR="$temporary" TMP="$temporary" TEMP="$temporary" \
+              cargo test --locked -q -p "$PACKAGE" "${which[@]}" -- "${filter[@]}" > "$said" 2>&1; then
               failed=$((failed + 1))
               echo "::error::run $run of $TIMES failed, after $((SECONDS - started)) s"
               tail -n 40 "$said"
+              mv "$RUNNER_TEMP/run-$run" "repeat-$SHARE/run-$run-kept" || true
             elif grep -q "test result: ok. 0 passed" "$said"; then
               # No test of that name ran: every run would say the same, so it stops here.
               echo "::error::no test named $TEST ran"
@@ -141,12 +163,29 @@ jobs:
             else
               echo "run $run passed in $((SECONDS - started)) s"
               rm "$said"
+              rm -rf "$RUNNER_TEMP/run-$run"
             fi
             ran=$((ran + 1))
             echo "$ran $failed" > "repeat-$SHARE/counts"
           done
           echo "$failed of this share's $ran runs failed"
           [ "$failed" -eq 0 ]
+      # Each dump read by the Windows debugger: what it stopped on, and every thread's stack.
+      - name: Read each dump's stacks
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dumps = Join-Path $env:GITHUB_WORKSPACE "repeat-$env:SHARE\dumps"
+          $found = @(Get-ChildItem -Path $dumps -Filter *.dmp -ErrorAction SilentlyContinue)
+          "$($found.Count) dumps"
+          if ($found.Count -eq 0) { exit 0 }
+          $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
+          if (-not (Test-Path $cdb)) { "::warning::there's no cdb at $cdb, so the dumps are kept unread"; exit 0 }
+          foreach ($dump in $found) {
+            & $cdb -z $dump.FullName -c '!analyze -v; ~*k 30; q' > "$($dump.FullName).txt" 2>&1
+            "== $($dump.Name)"
+            Get-Content "$($dump.FullName).txt" -Tail 80
+          }
       # `total` adds these up. Kept even when the job is stopped partway, so its runs still count.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

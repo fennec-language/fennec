@@ -35,8 +35,13 @@ pub(crate) fn kit(dir: &Path, shown: &str) -> Result<Merged, Refused> {
     if depends_on_kits(&manifest) {
         return Err(Refused::Unsupported("a kit with dependencies".to_owned()));
     }
+    // The oracle's `std.pack` has no lock: a kit whose `pack.lock` would leave layouts out of what
+    // it writes is refused.
+    if dir.join("pack.lock").is_file() {
+        return Err(Refused::Unsupported("a kit with a `pack.lock`".to_owned()));
+    }
     let shown_src = format!("{}/src/", shown.trim_end_matches('/'));
-    let mut loader = Loader::new(dir.join("src"), shown_src);
+    let mut loader = Loader::new(dir.join("src"), dir.to_path_buf(), shown_src);
     let (real, shown_main) = loader.path(&["main".to_owned()]);
     loader.visit("main".to_owned(), &real, shown_main)?;
     loader.merge()
@@ -44,14 +49,14 @@ pub(crate) fn kit(dir: &Path, shown: &str) -> Result<Merged, Refused> {
 
 /// Loads a single file, shown as `shown`, and the modules beside it that it imports.
 pub(crate) fn file(path: &Path, shown: &str) -> Result<Merged, Refused> {
-    let src = path.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let src = folder_of(path);
     let shown_src = match Path::new(shown).parent().map(|folder| folder.to_string_lossy().replace('\\', "/"))
     {
         Some(folder) if !folder.is_empty() && folder != "." => format!("{}/", folder.trim_end_matches('/')),
         _ => String::new(),
     };
     let name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut loader = Loader::new(src, shown_src);
+    let mut loader = Loader::new(src.clone(), src, shown_src);
     loader.visit(name, path, shown.to_owned())?;
     loader.merge()
 }
@@ -95,6 +100,8 @@ struct File {
 struct Loader {
     /// The folder module paths resolve against.
     src: PathBuf,
+    /// The folder nothing embedded may be outside of: the kit's, or a lone file's own.
+    root: PathBuf,
     /// How `src` is shown before a module's path.
     shown_src: String,
     sources: Sources,
@@ -105,9 +112,10 @@ struct Loader {
 }
 
 impl Loader {
-    fn new(src: PathBuf, shown_src: String) -> Loader {
+    fn new(src: PathBuf, root: PathBuf, shown_src: String) -> Loader {
         Loader {
             src,
+            root,
             shown_src,
             sources: Sources::new(),
             files: Vec::new(),
@@ -137,9 +145,7 @@ impl Loader {
         let base = self.sources.add(shown, text.clone());
         let mut module = fennec_syntax::parse_at(&text, base)
             .map_err(|problem| Refused::Invalid(self.sources.render(&problem)))?;
-        if let Some(embed) = embeds(&mut module) {
-            return Err(Refused::Unsupported(format!("`{embed}`")));
-        }
+        embed_files(&mut module, real, &self.root)?;
         let mut wanted = Vec::new();
         for item in &module.items {
             if let Item::Import(import) = item
@@ -183,6 +189,20 @@ impl Loader {
         let index: HashMap<String, usize> =
             self.files.iter().enumerate().map(|(at, file)| (file.name.clone(), at)).collect();
         let defines: Vec<HashSet<String>> = self.files.iter().map(|file| defined(&file.module)).collect();
+        // The files of a kit share one set of top-level names, as the compiler's loader holds them
+        // to: a name two files define is refused.
+        for (at, names) in defines.iter().enumerate() {
+            for (other, theirs) in defines.iter().enumerate().take(at) {
+                if let Some(name) = names.intersection(theirs).min() {
+                    let module = |at: usize| self.files.get(at).map_or("", |file| file.name.as_str());
+                    return Err(Refused::Invalid(format!(
+                        "`{name}` is defined in `{}` and in `{}`, and the files of a kit share one set of top-level names",
+                        module(other),
+                        module(at)
+                    )));
+                }
+            }
+        }
         let mut cases: HashMap<String, Vec<(String, usize)>> = HashMap::new();
         for (at, file) in self.files.iter().enumerate() {
             for item in &file.module.items {
@@ -204,23 +224,64 @@ impl Loader {
             .flat_map(|file| file.module.items)
             .filter(|item| !matches!(item, Item::Import(import) if !is_std(import)))
             .collect();
-        Ok(Merged { module: Module { items, ..Default::default() }, sources: self.sources })
+        // Each file's span, so the checker takes each file's imports as its own, as the compiler's
+        // loader has it check them.
+        let files = self.sources.spans();
+        Ok(Merged { module: Module { items, files, ..Default::default() }, sources: self.sources })
     }
 }
 
-/// The first of `embed_file` and `embed_folder` a file calls, which the compiler reads the files of
-/// as it loads the program, and the oracle doesn't.
-fn embeds(module: &mut Module) -> Option<String> {
-    let mut found = None;
+/// The folder a file is in: `.` for a bare name, as `tiny.fen` given from its own folder, whose
+/// parent is the empty path, which can't be read or made canonical.
+fn folder_of(file: &Path) -> PathBuf {
+    match file.parent() {
+        Some(folder) if !folder.as_os_str().is_empty() => folder.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+/// Puts each `embed_file("path")` a file calls in as the bytes it gives, as the compiler reads
+/// them as it builds the program: the file at `path` from the folder of the file that calls it,
+/// which can't be outside `root`. `embed_folder` isn't modeled.
+fn embed_files(module: &mut Module, file: &Path, root: &Path) -> Result<(), Refused> {
+    let folder = folder_of(file);
+    let root = root.canonicalize().map_err(|err| Refused::Invalid(format!("the kit's folder: {err}")))?;
+    let mut refused = None;
     visit::exprs_mut(module, &mut |expr| {
-        if let ExprKind::Call { callee, .. } = &expr.kind
-            && let ExprKind::Name(name) = &callee.kind
-            && matches!(name.as_str(), "embed_file" | "embed_folder")
-        {
-            found.get_or_insert_with(|| name.clone());
+        let ExprKind::Call { callee, args } = &expr.kind else { return };
+        let ExprKind::Name(name) = &callee.kind else { return };
+        if name == "embed_folder" {
+            refused.get_or_insert_with(|| Refused::Unsupported("`embed_folder`".to_owned()));
+            return;
         }
+        if name != "embed_file" {
+            return;
+        }
+        let [arg] = args.as_slice() else { return };
+        let ExprKind::Str(path) = &arg.value.kind else {
+            refused.get_or_insert_with(|| {
+                Refused::Unsupported("`embed_file` of a path not written out".to_owned())
+            });
+            return;
+        };
+        let found = folder.join(path).canonicalize().ok().filter(|found| found.starts_with(&root));
+        let Some(data) = found.and_then(|found| std::fs::read(found).ok()) else {
+            refused.get_or_insert_with(|| {
+                Refused::Invalid(format!("`embed_file(\"{path}\")` finds no file in the kit"))
+            });
+            return;
+        };
+        let span = expr.span;
+        let items =
+            data.into_iter().map(|byte| Expr { kind: ExprKind::Int(i64::from(byte)), span }).collect();
+        let list = Expr { kind: ExprKind::List(items), span };
+        let made = Expr { kind: ExprKind::Name("bytes".to_owned()), span };
+        expr.kind = ExprKind::Call {
+            callee: Box::new(made),
+            args: vec![fennec_syntax::Arg { name: None, is_mut: false, value: list }],
+        };
     });
-    found
+    refused.map_or(Ok(()), Err)
 }
 
 /// The names a file defines at the top level.
@@ -486,4 +547,19 @@ fn types_in_function(def: &mut FnDef, change: &mut dyn FnMut(&mut TypeExpr)) {
     def.params.iter_mut().filter_map(|param| param.ty.as_mut()).for_each(&mut *change);
     def.ret.iter_mut().chain(def.fails.iter_mut()).for_each(&mut *change);
     visit::written_types_in(&mut def.body, change);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::folder_of;
+
+    #[test]
+    fn a_file_given_by_its_bare_name_is_in_the_folder_it_runs_from() {
+        assert_eq!(folder_of(Path::new("tiny.fen")), PathBuf::from("."));
+        assert_eq!(folder_of(Path::new("./tiny.fen")), PathBuf::from("."));
+        assert_eq!(folder_of(Path::new("examples/tiny.fen")), PathBuf::from("examples"));
+        assert_eq!(folder_of(Path::new("/work/tiny.fen")), PathBuf::from("/work"));
+    }
 }

@@ -197,6 +197,9 @@ impl FnCx<'_> {
             return Some(self.construct(name, args, span));
         }
         if let Some(builtin) = self.checker.program.imported(name, callee.span).cloned() {
+            // Written in by its own name, as `math.sqrt`: what a file imports is its own, and
+            // nothing after the check looks a name up by what another file imports.
+            self.checker.std_names.insert((callee.span.start, callee.span.end), builtin.clone());
             return Some(self.call_builtin(&builtin, args, span));
         }
         if matches!(name, "len" | "abs") || builtins::is_builtin(name) {
@@ -227,8 +230,9 @@ impl FnCx<'_> {
                 Member::Name(member) => member,
                 Member::Missing => return None,
             },
+            // An import's name, or the builtin's own once it's written in.
             ExprKind::Name(name) if self.lookup(name).is_none() => {
-                self.checker.program.imported(name, callee.span)?.clone()
+                self.checker.program.imported(name, callee.span).cloned().unwrap_or_else(|| name.clone())
             }
             _ => return None,
         };
@@ -241,7 +245,7 @@ impl FnCx<'_> {
     }
 
     /// An argument's type, where a value of type `expected` goes, if that's known.
-    fn arg_as(&mut self, arg: &Arg, params: &[Type], expected: Option<&Type>) -> Type {
+    pub(crate) fn arg_as(&mut self, arg: &Arg, params: &[Type], expected: Option<&Type>) -> Type {
         if arg.is_mut {
             self.mut_place(&arg.value, MUT_ARG);
         }
@@ -395,11 +399,15 @@ impl FnCx<'_> {
             self.ignore_args(args);
             return Type::Unknown;
         }
-        let (signature, chosen) = self.instantiate(key, &signature, None, types, span);
+        let (signature, chosen, given) = self.instantiate(key, &signature, None, types, span);
         if !chosen.is_empty() {
-            let types = chosen.iter().map(|chosen| chosen.ty.clone()).collect();
-            let call =
-                crate::generic_copies::Call { caller: self.key.clone(), callee: key.to_owned(), types };
+            let (names, types) = given.into_iter().unzip();
+            let call = crate::generic_copies::Call {
+                caller: self.key.clone(),
+                callee: key.to_owned(),
+                types,
+                names,
+            };
             self.checker.generic_calls.insert((span.start, span.end), call);
         }
         if let Some(what) = crate::waits::intrinsic_waits(key) {

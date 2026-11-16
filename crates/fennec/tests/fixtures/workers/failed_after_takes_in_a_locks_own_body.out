@@ -1,0 +1,16 @@
+went straight True 3 4 3 straight 2, a text long enough for a block | 1 first, a text long enough for a block of its own
+failed straight True 40 30 4 3 straight 2, a text long enough for a block | 1 first, a text long enough for a block of its own
+went straight True 2 6 4 straight 1, a text long enough for a block | 1 first, a text long enough for a block of its own
+failed straight True 300 1 6 4 straight 1, a text long enough for a block | 1 first, a text long enough for a block of its own
+went method True 3 11 4 after, a text long enough for a block of its own | 1 first, a text long enough for a block of its own
+failed method True 40 30 11 4 after, a text long enough for a block of its own | 1 first, a text long enough for a block of its own
+went method True 2 15 4 after, a text long enough for a block of its own | 1 first, a text long enough for a block of its own
+failed method True 300 1 15 4 after, a text long enough for a block of its own | 1 first, a text long enough for a block of its own
+went straight False 3 15 7 after, a text long enough for a block of its own | 4 straight 2, a text long enough for a block
+failed straight False 40 30 15 7 after, a text long enough for a block of its own | 4 straight 2, a text long enough for a block
+went straight False 2 15 8 after, a text long enough for a block of its own | 6 straight 1, a text long enough for a block
+failed straight False 300 1 15 8 after, a text long enough for a block of its own | 6 straight 1, a text long enough for a block
+went method False 3 17 8 after, a text long enough for a block of its own | 9 by method 2, a text long enough for a block of its own
+failed method False 40 30 17 8 after, a text long enough for a block of its own | 9 by method 2, a text long enough for a block of its own
+went method False 2 19 8 after, a text long enough for a block of its own | 11 by method 1, a text long enough for a block of its own
+failed method False 300 1 19 8 after, a text long enough for a block of its own | 11 by method 1, a text long enough for a block of its own

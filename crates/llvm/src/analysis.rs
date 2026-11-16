@@ -24,6 +24,9 @@ type Changes<'f> = &'f dyn Fn(&str) -> Vec<usize>;
 /// Whether a function might give its parameter at a place another owner.
 type Keeps<'f> = &'f dyn Fn(&str, usize) -> bool;
 
+/// Whether a dict of this type holds its values in its entries, as the program's layouts say.
+type InEntries<'f> = &'f dyn Fn(&Type) -> bool;
+
 /// What a slice used as a key is of: the string, and its start and end as slicing takes them.
 pub(crate) type SliceKey = (Operand, Option<Operand>, Option<Operand>);
 
@@ -72,6 +75,12 @@ pub(crate) struct Analysis {
     /// Locals taking a field of a list's item out to change it, put back through the same place
     /// read again: `root.list[index].field`, as the root, the list's field and the index.
     path_taken: HashMap<usize, (LocalId, Vec<String>, Operand)>,
+    /// Those of them taken out only when the append comes, as its argument is worked out between
+    /// the read and it: by the block and instruction the append is, the field's local, the item
+    /// it's read from and the field.
+    path_waits: HashMap<(usize, usize), (LocalId, LocalId, String)>,
+    /// The fields' locals of [`Self::path_waits`].
+    path_waiting: HashSet<usize>,
     /// `for mut` items taken out for the whole of the loop's body.
     loop_taken: HashSet<usize>,
     /// Locals holding a place a call changes, which is taken out for it: each place in order
@@ -531,6 +540,7 @@ fn analyze(
     changes: &dyn Fn(&str) -> Vec<usize>,
     keeps: &dyn Fn(&str, usize) -> bool,
     params: &[Range],
+    in_entries: InEntries<'_>,
 ) -> Analysis {
     let mut known = Analysis::empty(function.locals.len());
     known.param_ranges = given_ranges(function, params);
@@ -540,7 +550,7 @@ fn analyze(
     find_place_takes(function, changes, &mut known);
     find_borrows(function, changes, &mut known);
     find_live_borrows(function, changes, &mut known);
-    find_path_takes(function, &mut known);
+    find_path_takes(function, changes, &mut known);
     find_aliases(function, &mut known);
     settle_place_takes(function, &mut known);
     find_loop_takes(function, &mut known);
@@ -622,7 +632,7 @@ fn analyze(
     find_guarded_reads(function, (&facts, &multi), &mut known);
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
-    find_slice_keys(function, &mut known);
+    find_slice_keys(function, in_entries, &mut known);
     find_unmade_enumerates(function, &mut known);
     find_counts_inside(function, &mut known);
     known
@@ -1366,7 +1376,7 @@ fn write_range(
 
 /// `d.get(text[a:b])` and `d[text[a:b]] = v`, with the slice used for nothing else and what it
 /// was made from unchanged after: the runtime finds and adds those bytes where they are.
-fn find_slice_keys(function: &Function, known: &mut Analysis) {
+fn find_slice_keys(function: &Function, in_entries: InEntries<'_>, known: &mut Analysis) {
     let insts: Vec<&InstKind> =
         function.blocks.iter().flat_map(|block| &block.insts).map(|inst| &inst.kind).collect();
     let steady = |operand: &Operand, known: &Analysis| match operand {
@@ -1374,11 +1384,14 @@ fn find_slice_keys(function: &Function, known: &mut Analysis) {
         Operand::Int(_) => true,
         _ => false,
     };
+    // A dict that holds its values in its entries is left out: finding a slice's bytes where
+    // they are, and adding them, are written for an entry of a key and one word. Which dicts do
+    // is the layouts' to say: a tuple, an array or an `Id` is held in place as a struct is,
+    // whatever it's written as.
     let str_keyed = |dict: &Operand| match dict {
-        Operand::Local(local) => matches!(
-            function.locals.get(local.0).map(|local| &local.ty),
-            Some(Type::Dict(key, _)) if **key == Type::Str
-        ),
+        Operand::Local(local) => function.locals.get(local.0).is_some_and(|local| {
+            matches!(&local.ty, Type::Dict(key, _) if **key == Type::Str) && !in_entries(&local.ty)
+        }),
         _ => false,
     };
     for inst in &insts {
@@ -1524,6 +1537,8 @@ fn may_change(
             InstKind::Call { .. } => !leaves_alone(inst, lenders, changes, roots),
             InstKind::Lock { .. }
             | InstKind::Unlock { .. }
+            | InstKind::LockAll { .. }
+            | InstKind::UnlockAll { .. }
             | InstKind::CrashCleanup { .. }
             | InstKind::CrashCleanupDone { .. } => true,
             _ => false,
@@ -1828,9 +1843,16 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
             known.field_of.insert(dest.0, (*from, field.clone()));
         }
     }
+    // A lock's handle is where a place's path may start only when the lock saves what it changes,
+    // so a take from it is put back by its log.
+    let saving = crate::rollback::saving_handles(function);
+    let reachable =
+        |local: LocalId| !crate::rollback::is_lock_handle(function, local) || saving.contains(&local.0);
     for block in &function.blocks {
-        // Where a borrowed list came from, for an item taken out of it.
-        let mut from_field: HashMap<usize, (LocalId, Vec<String>)> = HashMap::new();
+        // Where a borrowed list came from, for an item taken out of it: each local it was read out
+        // of on the way, nearest first, with the path from it, to the root of the chain. A lock's
+        // `held.value.named` is read out of `held` two fields up, as `self.named` is one up.
+        let mut from_field: HashMap<usize, Vec<(LocalId, Vec<String>)>> = HashMap::new();
         for (at, inst) in block.insts.iter().enumerate() {
             let (dest, source) = match &inst.kind {
                 InstKind::GetField { dest, object: Operand::Local(from), .. }
@@ -1869,14 +1891,17 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                 Some(Type::Dict(..) | Type::Table(_))
             );
             if let InstKind::GetIndex { index, .. } = &inst.kind {
-                let home = from_field.get(&source.0).cloned().unwrap_or((source, Vec::new()));
+                let homes = from_field.get(&source.0).cloned().unwrap_or_else(|| vec![(source, Vec::new())]);
+                let nearest = homes.first().map_or(source, |(at, _)| *at);
                 for next in later {
                     match &next.kind {
                         InstKind::SetIndex { object, path, index: put_at, value: Operand::Local(put) }
-                            if *object == home.0 && *path == home.1 && put_at == index && *put == dest =>
+                            if put_at == index
+                                && *put == dest
+                                && homes.iter().any(|(at, along)| at == object && along == path) =>
                         {
                             known.taken.insert(dest.0);
-                            known.items_taken.insert(dest.0, home);
+                            known.items_taken.insert(dest.0, (*object, path.clone()));
                             break;
                         }
                         InstKind::SetField { object, value, .. }
@@ -1897,7 +1922,7 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
                                     .iter()
                                     .any(|at| args.get(*at) == Some(&Operand::Local(dest)))
                                 && !args.contains(&Operand::Local(source)) => {}
-                        InstKind::SetIndex { object, path, .. } if *object != home.0 && path.is_empty() => {}
+                        InstKind::SetIndex { object, path, .. } if *object != nearest && path.is_empty() => {}
                         other if is_quiet(other) => {}
                         _ => break,
                     }
@@ -1906,7 +1931,13 @@ fn find_borrows(function: &Function, changes: &dyn Fn(&str) -> Vec<usize>, known
             }
             let InstKind::GetField { field, .. } = &inst.kind else { continue };
             if known.borrowed.contains(&dest.0) {
-                from_field.insert(dest.0, (source, vec![field.clone()]));
+                let mut homes = vec![(source, vec![field.clone()])];
+                for (at, along) in from_field.get(&source.0).into_iter().flatten() {
+                    if reachable(*at) {
+                        homes.push((*at, along.iter().chain([field]).cloned().collect()));
+                    }
+                }
+                from_field.insert(dest.0, homes);
             }
             for next in later {
                 match &next.kind {
@@ -2156,14 +2187,22 @@ fn settle_place_takes(function: &Function, known: &mut Analysis) {
 /// `root.list[index].field.append(x)` or `list[index].field.append(x)`, which the IR writes as
 /// reading the field out, changing it, then reading the item again to put it back: the field is
 /// taken, not copied, when nothing else touches the root meanwhile and the index stays the same.
-fn find_path_takes(function: &Function, known: &mut Analysis) {
+///
+/// The IR works `x` out between the read and the append. Where that's more than a read, a string
+/// being made, a call, a struct, the field is taken only when the append comes: nothing is out of
+/// the root while `x` is made, so a failure there has nothing to put back, and the read before it
+/// still fails first on a key that isn't there. That needs `x` to leave the root, the index and
+/// what's read on the way as they are; anything else keeps the field's own copy, as before.
+fn find_path_takes(function: &Function, changes: Changes<'_>, known: &mut Analysis) {
     let steady = |operand: &Operand, known: &Analysis| match operand {
         // A number or a string written out: a list's position, or a dict's key.
         Operand::Int(_) | Operand::Str(_) => true,
         Operand::Local(local) => known.writes.get(local.0).copied().unwrap_or(0) <= 1,
         _ => false,
     };
-    for block in &function.blocks {
+    // A lock's handle is a root only when the lock saves what it changes: the take asks its log.
+    let saving = crate::rollback::saving_handles(function);
+    for (block_at, block) in function.blocks.iter().enumerate() {
         let defined = |local: LocalId, before: usize| {
             block.insts.get(..before).unwrap_or_default().iter().rev().find_map(|inst| match &inst.kind {
                 InstKind::GetField { dest, object: Operand::Local(from), field } if *dest == local => {
@@ -2175,7 +2214,7 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                 _ => None,
             })
         };
-        for (at, inst) in block.insts.iter().enumerate() {
+        'reads: for (at, inst) in block.insts.iter().enumerate() {
             let InstKind::GetField { dest, object: Operand::Local(item), field } = &inst.kind else {
                 continue;
             };
@@ -2191,31 +2230,97 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
             ) {
                 continue;
             }
-            // The list is a field of the root, or the root itself.
-            let (root, list_path) = match defined(list, at) {
-                Some((Some(list_field), root, None)) => (root, vec![list_field]),
-                None => (list, Vec::new()),
-                Some(_) => continue,
-            };
+            // The list is the root itself, or reached from it by fields read one after another: a
+            // struct's `self.named` one up, a lock's `held.value.named` two. Each local on the way
+            // is written once.
+            let (mut root, mut list_path, mut chain) = (list, Vec::new(), Vec::new());
+            // Each step goes to a local written once before, so this ends; the bound is for safety,
+            // as `root_of`'s is.
+            let mut reached = false;
+            for _ in 0..=function.locals.len() {
+                match defined(root, at) {
+                    Some((Some(step), up, None)) if known.writes.get(root.0) == Some(&1) => {
+                        chain.push(root);
+                        list_path.insert(0, step);
+                        root = up;
+                    }
+                    None => {
+                        reached = true;
+                        break;
+                    }
+                    _ => continue 'reads,
+                }
+            }
+            if !reached {
+                continue;
+            }
+            if crate::rollback::is_lock_handle(function, root) && !saving.contains(&root.0) {
+                continue;
+            }
             if !steady(&index, known) || !known.borrowed.contains(&item.0) {
                 continue;
             }
-            // Then: changes to it, the same place read again, and it put back there.
+            // What's worked out for the append before it stands by: it may read the root, but
+            // changes neither it nor the index, and touches nothing read on the way to the field.
+            let index_local = match &index {
+                Operand::Local(local) => Some(*local),
+                _ => None,
+            };
+            let on_the_way: Vec<LocalId> = [*dest, *item].into_iter().chain(chain.iter().copied()).collect();
+            let stands_by = |inst: &InstKind| {
+                let (mut read, mut written) = (Vec::new(), Vec::new());
+                visit(inst, |operand| read.push(operand.clone()), |local| written.push(local));
+                let touched =
+                    |local: LocalId| read.contains(&Operand::Local(local)) || written.contains(&local);
+                let changed = |local: LocalId| {
+                    written.contains(&local)
+                        || may_change(inst, std::slice::from_ref(&local), changes, &Roots::new())
+                };
+                !on_the_way.iter().any(|local| touched(*local))
+                    && !changed(root)
+                    && !index_local.is_some_and(changed)
+            };
+            // Then: changes to it, the same place read again, and it put back there. The list is
+            // read again by the same fields from the root, each step into a new local.
             let mut again: (Option<LocalId>, Option<LocalId>) = (list_path.is_empty().then_some(root), None);
+            let mut read_again: HashMap<usize, Vec<String>> = HashMap::new();
             let mut put_in_item = false;
-            for next in block.insts.get(at + 1..).unwrap_or_default() {
+            // Where the first append is, and whether anything stood by before it.
+            let (mut appended_at, mut waits) = (None, false);
+            for (after, next) in block.insts.get(at + 1..).unwrap_or_default().iter().enumerate() {
                 match &next.kind {
                     InstKind::Builtin { name, args, .. }
                         if name == "list.append"
                             && args.first() == Some(&Operand::Local(*dest))
-                            && args.iter().skip(1).all(|arg| *arg != Operand::Local(root)) => {}
-                    InstKind::GetField { dest: list2, object: Operand::Local(from), field: name }
-                        if *from == root && list_path.first() == Some(name) && again.0.is_none() =>
+                            && args.iter().skip(1).all(|arg| *arg != Operand::Local(root)) =>
                     {
-                        again.0 = Some(*list2);
+                        appended_at = appended_at.or(Some(at + 1 + after));
+                    }
+                    // The place read again to put the field back, which comes after the append:
+                    // before it, the same read is one the argument makes.
+                    InstKind::GetField { dest: step, object: Operand::Local(from), field: name }
+                        if appended_at.is_some()
+                            && again.0.is_none()
+                            && (*from == root || read_again.contains_key(&from.0))
+                            && {
+                                let mut along = read_again.get(&from.0).cloned().unwrap_or_default();
+                                along.push(name.clone());
+                                list_path.starts_with(&along)
+                            } =>
+                    {
+                        let mut along = read_again.get(&from.0).cloned().unwrap_or_default();
+                        along.push(name.clone());
+                        if along == list_path {
+                            again.0 = Some(*step);
+                        } else {
+                            read_again.insert(step.0, along);
+                        }
                     }
                     InstKind::GetIndex { dest: item2, object: Operand::Local(from), index: at_again }
-                        if Some(*from) == again.0 && *at_again == index && again.1.is_none() =>
+                        if appended_at.is_some()
+                            && Some(*from) == again.0
+                            && *at_again == index
+                            && again.1.is_none() =>
                     {
                         again.1 = Some(*item2);
                     }
@@ -2226,18 +2331,32 @@ fn find_path_takes(function: &Function, known: &mut Analysis) {
                     {
                         put_in_item = true;
                     }
+                    // The item read again is taken too, with the same home: read with an owner of
+                    // its own, it would hold the field's word from before the change, which a
+                    // list that grew and moved has let go of.
                     InstKind::SetIndex { object, path, index: at_again, value: Operand::Local(put) }
                         if put_in_item
                             && *object == root
                             && *path == list_path
                             && *at_again == index
-                            && Some(*put) == again.1 =>
+                            && Some(*put) == again.1
+                            && known.items_taken.get(&put.0) == Some(&(root, list_path.clone())) =>
                     {
+                        // A field that waited with nothing appended to it has nothing to be
+                        // taken for, so it keeps its own copy.
+                        if waits && appended_at.is_none() {
+                            break;
+                        }
                         known.taken.insert(dest.0);
                         known.path_taken.insert(dest.0, (root, list_path.clone(), index.clone()));
+                        if waits && let Some(append) = appended_at {
+                            known.path_waiting.insert(dest.0);
+                            known.path_waits.insert((block_at, append), (*dest, *item, field.clone()));
+                        }
                         break;
                     }
                     other if is_quiet(other) && !reads_local(other, root) && !reads_local(other, *dest) => {}
+                    other if appended_at.is_none() && stands_by(other) => waits = true,
                     _ => break,
                 }
             }
@@ -3058,6 +3177,8 @@ impl Analysis {
             slot_homes: HashMap::new(),
             put_back_reads: HashMap::new(),
             path_taken: HashMap::new(),
+            path_waits: HashMap::new(),
+            path_waiting: HashSet::new(),
             loop_taken: HashSet::new(),
             places_taken: HashMap::new(),
             place_parts: HashMap::new(),
@@ -3218,6 +3339,17 @@ impl Analysis {
     /// list from it, and the index.
     pub(crate) fn path_home(&self, local: LocalId) -> Option<&(LocalId, Vec<String>, Operand)> {
         self.path_taken.get(&local.0)
+    }
+
+    /// Whether a field taken out by [`Self::path_home`] is taken only when its append comes.
+    pub(crate) fn path_waits(&self, local: LocalId) -> bool {
+        self.path_waiting.contains(&local.0)
+    }
+
+    /// The field taken out just before the instruction at `at`, an append it waited for: its
+    /// local, the item it's read from and the field.
+    pub(crate) fn path_due(&self, at: (usize, usize)) -> Option<&(LocalId, LocalId, String)> {
+        self.path_waits.get(&at)
     }
 
     /// The local and field a local was read from, if that's its one write.
@@ -3958,10 +4090,20 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
     };
     let params = param_ranges(program, &changes, &keeps);
+    // Without layouts, which a program that builds always has, any dict that isn't of plain words
+    // may hold its values in its entries.
+    let layouts = crate::layouts_of(program).ok();
+    let in_entries = |dict: &Type| match &layouts {
+        Some(layouts) => matches!(
+            crate::kinds::Kind::of(layouts, dict),
+            Ok(crate::kinds::Kind::Dict(_, fennec_rt::embed::dicts::Word::InPlace(_)))
+        ),
+        None => fennec_layout::dict_values_in_place(),
+    };
     let analyses: HashMap<&str, Analysis> = every()
         .map(|function| {
             let given = params.get(function.name.as_str()).map_or(&[][..], Vec::as_slice);
-            (function.name.as_str(), analyze(function, &changes, &keeps, given))
+            (function.name.as_str(), analyze(function, &changes, &keeps, given, &in_entries))
         })
         .collect();
     let mut generators = HashMap::new();
@@ -4031,7 +4173,7 @@ mod tests {
         let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
-        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
         let at = function.locals.iter().position(|local| local.name.as_deref() == Some("unit"));
         Ok(known.taken_over_loop(LocalId(at.ok_or("no `unit`")?)))
     }
@@ -4051,6 +4193,86 @@ mod tests {
         Ok(())
     }
 
+    /// Whether the list a function called `go` appends to, through a field of a dict's value or a
+    /// list's item, is taken out for it, whether it's taken only when the append comes, and
+    /// whether each item read again to be put back is taken too, from where it goes back.
+    fn field_taken(body: &str) -> Result<(bool, bool, bool), String> {
+        let types = "struct Bag:\n    items: list[str]\n    count: int\n\nstruct Shelf:\n    named: dict[str, Bag]\n    rows: list[Bag]\n    total: int\n\ndef made(turn: int) -> str:\n    return f\"made in turn {turn}\"\n\ndef counted(ref shelf: Shelf) -> str:\n    shelf.total += 1\n    return \"counted\"\n\n";
+        let source = format!("{types}{body}");
+        let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
+        let changes = |name: &str| if name == "counted" { vec![0] } else { Vec::new() };
+        let known = analyze(function, &changes, &|_, _| false, &[], &|_| false);
+        let appended =
+            function.blocks.iter().flat_map(|block| &block.insts).find_map(|inst| match &inst.kind {
+                InstKind::Builtin { name, args, .. } if name == "list.append" => match args.first() {
+                    Some(Operand::Local(list)) => Some(*list),
+                    _ => None,
+                },
+                _ => None,
+            });
+        let appended = appended.ok_or("no append")?;
+        // Every item put back whole is one read again and taken, with the put-back's place as its
+        // home: one read and kept would hold the list's old address once the list grows.
+        let put_backs: Vec<bool> = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.insts)
+            .filter_map(|inst| match &inst.kind {
+                InstKind::SetIndex { object, path, value: Operand::Local(item), .. } => {
+                    Some(known.items_taken.get(&item.0) == Some(&(*object, path.clone())))
+                }
+                _ => None,
+            })
+            .collect();
+        let put_back_taken = !put_backs.is_empty() && put_backs.iter().all(|taken| *taken);
+        Ok((known.path_home(appended).is_some(), known.path_waits(appended), put_back_taken))
+    }
+
+    /// `shelf.named[key].items.append(x)` takes the list out, not a copy of it, whatever `x` is.
+    /// When `x` is a local, the list is taken where it's read. When `x` is made on the way, a
+    /// string, a call's result, something read from the shelf, the list is taken only when the
+    /// append comes, so nothing is out while `x` is made: before this, each of those appended to
+    /// a copy, which copied the whole list every time.
+    #[test]
+    fn a_field_through_a_dict_is_taken_whatever_is_appended() -> Result<(), String> {
+        let go = "def go(ref shelf: Shelf, key: str, text: str, turn: int):\n    ";
+        for (appended, waits) in [
+            ("text", false),
+            ("f\"made in turn {turn}\"", true),
+            ("made(turn)", true),
+            ("str(shelf.total)", true),
+            ("made(shelf.named[key].count)", true),
+        ] {
+            let body = format!("{go}shelf.named[key].items.append({appended})\n");
+            let (taken, waited, _) = field_taken(&body)?;
+            assert_eq!((taken, waited), (true, waits), "{body}");
+        }
+        Ok(())
+    }
+
+    /// Written straight in a lock's body, `held.named[key].items.append(x)` takes the list out
+    /// through the lock's handle, two fields up from the dict, whatever `x` is: the IR reads
+    /// `held.value` into a new local on the way out and again on the way back, and both are the
+    /// same place from the handle. The bag read on the way back is taken too, with the same home.
+    /// A list's item, for `held.rows[i].items.append(x)`, is taken out of the list whole, so its
+    /// list is its own and grows where it is, with no path taken. Before, the take looked one
+    /// field up, from a different local each way, found nothing, and every append copied the
+    /// whole list.
+    #[test]
+    fn a_field_in_a_locks_own_body_is_taken_through_its_handle() -> Result<(), String> {
+        let go = "def go(shelf: shared Shelf, key: str, text: str, turn: int):\n    lock shelf as ref held:\n        ";
+        for (appended, waits) in [("text", false), ("f\"made in turn {turn}\"", true), ("made(turn)", true)] {
+            let body = format!("{go}held.named[key].items.append({appended})\n");
+            assert_eq!(field_taken(&body)?, (true, waits, true), "{body}");
+            let body = format!("{go}held.rows[turn].items.append({appended})\n");
+            assert_eq!(field_taken(&body)?, (false, false, true), "{body}");
+        }
+        Ok(())
+    }
+
     /// Whether the one list a function called `go` fills is filled with no room check: the
     /// list its comprehension makes, before it's given a name.
     fn within_room(body: &str) -> Result<bool, String> {
@@ -4058,7 +4280,7 @@ mod tests {
         let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
-        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
         Ok(!known.room_enough.is_empty())
     }
 
@@ -4089,7 +4311,7 @@ mod tests {
         let checked = fennec_check::check(&module).map_err(|err| format!("{err:?}"))?;
         let program = fennec_ir::lower(&module, &checked);
         let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
-        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[]);
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
         Ok((0..function.locals.len()).filter(|at| known.is_taken(LocalId(*at))).count())
     }
 

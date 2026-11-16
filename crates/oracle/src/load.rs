@@ -147,12 +147,19 @@ fn load_module(module: Module, sources: Sources) -> Result<&'static Program, Ref
     // Every expression the checker typed: the program's own, and those of the standard library
     // code it reaches, which a module run from its own source needs.
     let mut types_at = HashMap::new();
-    let typed = typed_fields(&module, &checked.signatures);
     for (_, body) in checked.types.iter() {
         for (span, ty) in body.exprs() {
             types_at.insert((span.start, span.end), ty.clone());
         }
     }
+    // A program's own type with a standard library type's name is renamed as the checker renames
+    // it, so the library's code run from its source still means its own, and the types the
+    // checker gave are the program's.
+    let mut module = module;
+    let renamed = fennec_check::renamed_own_types(&module);
+    fennec_syntax::rename::rename_types(&mut module, &renamed);
+    // Each field's type, by the names the types are checked under, as the checker gave them.
+    let typed = typed_fields(&module, &checked.signatures);
     // The tree is kept for the rest of the process, since values and generators running on
     // other threads point into it.
     let module: &'static Module = Box::leak(Box::new(module));
@@ -187,6 +194,8 @@ const RUN_FROM_SOURCE: &[&str] = &[
     "io",
     "toml",
     "json",
+    "net",
+    "pack",
 ];
 
 /// The capabilities `main` may take whose type a module run from its own source declares, which
@@ -197,6 +206,9 @@ const CAPABILITY_MODULES: &[(&str, &str)] = &[("Env", "env"), ("Clock", "time")]
 
 /// The core's types run from their own source, as `core_types` takes them in.
 const FROM_CORE: &[&str] = &["Template", "Interpolation"];
+
+/// The sized ints whose functions the core writes in Fennec, as `core_types` takes them in.
+const SIZED_FROM_CORE: &[&str] = &["i8", "i16", "i32", "u8", "u16", "u32", "u64"];
 
 /// The types the oracle models on its own, which a module run from its source declares or adds
 /// methods to in an `extend`: those are left out. `std.collections` extends `Table` and `Id`,
@@ -310,6 +322,14 @@ impl Gathered {
                 && !self.types.contains_key(&def.name)
             {
                 self.types.insert(def.name.clone(), Declared { def, kind: Kind::Struct, ruled: ruled(def) });
+            }
+            // The sized ints' functions written in Fennec, as `u64.parse` and `u8.from`, but
+            // those that take `self`, which the oracle models as it does an int's other methods.
+            if let Item::Extend(extension) = item
+                && SIZED_FROM_CORE.contains(&extension.name.as_str())
+            {
+                let functions = extension.methods.iter().filter(|def| !def.takes_self());
+                self.extensions.entry(extension.name.clone()).or_default().extend(functions);
             }
         }
         Ok(())

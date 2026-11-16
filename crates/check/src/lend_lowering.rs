@@ -258,7 +258,7 @@ pub(crate) fn reserved(length: u32) -> u32 {
 
 /// The lowest a span a lowering writes can be: well above any program's text, and below the
 /// standard library's.
-const WRITTEN_FROM: u32 = Span::PRELUDE - (1 << 28);
+const WRITTEN_FROM: u32 = Span::WRITTEN;
 
 /// Whether lowering wrote what's at `span` in, rather than a program or the standard library.
 pub(crate) fn written_in(span: Span) -> bool {
@@ -1851,15 +1851,15 @@ fn instead_of_fails(body: &mut [Stmt], instead: &Expr) {
 /// What starts the name of the function a crash in a `with` block runs.
 pub(crate) const ON_CRASH: &str = "crash__cleanup";
 
-/// What a crash in a `with` block runs: the source's `else:` as a function taking nothing and
-/// giving back how it failed, as text, or nothing, the call that marks it to run, and the call
-/// that unmarks it. `None` with no `else:`.
+/// What a crash in a `with` block runs: the source's `except:` cleanup as a function taking
+/// nothing and giving back how it failed, as text, or nothing, the call that marks it to run, and
+/// the call that unmarks it. `None` with no cleanup.
 fn on_crash(otherwise: &[Stmt], at: Span) -> Option<(Stmt, Stmt, Stmt)> {
     if otherwise.is_empty() {
         return None;
     }
-    let body = quietly(otherwise)?;
     let held = format!("{ON_CRASH}{}", here(at).start);
+    let body = as_written(otherwise, &held, at);
     let def = FnDef {
         name: held.clone(),
         generics: Vec::new(),
@@ -1880,38 +1880,68 @@ fn on_crash(otherwise: &[Stmt], at: Span) -> Option<(Stmt, Stmt, Stmt)> {
 }
 
 /// A cleanup as a crash runs it, giving back how it failed, as text, for the runtime to note on
-/// the crash, or `""`. There's no failure to pass up, so a `?` anywhere in it that fails ends it,
-/// as `else as why: return f"{why}"`, and so does a `fail`: the rest of it is skipped, as when it
-/// runs for a failure, and the crash goes on. A `?` or `fail` in a function or lambda written in
-/// it passes up from that, as it would anywhere. `None` for a `?` in a comprehension, which can't
-/// leave from where it is.
-fn quietly(cleanup: &[Stmt]) -> Option<Vec<Stmt>> {
-    let mut quiet = cleanup.to_vec();
-    let mut theirs = Shielded::default();
-    shield(&mut quiet, &mut theirs);
-    let mut stuck = false;
-    fennec_syntax::visit::in_stmts(&mut quiet, &mut |expr| {
-        if matches!(expr.kind, ExprKind::Comprehension { .. }) {
-            fennec_syntax::visit::in_expr(expr, &mut |inner| {
-                stuck |= matches!(inner.kind, ExprKind::Try { .. });
-            });
+/// the crash, or `""`. The cleanup is a function of its own, written as it is, and called: a
+/// failure passing up out of it ends it and is given back, as it would end it for a failed block.
+/// That's a `?`, a `fail`, or a `with` whose source fails as its block ends. Nothing in it is
+/// rewritten, so it checks as it did where it was written, whatever's in it: a `with launch`, a
+/// source, a `lock`, a `parallel` loop, a `?` in a comprehension. A `return` in it ends it with
+/// nothing to say.
+fn as_written(cleanup: &[Stmt], held: &str, at: Span) -> Vec<Stmt> {
+    let inner = format!("{held}_body");
+    let def = FnDef {
+        name: inner.clone(),
+        generics: Vec::new(),
+        params: Vec::new(),
+        ret: None,
+        arrow: None,
+        fails: None,
+        body: cleanup.to_vec(),
+        annotations: Vec::new(),
+        span: here(at),
+    };
+    let call = Expr {
+        kind: ExprKind::Call { callee: Box::new(name(&inner, at)), args: Vec::new() },
+        span: here(at),
+    };
+    // A cleanup with no `?` or `fail` of its own can't fail, and `except` on its call would be
+    // refused as handling nothing.
+    let ran = if can_fail(cleanup) {
+        let handled =
+            ExprKind::Else { value: Box::new(call), default: Box::new(ends_cleanup(at, None)), except: true };
+        Expr { kind: handled, span: here(at) }
+    } else {
+        call
+    };
+    let nothing = Expr { kind: ExprKind::Str(String::new()), span: here(at) };
+    vec![stmt(StmtKind::Def(def), at), stmt_value(ran), stmt(StmtKind::Return(Some(nothing)), at)]
+}
+
+/// Whether `body` can fail: it has a `?` or a `fail` of its own, not one in a function or lambda
+/// written in it, which passes up from that.
+fn can_fail(body: &[Stmt]) -> bool {
+    let mut own = body.to_vec();
+    functions_emptied(&mut own);
+    let mut found = fails_in(&mut own);
+    fennec_syntax::visit::in_stmts(&mut own, &mut |expr| match &mut expr.kind {
+        ExprKind::Try { .. } => found = true,
+        ExprKind::Match { arms, .. } => {
+            for arm in arms {
+                found |= fails_in(&mut arm.body);
+            }
         }
+        _ => {}
     });
-    if stuck {
-        return None;
-    }
-    fennec_syntax::visit::in_stmts(&mut quiet, &mut |expr| {
-        if let ExprKind::Try { value, context } = &expr.kind {
-            let (value, context) = (value.clone(), context.as_deref().cloned());
-            expr.kind =
-                ExprKind::Else { value, default: Box::new(ends_cleanup(expr.span, context)), except: false };
-        }
-    });
-    ends_saying(&mut quiet);
-    let nothing = Expr { kind: ExprKind::Str(String::new()), span: here(Span::default()) };
-    quiet.push(stmt(StmtKind::Return(Some(nothing)), Span::default()));
-    unshield(&mut quiet, theirs);
-    Some(quiet)
+    found
+}
+
+/// Whether `body` has a `fail` statement of its own, in its blocks but not in a function
+/// written in it.
+fn fails_in(body: &mut [Stmt]) -> bool {
+    body.iter_mut().any(|each| match &each.kind {
+        StmtKind::Fail(_) => true,
+        StmtKind::Def(_) => false,
+        _ => blocks_in(each).into_iter().any(|block| fails_in(block)),
+    })
 }
 
 /// The text a crash's cleanup gives back for `failure`: how it's printed.
@@ -1932,44 +1962,17 @@ fn ends_cleanup(at: Span, context: Option<Expr>) -> Expr {
     Expr { kind: ExprKind::Match { subject, arms: vec![arm] }, span: here(at) }
 }
 
-/// The bodies of the functions and lambdas written in a cleanup, taken out while it's rewritten,
-/// each by where it is, so their `?`, `fail` and `return` stay theirs.
-#[derive(Default)]
-struct Shielded {
-    defs: Vec<(Span, Vec<Stmt>)>,
-    lambdas: Vec<(Span, Expr)>,
-}
-
-/// Takes out the bodies of the functions and lambdas written in `body`, at any depth.
-fn shield(body: &mut [Stmt], kept: &mut Shielded) {
-    defs_out(body, kept);
+/// `body` with the bodies of the functions and lambdas written in it emptied, at any depth, so
+/// what's left is its own: their `?`, `fail` and `return` are theirs.
+fn functions_emptied(body: &mut [Stmt]) {
+    defs_emptied(body);
     fennec_syntax::visit::in_stmts(body, &mut |expr| match &mut expr.kind {
         ExprKind::Lambda { body: inner, .. } => {
-            let empty = Expr { kind: ExprKind::None, span: inner.span };
-            kept.lambdas.push((expr.span, std::mem::replace(&mut **inner, empty)));
+            **inner = Expr { kind: ExprKind::None, span: inner.span };
         }
         ExprKind::Match { arms, .. } => {
             for arm in arms {
-                defs_out(&mut arm.body, kept);
-            }
-        }
-        _ => {}
-    });
-}
-
-/// Puts back what [`shield`] took out.
-fn unshield(body: &mut [Stmt], mut kept: Shielded) {
-    defs_back(body, &mut kept);
-    fennec_syntax::visit::in_stmts(body, &mut |expr| match &mut expr.kind {
-        ExprKind::Lambda { body: inner, .. } => {
-            if let Some(at) = kept.lambdas.iter().position(|(span, _)| *span == expr.span) {
-                let (_, original) = kept.lambdas.swap_remove(at);
-                **inner = original;
-            }
-        }
-        ExprKind::Match { arms, .. } => {
-            for arm in arms {
-                defs_back(&mut arm.body, &mut kept);
+                defs_emptied(&mut arm.body);
             }
         }
         _ => {}
@@ -1989,66 +1992,14 @@ fn blocks_in(each: &mut Stmt) -> Vec<&mut Vec<Stmt>> {
     }
 }
 
-fn defs_out(body: &mut [Stmt], kept: &mut Shielded) {
+fn defs_emptied(body: &mut [Stmt]) {
     for each in body {
         if let StmtKind::Def(def) = &mut each.kind {
-            kept.defs.push((def.span, std::mem::take(&mut def.body)));
+            def.body.clear();
             continue;
         }
         for block in blocks_in(each) {
-            defs_out(block, kept);
-        }
-    }
-}
-
-fn defs_back(body: &mut [Stmt], kept: &mut Shielded) {
-    for each in body {
-        if let StmtKind::Def(def) = &mut each.kind {
-            if let Some(at) = kept.defs.iter().position(|(span, _)| *span == def.span) {
-                let (_, original) = kept.defs.swap_remove(at);
-                def.body = original;
-            }
-            continue;
-        }
-        for block in blocks_in(each) {
-            defs_back(block, kept);
-        }
-    }
-}
-
-/// Each `fail` in a cleanup made a `return` of how it's printed, and each `return` one of `""`,
-/// in every block and every case of a `match`, `else as` blocks included: either ends the cleanup
-/// a crash runs, which has no failure to pass up. The functions and lambdas in it are taken out
-/// first (see [`shield`]).
-fn ends_saying(body: &mut [Stmt]) {
-    say_at_ends(body);
-    fennec_syntax::visit::in_stmts(body, &mut |expr| {
-        if let ExprKind::Match { arms, .. } = &mut expr.kind {
-            for arm in arms {
-                say_at_ends(&mut arm.body);
-            }
-        }
-    });
-}
-
-fn say_at_ends(body: &mut [Stmt]) {
-    for each in body {
-        let at = each.span;
-        match &mut each.kind {
-            StmtKind::Fail(failure) => {
-                let text = said(failure.clone(), at);
-                each.kind = StmtKind::Return(Some(text));
-            }
-            StmtKind::Return(None) => {
-                let nothing = Expr { kind: ExprKind::Str(String::new()), span: here(at) };
-                each.kind = StmtKind::Return(Some(nothing));
-            }
-            StmtKind::Def(_) => {}
-            _ => {
-                for block in blocks_in(each) {
-                    say_at_ends(block);
-                }
-            }
+            defs_emptied(block);
         }
     }
 }

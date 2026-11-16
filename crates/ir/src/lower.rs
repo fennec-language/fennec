@@ -116,7 +116,6 @@ fn lower_from(
         mut_forms: those_where(&every, |def| def.name == "[]mut"),
         intrinsics: every.iter().filter(|(_, def)| is_intrinsic(def)).map(|(key, _)| key.clone()).collect(),
         options,
-        saves_itself: saves_itself(&functions),
     };
     let mut program = Program::default();
     for (key, def) in &functions {
@@ -167,14 +166,6 @@ fn every_key<'a>(functions: &'a [(String, &FnDef)], later: &'a HashMap<String, &
 fn compilers<'a>(functions: &'a [(String, &FnDef)]) -> HashSet<&'a str> {
     let written = functions.iter().filter(|(_, def)| fennec_check::compiler_written(def.span));
     written.map(|(key, _)| key.as_str()).collect()
-}
-
-fn saves_itself(functions: &[(String, &FnDef)]) -> HashSet<String> {
-    functions
-        .iter()
-        .filter(|(key, def)| key.ends_with(".serialize") && !def.span.in_prelude())
-        .filter_map(|(key, _)| key.strip_suffix(".serialize").map(str::to_owned))
-        .collect()
 }
 
 /// What lowering the functions found along the way: the generators passed as values, the types
@@ -308,8 +299,8 @@ struct Context<'a> {
     defaults: HashMap<defaults::FieldKey<'a>, &'a Expr>,
     /// The `where` rules of each struct, the standard library's included, in field order.
     rules: HashMap<&'a str, Vec<(&'a str, &'a Expr)>>,
-    /// What the module imports from the standard library.
-    imports: imports::Imports,
+    /// What each of the module's files imports from the standard library.
+    imports: imports::ByFile,
     /// What the standard library's own code imports.
     library_imports: imports::Imports,
     /// The keys of the standard library's functions and methods.
@@ -344,8 +335,6 @@ struct Context<'a> {
     intrinsics: HashSet<String>,
     /// How the backend wants the program lowered.
     options: Options,
-    /// The program's types that write their own `def serialize`, which a layout can't see into.
-    saves_itself: HashSet<String>,
 }
 
 impl Context<'_> {

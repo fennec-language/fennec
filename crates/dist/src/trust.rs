@@ -82,7 +82,7 @@ fn judge(path: &Path) -> Result<(), String> {
         if found.mode() & 0o002 != 0 {
             return Err(format!("{shown} can be written by anyone"));
         }
-        if Some(found.uid()) == own_uid() || listed(path) {
+        if found.uid() == own_uid() || listed(path) {
             return Ok(());
         }
         if found.uid() != 0 {
@@ -106,7 +106,7 @@ fn planted(manifest: &Path, folder: &Path) -> bool {
     {
         use std::os::unix::fs::MetadataExt as _;
         let theirs = std::fs::symlink_metadata(manifest)
-            .is_ok_and(|found| found.uid() != 0 && Some(found.uid()) != own_uid() && !listed(manifest));
+            .is_ok_and(|found| found.uid() != 0 && found.uid() != own_uid() && !listed(manifest));
         let open = std::fs::symlink_metadata(folder).is_ok_and(|found| found.mode() & 0o002 != 0);
         theirs && open
     }
@@ -176,21 +176,13 @@ pub fn write_kit_file(path: &Path, text: &str) -> Result<(), String> {
     })
 }
 
-/// The user this process runs as: the owner of a file it makes, since the standard library has no
-/// call that says so. Found once.
+/// The user this process runs as, by its effective id, which owns every file it makes. It once
+/// came from a file made in the temp folder, and where none could be made, as under heavy load,
+/// the user was nobody for that command: its cache went unused, so it built everything again, and
+/// its own kit wasn't trusted.
 #[cfg(unix)]
-pub(crate) fn own_uid() -> Option<u32> {
-    use std::os::unix::fs::MetadataExt as _;
-    static OWN: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
-    *OWN.get_or_init(|| {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-        let probe = std::env::temp_dir().join(format!(".fennec-who-{}-{nanos:x}", std::process::id()));
-        let made = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).ok()?;
-        let owner = made.metadata().ok().map(|metadata| metadata.uid());
-        drop(made);
-        let _ = std::fs::remove_file(&probe);
-        owner
-    })
+pub(crate) fn own_uid() -> u32 {
+    rustix::process::geteuid().as_raw()
 }
 
 #[cfg(all(test, unix))]

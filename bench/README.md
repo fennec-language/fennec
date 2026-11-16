@@ -143,7 +143,7 @@ case and keeps the last of a repeated field; the corpus sends neither.
 
 `router` is a web app's routes, 64 of them shaped like a REST API's, and two million requests through `std.net`'s `Router`. Seven in ten reach a handler, which parses an id, and the rest are 404s and 405s. Its twin routes with `matchit`, which axum routes with, decoding and parsing a parameter as `Captured` does.
 
-`web_backend` is a web backend and its load in one program. 32 clients sign up, sign in and write notes. They list the notes as JSON and search them through an HTML page made with `html.render`. Passwords are stretched with HMAC-SHA256 and sessions are HMAC-signed tokens, both from `std.crypto`. Users and notes are kept in SQLite. It reads and writes HTTP itself until `server.serve` can be stopped from inside a program. Its twin uses a thread for each connection, serde_json and rusqlite, with the runtime's own SHA-256, since Rust's standard library has none.
+`web_backend` is a web backend and its load in one program. 32 clients sign up, sign in and write notes. They list the notes as JSON and search them through an HTML page made with `html.render`. Passwords are stretched with HMAC-SHA256 and sessions are HMAC-signed tokens, both from `std.crypto`. Users and notes are kept in SQLite. It routes with `std.net`'s `Router` and answers with `server.serve`, and its clients call it with `net.post` and `net.get`. Its twin uses a thread for each connection, serde_json and rusqlite, with the runtime's own SHA-256, since Rust's standard library has none.
 
 - It's outside the locked suite, whose twins are one file each, and has no targets. Being slow never fails it: only printing something other than the twin does.
 - The twins are a small cargo project of their own in `bench/realworld/twin`, built with the same flags as the suite's, with their crates pinned in its lock file. serde is there only to be measured against, and nothing shipped depends on it.
@@ -179,6 +179,33 @@ Each step is the median of five runs. The count is the instructions retired by e
 - Each count is pinned in `bench/build-times.txt`, and a step more than 3% over its pin fails.
 - Wall time is shown, with the machine's load. A step that takes half again as long as when pinned only warns, since the load moves it.
 - The morning sweep runs it on the Mac. `fennec-bench build-times --pin` writes what it measured as the new pins, which a change that makes builds cheaper does in the same pull request.
+
+## Big codebase
+
+`fennec-bench big-codebase` generates a realistic program of a given size, the same each time from its seed, and measures what checking, building and testing it take, to show how each grows with a program's size. The program is an app kit of zones of 20 modules, depending on a kit of generic helpers. Each module has a few units of five kinds, with a test each:
+- a stock: structs, enums, dicts and f-strings;
+- a ledger: a `shared` struct a launched task adds to under its lock;
+- words: counting into a dict;
+- a grid: an enum scored with `parallel`;
+- a shelf: a generic struct and function used with three types.
+
+Modules import from earlier ones, picked at random. It's `fennec fmt`'s text and passes `fennec lint`.
+
+Its steps, at each size:
+- `check`: `fennec check`.
+- `cold-dev`: a dev build in a new Fennec folder.
+- `cold-release`: a release build in a new Fennec folder.
+- `edit-dev`: a dev build after a one-line edit to a module in the middle.
+- `edit-release`: a release build after that edit.
+- `test`: `fennec test` after the edit.
+
+Each gives its wall time and the most memory one process held. Where counted, it also gives the instructions each kind of process took and how many times it ran. Each build says how many functions it sent through LLVM, and after the edit the rest came from the cache.
+
+- Between each size and the next, each step's growth is set against the program's: 1.00 is in step, and over 1.25 fails.
+- Instructions here move with the machine's load, since a dev build starts thousands of short `opt` and `llc` processes: the same 23,000-line build counted 1,352 G at load 2 and 1,822 G at load 117. Compare sizes measured at the same load, as one run measures them.
+- `bench/big-codebase.txt` holds each system's budgets: a step's wall time may go over its budget by half, its memory by a quarter, and its instructions by 5%. `--pin` writes this system's from what it measured.
+- The nightly `proofs.yml` runs it on CI's Linux runners at 20,000 and 50,000 lines. Their budgets come from its first nights. At 100,000 lines and more, `fennec check` stops at the checker's own cap on copies of generic functions, until its part of #1896 lands.
+- `fennec-bench big-codebase generate DIR --lines N` writes the program alone, to look at.
 
 ## Adding a kernel
 

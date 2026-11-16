@@ -14,7 +14,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::io::Write as _;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering, fence};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
@@ -357,6 +357,15 @@ impl Pool {
     pub(in crate::embed) fn threads(&self) -> usize {
         self.stealers.len()
     }
+
+    /// Cuts short the waits of the ranges parked on any worker that are the task's told to stop
+    /// with `stop`.
+    fn cancel_ranges_of(&self, stop: &Arc<AtomicU8>) {
+        for at in 0..self.threads() {
+            let stop = Arc::clone(stop);
+            self.run_on(at, Box::new(move |io: &mut Io| io.cancel_ranges_of(&stop)));
+        }
+    }
 }
 
 /// The pool this thread is a worker of, and which worker, for sending it work later, as a wait
@@ -410,23 +419,36 @@ pub(in crate::embed) fn with_setup(threads: usize, setup: &Setup) -> &'static Po
 }
 
 /// The pool a call's ranges run on: the shared one, when there are enough words of items to be
-/// worth it and workers can have runtimes. None means the calling thread runs every range
-/// itself, as a worker does with a call of its own, since it can't lend its blocks while it
-/// keeps working.
+/// worth it, workers can have runtimes, and it has more than one (`shares`). None means the
+/// calling thread runs every range itself, as a worker does with a call of its own, since it can't
+/// lend its blocks while it keeps working.
 pub(super) fn for_call(words: usize) -> Option<&'static Pool> {
     if WORKER.get() || !(words >= SEQUENTIAL_WORDS || stressed()) || SETUP.get().is_none() {
         return None;
     }
-    pool()
+    pool().and_then(shares)
+}
+
+/// `pool`, if a thread's call shares its ranges with its workers there. A pool of one worker
+/// doesn't: the thread only waits while its call runs, so the one worker would run the ranges one
+/// after another as the thread can itself, and then hand back every block they made, one at a
+/// time, for the thread to take in. `game_tick`'s 4,096 result lists cost it 27M instructions a
+/// run that way. So the ranges run on the thread, as a small call's do, cut into the same halves,
+/// and what they make is its own at once. A replay starts as many workers as its recording had,
+/// so it runs them where the recording did. `FENNEC_PARALLEL_STRESS` still sends every call to the
+/// pool, to test what bodies do on workers.
+pub(super) fn shares(pool: &'static Pool) -> Option<&'static Pool> {
+    (pool.threads() > 1 || stressed()).then_some(pool)
 }
 
 /// The pool a call whose body is heavy runs on, whenever it has two items to share: the shared
-/// one, set up, and None on a worker, whose own call runs its ranges itself.
+/// one, set up, with more than one worker (`shares`), and None on a worker, whose own call runs
+/// its ranges itself.
 pub(super) fn for_heavy(length: usize) -> Option<&'static Pool> {
     if WORKER.get() || length < 2 || SETUP.get().is_none() {
         return None;
     }
-    pool()
+    pool().and_then(shares)
 }
 
 /// The pool a call whose body may wait runs on, however few its items: the shared one, when workers
@@ -436,6 +458,42 @@ pub(super) fn for_waiting() -> Option<&'static Pool> {
         return None;
     }
     pool()
+}
+
+/// The pool a launched task's call hands its ranges to while the task parks, which of its workers
+/// the task is on, and the task's stop: its own worker's pool. None where what's running isn't a launched task
+/// that can park, and for a range of such a call, whose own calls run their ranges themselves, as
+/// any range's do.
+pub(super) fn for_task() -> Option<((&'static Pool, usize), Arc<AtomicU8>)> {
+    let (here, stop) = (HERE.get()?, super::super::threads::task_stop()?);
+    let spreads = !super::super::threads::in_range_of_task()
+        && super::super::serve::can_park()
+        && !fennec_parked::is_cancelled();
+    spreads.then_some((here, stop))
+}
+
+/// Runs a launched task's call's ranges on its worker's pool: `start` hands it the first job, and
+/// the task parks until `done` says the last has finished. Its worker runs on meanwhile, the
+/// call's ranges among what it runs, so the ranges read what the task copied for them, and never
+/// its worker's blocks. A stop wakes the task, which passes it on to its ranges, parked on any
+/// worker, and waits on for them: they read what it lent until each has ended.
+pub(super) fn install_for_task(
+    (pool, at): (&'static Pool, usize),
+    start: impl FnOnce(),
+    done: &Latch,
+    stop: &Arc<AtomicU8>,
+) {
+    // What the task printed comes before anything the ranges print.
+    super::super::write_kept_output();
+    start();
+    let mut passed_on = 0;
+    done.wait_parked((pool, at), || {
+        let level = stop.load(Ordering::Acquire);
+        if level > passed_on {
+            passed_on = level;
+            pool.cancel_ranges_of(stop);
+        }
+    });
 }
 
 /// Runs a call's ranges on `pool`: `start` hands it the first job, and this thread waits until
@@ -456,8 +514,16 @@ pub(super) fn install(call: &super::Run, start: impl FnOnce(), done: &Latch) {
 pub(in crate::embed) struct Latch {
     /// How many jobs are still to finish.
     left: AtomicUsize,
-    finished: Mutex<bool>,
+    finished: Mutex<Finished>,
     woken: Condvar,
+}
+
+/// Whether a latch's jobs have all finished, and the task parked waiting for that, if one is.
+#[derive(Default)]
+struct Finished {
+    all: bool,
+    /// The pool and worker a task waits on, and the token it's parked on there.
+    parked: Option<(&'static Pool, usize, mio::Token)>,
 }
 
 impl Latch {
@@ -479,22 +545,67 @@ impl Latch {
     /// A job has finished.
     pub(in crate::embed) fn finished(&self) {
         if self.left.fetch_sub(1, Ordering::AcqRel) == 1 {
-            *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            let parked = {
+                let mut finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
+                finished.all = true;
+                finished.parked.take()
+            };
             self.woken.notify_all();
+            // Its worker takes its mail only once the task has parked, on that same thread.
+            if let Some((pool, at, token)) = parked {
+                pool.run_on(at, Box::new(move |io: &mut Io| io.wake_token(token)));
+            }
         }
     }
 
     /// Whether every job has finished.
     pub(in crate::embed) fn is_done(&self) -> bool {
-        *self.finished.lock().unwrap_or_else(PoisonError::into_inner)
+        self.finished.lock().unwrap_or_else(PoisonError::into_inner).all
     }
 
     pub(in crate::embed) fn wait(&self) {
         let mut finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
-        while !*finished {
+        while !finished.all {
             finished = self.woken.wait(finished).unwrap_or_else(PoisonError::into_inner);
         }
     }
+
+    /// Waits as a task on worker `at` of `pool` does: parked, woken by the last job as it
+    /// finishes, with no looking again meanwhile. Anything else that wakes it, as a stop does, is
+    /// told to `woken_early`, and it parks again: the wait ends only when every job has.
+    pub(super) fn wait_parked(&self, (pool, at): (&'static Pool, usize), mut woken_early: impl FnMut()) {
+        let token = super::super::serve::next_token();
+        loop {
+            {
+                let mut finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
+                if finished.all {
+                    return;
+                }
+                finished.parked = Some((pool, at, token));
+            }
+            // A cancelled task can't park. Only a server's rounds are cancelled, at their server's
+            // end, and `for_task` gives them no pool, so this is never reached: it's here so that
+            // if it ever were, the wait would block its thread rather than spin.
+            if fennec_parked::is_cancelled() {
+                self.wait();
+                return;
+            }
+            let _ = super::super::serve::park_through_a_stop(token);
+            if !self.is_done() {
+                woken_early();
+            }
+        }
+    }
+}
+
+pub(super) use super::super::threads::{
+    BeforeRange, Calling, range_off_its_caller_ends, range_off_its_caller_starts,
+};
+
+/// Whether what's running here is a range of a launched task that's been stopped: if so it fails,
+/// as stopped, as any wait it came to would make it.
+pub(super) fn cut_short() -> bool {
+    super::super::serve::cut_short()
 }
 
 /// Starts a range on a worker, with the blocks lent for the call to read.

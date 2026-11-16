@@ -632,9 +632,14 @@ fn made(db: &Connection) -> rusqlite::Result<()> {
 
 fn report(visits: &[Visit], db: &Connection, dropped: &[String]) -> rusqlite::Result<Vec<String>> {
     let failed: Vec<&Visit> = visits.iter().filter(|one| !one.failed.is_empty()).collect();
-    let mut lines = vec![format!("{} clients, {} failed, {} dropped", visits.len(), failed.len(), dropped.len())];
+    let mut lines = vec![format!("{} clients, {} failed", visits.len(), failed.len())];
     for one in &failed {
         lines.push(format!("  {}: {}", one.name, one.failed));
+    }
+    // `server.serve` answers what it can't read itself, so Fennec's side has none of these to count.
+    // One here is a fault of this side's, and shows as a line Fennec's summary doesn't have.
+    for why in dropped {
+        lines.push(format!("  dropped: {why}"));
     }
     let mut statuses = BTreeMap::new();
     for one in visits {

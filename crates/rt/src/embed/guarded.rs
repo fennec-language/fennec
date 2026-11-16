@@ -37,6 +37,14 @@ pub const GUARDED_OWNER: u64 = 0xFFFF;
 /// The owner number of a `shared` value's own block, which no thread ever is.
 pub const HANDLE_OWNER: u64 = 0xFFFE;
 
+/// The owner number of a block in a copy made for other threads to read: what a launched task is
+/// given until it takes it as its own, and what a task lends the rounds it serves or the ranges
+/// of its `parallel` call. No thread ever is this, and neither is the holder of a write lock, so
+/// whoever reads such a block leaves its count to the runtime, which notes the change for the
+/// copy's owner. It isn't [`GUARDED_OWNER`]: a thread holding a write lock goes by that number, and
+/// would count a lent block in place, as its own, while another thread did the same.
+pub const LENT_OWNER: u64 = 0xFFFC;
+
 /// Where a `shared` value's table is.
 enum Held {
     /// With nobody holding it. Boxed, so taking it moves a pointer.
@@ -140,7 +148,7 @@ fn lost(address: u64) -> Diagnostic {
 /// Anything reached twice is one block in the copy too. By a list of what's left to do, as a value
 /// can be deeper than a task's stack.
 fn copied(state: &mut State, address: u64) -> Result<u64, Diagnostic> {
-    copied_as(state, address, Copying::ForReaders)
+    copied_as(state, address, Copying::ForReaders, &mut UnderWay::default())
 }
 
 /// Which never-freed blocks a copy keeps as they are, rather than copy.
@@ -157,27 +165,46 @@ enum Copying {
 /// value crossing a lock's edge, keeping nothing of this thread's but `shared` handles and the string
 /// literals every thread can read. Gives back the copy's address and the table.
 pub(super) fn copied_for_task(state: &mut State, address: u64) -> Result<(u64, Box<Table>), Diagnostic> {
-    state.heap.enter_table(Box::new(Table::hashed()), GUARDED_OWNER << OWNER_SHIFT);
-    let copy = copied_as(state, address, Copying::ForTask);
+    state.heap.enter_table(Box::new(Table::hashed()), LENT_OWNER << OWNER_SHIFT);
+    let mut under_way = UnderWay::default();
+    let copy = copied_as(state, address, Copying::ForTask, &mut under_way);
     let table = state.heap.leave_table();
-    Ok((copy?, table))
+    match copy {
+        Ok(copy) => Ok((copy, table)),
+        // What was copied before it failed goes with its table, and each handle it had counted is
+        // given back. Only those: a block copied but not yet walked holds the words of handles
+        // nobody has counted, so giving back one for every handle in the table would take counts
+        // that were never added, and a `shared` value could go while it's held.
+        Err(failure) => {
+            drop(table);
+            for handle in under_way.counted {
+                release_handle(state, handle);
+            }
+            Err(failure)
+        }
+    }
 }
 
-fn copied_as(state: &mut State, address: u64, how: Copying) -> Result<u64, Diagnostic> {
-    let mut copies: HashMap<u64, u64> = HashMap::new();
-    let mut left = Vec::new();
-    let root = copy_of(state, address, &mut copies, &mut left, how)?;
+/// The copy of `address` in the current table, `how` it's wanted. Each handle it counts on the
+/// way is added to what `under_way` has counted, for a copy that fails part-way to give back.
+fn copied_as(
+    state: &mut State,
+    address: u64,
+    how: Copying,
+    under_way: &mut UnderWay,
+) -> Result<u64, Diagnostic> {
+    let root = copy_of(state, address, under_way, how)?;
     if root == address && how == Copying::ForReaders {
-        copy_read_in(state, address, &mut copies, &mut left)?;
+        copy_read_in(state, address, under_way)?;
     }
-    while let Some(new) = left.pop() {
+    while let Some(new) = under_way.next_to_walk() {
         for place in places_in(state, new)? {
             let block = state.heap.block(new).ok_or_else(|| lost(new))?;
             let old = block.get(place).copied().unwrap_or(0);
             if old == 0 {
                 continue;
             }
-            let held = copy_of(state, old, &mut copies, &mut left, how)?;
+            let held = copy_of(state, old, under_way, how)?;
             if let Some(word) = state.heap.block_mut(new).and_then(|block| block.get_mut(place)) {
                 *word = held;
             }
@@ -191,12 +218,7 @@ fn copied_as(state: &mut State, address: u64, how: Copying) -> Result<u64, Diagn
 /// such a value holding blocks of the `shared` value's table, whose counts went nowhere, as what's
 /// kept past a read lock is copied out. Without the copy, once the lock's let go, the runtime can't
 /// find those blocks, and a string of them prints as nothing.
-fn copy_read_in(
-    state: &mut State,
-    address: u64,
-    copies: &mut HashMap<u64, u64>,
-    left: &mut Vec<u64>,
-) -> Result<(), Diagnostic> {
+fn copy_read_in(state: &mut State, address: u64, under_way: &mut UnderWay) -> Result<(), Diagnostic> {
     if state.heap.reading.is_empty() {
         return Ok(());
     }
@@ -219,7 +241,7 @@ fn copy_read_in(
             if !state.heap.reading.iter().any(|table| table.get(at).is_some()) {
                 continue;
             }
-            let copy = copy_of(state, held, copies, left, Copying::ForReaders)?;
+            let copy = copy_of(state, held, under_way, Copying::ForReaders)?;
             if let Some(word) = state.heap.block_mut(here).and_then(|block| block.get_mut(place)) {
                 *word = copy;
             }
@@ -228,19 +250,85 @@ fn copy_read_in(
     Ok(())
 }
 
-/// The block in the copy for what's at `address`, added to `left` if it's new.
+/// How many of a copy's blocks are kept in a row before a map and a list are made for them.
+const FEW: usize = 8;
+
+/// A copy under way: which block each one copied so far became, the copies whose own holdings are
+/// still to be copied, and the handles counted so far. One thing to hand on, so each block copied
+/// passes a pointer.
+///
+/// A message is mostly a struct and what it holds, a few blocks, so the first few of each are kept
+/// in a row, with nothing made for them. Every copy used to make a map hashed with `SipHash` and a
+/// list, for three blocks. More than a few go on into a map, hashed by mixing an address's bits
+/// once, and a list.
+#[derive(Default)]
+struct UnderWay {
+    few: [(u64, u64); FEW],
+    count: usize,
+    more: HashMap<u64, u64, BuildHasherDefault<AddressHasher>>,
+    left_few: [u64; FEW],
+    left_count: usize,
+    left_more: Vec<u64>,
+    counted: Vec<u64>,
+}
+
+impl UnderWay {
+    /// What the block at `address` became, if it's been copied.
+    fn copy_made_of(&self, address: u64) -> Option<u64> {
+        let few = self.few.get(..self.count).unwrap_or_default();
+        if let Some((_, copy)) = few.iter().find(|(old, _)| *old == address) {
+            return Some(*copy);
+        }
+        if self.more.is_empty() {
+            return None;
+        }
+        self.more.get(&address).copied()
+    }
+
+    /// The block at `address` became `copy`, whose own holdings are still to be copied.
+    fn became(&mut self, address: u64, copy: u64) {
+        match self.few.get_mut(self.count) {
+            Some(slot) => {
+                *slot = (address, copy);
+                self.count += 1;
+            }
+            None => {
+                self.more.insert(address, copy);
+            }
+        }
+        // Last in, first out, as a list is: once any are in the list, the rest follow them there.
+        match self.left_few.get_mut(self.left_count) {
+            Some(slot) if self.left_more.is_empty() => {
+                *slot = copy;
+                self.left_count += 1;
+            }
+            _ => self.left_more.push(copy),
+        }
+    }
+
+    /// The next copy whose holdings are to be copied: the last one made.
+    fn next_to_walk(&mut self) -> Option<u64> {
+        if let Some(copy) = self.left_more.pop() {
+            return Some(copy);
+        }
+        self.left_count = self.left_count.checked_sub(1)?;
+        self.left_few.get(self.left_count).copied()
+    }
+}
+
+/// The block in the copy for what's at `address`, added to what's left to walk if it's new.
 fn copy_of(
     state: &mut State,
     address: u64,
-    copies: &mut HashMap<u64, u64>,
-    left: &mut Vec<u64>,
+    under_way: &mut UnderWay,
     how: Copying,
 ) -> Result<u64, Diagnostic> {
     if is_handle(address) {
         count_handle(address);
+        under_way.counted.push(address);
         return Ok(address);
     }
-    if let Some(copy) = copies.get(&address).copied() {
+    if let Some(copy) = under_way.copy_made_of(address) {
         bump(state, copy);
         return Ok(copy);
     }
@@ -263,8 +351,7 @@ fn copy_of(
     mark_owner(&mut copy, state.heap.owner_bits());
     state.heap.copied(copy.len());
     let new = u64::try_from(state.heap.insert(copy)).unwrap_or(0);
-    copies.insert(address, new);
-    left.push(new);
+    under_way.became(address, new);
     Ok(new)
 }
 

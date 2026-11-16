@@ -329,6 +329,7 @@ dependencies = [
  "fennec-blake3",
  "fennec-temp",
  "ring",
+ "rustix",
 ]
 
 [[package]]

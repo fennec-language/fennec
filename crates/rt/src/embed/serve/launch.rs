@@ -274,11 +274,13 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
     match held {
         Some(held) => super::super::fail_with(held),
         // Stopped while it waited, as its recording says.
-        None if replaying => crate::replay::stopped_at_block_end_as_recorded(),
+        None if replaying => {
+            let _ = crate::replay::stopped_in_as_recorded(crate::replay::StoppedIn::BlockEnd);
+        }
         // Stopped while it waited: it's cut short now its task has ended, which a recording notes.
         None => {
             if super::cut_short() {
-                crate::replay::stopped_at_block_end();
+                crate::replay::stopped_in(crate::replay::StoppedIn::BlockEnd);
             }
         }
     }
@@ -326,7 +328,8 @@ const CLEANUP_GRACE: Duration = Duration::from_secs(1);
 /// Waits for the task to end, stopping it at `deadline`, and hard once its grace is up: parked, in a
 /// task that can, and otherwise blocking. A launcher that's stopped itself stops its task at once.
 fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome {
-    if launched.stop.load(Ordering::Acquire) > 0 {
+    // A replay stops nothing by the clock: a task its recording stopped hard stops itself there.
+    if launched.stop.load(Ordering::Acquire) > 0 && !crate::replay::replaying() {
         deadline = Some(Instant::now() + CLEANUP_GRACE);
     }
     loop {

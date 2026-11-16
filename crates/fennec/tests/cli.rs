@@ -969,6 +969,38 @@ fn a_run_that_waits_for_its_program_prints_and_exits_the_same() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A program that's ended by a signal, rather than giving back an exit code, is said to have been,
+/// by `fennec run` that waited for it, and the run exits with 1. It used to exit with 1 and say
+/// nothing, as if the program had failed quietly, which is how a crash read on Windows, where
+/// `fennec run` always waits.
+#[cfg(unix)]
+#[test]
+fn a_run_whose_program_a_signal_ends_says_so() {
+    let dir = scratch("run-killed").unwrap();
+    let program = dir.join("killed.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout, process: Process):\n    stdout.print(\"before\")\n    _ = process.run(\"sh\", [\"-c\", \"kill -KILL $PPID\"]) except why:\n        stdout.print(f\"{why}\")\n        return\n    stdout.print(\"after\")\n    return\n",
+    )
+    .unwrap();
+    let path = program.to_str().unwrap();
+    let output = crate::executables::fennec_command()
+        .args(["run", "--no-test", path])
+        .env("FENNEC_NO_CACHE", "1")
+        .env("FENNEC_RUN_WAITS", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stderr).contains("error: the program it built was ended by signal 9 (SIGKILL)"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert!(!text(&output.stdout).contains("after"), "{}", text(&output.stdout));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// `main` may give back an int, which the process exits with: `return 2` exits with 2, and
 /// `return 0` with 0. One that gives back an int or a failure exits with the int, or prints the
 /// failure on standard error and exits with 1. The same on every engine, and built.
@@ -1062,6 +1094,33 @@ fn a_kit_without_main_can_be_tested_but_not_run() {
     assert!(text(&run.stderr).starts_with("error: src/main.fen doesn't exist"), "{}", text(&run.stderr));
     assert!(test.status.success(), "{}", text(&test.stderr));
     assert!(text(&test.stdout).ends_with("1 passed, 0 failed\n"));
+}
+
+/// A kit's files are in `src/`. One whose only file is beside `kit.toml` has nothing in it, and
+/// checking, linting or testing it fails and says to move the file. It passed without a word
+/// before, so `fennec lint` there found none of the file's lints.
+#[test]
+fn a_kit_with_its_file_beside_kit_toml_says_to_move_it_to_src() {
+    let dir = scratch("file-beside").unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"beside\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
+    std::fs::write(
+        dir.join("main.fen"),
+        "def shown(count: int) -> int:\n    return int(count) + 1\n\ndef main(stdout: Stdout):\n    stdout.print(shown(3))\n",
+    )
+    .unwrap();
+    let said: Vec<_> =
+        ["check", "lint", "test"].iter().map(|command| fennec_in(&dir, &[command], "").unwrap()).collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    for (command, output) in ["check", "lint", "test"].iter().zip(&said) {
+        let stderr = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
+        assert!(
+            stderr.starts_with("error: src/ has no .fen file, so there's nothing in this kit"),
+            "{command}: {stderr}"
+        );
+        assert!(stderr.contains("move main.fen to src/main.fen"), "{command}: {stderr}");
+    }
 }
 
 #[test]
@@ -1843,8 +1902,12 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
     write_kit(&dir.join("plain"), "plain", "", &[("lib.fen", BUILTINS_SAY)]).unwrap();
     let hostile = format!("{imports}{std_says}\n{}", defining(&functions, &constants, "export "));
     write_kit(&dir.join("hostile"), "hostile", "", &[("lib.fen", &hostile)]).unwrap();
+    // A kit that imports every name the program imports, each as another module.
+    let swapped = "from std import json as collections, log as json, net as log, time as net, toml as time, \
+        collections as toml\n\n## What its own `time` is.\nexport def swapped() -> str:\n    return time.dumps({\"a\": 1}).strip()\n";
+    write_kit(&dir.join("swapped"), "swapped", "", &[("lib.fen", swapped)]).unwrap();
     let app_main = format!(
-        "import hostile\nimport plain\n{imports}{STD_SAYS}\n{}\ndef main(stdout: Stdout):\n{logged}{}{}{}    stdout.print(own_total(), hostile.own_total())\n",
+        "import hostile\nimport plain\nimport swapped\n{imports}{STD_SAYS}\n{}\ndef main(stdout: Stdout):\n{logged}{}{}{}    stdout.print(own_total(), hostile.own_total(), swapped.swapped())\n",
         defining(&functions, &constants, ""),
         printed("std_says"),
         printed("plain.builtins_say"),
@@ -1853,14 +1916,17 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
     write_kit(
         &dir.join("app"),
         "app",
-        "[dependencies]\nhostile = { path = \"../hostile\" }\nplain = { path = \"../plain\" }\n",
+        "[dependencies]\nhostile = { path = \"../hostile\" }\nplain = { path = \"../plain\" }\nswapped = { path = \"../swapped\" }\n",
         &[("main.fen", &app_main)],
     )
     .unwrap();
     let (log_and_std, builtins) = alone.split_once("--\n").unwrap();
     let (_, std_lines) = log_and_std.split_once('\n').unwrap();
     let total = 8 * functions.len() + 7 * constants.len();
-    assert_eq!(run(&dir.join("app")), format!("{log_and_std}--\n{builtins}{std_lines}--\n{total} {total}\n"));
+    assert_eq!(
+        run(&dir.join("app")),
+        format!("{log_and_std}--\n{builtins}{std_lines}--\n{total} {total} a = 1\n")
+    );
     // A dependency can't name what std keeps to itself, any more than a program can.
     let peeks =
         "## Pads with std's own helper.\nexport def peeks() -> str:\n    return padding(\"x\", count=2)\n";
@@ -1881,6 +1947,93 @@ fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
         "{}",
         text(&refused.stderr)
     );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// What each file imports is its own, in a program's files and in its kits'. A kit's
+/// `from std.html import escape as sha256` once made the program's own `sha256(...)` give escaped
+/// text, as one table of imports served every file and the last import of a name decided it for
+/// all. Now each file's names are its own:
+/// - `sha256` beside a kit's, `dumps` from JSON beside a kit's from TOML, and `pick` as `floor`
+///   beside a kit's or another of the program's files' `pick` as `ceil`;
+/// - a name only a kit, or only another file, imports is refused where it isn't imported;
+/// - a hash given its chunks, imported by name or through its module, goes to std's function for
+///   chunks, as the checker sends it there.
+#[test]
+fn what_each_file_imports_is_its_own() {
+    let dir = scratch("imports_by_file").unwrap();
+    let fennec = |at: &Path| {
+        crate::executables::fennec_command()
+            .args(["run", "--no-test"])
+            .current_dir(at)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap()
+    };
+    let ran = |at: &Path| {
+        let output = fennec(at);
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        text(&output.stdout)
+    };
+    let kit =
+        |name: &str, source: &str| write_kit(&dir.join(name), name, "", &[("lib.fen", source)]).unwrap();
+    kit(
+        "escaping",
+        "from std.html import escape as sha256\nfrom std.toml import dumps\nfrom std.math import ceil as pick\n\n\
+         ## Its own `sha256`, `dumps` and `pick`.\nexport def own() -> str:\n    escaped = sha256(\"<kit>\")\n    \
+         saved = dumps({\"a\": 1}).strip()\n    return f\"{escaped} {saved} {pick(2.2)}\"\n",
+    );
+    let app = dir.join("app");
+    let main = "from std.crypto import sha256\nfrom std.json import dumps\nfrom std.math import floor as pick\n\
+        import escaping\nimport other\n\n\
+        def main(stdout: Stdout):\n    stdout.print(sha256(\"abc\"), dumps({\"a\": 1}), pick(2.7))\n    \
+        stdout.print(escaping.own(), other.picked())\n    \
+        stdout.print(sha256([\"a\", \"bc\"]) == sha256(\"abc\"), other.chunked())\n";
+    let other = "from std import crypto\nfrom std.math import ceil as pick\n\n## Its own `pick`.\nexport def picked() -> int:\n    return pick(2.2)\n\n\
+        ## Hashed in chunks.\nexport def chunked() -> bool:\n    return crypto.blake3([\"a\", \"bc\"]) == crypto.blake3(\"abc\")\n";
+    write_kit(
+        &app,
+        "app",
+        "[dependencies]\nescaping = { path = \"../escaping\" }\n",
+        &[("main.fen", main), ("other.fen", other)],
+    )
+    .unwrap();
+    assert_eq!(
+        ran(&app),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad {\"a\": 1} 2\n&lt;kit&gt; a = 1 3 3\nTrue True\n"
+    );
+    // A name only a kit imports, or only another of the program's files.
+    kit(
+        "lifting",
+        "from std.math import ceil as lift\nfrom std import math as mathy\n\n## Uses both.\nexport def plain() -> float:\n    return lift(1.5) + mathy.sqrt(4.0)\n",
+    );
+    for (main, other, refused) in [
+        (
+            "import lifting\n\ndef main(stdout: Stdout):\n    stdout.print(lift(2.2), lifting.plain())\n",
+            None,
+            "`lift` doesn't exist",
+        ),
+        (
+            "import lifting\n\ndef main(stdout: Stdout):\n    stdout.print(mathy.sqrt(16.0), lifting.plain())\n",
+            None,
+            "`mathy` doesn't exist",
+        ),
+        (
+            "import lifting\nimport other\n\ndef main(stdout: Stdout):\n    stdout.print(other.lifted(), lifting.plain())\n",
+            Some("## Calls what only the kit imported.\nexport def lifted() -> int:\n    return lift(2.2)\n"),
+            "`lift` doesn't exist",
+        ),
+    ] {
+        let mut files = vec![("main.fen", main)];
+        files.extend(other.map(|other| ("other.fen", other)));
+        let refusing = dir.join("refusing");
+        let _ = std::fs::remove_dir_all(&refusing);
+        write_kit(&refusing, "refusing", "[dependencies]\nlifting = { path = \"../lifting\" }\n", &files)
+            .unwrap();
+        let output = fennec(&refusing);
+        assert!(!output.status.success(), "{main}");
+        assert!(text(&output.stderr).contains(refused), "{main}: {}", text(&output.stderr));
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -4448,9 +4601,12 @@ fn wide_program(methods: usize, kinds: usize) -> String {
     lines.join("\n")
 }
 
-/// The walk over copies of generic functions never stops counting: one that hands nothing over
-/// doesn't count towards its bound, and past the bound every kit may receive anything the program
-/// holds, which stops the check rather than passing it.
+/// The walk over copies of generic functions follows the rules lowering does, and never passes over
+/// what it can't follow. A kit's generic that comes back to itself with a bigger type each time is
+/// refused where it's written, since it can't be built. A chain of generics each asking for two
+/// copies of the next reaches the backstop, 16 copies for each function the program has, and past
+/// it every kit may receive anything the program holds, which stops the check rather than passing
+/// it.
 #[test]
 fn the_walk_never_passes_over_what_it_cant_follow() {
     let take = "export def take(fs: Fs) -> int:\n    return 7\n";
@@ -4470,11 +4626,35 @@ fn the_walk_never_passes_over_what_it_cant_follow() {
                 "def grow[T](value: T, left: int) -> int:\n    if left == 0:\n        return 0\n    return grow([value], left - 1)\n\n\
                  export struct Spin:\n    name: str\n\n    def go(self) -> int:\n        return grow(1, 3)\n\n\
                  export def take(fs: Fs) -> int:\n    return 7\n",
-                "past 2000 copies of generic functions",
+                "`grow` calls itself with a bigger type each time",
+            ),
+            (
+                "import helper\n\ndef main(fs: Fs, stdout: Stdout):\n    stdout.print(helper.take(fs))\n",
+                &doubling_chain(16),
+                "past the copies of generic functions a program of its size can ask for",
             ),
         ],
     )
     .unwrap();
+}
+
+/// A kit whose `Spin.go` starts a chain of `steps` generics, each asking for two copies of the next,
+/// one with a tuple and one with a list, beside a `take` that's handed an `Fs`: no type nests past
+/// `steps`, but the copies double at every step.
+fn doubling_chain(steps: usize) -> String {
+    let mut parts: Vec<String> = (0..steps)
+        .map(|step| {
+            let next = step + 1;
+            format!("def step{step}[T](value: T) -> int:\n    return step{next}((value, 1)) + step{next}([value])\n")
+        })
+        .collect();
+    parts.push(format!("def step{steps}[T](value: T) -> int:\n    return 1\n"));
+    parts.push(
+        "export struct Spin:\n    name: str\n\n    def go(self) -> int:\n        return step0(1)\n\n\
+         export def take(fs: Fs) -> int:\n    return 7\n"
+            .to_owned(),
+    );
+    parts.join("\n")
 }
 
 /// A generic type's method that only the standard library calls, as printing calls `str`, is
@@ -5310,6 +5490,7 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
             "FENNEC_THREADS_RUNTIME",
             "FENNEC_BOXED_RESULTS",
             "FENNEC_BOXED_TYPES",
+            "FENNEC_BOXED_DICT_VALUES",
             "FENNEC_AUDIT",
             "FENNEC_NO_CACHE",
         ] {
@@ -5344,6 +5525,7 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
         ("FENNEC_THREADS_RUNTIME", "0"),
         ("FENNEC_BOXED_RESULTS", "1"),
         ("FENNEC_BOXED_TYPES", "1"),
+        ("FENNEC_BOXED_DICT_VALUES", "1"),
         ("FENNEC_AUDIT", "1"),
     ]
     .into_iter()

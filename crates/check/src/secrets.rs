@@ -118,7 +118,8 @@ impl FnCx<'_> {
     pub(crate) fn no_password_in_imported_url(&mut self, callee: &Expr, args: &[Arg]) {
         if let ExprKind::Name(name) = &callee.kind
             && self.lookup(name).is_none()
-            && let Some(function) = self.checker.program.std_functions.get(name).cloned()
+            && let Some(function) =
+                self.checker.program.imported_by(callee.span, |imports| imports.functions.get(name)).cloned()
         {
             self.no_password_in_written_url(&function, args);
         }

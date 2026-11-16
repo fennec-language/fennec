@@ -6,30 +6,11 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 
+use fennec_check::copies::{Copies, Refusal};
 use fennec_check::{Signature, Type};
 
 use super::{Context, Lowered, Lowering};
 use fennec_syntax::{Expr, ExprKind, Stmt};
-
-/// How many copies of generic functions a program can ask for.
-const MOST_COPIES: usize = 2000;
-
-/// How deeply a type a generic function is copied for can nest.
-const DEEPEST_TYPE: usize = 32;
-
-/// How deeply a type nests.
-fn depth(ty: &Type) -> usize {
-    let deepest = |types: &[Type]| types.iter().map(depth).max().unwrap_or(0);
-    1 + match ty {
-        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) | Type::Id(item) => {
-            depth(item)
-        }
-        Type::Dict(first, second) | Type::Result(first, second) => depth(first).max(depth(second)),
-        Type::Tuple(items) | Type::Generic(_, items) => deepest(items),
-        Type::Arrow(params, returns) => deepest(params).max(depth(returns)),
-        _ => 0,
-    }
-}
 
 /// What each type parameter stands for.
 pub(super) type Subst = BTreeMap<String, Type>;
@@ -62,19 +43,35 @@ pub(super) struct Instances {
     pub(super) types: RefCell<BTreeMap<String, TypeInstance>>,
     pub(super) waiting: RefCell<Vec<FunctionInstance>>,
     seen: RefCell<HashSet<String>>,
+    /// Why the last copy asked for was refused, for the call that asked to say.
+    refused: RefCell<Option<String>>,
+    /// The copies made, as the rules every walk over them shares count them.
+    copies: RefCell<Copies>,
+}
+
+impl Instances {
+    /// Why the last copy asked for was refused, if it was, and forgets it.
+    pub(super) fn take_refusal(&self) -> Option<String> {
+        self.refused.borrow_mut().take()
+    }
 }
 
 /// Whether a type still has a type parameter in it.
 pub(super) fn mentions_param(ty: &Type) -> bool {
     match ty {
         Type::Param(_) | Type::Generic(..) => true,
-        Type::List(item) | Type::Set(item) | Type::Optional(item) | Type::Table(item) | Type::Id(item) => {
-            mentions_param(item)
-        }
+        Type::List(item)
+        | Type::Buffer(item)
+        | Type::Array(item, _)
+        | Type::Iterator(item)
+        | Type::Set(item)
+        | Type::Optional(item)
+        | Type::Table(item)
+        | Type::Id(item) => mentions_param(item),
         Type::Dict(first, second) | Type::Result(first, second) => {
             mentions_param(first) || mentions_param(second)
         }
-        Type::Tuple(items) => items.iter().any(mentions_param),
+        Type::Tuple(items) | Type::Union(items) => items.iter().any(mentions_param),
         Type::Arrow(params, returns) => params.iter().any(mentions_param) || mentions_param(returns),
         _ => false,
     }
@@ -97,6 +94,8 @@ impl Context<'_> {
         match ty {
             Type::Param(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
             Type::List(item) => Type::List(inner(item)),
+            Type::Buffer(item) => Type::Buffer(inner(item)),
+            Type::Array(item, size) => Type::Array(inner(item), *size),
             Type::Iterator(item) => Type::Iterator(inner(item)),
             Type::Set(item) => Type::Set(inner(item)),
             // As the checker has it, an optional of an optional is that optional: `V?` with `V`
@@ -179,19 +178,23 @@ impl Context<'_> {
         filled
     }
 
-    /// Asks for a copy of a generic function, and gives its name. `None` once a program has
-    /// asked for too many, as one does when a generic calls itself with a bigger type each
-    /// time, which would never finish.
+    /// Asks for a copy of a generic function, and gives its name. `None` for one that would
+    /// never finish, a generic that calls itself with a bigger type each time, with why kept for
+    /// the call to say.
     fn request(&self, base: &str, subst: Subst) -> Option<String> {
-        if subst.values().any(|ty| depth(ty) > DEEPEST_TYPE) {
-            return None;
+        let refused = |refusal: Refusal| {
+            *self.instances.refused.borrow_mut() = Some(refusal.said(base));
+            None
+        };
+        if let Some(refusal) = self.instances.copies.borrow_mut().too_deep(base, &subst) {
+            return refused(refusal);
         }
         let args: Vec<String> = subst.values().map(ToString::to_string).collect();
         let name = format!("{base}[{}]", args.join(", "));
         let mut seen = self.instances.seen.borrow_mut();
         if !seen.contains(&name) {
-            if seen.len() >= MOST_COPIES {
-                return None;
+            if let Err(refusal) = self.instances.copies.borrow_mut().make(base, self.functions.len()) {
+                return refused(refusal);
             }
             seen.insert(name.clone());
             let instance = FunctionInstance { base: base.to_owned(), name: name.clone(), subst };
@@ -293,6 +296,15 @@ impl Lowering<'_> {
         self.resolve_written(key, &[], given, returns)
     }
 
+    /// What a call to `key` says when its copy can't be made: why it was refused, or that the
+    /// call doesn't say what its types stand for.
+    pub(super) fn unresolved(&self, key: &str) -> String {
+        match self.context.instances.take_refusal() {
+            Some(why) => format!("its call to `{key}` {why}"),
+            None => format!("its call to `{key}` doesn't say what its types stand for"),
+        }
+    }
+
     /// The same, with the types written in brackets at the call, which come first.
     pub(super) fn resolve_written(
         &self,
@@ -302,6 +314,7 @@ impl Lowering<'_> {
         returns: Option<&Type>,
     ) -> Option<(String, Signature)> {
         let context = self.context;
+        context.instances.refused.borrow_mut().take();
         let base = context.base_key(key);
         let raw = context.signatures.get(&base)?;
         let mut subst = key

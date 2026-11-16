@@ -4,6 +4,7 @@
 //! a `for ref` loop's name or a local `ref`, a place: a name in an older frame and the fields and
 //! positions under it. Reading a place copies what's there, and writing one writes there.
 
+mod actors;
 mod builtins;
 mod calls;
 pub(crate) mod disk;
@@ -14,6 +15,7 @@ mod library;
 mod locks;
 mod methods;
 mod own_index;
+mod packing;
 mod parallel;
 mod paths;
 mod saving;
@@ -94,6 +96,9 @@ pub(crate) struct Shared {
     pub(crate) disk: Arc<Mutex<disk::Disk>>,
     /// The number the next `shared` value made gets.
     next_cell: AtomicU64,
+    /// The `shared` values sent on a channel, which no `parallel` round has to itself once they
+    /// have been: another round may have taken them.
+    pub(crate) sent_cells: Mutex<std::collections::BTreeSet<u64>>,
     /// What runs side by side now, `parallel` calls' rounds and `with launch` blocks and their
     /// tasks, the innermost last. Only one thread runs at a time, so they're what whatever runs
     /// now is inside.
@@ -105,6 +110,11 @@ pub(crate) struct Shared {
     /// moved the clock on, in nanoseconds, without waiting.
     pub(crate) started: std::time::Instant,
     pub(crate) slept: AtomicU64,
+    /// Who of `main` and the tasks it launched runs, and the channels they share.
+    pub(crate) sched: actors::Sched,
+    /// Whether standard error is left unwritten, as it is on every run but the first of a
+    /// program whose tasks' messages are tried in each order.
+    pub(crate) quiet: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
@@ -119,10 +129,13 @@ impl Shared {
             next_tag: AtomicU64::new(1),
             disk: Arc::new(Mutex::new(disk::Disk::new(workdir))),
             next_cell: AtomicU64::new(1),
+            sent_cells: Mutex::new(std::collections::BTreeSet::new()),
             scopes: Mutex::new(Vec::new()),
             rounds_started: AtomicU64::new(0),
             started: std::time::Instant::now(),
             slept: AtomicU64::new(0),
+            sched: actors::Sched::default(),
+            quiet: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -184,6 +197,7 @@ pub(crate) enum Binding {
 }
 
 /// One call's names.
+#[derive(Clone)]
 pub(crate) struct Frame {
     pub(crate) id: u64,
     pub(crate) vars: Vec<(String, Binding)>,
@@ -202,7 +216,7 @@ pub(crate) struct Interp {
     /// The frame names are read and written in: the newest, except while a `with` block runs
     /// inside its source.
     pub(crate) cur: usize,
-    next_id: u64,
+    pub(crate) next_id: u64,
     pub(crate) lends: Vec<sources::Lending>,
     pub(crate) yields: Option<stream::YieldSide>,
     depth: usize,
@@ -219,6 +233,19 @@ pub(crate) struct Interp {
     pub(crate) recordings: Vec<Option<json::write::Saved>>,
     /// What each type's own `def deserialize` running for `json.loads` reads, the newest last.
     pub(crate) loadings: Vec<json::read::Loading>,
+    /// Which of `main`'s thread and the tasks it launched this runs as: 0 for `main`.
+    pub(crate) actor: usize,
+    /// The `parallel` rounds this thread runs inside, the innermost last. Each round is one of
+    /// its own to the channels it uses, as it runs on a thread of its own in the compiled
+    /// program, and gets the number they know it by the first time it uses one.
+    pub(crate) rounds_as: Vec<Option<usize>>,
+    /// The `parallel` calls whose rounds this thread runs, the innermost last, each with whether
+    /// the rounds after the one running now were handed to a thread of their own.
+    pub(crate) handing: Vec<parallel::Handing>,
+    /// The local `Buffer` a `reserve(n)` was just called on, by its frame and name, and the room
+    /// it promised: `n` more than it held. Any write anywhere forgets it, so it holds only until
+    /// the buffer, or anything else, changes.
+    pub(crate) reserved: Option<(usize, String, i64)>,
 }
 
 /// How `main` ended.
@@ -248,6 +275,10 @@ impl Interp {
             parts_read: 0,
             recordings: Vec::new(),
             loadings: Vec::new(),
+            actor: 0,
+            rounds_as: Vec::new(),
+            handing: Vec::new(),
+            reserved: None,
         }
     }
 
@@ -280,7 +311,10 @@ impl Interp {
             };
             given.push(calls::ArgVal::Value(None, Value::Cap(cap)));
         }
-        match self.call_def(main, None, None, given, main.span) {
+        let ended = self.call_def(main, None, None, given, main.span);
+        // A task still waiting for its turn when `main` is done runs nothing more.
+        self.give_up();
+        match ended {
             Ok(value) => MainEnded::Returned(value),
             Err(Flow::Fail(error, span)) => MainEnded::Failed(error, span),
             Err(Flow::Crash(message, span)) => MainEnded::Crashed(message, span),
@@ -336,6 +370,7 @@ impl Interp {
     /// Writes text to standard output.
     pub(crate) fn print(&self, text: &str) -> Run<()> {
         self.reach_out(parallel::Outside::Printing)?;
+        self.outside_in_order(parallel::Outside::Printing)?;
         let Ok(mut out) = self.shared.out.lock() else { return unsupported("standard output was lost") };
         if out.len() + text.len() > MOST_OUTPUT {
             return unsupported("ran too long: it printed too much");
@@ -430,6 +465,7 @@ impl Interp {
 
     /// Gives a new name a value, hiding any it had.
     pub(crate) fn bind(&mut self, name: &str, value: Value) -> Run<()> {
+        self.reserved = None;
         if name != "_" {
             self.frame_mut()?.vars.push((name.to_owned(), Binding::Value(value)));
         }
@@ -437,6 +473,7 @@ impl Interp {
     }
 
     pub(crate) fn bind_ref(&mut self, name: &str, place: Place) -> Run<()> {
+        self.reserved = None;
         if name != "_" {
             self.frame_mut()?.vars.push((name.to_owned(), Binding::Ref(place)));
         }
@@ -446,6 +483,7 @@ impl Interp {
     /// Sets a name: a value it holds is replaced, a place it stands for is written, and a name
     /// it doesn't have yet is made.
     pub(crate) fn set_name(&mut self, name: &str, value: Value, span: Span) -> Run<()> {
+        self.reserved = None;
         if name == "_" {
             return Ok(());
         }
@@ -534,6 +572,7 @@ impl Interp {
         adding: bool,
         change: impl FnOnce(&mut Value) -> Run<R>,
     ) -> Run<R> {
+        self.reserved = None;
         let last = place.path.len().saturating_sub(1);
         let mut value = self.root_mut(place)?;
         for (at, step) in place.path.iter().enumerate() {

@@ -30,8 +30,6 @@ pub(crate) enum Source {
     Of(Stream),
     /// The lines of a file a `with` lent, read one at a time as they're asked for.
     Lines(FileLines),
-    /// The messages a launched task's inbox holds, read until there are none.
-    Inbox(Arc<Mutex<std::collections::VecDeque<Value>>>),
 }
 
 /// Where a file's `lines()` reads from: the file system, the file's handle, and where `lines()`
@@ -150,10 +148,6 @@ impl Source {
                 drop(disk);
                 super::files::done(read, lines.span).map(|line| line.map(Value::Str))
             }
-            Source::Inbox(queue) => match queue.lock() {
-                Ok(mut queue) => Ok(queue.pop_front()),
-                Err(_) => unsupported("a channel was lost"),
-            },
         }
     }
 }
@@ -162,6 +156,8 @@ impl Source {
 pub(crate) enum Items {
     List(std::vec::IntoIter<Value>),
     Stream(Stream),
+    /// A task's inbox, read from its channel until it's closed and empty, waiting as it does.
+    Channel(i64),
 }
 
 impl Interp {
@@ -181,11 +177,8 @@ impl Interp {
                 table.slots.into_iter().filter_map(|slot| slot.item).collect::<Vec<_>>().into_iter()
             }
             Value::Stream(stream) => return Ok(Items::Stream(stream)),
-            Value::Channel(end) if !end.sends => {
-                let Value::Stream(stream) = Interp::stream_of(Source::Inbox(end.queue), None) else {
-                    return unsupported("an inbox that isn't one");
-                };
-                return Ok(Items::Stream(stream));
+            Value::Channel(crate::value::Channel { sends: false, number }) => {
+                return Ok(Items::Channel(number));
             }
             Value::Cap(Cap::Args) => Vec::new().into_iter(),
             Value::Instance(instance) => match self.program.method(&instance.ty, "iter") {
@@ -207,6 +200,10 @@ impl Interp {
             Items::Stream(stream) => {
                 let Ok(mut source) = stream.source.lock() else { return unsupported("a generator was lost") };
                 source.next(&self.shared)
+            }
+            Items::Channel(number) => {
+                let (message, why) = self.channel_receive(*number, -1)?;
+                Ok((why == 0).then_some(message))
             }
         }
     }
@@ -348,11 +345,12 @@ impl Interp {
             shared.threads.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             return unsupported("ran too long: too many generators at once");
         }
+        let actor = (self.actor, self.rounds_as.clone());
         let (items, read) = channel();
         let (resume, asked) = channel();
         let thread = std::thread::Builder::new()
             .stack_size(GENERATOR_STACK)
-            .spawn(move || generator_thread(&shared, YieldSide { items, resume: asked }, body));
+            .spawn(move || generator_thread(&shared, actor, YieldSide { items, resume: asked }, body));
         let Ok(thread) = thread else {
             self.shared.threads.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             return unsupported("a generator's thread couldn't start");
@@ -374,10 +372,19 @@ impl Interp {
     }
 }
 
-fn generator_thread(shared: &Arc<Shared>, side: YieldSide, body: impl FnOnce(&mut Interp) -> Run<()>) {
+fn generator_thread(
+    shared: &Arc<Shared>,
+    (actor, rounds_as): (usize, Vec<Option<usize>>),
+    side: YieldSide,
+    body: impl FnOnce(&mut Interp) -> Run<()>,
+) {
     if side.resume.recv().is_ok() {
         let items = side.items.clone();
         let mut interp = Interp::new(Arc::clone(shared), Some(side));
+        // It runs for whoever reads it, `main` or a task, and waits as they do, and for the
+        // `parallel` round it was made in, if it was.
+        interp.actor = actor;
+        interp.rounds_as = rounds_as;
         match body(&mut interp) {
             Ok(()) => {
                 let _ = items.send(Msg::End);

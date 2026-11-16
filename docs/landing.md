@@ -23,7 +23,7 @@ It does the three steps below in order, and stops at the first that fails, with 
    commit, and run it again.
 2. It runs the gate, `.github/scripts/gate.sh`. That checks formatting, runs clippy, checks that the workspace and its tests
    compile on Linux with every warning an error, in a Linux container in Fennec's own VM (below), and for Windows, with MinGW-w64's C compiler (`brew install mingw-w64`), runs every test and
-   every example and kit, and builds every example as x86-64 under Rosetta. It stops at the first failure and
+   every example and kit. x86-64 is left to CI's native x86-64 jobs. It stops at the first failure and
    prints that step's output. A test program that uses more than a minute of CPU, runs for ten minutes or holds
    more than 4 GB is stopped, and the gate says which. A busy machine can't stop one that isn't stuck. It takes four to five minutes when the build is warm.
 3. It pushes your branch, checks that origin has this very commit, and opens the pull request to
@@ -31,6 +31,21 @@ It does the three steps below in order, and stops at the first that fails, with 
 
 Say in the text that the gate passed, and what you measured. Don't open a pull request by joining these
 steps by hand in one command: a failed merge or gate goes unnoticed that way, and has more than once.
+
+## Branches and worktrees
+
+- **A branch pushed only for a CI run**, such as one to dispatch a workflow from before it's on
+  `main`, is deleted as soon as the run finishes: `git push origin --delete <branch>`.
+- **Every Monday**, `sweep-branches.yml` deletes the branches on GitHub with no open pull request
+  and no commit in seven days. It never touches `main`, `staging`, `bench-history`, Dependabot's
+  branches or the merge queue's. Its summary lists each branch it deleted with its last commit, so
+  one taken by mistake can be pushed again. The morning's `nightly-report.sh` warns when there are
+  more than 25 branches.
+- **On this Mac**, `.github/scripts/sweep-worktrees.sh` removes the worktrees under
+  `.claude/worktrees` whose branch has landed, that nothing has used for six hours, that nothing is
+  running in, and that have nothing uncommitted. It keeps their branches. It never touches a
+  `-keep`, `-base` or `-gate` worktree, or a session's own. Run it weekly, or with `--dry-run` to see
+  what it would do.
 
 ## The Linux VM
 

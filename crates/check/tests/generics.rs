@@ -1072,6 +1072,111 @@ fn a_generic_types_shape_holds_its_fields_with_its_arguments_filled_in() {
     }
 }
 
+/// A type that writes its own `serialize` is shaped by what it saves, as its layout is, and not by
+/// its fields. A standard library type that saves as another has that type's shape: a `Deque[int]`
+/// a `list[int]`'s, a `Time` text's. A program's type that saves itself its own way is its name
+/// and type arguments alone, so changing its fields changes nothing. A type that writes neither
+/// method keeps its fields, with those inside it shaped the same way.
+#[test]
+fn a_type_that_writes_its_own_serialize_is_shaped_by_what_it_saves() {
+    use fennec_check::Type;
+    let shapes = |source: &str, ty: &Type| {
+        let mut module = fennec_syntax::parse(source).unwrap();
+        fennec_check::check_and_resolve(&mut module).unwrap().shape(ty)
+    };
+    let declared = "from std.collections import Deque, Grid, SortedMap, SortedSet\n\
+        from std.time import Duration, Time\nfrom std.uuid import Uuid\n\n\
+        struct Money:\n    cents: int\n\n\
+        extend Money:\n    def serialize(self, ref out: Serializer):\n        out.int(self.cents)\n\n    \
+        def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        return Money(cents=src.int()?)\n\n\
+        struct Tagged[T]:\n    value: T\n    note: str\n\n\
+        extend Tagged[T: Serializable]:\n    def serialize(self, ref out: Serializer):\n        out.value(self.value)\n\n\
+        extend Tagged[T: Deserializable]:\n    def deserialize(ref src: Deserializer) -> Self fails ParseError:\n        \
+        return Tagged(value=src.value[T]()?, note=\"\")\n\n\
+        struct Ledger:\n    wallet: Money\n    queue: Deque[int]\n    at: Time\n    tagged: Tagged[int]\n\n\
+        def kept(id: Uuid, span: Duration, grid: Grid[float], names: SortedMap[str, int], seen: SortedSet[str]):\n    \
+        pass\n\ndef main():\n    pass\n";
+    let generic = |name: &str, args: Vec<Type>| Type::Generic(name.to_owned(), args);
+    let named = |name: &str| Type::Named(name.to_owned());
+    for (ty, shape) in [
+        (generic("Deque", vec![Type::Int]), "list[int]"),
+        (generic("SortedSet", vec![Type::Str]), "list[str]"),
+        (generic("SortedMap", vec![Type::Str, Type::Int]), "dict[str, int]"),
+        (generic("Grid", vec![Type::Float]), "list[list[float]]"),
+        (named("Time"), "str"),
+        (named("Uuid"), "str"),
+        (named("Duration"), "int"),
+        (named("Money"), "Money"),
+        (generic("Tagged", vec![Type::Int]), "Tagged[int]"),
+        (generic("Deque", vec![named("Money")]), "list[Money]"),
+        (named("Ledger"), "Ledger{wallet: Money, queue: list[int], at: str, tagged: Tagged[int]}"),
+    ] {
+        assert_eq!(shapes(declared, &ty), shape, "{ty}");
+    }
+    let moved =
+        declared.replace("struct Money:\n    cents: int\n", "struct Money:\n    cents: int\n    units = 0\n");
+    assert_ne!(moved, declared);
+    assert_eq!(shapes(&moved, &named("Money")), "Money");
+    let renamed = declared.replace("    value: T\n    note: str\n", "    held: T\n");
+    let renamed = renamed
+        .replace("self.value", "self.held")
+        .replace("value=src", "held=src")
+        .replace(", note=\"\"", "");
+    assert_eq!(shapes(&renamed, &generic("Tagged", vec![Type::Int])), "Tagged[int]");
+}
+
+/// A generic function that comes back to itself with a bigger type each time can't be built: it
+/// would need a copy for every size. The check refuses it at the call that makes the type bigger,
+/// whether it calls itself, comes back through another generic, is a generic type's method, or
+/// calls back from a function nested in it. One that comes back with the same type, a method
+/// included, or calls another with a bigger type and isn't called back, is fine.
+#[test]
+fn a_generic_that_comes_back_to_itself_with_a_bigger_type_is_refused() {
+    let grows = "def grow[T](x: T, n: int) -> int:\n    if n == 0:\n        return 0\n    return grow([x], n - 1)\n\n\
+        def main(stdout: Stdout):\n    stdout.print(grow(1, 3))\n";
+    assert_eq!(
+        problems(grows),
+        [
+            "`grow` calls itself with a bigger type each time: here its `T` is `list[T]`, so it would need a copy for every size, and can't be built @ grow([x], n - 1)"
+        ]
+    );
+    let through = "def ping[T](x: T, n: int) -> int:\n    if n == 0:\n        return 0\n    return pong((x, 1), n - 1)\n\n\
+        def pong[U](y: U, n: int) -> int:\n    return ping(y, n)\n\n\
+        def main(stdout: Stdout):\n    stdout.print(ping(1, 3))\n";
+    assert_eq!(
+        problems(through),
+        [
+            "`ping` comes back to itself through `pong` with a bigger type each time: here `pong`'s `U` is `(T, int)`, so it would need a copy for every size, and can't be built @ pong((x, 1), n - 1)"
+        ]
+    );
+    let method = "struct Boxed[T]:\n    value: T\n\n    def grow(self, n: int) -> int:\n        if n == 0:\n            return 0\n        \
+        return Boxed(value=[self.value]).grow(n - 1)\n\n\
+        def main(stdout: Stdout):\n    stdout.print(Boxed(value=1).grow(3))\n";
+    assert_eq!(
+        problems(method),
+        [
+            "`Boxed.grow` calls itself with a bigger type each time: here its `T` is `list[T]`, so it would need a copy for every size, and can't be built @ Boxed(value=[self.value]).grow(n - 1)"
+        ]
+    );
+    let nested = "def outer[T](value: T, n: int) -> int:\n    def inner(held: T) -> int:\n        if n == 0:\n            return 0\n        \
+        return outer([held], n - 1)\n    return inner(value)\n\n\
+        def main(stdout: Stdout):\n    stdout.print(outer(1, 3))\n";
+    assert_eq!(
+        problems(nested),
+        [
+            "`outer` calls itself with a bigger type each time: here its `T` is `list[T]`, so it would need a copy for every size, and can't be built @ outer([held], n - 1)"
+        ]
+    );
+    let fine = "def same[T](x: T, n: int) -> int:\n    if n == 0:\n        return 0\n    return same(x, n - 1)\n\n\
+        struct Kept[T]:\n    value: T\n\n    def again(self, n: int) -> int:\n        if n == 0:\n            return 0\n        \
+        return Kept(value=self.value).again(n - 1)\n\n\
+        def wrap[T](x: T) -> int:\n    return 1\n\n\
+        def once[T](x: T) -> int:\n    return wrap([x]) + wrap((x, 2))\n\n\
+        def main(stdout: Stdout):\n    stdout.print(same(1, 3), once('a'), Kept(value=2).again(3))\n";
+    let empty: [&str; 0] = [];
+    assert_eq!(problems(fine), empty);
+}
+
 /// A tuple saves when each of its items does, but not one of a single item yet.
 #[test]
 fn a_tuple_saves_when_its_items_do() {

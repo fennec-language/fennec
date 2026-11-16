@@ -202,6 +202,66 @@ fn two_values_held_at_once_each_end_up_with_only_what_is_their_own() {
     finish();
 }
 
+/// Tables with three more shapes: one that can't be copied, as a generator in the middle of
+/// running can't; one holding an `Owner` and one of those; and one holding a `Log` and one of those.
+fn tables_with_what_cant_be_copied() -> Tables {
+    let running =
+        Element::Struct { name: Rc::from("Running"), fields: vec![(Rc::from("\0at"), Element::Int)] };
+    let beside = |name: &str, held: usize| Element::Struct {
+        name: Rc::from(name),
+        fields: vec![(Rc::from("held"), Element::Boxed(held)), (Rc::from("running"), Element::Boxed(2))],
+    };
+    let mut tables = tables();
+    // Before the strings' shape, which stays the last.
+    tables.shapes.insert(2, Rc::new(running));
+    tables.shapes.insert(3, Rc::new(beside("OwnerBeside", 1)));
+    tables.shapes.insert(4, Rc::new(beside("LogBeside", 0)));
+    tables.str_shape = 5;
+    tables
+}
+
+/// A copy for a task that fails part-way gives back the handles it had counted, and no others. A
+/// block that's been copied but not yet walked holds the words of handles nobody has counted: here
+/// the `Owner`'s copy, when the copy fails on what can't be copied beside it. Giving back a count
+/// for every handle in the part-made table would take one that was never added, and the `shared`
+/// value could go while the original still holds it.
+#[test]
+fn a_copy_for_a_task_that_fails_part_way_gives_back_only_the_handles_it_counted() {
+    start(tables_with_what_cant_be_copied(), crate::Inputs::default());
+    let log = log_of(&["one"]);
+    shared_new(log);
+    let address = u64::try_from(log).unwrap();
+    let owner = heap::alloc(OWNER);
+    set_word(owner, FIELDS, log);
+    count_handle(address);
+    let both = heap::alloc(3);
+    set_word(both, FIELDS, owner);
+    set_word(both, FIELDS + 1, heap::alloc(2));
+    let handles = || with_slot(address, |slot| slot.handles.load(Ordering::Acquire));
+    let before = handles();
+    let failed = with(|state| copied_for_task(state, u64::try_from(both).unwrap()).is_err());
+    assert!(failed, "a value holding what can't be copied was copied");
+    assert_eq!(handles(), before, "a handle the failed copy hadn't counted was given back");
+    // The other way: a handle the copy had counted before it failed, held by the block it started
+    // from, which is walked first. That one is given back.
+    let beside = heap::alloc(4);
+    set_word(beside, FIELDS, log);
+    count_handle(address);
+    set_word(beside, FIELDS + 1, heap::alloc(2));
+    let before = handles();
+    let failed = with(|state| copied_for_task(state, u64::try_from(beside).unwrap()).is_err());
+    assert!(failed, "a value holding what can't be copied was copied");
+    assert_eq!(handles(), before, "a handle the failed copy had counted was kept");
+    // The originals still hold their handles, and letting go of them all takes the value with them.
+    with(|state| release_handle(state, address));
+    assert!(is_handle(address), "the value went while the originals held it");
+    heap::free(both);
+    assert!(is_handle(address), "the value went while one original still held it");
+    heap::free(beside);
+    assert!(!is_handle(address));
+    finish();
+}
+
 #[test]
 fn a_handle_inside_a_value_is_the_same_handle_with_one_more_count() {
     begin();
@@ -392,4 +452,35 @@ fn outside_a_recording_the_lock_hooks_do_nothing() {
     replay_lock(0, 1);
     replay_locked(0, 1);
     assert!(!crate::embed::failed());
+}
+
+/// A copy remembers what each block became, the first few in a row and the rest in a map, and goes
+/// through the copies last made first, however many there are and however making and going through
+/// them are mixed.
+#[test]
+fn a_copy_of_many_blocks_remembers_each_and_goes_through_them_last_first() {
+    let mut copied = UnderWay::default();
+    for block in 1..=20_u64 {
+        copied.became(block * 16, block * 16 + 1);
+    }
+    for block in 1..=20_u64 {
+        assert_eq!(copied.copy_made_of(block * 16), Some(block * 16 + 1), "{block}");
+    }
+    assert_eq!(copied.copy_made_of(7), None);
+    assert_eq!(copied.copy_made_of(21 * 16), None);
+    // The last three made come first, then three more made meanwhile, then the rest.
+    let mut order: Vec<u64> = (0..3).filter_map(|_| copied.next_to_walk()).collect();
+    for block in 21..=23_u64 {
+        copied.became(block * 16, block * 16 + 1);
+    }
+    order.extend(std::iter::from_fn(|| copied.next_to_walk()));
+    let expected: Vec<u64> =
+        [20, 19, 18, 23, 22, 21].into_iter().chain((1..=17).rev()).map(|block| block * 16 + 1).collect();
+    assert_eq!(order, expected);
+    assert_eq!(copied.next_to_walk(), None);
+    assert_eq!(
+        copied.copy_made_of(23 * 16),
+        Some(23 * 16 + 1),
+        "what's been gone through is still remembered"
+    );
 }

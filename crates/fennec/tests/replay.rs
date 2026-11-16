@@ -208,6 +208,208 @@ fn a_parallel_call_whose_ranges_take_inputs_replays_identically() -> std::io::Re
     Ok(())
 }
 
+/// A comprehension over `parallel` whose pieces sleep, one in five of them failing.
+const PIECES_FAILING: &str = "error TooFar:
+    at: int
+
+def checked(number: int, clock: Clock) -> int fails TooFar:
+    clock.sleep(1ms)
+    if number % 5 == 4:
+        fail TooFar(at=number)
+    return number
+
+def lowest(clock: Clock) -> int fails TooFar:
+    passed = [checked(number, clock=clock)? for number in parallel(range(12))]
+    return len(passed)
+
+def main(clock: Clock, stdout: Stdout):
+    passed = lowest(clock) except why:
+        stdout.print(f\"{why}\")
+        return
+    stdout.print(passed)
+";
+
+/// A `for` loop over `parallel` whose pieces work and print, one crashing. A loop's body that
+/// fails with `?` runs as a plain loop, so a crash is how a piece of a loop fails.
+const PIECES_FAILING_IN_A_LOOP: &str = "def busy(turns: int) -> int:
+    return sum(step % 7 for step in range(turns)) % 2
+
+def checked(number: int, stdout: Stdout):
+    worked = busy(100000)
+    stdout.print(\"did\", number, 1000 // (77 - number) + worked)
+
+def main(stdout: Stdout):
+    for number in parallel(range(200)):
+        checked(number, stdout=stdout)
+    stdout.print(\"never said\")
+";
+
+/// A sum over `parallel` of enough items to be cut into many leaves, whose pieces sleep now and
+/// then and print, one crashing.
+const PIECES_FAILING_IN_A_SUM: &str = "def weighed(number: int, clock: Clock, stdout: Stdout) -> int:
+    if number % 97 == 0:
+        clock.sleep(1ms)
+        stdout.print(\"at\", number)
+    return 1000 // (2100 - number)
+
+def main(clock: Clock, stdout: Stdout):
+    added = sum(weighed(number, clock=clock, stdout=stdout) for number in parallel(range(20000)))
+    stdout.print(\"never said\", added)
+";
+
+/// The first piece fails at once and the rest sleep, so most pieces never begin.
+const FIRST_PIECE_FAILING: &str = "error TooFar:
+    at: int
+
+def checked(number: int, clock: Clock) -> int fails TooFar:
+    if number == 0:
+        fail TooFar(at=number)
+    clock.sleep(5ms)
+    return number
+
+def lowest(clock: Clock) -> int fails TooFar:
+    passed = [checked(number, clock=clock)? for number in parallel(range(64))]
+    return len(passed)
+
+def main(clock: Clock, stdout: Stdout):
+    passed = lowest(clock) except why:
+        stdout.print(f\"{why}\")
+        return
+    stdout.print(passed)
+";
+
+/// Records `source` at 1 thread and at 4, with every piece on the pool or not, and replays each
+/// recording `rounds` times at each of 1, 4 and 16 threads: every recording ends with `ends`, and
+/// every replay is the recorded run.
+fn replays_at_one_four_and_sixteen(
+    name: &str,
+    source: &str,
+    rounds: usize,
+    ends: i32,
+) -> std::io::Result<()> {
+    let dir = folder(name)?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, source)?;
+    for (recorded_threads, stress) in [("1", "0"), ("4", "0"), ("4", "1")] {
+        let log = dir.join(format!("recorded-{recorded_threads}-{stress}.log"));
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", recorded_threads).env("FENNEC_PARALLEL_STRESS", stress);
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = outcome(&record.output_before(DEADLINE)?);
+        assert_eq!(recorded.2, Some(ends), "{name} recorded at {recorded_threads}: {}", recorded.1);
+        for round in 0..rounds {
+            for threads in ["1", "4", "16"] {
+                let replayed = outcome(
+                    &fennec_command()
+                        .env("FENNEC_THREADS", threads)
+                        .env("FENNEC_PARALLEL_STRESS", stress)
+                        .args(["replay", &log.to_string_lossy()])
+                        .current_dir(&dir)
+                        .output_before(DEADLINE)?,
+                );
+                assert_eq!(
+                    replayed, recorded,
+                    "{name} recorded at {recorded_threads} (stress {stress}), replay {round} at {threads}"
+                );
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A `parallel` call where a piece fails replays from its own recording. Which later pieces had
+/// begun when the failure was noted depends on timing, and pieces that hadn't don't begin, so a
+/// replay used to run another set: 11 of 12 asked for an input its recording didn't have, or ended
+/// with one left over (#1804). Now the recording says which pieces a failure kept from starting,
+/// and a replay skips exactly those.
+#[test]
+fn a_parallel_call_where_a_piece_fails_replays_the_pieces_it_ran() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_at_one_four_and_sixteen("pieces-failing", PIECES_FAILING, 17, 0)?;
+    replays_at_one_four_and_sixteen("first-piece-failing", FIRST_PIECE_FAILING, 17, 0)
+}
+
+/// The same in a `for` loop and in a sum, which split their pieces their own way, and whose pieces
+/// fail by crashing, which ends the program: what it printed before is the recording's.
+#[test]
+fn a_parallel_loop_or_sum_where_a_piece_fails_replays_the_pieces_it_ran() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_at_one_four_and_sixteen("pieces-failing-in-a-loop", PIECES_FAILING_IN_A_LOOP, 5, 1)?;
+    replays_at_one_four_and_sixteen("pieces-failing-in-a-sum", PIECES_FAILING_IN_A_SUM, 5, 1)
+}
+
+const DRAWN_IN_A_TASK: &str = "from std.concurrent import Crashed
+
+def drawn(clock: Clock, entropy: Entropy) -> int:
+    clock.sleep(1ms)
+    return entropy.seed() % 1000
+
+def some(item: int, clock: Clock, entropy: Entropy) -> int:
+    if item % 400 != 0:
+        return item
+    clock.sleep(1ms)
+    return entropy.seed() % 1000
+
+def draws(place: str, stdout: Stdout, clock: Clock, entropy: Entropy):
+    stdout.print(place, [drawn(clock, entropy=entropy) + item for item in parallel(range(24))])
+    stdout.print(place, sum(some(item, clock=clock, entropy=entropy) for item in parallel(range(3000))))
+
+def main(stdout: Stdout, clock: Clock, entropy: Entropy) fails Crashed:
+    draws(\"main\", stdout=stdout, clock=clock, entropy=entropy)
+    with launch(() => draws(\"task\", stdout=stdout, clock=clock, entropy=entropy))?:
+        pass
+";
+
+/// A launched task's comprehension and waiting sum hand their pieces to the workers, as `main`'s
+/// do, with the pieces reading a copy of what they capture. Each piece still replays its own
+/// inputs, by its place in its call, so the recorded run comes out again, `main`'s calls and the
+/// task's alike: recorded on 1, 4 and 16 threads, with the lists cut as they come and cut down to an
+/// item each, and replayed on other numbers of threads than it was recorded with.
+///
+/// No piece here fails and no task is stopped: neither replays yet, from `main` either (#1804,
+/// #1805).
+#[test]
+fn a_task_s_parallel_calls_whose_pieces_take_inputs_replay_identically() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("drawn-in-a-task")?;
+    let program = dir.join("drawn_in_a_task.fen");
+    std::fs::write(&program, DRAWN_IN_A_TASK)?;
+    for (recorded_on, stressed) in [("1", false), ("4", false), ("16", false), ("4", true), ("16", true)] {
+        let log = dir.join(format!("drawn-{recorded_on}-{stressed}.log"));
+        let on = |threads: &str| {
+            let mut command = fennec_command();
+            command.env("FENNEC_THREADS", threads).current_dir(&dir);
+            if stressed {
+                command.env("FENNEC_PARALLEL_STRESS", "1");
+            }
+            command
+        };
+        let how = format!("recorded with FENNEC_THREADS={recorded_on}, stressed: {stressed}");
+        let recorded = outcome(
+            &on(recorded_on)
+                .args(["run", "--record", &log.to_string_lossy()])
+                .arg(&program)
+                .output_before(DEADLINE)?,
+        );
+        assert_eq!(recorded.2, Some(0), "{how}: {}", recorded.1);
+        assert_eq!(recorded.0.lines().count(), 4, "{how}: {}", recorded.0);
+        for threads in ["1", "4", "7", "16", "1", "4"] {
+            let replayed =
+                outcome(&on(threads).args(["replay", &log.to_string_lossy()]).output_before(DEADLINE)?);
+            assert_eq!(replayed, recorded, "{how}, replayed with {threads}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 const SERVER: &str = "from std.net import NetError
 
 struct Total:
@@ -313,6 +515,169 @@ fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()>
             String::from_utf8_lossy(&replayed.stderr)
         );
         assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A task serves, `main` makes one request of it and closes the server: no stop comes into it.
+const SERVED_IN_A_TASK: &str = "from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def answered(request: Request) -> Response:
+    return Response(status=200, body=f\"hello {request.path}\".encode())
+
+def serving(server: Server, stdout: Stdout):
+    server.serve((request) => answered(request))
+    stdout.print(\"the server ended\")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => serving(server, stdout=stdout))?:
+            got = net.get(f\"http://127.0.0.1:{port}/one\")?
+            stdout.print(got.text())
+            server.close()
+    stdout.print(\"the server is over\")
+";
+
+/// A task serves, and its block's end stops it there, 20 ms after one request was answered.
+const SERVED_IN_A_TASK_AND_STOPPED: &str = "from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def answered(request: Request) -> Response:
+    return Response(status=200, body=f\"hello {request.path}\".encode())
+
+def serving(server: Server, stdout: Stdout):
+    server.serve((request) => answered(request))
+    stdout.print(\"the server never said\")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => serving(server, stdout=stdout), stop_after=20ms)?:
+            got = net.get(f\"http://127.0.0.1:{port}/one\")?
+            stdout.print(got.text())
+    stdout.print(\"the server is over\")
+";
+
+/// A client connects and sends nothing, so its round is waiting to read when the serving task's
+/// block ends and stops it.
+const SERVED_IN_A_TASK_STOPPED_WHILE_A_ROUND_READS: &str = "from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def answered(request: Request) -> Response:
+    return Response(status=200, body=f\"hello {request.path}\".encode())
+
+def serving(server: Server, stdout: Stdout):
+    server.serve((request) => answered(request))
+    stdout.print(\"the server never said\")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect(\"127.0.0.1\", port)? as quiet:
+            with launch(() => serving(server, stdout=stdout), stop_after=50ms)?:
+                got = net.get(f\"http://127.0.0.1:{port}/one\")?
+                stdout.print(got.text())
+            stdout.print(\"the block ended\", quiet.peer != \"\")
+    stdout.print(\"the server is over\")
+";
+
+/// One round's handler is asleep when the serving task's block ends and stops it.
+const SERVED_IN_A_TASK_STOPPED_WHILE_A_HANDLER_SLEEPS: &str = "from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def answered(request: Request, clock: Clock, stdout: Stdout) -> Response:
+    if request.path == \"/slow\":
+        stdout.print(\"the slow one began\")
+        clock.sleep(2h)
+        stdout.print(\"the slow one never said\")
+    return Response(status=200, body=f\"hello {request.path}\".encode())
+
+def serving(server: Server, clock: Clock, stdout: Stdout):
+    server.serve((request) => answered(request, clock=clock, stdout=stdout))
+    stdout.print(\"the server never said\")
+
+def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect(\"127.0.0.1\", port)? as slow:
+            slow.write(\"GET /slow HTTP/1.1\\r\\nhost: here\\r\\n\\r\\n\")?
+            with launch(() => serving(server, clock=clock, stdout=stdout), stop_after=100ms)?:
+                got = net.get(f\"http://127.0.0.1:{port}/one\")?
+                stdout.print(got.text())
+    stdout.print(\"the server is over\")
+";
+
+/// A task loops over a server's connections itself, and its block's end stops it there.
+const LOOPED_IN_A_TASK_AND_STOPPED: &str = "from std.concurrent import Crashed
+from std.net import NetError, Server
+
+def serving(server: Server, stdout: Stdout) fails NetError:
+    for conn in parallel(server):
+        line = conn.read_line()? else \"\"
+        conn.write(f\"{len(line)}\\n\")?
+    stdout.print(\"the loop never said\")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with launch(() => serving(server, stdout=stdout)?, stop_after=50ms)?:
+            with net.connect(\"127.0.0.1\", port)? as first:
+                first.write(\"hello\\n\")?
+                stdout.print(first.read_line()? else \"nothing\")
+    stdout.print(\"the server is over\")
+";
+
+/// A server served from a launched task replays, closed or stopped, with a stop that races a round
+/// reading or asleep, and a task looping over its connections itself. A replayed server blocked its
+/// thread until its rounds ended, and a task's thread is a worker its rounds run on, so the replay
+/// never ended (#1832). Now it parks, as a live one does, and lends its rounds a copy of what
+/// they're given. A stop that ended it is recorded, and its replay fails as stopped there too.
+/// What a replay prints and how it ends are the recording's; a replayed server says on standard
+/// error where its recording ended.
+#[test]
+fn a_server_served_from_a_task_replays_closed_or_stopped() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("served-in-a-task")?;
+    for (name, source) in [
+        ("closed", SERVED_IN_A_TASK),
+        ("stopped", SERVED_IN_A_TASK_AND_STOPPED),
+        ("stopped-while-a-round-reads", SERVED_IN_A_TASK_STOPPED_WHILE_A_ROUND_READS),
+        ("stopped-while-a-handler-sleeps", SERVED_IN_A_TASK_STOPPED_WHILE_A_HANDLER_SLEEPS),
+        ("looped-and-stopped", LOOPED_IN_A_TASK_AND_STOPPED),
+    ] {
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        for recorded_threads in ["1", "4"] {
+            let log = dir.join(format!("{name}-{recorded_threads}.log"));
+            let mut record = fennec_command();
+            record.env("FENNEC_THREADS", recorded_threads);
+            record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+            let recorded = outcome(&record.output_before(DEADLINE)?);
+            assert_eq!(recorded.2, Some(0), "{name} recorded at {recorded_threads}: {}", recorded.1);
+            for round in 0..8 {
+                for threads in ["1", "4", "16"] {
+                    let replayed = outcome(
+                        &fennec_command()
+                            .env("FENNEC_THREADS", threads)
+                            .args(["replay", &log.to_string_lossy()])
+                            .current_dir(&dir)
+                            .output_before(DEADLINE)?,
+                    );
+                    let at = format!("{name} recorded at {recorded_threads}, replay {round} at {threads}");
+                    assert_eq!((&replayed.0, replayed.2), (&recorded.0, recorded.2), "{at}: {}", replayed.1);
+                    assert!(
+                        replayed.1.contains("the recording ends here, so the server is stopped"),
+                        "{at}: {}",
+                        replayed.1
+                    );
+                }
+            }
+        }
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

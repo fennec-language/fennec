@@ -1,0 +1,68 @@
+# Failures leaving a lock's own body, after appends written straight in it and through a `ref`
+# method that fails partway: what the lock holds after each is what it held before.
+error Tooth:
+    Bad(at: int)
+
+struct Bag:
+    items: list[str]
+    seen: int
+
+    def add_then_fail(ref self, count: int, limit: int) fails Tooth:
+        for turn in range(count):
+            self.items.append(f"by method {turn}, a text long enough for a block of its own")
+            if turn == limit:
+                fail .Bad(at=turn)
+        return
+
+struct Shelf:
+    named: dict[str, Bag]
+    rows: list[Bag]
+
+def first_bag() -> Bag:
+    return Bag(items=["first, a text long enough for a block of its own"], seen=0)
+
+def checked(turn: int, limit: int) -> int fails Tooth:
+    if turn == limit:
+        fail .Bad(at=turn)
+    return turn
+
+def straight(shelf: shared Shelf, count: int, limit: int, by_name: bool) fails Tooth:
+    lock shelf as ref held:
+        for turn in range(count):
+            if by_name:
+                held.named["one"].items.append(f"straight {turn}, a text long enough for a block")
+            else:
+                held.rows[0].items.append(f"straight {turn}, a text long enough for a block")
+            held.named["one"].seen += checked(turn, limit=limit)?
+    return
+
+def by_method(shelf: shared Shelf, count: int, limit: int, by_name: bool) fails Tooth:
+    lock shelf as ref held:
+        held.named["one"].items.append("before, a text long enough for a block of its own")
+        if by_name:
+            held.named["one"].add_then_fail(count, limit=limit)?
+        else:
+            held.rows[0].add_then_fail(count, limit=limit)?
+        held.named["one"].items.append("after, a text long enough for a block of its own")
+    return
+
+def held_now(shelf: shared Shelf) -> str:
+    lock shelf as held:
+        named = held.named["one"]
+        row = held.rows[0]
+        return f"{len(named.items)} {named.seen} {named.items[-1]} | {len(row.items)} {row.items[-1]}"
+
+def main(stdout: Stdout):
+    shared shelf = Shelf(named={"one": first_bag()}, rows=[first_bag()])
+    for by_name in [True, False]:
+        for count, limit in [(3, 9), (40, 30), (2, 9), (300, 1)]:
+            straight(shelf, count=count, limit=limit, by_name=by_name) except .Bad(at):
+                stdout.print("failed straight", by_name, count, at, held_now(shelf))
+                continue
+            stdout.print("went straight", by_name, count, held_now(shelf))
+        for count, limit in [(3, 9), (40, 30), (2, 9), (300, 1)]:
+            by_method(shelf, count=count, limit=limit, by_name=by_name) except .Bad(at):
+                stdout.print("failed method", by_name, count, at, held_now(shelf))
+                continue
+            stdout.print("went method", by_name, count, held_now(shelf))
+    return

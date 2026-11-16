@@ -87,6 +87,10 @@ impl FnCx<'_> {
             {
                 self.is_member(lhs, member, rhs.span)
             }
+            ExprKind::Binary { op: op @ (BinOp::In | BinOp::NotIn), lhs, rhs } => {
+                let (left, right) = self.contained(lhs, rhs);
+                self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
+            }
             ExprKind::Binary { op, lhs, rhs } => {
                 let (left, right) = self.operands(lhs, rhs);
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
@@ -294,7 +298,7 @@ impl FnCx<'_> {
             return Type::Float;
         }
         // A name an import that failed would have bound was reported at the import.
-        if self.checker.program.failed_imports.contains(name) {
+        if self.checker.program.imported_by(span, |imports| imports.failed.get(name)).is_some() {
             return Type::Unknown;
         }
         let modules = self.checker.program.modules_at(span);
@@ -348,11 +352,12 @@ impl FnCx<'_> {
         let qualified = format!("{module}.{name}");
         if self.checker.program.functions.contains_key(&qualified)
             || self.checker.program.constants.contains_key(&qualified)
+            || builtins::is_builtin(&qualified)
         {
             self.checker.std_names.insert((span.start, span.end), qualified.clone());
             return Some(Member::Name(qualified));
         }
-        Some(Member::Name(if builtins::is_builtin(&qualified) { qualified } else { name.to_owned() }))
+        Some(Member::Name(name.to_owned()))
     }
 
     /// The standard library function written in Fennec that a name was imported as.
@@ -361,7 +366,7 @@ impl FnCx<'_> {
         if span.in_prelude() {
             return None;
         }
-        let function = self.checker.program.std_functions.get(name)?.clone();
+        let function = self.checker.program.imported_by(span, |imports| imports.functions.get(name))?.clone();
         self.checker.std_names.insert((span.start, span.end), function.clone());
         Some(function)
     }
@@ -376,7 +381,7 @@ impl FnCx<'_> {
                 if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
                     return None;
                 }
-                let module = self.checker.program.modules_at(expr.span).get(&alias)?;
+                let module = *self.checker.program.modules_at(expr.span).get(&alias)?;
                 fennec_syntax::std_member(module, name, expr.span).ok()?;
                 name
             }

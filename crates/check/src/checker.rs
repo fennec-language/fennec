@@ -89,6 +89,9 @@ pub(crate) struct Checker {
     pub(crate) generic_sources: BTreeSet<String>,
     /// Each call to a generic function, by its span, with the types its type parameters are there.
     pub(crate) generic_calls: BTreeMap<(u32, u32), crate::generic_copies::Call>,
+    /// Each call to a method with type parameters, its type's or its own, by its span, with the
+    /// types they are there: what `copies::growing` follows beside `generic_calls`.
+    pub(crate) generic_method_calls: BTreeMap<(u32, u32), crate::generic_copies::Call>,
     /// What each generic function writes or reads with a format, by its type parameters: the
     /// function, the type, the format and the interface it's written or read through. Each call's
     /// own type is checked once every function is.
@@ -183,13 +186,8 @@ fn library_alone<'m>(
         program.add_with(prelude, true, hold);
         program.problems.extend(crate::privacy::top_level_underscores(prelude));
     }
-    program.prelude_imports = std::mem::take(&mut program.imports);
-    program.prelude_modules = std::mem::take(&mut program.modules);
-    // What a standard library module imports is its own: a program names it only by importing
-    // it too.
-    program.std_functions.clear();
-    program.std_constants.clear();
-    program.imported_types.clear();
+    // What a standard library module imports is its own, kept apart by where it's written: a
+    // program names it only by importing it too.
     program
 }
 
@@ -243,6 +241,7 @@ impl Checker {
             widened_values: BTreeMap::new(),
             generic_sources: BTreeSet::new(),
             generic_calls: BTreeMap::new(),
+            generic_method_calls: BTreeMap::new(),
             format_params: BTreeSet::new(),
             union_sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
@@ -327,6 +326,11 @@ impl Checker {
         if self.diagnostics.is_empty() {
             self.body_rules(scope);
         }
+        // A generic that comes back to itself with a bigger type each time can't be built.
+        if self.diagnostics.is_empty() {
+            let growing = crate::copies::growing(&self);
+            self.diagnostics.extend(growing);
+        }
         // What a program as lowering rewrote it hands over is what it handed as written.
         if self.diagnostics.is_empty() && !self.again {
             let refused = crate::holds::refused(&mut self);
@@ -360,6 +364,27 @@ impl Checker {
         }
     }
 
+    /// The types that write their own `serialize`, with whose it is: the standard library's, or
+    /// one a program or a kit wrote by hand. What the checker writes for a type that writes
+    /// neither method is parsed where std's code is, but it's the program's, and saves field by
+    /// field, so it isn't among them.
+    fn own_saving(&self) -> BTreeMap<String, crate::shapes::Writer> {
+        let saving = self.program.functions.values().filter(|entry| entry.def.name == "serialize");
+        saving
+            .filter_map(|entry| {
+                let owner = entry.owner.clone()?;
+                let writer = if entry.prelude {
+                    crate::shapes::Writer::Library
+                } else if !entry.def.span.in_prelude() {
+                    crate::shapes::Writer::Program
+                } else {
+                    return None;
+                };
+                Some((owner, writer))
+            })
+            .collect()
+    }
+
     /// What a check that found nothing wrong gives back.
     fn checked(
         mut self,
@@ -384,6 +409,7 @@ impl Checker {
         // A type asked about before what it holds was known, like the list in `pack.dumps(pairs)`
         // before `pairs.append((1, "a"))`, is what it holds once the check is done.
         let saved_types = std::mem::take(&mut self.saved_types).iter().map(|ty| self.settled(ty)).collect();
+        let own_saving = self.own_saving();
         let functions = self
             .states
             .into_iter()
@@ -400,6 +426,7 @@ impl Checker {
             locals,
             lock_verdicts: self.lock_verdicts,
             crossing: std::mem::take(&mut self.crossing),
+            own_saving,
             ..Signatures::default()
         };
         let types = Types { functions: self.typed };
@@ -734,7 +761,7 @@ impl Checker {
         };
         // A value that isn't fully known has been reported already.
         if def.ret.is_none() && gives_back && value.is_known() && !prelude {
-            let fixable = self.can_write(&value);
+            let fixable = self.can_write(&value, def.span);
             self.diagnostics.push(missing_return_type(&def, &value, effects.yields, fixable));
         }
         if let (Some(ret), Some(arrow)) = (&def.ret, def.arrow)
@@ -769,7 +796,10 @@ impl Checker {
             let def = &entry.def;
             // A `test` block, and the function LLVM's tests make of one, have no signature.
             let test = key.starts_with("test \"") || key.starts_with("test:");
-            if entry.prelude || def.fails.is_some() || def.name == "main" || test {
+            // What the compiler writes in, like a crash's cleanup run as a function of its own, has
+            // no reader to see a signature: what it can fail with is what its body says.
+            let written = crate::lend_lowering::not_written_by_hand(def.span);
+            if entry.prelude || def.fails.is_some() || def.name == "main" || test || written {
                 continue;
             }
             let Some(State::Done(signature)) = self.states.get(key) else { continue };
@@ -863,8 +893,9 @@ impl Checker {
         );
     }
 
-    /// Whether a program can write a type as it is, with every type it names in scope.
-    fn can_write(&self, ty: &Type) -> bool {
+    /// Whether a program can write a type as it is at `at`, with every type it names in scope in
+    /// that file.
+    fn can_write(&self, ty: &Type, at: Span) -> bool {
         let mut writable = true;
         ty.map(&mut |part| {
             let name = match part {
@@ -873,7 +904,7 @@ impl Checker {
                 Type::Table(_) => Some("Table"),
                 _ => None,
             };
-            writable &= name.is_none_or(|name| self.program.can_name(name));
+            writable &= name.is_none_or(|name| self.program.can_name(name, at));
             None
         });
         writable

@@ -1,0 +1,1215 @@
+//! Tasks that run beside their block and talk through `std.concurrent`'s channels: a `with
+//! launch(task)?:` with no `as`, of a task that takes no inbox. The channels are modeled here from
+//! what `intrinsics.fen` says each channel intrinsic does, and `std.concurrent`'s own Fennec runs
+//! over them.
+//!
+//! Each task runs on a thread of its own, but only one thread ever runs: whoever holds the baton
+//! runs until it has to wait, for a message, for room to send one, or for a task to end, and then
+//! hands it to the next one after it, in the order they were launched, that can go on. So a run is
+//! the same every time, and where nothing waits on a channel it's the block first and then its
+//! task, as a launch with `as sends` runs.
+//!
+//! One thing about a run hangs on time and is tried every way: where several tasks send on one
+//! channel, which of their messages comes next. Before a receive, whatever else can go on goes
+//! first, so every message that could be next is there, and where the first from each sender
+//! differ, each is taken in turn, on a run of its own (`lib.rs`), and every run has to print the
+//! same and end the same. Anything else whose outcome hangs on time is refused:
+//! - two tasks taking messages from one channel to one receiver at once, which gets which hanging
+//!   on time: one after another, where each had heard of the other's last take, is in order;
+//! - several senders' messages to a listener of a channel to every listener, or waiting for room,
+//!   when the next ones differ;
+//! - a channel to every listener sent more messages than it keeps, which a listener could fall
+//!   behind on or not;
+//! - a send waiting for room when its channel closes, which got in or not;
+//! - waiting on a channel inside a `lock`;
+//! - every task waiting on another, which hangs.
+//!
+//! A wait given a timeout times out only when nothing else can go on: whatever could still answer
+//! it is taken to answer in time.
+//!
+//! The rounds of a `parallel` call run one after another here, on the thread that made the call,
+//! but each is one of its own to the channels it uses, as it runs beside the others in the
+//! compiled program: what one round sends doesn't come before what another sends, and two taking
+//! from one channel is refused. What they all did comes before what the call's caller does next.
+//! A round that receives, or waits for room, from a channel made outside it hands the rounds
+//! after it to a thread of their own, given a copy of the names they read: they go first, as
+//! everything else that can go on does, so their messages are there before it takes the next,
+//! and it can wait for them.
+//! What a task's block and the task itself reach, printing, the file system and `shared` values,
+//! is held to what `tasks.rs` says, each seeing the launch from its own side.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+
+use fennec_syntax::{Span, Stmt, WithName};
+
+use super::calls::ArgVal;
+use super::parallel::{ChannelUse, Handed, RoundsRan, Scope, Work};
+use super::tasks::Launched;
+use super::{Flow, Interp, Run, unsupported};
+use crate::value::{Channel, Value, same};
+
+/// What a run where every task waits on another says.
+const HANGS: &str = "every task waits on another, so the program hangs";
+
+/// Each task's thread's stack.
+const TASK_STACK: usize = 64 << 20;
+
+/// The most tasks one run may launch.
+const MOST_TASKS: usize = 1_000;
+
+/// Who runs, and the channels they share.
+#[derive(Default)]
+pub(crate) struct Sched {
+    state: Mutex<State>,
+    turn: Condvar,
+    /// Which message each receive takes where that hangs on time, as `lib.rs` tries every way.
+    pub(crate) orders: Mutex<Orders>,
+}
+
+/// The choices of a run that tries one order of messages: those to make, in turn, and those
+/// made, each with how many there were to choose from.
+#[derive(Default)]
+pub(crate) struct Orders {
+    pub(crate) script: Vec<usize>,
+    pub(crate) made: Vec<(usize, usize)>,
+}
+
+impl Orders {
+    /// Chooses one of `count`: as the script says, or the first, past its end.
+    fn choose(&mut self, count: usize) -> usize {
+        let chosen = self.script.get(self.made.len()).copied().filter(|chosen| *chosen < count).unwrap_or(0);
+        self.made.push((chosen, count));
+        chosen
+    }
+}
+
+struct State {
+    /// The one that runs now.
+    running: usize,
+    /// Each one that runs, by number: `main`'s thread first, then each task in the order it was
+    /// launched.
+    actors: Vec<Actor>,
+    channels: BTreeMap<i64, Chan>,
+    /// Each listener to a channel to every listener, by the number it's received from by.
+    listeners: BTreeMap<i64, Listener>,
+    next_number: i64,
+    /// Whether the run was given up, so every thread that waits is to end.
+    given_up: bool,
+    /// The last that printed, and the last that reached the file system, each with its clock then.
+    last_outside: [Option<(usize, Clock)>; 2],
+}
+
+impl Default for State {
+    fn default() -> State {
+        State {
+            running: 0,
+            actors: vec![Actor::ready(Vec::new(), Vec::new())],
+            channels: BTreeMap::new(),
+            listeners: BTreeMap::new(),
+            next_number: 1,
+            given_up: false,
+            last_outside: [None, None],
+        }
+    }
+}
+
+struct Actor {
+    state: Doing,
+    /// The scopes it runs inside, kept while another runs.
+    scopes: Vec<Scope>,
+    /// How a task ended, once it has.
+    ended: Option<Run<()>>,
+    /// Whether its wait timed out.
+    timed_out: bool,
+    /// What it's heard of each one's sends and ends, by how many of them it's seen: what happened
+    /// before what it does now, whatever order things ran in.
+    clock: Clock,
+    /// Which one launched it, for a task.
+    launcher: Option<usize>,
+    /// The tasks it launched that crashed while it's still in their blocks, which cuts short every
+    /// wait it's in there, as `docs/language.md` says, until their blocks end.
+    cut_short: Vec<usize>,
+    /// For a thread running a `parallel` call's rounds handed on to it, the one that handed them
+    /// on: they're in every block it's in.
+    beside: Option<usize>,
+}
+
+impl Actor {
+    fn ready(scopes: Vec<Scope>, clock: Clock) -> Actor {
+        Actor {
+            state: Doing::Ready,
+            scopes,
+            ended: None,
+            timed_out: false,
+            clock,
+            launcher: None,
+            cut_short: Vec::new(),
+            beside: None,
+        }
+    }
+}
+
+/// A vector clock: for each one that runs, by number, how many of its steps are known.
+type Clock = Vec<u64>;
+
+/// Counts a step of `actor`'s on its clock.
+fn tick(clock: &mut Clock, actor: usize) {
+    if clock.len() <= actor {
+        clock.resize(actor + 1, 0);
+    }
+    if let Some(steps) = clock.get_mut(actor) {
+        *steps += 1;
+    }
+}
+
+/// Takes in what `other` knew.
+fn merge(clock: &mut Clock, other: &Clock) {
+    if clock.len() < other.len() {
+        clock.resize(other.len(), 0);
+    }
+    for (mine, theirs) in clock.iter_mut().zip(other) {
+        *mine = (*mine).max(*theirs);
+    }
+}
+
+/// Whether what's stamped `earlier` happened before what's stamped `later`, whatever order
+/// things ran in.
+fn happened_before(earlier: &Clock, later: &Clock) -> bool {
+    earlier.iter().enumerate().all(|(at, steps)| *steps <= later.get(at).copied().unwrap_or(0))
+}
+
+/// A message sent: who sent it, what, and the sender's clock as it sent it.
+struct Sent {
+    sender: usize,
+    value: Value,
+    clock: Clock,
+}
+
+enum Doing {
+    Ready,
+    /// Waiting, with a timeout when `timed`.
+    Waiting(Wait, bool),
+    Ended,
+}
+
+#[derive(Clone, Copy)]
+enum Wait {
+    /// For a message from the channel or listener of this number, or for it to close.
+    Message(i64),
+    /// For room to send on this channel, or for it to close.
+    Room(i64),
+    /// For this task to end.
+    Task(usize),
+}
+
+/// A channel.
+struct Chan {
+    size: usize,
+    /// Whether it's to every listener, rather than to one receiver.
+    every: bool,
+    closed: bool,
+    /// What's sent and not yet taken, for a channel to one receiver.
+    queue: VecDeque<Sent>,
+    /// Every message sent, for a channel to every listener.
+    sent: Vec<Sent>,
+    /// Who's tried to take a message from it, each with what it knew when it last tried, or once
+    /// it had taken one, and whether it ever has.
+    receivers: BTreeMap<usize, (Clock, bool)>,
+    /// Each send waiting for room.
+    waiting_sends: Vec<Sent>,
+    /// Whether it's a task's inbox the task has left by ending.
+    left: bool,
+}
+
+/// A listener to a channel to every listener: the channel, and how many of its messages it's read.
+struct Listener {
+    channel: i64,
+    at: usize,
+}
+
+impl State {
+    /// Whether the one numbered `actor` can go on.
+    fn can_go(&self, actor: usize) -> bool {
+        let Some(found) = self.actors.get(actor) else { return false };
+        match found.state {
+            Doing::Ready => true,
+            Doing::Ended => false,
+            Doing::Waiting(Wait::Task(task), _) => {
+                self.actors.get(task).is_none_or(|task| matches!(task.state, Doing::Ended))
+            }
+            // A wait in the block of a task that crashed is cut short.
+            Doing::Waiting(Wait::Room(_) | Wait::Message(_), _) if !found.cut_short.is_empty() => true,
+            Doing::Waiting(Wait::Room(number), _) => {
+                self.channels.get(&number).is_none_or(|chan| chan.closed || chan.queue.len() < chan.size)
+            }
+            Doing::Waiting(Wait::Message(number), _) => self.has_message(number),
+        }
+    }
+
+    /// Whether a receive from `number`, a channel or a listener, would find a message, or the
+    /// channel closed.
+    fn has_message(&self, number: i64) -> bool {
+        if let Some(listener) = self.listeners.get(&number) {
+            return self
+                .channels
+                .get(&listener.channel)
+                .is_none_or(|chan| chan.closed || listener.at < chan.sent.len());
+        }
+        self.channels.get(&number).is_none_or(|chan| chan.closed || !chan.queue.is_empty())
+    }
+
+    /// The next one after `from`, in order, that can go on, `from` itself last.
+    fn next_after(&self, from: usize) -> Option<usize> {
+        let count = self.actors.len();
+        (1..=count).map(|step| (from + step) % count).find(|&actor| self.can_go(actor))
+    }
+
+    /// Hands the baton on from `from`: to the next that can go on, or, when none can, to the
+    /// first waiting with a timeout, whose wait then times out. `false` when nothing can.
+    fn hand_on(&mut self, from: usize) -> bool {
+        let next = self.next_after(from).or_else(|| {
+            let timed =
+                self.actors.iter().position(|actor| matches!(actor.state, Doing::Waiting(_, true)))?;
+            if let Some(actor) = self.actors.get_mut(timed) {
+                actor.timed_out = true;
+            }
+            Some(timed)
+        });
+        let Some(next) = next else { return false };
+        if let Some(actor) = self.actors.get_mut(next) {
+            actor.state = Doing::Ready;
+        }
+        self.running = next;
+        true
+    }
+}
+
+/// Who runs, and the channels they share, held.
+fn lock_state(shared: &super::Shared) -> Run<MutexGuard<'_, State>> {
+    shared.sched.state.lock().map_or_else(|_| unsupported("the tasks were lost"), Ok)
+}
+
+/// The number the channels know whoever runs now by: the innermost `parallel` round the thread
+/// `actor` runs inside, `rounds_as`, or else the thread itself. A round is one of its own, which
+/// starts knowing what whoever made its call knew, and is given its number the first time it
+/// uses a channel, as each round it's inside is. Its rounds' numbers are never scheduled: what
+/// waits is the thread.
+fn who(rounds_as: &mut [Option<usize>], actor: usize, state: &mut State) -> Run<usize> {
+    let mut parent = actor;
+    for round in rounds_as.iter_mut() {
+        if let Some(number) = *round {
+            parent = number;
+            continue;
+        }
+        if state.actors.len() >= MOST_TASKS {
+            return unsupported("ran too long: too many tasks and `parallel` rounds using channels");
+        }
+        let number = state.actors.len();
+        let mut clock = state.actors.get(parent).map(|actor| actor.clock.clone()).unwrap_or_default();
+        tick(&mut clock, number);
+        state.actors.push(Actor {
+            state: Doing::Ended,
+            ended: Some(Ok(())),
+            ..Actor::ready(Vec::new(), clock)
+        });
+        *round = Some(number);
+        parent = number;
+    }
+    Ok(parent)
+}
+
+impl Interp {
+    fn sched_state(&self) -> Run<MutexGuard<'_, State>> {
+        lock_state(&self.shared)
+    }
+
+    /// Hands the rounds after the one running now, of each `parallel` call this thread runs
+    /// whose rounds can be handed on and that `channel` is from outside of, to a thread of their
+    /// own, as they run beside it in the compiled program: so whatever they'd send on a channel
+    /// is there before a receive takes the next message, and a round can wait on one after it.
+    /// The thread is given a copy of the names the call's rounds read and of what they run
+    /// inside, and runs them from the call's `Work`.
+    pub(crate) fn hand_on_rounds(&mut self, channel: i64) -> Run<()> {
+        for at in 0..self.handing.len() {
+            let Some(handing) = self.handing.get(at) else { break };
+            if handing.handed.is_some() || handing.maybe || handing.round + 1 >= handing.count {
+                continue;
+            }
+            let Some(work) = handing.work.clone() else { continue };
+            let (from, count, mark, scope, level) =
+                (handing.round + 1, handing.count, handing.mark, handing.scope, handing.level);
+            let mut frames: Vec<super::Frame> =
+                self.frames.get(..handing.frames).unwrap_or_default().to_vec();
+            if let Some(frame) = frames.get_mut(mark.0) {
+                frame.vars.truncate(mark.1);
+            }
+            let scopes = {
+                let Ok(mut held) = self.shared.scopes.lock() else { return unsupported("a launch was lost") };
+                let Some(Scope::Rounds(call)) = held.get_mut(scope) else {
+                    return unsupported("a `parallel` call was lost");
+                };
+                // A channel made in the round running now is its own: no other round reaches it.
+                if channel >= call.first_channel {
+                    continue;
+                }
+                call.handed = true;
+                let mut scopes: Vec<Scope> =
+                    held.get(..=scope).unwrap_or_default().iter().map(Scope::copy).collect();
+                if let Some(Scope::Rounds(call)) = scopes.last_mut() {
+                    call.handed = false;
+                }
+                scopes
+            };
+            let done = Arc::new(Mutex::new(None));
+            let slot = {
+                let mut state = lock_state(&self.shared)?;
+                // The rounds handed on start knowing what the call's caller knew, as each round does.
+                let caller =
+                    who(self.rounds_as.get_mut(..level).unwrap_or_default(), self.actor, &mut state)?;
+                if state.actors.len() >= MOST_TASKS {
+                    return unsupported("ran too long: too many tasks");
+                }
+                let clock = state.actors.get(caller).map(|actor| actor.clock.clone()).unwrap_or_default();
+                let cut_short =
+                    state.actors.get(self.actor).map(|actor| actor.cut_short.clone()).unwrap_or_default();
+                let slot = state.actors.len();
+                state.actors.push(Actor {
+                    beside: Some(self.actor),
+                    cut_short,
+                    ..Actor::ready(scopes, clock)
+                });
+                slot
+            };
+            let rest = Rest {
+                work,
+                from,
+                count,
+                frames,
+                cur: mark.0,
+                next_id: self.next_id,
+                rounds_as: self.rounds_as.get(..level).unwrap_or_default().to_vec(),
+                scope,
+                done: Arc::clone(&done),
+            };
+            let shared = Arc::clone(&self.shared);
+            let thread = std::thread::Builder::new()
+                .stack_size(TASK_STACK)
+                .spawn(move || rest_thread(&shared, slot, rest));
+            if thread.is_err() {
+                self.give_up();
+                return unsupported("a thread for a `parallel` call's rounds couldn't start");
+            }
+            if let Some(handing) = self.handing.get_mut(at) {
+                handing.handed = Some(Handed { slot, done });
+            }
+        }
+        Ok(())
+    }
+
+    /// Waits for the thread rounds were handed on to to end, and gives back what they made.
+    pub(crate) fn rest_ended(&mut self, handed: &Handed) -> Run<RoundsRan> {
+        loop {
+            {
+                let state = lock_state(&self.shared)?;
+                if state.actors.get(handed.slot).is_none_or(|actor| matches!(actor.state, Doing::Ended)) {
+                    break;
+                }
+            }
+            self.wait_for(Wait::Task(handed.slot), false)?;
+        }
+        let done = handed.done.lock().ok().and_then(|mut done| done.take());
+        match done {
+            Some(done) => Ok(done),
+            None => self.given_up_why(),
+        }
+    }
+
+    /// Notes the `shared` values a message holds, and those they hold, as sent: no `parallel`
+    /// round has them to itself after that.
+    fn note_sent_cells(&self, message: &Value) -> Run<()> {
+        let mut found = Vec::new();
+        let mut waiting: Vec<Value> = vec![message.clone()];
+        while let Some(held) = waiting.pop() {
+            match held {
+                Value::List(items) | Value::Tuple(items) | Value::Set(items) => waiting.extend(items),
+                Value::Dict(pairs) => {
+                    for (key, value) in pairs {
+                        waiting.push(key);
+                        waiting.push(value);
+                    }
+                }
+                Value::Instance(instance) => {
+                    waiting.extend(instance.fields.into_iter().map(|(_, field)| field));
+                }
+                Value::Table(table) => waiting.extend(table.live().map(|(_, item)| item.clone())),
+                Value::Shared(cell) => {
+                    if found.contains(&cell.id) {
+                        continue;
+                    }
+                    found.push(cell.id);
+                    // What it holds, unless a `lock` holds it now, which this can't look inside.
+                    let Ok(inside) = cell.held.try_lock() else {
+                        return unsupported("a message holding a `shared` value a `lock` holds now");
+                    };
+                    waiting.push(inside.clone());
+                }
+                _ => {}
+            }
+        }
+        if !found.is_empty()
+            && let Ok(mut sent) = self.shared.sent_cells.lock()
+        {
+            sent.extend(found);
+        }
+        Ok(())
+    }
+
+    /// The number the next channel made gets, so one made since is told apart.
+    pub(crate) fn channels_made(&self) -> Run<i64> {
+        Ok(self.sched_state()?.next_number)
+    }
+
+    /// Takes in what the rounds of a `parallel` call that used channels did, by their numbers,
+    /// once they've all ended: all of it happened before what its caller does next.
+    pub(crate) fn rounds_ended(&mut self, rounds: &[usize]) -> Run<()> {
+        if rounds.is_empty() {
+            return Ok(());
+        }
+        let mut state = lock_state(&self.shared)?;
+        let caller = who(&mut self.rounds_as, self.actor, &mut state)?;
+        let clocks: Vec<Clock> = rounds
+            .iter()
+            .filter_map(|&round| state.actors.get(round).map(|round| round.clock.clone()))
+            .collect();
+        if let Some(actor) = state.actors.get_mut(caller) {
+            for clock in &clocks {
+                merge(&mut actor.clock, clock);
+            }
+            tick(&mut actor.clock, caller);
+        }
+        Ok(())
+    }
+
+    /// Waits for `wait`, handing the baton on until it comes back. Says whether the wait timed
+    /// out, which only one given a timeout can.
+    fn wait_for(&self, wait: Wait, timed: bool) -> Run<bool> {
+        if self.holding > 0 {
+            return unsupported("waiting on a channel or a task inside a `lock`");
+        }
+        let me = self.actor;
+        let mut state = self.sched_state()?;
+        if state.given_up {
+            drop(state);
+            return self.given_up_why();
+        }
+        // What runs inside what is each one's own, kept while another runs.
+        let mine =
+            self.shared.scopes.lock().map(|mut scopes| std::mem::take(&mut *scopes)).unwrap_or_default();
+        if let Some(actor) = state.actors.get_mut(me) {
+            actor.state = Doing::Waiting(wait, timed);
+            actor.scopes = mine;
+        }
+        if !state.hand_on(me) {
+            // Every thread that's waiting says this, whichever found it, so it's noted first.
+            if let Ok(mut refused) = self.shared.refused.lock() {
+                refused.get_or_insert_with(|| HANGS.to_owned());
+            }
+            state.given_up = true;
+            drop(state);
+            self.shared.sched.turn.notify_all();
+            return unsupported(HANGS);
+        }
+        self.shared.sched.turn.notify_all();
+        while state.running != me && !state.given_up {
+            state =
+                self.shared.sched.turn.wait(state).map_or_else(|_| unsupported("the tasks were lost"), Ok)?;
+        }
+        if state.given_up {
+            drop(state);
+            return self.given_up_why();
+        }
+        let Some(actor) = state.actors.get_mut(me) else { return unsupported("a task was lost") };
+        let timed_out = std::mem::take(&mut actor.timed_out);
+        let scopes = std::mem::take(&mut actor.scopes);
+        drop(state);
+        if let Ok(mut held) = self.shared.scopes.lock() {
+            *held = scopes;
+        }
+        Ok(timed_out)
+    }
+
+    /// Why a wait ends with the run given up: what a task found it couldn't model, or that it was.
+    fn given_up_why<T>(&self) -> Run<T> {
+        let refused = self.shared.refused.lock().ok().and_then(|refused| refused.clone());
+        unsupported(refused.unwrap_or_else(|| "a task ran on after the run was given up".to_owned()))
+    }
+
+    /// Notes printing, or reaching the file system, refusing it where it could come before or after
+    /// what another task did last of the same, as which hangs on time: it has to have heard of
+    /// that, through a message, a task's end or a launch.
+    pub(crate) fn outside_in_order(&self, outside: super::parallel::Outside) -> Run<()> {
+        let mut state = self.sched_state()?;
+        if state.actors.len() < 2 {
+            return Ok(());
+        }
+        let me = self.actor;
+        let Some(actor) = state.actors.get_mut(me) else { return unsupported("a task was lost") };
+        tick(&mut actor.clock, me);
+        let mine = actor.clock.clone();
+        let kind = usize::from(matches!(outside, super::parallel::Outside::Disk));
+        let Some(last) = state.last_outside.get_mut(kind) else { return Ok(()) };
+        if let Some((who, clock)) = last.as_ref()
+            && *who != me
+            && !happened_before(clock, &mine)
+        {
+            return unsupported(format!(
+                "{} in two tasks at once, whose order hangs on time",
+                outside.what()
+            ));
+        }
+        *last = Some((me, mine));
+        Ok(())
+    }
+
+    /// Gives up the run: every task waiting ends, running nothing more of the program.
+    pub(crate) fn give_up(&self) {
+        if let Ok(mut state) = self.shared.sched.state.lock() {
+            state.given_up = true;
+        }
+        self.shared.sched.turn.notify_all();
+    }
+
+    /// `with launch(task)?:` with no `as`, whose task takes no inbox: the task launched on a
+    /// thread of its own, the block run, and then the task waited for. What the `with` ends with
+    /// is the block's leaving, once the task has ended well, or how the task ended.
+    pub(crate) fn launch_beside(
+        &mut self,
+        task: Value,
+        (inbox, names): (Option<usize>, &'static [WithName]),
+        body: &'static [Stmt],
+        span: Span,
+    ) -> Run<()> {
+        // A task with an inbox has a channel of its own, which its block sends on through what it
+        // lends, `as sends`, and which closes when the block ends.
+        let channel = match inbox {
+            Some(size) => Some(self.new_channel(size, false)?),
+            None => None,
+        };
+        let end = |sends: bool, number: i64| Value::Channel(Channel { sends, number });
+        let given: Vec<Value> = channel.map(|number| end(false, number)).into_iter().collect();
+        let (number, launched) = self.start_task(task, given, channel)?;
+        self.push_scope(Scope::Launch(launched))?;
+        let mark = self.mark();
+        let lent = channel.map_or(Value::Int(0), |number| end(true, number));
+        let ran = self.lend_names(names, lent, span).and_then(|()| self.stmts(body));
+        self.restore(mark);
+        self.pop_scope();
+        let pending = match ran {
+            Ok(()) => None,
+            Err(flow @ (Flow::Return(_) | Flow::Break | Flow::Continue)) => Some(flow),
+            Err(Flow::Fail(..) | Flow::Crash(..)) => {
+                self.give_up();
+                return unsupported("a `with launch` block that fails, which cuts its task short at once");
+            }
+            Err(other) => {
+                self.give_up();
+                return Err(other);
+            }
+        };
+        if let Some(channel) = channel {
+            let mut state = self.sched_state()?;
+            if let Some(chan) = state.channels.get_mut(&channel) {
+                chan.closed = true;
+            }
+        }
+        let ended = self.task_ended(number)?;
+        {
+            let mut state = self.sched_state()?;
+            if let Some(actor) = state.actors.get_mut(self.actor) {
+                actor.cut_short.retain(|&task| task != number);
+            }
+        }
+        if let Some(channel) = channel {
+            let mut state = self.sched_state()?;
+            // A task that ends with messages left closes its inbox, and whether the block's sends
+            // after that failed with `Closed`, and so how the `with` ends, hangs on time.
+            if state.channels.remove(&channel).is_some_and(|chan| !chan.queue.is_empty()) {
+                return unsupported("a launched task that ends with messages left in its inbox");
+            }
+        }
+        match ended {
+            Ok(()) => pending.map_or(Ok(()), Err),
+            Err(Flow::Fail(error, _)) => Err(Flow::Fail(error, span)),
+            Err(Flow::Crash(..)) => {
+                let why = Value::Str("the task crashed".to_owned());
+                Err(Flow::Fail(Value::instance("Crashed", None, vec![("why".to_owned(), why)]), span))
+            }
+            Err(Flow::Return(_) | Flow::Break | Flow::Continue) => {
+                unsupported("a `return`, `break` or `continue` leaving a launched task")
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Starts `task` on a thread of its own, given `given`, after what's run so far, and gives
+    /// back its number and its launch's block's view of the launch. Its inbox, if it has one,
+    /// closes as it ends.
+    fn start_task(&mut self, task: Value, given: Vec<Value>, inbox: Option<i64>) -> Run<(usize, Launched)> {
+        let task_expr = super::tasks::task_expr(&task)?;
+        let started = self.shared.rounds_started.fetch_add(1, Ordering::SeqCst) + 1;
+        let launched = Launched::new();
+        let mut task_scopes = Vec::new();
+        {
+            let Ok(scopes) = self.shared.scopes.lock() else { return unsupported("a launch was lost") };
+            for scope in scopes.iter() {
+                match scope {
+                    Scope::Launch(outer) => task_scopes.push(Scope::Launch(outer.clone())),
+                    Scope::Rounds(_) => return unsupported("a launch inside a `parallel` round"),
+                }
+            }
+        }
+        task_scopes.push(Scope::Launch(launched.task_view(started)));
+        let number = {
+            let mut state = self.sched_state()?;
+            if state.actors.len() >= MOST_TASKS {
+                return unsupported("ran too long: too many tasks");
+            }
+            let number = state.actors.len();
+            let mut clock = state.actors.get(self.actor).map(|actor| actor.clock.clone()).unwrap_or_default();
+            tick(&mut clock, self.actor);
+            if let Some(parent) = state.actors.get_mut(self.actor) {
+                parent.clock.clone_from(&clock);
+            }
+            tick(&mut clock, number);
+            state.actors.push(Actor { launcher: Some(self.actor), ..Actor::ready(task_scopes, clock) });
+            number
+        };
+        let shared = Arc::clone(&self.shared);
+        let thread = std::thread::Builder::new()
+            .stack_size(TASK_STACK)
+            .spawn(move || task_thread(&shared, (number, inbox), &task, (task_expr, given)));
+        if thread.is_err() {
+            self.give_up();
+            return unsupported("a task's thread couldn't start");
+        }
+        Ok((number, launched))
+    }
+
+    /// A new channel of `size`, to every listener when `every`, by its number.
+    fn new_channel(&self, size: usize, every: bool) -> Run<i64> {
+        if size == 0 {
+            return unsupported("a channel of no size");
+        }
+        let mut state = self.sched_state()?;
+        let number = state.next_number;
+        state.next_number += 1;
+        let chan = Chan {
+            size,
+            every,
+            closed: false,
+            queue: VecDeque::new(),
+            sent: Vec::new(),
+            receivers: BTreeMap::new(),
+            waiting_sends: Vec::new(),
+            left: false,
+        };
+        state.channels.insert(number, chan);
+        Ok(number)
+    }
+
+    /// Waits for task `number` to end, and gives back how it did. What it did happened before
+    /// what its launcher does next.
+    fn task_ended(&self, number: usize) -> Run<Run<()>> {
+        loop {
+            {
+                let mut state = self.sched_state()?;
+                if let Some(actor) = state.actors.get_mut(number)
+                    && matches!(actor.state, Doing::Ended)
+                {
+                    let ended = actor.ended.take().unwrap_or(Ok(()));
+                    let theirs = actor.clock.clone();
+                    if let Some(parent) = state.actors.get_mut(self.actor) {
+                        merge(&mut parent.clock, &theirs);
+                        tick(&mut parent.clock, self.actor);
+                    }
+                    return Ok(ended);
+                }
+            }
+            self.wait_for(Wait::Task(number), false)?;
+        }
+    }
+
+    /// A channel intrinsic, as `intrinsics.fen` says it.
+    pub(crate) fn channel_intrinsic(&mut self, name: &str, given: Vec<ArgVal>, span: Span) -> Run<Value> {
+        let mut values = Vec::with_capacity(given.len());
+        let mut why_place = None;
+        for arg in given {
+            match arg {
+                ArgVal::Ref(_, place) => why_place = Some(place),
+                other => values.push(self.arg_as_value(other)?),
+            }
+        }
+        match (name, values.as_slice()) {
+            ("new" | "new_every", [Value::Int(size)]) => {
+                let Ok(size) = usize::try_from(*size) else { return unsupported("a channel of no size") };
+                self.new_channel(size, name == "new_every").map(Value::Int)
+            }
+            ("listen", [Value::Int(number), Value::Bool(_)]) => {
+                let mut state = self.sched_state()?;
+                let Some(chan) = state.channels.get(number) else {
+                    return unsupported("a channel let go of");
+                };
+                if !chan.every {
+                    return Ok(Value::Int(*number));
+                }
+                let at = chan.sent.len();
+                let listener = state.next_number;
+                state.next_number += 1;
+                state.listeners.insert(listener, Listener { channel: *number, at });
+                Ok(Value::Int(listener))
+            }
+            ("send", [Value::Int(number), message, Value::Int(timeout)]) => {
+                self.charge(message)?;
+                self.note_sent_cells(message)?;
+                self.channel_send(*number, message, *timeout)
+            }
+            ("receive", [Value::Int(number), Value::Int(timeout)]) => {
+                let (got, why) = self.channel_receive(*number, *timeout)?;
+                let Some(place) = why_place else {
+                    return unsupported("`channel_receive` with no place for why");
+                };
+                self.write_place(&place, Value::Int(why), span)?;
+                Ok(got)
+            }
+            ("close", [Value::Int(number)]) => {
+                self.channel_in_rounds(*number, ChannelUse::Close)?;
+                let mut state = self.sched_state()?;
+                let Some(chan) = state.channels.get_mut(number) else { return Ok(Value::Unit) };
+                if !chan.waiting_sends.is_empty() {
+                    return unsupported(
+                        "a send waiting for room when its channel closes, which got in or not by time",
+                    );
+                }
+                chan.closed = true;
+                Ok(Value::Unit)
+            }
+            ("free", [Value::Int(number)]) => {
+                let mut state = self.sched_state()?;
+                state.channels.remove(number);
+                state.listeners.retain(|_, listener| listener.channel != *number);
+                Ok(Value::Unit)
+            }
+            _ => unsupported(format!("std.intrinsics.channel_{name}")),
+        }
+    }
+
+    /// `channel_send`: 0 sent, 1 closed, 2 timed out.
+    pub(crate) fn channel_send(&mut self, number: i64, message: &Value, timeout: i64) -> Run<Value> {
+        self.channel_in_rounds(number, ChannelUse::Send)?;
+        let me = self.actor;
+        loop {
+            let sender = {
+                let mut state = lock_state(&self.shared)?;
+                let sender = who(&mut self.rounds_as, me, &mut state)?;
+                let clock = match state.actors.get_mut(sender) {
+                    Some(actor) => {
+                        tick(&mut actor.clock, sender);
+                        actor.clock.clone()
+                    }
+                    None => return unsupported("a task was lost"),
+                };
+                if cut_short(&mut state, me, sender) {
+                    if let Some(chan) = state.channels.get_mut(&number) {
+                        chan.waiting_sends.retain(|sent| sent.sender != sender);
+                    }
+                    return Ok(Value::Int(1));
+                }
+                let Some(chan) = state.channels.get_mut(&number) else { return Ok(Value::Int(1)) };
+                chan.waiting_sends.retain(|sent| sent.sender != sender);
+                if chan.left {
+                    return unsupported(
+                        "a send to the inbox of a task that's ended, which got in or not by time",
+                    );
+                }
+                if chan.closed {
+                    return Ok(Value::Int(1));
+                }
+                let sent = Sent { sender, value: message.clone(), clock };
+                if chan.every {
+                    chan.sent.push(sent);
+                    if chan.sent.len() > chan.size {
+                        return unsupported(
+                            "a channel to every listener sent more than it keeps, which a listener could fall behind on or not",
+                        );
+                    }
+                    return Ok(Value::Int(0));
+                }
+                if chan.queue.len() < chan.size {
+                    chan.queue.push_back(sent);
+                    return Ok(Value::Int(0));
+                }
+                if timeout == 0 {
+                    return Ok(Value::Int(2));
+                }
+                chan.waiting_sends.push(sent);
+                sender
+            };
+            // The rounds after this one run beside it, so they can make room for it.
+            self.hand_on_rounds(number)?;
+            if self.wait_for(Wait::Room(number), timeout > 0)? {
+                let mut state = self.sched_state()?;
+                if let Some(chan) = state.channels.get_mut(&number) {
+                    chan.waiting_sends.retain(|sent| sent.sender != sender);
+                }
+                return Ok(Value::Int(2));
+            }
+        }
+    }
+
+    /// `channel_receive`: the message, or `None`, and why: 0 a message, 1 closed and empty, 2
+    /// timed out.
+    pub(crate) fn channel_receive(&mut self, number: i64, timeout: i64) -> Run<(Value, i64)> {
+        let channel = self.sched_state()?.listeners.get(&number).map_or(number, |listener| listener.channel);
+        // The rounds after this one run beside it, so their messages can be the next.
+        self.hand_on_rounds(channel)?;
+        self.channel_in_rounds(channel, ChannelUse::Receive)?;
+        let me = self.actor;
+        // Whatever else can go on goes first, so every message that could be the next one has
+        // been sent or is waiting to be.
+        let others_can_go = {
+            let state = self.sched_state()?;
+            state.actors.len() > 1
+                && (1..state.actors.len()).any(|step| {
+                    let other = (me + step) % state.actors.len();
+                    state.can_go(other)
+                })
+        };
+        // A receive given a timeout times out here if, once everything else has gone as far as
+        // it can, there's still nothing to take.
+        if others_can_go && self.wait_for(Wait::Message(number), timeout >= 0)? {
+            return Ok((Value::None, 2));
+        }
+        loop {
+            {
+                let mut state = lock_state(&self.shared)?;
+                let receiver = who(&mut self.rounds_as, me, &mut state)?;
+                let mut orders = self
+                    .shared
+                    .sched
+                    .orders
+                    .lock()
+                    .map_or_else(|_| unsupported("the tasks were lost"), Ok)?;
+                if cut_short(&mut state, me, receiver) {
+                    return Ok((Value::None, 1));
+                }
+                if let Some(taken) = take_message(&mut state, receiver, number, &mut orders)? {
+                    return Ok(taken);
+                }
+                if timeout == 0 {
+                    return Ok((Value::None, 2));
+                }
+            }
+            if self.wait_for(Wait::Message(number), timeout > 0)? {
+                return Ok((Value::None, 2));
+            }
+        }
+    }
+}
+
+/// Whether `me`'s waits are cut short, by a task it launched crashing while it's in that task's
+/// block, as `docs/language.md` says: a cut wait ends as a closed channel's does, after the
+/// crash, so `who`, `me` or the round it runs, takes in what the crashed task had done.
+fn cut_short(state: &mut State, me: usize, who: usize) -> bool {
+    let crashed: Vec<usize> = state.actors.get(me).map(|actor| actor.cut_short.clone()).unwrap_or_default();
+    if crashed.is_empty() {
+        return false;
+    }
+    let clocks: Vec<Clock> =
+        crashed.iter().filter_map(|&task| state.actors.get(task).map(|task| task.clock.clone())).collect();
+    if let Some(actor) = state.actors.get_mut(who) {
+        for clock in &clocks {
+            merge(&mut actor.clock, clock);
+        }
+        tick(&mut actor.clock, who);
+    }
+    true
+}
+
+/// Takes the next message from `number`, a channel or a listener, for `receiver`: `None` while
+/// there's none, `(None, 1)` once it's closed and empty. The taker's clock takes in the sender's.
+fn take_message(
+    state: &mut State,
+    receiver: usize,
+    number: i64,
+    orders: &mut Orders,
+) -> Run<Option<(Value, i64)>> {
+    let taken = if let Some(listener) = state.listeners.get(&number) {
+        let channel = listener.channel;
+        let at = listener.at;
+        let Some(chan) = state.channels.get(&channel) else { return Ok(Some((Value::None, 1))) };
+        if at >= chan.sent.len() {
+            return Ok(chan.closed.then_some((Value::None, 1)));
+        }
+        let unread: Vec<&Sent> = chan.sent.get(at..).unwrap_or_default().iter().collect();
+        if could_come_next(&unread).len() > 1 {
+            return unsupported("messages from several senders to a listener, whose order hangs on time");
+        }
+        let Some(first) = unread.first() else { return Ok(None) };
+        let taken = (first.value.clone(), first.clock.clone());
+        if let Some(listener) = state.listeners.get_mut(&number) {
+            listener.at += 1;
+        }
+        taken
+    } else {
+        let now = state.actors.get(receiver).map(|actor| actor.clock.clone()).unwrap_or_default();
+        let Some(chan) = state.channels.get_mut(&number) else { return Ok(Some((Value::None, 1))) };
+        // Two at once, where one takes a message, which the other could have taken instead: which
+        // gets which hangs on time. One after another, where each knew of the other's last try,
+        // is in order, and so are two that only wait, which nothing is taken from.
+        let takes = !chan.queue.is_empty();
+        let races = chan.receivers.iter().any(|(other, (tried, took))| {
+            *other != receiver && (takes || *took) && !happened_before(tried, &now)
+        });
+        if races {
+            return unsupported(
+                "two tasks taking messages from one channel, which gets which hanging on time",
+            );
+        }
+        let took = chan.receivers.get(&receiver).is_some_and(|(_, took)| *took);
+        chan.receivers.insert(receiver, (now, took));
+        if chan.queue.is_empty() {
+            return Ok(chan.closed.then_some((Value::None, 1)));
+        }
+        let queued: Vec<&Sent> = chan.queue.iter().collect();
+        let mut next = could_come_next(&queued);
+        if !chan.waiting_sends.is_empty() {
+            let mut all: Vec<&Sent> = queued.clone();
+            all.extend(chan.waiting_sends.iter());
+            if could_come_next(&all).len() > next.len() {
+                return unsupported(
+                    "messages from several senders, one waiting for room, whose order hangs on time",
+                );
+            }
+        }
+        // Which sender's message comes next hangs on time: each is taken, on a run of its own.
+        let chosen = if next.len() > 1 { orders.choose(next.len()) } else { 0 };
+        let at = next.swap_remove(chosen.min(next.len().saturating_sub(1)));
+        let Some(sent) = chan.queue.remove(at) else { return Ok(None) };
+        (sent.value, sent.clock)
+    };
+    let (message, clock) = taken;
+    if let Some(actor) = state.actors.get_mut(receiver) {
+        merge(&mut actor.clock, &clock);
+        tick(&mut actor.clock, receiver);
+        let took = actor.clock.clone();
+        if let Some(chan) = state.channels.get_mut(&number)
+            && let Some(tried) = chan.receivers.get_mut(&receiver)
+        {
+            *tried = (took, true);
+        }
+    }
+    Ok(Some((message, 0)))
+}
+
+/// Of messages in the order they were sent, the places of those that could have been sent first
+/// in another order, one for each value: each sender's first, which nothing sent before it
+/// happened before. Two of the same value make the same run, so one stands for both.
+fn could_come_next(sent: &[&Sent]) -> Vec<usize> {
+    let mut found: Vec<usize> = Vec::new();
+    let mut senders = BTreeSet::new();
+    for (at, message) in sent.iter().enumerate() {
+        if !senders.insert(message.sender) {
+            continue;
+        }
+        let blocked = sent
+            .get(..at)
+            .unwrap_or_default()
+            .iter()
+            .any(|before| happened_before(&before.clock, &message.clock));
+        let repeated = found
+            .iter()
+            .any(|&other| sent.get(other).is_some_and(|other| same(&other.value, &message.value)));
+        if !blocked && !repeated {
+            found.push(at);
+        }
+    }
+    found
+}
+
+/// The rounds of a `parallel` call handed on to a thread of their own: what they run, which of
+/// them, a copy of the names they read and of the rounds they're inside, where the call is in
+/// what runs side by side, and where to leave what they made.
+struct Rest {
+    work: Arc<Work>,
+    from: usize,
+    count: usize,
+    frames: Vec<super::Frame>,
+    cur: usize,
+    next_id: u64,
+    rounds_as: Vec<Option<usize>>,
+    scope: usize,
+    done: Arc<Mutex<Option<RoundsRan>>>,
+}
+
+/// A thread running rounds handed on to it: it waits for the baton, runs them, leaves what they
+/// made, and ends.
+fn rest_thread(shared: &Arc<super::Shared>, slot: usize, rest: Rest) {
+    let sched = &shared.sched;
+    let Ok(mut state) = sched.state.lock() else { return };
+    while state.running != slot && !state.given_up {
+        let Ok(next) = sched.turn.wait(state) else { return };
+        state = next;
+    }
+    if state.given_up {
+        return;
+    }
+    let scopes =
+        state.actors.get_mut(slot).map(|actor| std::mem::take(&mut actor.scopes)).unwrap_or_default();
+    drop(state);
+    if let Ok(mut held) = shared.scopes.lock() {
+        *held = scopes;
+    }
+    let mut interp = Interp::new(Arc::clone(shared), None);
+    interp.actor = slot;
+    interp.frames = rest.frames;
+    interp.cur = rest.cur;
+    interp.next_id = rest.next_id;
+    interp.rounds_as = rest.rounds_as;
+    let (frames, mark, level) = (interp.frames.len(), interp.mark(), interp.rounds_as.len());
+    interp.handing.push(super::parallel::Handing {
+        work: Some(Arc::clone(&rest.work)),
+        count: rest.count,
+        round: rest.from,
+        maybe: false,
+        frames,
+        mark,
+        scope: rest.scope,
+        level,
+        handed: None,
+    });
+    let work = rest.work;
+    let ran = interp.each_round(rest.from, rest.count, &mut |interp, at, _| interp.run_round(&work, at));
+    match ran {
+        Ok(done) => {
+            if let Ok(mut left) = rest.done.lock() {
+                *left = Some(done);
+            }
+        }
+        Err(Flow::Abandoned) => return,
+        Err(other) => {
+            // What the rounds couldn't be run through gives up the whole run, saying what.
+            let why = match other {
+                Flow::Unsupported(why) => why,
+                _ => "a `parallel` round handed on ended the way no round can".to_owned(),
+            };
+            if let Ok(mut refused) = shared.refused.lock() {
+                refused.get_or_insert(why);
+            }
+            if let Ok(mut state) = sched.state.lock() {
+                state.given_up = true;
+            }
+            sched.turn.notify_all();
+            return;
+        }
+    }
+    let Ok(mut state) = sched.state.lock() else { return };
+    if let Some(actor) = state.actors.get_mut(slot) {
+        actor.state = Doing::Ended;
+    }
+    if let Ok(mut held) = shared.scopes.lock() {
+        held.clear();
+    }
+    if !state.hand_on(slot) {
+        state.given_up = true;
+        if let Ok(mut refused) = shared.refused.lock() {
+            refused.get_or_insert_with(|| HANGS.to_owned());
+        }
+    }
+    drop(state);
+    sched.turn.notify_all();
+}
+
+/// A task's thread: it waits for the baton, runs the task, and notes how it ended.
+fn task_thread(
+    shared: &Arc<super::Shared>,
+    (number, inbox): (usize, Option<i64>),
+    task: &Value,
+    (task_expr, given): (&'static fennec_syntax::Expr, Vec<Value>),
+) {
+    let sched = &shared.sched;
+    let Ok(mut state) = sched.state.lock() else { return };
+    while state.running != number && !state.given_up {
+        let Ok(next) = sched.turn.wait(state) else { return };
+        state = next;
+    }
+    if state.given_up {
+        return;
+    }
+    let scopes =
+        state.actors.get_mut(number).map(|actor| std::mem::take(&mut actor.scopes)).unwrap_or_default();
+    drop(state);
+    if let Ok(mut held) = shared.scopes.lock() {
+        *held = scopes;
+    }
+    let mut interp = Interp::new(Arc::clone(shared), None);
+    interp.actor = number;
+    let ended = interp.call_value(task, given, task_expr).map(|_| ());
+    if matches!(ended, Err(Flow::Abandoned)) {
+        return;
+    }
+    // Something the oracle doesn't model gives up the whole run at once, saying what it was,
+    // rather than leaving what waits on this task waiting.
+    if let Err(Flow::Unsupported(why)) = &ended {
+        if let Ok(mut refused) = shared.refused.lock() {
+            refused.get_or_insert_with(|| why.clone());
+        }
+        if let Ok(mut state) = sched.state.lock() {
+            state.given_up = true;
+        }
+        sched.turn.notify_all();
+        return;
+    }
+    let Ok(mut state) = sched.state.lock() else { return };
+    let crashed = matches!(ended, Err(Flow::Crash(..)));
+    let mut launcher = None;
+    if let Some(actor) = state.actors.get_mut(number) {
+        actor.state = Doing::Ended;
+        actor.ended = Some(ended);
+        launcher = actor.launcher;
+    }
+    // A task that crashes cuts short every wait its block is in: its launcher's, and those of
+    // the threads running rounds it handed on, which are in the block too.
+    if crashed && let Some(launcher) = launcher {
+        let mut block = vec![launcher];
+        while let Some(more) = state.actors.iter().enumerate().position(|(at, actor)| {
+            !block.contains(&at)
+                && !matches!(actor.state, Doing::Ended)
+                && actor.beside.is_some_and(|beside| block.contains(&beside))
+        }) {
+            block.push(more);
+        }
+        for at in block {
+            if let Some(actor) = state.actors.get_mut(at) {
+                actor.cut_short.push(number);
+            }
+        }
+    }
+    // Its inbox closes as it ends: a send after that fails.
+    if let Some(chan) = inbox.and_then(|inbox| state.channels.get_mut(&inbox)) {
+        chan.closed = true;
+        chan.left = true;
+    }
+    if let Ok(mut held) = shared.scopes.lock() {
+        held.clear();
+    }
+    if !state.hand_on(number) {
+        state.given_up = true;
+        if let Ok(mut refused) = shared.refused.lock() {
+            refused.get_or_insert_with(|| HANGS.to_owned());
+        }
+    }
+    drop(state);
+    sched.turn.notify_all();
+}

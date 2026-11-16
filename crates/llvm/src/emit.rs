@@ -1183,6 +1183,11 @@ impl Emit<'_, '_, '_> {
                 }
                 self.forget_entries(&inst.kind);
                 self.take_waiting_places(&inst.kind, inst.span)?;
+                // A field that waited for this append is taken out now, with what's appended
+                // already worked out.
+                if let Some((field_local, item, field)) = self.known.path_due(self.at).cloned() {
+                    self.get_field(field_local, &Operand::Local(item), &field)?;
+                }
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
                     for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
                         if let Some(Operand::Local(given)) = args.get(param.0) {
@@ -2907,10 +2912,11 @@ impl Emit<'_, '_, '_> {
         Ok(())
     }
 
+    /// A builtin, and whether it changes what it's given first, as the IR says.
     fn builtin(
         &mut self,
         dest: Option<LocalId>,
-        name: &str,
+        (name, changes): (&str, bool),
         args: &[Operand],
         span: Span,
     ) -> Result<(), String> {
@@ -2973,6 +2979,7 @@ impl Emit<'_, '_, '_> {
             "intrinsics.bytes_builder"
             | "intrinsics.bytes_push"
             | "intrinsics.bytes_push_word"
+            | "intrinsics.bytes_push_varint"
             | "intrinsics.bytes_push_text"
             | "intrinsics.bytes_push_bytes"
             | "intrinsics.bytes_set" => self.byte_builder(dest, name, args),
@@ -3002,7 +3009,9 @@ impl Emit<'_, '_, '_> {
             "random.random_int" | "random.random_float" | "random_choice" | "random.random_choice" => {
                 self.random_builtin(dest, name, args, span)
             }
-            parallel if parallel.starts_with("parallel.") => self.parallel_builtin(dest, name, args, span),
+            parallel if parallel.starts_with("parallel.") => {
+                self.parallel_builtin(dest, (name, changes), args, span)
+            }
             channel if channel.starts_with("intrinsics.channel_") => self.channel_builtin(dest, name, args),
             "intrinsics.launch" | "intrinsics.launch_take" => self.launch_builtin(dest, name, args),
             "error.add_note" | "error.notes" => self.notes_builtin(dest, name, args),
@@ -3377,7 +3386,7 @@ impl Emit<'_, '_, '_> {
                 {
                     self.save_before_change(changed)?;
                 }
-                self.builtin(*dest, name, args, span)
+                self.builtin(*dest, (name, *changes), args, span)
             }
             InstKind::Call { dest, function, args } => self.call(*dest, function, args, span),
             InstKind::MakeGenerator { dest, generator, args } => self.make_generator(*dest, generator, args),
@@ -4208,7 +4217,8 @@ def main(stdout: Stdout):
         let main = text("main").ok_or("`main` isn't lowered")?;
         let worked_out =
             main.find("call swiftcc ptr @\"f_WORDS\"").ok_or("`main` doesn't work out `WORDS`")?;
-        let workers = main.rfind("@fennec_parallel_for(").ok_or("`main` starts no workers")?;
+        // A `for ref` loop, which writes its items back where they are.
+        let workers = main.rfind("@fennec_parallel_for_in_place(").ok_or("`main` starts no workers")?;
         assert!(worked_out < workers, "{main}");
         assert!(!main.contains("@\"f_FIRST\""), "{main}");
         Ok(())

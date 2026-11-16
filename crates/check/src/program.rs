@@ -127,29 +127,40 @@ pub(crate) struct Program {
     pub(crate) tests: Vec<TestDef>,
     pub(crate) interfaces: BTreeMap<String, Interface>,
     pub(crate) constants: BTreeMap<String, ConstEntry>,
-    /// Builtins that exist only once imported, like `loads` from `std.json`, by the name
-    /// they're imported under.
-    pub(crate) imports: BTreeMap<String, String>,
+    /// Each file of the program, the program's own and its kits', by the span its text covers.
+    /// None for a program parsed from one text, which is one file.
+    pub(crate) files: Vec<Span>,
+    /// What each of those files imports from the standard library, in the same order: one file's
+    /// imports are its own, never another's.
+    pub(crate) file_imports: Vec<Imports>,
     /// What the standard library's own code imports, which only that code sees.
-    pub(crate) prelude_imports: BTreeMap<String, String>,
-    /// Standard library functions written in Fennec, by the name they're imported under.
-    pub(crate) std_functions: BTreeMap<String, String>,
-    /// Standard library constants, by the name they're imported under, as `INFINITY` for
-    /// `math.INFINITY`.
-    pub(crate) std_constants: BTreeMap<String, String>,
-    /// Standard library types imported by name, like `Deque` from `std.collections`.
-    pub(crate) imported_types: BTreeSet<String>,
-    /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
-    pub(crate) modules: BTreeMap<String, &'static str>,
-    /// What the standard library's own code imports as modules, which only that code sees.
-    pub(crate) prelude_modules: BTreeMap<String, &'static str>,
+    pub(crate) std_imports: Imports,
+    /// What lowering imports for the code it writes in, under names no file can write.
+    pub(crate) written_imports: Imports,
     /// Problems found while adding declarations: imports of modules or names that don't
     /// exist, and methods that can't be added.
     pub(crate) problems: Vec<Diagnostic>,
+    aliases: BTreeMap<String, TypeExpr>,
+}
+
+/// What one file imports from the standard library, by the names it binds.
+#[derive(Clone, Default)]
+pub(crate) struct Imports {
+    /// Builtins that exist only once imported, like `loads` from `std.json`, by the name they're
+    /// imported under.
+    pub(crate) builtins: BTreeMap<String, String>,
+    /// Standard library functions written in Fennec, by the name they're imported under.
+    pub(crate) functions: BTreeMap<String, String>,
+    /// Standard library constants, by the name they're imported under, as `INFINITY` for
+    /// `math.INFINITY`.
+    pub(crate) constants: BTreeMap<String, String>,
+    /// Standard library types imported by name, like `Deque` from `std.collections`.
+    pub(crate) types: BTreeSet<String>,
+    /// Imported modules, by the name they're used under, like `json` in `json.loads(...)`.
+    pub(crate) modules: BTreeMap<String, &'static str>,
     /// The names an import that failed would have bound, which aren't reported again where
     /// they're used.
-    pub(crate) failed_imports: BTreeSet<String>,
-    aliases: BTreeMap<String, TypeExpr>,
+    pub(crate) failed: BTreeSet<String>,
 }
 
 /// How deeply type aliases may refer to each other, which also stops an alias naming itself.
@@ -163,6 +174,10 @@ impl Program {
 
     /// Adds a module's declarations, each held as `hold` says.
     pub(crate) fn add_with<'m>(&mut self, module: &'m Module, prelude: bool, hold: &impl Holds<'m>) {
+        if !prelude {
+            self.files.clone_from(&module.files);
+            self.file_imports = vec![Imports::default(); module.files.len().max(1)];
+        }
         for item in &module.items {
             match item {
                 Item::Function(def) => {
@@ -240,7 +255,7 @@ impl Program {
                                 .bound()
                                 .next()
                                 .map_or_else(|| name.clone(), |(_, alias)| alias.to_owned());
-                            self.failed_imports.insert(bound);
+                            self.imports_mut(import.span).failed.insert(bound);
                             self.problems.push(problem);
                         }
                     }
@@ -249,7 +264,7 @@ impl Program {
             }
             Err(problem) => {
                 if let Some((_, alias)) = import.bound().next() {
-                    self.failed_imports.insert(alias.to_owned());
+                    self.imports_mut(import.span).failed.insert(alias.to_owned());
                 }
                 self.problems.push(problem);
                 return;
@@ -258,28 +273,75 @@ impl Program {
         for item in imported {
             match item {
                 Imported::Module { alias, module } => {
-                    self.modules.insert(alias, module);
+                    self.imports_mut(import.span).modules.insert(alias, module);
                 }
                 Imported::Name { name, alias, module } => {
                     let builtin = format!("{module}.{name}");
+                    let (function, constant) =
+                        (self.functions.contains_key(&builtin), self.constants.contains_key(&builtin));
+                    let imports = self.imports_mut(import.span);
                     if crate::builtins::is_builtin(&builtin) {
-                        self.imports.insert(alias, builtin);
-                    } else if self.functions.contains_key(&builtin) {
-                        self.std_functions.insert(alias, builtin);
-                    } else if self.constants.contains_key(&builtin) {
-                        self.std_constants.insert(alias, builtin);
+                        imports.builtins.insert(alias, builtin);
+                    } else if function {
+                        imports.functions.insert(alias, builtin);
+                    } else if constant {
+                        imports.constants.insert(alias, builtin);
                     } else {
-                        self.imported_types.insert(name);
+                        imports.types.insert(name);
                     }
                 }
             }
         }
     }
 
+    /// The imports an import at `span` adds to: std's own, those of the file it's written in, or,
+    /// for one lowering writes in with no place in a file, the written-in code's.
+    fn imports_mut(&mut self, span: Span) -> &mut Imports {
+        match crate::import_place(&self.files, span) {
+            crate::Place::Std => &mut self.std_imports,
+            crate::Place::File(at) => {
+                if self.file_imports.len() <= at {
+                    self.file_imports.resize(at + 1, Imports::default());
+                }
+                match self.file_imports.get_mut(at) {
+                    Some(imports) => imports,
+                    None => &mut self.written_imports,
+                }
+            }
+            crate::Place::Written => &mut self.written_imports,
+        }
+    }
+
+    /// What code at `span` imports: std's own code its own, a file's code that file's, and what
+    /// lowering writes in only what it imports itself. What lowering imports, under names no file
+    /// can write, every file's code reaches too.
+    pub(crate) fn imports_at(&self, span: Span) -> [Option<&Imports>; 2] {
+        match crate::place(&self.files, span) {
+            crate::Place::Std => [Some(&self.std_imports), None],
+            crate::Place::File(at) => [self.file_imports.get(at), Some(&self.written_imports)],
+            crate::Place::Written => [None, Some(&self.written_imports)],
+        }
+    }
+
+    /// Something code at `span` imported, found by `found` in the imports it sees.
+    pub(crate) fn imported_by<'a, T>(
+        &'a self,
+        span: Span,
+        found: impl Fn(&'a Imports) -> Option<T>,
+    ) -> Option<T> {
+        self.imports_at(span).into_iter().flatten().find_map(found)
+    }
+
     fn add_type<'m>(&mut self, def: &'m TypeDef, kind: TypeKind, prelude: bool, hold: &impl Holds<'m>) {
-        // A program's own type replaces a standard library type of the same name, methods too.
+        // A program's own type replaces a standard library type of the same name, methods too: only
+        // that type's, never a std module's functions, as `path.is_device` beside a `struct path`.
         let methods = format!("{}.", def.name);
-        self.functions.retain(|key, entry| !(!prelude && entry.prelude && key.starts_with(&methods)));
+        self.functions.retain(|key, entry| {
+            !(!prelude
+                && entry.prelude
+                && key.starts_with(&methods)
+                && entry.owner.as_deref() == Some(def.name.as_str()))
+        });
         for method in &def.methods {
             self.add_method(&def.name, method, prelude, &[], hold);
         }
@@ -292,15 +354,17 @@ impl Program {
         literal_type(param.default.as_ref()?, self)
     }
 
-    /// The modules imported where `span` is: the standard library's own, or the program's.
-    pub(crate) fn modules_at(&self, span: Span) -> &BTreeMap<String, &'static str> {
-        if span.in_prelude() { &self.prelude_modules } else { &self.modules }
+    /// The modules imported where `span` is, by the names they're bound under.
+    pub(crate) fn modules_at(&self, span: Span) -> BTreeMap<String, &'static str> {
+        // A file's own alias stands over one lowering imported, though their names never meet.
+        let seen = self.imports_at(span).into_iter().rev().flatten();
+        seen.flat_map(|imports| imports.modules.iter().map(|(alias, module)| (alias.clone(), *module)))
+            .collect()
     }
 
-    /// The builtin an imported name at `span` stands for: what std's own code imports, there,
-    /// and what the program imports anywhere else.
+    /// The builtin an imported name at `span` stands for, as the file it's written in imports it.
     pub(crate) fn imported(&self, name: &str, span: Span) -> Option<&String> {
-        if span.in_prelude() { self.prelude_imports.get(name) } else { self.imports.get(name) }
+        self.imported_by(span, |imports| imports.builtins.get(name))
     }
 
     pub(crate) fn type_info(&self, name: &str) -> Option<&TypeInfo> {
@@ -533,12 +597,12 @@ impl Program {
         Ok(if written.optional { Type::optional(ty) } else { ty })
     }
 
-    /// Whether a program can write a type's name where it is: it's built in, declared in the
-    /// program, or imported from the standard library.
-    pub(crate) fn can_name(&self, name: &str) -> bool {
+    /// Whether a program can write a type's name at `at`: it's built in, declared in the program,
+    /// or imported from the standard library by the file `at` is in.
+    pub(crate) fn can_name(&self, name: &str, at: Span) -> bool {
         fennec_syntax::importable_type(name).is_none()
             || self.types.get(name).is_some_and(|info| !info.prelude)
-            || self.imported_types.contains(name)
+            || self.imported_by(at, |imports| imports.types.get(name)).is_some()
     }
 
     /// Whether a name is an interface: one the program declares, or a built-in one.

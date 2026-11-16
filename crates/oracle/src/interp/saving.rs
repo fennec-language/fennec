@@ -14,9 +14,14 @@
 //!   cases. One with data is `out.case_record(name, case, at, count)`, then its fields as a
 //!   struct's, then `out.end()` for the case: its fields and the case each end.
 //!
+//! - A tuple is `out.items(name, count)`, `name` its type as written, then each item as
+//!   `out.item(x)`, then `out.end_items()`.
+//! - A union's value is `out.member(name, at)`, `name` the type of the member it holds as written
+//!   and `at` where that member is among the union's, then `out.value(x)`, then
+//!   `out.end_member()`. One more than one member could hold, as an empty list, is refused.
+//!
 //! What each is called with is typed as the value's own parts are, so `out.sequence` of a
-//! `list[int?]` is called with `T` an `int?`. A union, a tuple, a `Table` and an `Id` aren't
-//! modeled here.
+//! `list[int?]` is called with `T` an `int?`. A `Table` and an `Id` aren't modeled here.
 
 use fennec_check::Type;
 use fennec_syntax::Span;
@@ -32,11 +37,10 @@ impl Interp {
     /// `object`, is known and has no `def serialize` of its own.
     pub(crate) fn serialize_target(&mut self, object: &'static fennec_syntax::Expr) -> Run<Option<Target>> {
         let Some(ty) = self.static_type(object.span) else { return Ok(None) };
-        if let Type::Named(name) | Type::Generic(name, _) = &ty {
-            let name = fennec_syntax::rename::shown_type_name(name);
-            if self.program.method(name, "serialize").is_some() || !self.program.types.contains_key(name) {
-                return Ok(None);
-            }
+        if let Type::Named(name) | Type::Generic(name, _) = &ty
+            && (self.program.method(name, "serialize").is_some() || !self.program.types.contains_key(name))
+        {
+            return Ok(None);
         }
         if !super::typed::settled(&ty) {
             return unsupported("saving a value whose type parameter isn't known where it's saved");
@@ -78,6 +82,31 @@ impl Interp {
                 let types = vec![(**key).clone(), (**held).clone()];
                 self.tell(out, "map", vec![Value::List(pairs)], types, span)
             }
+            (Type::Tuple(types), Value::Tuple(items)) if types.len() == items.len() => {
+                let Some(name) = ty.source() else {
+                    return unsupported("a tuple whose type can't be written");
+                };
+                let count = Value::Int(i64::try_from(items.len()).unwrap_or(i64::MAX));
+                self.tell(out, "items", vec![Value::Str(name), count], Vec::new(), span)?;
+                for (item, item_type) in items.iter().zip(types) {
+                    self.tell(out, "item", vec![item.clone()], vec![item_type.clone()], span)?;
+                }
+                self.tell(out, "end_items", Vec::new(), Vec::new(), span)
+            }
+            (Type::Union(members), held) => {
+                let holding: Vec<(usize, &Type)> =
+                    members.iter().enumerate().filter(|(_, member)| holds(member, held)).collect();
+                let [(at, member)] = holding.as_slice() else {
+                    return unsupported("saving a union's value that isn't one member's alone");
+                };
+                let Some(name) = member.source() else {
+                    return unsupported("a union's member that can't be written");
+                };
+                let at = Value::Int(i64::try_from(*at).unwrap_or(i64::MAX));
+                self.tell(out, "member", vec![Value::Str(name), at], Vec::new(), span)?;
+                self.tell(out, "value", vec![held.clone()], vec![(*member).clone()], span)?;
+                self.tell(out, "end_member", Vec::new(), Vec::new(), span)
+            }
             (Type::Named(name), Value::Instance(_)) => self.serialize_instance(value, name, &[], out, span),
             (Type::Generic(name, args), Value::Instance(_)) => {
                 self.serialize_instance(value, name, args, out, span)
@@ -100,9 +129,10 @@ impl Interp {
         out: &Place,
         span: Span,
     ) -> Run<()> {
-        let name = fennec_syntax::rename::shown_type_name(name);
+        // Looked up by the name it's checked under, and saved by the name it's written with.
+        let shown = fennec_syntax::rename::shown_type_name(name);
         let Some(declared) = self.program.types.get(name) else {
-            return unsupported(format!("saving a {name} through a format's own `Serializer`"));
+            return unsupported(format!("saving a {shown} through a format's own `Serializer`"));
         };
         if declared.kind == Kind::Error || declared.def.shared {
             return unsupported(format!("saving a {name} through a format's own `Serializer`"));
@@ -117,7 +147,7 @@ impl Interp {
             .filter(|field| !field.skipped)
             .collect();
         let count = Value::Int(i64::try_from(fields.len()).unwrap_or(i64::MAX));
-        let shown = Value::Str(name.to_owned());
+        let shown = Value::Str(shown.to_owned());
         let mut ends = 1;
         match &instance.case {
             None => self.tell(out, "record", vec![shown, count], Vec::new(), span)?,
@@ -186,16 +216,15 @@ impl Interp {
         if !super::typed::settled(&ty) {
             return unsupported("loading a value whose type parameter isn't known where it's loaded");
         }
-        if let Type::Named(name) | Type::Generic(name, _) = &ty {
-            let name = fennec_syntax::rename::shown_type_name(name);
-            if let Some(def) = self.program.method(name, "deserialize") {
-                let args = match &ty {
-                    Type::Generic(_, args) => args.as_slice(),
-                    _ => &[],
-                };
-                let types = self.own_bound(def, name, args)?;
-                return Ok(Some(Target::Def { def, parent: None, receiver: None, types }));
-            }
+        if let Type::Named(name) | Type::Generic(name, _) = &ty
+            && let Some(def) = self.program.method(name, "deserialize")
+        {
+            let args = match &ty {
+                Type::Generic(_, args) => args.as_slice(),
+                _ => &[],
+            };
+            let types = self.own_bound(def, name, args)?;
+            return Ok(Some(Target::Def { def, parent: None, receiver: None, types }));
         }
         Ok(Some(Target::Deserialize(ty)))
     }
@@ -291,9 +320,10 @@ impl Interp {
 
     /// A struct, or one of an enum's cases, as the `def deserialize` the checker writes reads it.
     fn instance_from(&mut self, name: &str, args: &[Type], src: &Place, span: Span) -> Run<Value> {
-        let name = fennec_syntax::rename::shown_type_name(name);
+        // Looked up by the name it's checked under, and read by the name it's written with.
+        let shown = fennec_syntax::rename::shown_type_name(name);
         let Some(declared) = self.program.types.get(name) else {
-            return unsupported(format!("loading a {name} through a format's own `Deserializer`"));
+            return unsupported(format!("loading a {shown} through a format's own `Deserializer`"));
         };
         if declared.kind == Kind::Error || declared.def.shared || declared.ruled {
             return unsupported(format!("loading a {name} through a format's own `Deserializer`"));
@@ -310,12 +340,12 @@ impl Interp {
                 Value::Tuple(vec![Value::Str(case.name.clone()), Value::Bool(!case.fields.is_empty())])
             })
             .collect();
-        let asked = vec![Value::Str(name.to_owned()), Value::List(cases)];
+        let asked = vec![Value::Str(shown.to_owned()), Value::List(cases)];
         let Value::Int(at) = self.ask(src, "enum_case", asked, Vec::new(), span)? else {
             return unsupported("an `enum_case` that isn't an int");
         };
         let Some(case) = usize::try_from(at).ok().and_then(|at| def.cases.get(at)) else {
-            let message = Value::Str(format!("`{name}` has no such case"));
+            let message = Value::Str(format!("`{shown}` has no such case"));
             let error = self.ask(src, "rule", vec![message], Vec::new(), span)?;
             return Err(Flow::Fail(error, span));
         };
@@ -336,7 +366,7 @@ impl Interp {
         src: &Place,
         span: Span,
     ) -> Run<Value> {
-        let shown = Value::Str(case.unwrap_or(name).to_owned());
+        let shown = Value::Str(case.unwrap_or(fennec_syntax::rename::shown_type_name(name)).to_owned());
         let saved: Vec<&super::json::SavedField> = fields.iter().filter(|field| !field.skipped).collect();
         if saved.iter().any(|field| holds_union(&field.ty)) {
             return unsupported("loading a union through a format's own `Deserializer`");
@@ -454,6 +484,24 @@ fn holds_union(ty: &Type) -> bool {
         Type::List(inner) | Type::Set(inner) | Type::Optional(inner) => holds_union(inner),
         Type::Dict(key, value) => holds_union(key) || holds_union(value),
         Type::Tuple(items) | Type::Generic(_, items) => items.iter().any(holds_union),
+        _ => false,
+    }
+}
+
+/// Whether a value could be one a union's member `member` holds, by what kind of value it is.
+fn holds(member: &Type, value: &Value) -> bool {
+    match (member, value) {
+        (Type::Int, Value::Int(_))
+        | (Type::Float, Value::Float(_))
+        | (Type::Bool, Value::Bool(_))
+        | (Type::Str | Type::LiteralStr, Value::Str(_))
+        | (Type::Bytes, Value::Bytes(_))
+        | (Type::List(_), Value::List(_))
+        | (Type::Set(_), Value::Set(_))
+        | (Type::Dict(..), Value::Dict(_))
+        | (Type::Tuple(_), Value::Tuple(_))
+        | (Type::None | Type::Optional(_), Value::None) => true,
+        (Type::Named(name) | Type::Generic(name, _), Value::Instance(instance)) => instance.ty == *name,
         _ => false,
     }
 }

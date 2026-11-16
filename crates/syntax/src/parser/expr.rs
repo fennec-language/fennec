@@ -7,7 +7,6 @@ use crate::ast::{
     Arg, BinOp, CompKind, Expr, ExprKind, FStrPart, MatchArm, Pattern, Stmt, StmtKind, UnaryOp,
 };
 use crate::diagnostic::Diagnostic;
-use crate::lexer::lex;
 use crate::span::Span;
 use crate::token::{FPart, Kw, Punct, Tok};
 
@@ -669,11 +668,7 @@ pub(super) fn interpolated(source: &str, offset: u32, what: &str) -> Result<Expr
         )
         .with_help("put an expression inside, or write `{{` for a literal brace"));
     }
-    // Lexed on its own, a leading space would read as indentation.
-    let trimmed = source.trim_start();
-    let skipped = source.len() - trimmed.len();
-    let offset = Span::new(skipped, skipped).shifted(offset).start;
-    let mut parser = Parser::new(lex(trimmed, offset)?);
+    let mut parser = Parser::new(super::interpolated_tokens(source, offset)?);
     let expr = parser.expr()?;
     parser.eat(&Tok::Newline);
     if !parser.at(&Tok::Eof) {

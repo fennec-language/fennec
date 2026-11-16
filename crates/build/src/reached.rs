@@ -36,6 +36,7 @@ pub fn what_main_reaches(module: &Module) -> Module {
         items: items.collect(),
         std_rewritten: module.std_rewritten.clone(),
         holds: module.holds.clone(),
+        files: module.files.clone(),
     }
 }
 
@@ -227,8 +228,10 @@ mod tests {
 
     /// The names of the items left after keeping what `main` reaches in `source`, which copying
     /// out what it reaches gives too.
+    /// What stays of `source`, read as the module lowering hands on, which may hold declarations
+    /// lowering wrote in, like `Shared__Point`, under names no program can write.
     fn kept(source: &str) -> Vec<String> {
-        let mut module = fennec_syntax::parse(source).unwrap();
+        let mut module = fennec_syntax::parse_written(source).unwrap();
         let copied = what_main_reaches(&module);
         keep_what_main_reaches(&mut module);
         assert_eq!(copied, module, "copying out what main reaches leaves what cutting the rest away does");

@@ -1206,18 +1206,20 @@ fn requests_from_rounds_leave_the_blocking_threads_to_the_handlers_they_wait_for
 /// program prints: the round's first line, `main`'s answer, and the end. A round is cancelled when
 /// its server stops, and fails as stopped at whatever wait it's in, so it goes no further.
 ///
-/// On Windows another program's run is a blocking job, which a stop doesn't cut (#1915's follow-up),
-/// and `sleep` is no program there, so that one is Unix only.
+/// On Windows another program's run is a blocking job, which a stop doesn't cut yet (#1950), and
+/// `sleep` is no program there, so that one is Unix only.
 pub(crate) fn stopped_rounds() -> Vec<(&'static str, &'static str, &'static str)> {
-    let mut rounds = STOPPED_ROUNDS.to_vec();
-    #[cfg(unix)]
-    rounds.push((
-        "another program",
-        include_str!("fixtures/stopped_rounds/stopprocess.fen"),
-        "the slow one began",
-    ));
-    rounds
+    STOPPED_ROUNDS.iter().chain(UNIX_STOPPED_ROUNDS.iter()).copied().collect()
 }
+
+/// The rounds of `STOPPED_ROUNDS` that only Unix has.
+#[cfg(unix)]
+const UNIX_STOPPED_ROUNDS: [(&str, &str, &str); 1] =
+    [("another program", include_str!("fixtures/stopped_rounds/stopprocess.fen"), "the slow one began")];
+
+/// The rounds of `STOPPED_ROUNDS` that only Unix has: none elsewhere.
+#[cfg(not(unix))]
+const UNIX_STOPPED_ROUNDS: [(&str, &str, &str); 0] = [];
 
 const STOPPED_ROUNDS: [(&str, &str, &str); 7] = [
     ("sleep", include_str!("fixtures/stopped_rounds/stophandler.fen"), "the slow one began"),

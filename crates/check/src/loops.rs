@@ -466,7 +466,19 @@ impl Loops<'_, '_> {
     /// The key of the function a call names, when it's one of the program's.
     fn function_key(&self, callee: &Expr, body: Option<&Body>) -> Option<String> {
         match &callee.kind {
-            ExprKind::Name(name) if self.checker.program.functions.contains_key(name) => Some(name.clone()),
+            // The function the checker found the call names, as std's code calling the builtin
+            // `round` beside a program's own `round` doesn't name the program's.
+            ExprKind::Name(name) => match body.and_then(|body| body.expr(callee.span)) {
+                Some(Type::Function(key)) => Some(key.clone()),
+                Some(_) => None,
+                None => self
+                    .checker
+                    .program
+                    .functions
+                    .get(name)
+                    .filter(|entry| entry.prelude || !callee.span.in_prelude())
+                    .map(|_| name.clone()),
+            },
             ExprKind::Attr { object, name, .. } => {
                 let owner = body.and_then(|body| body.expr(object.span))?.type_name()?;
                 self.checker.program.method(owner, name).map(|(key, _)| key)

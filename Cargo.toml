@@ -96,6 +96,10 @@ rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled
 # process group of its own, and the group is killed at its timeout, which the standard library
 # can't do without `unsafe`. rustix is already here under cap-std; this is its safe call for it.
 rustix = { version = "=1.1.6", default-features = false, features = ["process", "std"] }
+# On macOS, being told when a program `process.run` started has ended, by kqueue's `EVFILT_PROC`,
+# so a task waiting for it parks until then rather than looking. rustix reaches `kevent` only
+# through an `unsafe` call, and nix's `Kqueue` is safe. It's already here under ctrlc. Under MIT.
+nix = { version = "=0.30.1", default-features = false, features = ["event"] }
 # On Windows, telling whether a path still names a file held open, by its volume and index, for a
 # SQLite database a narrowed `Fs` opened. It's already here under walkdir; this is its safe call
 # for `GetFileInformationByHandle`. Under MIT or Unlicense.

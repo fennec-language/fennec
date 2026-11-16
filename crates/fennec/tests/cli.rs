@@ -1696,6 +1696,194 @@ fn a_kits_kept_image_is_passed_over_when_its_manifest_or_a_dependency_changes() 
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// What std's code does with names a program may also define: each line is the same whoever
+/// defines what.
+const STD_SAYS: &str = r#"
+def std_says() -> list[str]:
+    mut said = list[str]()
+    said.append(f"{time.Duration.seconds(1.5)}")
+    said.append("ab".ljust(5) + "|" + "ab".rjust(5) + "|" + "ab".center(6) + "|")
+    said.append("hello world".title() + " " + "abc".capitalize())
+    mut tree = collections.Tree[str]()
+    root = tree.add("root")
+    left = tree.add("left", parent=root)
+    _ = tree.add("leaf", parent=left)
+    _ = tree.add("right", parent=root)
+    said.append(", ".join([tree[node] for node in tree.descendants(root)]))
+    mut router = net.Router()
+    router.handle("GET /a/{first}/{second}", (request, found) => net.Response(status=200, body=found.text_at(1).encode()))
+    answer = router.respond(net.Request(method="GET", path="/a/1/2"))
+    said.append(f"{answer.status}")
+    said.append(deep_json())
+    said.append(twice_toml())
+    return said
+
+def deep_json() -> str:
+    mut deep = ""
+    for _ in range(600):
+        deep = deep + "["
+    for _ in range(600):
+        deep = deep + "]"
+    _ = json.loads[list[int]](deep) except why:
+        return f"{why}"
+    return "read"
+
+def twice_toml() -> str:
+    _ = toml.loads[dict[str, int]]("a = 1\na = 2") except why:
+        return f"{why}"
+    return "read"
+"#;
+
+/// What the builtins give, called by name.
+const BUILTINS_SAY: &str = r#"
+struct Spot:
+    x: int
+    y: int
+
+## What the builtins give, called by name.
+export def builtins_say() -> list[str]:
+    numbers = [3, 1, 2]
+    moved = copy(Spot(x=1, y=2), x=5)
+    return [
+        f"{round(2.5)} {round(2.567, 2)}",
+        f"{reversed(numbers)} {sorted(numbers)}",
+        f"{any([False, True])} {all([True, False])}",
+        f"{moved.x} {moved.y} {len(numbers)} {abs(-4)}",
+        f"{min(numbers)} {max(numbers)} {sum(numbers)}",
+    ]
+"#;
+
+/// Every name a program may define that the language or the standard library also has at the top
+/// level: each builtin function a program can name, and each of std's own functions and constants,
+/// read from std's files, so a name added later is covered too.
+fn names_std_has() -> Result<(Vec<String>, Vec<String>), String> {
+    let mut functions = std::collections::BTreeSet::new();
+    let mut constants = std::collections::BTreeSet::new();
+    for name in fennec_check::builtin_function_names() {
+        functions.insert(name.to_owned());
+    }
+    for (file, source) in fennec_syntax::prelude_files() {
+        let module =
+            fennec_syntax::parse_prelude(source).map_err(|problem| format!("{file}: {problem:?}"))?;
+        for item in module.items {
+            match item {
+                fennec_syntax::Item::Function(def) => {
+                    functions.insert(def.name);
+                }
+                fennec_syntax::Item::Const { name, .. } => {
+                    constants.insert(name);
+                }
+                _ => {}
+            }
+        }
+    }
+    let free = |name: &String| !name.starts_with('_') && name != "main" && !fennec_check::reserved_name(name);
+    let functions =
+        functions.into_iter().filter(|name| free(name) && name.starts_with(|c: char| c.is_ascii_lowercase()));
+    let constants =
+        constants.into_iter().filter(|name| free(name) && name.starts_with(|c: char| c.is_ascii_uppercase()));
+    Ok((functions.collect(), constants.collect()))
+}
+
+/// A function of every name in `functions` and a constant of every name in `constants`, with
+/// `own_total` adding up what each gives, `export`ed when `export` says.
+fn defining(functions: &[String], constants: &[String], export: &str) -> String {
+    let defined =
+        functions.iter().flat_map(|name| ["def ", name, "(number: int) -> int:\n    return number + 7\n\n"]);
+    let constant = constants.iter().flat_map(|name| [name.as_str(), " = 7\n"]);
+    let added = functions.iter().flat_map(|name| ["    total += ", name, "(1)\n"]);
+    let read = constants.iter().flat_map(|name| ["    total += ", name, "\n"]);
+    let total = [
+        "\n## What every name defined here gives, added up.\n",
+        export,
+        "def own_total() -> int:\n    mut total = 0\n",
+    ];
+    defined.chain(constant).chain(total).chain(added).chain(read).chain(["    return total\n"]).collect()
+}
+
+/// A program or a kit defining every name the language and the standard library also have at the
+/// top level changes nothing std's code does: a program's `round` is its own, and std's
+/// `Duration.seconds` still rounds with the builtin, as std's `ljust` still pads with its own
+/// helper and `Router` still holds its own limit. A dependency that defines none of them still
+/// calls the builtins, beside a program defining all of them. Each runs as a program defining
+/// nothing does.
+#[test]
+fn a_program_or_kit_defining_every_builtin_name_changes_nothing_std_does() {
+    let dir = scratch("names_std_has").unwrap();
+    let (functions, constants) = names_std_has().unwrap();
+    assert!(
+        functions.iter().any(|name| name == "round")
+            && constants.iter().any(|name| name == "MOST_ROUTE_PARAMETERS")
+    );
+    let imports = "from std import collections, json, log, net, time, toml\n";
+    let std_says = STD_SAYS.replacen("def std_says", "## What std's code says.\nexport def std_says", 1);
+    let logged = "    lines = log.Log(out=stdout, level=.Info)\n    lines.with_fields({\"user\": \"ann\"}).info(\"hello\")\n";
+    let printed = |from: &str| {
+        format!("    for line in {from}():\n        stdout.print(line)\n    stdout.print(\"--\")\n")
+    };
+    let run = |at: &Path| {
+        let output = crate::executables::fennec_command()
+            .args(["run", "--no-test"])
+            .current_dir(at)
+            .env("FENNEC_HOME", dir.join("home"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        text(&output.stdout)
+    };
+    // What a program defining none of the names gets.
+    let plain_main = format!(
+        "{imports}{STD_SAYS}{BUILTINS_SAY}\ndef main(stdout: Stdout):\n{logged}{}{}",
+        printed("std_says"),
+        printed("builtins_say")
+    );
+    write_kit(&dir.join("alone"), "alone", "", &[("main.fen", &plain_main)]).unwrap();
+    let alone = run(&dir.join("alone"));
+    // The program and one kit define every name, and another kit, defining none, calls the builtins.
+    write_kit(&dir.join("plain"), "plain", "", &[("lib.fen", BUILTINS_SAY)]).unwrap();
+    let hostile = format!("{imports}{std_says}\n{}", defining(&functions, &constants, "export "));
+    write_kit(&dir.join("hostile"), "hostile", "", &[("lib.fen", &hostile)]).unwrap();
+    let app_main = format!(
+        "import hostile\nimport plain\n{imports}{STD_SAYS}\n{}\ndef main(stdout: Stdout):\n{logged}{}{}{}    stdout.print(own_total(), hostile.own_total())\n",
+        defining(&functions, &constants, ""),
+        printed("std_says"),
+        printed("plain.builtins_say"),
+        printed("hostile.std_says"),
+    );
+    write_kit(
+        &dir.join("app"),
+        "app",
+        "[dependencies]\nhostile = { path = \"../hostile\" }\nplain = { path = \"../plain\" }\n",
+        &[("main.fen", &app_main)],
+    )
+    .unwrap();
+    let (log_and_std, builtins) = alone.split_once("--\n").unwrap();
+    let (_, std_lines) = log_and_std.split_once('\n').unwrap();
+    let total = 8 * functions.len() + 7 * constants.len();
+    assert_eq!(run(&dir.join("app")), format!("{log_and_std}--\n{builtins}{std_lines}--\n{total} {total}\n"));
+    // A dependency can't name what std keeps to itself, any more than a program can.
+    let peeks =
+        "## Pads with std's own helper.\nexport def peeks() -> str:\n    return padding(\"x\", count=2)\n";
+    write_kit(&dir.join("peek"), "peek", "", &[("lib.fen", peeks)]).unwrap();
+    let main = "from peek import peeks\n\ndef main(stdout: Stdout):\n    stdout.print(peeks())\n";
+    let peeking = dir.join("peeking");
+    write_kit(&peeking, "peeking", "[dependencies]\npeek = { path = \"../peek\" }\n", &[("main.fen", main)])
+        .unwrap();
+    let refused = crate::executables::fennec_command()
+        .args(["run", "--no-test"])
+        .current_dir(&peeking)
+        .env("FENNEC_HOME", dir.join("home"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("`padding` is private to the standard library"),
+        "{}",
+        text(&refused.stderr)
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A program the store has is the one built with the output switches a run has now: one run
 /// with `FENNEC_BOXED_RESULTS` or `FENNEC_STRIP_FACTS` makes a program of its own, and runs
 /// without them go on using theirs.
@@ -1706,12 +1894,18 @@ fn a_kits_kept_image_is_passed_over_when_its_manifest_or_a_dependency_changes() 
 fn a_run_with_another_output_switch_never_gets_the_program_built_without_it() {
     let dir = scratch("run_switches").unwrap();
     std::fs::write(dir.join("main.fen"), "def main(stdout: Stdout):\n    stdout.print(42)\n").unwrap();
-    // The programs the store holds: a file named for each root, beside its `.sum` and `.functions`.
+    // The programs the store holds, one a root: one written as bytes is a file named for the root,
+    // and one kept as the file that ran is named by the root's `.sum` file, beside the program.
     let stored = || {
         let mut found = 0;
         for version in std::fs::read_dir(dir.join("home/cache")).into_iter().flatten().flatten() {
             let programs = std::fs::read_dir(version.path().join("programs")).into_iter().flatten().flatten();
-            found += programs.filter(|entry| !entry.file_name().to_string_lossy().contains('.')).count();
+            found += programs
+                .filter(|entry| {
+                    let path = entry.path();
+                    path.extension().is_none_or(|ext| ext.eq_ignore_ascii_case("sum"))
+                })
+                .count();
         }
         found
     };
@@ -3555,7 +3749,8 @@ fn only_the_kit_that_declares_a_type_extends_it() {
 
 /// A dependency sees its own kit's names, what it imports, and the language's: never the program's.
 /// The program's names have no prefix in the merged module, so a dependency writing one it doesn't
-/// define read the program's private constant and called its private function.
+/// define read the program's private constant and called its private function. A builtin it calls
+/// is the language's, though the program defines one of that name.
 #[test]
 fn a_dependency_sees_only_its_own_names_what_it_imports_and_the_languages() {
     let dir = scratch("dependency-names").unwrap();
@@ -3595,16 +3790,17 @@ fn a_dependency_sees_only_its_own_names_what_it_imports_and_the_languages() {
     )
     .unwrap();
     refused(&["`Player` doesn't exist"]);
-    // The program's own `len` would hide the language's from the dependency: refused, saying so.
-    std::fs::write(helper.join("src/lib.fen"), "export def size() -> int:\n    return len(\"abc\")\n")
-        .unwrap();
+    // The program's own `round` is its own: the dependency's `round` is still the language's.
+    std::fs::write(helper.join("src/lib.fen"), "export def size() -> int:\n    return round(2.6)\n").unwrap();
     std::fs::write(
         game.join("src/main.fen"),
-        "import helper\n\ndef len(text: str) -> int:\n    return 99\n\n\
-         def main(stdout: Stdout):\n    stdout.print(helper.size())\n",
+        "import helper\n\ndef round(number: float) -> int:\n    _ = number\n    return 99\n\n\
+         def main(stdout: Stdout):\n    stdout.print(helper.size(), round(1.0))\n",
     )
     .unwrap();
-    refused(&["`len` here would be the program's own `len`, not the language's"]);
+    let ran = fennec("run");
+    assert!(ran.status.success(), "{}", text(&ran.stderr));
+    assert_eq!(text(&ran.stdout), "3 99\n");
     // A name the dependency defines itself is its own, though the program has one too.
     std::fs::write(
         helper.join("src/lib.fen"),
@@ -5132,12 +5328,11 @@ fn a_switch_that_changes_a_program_never_gets_one_built_without_it() -> std::io:
             .flatten()
             .filter_map(|build| std::fs::read_dir(build.path().join("programs")).ok())
             .flat_map(Iterator::flatten)
-            // A program's hash and its list of functions are kept beside it, under its key.
+            // One a key: one written as bytes is a file named for the key, and one kept as the file
+            // that ran is named by the key's `.sum` file, beside the program.
             .filter(|entry| {
                 let path = entry.path();
-                !path.extension().is_some_and(|ext| {
-                    ext.eq_ignore_ascii_case("sum") || ext.eq_ignore_ascii_case("functions")
-                })
+                path.extension().is_none_or(|ext| ext.eq_ignore_ascii_case("sum"))
             })
             .count()
     };
@@ -5247,6 +5442,38 @@ fn a_release_built_anywhere_is_the_same_bytes() -> std::io::Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     assert!(dev_builds[0] == dev_builds[1], "a dev build in one folder came out different a second later");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A program is the same bytes whatever it's named and wherever it's written: built twice from
+/// nothing, each with a Fennec folder of its own, under two names in two folders, dev and release.
+/// macOS's linker made a program's UUID, and the signature over it, from the name it was written
+/// to, so a recorded run's program and its replay's, named apart, differed.
+#[test]
+fn a_program_is_the_same_bytes_whatever_its_named() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("same-bytes-named")?;
+    std::fs::write(dir.join("alone.fen"), "def main(stdout: Stdout):\n    stdout.print(42)\n    return\n")?;
+    std::fs::create_dir_all(dir.join("elsewhere/deeper"))?;
+    for how in [&[][..], &["--release"][..]] {
+        let mut made = Vec::new();
+        for (at, out) in ["first", "elsewhere/deeper/a-name-of-its-own"].into_iter().enumerate() {
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .args(["alone.fen", "-o", out])
+                .current_dir(&dir)
+                .env("FENNEC_HOME", dir.join(format!("home-{}-{at}", how.len())))
+                .output_within()?;
+            assert!(built.status.success(), "{how:?} {out}: {}", text(&built.stderr));
+            made.push(std::fs::read(dir.join(out))?);
+        }
+        assert!(made[0] == made[1], "{how:?}: one program built under two names came out different");
+    }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

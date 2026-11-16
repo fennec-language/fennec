@@ -2798,6 +2798,54 @@ fn random_changes_under_a_lock_are_undone_by_a_crash() -> std::io::Result<()> {
     )
 }
 
+/// A value that's out of the list or dict holding it goes back when a crash leaves the function,
+/// before anything looks at what it came out of. Taken out by a method on it or by hand, in the
+/// function that made the list or dict, in one handed it by `ref`, in a struct through `ref self`,
+/// and in a function handed part of what a lock holds, a task then crashing partway:
+/// - **Under a lock** the value is as it was before the lock. The rollback found the list or dict
+///   still holding what was there when the value came out, let go of that a second time, and left
+///   the lock's value holding a block that was gone.
+/// - **With no lock** nothing the task made outlives it. What the value had come to hold was never
+///   let go of.
+///
+/// It prints what the reference evaluator prints, on one thread and on four, with nothing left.
+#[test]
+fn a_value_out_of_its_list_or_dict_goes_back_when_a_task_crashes() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("taken_out_when_a_task_crashes")?;
+    let program = dir.join("taken_out_when_a_task_crashes.fen");
+    std::fs::write(&program, include_str!("fixtures/workers/taken_out_when_a_task_crashes.fen"))?;
+    let (program, executable) =
+        (program.to_string_lossy().into_owned(), dir.join("taken_out_when_a_task_crashes"));
+    let output = executable.to_string_lossy().into_owned();
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([program.as_str(), "-o", &output])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        for threads in ["1", "4"] {
+            let ran = Command::new(&executable)
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .output_within()?;
+            let printed = String::from_utf8_lossy(&ran.stdout).into_owned();
+            let wanted = include_str!("fixtures/workers/taken_out_when_a_task_crashes.out");
+            let errors = String::from_utf8_lossy(&ran.stderr).into_owned();
+            assert_eq!(printed, wanted, "{how:?}, {threads} threads: {errors}");
+            assert!(ran.status.success(), "{how:?}, {threads} threads: {errors}");
+            let counts = errors.lines().find(|line| line.starts_with("copies ")).unwrap_or_default();
+            assert!(counts.ends_with(" live 0"), "{how:?}, {threads} threads: {counts}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A struct's field defaulting to an empty list, dict or set reads one made once, so a value
 /// nothing writes to makes no block: a thousand more values built and only read make exactly as
 /// many blocks as ten, on one thread and on four. Each default made a block of its own for every
@@ -14925,6 +14973,65 @@ fn process_options_called_natively_match_what_was_pinned() -> std::io::Result<()
     Ok(())
 }
 
+/// `process.run` in a task parks while its program runs, holding no thread: each of its cases
+/// runs in a `parallel` round as `run` promises, and 70 programs wait at once, past the blocking
+/// threads there are, for a file another round writes. Held on a blocking thread each, as they
+/// were, the waiters took every one, the write waited behind them, and they waited for it until
+/// their 20-second timeouts (#1791).
+///
+/// It's built for a heap audit and run under it on 1, 4 and 16 threads, each run cut off at two
+/// minutes: it ends with what it should have printed, nothing live and nothing said.
+#[test]
+#[cfg(unix)]
+fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder("process-runs-parked")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "process_runs_parked_in_tasks";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    let wanted = "0: status 0, out a b|*|, 0 bytes on stderr\n\
+                  1: status 0, out 1048576, 0 bytes on stderr\n\
+                  2: timed out\n\
+                  3: too much output, past 1000\n\
+                  4: status 0, out , 0 bytes on stderr\n\
+                  5: timed out\n\
+                  6: status 3, out , 5 bytes on stderr\n\
+                  7: status 0, out , 0 bytes on stderr\n\
+                  70 waiters: status 0, out here, 0 bytes on stderr\n\
+                  wrote\n";
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("TMPDIR", &dir)
+            .env("FENNEC_AUDIT", "1")
+            .env("FENNEC_COUNTS", "1")
+            .env("FENNEC_THREADS", threads)
+            .env_remove("FENNEC_AUDIT_SELFTEST")
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, wanted, "on {threads} threads: {said}");
+        assert!(said.contains(" live 0"), "on {threads} threads: {said}");
+        assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// `fs.walk` in compiled code, on a real tree holding a link back to its own top, which is
 /// listed and not gone into, and through an `Fs` narrowed to one folder.
 #[cfg(unix)]
@@ -16350,6 +16457,67 @@ fn a_server_served_from_a_task_can_be_stopped_from_inside_the_program() -> std::
             let mut lines: Vec<&str> = printed.lines().collect();
             lines.sort_unstable();
             assert_eq!(lines, wanted, "{how}: {said}");
+            assert!(said.contains(" live 0"), "{how}: {said}");
+            assert!(!said.contains("heap audit"), "{how}: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
+/// A server's blocking work isn't starved by clients waiting on that same server. Clients in
+/// `parallel` rounds `net.post` to a server served from a task, whose handler writes to SQLite on
+/// a blocking thread. When each client's exchange held a blocking thread while it waited for its
+/// answer, eight clients took all of a fixed eight, the handlers queued behind them, and the
+/// clients failed at their 30-second timeout. Exchanges park on their sockets now (#1823), and the
+/// pool grows while every thread is busy, so the handlers get theirs at 300 clients too.
+///
+/// Each run is built for a heap audit and run under it, on 1, 4 and 16 threads: it ends with
+/// what it should have printed, nothing live and nothing said.
+#[test]
+fn a_servers_blocking_work_isnt_starved_by_its_own_clients() -> std::io::Result<()> {
+    served_while_its_clients_post("blocking-pool-not-starved", &[8, 32, 300])
+}
+
+/// Builds `served_handler_blocks_while_clients_post.fen` for a heap audit, and runs it with each
+/// number of `clients` on 1, 4 and 16 threads. Every client's answer has to be saved.
+fn served_while_its_clients_post(name: &str, clients: &[usize]) -> std::io::Result<()> {
+    if !ready() || !crate::executables::audited_runtimes_built() {
+        return Ok(());
+    }
+    let dir = folder(name)?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "served_handler_blocks_while_clients_post";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_AUDIT", "1")
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for &count in clients {
+        for threads in ["1", "4", "16"] {
+            let how = format!("{count} clients on {threads} threads");
+            // A starved server fails its clients at their 30-second timeout, in waves: two minutes
+            // by the clock says so, where these take under a second.
+            let ended = Command::new(&executable)
+                .env("CLIENTS", count.to_string())
+                .env("TMPDIR", &dir)
+                .env("FENNEC_AUDIT", "1")
+                .env("FENNEC_COUNTS", "1")
+                .env("FENNEC_THREADS", threads)
+                .env_remove("FENNEC_AUDIT_SELFTEST")
+                .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+            let (printed, said) =
+                (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+            assert_eq!(ended.status.code(), Some(0), "{how}: {printed}{said}");
+            assert_eq!(printed, format!("{count} of {count} saved\n{count} rows kept\n"), "{how}: {said}");
             assert!(said.contains(" live 0"), "{how}: {said}");
             assert!(!said.contains("heap audit"), "{how}: {said}");
         }
@@ -18382,6 +18550,44 @@ def main(stdout: Stdout):
     )
 }
 
+/// A function where a function type giving back something wider is written, held in a name of
+/// that type: an arrow giving back `str` where `(int) -> str?` and `(int) -> str | int` go, a named
+/// function where `(int) -> str | int` goes, an arrow giving back `None` given to a `mut` name of
+/// it later, and one where `(int) -> str | (str) -> str` goes, which gives back `str` or a function.
+/// Each is held as the type written, and reads and calls as that.
+#[test]
+fn a_function_held_where_a_wider_function_type_is_written_calls_as_that_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "wider_function_held",
+        r#"type Two = (int) -> str | (str) -> str
+
+def twice(number: int) -> str:
+    return f"{number}{number}"
+
+def keep(answer: Two) -> Two:
+    return answer
+
+def main(stdout: Stdout):
+    maybe: (int) -> str? = (number) => f"maybe {number}"
+    either: (int) -> str | int = (number) => f"either {number}"
+    named: (int) -> str | int = twice
+    mut later: (int) -> str? = twice
+    stdout.print(maybe(1) else "none", either(2), named(3), later(4) else "none")
+    later = (number) => None
+    stdout.print(later(5) else "none")
+    held = keep((number) => f"held {number}")
+    given = held(6)
+    if given is str:
+        stdout.print(given)
+    return
+"#,
+        "maybe 1 either 2 33 44\nnone\nheld 6\n",
+    )
+}
+
 /// What's left of a three-member union after `if store is Lite: return` is the other two, read
 /// natively as the union it was: its members told apart with `is` and `match`, each one's
 /// fields read once it's narrowed to it, a method all of them have called on it, and it given
@@ -20121,6 +20327,110 @@ fn pack_loads_an_earlier_version_of_a_type_by_its_names() -> std::io::Result<()>
     assert_eq!(
         printed,
         "ana 7.0 1 [\"a\", \"b\"] (5, \"five\") text c-1\n[(1, 2, 0), (3, 4, 0)]\n[\"a\", \"b\", \"c\"] 0\nangry 3 none\nTrue\n`rank` isn't in the data, and has no default, at byte 282\n`name` was saved as text, not an int, at byte 234\n`mood` was saved as `NoAngry.Angry`, a case `NoAngry` doesn't have now, at byte 244\n`code` isn't in the type now, and holds a `Code`, which saves itself its own way, so where it ends can't be found, at byte 267\n`pair` was saved as a tuple of 2 items, not 3, at byte 255\nloaded this was packed from a different `After`, at byte 4\n282 60\n"
+    );
+    Ok(())
+}
+
+/// What the next test packs with the first version of its generic types: each value's bytes, a
+/// line each.
+const GENERIC_PACK_FIRST: &str = r#"from std import pack
+
+struct Pair[T]:
+    first: T
+    second: T
+
+struct Box[T]:
+    held: T
+    count: int
+
+enum Maybe[T]:
+    Some(value: T, note: str)
+    Nothing
+
+struct Holder:
+    pair: Pair[int]
+    label: str
+
+## A value's bytes as numbers apart by commas.
+def shown(data: bytes) -> str:
+    return ",".join([f"{data[at]}" for at in range(len(data))])
+
+def main(stdout: Stdout):
+    boxes: Pair[Box[int]] = Pair(first=Box(held=3, count=4), second=Box(held=5, count=6))
+    maybe: Maybe[int] = .Some(value=7, note="seven")
+    stdout.print(shown(pack.dumps(Pair(first=1, second=2))))
+    stdout.print(shown(pack.dumps(boxes)))
+    stdout.print(shown(pack.dumps(maybe)))
+    stdout.print(shown(pack.dumps(Holder(pair=Pair(first=8, second=9), label="h"))))
+    stdout.print(shown(pack.dumps([Pair(first=10, second=11)])))
+    stdout.print(shown(pack.dumps({"k": Pair(first=12, second=13)})))
+    stdout.print(shown(pack.dumps((Pair(first=14, second=15), 16))))
+"#;
+
+/// The next version of those types, each with its fields moved, loading what the first saved.
+const GENERIC_PACK_NEXT: &str = r#"from std import pack
+
+struct Pair[T]:
+    second: T
+    first: T
+
+struct Box[T]:
+    count: int
+    held: T
+
+enum Maybe[T]:
+    Some(note: str, value: T)
+    Nothing
+
+struct Holder:
+    pair: Pair[int]
+    label: str
+
+## The bytes numbers apart by commas stand for.
+def bytes_of(text: str) -> bytes:
+    mut items = list[int]()
+    for part in text.split(","):
+        number = int.parse(part) except InvalidValue(): 0
+        items.append(number)
+    return bytes(items)
+
+def main(stdout: Stdout) fails ParseError:
+    saved = [SAVED]
+    pair = pack.loads[Pair[int]](bytes_of(saved[0]))?
+    stdout.print(pair.first, pair.second)
+    boxes = pack.loads[Pair[Box[int]]](bytes_of(saved[1]))?
+    stdout.print(boxes.first.held, boxes.first.count, boxes.second.held, boxes.second.count)
+    match pack.loads[Maybe[int]](bytes_of(saved[2]))?:
+        case .Some(note, value):
+            stdout.print(value, note)
+        case .Nothing:
+            stdout.print("nothing")
+    holder = pack.loads[Holder](bytes_of(saved[3]))?
+    stdout.print(holder.pair.first, holder.pair.second, holder.label)
+    listed = pack.loads[list[Pair[int]]](bytes_of(saved[4]))?
+    stdout.print(listed[0].first, listed[0].second)
+    keyed = pack.loads[dict[str, Pair[int]]](bytes_of(saved[5]))?
+    stdout.print(keyed["k"].first, keyed["k"].second)
+    paired = pack.loads[(Pair[int], int)](bytes_of(saved[6]))?
+    stdout.print(paired[0].first, paired[0].second, paired[1])
+"#;
+
+/// A generic type's shape holds its fields with its arguments filled in, so data saved by an
+/// earlier version of `Pair[T]`, with its fields in another order, is read by their names rather
+/// than by place, as a plain struct's is. Before, `Pair[int]`'s shape was its name alone, and the
+/// next version read `first` as `second`. The same for a generic inside a generic, a generic
+/// enum's case, a generic inside a plain struct, and one inside a list, a dict and a tuple.
+#[test]
+fn pack_loads_a_generic_types_earlier_fields_by_their_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let saved = printed_by("generic_pack_first", GENERIC_PACK_FIRST)?;
+    let lines: Vec<String> = saved.lines().map(|line| format!("\"{line}\"")).collect();
+    let next = GENERIC_PACK_NEXT.replace("SAVED", &lines.join(", "));
+    assert_eq!(
+        printed_by("generic_pack_next", &next)?,
+        "1 2\n3 4 5 6\n7 seven\n8 9 h\n10 11\n12 13\n14 15 16\n"
     );
     Ok(())
 }

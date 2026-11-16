@@ -141,6 +141,8 @@ pub const NEVER_FAIL: &[&str] = &[
     "fennec_native_live",
     // Bytes made from bytes. Each runs under `with`, which sets no flag, and none has a wrong
     // argument to refuse:
+    // bytes written out in hex, with the separator given, if any, between them, give a text always;
+    "fennec_bytes_hex",
     // a slice holds both bounds to what's there, as a list's slice does, down to nothing;
     "fennec_bytes_slice",
     // a part read as text holds its places to what's there too, and bytes that aren't UTF-8 give
@@ -151,6 +153,9 @@ pub const NEVER_FAIL: &[&str] = &[
     // and bytes read as text whatever they hold give a text always, with what isn't UTF-8
     // replaced: `fennec_bytes_decode` above without its one refusal.
     "fennec_bytes_text",
+    // Says TLS is wanted before a request, which only sets the three functions that put TLS over a
+    // connection, each once.
+    "fennec_use_tls",
 ];
 
 /// Which export takes which names, and the function that looks one up: in `fennec-rt`, where the

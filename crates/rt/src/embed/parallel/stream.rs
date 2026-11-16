@@ -120,7 +120,7 @@ impl Stream {
     fn make(&self, at: usize) -> Slot {
         let from = at * self.chunk;
         let to = (from + self.chunk).min(self.length);
-        let since = threads::made_so_far();
+        let since = threads::made_scope_starts();
         let mut was = crate::replay::range(self.task.as_ref(), from);
         crate::replay::swap(&mut was);
         let mut capture = self.capture.clone();
@@ -143,6 +143,7 @@ impl Stream {
             with(|state| state.failure = held);
             set_failed(1);
         }
+        threads::made_scope_ends(threads::index() == self.reader);
         let made = if threads::index() == self.reader { Vec::new() } else { threads::hand_over(since) };
         // What it printed is written before the reader can see it's done, so what the reader
         // prints after the stream comes after it, as for a range, and under the chunk's own name

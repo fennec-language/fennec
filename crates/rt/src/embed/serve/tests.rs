@@ -184,6 +184,22 @@ fn a_failing_connection_ends_only_its_own_task() {
     assert_eq!(ended, [0, 1]);
 }
 
+/// Connections reset as they come end only their own rounds: twenty connect and reset, and the
+/// server goes on to answer the next. macOS hands a connection reset before it's taken to `accept`
+/// all the same, and refuses to set an option on it, which the server passes over; Windows says
+/// the reset from `accept`, which the server passes over too (#1903).
+#[test]
+fn connections_reset_as_they_come_end_only_their_own_rounds() {
+    let served = run(2, &echo(), |address| {
+        for _ in 0..20 {
+            let reset = std::net::TcpStream::connect(address).unwrap();
+            socket2::SockRef::from(&reset).set_linger(Some(Duration::ZERO)).unwrap();
+        }
+        talk(address, &["still here".to_owned()]);
+    });
+    assert!(served.connections >= 1, "{served:?}");
+}
+
 #[test]
 fn a_wait_with_a_timeout_gives_up_while_others_go_on() {
     let timing_out: Handler = Arc::new(|conn: Conn| match conn.read_line(Some(Duration::from_millis(50))) {

@@ -1,0 +1,58 @@
+# A source's `except:` cleanup holding what a crash once couldn't run as written, one case each:
+# a `with launch`, a source whose block's end fails, a `lock`, a `parallel` sum, and a `?` in a
+# comprehension. Each runs with the caller's block crashing, and with it failing.
+from std.concurrent import Crashed
+
+error Shut:
+    why: str
+
+struct Scores:
+    total = 0
+
+def work(stdout: Stdout):
+    stdout.print("task ran")
+
+def capped(step: int, limit: int) -> int fails Shut:
+    if step > limit:
+        fail Shut(why=f"{step} over {limit}")
+    return step
+
+## Lends 1, then fails as its caller's block ends.
+def guard(stdout: Stdout) -> with int fails Shut:
+    lend 1
+    stdout.print("guard closing")
+    fail Shut(why="closing failed")
+
+def opened(which: int, stdout: Stdout, scores: shared Scores) -> with int fails Shut | Crashed:
+    lend which except:
+        stdout.print("cleanup", which)
+        if which == 1:
+            with launch(() => work(stdout))?:
+                pass
+        elif which == 2:
+            with guard(stdout)? as inner:
+                stdout.print("inside", inner)
+        elif which == 3:
+            lock scores as ref current:
+                current.total += 10
+            lock scores as seen:
+                stdout.print("total", seen.total)
+        elif which == 4:
+            stdout.print("sum", sum(step * 2 for step in parallel([1, 2, 3])))
+        elif which == 5:
+            kept = [capped(step, limit=1)? for step in range(3)]
+            stdout.print("kept", len(kept))
+        stdout.print("cleanup done", which)
+
+def run(which: int, crash: bool, stdout: Stdout, scores: shared Scores) fails Shut | Crashed:
+    with opened(which, stdout, scores)? as held:
+        if not crash:
+            fail Shut(why="the block failed")
+        values = [1]
+        stdout.print(values[held])
+
+def main(stdout: Stdout, args: Args) fails Shut | Crashed:
+    which = int(args[0]) except InvalidValue(): 0
+    crash = args[1] == "crash"
+    shared scores = Scores()
+    run(which, crash, stdout, scores)?

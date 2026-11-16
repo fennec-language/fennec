@@ -20387,7 +20387,8 @@ fn pack_headers_are_the_ones_docs_pack_md_pins() -> std::io::Result<()> {
             fnv ^= u64::from(byte);
             fnv = fnv.wrapping_mul(0x0100_0000_01b3);
         }
-        let written: String = fnv.to_le_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+        // As the 8 bytes hold it, low byte first.
+        let written = format!("{:016x}", fnv.swap_bytes());
         assert_eq!(&written, hash, "the hash of `{shape}`");
         wanted.push(format!("FPK2 {hash} {layout}\n"));
     }

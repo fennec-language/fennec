@@ -327,9 +327,8 @@ struct Walk<'c> {
     types: BTreeSet<Type>,
     /// Set when a type that crosses has a type parameter no copy placed.
     unplaced: bool,
-    /// Each test's place among the program's tests, by the key its body is checked under,
-    /// `test "<name>"`, made once rather than for every key looked up.
-    tests: BTreeMap<String, usize>,
+    /// Where every `with launch`'s task is, made once.
+    tasks: BTreeSet<(u32, u32)>,
 }
 
 impl<'c> Walk<'c> {
@@ -346,13 +345,7 @@ impl<'c> Walk<'c> {
                 methods.entry(owner.clone()).or_default().push(key.clone());
             }
         }
-        let tests = checker
-            .program
-            .tests
-            .iter()
-            .enumerate()
-            .map(|(at, test)| (format!("test \"{}\"", test.name), at))
-            .collect();
+        let tasks = checker.launches.values().map(|launch| at(&launch.task)).collect();
         Walk {
             checker,
             reached,
@@ -363,7 +356,7 @@ impl<'c> Walk<'c> {
             arrows: BTreeMap::new(),
             types: BTreeSet::new(),
             unplaced: false,
-            tests,
+            tasks,
         }
     }
 
@@ -458,15 +451,16 @@ impl<'c> Walk<'c> {
                     });
                     spots.nested = Some(reads);
                 }
-            } else if let Some(test) = self.tests.get(key).and_then(|at| self.checker.program.tests.get(*at))
-            {
+            } else if let Some(test) = self.checker.program.test(key) {
                 spots_in(&test.body, &mut spots);
             }
             if let Some(body) = self.checker.typed.get(key) {
-                for launch in self.checker.launches.values() {
-                    if body.expr(launch.task.span).is_some() {
-                        spots.whole.push(at(&launch.task));
-                    }
+                // Whichever is fewer is looked through, the tasks or the body's expressions, so
+                // neither many launches nor long functions pay for every pair of the two.
+                if self.tasks.len() <= body.exprs.len() {
+                    spots.whole.extend(self.tasks.iter().filter(|task| body.exprs.contains_key(task)));
+                } else {
+                    spots.whole.extend(body.exprs.keys().filter(|span| self.tasks.contains(span)));
                 }
             }
             self.spots.insert(key.to_owned(), spots);

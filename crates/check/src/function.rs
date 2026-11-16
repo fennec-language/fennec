@@ -556,7 +556,7 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn check_test(checker: &'c mut Checker, test: &TestDef) {
-        let key = format!("test \"{}\"", test.name);
+        let key = crate::program::test_key(&test.name);
         let mut cx = FnCx::new(checker, &key, "test", true);
         for capability in &test.capabilities {
             let name = capability.ty.as_ref().map_or("", |ty| ty.name.as_str());

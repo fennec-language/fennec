@@ -1,34 +1,36 @@
 ## `Buffer[T]`: the growable, counted run of slots that lists are built on. It fills slots in
-## order, so reading one nothing wrote is an ordinary out-of-range failure.
+## order, so reading one nothing wrote is an ordinary out-of-range failure. How it grows is the
+## runtime's to tune: what's promised is that it always has room for what it holds, and that
+## `reserve(n)` makes room for `n` more.
 
 def main(stdout: Stdout):
     mut squares = Buffer[int](capacity=2)
-    stdout.print(len(squares), squares.capacity())
+    stdout.print(len(squares), squares.capacity() >= len(squares))
     for i in range(5):
         squares.push(i * i)
-    # Pushing into a full buffer doubles what it held.
-    stdout.print(len(squares), squares.capacity(), squares[4])
+    # Pushing into a full buffer grows it.
+    stdout.print(len(squares), squares.capacity() >= len(squares), squares[4])
     squares[0] = 100
     stdout.print(squares.pop(), len(squares))
     squares.reserve(20)
-    stdout.print(squares.capacity())
+    stdout.print(squares.capacity() >= len(squares) + 20)
     squares.truncate(2)
-    stdout.print(len(squares), squares.capacity())
+    stdout.print(len(squares), squares.capacity() >= len(squares))
     for square in squares:
         stdout.print(square)
     mut names = Buffer[str]()
     names.push("fox")
     names.push("fennec")
-    stdout.print(names[1], len(names), names.capacity())
+    stdout.print(names[1], len(names), names.capacity() >= len(names))
     mut more = Buffer[int]()
     more.push(7)
     more.push(8)
     squares.extend(more)
     squares.insert(0, 5)
-    stdout.print(squares.remove(1), len(squares), squares.capacity())
+    stdout.print(squares.remove(1), len(squares), squares.capacity() >= len(squares))
     stdout.print(squares[0], squares[3])
-    # Extending grows once, by the same rule, for all the items added.
+    # Extending makes room for every item added.
     mut both = Buffer[int]()
     both.extend(squares)
     both.extend(squares)
-    stdout.print(len(both), both.capacity())
+    stdout.print(len(both), both.capacity() >= len(both))

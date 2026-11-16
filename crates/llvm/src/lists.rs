@@ -661,7 +661,8 @@ impl Emit<'_, '_, '_> {
                         index
                     } else {
                         let known_as = self.list_key(root, &along);
-                        self.position_once(known_as, (&list, index_operand, &index), span)
+                        let from = along.is_empty().then_some(root);
+                        self.position_once((known_as, from), (&list, index_operand, &index), span)
                     };
                     let memory = held.memory(self.module.layouts);
                     at = self.item_address(&list, &memory, &position);
@@ -1555,10 +1556,11 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Where an index points in a list, checked once: until something shortens or replaces
-    /// the list, or writes the index, it's read back from where the first check left it.
+    /// the list, or writes the index, it's read back from where the first check left it. `from` is
+    /// the local the list was read from, whose length may be kept (`length_of_list`).
     fn position_once(
         &mut self,
-        place: Option<FieldPath>,
+        (place, from): (Option<FieldPath>, Option<LocalId>),
         (list, index_operand, index): (&str, &Operand, &str),
         span: Span,
     ) -> String {
@@ -1575,10 +1577,11 @@ impl Emit<'_, '_, '_> {
             self.proof_inside(list, &position, "index checked before still inside its list", span);
             return position;
         }
+        let length = self.length_of_list(from, list);
         let position = if self.index_not_negative() {
-            self.position_not_negative(list, index, span)
+            self.position_not_negative(&length, index, span)
         } else {
-            self.position(list, index, span)
+            self.position_in(&length, index, span)
         };
         if let Some(fact) = fact {
             let slot = if let Some(slot) = self.inside_slots.get(&fact) {
@@ -1605,13 +1608,12 @@ impl Emit<'_, '_, '_> {
 
     /// Where an index proven not negative points: one unsigned comparison with the length, with
     /// no way back from the end. A build that checks proofs checks it isn't negative.
-    fn position_not_negative(&mut self, list: &str, index: &str, span: Span) -> String {
+    fn position_not_negative(&mut self, length: &str, index: &str, span: Span) -> String {
         if self.checks_proofs() {
             let negative = self.temp();
             self.line(&format!("{negative} = icmp slt i64 {index}, 0"));
             self.proof_held(&negative, "index not negative", span);
         }
-        let length = self.list_length(list);
         let (inside, ok, fail) = (self.temp(), self.label("ok"), self.label("outside"));
         self.line(&format!("{inside} = icmp ult i64 {index}, {length}"));
         self.line(&format!("br i1 {inside}, label %{ok}, label %{fail}, !prof !8"));
@@ -1749,11 +1751,12 @@ impl Emit<'_, '_, '_> {
             self.proof_inside(&list, &index, proof, span);
             index
         } else {
-            let place = match object {
-                Operand::Local(local) => self.list_key(*local, &[]),
+            let from = match object {
+                Operand::Local(local) => Some(*local),
                 _ => None,
             };
-            self.position_once(place, (&list, index_operand, &index), span)
+            let place = from.and_then(|local| self.list_key(local, &[]));
+            self.position_once((place, from), (&list, index_operand, &index), span)
         };
         let memory = held.memory(self.module.layouts);
         let at = self.item_address(&list, &memory, &position);
@@ -2229,7 +2232,8 @@ impl Emit<'_, '_, '_> {
                 index
             } else {
                 let place = self.list_key(object, path);
-                self.position_once(place, (&list, index_operand, &index), span)
+                let from = path.is_empty().then_some(object);
+                self.position_once((place, from), (&list, index_operand, &index), span)
             };
             self.item_address(&list, &memory, &position)
         };

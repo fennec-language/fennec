@@ -148,7 +148,7 @@ const FIRST_LOOP: usize = 100;
 
 /// The jumps that go back to the start of a loop they're in, from block to block: their target
 /// is still being walked, depth first from the entry, when they're reached.
-fn back_edges(function: &Function) -> HashSet<(usize, usize)> {
+pub(crate) fn back_edges(function: &Function) -> HashSet<(usize, usize)> {
     let blocks = function.blocks.len();
     let (mut walking, mut done) = (vec![false; blocks], vec![false; blocks]);
     let mut found = HashSet::new();
@@ -1069,6 +1069,16 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store {text} %p{at}, ptr %l{at}"));
             }
         }
+        // Each list whose length nothing here changes has its length kept where it's given its
+        // value: a parameter's now.
+        let mut steady: Vec<usize> = self.known.steady_lengths.iter().copied().collect();
+        steady.sort_unstable();
+        for at in steady {
+            let _ = writeln!(self.allocas, "  %sl{at} = alloca i64");
+            if at < function.params {
+                self.keep_length(LocalId(at));
+            }
+        }
         // What every call gives a parameter, which what's proven from it leans on.
         if self.checks_proofs() && !self.known.param_ranges.is_empty() {
             let span = entry_span;
@@ -1207,6 +1217,14 @@ impl Emit<'_, '_, '_> {
                     appended = true;
                 } else {
                     self.inst(&inst.kind, inst.span, at)?;
+                }
+                // A list whose length is kept has it read where it's given its value, here.
+                let mut written = Vec::new();
+                visit(&inst.kind, |_| {}, |local| written.push(local));
+                for local in written {
+                    if self.known.steady_lengths.contains(&local.0) {
+                        self.keep_length(local);
+                    }
                 }
                 if !self.alone_fields.is_empty() {
                     let hit = unsettled(function, self.known, &inst.kind, settles);
@@ -1886,6 +1904,32 @@ impl Emit<'_, '_, '_> {
             self.declare("declare void @llvm.assume(i1)");
             self.line(&format!("call void @llvm.assume(i1 {holds})"));
         }
+    }
+
+    /// Reads the length of a list whose length nothing in this function changes, where it's just
+    /// been given its value, into the place it's kept (`%sl`, see `steady_lengths`).
+    fn keep_length(&mut self, local: LocalId) {
+        let (list, slot) = (self.temp(), self.slot(local));
+        self.line(&format!("{list} = load ptr, ptr {slot}"));
+        let length = self.list_length(&list);
+        self.line(&format!("store i64 {length}, ptr %sl{}", local.0));
+    }
+
+    /// The length of `list`, read from the local `from`: the length kept for it if nothing in this
+    /// function changes its length, which LLVM can see doesn't change in a loop and so can check
+    /// once, or else the one in the list. A build that checks proofs checks the two are the same.
+    pub(crate) fn length_of_list(&mut self, from: Option<LocalId>, list: &str) -> String {
+        let Some(local) = from.filter(|local| self.known.steady_lengths.contains(&local.0)) else {
+            return self.list_length(list);
+        };
+        let length = self.temp();
+        self.line(&format!("{length} = load i64, ptr %sl{}", local.0));
+        if self.checks_proofs() {
+            let (own, differs) = (self.list_length(list), self.temp());
+            self.line(&format!("{differs} = icmp ne i64 {length}, {own}"));
+            self.proof_held_here(&differs, "a list's length is the one kept for it", Span::default());
+        }
+        length
     }
 
     /// Loads a length from `at` into `dest`. LLVM is told it's from 0 to the most items anything
@@ -2946,8 +2990,13 @@ impl Emit<'_, '_, '_> {
                     }
                     _ => None,
                 };
-                let (list, _) = self.operand(counted.as_ref().or(first).ok_or("no argument")?)?;
-                let length = self.list_length(&list);
+                let looked_at = counted.as_ref().or(first).ok_or("no argument")?;
+                let (list, _) = self.operand(looked_at)?;
+                let from = match looked_at {
+                    Operand::Local(local) => Some(*local),
+                    _ => None,
+                };
+                let length = self.length_of_list(from, &list);
                 self.assign(dest.ok_or("no result")?, &length)
             }
             "list.append" => self.append(args),

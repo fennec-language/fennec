@@ -13352,6 +13352,45 @@ fn strings_compare_with_short_literals_as_pinned() -> std::io::Result<()> {
     )
 }
 
+/// A list whose length nothing in its function changes has its length read where it's given its
+/// value, and every check against it uses that, so LLVM can check an index that doesn't change in a
+/// loop once: read after a `continue`, stored into through `ref`, written through a copy made alone
+/// again inside the loop, counted from the end, measured with `len`, and handed by value to a call
+/// that grows its own copy. Dev and release, plain and checking proofs, which check each kept
+/// length against the list's own, it prints what the reference evaluator prints.
+#[test]
+fn a_kept_length_is_the_lists_own_however_the_list_is_used() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for proofs in ["0", "1"] {
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder("kept_lengths")?;
+            let (program, executable) = (dir.join("kept_lengths.fen"), dir.join("kept_lengths"));
+            std::fs::write(&program, include_str!("fixtures/kept_lengths.fen"))?;
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .arg(&program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env("FENNEC_CHECK_PROOFS", proofs)
+                .output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                include_str!("fixtures/kept_lengths.out"),
+                "{how:?}, proofs {proofs}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
 /// An index checked once stays inside its list until something shortens or replaces the
 /// list, or writes the index: a pop, a method popping or replacing a field, a new list, and
 /// negative indexes are each checked again, and the last read fails.

@@ -5439,6 +5439,38 @@ fn a_release_built_anywhere_is_the_same_bytes() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A program is the same bytes whatever it's named and wherever it's written: built twice from
+/// nothing, each with a Fennec folder of its own, under two names in two folders, dev and release.
+/// macOS's linker made a program's UUID, and the signature over it, from the name it was written
+/// to, so a recorded run's program and its replay's, named apart, differed.
+#[test]
+fn a_program_is_the_same_bytes_whatever_its_named() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("same-bytes-named")?;
+    std::fs::write(dir.join("alone.fen"), "def main(stdout: Stdout):\n    stdout.print(42)\n    return\n")?;
+    std::fs::create_dir_all(dir.join("elsewhere/deeper"))?;
+    for how in [&[][..], &["--release"][..]] {
+        let mut made = Vec::new();
+        for (at, out) in ["first", "elsewhere/deeper/a-name-of-its-own"].into_iter().enumerate() {
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .args(["alone.fen", "-o", out])
+                .current_dir(&dir)
+                .env("FENNEC_HOME", dir.join(format!("home-{}-{at}", how.len())))
+                .output_within()?;
+            assert!(built.status.success(), "{how:?} {out}: {}", text(&built.stderr));
+            made.push(std::fs::read(dir.join(out))?);
+        }
+        assert!(made[0] == made[1], "{how:?}: one program built under two names came out different");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A program built again under the same name, and run each time, is a new file every time: macOS
 /// remembers the code signature of a file it has launched and kills a program written into one,
 /// with no word. So two programs take turns at one path, built through the store, which links one

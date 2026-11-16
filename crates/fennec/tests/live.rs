@@ -16,6 +16,10 @@ use crate::executables::{Within, fennec_command, runtime_built, threads_runtime_
 const WARM: usize = 300;
 const MORE: usize = 1500;
 
+/// How many hangups go before the client waits for the server to have taken them, well under the
+/// 128 connections the Mac keeps waiting for a server.
+const TAKEN_EVERY: usize = 50;
+
 struct Server {
     child: Child,
     port: u16,
@@ -72,19 +76,26 @@ fn start(executable: &Path, dir: &Path) -> std::io::Result<Server> {
     Ok(Server { child, port, report })
 }
 
+/// What turns an error into one that says what was being done when it came, so a failure here says
+/// which kind of request, which of them, and which call: a bare "Connection reset by peer" says
+/// none of it.
+fn during(what: impl std::fmt::Display) -> impl FnOnce(std::io::Error) -> std::io::Error {
+    move |error| std::io::Error::new(error.kind(), format!("{what}: {error}"))
+}
+
 /// Sends one request on `stream` and reads its whole response, giving back its status.
 fn ask(stream: &mut TcpStream, method: &str, path: &str, body: &str) -> std::io::Result<u16> {
     // In one write: `write!` on a socket sends each piece as a write of its own.
     let request =
         format!("{method} {path} HTTP/1.1\r\nhost: here\r\ncontent-length: {}\r\n\r\n{body}", body.len());
-    stream.write_all(request.as_bytes())?;
-    let mut reader = BufReader::new(stream.try_clone()?);
+    stream.write_all(request.as_bytes()).map_err(during("writing the request"))?;
+    let mut reader = BufReader::new(stream.try_clone().map_err(during("copying the connection"))?);
     let mut status = String::new();
-    reader.read_line(&mut status)?;
+    reader.read_line(&mut status).map_err(during("reading the status line"))?;
     let mut length = 0;
     loop {
         let mut header = String::new();
-        reader.read_line(&mut header)?;
+        reader.read_line(&mut header).map_err(during("reading a header"))?;
         if header.trim().is_empty() {
             break;
         }
@@ -95,7 +106,7 @@ fn ask(stream: &mut TcpStream, method: &str, path: &str, body: &str) -> std::io:
         }
     }
     let mut body = vec![0; length];
-    reader.read_exact(&mut body)?;
+    reader.read_exact(&mut body).map_err(during("reading the body"))?;
     status
         .split_whitespace()
         .nth(1)
@@ -107,49 +118,67 @@ fn ask(stream: &mut TcpStream, method: &str, path: &str, body: &str) -> std::io:
 /// that end their connection.
 fn send(server: &Server, kept: &mut Option<TcpStream>, kind: &str, n: usize) -> std::io::Result<()> {
     let connect = || {
-        let stream = TcpStream::connect(("127.0.0.1", server.port))?;
-        stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+        let stream = TcpStream::connect(("127.0.0.1", server.port)).map_err(during("connecting"))?;
+        stream
+            .set_read_timeout(Some(crate::executables::WALL_DEADLINE))
+            .map_err(during("setting a timeout"))?;
         // As a real client would, so no write waits for the last to be acknowledged.
-        stream.set_nodelay(true)?;
+        stream.set_nodelay(true).map_err(during("setting no delay"))?;
         Ok::<_, std::io::Error>(stream)
     };
     match kind {
         "crash" => {
             // It closes its connection.
             let mut stream = connect()?;
-            stream.write_all(
-                format!("GET /crash?n={} HTTP/1.1\r\nhost: here\r\n\r\n", n % 100 + 1).as_bytes(),
-            )?;
+            stream
+                .write_all(format!("GET /crash?n={} HTTP/1.1\r\nhost: here\r\n\r\n", n % 100 + 1).as_bytes())
+                .map_err(during("writing the request"))?;
             let mut back = [0; 16];
             let _ = stream.read(&mut back);
             return Ok(());
         }
         "garbage" => {
             let mut stream = connect()?;
-            stream.write_all(b"NOT HTTP AT ALL\r\n\r\n")?;
+            stream.write_all(b"NOT HTTP AT ALL\r\n\r\n").map_err(during("writing the request"))?;
             let mut back = [0; 16];
-            let _ = stream.read(&mut back)?;
+            let _ = stream.read(&mut back).map_err(during("reading the answer"))?;
             return Ok(());
         }
         "hangup" => {
             let mut stream = connect()?;
-            stream.write_all(b"POST /note?n=1 HTTP/1.1\r\ncontent-length: 100\r\n\r\nhalf")?;
+            stream
+                .write_all(b"POST /note?n=1 HTTP/1.1\r\ncontent-length: 100\r\n\r\nhalf")
+                .map_err(during("writing half a request"))?;
+            drop(stream);
+            // A hangup waits for nothing, so on a loaded machine the client could open connections
+            // faster than the server took them, and the Mac resets those past the 128 it keeps
+            // waiting (#1903). The server takes them in the order they came, so one answered
+            // request after every `TAKEN_EVERY` says it has taken them all.
+            if (n + 1).is_multiple_of(TAKEN_EVERY) {
+                let mut stream = connect().map_err(during("waiting for the hangups to be taken"))?;
+                ask(&mut stream, "GET", "/count", "")
+                    .map_err(during("waiting for the hangups to be taken"))?;
+            }
             return Ok(());
         }
         _ => {}
     }
+    // Whether this request opened the kept-alive connection, or came after others on it.
+    let on =
+        if kept.is_none() { "on a kept-alive connection it opened" } else { "on the kept-alive connection" };
     if kept.is_none() {
         *kept = Some(connect()?);
     }
     let stream = kept.as_mut().ok_or_else(|| std::io::Error::other("no connection"))?;
     let status = match kind {
-        "count" => ask(stream, "GET", "/count", "")?,
-        "stats" => ask(stream, "GET", "/stats", "")?,
-        "note" => ask(stream, "POST", &format!("/note?n={}", n + 1_000_000), "a note to keep")?,
-        "duplicate" => ask(stream, "POST", "/note?n=7", "the same note again")?,
-        "file" => ask(stream, "POST", &format!("/file?n={n}"), &"y".repeat(500))?,
+        "count" => ask(stream, "GET", "/count", ""),
+        "stats" => ask(stream, "GET", "/stats", ""),
+        "note" => ask(stream, "POST", &format!("/note?n={}", n + 1_000_000), "a note to keep"),
+        "duplicate" => ask(stream, "POST", "/note?n=7", "the same note again"),
+        "file" => ask(stream, "POST", &format!("/file?n={n}"), &"y".repeat(500)),
         _ => return Err(std::io::Error::other(format!("no kind {kind}"))),
-    };
+    }
+    .map_err(during(on))?;
     assert!(status == 200 || (kind == "duplicate" && status == 500), "{kind} answered {status}");
     Ok(())
 }
@@ -194,13 +223,13 @@ fn counts_before_and_after(executable: &Path, kind: &str) -> std::io::Result<(St
     let server = start(executable, &dir)?;
     let mut kept = None;
     for n in 0..WARM {
-        send(&server, &mut kept, kind, n)?;
+        send(&server, &mut kept, kind, n).map_err(during(format!("{kind} request {n}")))?;
     }
     // Its kept-alive connection closes before each count, so each counts with nothing open.
     kept = None;
     let before = settled(&server);
     for n in WARM..WARM + MORE {
-        send(&server, &mut kept, kind, n)?;
+        send(&server, &mut kept, kind, n).map_err(during(format!("{kind} request {n}")))?;
     }
     kept = None;
     let after = settled(&server);

@@ -739,9 +739,8 @@ impl Lowering<'_> {
             }
         }
         let written = std::mem::take(&mut self.written_types);
-        let (function, signature) = self
-            .resolve_written(&key, &written, &types, keep)
-            .ok_or_else(|| format!("its call to `{key}` doesn't say what its types stand for"))?;
+        let (function, signature) =
+            self.resolve_written(&key, &written, &types, keep).ok_or_else(|| self.unresolved(&key))?;
         // The checker writes what a call leaves out into the program's own code; the standard
         // library's runs as it's written, so its calls take their defaults here.
         let defaulted = with_defaults(args, &signature.params, first);

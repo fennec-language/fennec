@@ -13,6 +13,9 @@ pub struct Module {
     /// What `kit.lock` says each kit the program depends on holds, which checking it holds the
     /// program to.
     pub holds: Holds,
+    /// Each file the program is made of, its own and its kits', by the span its text covers, in
+    /// order. What a file imports is its own. None for a module parsed from one text.
+    pub files: Vec<Span>,
 }
 
 /// The capabilities a dependency can be handed, by their type in code: the program's ways to reach

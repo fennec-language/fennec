@@ -792,7 +792,10 @@ impl Checker {
             let def = &entry.def;
             // A `test` block, and the function LLVM's tests make of one, have no signature.
             let test = key.starts_with("test \"") || key.starts_with("test:");
-            if entry.prelude || def.fails.is_some() || def.name == "main" || test {
+            // What the compiler writes in, like a crash's cleanup run as a function of its own, has
+            // no reader to see a signature: what it can fail with is what its body says.
+            let written = crate::lend_lowering::not_written_by_hand(def.span);
+            if entry.prelude || def.fails.is_some() || def.name == "main" || test || written {
                 continue;
             }
             let Some(State::Done(signature)) = self.states.get(key) else { continue };

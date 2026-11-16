@@ -230,6 +230,10 @@ pub(crate) struct Interp {
     pub(crate) loadings: Vec<json::read::Loading>,
     /// Which of `main`'s thread and the tasks it launched this runs as: 0 for `main`.
     pub(crate) actor: usize,
+    /// The `parallel` rounds this thread runs inside, the innermost last. Each round is one of
+    /// its own to the channels it uses, as it runs on a thread of its own in the compiled
+    /// program, and gets the number they know it by the first time it uses one.
+    pub(crate) rounds_as: Vec<Option<usize>>,
     /// The local `Buffer` a `reserve(n)` was just called on, by its frame and name, and the room
     /// it promised: `n` more than it held. Any write anywhere forgets it, so it holds only until
     /// the buffer, or anything else, changes.
@@ -264,6 +268,7 @@ impl Interp {
             recordings: Vec::new(),
             loadings: Vec::new(),
             actor: 0,
+            rounds_as: Vec::new(),
             reserved: None,
         }
     }

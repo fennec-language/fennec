@@ -1290,16 +1290,41 @@ fn tasks_talk_through_channels_and_listeners() {
 }
 
 /// A task that crashes cuts short every wait its block is in, as a closed channel does, so a
-/// receive in the block, in each of its `parallel` pieces, gives `None` and the block reaches its
-/// end, where the crash comes out. A wait the block starts after the crash is cut short too. The
-/// same from main and from a task. What it prints is what the compiled program printed
-/// (`workers/crash_while_pieces_wait.fen`).
+/// receive in the block gives `None` and the block reaches its end, where the crash comes out. A
+/// wait the block starts after the crash is cut short too. What it prints is what the compiled
+/// program printed. `workers/crash_while_pieces_wait.fen` waits so in each of a `parallel` call's
+/// pieces, which is refused until a round that waits lets the rounds after it run.
 #[test]
 fn a_crashing_task_cuts_short_every_wait_its_block_is_in() {
-    let (printed, ended) =
-        ran(include_str!("../../fennec/tests/fixtures/workers/crash_while_pieces_wait.fen"));
-    assert_eq!(ended, Ended::Exited(0), "{printed}");
-    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/workers/crash_while_pieces_wait.out"));
+    let (_, ended) = ran(include_str!("../../fennec/tests/fixtures/workers/crash_while_pieces_wait.fen"));
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "a receive in a `parallel` round before the rounds after it have run, whose messages could come first"
+                .to_owned()
+        )
+    );
+    prints(
+        "
+        from std.concurrent import Channel, Crashed, channel
+
+        def child(clock: Clock):
+            clock.sleep(20ms)
+            nothing: list[int] = []
+            _ = nothing[3]
+
+        def both(between: Channel[int], clock: Clock, stdout: Stdout) fails Crashed:
+            with launch(() => child(clock))?:
+                stdout.print('block gave', between.receive() else -1)
+
+        def main(clock: Clock, stdout: Stdout):
+            with channel[int](size=1) as between:
+                both(between, clock=clock, stdout=stdout) except why:
+                    stdout.print(f'{why}')
+            stdout.print('done')
+        ",
+        "block gave -1\nCrashed(why=\"the task crashed\")\ndone\n",
+    );
     // A send waiting for room is cut short as a closed channel's: it fails with `Closed`.
     prints(
         "
@@ -1354,6 +1379,165 @@ fn messages_whose_order_changes_what_prints_are_refused() {
                 .to_owned()
         )
     );
+}
+
+/// The rounds of a `parallel` call run beside each other in the compiled program, so which
+/// round's message comes first hangs on time, as two tasks' does: every order is tried, and where
+/// what's printed changes, the program is refused. Where it doesn't, it runs, nested calls too.
+#[test]
+fn each_parallel_round_is_a_sender_of_its_own() {
+    let (_, ended) = ran("
+        from std.concurrent import Channel, channel
+
+        def piece(number: int, out: Channel[int]) -> int:
+            out.send(number) except why:
+                return -len(f'{why}')
+            return number
+
+        def main(stdout: Stdout):
+            with channel[int](size=4) as between:
+                made = [piece(number, out=between) for number in parallel(range(2))]
+                first = between.receive() else -1
+                second = between.receive() else -1
+                stdout.print(made, first, second)
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "what it prints, or how it ends, hangs on the order its tasks' messages come in: \
+             line 1 is \"[0, 1] 0 1\" in one order and \"[0, 1] 1 0\" in another"
+                .to_owned()
+        )
+    );
+    prints(
+        "
+        from std.concurrent import Channel, channel
+
+        def inner(number: int, out: Channel[int]) -> int:
+            out.send(number) except why:
+                return -len(f'{why}')
+            return number
+
+        def outer(number: int, out: Channel[int]) -> int:
+            made = [inner(number * 10 + at, out=out) for at in parallel(range(2))]
+            return sum(made)
+
+        def main(stdout: Stdout):
+            with channel[int](size=8) as between:
+                made = [outer(number, out=between) for number in parallel(range(2))]
+                mut total = 0
+                for _ in range(4):
+                    total += between.receive() else -1
+                stdout.print(made, total)
+        ",
+        "[1, 21] 22\n",
+    );
+}
+
+/// A round's receive from a channel made outside it, while rounds after it haven't run here, is
+/// refused: in the compiled program they run beside it, and their messages could be the next, or
+/// it could be waiting on one. Where the rounds after it have all run, or the channel is the
+/// round's own, it runs; and taking from a channel in turn, where each knows the last take
+/// happened, is in order.
+#[test]
+fn a_round_receiving_before_the_rounds_after_it_have_run_is_refused() {
+    let (_, ended) = ran("
+        from std.concurrent import Channel, channel
+
+        def piece(number: int, between: Channel[int]) -> int:
+            if number == 0: return between.receive() else -1
+            between.send(7) except why:
+                return -len(f'{why}')
+            return 0
+
+        def main(stdout: Stdout):
+            with channel[int](size=1) as between:
+                stdout.print([piece(number, between=between) for number in parallel(range(2))])
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "a receive in a `parallel` round before the rounds after it have run, whose messages could come first"
+                .to_owned()
+        )
+    );
+    prints(
+        "
+        from std.concurrent import Channel, channel
+
+        def inner(number: int, out: Channel[int]) -> int:
+            out.send(number) except why:
+                return -len(f'{why}')
+            return number
+
+        def piece(number: int) -> int:
+            with channel[int](size=4) as mine:
+                made = [inner(number * 10 + at, out=mine) for at in parallel(range(2))]
+                mut total = 0
+                for _ in made:
+                    total += mine.receive() else -1
+                return total
+
+        def main(stdout: Stdout):
+            stdout.print([piece(number) for number in parallel(range(3))])
+        ",
+        "[1, 21, 41]\n",
+    );
+    prints(
+        "
+        from std.concurrent import Channel, Closed, channel
+
+        def piece(number: int, jobs: Channel[int]) -> int:
+            return (jobs.receive() else -1) * 10 + number
+
+        def main(stdout: Stdout) fails Closed:
+            with channel[int](size=4) as jobs:
+                for job in range(1, 4):
+                    jobs.send(job)?
+                first = jobs.receive() else -1
+                made = [piece(number, jobs=jobs) for number in parallel(range(1))]
+                last = jobs.receive() else -1
+                stdout.print(first, made, last)
+            return
+        ",
+        "1 [20] 3\n",
+    );
+}
+
+/// A round after one that failed may not run at all, so a message it sends may never be sent:
+/// it's refused, as its changing a `shared` value is.
+#[test]
+fn a_parallel_round_that_may_not_run_using_a_channel_is_refused() {
+    let (_, ended) = ran("
+        from std.concurrent import Channel, channel
+
+        error Odd:
+            at: int
+
+        def piece(number: int, out: Channel[int]) -> int fails Odd:
+            if number == 0: fail Odd(at=number)
+            out.send(number) except why:
+                return -len(f'{why}')
+            return number
+
+        def made(out: Channel[int]) -> int fails Odd:
+            pieces = [piece(number, out=out)? for number in parallel(range(2))]
+            return len(pieces)
+
+        def tried(out: Channel[int]) -> str:
+            count = made(out) except why:
+                return f'{why}'
+            return f'{count}'
+
+        def main(stdout: Stdout):
+            with channel[int](size=4) as between:
+                stdout.print(tried(between))
+                got = between.receive_within(0ms) except why:
+                    stdout.print(f'{why}')
+                    return
+                stdout.print(got else -1)
+        ");
+    assert_eq!(ended, Ended::Unsupported("a `parallel` round that may not run using a channel".to_owned()));
 }
 
 /// A task waiting for its inbox to close, which closes only once the task's own `with launch`

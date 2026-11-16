@@ -1007,11 +1007,29 @@ pub extern "C" fn from_value(value: i64, element: i64, start: i64, end: i64) -> 
     })
 }
 
-/// Empties a list only one owner holds, letting go of what it held, and zeroes the room it held
-/// it in.
+/// Empties a list only one owner holds, letting go of what it held.
+///
+/// A list whose items hold no blocks, like a `list[int]`, only has its length set to 0, on one
+/// look at its block: what it held stays in its room, which nothing reads past the length, and
+/// growing into that room zeroes each item it adds. Looking it up twice and zeroing the room was
+/// most of what `cell.clear()` cost `game_tick`, where Rust's `Vec::clear` sets the length.
+/// A list whose items hold blocks lets go of them and has its room zeroed, as before.
 pub extern "C" fn clear(list: i64) {
     with(|state| {
         let address = u64::try_from(list).unwrap_or(0);
+        let first = first_list_shape(state);
+        let State { heap, tables, .. } = &mut *state;
+        let Some(block) = heap.block_mut(address) else { return };
+        let plain = shape_word(block)
+            .and_then(|shape| usize::try_from(shape.checked_sub(first)?).ok())
+            .and_then(|number| tables.element(number))
+            .is_some_and(|element| !super::heap::holds_blocks(element));
+        if plain {
+            if let Some(length) = block.get_mut(2) {
+                *length = 0;
+            }
+            return;
+        }
         let Some(block) = state.heap.block(address) else { return };
         let Some(element) = element_of(state, block) else { return };
         let stride = element.words();

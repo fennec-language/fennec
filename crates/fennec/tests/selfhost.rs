@@ -135,6 +135,9 @@ const PARSE_CASES: &[(&str, &str)] = &[
     ("typed_attr", "def f():\n    a.b: int = 1\n"),
     ("typed_needs_value", "def f():\n    x: int\n"),
     ("fstring_leading_space", "def f():\n    x = f\"{ a} {\u{a0}b} { c:>3}\"\n"),
+    ("double_underscore_name", "def f():\n    held__lock = 1\n"),
+    ("double_underscore_fstring", "def f():\n    x = f\"{ a} {  held__lock:>3}\"\n"),
+    ("double_underscore_text", "def f():\n    x = \"held__lock is text\"\n"),
     ("lambda_trailing_comma", "def f():\n    g = (a, b,) => a\n    h = (a,) => a\n    i = () => 1\n"),
     ("lambda_lone_comma", "def f():\n    i = (,) => 1\n"),
     (

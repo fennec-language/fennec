@@ -969,6 +969,38 @@ fn a_run_that_waits_for_its_program_prints_and_exits_the_same() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A program that's ended by a signal, rather than giving back an exit code, is said to have been,
+/// by `fennec run` that waited for it, and the run exits with 1. It used to exit with 1 and say
+/// nothing, as if the program had failed quietly, which is how a crash read on Windows, where
+/// `fennec run` always waits.
+#[cfg(unix)]
+#[test]
+fn a_run_whose_program_a_signal_ends_says_so() {
+    let dir = scratch("run-killed").unwrap();
+    let program = dir.join("killed.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout, process: Process):\n    stdout.print(\"before\")\n    _ = process.run(\"sh\", [\"-c\", \"kill -KILL $PPID\"]) except why:\n        stdout.print(f\"{why}\")\n        return\n    stdout.print(\"after\")\n    return\n",
+    )
+    .unwrap();
+    let path = program.to_str().unwrap();
+    let output = crate::executables::fennec_command()
+        .args(["run", "--no-test", path])
+        .env("FENNEC_NO_CACHE", "1")
+        .env("FENNEC_RUN_WAITS", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stderr).contains("error: the program it built was ended by signal 9 (SIGKILL)"),
+        "{}",
+        text(&output.stderr)
+    );
+    assert!(!text(&output.stdout).contains("after"), "{}", text(&output.stdout));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// `main` may give back an int, which the process exits with: `return 2` exits with 2, and
 /// `return 0` with 0. One that gives back an int or a failure exits with the int, or prints the
 /// failure on standard error and exits with 1. The same on every engine, and built.

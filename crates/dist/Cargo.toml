@@ -12,6 +12,12 @@ publish.workspace = true
 fennec-blake3.workspace = true
 ring.workspace = true
 
+# Which user this process runs as, to tell whose a folder is: rustix's safe `geteuid`, already here
+# under the runtime and cap-std. The standard library can't say, and finding out by making a file
+# in the temp folder fails when no file can be made there, as under heavy load.
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 fennec-temp.workspace = true
 # Making a hardware key's signatures for the tests, which takes generating a key.

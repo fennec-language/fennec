@@ -36,6 +36,51 @@ pub(crate) fn written(input: &[u8]) -> String {
     source::source(&generate::program(input))
 }
 
+/// How many random programs the oracle ran, and why it refused the rest. The builds are held to
+/// the oracle only on the programs it runs, so this is how much of the target's comparison with it
+/// says anything: a refusal skips it without a word.
+#[derive(Default)]
+pub(crate) struct OracleShare {
+    pub(crate) programs: usize,
+    pub(crate) ran: usize,
+    /// How many it refused for each reason, with the numbers in a reason left out, so each kind is
+    /// counted once.
+    refused: std::collections::BTreeMap<String, usize>,
+}
+
+/// Runs the program each input writes through the oracle alone, and counts how many it ran and
+/// why it refused the rest.
+pub(crate) fn oracle_share(inputs: impl IntoIterator<Item = Vec<u8>>) -> OracleShare {
+    let mut share = OracleShare::default();
+    for input in inputs {
+        let outcome = fennec_oracle::run_source(&written(&input), "programs.fen");
+        share.programs += 1;
+        match outcome.ended {
+            fennec_oracle::Ended::Unsupported(why) => {
+                let first = why.lines().next().unwrap_or_default();
+                let kind: String = first.chars().filter(|c| !c.is_ascii_digit()).collect();
+                *share.refused.entry(kind).or_default() += 1;
+            }
+            fennec_oracle::Ended::Exited(_) | fennec_oracle::Ended::Stopped(_) => share.ran += 1,
+        }
+    }
+    share
+}
+
+impl std::fmt::Display for OracleShare {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let percent = self.ran * 100 / self.programs.max(1);
+        write!(f, "the oracle ran {} of {} random programs ({percent}%)", self.ran, self.programs)?;
+        let mut kinds: Vec<(&String, &usize)> = self.refused.iter().collect();
+        kinds.sort_by(|(first, many), (second, more)| more.cmp(many).then(first.cmp(second)));
+        let said: Vec<String> = kinds.iter().map(|(why, count)| format!("{count} {why}")).collect();
+        if !said.is_empty() {
+            write!(f, "; refused: {}", said.join("; "))?;
+        }
+        Ok(())
+    }
+}
+
 /// The target: the two builds agree with each other and with the evaluator.
 pub(crate) fn programs(input: &[u8]) -> Result<(), String> {
     if crate::llvm::ready().is_err() {
@@ -188,6 +233,24 @@ mod tests {
         }
         assert!(sure > 240, "sure of only {sure} of 256");
         assert!(failed > 0, "no program failed, so failures are never compared");
+    }
+
+    /// The least share of random programs, in percent, the oracle has to run. It refuses the rest,
+    /// and a refusal skips the target's comparison with it without a word. It goes up as what it
+    /// refuses comes to be modeled, and never down.
+    const ORACLE_RUNS_AT_LEAST: usize = 50;
+
+    /// The oracle runs at least `ORACLE_RUNS_AT_LEAST` percent of random programs, or holding the
+    /// builds to it says little. What it refused, by why, is in the message.
+    #[test]
+    fn the_oracle_runs_its_share_of_programs() {
+        let inputs = (0_u8..64).map(|seed| -> Vec<u8> {
+            (0_u8..160)
+                .map(|at| at.wrapping_mul(seed).wrapping_add(seed.rotate_left(5)) ^ at.rotate_left(2))
+                .collect()
+        });
+        let share = super::oracle_share(inputs);
+        assert!(share.ran * 100 >= share.programs * ORACLE_RUNS_AT_LEAST, "{share}");
     }
 
     /// Trees, `Node` and `Named`, are built, changed through `ref`, copied while they change,

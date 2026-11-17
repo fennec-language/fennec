@@ -1,0 +1,16 @@
+# The last task that could move sleeps, then ends, sending nothing, which leaves the rest stuck.
+from std.concurrent import Channel, Crashed, channel
+from std.time import Duration
+
+def waits(numbers: Channel[int]):
+    _ = numbers.receive() else -1
+
+def naps(clock: Clock, stdout: Stdout):
+    clock.sleep(Duration.millis(50))
+    stdout.print("napped")
+
+def main(stdout: Stdout, clock: Clock) fails Crashed:
+    with channel[int](size=1) as numbers:
+        with launch(() => naps(clock, stdout=stdout))?:
+            with launch(() => waits(numbers))?:
+                pass

@@ -1,0 +1,14 @@
+# Two tasks, each waiting to hear from the other before it sends: neither ever does, and main
+# waits at the block's end for them.
+from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+def passes_on(inbox: Inbox[int], outbox: Sender[int]) fails Closed:
+    heard = inbox.receive() else -1
+    outbox.send(heard)?
+
+def main(stdout: Stdout) fails Closed | Crashed:
+    with channel[int](size=1) as first:
+        with channel[int](size=1) as second:
+            with launch(() => passes_on(first.inbox(), outbox=second.sender())?)?:
+                with launch(() => passes_on(second.inbox(), outbox=first.sender())?)?:
+                    stdout.print("both launched")

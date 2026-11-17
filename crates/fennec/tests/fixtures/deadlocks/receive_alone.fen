@@ -1,0 +1,8 @@
+# A receive nobody can send to: main waits for good.
+from std.concurrent import channel
+
+def main(stdout: Stdout):
+    with channel[int](size=1) as box:
+        stdout.print("before")
+        heard = box.receive() else -1
+        stdout.print(heard)

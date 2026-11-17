@@ -1,0 +1,13 @@
+# A task sends twice to a channel that holds one message, which nobody receives from.
+from std.concurrent import Channel, Closed, Crashed, channel
+
+def sends(numbers: Channel[int]):
+    numbers.send(1) except Closed():
+        return
+    numbers.send(2) except Closed():
+        return
+
+def main(stdout: Stdout) fails Crashed:
+    with channel[int](size=1) as numbers:
+        with launch(() => sends(numbers))?:
+            stdout.print("launched")

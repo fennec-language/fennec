@@ -1,0 +1,63 @@
+## Serving: a chat server. A client's first line joins a room, `JOIN <room> <name>`, and each line
+## after it is a message to that room. A hub task owns the rooms and sends each message, as
+## `<name> <message>`, to every member, its sender too. Each connection has a task of its own
+## that writes what the hub sends it, so a client slow to read holds up only its own.
+from std.concurrent import Closed, Crashed, Inbox, Sender
+from std.net import Connection, NetError
+
+## What the hub hears from the connections.
+enum Note:
+    Joined(name: str, room: str, mailbox: Sender[str])
+    Said(room: str, line: str)
+    Left(name: str, room: str)
+
+## Writes each line the hub sends one connection, until the hub lets go of its mailbox.
+def deliver(inbox: Inbox[str], conn: Connection) fails NetError:
+    for line in inbox:
+        conn.write(line)?
+    return
+
+## The hub: each room's members, by name, and each message sent on to all of them. A member that
+## has gone is passed over: its connection's own task tells the hub it has left.
+def hub(inbox: Inbox[Note]):
+    mut rooms = dict[str, dict[str, Sender[str]]]()
+    for note in inbox:
+        match note:
+            case .Joined(name, room, mailbox):
+                if room not in rooms:
+                    rooms[room] = dict[str, Sender[str]]()
+                rooms[room][name] = mailbox
+                mailbox.send(f"JOINED {room}\n") except Closed():
+                    pass
+            case .Said(room, line):
+                for member in rooms[room].values():
+                    member.send(line) except Closed():
+                        pass
+            case .Left(name, room):
+                _ = rooms[room].pop(name)
+    return
+
+## One connection: it joins its room, then hands the hub each line it sends, until it hangs up.
+def attend(conn: Connection, to_hub: Sender[Note]) fails NetError | Closed | Crashed:
+    first = conn.read_line()? else:
+        return
+    parts = first.split(" ")
+    if len(parts) != 3 or parts[0] != "JOIN": return
+    room = parts[1]
+    name = parts[2]
+    with launch((inbox) => deliver(inbox, conn)?, inbox_size=64)? as mailbox:
+        to_hub.send(.Joined(name=name, room=room, mailbox=mailbox))?
+        for line in conn.lines()?:
+            to_hub.send(.Said(room=room, line=f"{name} {line}\n"))?
+        to_hub.send(.Left(name=name, room=room))?
+    return
+
+def main(net: Net, stdout: Stdout, stderr: Stderr) fails NetError | Crashed | IoError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        with launch((inbox) => hub(inbox), inbox_size=1024)? as to_hub:
+            for conn in parallel(server):
+                # A connection that goes wrong ends itself, not the server, and says why.
+                attend(conn, to_hub) except why:
+                    stderr.write_line(f"{conn}: {why}")?
+    return

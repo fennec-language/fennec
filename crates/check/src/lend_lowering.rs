@@ -646,9 +646,12 @@ impl Lowering<'_> {
         // The source's own names, hidden, so none is one of the caller's.
         let mut locals = Vec::new();
         declared_in(&def.body, &mut locals);
+        // And every name bound inside it, by a nested function, an arrow function or a case
+        // anywhere, so none is one of the caller's where the block is written in.
+        locals.extend(fennec_syntax::sight::names_bound(&def.body));
         renamed.extend(locals.iter().map(|local| (local.clone(), hidden(local))));
         let mut body = def.body.clone();
-        rename(&mut body, &renamed);
+        fennec_syntax::sight::rename_everywhere(&mut body, &renamed);
         if let Some(instead) = self.instead.take() {
             fail_instead(&mut body, &instead);
         }
@@ -1760,7 +1763,11 @@ fn given_as(block: &mut Vec<Stmt>, (split, names): (bool, &[WithName]), held: &s
         let kind = StmtKind::Assign { target, op: None, value: name(place, at), declare_mut: true, ty: None };
         block.insert(0, stmt(kind, at));
     } else {
-        rename(block, &[(held.to_owned(), place.to_owned())]);
+        // Each use of the `with`'s name is the source's own name for what it lends, but not a use
+        // under something in the block that names it again.
+        fennec_syntax::sight::uses_in_sight(block, &[held.to_owned()], &mut |expr| {
+            expr.kind = ExprKind::Name(place.to_owned());
+        });
     }
 }
 
@@ -2126,43 +2133,6 @@ fn targets(target: &Expr, found: &mut Vec<String>) {
     }
 }
 
-/// Renames names in a body, those it reads and those its loops and `with`s give.
-fn rename(body: &mut [Stmt], renamed: &[(String, String)]) {
-    let fresh = |name: &str| renamed.iter().find(|(from, _)| from == name).map(|(_, to)| to.clone());
-    fennec_syntax::visit::in_stmts(body, &mut |expr| match &mut expr.kind {
-        ExprKind::Name(name) => {
-            if let Some(to) = fresh(name) {
-                *name = to;
-            }
-        }
-        ExprKind::Lambda { params, .. } => {
-            for param in params {
-                if let Some(to) = fresh(param) {
-                    *param = to;
-                }
-            }
-        }
-        ExprKind::Comprehension { names, .. } => {
-            for held in names {
-                if let Some(to) = fresh(held) {
-                    *held = to;
-                }
-            }
-        }
-        ExprKind::Match { arms, .. } => {
-            for arm in arms {
-                bound_by(&mut arm.pattern, &mut |held| {
-                    if let Some(to) = fresh(held) {
-                        *held = to;
-                    }
-                });
-            }
-        }
-        _ => {}
-    });
-    rename_bound(body, &fresh);
-}
-
 /// Each name a pattern binds.
 fn bound_by(pattern: &mut Pattern, each: &mut dyn FnMut(&mut String)) {
     match pattern {
@@ -2173,44 +2143,6 @@ fn bound_by(pattern: &mut Pattern, each: &mut dyn FnMut(&mut String)) {
             }
         }
         Pattern::Wildcard | Pattern::Literal(_) => {}
-    }
-}
-
-fn rename_bound(body: &mut [Stmt], fresh: &dyn Fn(&str) -> Option<String>) {
-    for stmt in body {
-        match &mut stmt.kind {
-            StmtKind::For { names, body, .. } => {
-                for held in names {
-                    if let Some(to) = fresh(held) {
-                        *held = to;
-                    }
-                }
-                rename_bound(body, fresh);
-            }
-            StmtKind::With { names, body, .. } => {
-                for held in names {
-                    if let Some(to) = fresh(&held.name) {
-                        held.name = to;
-                    }
-                }
-                rename_bound(body, fresh);
-            }
-            StmtKind::While { body, .. } => rename_bound(body, fresh),
-            StmtKind::OnFailure { cleanup, body, .. } => {
-                rename_bound(cleanup, fresh);
-                rename_bound(body, fresh);
-            }
-            StmtKind::If { branches, otherwise } => {
-                for (_, body) in branches {
-                    rename_bound(body, fresh);
-                }
-                if let Some(body) = otherwise {
-                    rename_bound(body, fresh);
-                }
-            }
-            StmtKind::Lend { otherwise, .. } => rename_bound(otherwise, fresh),
-            _ => {}
-        }
     }
 }
 

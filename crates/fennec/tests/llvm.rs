@@ -1772,6 +1772,99 @@ const LOCK_BLOCK_VALUE: &str = r#"def main(stdout: Stdout):
     stdout.print(kept)
 "#;
 
+/// A name a `lock` gives, named again inside its block by a loop, a case or an arrow function's
+/// parameter, is that one there, of the same type: not what's locked. Before, a loop's and a
+/// case's read what's locked, and an arrow function's was refused as taking the lock again, or
+/// stopped the program when it ran. A nested function's parameter is renamed the same way, but a
+/// nested function called inside a lock is refused for now whatever its names (#2011).
+#[test]
+fn a_lock_s_name_named_again_inside_its_block_is_that_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let case = "enum Box:\n    Held(lines: list[int])\n    Empty\n\n";
+    let applied = "def applied(work: (list[int]) -> int) -> int:\n    return work([1, 2, 3])\n\n";
+    let shapes = [
+        ("lock_named_by_a_loop", "", "for lines in [[1, 2, 3]]:\n    stdout.print(len(lines))"),
+        (
+            "lock_named_by_a_case",
+            case,
+            "boxed = Box.Held(lines=[1, 2, 3])\nmatch boxed:\n    case .Held(lines):\n        stdout.print(len(lines))\n    case _:\n        pass",
+        ),
+        ("lock_named_by_an_arrow", applied, "stdout.print(applied((lines) => len(lines)))"),
+        (
+            "lock_named_by_a_kept_arrow",
+            "",
+            "counted: (list[int]) -> int = (lines) => len(lines)\nstdout.print(counted([1, 2, 3]))",
+        ),
+    ];
+    for (name, top, inside) in shapes {
+        let inside = inside.replace('\n', "\n        ");
+        let source = LOCK_NAMED_AGAIN.replace("TOP\n", top).replace("INSIDE", &inside);
+        prints_in_both_builds(name, &source, "3\n1\n")?;
+    }
+    // The coverage lane's shape, which checked and then stopped when the arrow ran: a bare
+    // parameter, typed by what it's kept in, reading a field of a value of the locked one's type.
+    prints_in_both_builds("lock_named_by_a_bare_arrow", LOCK_NAMED_BY_A_BARE_ARROW, "3\n[1, 2, 5]\n")
+}
+
+const LOCK_NAMED_BY_A_BARE_ARROW: &str = r"struct Bag:
+    items: list[int]
+    counts: dict[str, int]
+
+def main(stdout: Stdout):
+    shared bag = Bag(items=[1, 2], counts=dict[str, int]())
+    lock bag as ref held:
+        measure: (Bag) -> int = held => len(held.items)
+        stdout.print(measure(Bag(items=[3, 3, 3], counts=dict[str, int]())))
+        held.items.append(5)
+    lock bag as held:
+        stdout.print(held.items)
+";
+
+/// What each shape of `a_lock_s_name_named_again_inside_its_block_is_that_name` goes in, after
+/// what it declares at the top: it prints 3, from the name inside, and then 1, from what's locked.
+const LOCK_NAMED_AGAIN: &str = r"TOP
+def main(stdout: Stdout):
+    shared log = list[int]()
+    lock log as ref lines:
+        lines.append(5)
+        INSIDE
+        stdout.print(len(lines))
+";
+
+/// A name a `with` gives, named again inside its block by a nested function's parameter or by a
+/// loop inside a case, is that one there, of the same type: not what the source lends. So is a
+/// name a source's own nested function's parameter has, where the source has a local of that
+/// name. Before, each read the other.
+#[test]
+fn a_with_s_name_named_again_inside_its_block_is_that_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("with_named_again", WITH_NAMED_AGAIN, "1\n2\n30 205\n")
+}
+
+const WITH_NAMED_AGAIN: &str = r"def opened() -> with int:
+    value = 5
+    def doubled(value: int) -> int:
+        return value * 2
+    lend value + doubled(100)
+
+def main(stdout: Stdout):
+    mode = 0
+    with opened() as added:
+        def tripled(added: int) -> int:
+            return added * 3
+        match mode:
+            case 0:
+                for added in [1, 2]:
+                    stdout.print(added)
+            case _:
+                pass
+        stdout.print(tripled(10), added)
+";
+
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
     let dir = folder(name)?;

@@ -1236,8 +1236,7 @@ fn requests_from_rounds_leave_the_blocking_threads_to_the_handlers_they_wait_for
 /// program prints: the round's first line, `main`'s answer, and the end. A round is cancelled when
 /// its server stops, and fails as stopped at whatever wait it's in, so it goes no further.
 ///
-/// On Windows another program's run is a blocking job, which a stop doesn't cut yet (#1950), and
-/// `sleep` is no program there, so that one is Unix only.
+/// `sleep` is no program on Windows, so the round running it is Unix only.
 pub(crate) fn stopped_rounds() -> Vec<(&'static str, &'static str, &'static str)> {
     STOPPED_ROUNDS.iter().chain(UNIX_STOPPED_ROUNDS.iter()).copied().collect()
 }
@@ -1251,7 +1250,7 @@ const UNIX_STOPPED_ROUNDS: [(&str, &str, &str); 1] =
 #[cfg(not(unix))]
 const UNIX_STOPPED_ROUNDS: [(&str, &str, &str); 0] = [];
 
-const STOPPED_ROUNDS: [(&str, &str, &str); 7] = [
+const STOPPED_ROUNDS: [(&str, &str, &str); 10] = [
     ("sleep", include_str!("fixtures/stopped_rounds/stophandler.fen"), "the slow one began"),
     ("sleeps in a loop", include_str!("fixtures/stopped_rounds/stopspin.fen"), "the slow one began"),
     ("sleeps for ever", include_str!("fixtures/stopped_rounds/stopforever.fen"), "the slow one began"),
@@ -1263,6 +1262,13 @@ const STOPPED_ROUNDS: [(&str, &str, &str); 7] = [
         "the slow one began",
     ),
     ("a lock, then a sleep", include_str!("fixtures/stopped_rounds/stoplock.fen"), "the slow one counted"),
+    ("a blocking job", include_str!("fixtures/stopped_rounds/stophash.fen"), "the slow one began"),
+    (
+        "its own connection",
+        include_str!("fixtures/stopped_rounds/stopconn.fen"),
+        "the quiet one connected True",
+    ),
+    ("a server of its own", include_str!("fixtures/stopped_rounds/stopserving.fen"), "the slow one began"),
 ];
 
 /// What a program of `STOPPED_ROUNDS` prints, the round's line `first`: `stoplock.fen` counts the
@@ -1276,7 +1282,9 @@ pub(crate) fn stopped_round_printed(name: &str, first: &str) -> String {
 /// database or past a lock, when the task serving it is stopped, ends there, quietly, at 1 and 4
 /// threads. A round's sleep, its block's end, a program's wait and a database's pause went on as if
 /// they'd ended, so it printed what it never should have, and a round that slept in a loop never
-/// ended, nor did its program (#1915). A channel's wait already ended it.
+/// ended, nor did its program (#1915). A channel's wait already ended it. A blocking job and a
+/// read of the round's own connection let it go on too, and a round serving a server of its own
+/// never ended (#1950).
 #[test]
 fn a_round_stopped_in_any_wait_ends_there() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {

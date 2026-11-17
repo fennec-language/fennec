@@ -75,7 +75,11 @@ use fennec_syntax::{Diagnostic, Span};
 
 use crate::value::{Instance, Value};
 
-const MAGIC: &[u8; 8] = b"FENREPL7";
+const MAGIC: &[u8; 8] = b"FENREPL8";
+
+/// A log from before a stop that cut a blocking piece of work short was recorded: its replay may go
+/// on past the work.
+const MAGIC_BEFORE_WORK_STOPS: &[u8; 8] = b"FENREPL7";
 
 /// A log from before a `parallel` call's ranges a stop kept from beginning were recorded: its
 /// replay may begin others.
@@ -114,7 +118,7 @@ const CUT_SHORT: &str = "cut short";
     not(any(test, feature = "threads")),
     expect(dead_code, reason = "only launched tasks are stopped")
 )]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StoppedIn {
     /// Its own `with launch` block's end, waiting for a task it launched to end.
     BlockEnd,
@@ -123,6 +127,9 @@ pub(crate) enum StoppedIn {
     CancelledAtBlockEnd,
     /// A call serving, which a stop ends with its server.
     Serving,
+    /// A piece of work on a blocking thread, as hashing a password is, which a stop ends once it's
+    /// done. Logged only where the work is no capability's call, which a replay doesn't run.
+    Work,
 }
 
 impl StoppedIn {
@@ -136,6 +143,7 @@ impl StoppedIn {
             StoppedIn::BlockEnd => "stopped at its block's end",
             StoppedIn::CancelledAtBlockEnd => "cancelled at its block's end",
             StoppedIn::Serving => "stopped serving",
+            StoppedIn::Work => "stopped in its work",
         }
     }
 }
@@ -171,11 +179,14 @@ pub(crate) struct Task {
     /// stopped: so a server's round, which has no stop of its own to keep its end quiet, ends as
     /// quietly as the run's did (#1918).
     stopped: bool,
+    /// In a recording, whether it's in a capability's call, which a replay gives back without
+    /// running: a stop in work it does there is the call's to note, as cut short.
+    in_call: bool,
 }
 
 impl Task {
     fn named(name: Arc<str>) -> Task {
-        Task { name, started: 0, made: 0, stopped: false }
+        Task { name, started: 0, made: 0, stopped: false, in_call: false }
     }
 
     /// Whether, in a replay, its recording said a stop or a cancel cut it short.
@@ -579,6 +590,7 @@ impl Player {
 fn player_of(log: &[u8]) -> Option<Player> {
     let named = [
         MAGIC,
+        MAGIC_BEFORE_WORK_STOPS,
         MAGIC_BEFORE_UNBEGUN,
         MAGIC_BEFORE_SERVING_STOPS,
         MAGIC_BEFORE_SKIPS,
@@ -594,6 +606,7 @@ fn player_of(log: &[u8]) -> Option<Player> {
         held: HashMap::new(),
         whole: ![
             MAGIC,
+            MAGIC_BEFORE_WORK_STOPS,
             MAGIC_BEFORE_UNBEGUN,
             MAGIC_BEFORE_SERVING_STOPS,
             MAGIC_BEFORE_SKIPS,
@@ -667,6 +680,7 @@ fn entries_start(log: &[u8]) -> Option<usize> {
     let magic = log.get(..MAGIC.len())?;
     if ![
         MAGIC,
+        MAGIC_BEFORE_WORK_STOPS,
         MAGIC_BEFORE_UNBEGUN,
         MAGIC_BEFORE_SERVING_STOPS,
         MAGIC_BEFORE_SKIPS,
@@ -754,7 +768,7 @@ pub(crate) fn value(
         Mode::Off => live(),
         Mode::Record(file) => {
             let failing = crate::embed::failed();
-            let result = live();
+            let result = in_call(live);
             let mut payload = Vec::new();
             encode_result(&result, &mut payload);
             log_call(file, &running(), &call.to_string(), &payload, failing);
@@ -791,7 +805,7 @@ pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String
         Mode::Off => Ok(live()),
         Mode::Record(file) => {
             let failing = crate::embed::failed();
-            let word = live();
+            let word = in_call(live);
             log_call(file, &running(), call, &word.to_le_bytes(), failing);
             Ok(word)
         }
@@ -803,6 +817,19 @@ pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String
             Ok(i64::from_le_bytes(bytes))
         }
     }
+}
+
+/// Runs a capability's call live, in a recording, with the running task marked as in it.
+fn in_call<T>(live: impl FnOnce() -> T) -> T {
+    let mark = |inside: bool| {
+        TASK.with_borrow_mut(|task| {
+            std::mem::replace(&mut task.get_or_insert_with(Task::main).in_call, inside)
+        })
+    };
+    let outer = mark(true);
+    let given = live();
+    mark(outer);
+    given
 }
 
 /// In a recording, logs a call `task` made, which it made `failing` or not, giving `payload`, and
@@ -863,6 +890,10 @@ fn stopped_if_cut_short(player: &Mutex<Player>) {
 )]
 pub(crate) fn stopped_in(waiting: StoppedIn) {
     if let Mode::Record(file) = mode() {
+        let in_call = TASK.with_borrow(|task| task.as_ref().is_some_and(|task| task.in_call));
+        if waiting == StoppedIn::Work && in_call {
+            return;
+        }
         log(file, &running(), waiting.entry(), &[]);
     }
 }

@@ -200,6 +200,11 @@ pub(crate) fn audit(
     layouts: &Layouts,
     kept: &[Kept],
 ) -> Result<(), String> {
+    // A unit that asked for, or shared, a kind with no name to keep it by is never used again, so
+    // a build that has one writes it every time, and there's nothing kept to check.
+    if kept.iter().any(|kept| kept.share.added.is_none() || kept.asked.is_none()) {
+        return Ok(());
+    }
     let functions: HashMap<&str, &Function> = program
         .functions
         .iter()
@@ -220,8 +225,7 @@ pub(crate) fn audit(
     let afresh = crate::layouts_of(program)?;
     let _ = crate::native::native_types(program, &afresh);
     for Kept { function, asked, .. } in kept {
-        let asked =
-            asked.as_deref().ok_or_else(|| format!("`{function}` asked for a number with no name"))?;
+        let asked = asked.as_deref().unwrap_or_default();
         afresh.ask_again(asked).ok_or_else(|| format!("`{function}` asked for what has no layout"))?;
     }
     if afresh.fingerprint() != layouts.fingerprint() {

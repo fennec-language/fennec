@@ -48,7 +48,7 @@ pub mod notes;
 pub mod numbers;
 pub mod objects;
 pub mod parallel;
-pub(crate) use parallel::workers_wanted;
+pub(crate) use parallel::{stress_asked, workers_wanted};
 mod plans;
 pub mod regex;
 #[cfg(any(test, feature = "threads"))]
@@ -686,6 +686,9 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
         None => (Vec::new(), None, Leftovers::default()),
     }
 }
+
+/// What a task fails with when a stop, or a cancel of its round, cuts it short.
+pub(crate) const STOPPED_FAILURE: &str = "this task was stopped";
 
 /// Records a failure from compiled code's own checks, such as an overflow.
 pub fn fail_with(diagnostic: Diagnostic) {

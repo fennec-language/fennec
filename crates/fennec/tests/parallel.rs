@@ -1251,7 +1251,7 @@ const UNIX_STOPPED_ROUNDS: [(&str, &str, &str); 1] =
 #[cfg(not(unix))]
 const UNIX_STOPPED_ROUNDS: [(&str, &str, &str); 0] = [];
 
-const STOPPED_ROUNDS: [(&str, &str, &str); 7] = [
+const STOPPED_ROUNDS: [(&str, &str, &str); 8] = [
     ("sleep", include_str!("fixtures/stopped_rounds/stophandler.fen"), "the slow one began"),
     ("sleeps in a loop", include_str!("fixtures/stopped_rounds/stopspin.fen"), "the slow one began"),
     ("sleeps for ever", include_str!("fixtures/stopped_rounds/stopforever.fen"), "the slow one began"),
@@ -1263,6 +1263,11 @@ const STOPPED_ROUNDS: [(&str, &str, &str); 7] = [
         "the slow one began",
     ),
     ("a lock, then a sleep", include_str!("fixtures/stopped_rounds/stoplock.fen"), "the slow one counted"),
+    (
+        "a database's turn another has",
+        include_str!("fixtures/stopped_rounds/stopturn.fen"),
+        "the late one began",
+    ),
 ];
 
 /// What a program of `STOPPED_ROUNDS` prints, the round's line `first`: `stoplock.fen` counts the
@@ -1273,10 +1278,12 @@ pub(crate) fn stopped_round_printed(name: &str, first: &str) -> String {
 }
 
 /// A server's round that's asleep, at its own block's end, running another program, pausing for a
-/// database or past a lock, when the task serving it is stopped, ends there, quietly, at 1 and 4
-/// threads. A round's sleep, its block's end, a program's wait and a database's pause went on as if
-/// they'd ended, so it printed what it never should have, and a round that slept in a loop never
-/// ended, nor did its program (#1915). A channel's wait already ended it.
+/// database, past a lock, or waiting its turn at a database's connection, when the task serving it
+/// is stopped, ends there, quietly, at 1 and 4 threads. A round's sleep, its block's end, a
+/// program's wait and a database's pause went on as if they'd ended, so it printed what it never
+/// should have, and a round that slept in a loop never ended, nor did its program (#1915). A
+/// channel's wait already ended it. One stopped waiting its turn ran its statement once the turn
+/// before it ended (#1951).
 #[test]
 fn a_round_stopped_in_any_wait_ends_there() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
@@ -1300,6 +1307,44 @@ fn a_round_stopped_in_any_wait_ends_there() -> std::io::Result<()> {
             );
             assert!(!said.contains("error"), "{name} on {threads} threads: {said}");
         }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A server's round stopped while it waits its turn at a file, which another round's read has,
+/// doesn't read it, at 1 and 4 threads: `main` reads the line the late round would have. The file is
+/// the program's standard input, which gets its two lines only seconds later, once the round's
+/// been stopped. The read was done once the read before it ended (#1951). Unix only, for
+/// `/dev/stdin`.
+#[cfg(unix)]
+#[test]
+fn a_round_stopped_waiting_its_turn_at_a_file_doesnt_read_it() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-stopped-turn-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/stopped_rounds/stopturnfile.fen");
+    let built = build_on_threads(&dir, source, "stopturnfile")?;
+    for threads in ["1", "4"] {
+        let ran = Command::new("sh")
+            .arg("-c")
+            .arg("(sleep 3; printf 'one\\ntwo\\n') | \"$0\"")
+            .arg(&built)
+            .env("FENNEC_THREADS", threads)
+            .current_dir(&dir)
+            .output_within()?;
+        let said = String::from_utf8_lossy(&ran.stderr);
+        assert_eq!(ran.status.code(), Some(0), "on {threads} threads: {said}");
+        assert_eq!(
+            sorted_lines(&ran.stdout),
+            sorted_lines(b"the late one began\nhello /one\nthe server is over\n"),
+            "on {threads} threads: {said}"
+        );
+        assert!(!said.contains("error"), "on {threads} threads: {said}");
     }
     std::fs::remove_dir_all(&dir)?;
     Ok(())

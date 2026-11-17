@@ -13687,6 +13687,84 @@ fn a_kept_length_is_the_lists_own_however_the_list_is_used() -> std::io::Result<
     Ok(())
 }
 
+/// Two reads next to each other, `starts[near]` then `starts[near + 1]`, are tested together
+/// for both being inside, and only when that fails is each checked on its own, in order: so the
+/// first outside fails as it would alone, with the same message and trace, after what came before
+/// it ran. Outside past the end on the second read and on the first, from the end with a
+/// negative `near` that's inside, before the front, and after a loop has printed and appended.
+#[test]
+fn two_reads_next_to_each_other_fail_as_each_would_alone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_pinned("adjacent_second_outside", ADJACENT_SECOND_OUTSIDE)?;
+    same_as_pinned("adjacent_first_outside", ADJACENT_FIRST_OUTSIDE)?;
+    same_as_pinned("adjacent_from_the_end", ADJACENT_FROM_THE_END)?;
+    same_as_pinned("adjacent_before_the_front", ADJACENT_BEFORE_THE_FRONT)?;
+    same_as_pinned("adjacent_after_writes", ADJACENT_AFTER_WRITES)?;
+    Ok(())
+}
+
+const ADJACENT_SECOND_OUTSIDE: &str = r#"def summed(starts: list[int], upto: int, stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(upto):
+        total += starts[near] * 10 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(summed([0, 2, 4, 6], upto=5, stdout=stdout))
+    return
+"#;
+
+const ADJACENT_FIRST_OUTSIDE: &str = r#"def spans(starts: list[int], start: int, stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(start, start + 3):
+        total += starts[near + 1] - starts[near]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(spans([0, 2, 5, 9], start=1, stdout=stdout))
+    return
+"#;
+
+const ADJACENT_FROM_THE_END: &str = r#"def ends(starts: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(-4, 2):
+        total += starts[near] * 100 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(ends([1, 2, 3, 4], stdout=stdout))
+    return
+"#;
+
+const ADJACENT_BEFORE_THE_FRONT: &str = r#"def ends(starts: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(-3, -7, -1):
+        total += starts[near] * 100 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(ends([1, 2, 3, 4], stdout=stdout))
+    return
+"#;
+
+const ADJACENT_AFTER_WRITES: &str = r#"def filled(starts: list[int], stdout: Stdout) -> list[int]:
+    mut made = list[int]()
+    for near in range(len(starts)):
+        made.append(starts[near] + starts[near + 1])
+        stdout.print(made)
+    return made
+
+def main(stdout: Stdout):
+    stdout.print(filled([5, 6, 7], stdout=stdout))
+    return
+"#;
+
 /// An index checked once stays inside its list until something shortens or replaces the
 /// list, or writes the index: a pop, a method popping or replacing a field, a new list, and
 /// negative indexes are each checked again, and the last read fails.

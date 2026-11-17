@@ -1,0 +1,11 @@
+source 8b7aaba1e8acd9be01b26ff7296ace3bde5d0c681ae288c9b2c9b989db23d2b1
+code 0
+stdout 48
+-4 102
+-3 305
+-2 609
+-1 1010
+0 1112
+1 1315
+1315
+stderr 0

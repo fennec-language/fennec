@@ -15,6 +15,13 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
+
+/// How long a wait that blocks its thread waits before it counts as a stuck one, noted and counted
+/// for the check: most end sooner, and a thread that blocks often, as `main` sending to a busy
+/// task's inbox does, would otherwise note and count every one. A deadlock with such a wait in it
+/// is said this much later.
+pub(crate) const PATIENCE: Duration = Duration::from_millis(1);
 
 /// Bits for each of the two counts in [`COUNTS`]; the generation has the rest.
 const FIELD: u32 = 21;
@@ -165,31 +172,48 @@ impl Who {
         let number = super::serve::task_number(self);
         #[cfg(not(any(test, feature = "threads")))]
         let number = None;
-        match number.or_else(|| notes.iter().find_map(|note| note.on.number_of(self))) {
+        match number.or_else(|| notes.iter().find_map(|note| note.number_of(self))) {
             Some(number) => ((1, number), format!("task {number}")),
             None => ((2, 0), "a task".to_owned()),
         }
     }
 }
 
+/// What a stuck wait waits on.
+#[derive(Clone)]
+enum On {
+    /// A channel, by its number, found again only when a check looks: a parked wait's note then
+    /// shares nothing with the threads sending and receiving on it.
+    Channel(i64),
+    /// A launched task, at a block's end.
+    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are launched"))]
+    Awaited(Arc<dyn Awaited>),
+}
+
 /// What a stuck wait leaves for the check: who waits, on what, for which.
 #[derive(Clone)]
 pub(crate) struct Note {
     who: Who,
-    on: Arc<dyn Awaited>,
+    on: On,
     kind: Kind,
 }
 
 impl Note {
-    /// The note of a parked wait of `kind` on `on`, whose worker says who it is as the task parks
-    /// (`parked_by`): nothing's looked up on the way to a park.
-    pub(crate) fn parked(on: Arc<dyn Awaited>, kind: Kind) -> Note {
-        Note { who: Who::Other, on, kind }
+    /// The note of a parked wait of `kind` on the channel numbered `channel`, whose worker says who
+    /// it is as the task parks (`parked_by`): nothing's looked up or shared on the way to a park.
+    pub(crate) fn on_channel(channel: i64, kind: Kind) -> Note {
+        Note { who: Who::Other, on: On::Channel(channel), kind }
     }
 
-    /// The note of a wait of `kind` on `on` that blocks this thread, by whoever's running here.
-    pub(crate) fn blocking(on: Arc<dyn Awaited>, kind: Kind) -> Note {
-        Note { who: Who::here(), on, kind }
+    /// The note of a parked wait of `kind` on `on`, as `on_channel`'s.
+    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are launched"))]
+    pub(crate) fn parked(on: Arc<dyn Awaited>, kind: Kind) -> Note {
+        Note { who: Who::Other, on: On::Awaited(on), kind }
+    }
+
+    /// The same note, of a wait that blocks this thread, by whoever's running here.
+    pub(crate) fn blocking(self) -> Note {
+        Note { who: Who::here(), ..self }
     }
 
     /// The task this parked wait is, as its worker has it.
@@ -199,12 +223,29 @@ impl Note {
     }
 
     fn holds(&self) -> bool {
-        self.on.holds(self.kind)
+        match &self.on {
+            On::Channel(channel) => super::channels::still_waits_on(*channel, self.kind),
+            On::Awaited(on) => on.holds(self.kind),
+        }
+    }
+
+    fn number_of(&self, who: &Who) -> Option<i64> {
+        match &self.on {
+            On::Channel(_) => None,
+            On::Awaited(on) => on.number_of(who),
+        }
     }
 
     fn said(&self, notes: &[Note]) -> ((u8, i64), String) {
         let (order, who) = self.who.said(notes);
-        (order, format!("  {who} is waiting {}", self.on.said(self.kind)))
+        let what = match &self.on {
+            On::Channel(_) => match self.kind {
+                Kind::Send => "to send on a channel that's full".to_owned(),
+                Kind::Receive | Kind::BlockEnd => "to receive on a channel that's empty".to_owned(),
+            },
+            On::Awaited(on) => on.said(self.kind),
+        };
+        (order, format!("  {who} is waiting {what}"))
     }
 }
 

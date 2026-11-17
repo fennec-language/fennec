@@ -410,8 +410,15 @@ fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome 
             let waited = launched.ended.wait_timeout(end, left).unwrap_or_else(PoisonError::into_inner);
             waited.1.timed_out().then_some(Parked::TimedOut)
         } else {
+            // A stuck wait once it's waited a moment (see `deadlock::PATIENCE`): a task that ends by
+            // then costs the check nothing.
+            let (end, waited) =
+                launched.ended.wait_timeout(end, deadlock::PATIENCE).unwrap_or_else(PoisonError::into_inner);
+            if !waited.timed_out() || !matches!(*end, End::Running(_)) {
+                continue;
+            }
             // Counted with the end held, so the task's end, which takes it, comes before or after.
-            let (number, look) = deadlock::thread_waits(Note::blocking(on(), Kind::BlockEnd), false);
+            let (number, look) = deadlock::thread_waits(Note::parked(on(), Kind::BlockEnd).blocking(), false);
             let end = if look {
                 // The check looks at this task's end, so it's let go of meanwhile, and looked at
                 // again after: an end that came then has told no one.

@@ -523,6 +523,82 @@ fn a_name_two_files_of_a_kit_define_is_refused() {
     assert!(why.contains("`area` is defined in `squares` and in `circles`"), "{why}");
 }
 
+/// What each file imports from the standard library is its own, as the checker has it: `pick` is
+/// `floor` in the file that imports it so and `ceil` in the file that imports that, `dumps` is
+/// JSON's in one and TOML's in the other, and the program's `id_at` is its own beside the
+/// `id_at` `std.collections` imports for its `Deque`. The oracle refused each, where one table of
+/// imports for every file couldn't hold both. What it prints is what the compiled program printed.
+#[test]
+fn what_each_file_imports_is_its_own() {
+    let main = "\
+from std.collections import Deque
+from std.json import dumps
+from std.math import floor as pick, sqrt as id_at
+from shapes import Point
+import other
+
+def main(stdout: Stdout):
+    stdout.print(pick(2.7), other.lifted(2.7), id_at(16.0))
+    stdout.print(dumps(Point(x=1, y=2)))
+    stdout.print(other.saved(Point(x=3, y=4)))
+    mut queue = Deque.of([1, 2])
+    queue.appendleft(0)
+    stdout.print(len(queue), queue[0])
+";
+    let other = "\
+from std.math import ceil as pick
+from std.toml import dumps
+from shapes import Point
+
+def lifted(number: float) -> int:
+    return pick(number)
+
+def saved(point: Point) -> str:
+    return dumps(point)
+";
+    let files = [
+        ("kit.toml", KIT_TOML),
+        ("src/main.fen", main),
+        ("src/other.fen", other),
+        ("src/shapes.fen", "struct Point:\n    x: int\n    y: int\n"),
+    ];
+    let (printed, ended) = kit_ran("own_imports", &files).unwrap();
+    assert_eq!(ended, Ended::Exited(0), "it printed:\n{printed}");
+    assert_eq!(printed, "2 3 4.0\n{'x': 1, 'y': 2}\nx = 3\ny = 4\n\n3 0\n".replace('\'', "\""));
+}
+
+/// A program's own function with a builtin's name is its own, and std's code still calls the
+/// builtin, by the checker's rule: std's `Tree.descendants` reverses with `reversed` and
+/// `url.parse` fills in a `Url` with `copy`. The oracle ran the program's `reversed` from std's
+/// code, and printed `right, left, leaf`. What it prints is what the compiled program printed.
+#[test]
+fn a_program_defining_builtin_names_changes_nothing_std_does() {
+    prints(
+        "
+        from std import collections, url
+
+        def copy(number: int) -> int:
+            return number + 7
+
+        def reversed(items: list[str]) -> list[str]:
+            return items
+
+        def main(stdout: Stdout):
+            mut tree = collections.Tree[str]()
+            root = tree.add('root')
+            left = tree.add('left', parent=root)
+            _ = tree.add('leaf', parent=left)
+            _ = tree.add('right', parent=root)
+            stdout.print(', '.join([tree[node] for node in tree.descendants(root)]))
+            found = url.parse('http://example.com/a?b=1#top') except why:
+                stdout.print(f'{why}')
+                return
+            stdout.print(found.scheme, found.fragment, found.path, copy(1), reversed(['a', 'b']))
+        ",
+        "left, leaf, right\nhttp top /a 8 [\"a\", \"b\"]\n",
+    );
+}
+
 #[test]
 fn json_writes_a_value_as_its_type_saves_it_and_reads_it_back() {
     prints(
@@ -1346,6 +1422,23 @@ fn a_crashing_task_cuts_short_every_wait_its_block_is_in() {
             stdout.print('done')
         ",
         "second send closed\nblock ends\nCrashed(why=\"the task crashed\")\ndone\n",
+    );
+}
+
+/// A task that fails cuts short every wait its block is in, as a crash does, as the runtime has
+/// it: its launcher, waiting for a reply it will never send while still holding a sender of the
+/// replies itself, takes `None`, and the failure comes out where the block ends. A send waiting
+/// for room fails with `Closed`. The oracle cut short waits only for a crash, and refused these as
+/// hangs, as it refused 2 of 200 random programs from `fennec-fuzz`. What it prints is what the compiled
+/// program printed (`workers/failed_while_its_launcher_waits.fen`).
+#[test]
+fn a_failing_task_cuts_short_every_wait_its_block_is_in() {
+    let (printed, ended) =
+        ran(include_str!("../../fennec/tests/fixtures/workers/failed_while_its_launcher_waits.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(
+        printed,
+        include_str!("../../fennec/tests/fixtures/workers/failed_while_its_launcher_waits.out")
     );
 }
 

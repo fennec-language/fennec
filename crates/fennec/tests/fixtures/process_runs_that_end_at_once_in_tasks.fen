@@ -1,0 +1,28 @@
+# For the test that a parked `process.run` whose program ends at once never waits out its timeout.
+# Each run's program ends straight away, so its outputs close and its end comes together, which is
+# where macOS says a program has exited a moment before it can be reaped (#1954). Each run gives up
+# after 10 seconds, so a run that misses its program's end ends as timed out, not as a hang.
+from std.time import Duration
+
+RUNS = 400
+
+# How one run ended.
+def ended(process: Process) -> str:
+    done = process.run("true", [], timeout=Duration.seconds(10.0)) except why:
+        case .TimedOut(program=_, after=_):
+            return "timed out"
+        case .TooMuchOutput(program=_, most=most):
+            return f"too much output, past {most}"
+        case .NotRun(program=_, reason=reason):
+            return f"not run: {reason}"
+        case .LooksLikeAnOption(program=_, expression=expression):
+            return f"looks like an option: {expression}"
+    return f"status {done.status}"
+
+def main(process: Process, stdout: Stdout):
+    endings = [ended(process) for _ in parallel(range(RUNS))]
+    timed_out = len([ending for ending in endings if ending == "timed out"])
+    others = [ending for ending in endings if ending != "status 0" and ending != "timed out"]
+    stdout.print(RUNS - timed_out - len(others), "ended,", timed_out, "timed out")
+    if len(others) > 0:
+        stdout.print(others[0])

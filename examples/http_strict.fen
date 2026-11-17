@@ -3,9 +3,10 @@
 # A proxy and a server that disagree on where a request ends let one request hide inside another.
 # So anything the grammar doesn't allow gets a 400: a second `content-length`, a length that isn't
 # only digits, a space before a header's `:`, a header folded onto the next line, a version that
-# isn't 1.0 or 1.1, a control character in the method, or a line ended by a bare line feed. A line
-# over a mebibyte gets a 431. A value with a line break can't go into a response's headers, where
-# it would start a header of its own.
+# isn't 1.0 or 1.1, a control character in the method, or a line ended by a bare line feed. A
+# header line over a mebibyte gets a 431, and a request line longer than a whole head may be a
+# 414. A value with a line break can't go into a response's headers, where it would start a header
+# of its own.
 from std.net import NetError, Request, Response
 
 def respond(request: Request) -> Response:
@@ -82,7 +83,7 @@ test "a line ended by a bare line feed is refused"(net: Net):
     assert status_of(net, f"GET / HTTP/1.1\nhost: a\r\n{END}")? == BAD
     assert status_of(net, f"GET / HTTP/1.1\r\nhost: a\n{END}")? == BAD
 
-test "a line over a mebibyte is refused"(net: Net):
+test "a header line over a mebibyte is refused"(net: Net):
     long = "a" * 1048577
     assert status_of(net, f"GET / HTTP/1.1\r\nx-long: {long}\r\n{END}")? == TOO_BIG
 

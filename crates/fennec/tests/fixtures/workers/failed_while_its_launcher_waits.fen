@@ -1,0 +1,49 @@
+from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, channel
+
+error Refused:
+    code: int
+
+# Doubles each number it's sent back, and fails on the one it refuses.
+def answering(inbox: Inbox[int], back: Sender[int], refused: int) fails Closed | Refused:
+    for number in inbox:
+        if number == refused:
+            fail Refused(code=number)
+        back.send(number * 2)?
+
+# Sends 0, 1 and 2 in turn and waits for each answer. A task that fails cuts that wait short, as a
+# crash does, though this side still holds a sender of the replies, so the failure comes out where
+# the block ends.
+def asked(refused: int, stdout: Stdout) fails Closed | Crashed | Refused:
+    with channel[int](size=1) as replies:
+        back = replies.sender()
+        with launch((inbox) => answering(inbox, back, refused=refused)?)? as sends:
+            for number in range(3):
+                sends.send(number)?
+                got = replies.receive() else break
+                stdout.print("sent", number, "got", got)
+        back.send(-9)?
+        stdout.print("left", replies.receive() else 0)
+
+# Fails a moment after it starts, reading nothing.
+def refusing(clock: Clock) fails Refused:
+    clock.sleep(20ms)
+    fail Refused(code=7)
+
+# Fills a channel no one reads, so the second send waits for room, until the task's failure cuts it
+# short and it fails with `Closed`.
+def filled(between: Channel[int], clock: Clock, stdout: Stdout) fails Crashed | Refused:
+    with launch(() => refusing(clock)?)?:
+        between.send(1) except Closed():
+            stdout.print("first send closed")
+        between.send(2) except Closed():
+            stdout.print("second send closed")
+
+def main(clock: Clock, stdout: Stdout):
+    for refused in [1, 0, 5]:
+        asked(refused, stdout) except why:
+            stdout.print(f"{refused}: {why}")
+    with channel[int](size=1) as between:
+        filled(between, clock=clock, stdout=stdout) except why:
+            stdout.print(f"filled: {why}")
+        stdout.print("held", between.receive() else 0)
+    stdout.print("done")

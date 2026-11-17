@@ -128,8 +128,8 @@ struct Actor {
     clock: Clock,
     /// Which one launched it, for a task.
     launcher: Option<usize>,
-    /// The tasks it launched that crashed while it's still in their blocks, which cuts short every
-    /// wait it's in there, as `docs/language.md` says, until their blocks end.
+    /// The tasks it launched that failed or crashed while it's still in their blocks, which cuts
+    /// short every wait it's in there, as `docs/language.md` says, until their blocks end.
     cut_short: Vec<usize>,
     /// For a thread running a `parallel` call's rounds handed on to it, the one that handed them
     /// on: they're in every block it's in.
@@ -239,7 +239,7 @@ impl State {
             Doing::Waiting(Wait::Task(task), _) => {
                 self.actors.get(task).is_none_or(|task| matches!(task.state, Doing::Ended))
             }
-            // A wait in the block of a task that crashed is cut short.
+            // A wait in the block of a task that failed or crashed is cut short.
             Doing::Waiting(Wait::Room(_) | Wait::Message(_), _) if !found.cut_short.is_empty() => true,
             Doing::Waiting(Wait::Room(number), _) => {
                 self.channels.get(&number).is_none_or(|chan| chan.closed || chan.queue.len() < chan.size)
@@ -918,16 +918,16 @@ impl Interp {
     }
 }
 
-/// Whether `me`'s waits are cut short, by a task it launched crashing while it's in that task's
-/// block, as `docs/language.md` says: a cut wait ends as a closed channel's does, after the
-/// crash, so `who`, `me` or the round it runs, takes in what the crashed task had done.
+/// Whether `me`'s waits are cut short, by a task it launched failing or crashing while it's in
+/// that task's block, as `docs/language.md` says: a cut wait ends as a closed channel's does, after
+/// the task's end, so `who`, `me` or the round it runs, takes in what the task had done.
 fn cut_short(state: &mut State, me: usize, who: usize) -> bool {
-    let crashed: Vec<usize> = state.actors.get(me).map(|actor| actor.cut_short.clone()).unwrap_or_default();
-    if crashed.is_empty() {
+    let stopped: Vec<usize> = state.actors.get(me).map(|actor| actor.cut_short.clone()).unwrap_or_default();
+    if stopped.is_empty() {
         return false;
     }
     let clocks: Vec<Clock> =
-        crashed.iter().filter_map(|&task| state.actors.get(task).map(|task| task.clock.clone())).collect();
+        stopped.iter().filter_map(|&task| state.actors.get(task).map(|task| task.clock.clone())).collect();
     if let Some(actor) = state.actors.get_mut(who) {
         for clock in &clocks {
             merge(&mut actor.clock, clock);
@@ -1172,16 +1172,19 @@ fn task_thread(
         return;
     }
     let Ok(mut state) = sched.state.lock() else { return };
-    let crashed = matches!(ended, Err(Flow::Crash(..)));
+    // The runtime cuts the block's waits short when its task fails as when it crashes, so its
+    // launcher waiting on a reply that will never come reaches the block's end, and the failure
+    // comes out there.
+    let stopped = matches!(ended, Err(Flow::Crash(..) | Flow::Fail(..)));
     let mut launcher = None;
     if let Some(actor) = state.actors.get_mut(number) {
         actor.state = Doing::Ended;
         actor.ended = Some(ended);
         launcher = actor.launcher;
     }
-    // A task that crashes cuts short every wait its block is in: its launcher's, and those of
+    // A task that fails or crashes cuts short every wait its block is in: its launcher's, and those of
     // the threads running rounds it handed on, which are in the block too.
-    if crashed && let Some(launcher) = launcher {
+    if stopped && let Some(launcher) = launcher {
         let mut block = vec![launcher];
         while let Some(more) = state.actors.iter().enumerate().position(|(at, actor)| {
             !block.contains(&at)

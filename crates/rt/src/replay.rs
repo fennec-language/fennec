@@ -179,10 +179,6 @@ impl Task {
     }
 
     /// Whether, in a replay, its recording said a stop or a cancel cut it short.
-    #[cfg_attr(
-        not(any(test, feature = "threads")),
-        expect(dead_code, reason = "only a server's rounds are cancelled, which need threads")
-    )]
     pub(crate) fn was_stopped(&self) -> bool {
         self.stopped
     }
@@ -471,17 +467,24 @@ pub(crate) fn stopped_as_recorded() {
         if let Some(stop) = crate::embed::threads::task_stop() {
             stop.fetch_max(crate::embed::threads::STOPPING, Ordering::AcqRel);
         }
-        TASK.with_borrow_mut(|task| {
-            if let Some(task) = task.as_mut() {
-                task.stopped = true;
-            }
-        });
+        mark_stopped();
         crate::embed::serve::fail_as_stopped();
     }
     // Without threads there are no tasks to stop, so no recording a runtime like this one made says
     // a wait was cut short. One made with them that does still fails here, as it did.
     #[cfg(not(any(test, feature = "threads")))]
     crate::embed::fail_with(Diagnostic::new("this task was stopped", Span::default()));
+}
+
+/// In a replay, marks the running task as one its recording said a stop or a cancel cut short (see
+/// `Task::stopped`): for the code that made a `parallel` call or read a stream, once a piece of it
+/// was, as that piece ran under a name of its own and the code's end looks at the code's (#1949).
+pub(crate) fn mark_stopped() {
+    TASK.with_borrow_mut(|task| {
+        if let Some(task) = task.as_mut() {
+            task.stopped = true;
+        }
+    });
 }
 
 /// Whether this run is a replay, whose outside inputs all come from its recording.
@@ -754,9 +757,7 @@ pub(crate) fn value(
             let result = live();
             let mut payload = Vec::new();
             encode_result(&result, &mut payload);
-            let task = running();
-            log(file, &task, &call.to_string(), &payload);
-            note_cut_short(file, &task, failing);
+            log_call(file, &running(), &call.to_string(), &payload, failing);
             result
         }
         Mode::Replay(player) => {
@@ -791,9 +792,7 @@ pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String
         Mode::Record(file) => {
             let failing = crate::embed::failed();
             let word = live();
-            let task = running();
-            log(file, &task, call, &word.to_le_bytes());
-            note_cut_short(file, &task, failing);
+            log_call(file, &running(), call, &word.to_le_bytes(), failing);
             Ok(word)
         }
         Mode::Replay(player) => {
@@ -806,20 +805,35 @@ pub(crate) fn word(call: &str, live: impl FnOnce() -> i64) -> Result<i64, String
     }
 }
 
-/// In a recording, after a call `task` made, which it made `failing` or not: if a stop cut the
-/// call short, and so it's failing now as a stopped task, logs that, for a replay to stop it there.
-fn note_cut_short(file: &Mutex<std::fs::File>, task: &str, failing: bool) {
+/// In a recording, logs a call `task` made, which it made `failing` or not, giving `payload`, and
+/// after it, if a stop cut the call short, that it did, for a replay to stop the task there. Both go
+/// in one write, so a run that ends meanwhile keeps both or neither. A task left behind by a round
+/// cancelled at its block's end is stopped as the program ends: its sleep was kept without the mark
+/// once, and a replay went on past it, printing what the run never did.
+fn log_call(file: &Mutex<std::fs::File>, task: &str, call: &str, payload: &[u8], failing: bool) {
+    if cut_short_by_a_stop(failing) {
+        log_entries(file, task, &[(call, payload), (CUT_SHORT, &[])]);
+    } else {
+        log_entries(file, task, &[(call, payload)]);
+    }
+}
+
+/// Whether the call just made, which was made `failing` or not, was cut short by a stop, so the
+/// task's failing now as a stopped one.
+fn cut_short_by_a_stop(failing: bool) -> bool {
     // A server's round is cancelled when its server stops, rather than stopped, and fails as
     // stopped at its wait all the same.
     #[cfg(any(test, feature = "threads"))]
-    if !failing
-        && crate::embed::failed()
-        && (crate::embed::threads::stopped() || fennec_parked::is_cancelled())
     {
-        log(file, task, CUT_SHORT, &[]);
+        !failing
+            && crate::embed::failed()
+            && (crate::embed::threads::stopped() || fennec_parked::is_cancelled())
     }
     #[cfg(not(any(test, feature = "threads")))]
-    let _ = (file, task, failing);
+    {
+        let _ = failing;
+        false
+    }
 }
 
 /// In a replay, after a call the running task made: if a stop cut it short in the recording, the
@@ -888,20 +902,29 @@ pub(crate) fn will_be_stopped_in(waiting: StoppedIn, taking: bool) -> bool {
 }
 
 fn log(file: &Mutex<std::fs::File>, task: &str, call: &str, payload: &[u8]) {
+    log_entries(file, task, &[(call, payload)]);
+}
+
+/// Logs `task`'s entries, each a call and what it gave, together.
+fn log_entries(file: &Mutex<std::fs::File>, task: &str, entries: &[(&str, &[u8])]) {
     // Once an entry is lost, none comes after it: the log stops there, without its end mark, so a
     // replay says it was cut short rather than finding a gap and blaming the program.
     if LOG_FAILED.load(Ordering::Relaxed) {
         return;
     }
-    let too_big = u16::try_from(task.len()).is_err()
-        || u16::try_from(call.len()).is_err()
-        || u32::try_from(payload.len()).is_err();
-    if too_big {
-        stopped(&format!("`{call}` gave {} bytes, more than a recording can hold", payload.len()));
-        return;
+    let mut bytes = Vec::new();
+    for (call, payload) in entries {
+        let too_big = u16::try_from(task.len()).is_err()
+            || u16::try_from(call.len()).is_err()
+            || u32::try_from(payload.len()).is_err();
+        if too_big {
+            stopped(&format!("`{call}` gave {} bytes, more than a recording can hold", payload.len()));
+            return;
+        }
+        bytes.extend(entry(task, call, payload));
     }
     // Written at once, so a run that crashes or is killed leaves what it took.
-    let wrote = file.lock().unwrap_or_else(PoisonError::into_inner).write_all(&entry(task, call, payload));
+    let wrote = file.lock().unwrap_or_else(PoisonError::into_inner).write_all(&bytes);
     if let Err(error) = wrote {
         stopped(&error.to_string());
     }

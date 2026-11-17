@@ -1,0 +1,31 @@
+# A round's handler is asleep inside a piece of a `parallel` call when the serving task's block
+# ends and stops it, which cancels the round.
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def slept(number: int, clock: Clock, stdout: Stdout) -> int:
+    stdout.print("a piece began", number)
+    clock.sleep(2h)
+    stdout.print("a piece never said", number)
+    return number
+
+def answered(request: Request, clock: Clock, stdout: Stdout) -> Response:
+    if request.path == "/slow":
+        stdout.print("the slow one began")
+        found = [slept(number, clock=clock, stdout=stdout) for number in parallel([1, 2, 3])]
+        stdout.print("the slow one never said", len(found))
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, clock: Clock, stdout: Stdout):
+    server.serve((request) => answered(request, clock=clock, stdout=stdout))
+    stdout.print("the server never said")
+
+def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as slow:
+            slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+            with launch(() => serving(server, clock=clock, stdout=stdout), stop_after=200ms)?:
+                got = net.get(f"http://127.0.0.1:{port}/one")?
+                stdout.print(got.text())
+    stdout.print("the server is over")

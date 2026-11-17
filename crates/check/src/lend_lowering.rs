@@ -13,7 +13,7 @@
 //!
 //! It's the only place that knows how a source runs, so a native one can replace it alone.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use fennec_syntax::sight::Binder;
@@ -71,6 +71,7 @@ pub(crate) fn lower(
         failing: Vec::new(),
         fails: Vec::new(),
         instead: None,
+        tails: BTreeSet::new(),
     };
     for item in &mut module.items {
         match item {
@@ -100,7 +101,7 @@ pub(crate) fn lower(
 /// Writes each `with` that opens several handles, `with a()? as x, b()? as y:`, as one inside
 /// another, saying whether there were any. Then they finish innermost first, and when one fails
 /// to open, the ones opened before it run their `else:`, as their blocks failed.
-pub(crate) fn nest(module: &mut Module, opened_apart: &std::collections::BTreeSet<(u32, u32)>) -> bool {
+pub(crate) fn nest(module: &mut Module, opened_apart: &BTreeSet<(u32, u32)>) -> bool {
     if opened_apart.is_empty() {
         return false;
     }
@@ -122,7 +123,7 @@ pub(crate) fn nest(module: &mut Module, opened_apart: &std::collections::BTreeSe
     nested
 }
 
-fn nest_in(body: &mut [Stmt], opened_apart: &std::collections::BTreeSet<(u32, u32)>, nested: &mut bool) {
+fn nest_in(body: &mut [Stmt], opened_apart: &BTreeSet<(u32, u32)>, nested: &mut bool) {
     for each in body {
         match &mut each.kind {
             StmtKind::If { branches, otherwise } => {
@@ -196,6 +197,9 @@ struct Lowering<'s> {
     fails: Vec<Option<TypeExpr>>,
     /// What the source being written in does in place of failing, for `with src else fail E:`.
     instead: Option<Expr>,
+    /// The `with`s that are the last line of a function giving back a value, by span, through
+    /// `if`s and `match`es: one whose block always fails says so where it's written in.
+    tails: BTreeSet<(u32, u32)>,
 }
 
 thread_local! {
@@ -333,6 +337,7 @@ impl Lowering<'_> {
         self.fails.push(def.fails.clone());
         if def.ret.is_some() {
             self.tail_returned(&mut def.body);
+            tail_withs(&def.body, &mut self.tails);
         }
         self.stmts(&mut def.body);
         self.fails.pop();
@@ -633,6 +638,10 @@ impl Lowering<'_> {
         body.push(put_back);
         if always && ways.returned == Some(true) {
             body.extend(returned_always(&returned, at));
+        } else if always && ways.failed && ways.returned.is_none() && !ways.broke && !ways.continued {
+            // A matched case's body always runs, so one that always fails always leaves by
+            // failing, through the put-back.
+            body.extend(failed_always(&failed, at));
         } else {
             body.extend(taken_again(ways, &exit, &returned, at));
         }
@@ -735,7 +744,15 @@ impl Lowering<'_> {
         written.extend(body);
         if always_returns && ways.returned == Some(true) && !ways.broke && !ways.continued {
             written.extend(returned_always(&returned, at));
-        } else if always_returns && ways.failed && ways.returned.is_none() && !ways.broke && !ways.continued {
+        } else if always_returns
+            && ways.failed
+            && ways.returned.is_none()
+            && !ways.broke
+            && !ways.continued
+            && self.tails.contains(&(at.start, at.end))
+        {
+            // Only where the `with` is a value-giving function's last line, which needs it: a source
+            // that doesn't reach its `lend` skips the block, and code after the `with` runs then.
             written.extend(failed_always(&failed, at));
         } else {
             written.extend(taken_again(ways, &exit, &returned, at));
@@ -1010,6 +1027,30 @@ fn returned_always(returned: &str, at: Span) -> Vec<Stmt> {
         span: here(at),
     };
     vec![stmt(StmtKind::Assert(given), at), stmt(StmtKind::Return(Some(name(returned, at))), at)]
+}
+
+/// The spans of the `with`s that are `body`'s last line, through an `if` with an `else`, a
+/// `match`'s cases, and a `with`'s own block.
+fn tail_withs(body: &[Stmt], tails: &mut BTreeSet<(u32, u32)>) {
+    let Some(last) = body.last() else { return };
+    match &last.kind {
+        StmtKind::With { body: block, lock: false, .. } => {
+            tails.insert((last.span.start, last.span.end));
+            tail_withs(block, tails);
+        }
+        StmtKind::If { branches, otherwise: Some(otherwise) } => {
+            for (_, branch) in branches {
+                tail_withs(branch, tails);
+            }
+            tail_withs(otherwise, tails);
+        }
+        StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
+            for arm in arms {
+                tail_withs(&arm.body, tails);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// What's written after a source's body whose block always fails: `assert failed is not None`,
@@ -1848,7 +1889,7 @@ fn unmarked_first(crash: Option<&(Stmt, Stmt, Stmt)>, otherwise: &[Stmt]) -> Vec
 fn fail_instead(body: &mut [Stmt], instead: &Expr) {
     instead_of_fails(body, instead);
     let leaving = Box::new(instead.clone());
-    let mut in_arrows = std::collections::BTreeSet::new();
+    let mut in_arrows = BTreeSet::new();
     fennec_syntax::visit::in_stmts(body, &mut |expr| {
         if let ExprKind::Lambda { body, .. } = &mut expr.kind {
             fennec_syntax::visit::in_expr(body, &mut |inner| {

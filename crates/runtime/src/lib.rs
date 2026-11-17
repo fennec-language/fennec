@@ -2,11 +2,12 @@
 //! calls, exported under the name it calls it by. `fennec build`
 //! links an executable's object file with this library and the system's C libraries.
 //!
-//! The functions are `fennec_rt::embed`'s; this crate only gives them names a linker
-//! can find, which is the one thing here Rust calls unsafe.
+//! The functions are `fennec_rt::embed`'s; this crate gives them names a linker can find,
+//! and asks the system for what only it can give: Windows's fine timer, and a process's end.
+//! Those are the things here Rust calls unsafe.
 #![expect(
     unsafe_code,
-    reason = "exporting the runtime's functions under fixed names, for linked executables"
+    reason = "exporting the runtime's functions under fixed names, and calling the system to end the process"
 )]
 
 use fennec_rt::embed::guarded::rollback;
@@ -522,7 +523,11 @@ export! {
 pub extern "C" fn fennec_aot_run(entry: extern "C" fn(i64), length: i64) -> i32 {
     #[cfg(windows)]
     fine_timer();
-    aot::run(entry, length, stop)
+    let code = aot::run(entry, length, stop);
+    #[cfg(windows)]
+    end_process(code);
+    #[cfg(not(windows))]
+    code
 }
 
 /// Asks Windows to tick its timer every millisecond while the program runs, as Go's runtime does.
@@ -543,11 +548,42 @@ fn fine_timer() {
 
 /// Ends the process now, for a failure in cleanup that nothing can pass on.
 fn stop(code: i32) {
-    unsafe extern "C" {
-        fn exit(code: i32) -> !;
+    #[cfg(windows)]
+    end_process(code);
+    #[cfg(not(windows))]
+    {
+        unsafe extern "C" {
+            fn exit(code: i32) -> !;
+        }
+        // SAFETY: the C library's `exit` takes any code, and this is the last thing the run does.
+        unsafe { exit(code) }
     }
-    // SAFETY: the C library's `exit` takes any code, and this is the last thing the run does.
-    unsafe { exit(code) }
+}
+
+/// Ends the process at once with `code`, on Windows, once what the run printed has been written:
+/// every thread stops where it is, and none of the C runtime's `exit` runs.
+///
+/// A program used to end by returning from its `main` into that `exit`, which tears the C runtime
+/// down, and on Windows loads a library to look up how to, while the program's workers go on. A
+/// worker still starting its share of the program then crashed in the allocator, reading the
+/// thread's heap as null: 0xC0000005 after the right output, in about one Windows CI run of the
+/// replay tests in eight, every crash the same under a debugger (CI run 43932818597). The runtime
+/// leaves its heap for the process's end to give back, so nothing that teardown does is needed.
+/// Linux and macOS go on ending through `exit`.
+#[cfg(windows)]
+fn end_process(code: i32) -> ! {
+    // Linked by name with no import library, as `fine_timer`'s function is.
+    #[link(name = "kernel32", kind = "raw-dylib")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn TerminateProcess(process: isize, code: u32) -> i32;
+    }
+    // SAFETY: `GetCurrentProcess` gives a handle to this process that needs no closing, and
+    // `TerminateProcess` takes it and any code; ending this process, it doesn't come back.
+    unsafe {
+        TerminateProcess(GetCurrentProcess(), code.cast_unsigned());
+    }
+    std::process::abort()
 }
 
 #[cfg(test)]

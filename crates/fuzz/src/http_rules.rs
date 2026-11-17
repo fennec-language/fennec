@@ -66,6 +66,21 @@ const MOST_BODY: usize = 10_485_760;
 /// The most blank lines `std.net` passes over before a request line.
 const MOST_BLANK_LINES: usize = 8;
 
+/// The most the runtime reads into one line, `MOST_LINE_BYTES`: a longer line fails before its end
+/// is seen.
+const MOST_LINE_BYTES: usize = 1 << 20;
+
+/// What a request line from `at` too long to be read gets: a 414, whatever it ends with, since the
+/// runtime gives up on it before its end. Near the limit, how its end is counted decides, which
+/// isn't promised.
+fn unreadable(input: &[u8], at: usize) -> Option<Result<(Wanted, bool), Stop>> {
+    let (found, _) = line(input, at)?;
+    if found.len().abs_diff(MOST_LINE_BYTES) <= 2 {
+        return Some(Err(Stop::Unpromised));
+    }
+    (found.len() > MOST_LINE_BYTES).then_some(Ok((Wanted::Refused(414), false)))
+}
+
 /// How long the server may take to answer and close.
 const ANSWERED_WITHIN: Duration = Duration::from_secs(10);
 
@@ -92,10 +107,6 @@ enum Stop {
     End,
     /// What comes next isn't promised anything.
     Unpromised,
-    /// The server closed with input unread on the plain runtime, which resets the connection and
-    /// can lose answers. Reported: the plain runtime's `close` doesn't linger as the threads one
-    /// does. Take this out once it does.
-    ClosedUnread,
 }
 
 /// A line of `input` from `at`, without its ending, and where the next starts, as the server's
@@ -170,14 +181,7 @@ fn query(text: &str) -> Vec<(String, String)> {
 }
 
 /// What each request in `input` should get, in order, and whether more could follow.
-fn wanted(input: &[u8], resets: bool) -> (Vec<Wanted>, Stop) {
-    // Reported: the runtime takes a `\r` off a line twice, so `\r\r\n` ends a line as `\r\n` does,
-    // where a bare `\r` should make it invalid. Take this out once
-    // `a_bare_carriage_return_isnt_taken_off_a_line` passes.
-    if input.windows(3).any(|three| three == b"\r\r\n") {
-        return (Vec::new(), Stop::Unpromised);
-    }
-    let closed = |at: usize| if resets && at < input.len() { Stop::ClosedUnread } else { Stop::End };
+fn wanted(input: &[u8]) -> (Vec<Wanted>, Stop) {
     let mut answers = Vec::new();
     let mut at = 0;
     loop {
@@ -186,10 +190,9 @@ fn wanted(input: &[u8], resets: bool) -> (Vec<Wanted>, Stop) {
                 let refused = matches!(answer, Wanted::Refused(_));
                 answers.push(answer);
                 if refused || !keep {
-                    return (answers, closed(at));
+                    return (answers, Stop::End);
                 }
             }
-            Err(Stop::End) => return (answers, closed(at)),
             Err(stop) => return (answers, stop),
         }
     }
@@ -198,6 +201,9 @@ fn wanted(input: &[u8], resets: bool) -> (Vec<Wanted>, Stop) {
 /// The next request from `at`, and whether the connection's kept open after it.
 fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     let refused = |status| Ok((Wanted::Refused(status), false));
+    if let Some(long) = unreadable(input, *at) {
+        return long;
+    }
     let Ok((first, next)) = request_line(input, *at).ok_or(Stop::End)? else { return refused(400) };
     *at = next;
     // A few blank lines before a request line are passed over, as HTTP/1.1 says.
@@ -205,11 +211,18 @@ fn request(input: &[u8], at: &mut usize) -> Result<(Wanted, bool), Stop> {
     let mut blank = 0;
     while first.is_empty() && blank < MOST_BLANK_LINES {
         blank += 1;
+        if let Some(long) = unreadable(input, *at) {
+            return long;
+        }
         let Ok((line, next)) = request_line(input, *at).ok_or(Stop::End)? else { return refused(400) };
         (first, *at) = (line, next);
     }
     if first.is_empty() {
         return Err(Stop::End);
+    }
+    // A first line longer than a whole head may be is a 414, before it's taken apart.
+    if first.len() > MOST_HEADER_BYTES {
+        return refused(414);
     }
     let first = std::str::from_utf8(first).map_err(|_| Stop::Unpromised)?;
     let parts: Vec<&str> = first.split(' ').collect();
@@ -323,7 +336,7 @@ struct Heard {
 }
 
 /// The responses in what the server said, in order, up to `most`, or what's wrong with them.
-fn heard(said: &[u8], heads: &[bool], most: usize, reset: bool) -> Result<Vec<Heard>, String> {
+fn heard(said: &[u8], heads: &[bool], most: usize) -> Result<Vec<Heard>, String> {
     let mut responses = Vec::new();
     let mut at = 0;
     while at < said.len() && responses.len() < most {
@@ -350,11 +363,7 @@ fn heard(said: &[u8], heads: &[bool], most: usize, reset: bool) -> Result<Vec<He
         if heads.get(responses.len()).copied().unwrap_or(false) {
             length = 0;
         }
-        // A reset can cut what came last short.
         let Some(body) = said.get(next..next + length) else {
-            if reset {
-                break;
-            }
             return Err("a response's body was cut short".to_owned());
         };
         let body = body.to_vec();
@@ -435,12 +444,11 @@ pub(crate) fn http_server(input: &[u8]) -> Result<(), String> {
     if crate::supervise::kilobytes(server.0.id()).is_some_and(|held| held > 512 * 1024) {
         return Err(format!("the server holds more than 512 MB after {} bytes", input.len()));
     }
-    let resets = !crate::llvm::threads_runtime_here();
-    let (wanted, stop) = wanted(input, resets);
+    let (wanted, stop) = wanted(input);
     let heads: Vec<bool> = wanted.iter().map(|wanted| matches!(wanted, Wanted::Head)).collect();
     // Past what's unpromised, which may be a `HEAD`, a response's length can't be known.
     let most = if matches!(stop, Stop::Unpromised) { wanted.len() } else { usize::MAX };
-    let responses = heard(&said, &heads, most, matches!(stop, Stop::ClosedUnread))
+    let responses = heard(&said, &heads, most)
         .map_err(|wrong| format!("{wrong} in {:?}", String::from_utf8_lossy(&said)))?;
     let shown = || {
         format!("asked {:?}, it said {:?}", String::from_utf8_lossy(input), String::from_utf8_lossy(&said))
@@ -461,7 +469,6 @@ pub(crate) fn http_server(input: &[u8]) -> Result<(), String> {
     let complete = match stop {
         Stop::End => responses.len() == wanted.len(),
         Stop::Unpromised => responses.len() >= wanted.len(),
-        Stop::ClosedUnread => true,
     };
     if !complete {
         return Err(format!("wanted {} answers, got {}: {}", wanted.len(), responses.len(), shown()));
@@ -471,11 +478,11 @@ pub(crate) fn http_server(input: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Stop, Wanted, wanted};
+    use super::{MOST_HEADER_BYTES, MOST_LINE_BYTES, Stop, Wanted, wanted};
 
     #[test]
     fn the_reader_here_takes_requests_apart_as_http_says() {
-        let (answers, stop) = wanted(b"GET /a%20b?x=1+2&x=3 HTTP/1.1\r\nHost: h\r\nX-Y:  z \r\n\r\nPOST / HTTP/1.0\r\nContent-Length: 2\r\n\r\nhiGET", false);
+        let (answers, stop) = wanted(b"GET /a%20b?x=1+2&x=3 HTTP/1.1\r\nHost: h\r\nX-Y:  z \r\n\r\nPOST / HTTP/1.0\r\nContent-Length: 2\r\n\r\nhiGET");
         assert!(matches!(stop, Stop::End));
         let [Wanted::Echoed { path, query, headers, .. }, Wanted::Echoed { body, .. }] = answers.as_slice()
         else {
@@ -486,6 +493,10 @@ mod tests {
         assert_eq!(query, &[("x".to_owned(), "1 2".to_owned())]);
         assert_eq!(headers, &[("host".to_owned(), "h".to_owned()), ("x-y".to_owned(), "z".to_owned())]);
         assert_eq!(body, b"hi");
+        // A first line longer than a whole head may be, and one longer than the runtime reads,
+        // whatever ends it.
+        let long_target = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(MOST_HEADER_BYTES));
+        let long_line = format!("{}\n", "G".repeat(MOST_LINE_BYTES + 3));
         for (asked, status) in [
             (&b"GET / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx"[..], 400),
             (b"GET / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", 501),
@@ -495,8 +506,10 @@ mod tests {
             (b"GET / HTTP/1.1\r\nContent-Length: +1\r\n\r\nx", 400),
             (b"GET / HTTP/1.1\nHost: a\r\n\r\n", 400),
             (b"\nGET / HTTP/1.1\r\n\r\n", 400),
+            (long_target.as_bytes(), 414),
+            (long_line.as_bytes(), 414),
         ] {
-            let (answers, _) = wanted(asked, false);
+            let (answers, _) = wanted(asked);
             assert!(
                 matches!(answers.as_slice(), [Wanted::Refused(found)] if *found == status),
                 "{answers:?}"

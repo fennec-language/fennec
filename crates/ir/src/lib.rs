@@ -50,6 +50,7 @@ mod guard;
 pub mod lengths;
 mod lower;
 mod print;
+pub mod ranges;
 mod validate;
 
 use fennec_check::Type;

@@ -1425,6 +1425,23 @@ fn a_crashing_task_cuts_short_every_wait_its_block_is_in() {
     );
 }
 
+/// A task that fails cuts short every wait its block is in, as a crash does, as the runtime has
+/// it: its launcher, waiting for a reply it will never send while still holding a sender of the
+/// replies itself, takes `None`, and the failure comes out where the block ends. A send waiting
+/// for room fails with `Closed`. The oracle cut short waits only for a crash, and refused these as
+/// hangs, as it refused 2 of 200 random programs from `fennec-fuzz`. What it prints is what the compiled
+/// program printed (`workers/failed_while_its_launcher_waits.fen`).
+#[test]
+fn a_failing_task_cuts_short_every_wait_its_block_is_in() {
+    let (printed, ended) =
+        ran(include_str!("../../fennec/tests/fixtures/workers/failed_while_its_launcher_waits.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(
+        printed,
+        include_str!("../../fennec/tests/fixtures/workers/failed_while_its_launcher_waits.out")
+    );
+}
+
 /// Where which of several tasks' messages comes first changes what's printed, every order is
 /// tried, and the program is refused: what it prints hangs on time, from the line it parts at.
 #[test]

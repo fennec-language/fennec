@@ -1,0 +1,11 @@
+sent 0 got 0
+1: Refused(code=1)
+0: Refused(code=0)
+sent 0 got 0
+sent 1 got 2
+sent 2 got 4
+left -9
+second send closed
+filled: Refused(code=7)
+held 1
+done

@@ -445,6 +445,14 @@ pub(super) fn counts_line(counts: &heap::Counts, parallel_calls: u64, blocked_wa
 /// Ends the program at once with `code`.
 pub(crate) fn stop_now(code: i32) -> ! {
     crate::replay::ended();
+    end_at_once(code)
+}
+
+/// Ends the process at once with `code`, the way the runtime library ends an executable's (its
+/// `stop`, which on Windows ends it with `TerminateProcess`), without saying a recording ended:
+/// for a second Ctrl-C, which cuts the run short. Outside an executable, where nothing gave a way
+/// to end, it aborts.
+pub(crate) fn end_at_once(code: i32) -> ! {
     if let Some(stop) = STOP.get() {
         stop(code);
     }

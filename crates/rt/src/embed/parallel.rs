@@ -22,7 +22,7 @@
 //! a test's does, the ranges' text is handed to it whole, by where each range starts.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use fennec_syntax::Diagnostic;
@@ -117,6 +117,9 @@ struct Run {
     /// Where the lowest range that failed so far starts. Ranges after it don't start, and
     /// ranges before it still run, since one of them failing is the failure passed up.
     stop: AtomicUsize,
+    /// In a replay, whether the recording said a stop or a cancel cut a range short: the code
+    /// that made the call was then, and its end is to be as quiet as the run's (#1949).
+    pieces_stopped: AtomicBool,
     /// Which ranges a failure kept from starting, each by where it starts and ends, as they were
     /// split: in a recording, noted to log when the call ends, and in a replay, those the recording
     /// says. Which had begun when the failure was noted depends on timing, so a replay skips
@@ -296,6 +299,7 @@ impl Run {
             task,
             capture: super::capture_here(),
             stop: AtomicUsize::new(usize::MAX),
+            pieces_stopped: AtomicBool::new(false),
             failure: Mutex::new(None),
             beaten: Mutex::new(Vec::new()),
             lent: RwLock::new(None),
@@ -420,6 +424,9 @@ impl Run {
             super::write_kept_output();
         }
         crate::replay::swap(&mut was);
+        if was.as_ref().is_some_and(crate::replay::Task::was_stopped) {
+            self.pieces_stopped.store(true, Ordering::Release);
+        }
         super::swap_capture(&mut capture);
         super::threads::made_scope_ends(self.on_caller());
         if let Some(before) = before {
@@ -477,6 +484,9 @@ impl Run {
     /// Passes the failure up, in the calling thread's runtime, after adopting what the ranges
     /// made: 1 if there was one, else 0.
     fn finish(self) -> i64 {
+        if self.pieces_stopped.load(Ordering::Acquire) {
+            crate::replay::mark_stopped();
+        }
         self.skipped.log(self.task.as_ref(), SKIPPED);
         self.not_begun.log(self.task.as_ref(), NOT_BEGUN);
         let made = self.made.into_inner().unwrap_or_else(PoisonError::into_inner);

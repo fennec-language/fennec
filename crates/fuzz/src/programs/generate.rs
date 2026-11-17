@@ -82,7 +82,7 @@ const LOOKUPS_SWAPPED: bool = true;
 /// index of what's matched changed in the case, and a `for ref` in the case whose item's change a
 /// `?` failing in a `while` condition, a later `elif` or after an `and` lost (#2025). The oracle
 /// found them, held to the compiled program. On since #2017 put each case back by its fields'
-/// names; the three `for ref` ways wait for #2025's fix.
+/// names, and #2038 wrote a `for ref` item back before its case.
 const REF_CASES: bool = true;
 
 /// Whether random programs write a name where another of the same name and type is in sight, each
@@ -1109,12 +1109,7 @@ impl Writer<'_> {
     fn ref_cases(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;
         let id = self.made;
-        // The `for ref` ways wait for #2025.
-        let ways: Vec<RefWay> = REF_WAYS
-            .into_iter()
-            .filter(|way| !matches!(way, RefWay::ForRefWhile | RefWay::ForRefElif | RefWay::ForRefAnd))
-            .collect();
-        let way = ways.get(self.choice(ways.len())).copied().unwrap_or(RefWay::Deep);
+        let way = REF_WAYS.get(self.choice(REF_WAYS.len())).copied().unwrap_or(RefWay::Deep);
         let start = self.choice(REF_STARTS);
         let text = self.choice(REF_TEXTS.len());
         body.push(Stmt::RefCased(RefCasing { id, way, start, text }));

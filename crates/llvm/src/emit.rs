@@ -4775,11 +4775,11 @@ def main(stdout: Stdout):
         let (units, shared, _) = emit(&lowered(source)?)?;
         assert!(!shared.native.is_empty(), "Named's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
-        let drops: Vec<&str> = text.split("define internal void @fen_drop_").skip(1).collect();
+        let drops: Vec<&str> = text.split("define internal void @\"fen_drop_").skip(1).collect();
         assert!(!drops.is_empty(), "{text}");
         for drop in drops {
             let body = drop.split("\n}\n").next().unwrap_or_default();
-            assert!(!body.contains("call void @fen_drop_"), "{body}");
+            assert!(!body.contains("call void @\"fen_drop_"), "{body}");
             assert!(body.contains("%waiting"), "{body}");
         }
         Ok(())
@@ -4868,6 +4868,35 @@ def main(stdout: Stdout):
         );
         assert!(text.contains("release, align 8"), "{text}");
         assert!(!text.contains("unordered"), "{text}");
+        Ok(())
+    }
+
+    /// The symbols modules share name types by what they are, so a function's text is the same
+    /// after a type is added before its own, or another function asks for new kinds of blocks
+    /// first: a dict's shape (plain struct keys, struct values in the entry, list values), a kind
+    /// of list item that's a block, and an enum's case with no fields, kept in a global. They named
+    /// layouts and kinds of blocks by numbers that follow the order of definitions and of asking,
+    /// so each such edit wrote these functions again, and a function written once and used after
+    /// could name another type.
+    #[test]
+    fn a_function_reads_the_same_after_types_are_added_before_it() -> Result<(), String> {
+        let program = "struct Spot:\n    x: int\n    y: int\n\nstruct Info:\n    hits: int\n    seen: bool\n\nenum Twig:\n    Leaf\n    Node(left: Twig, right: Twig, tag: str)\n\ndef shapes(keys: list[Spot]) -> int:\n    mut by_spot = dict[Spot, int]()\n    mut infos = dict[str, Info]()\n    mut runs = dict[str, list[int]]()\n    for key in keys:\n        by_spot[key] = key.x\n        infos[f\"{key.x}\"] = Info(hits=key.y, seen=True)\n        runs[f\"{key.y}\"] = [key.x]\n    return len(by_spot) + len(infos) + len(runs)\n\ndef nested(count: int) -> int:\n    mut rows = list[list[int]]()\n    for at in range(count):\n        rows.append([at])\n    return len(rows)\n\ndef leaf() -> Twig:\n    return .Leaf\n\ndef main(stdout: Stdout):\n    stdout.print(shapes([Spot(x=1, y=2)]) + nested(3))\n    stdout.print(leaf() is Twig.Leaf)\n";
+        let before = "struct Early:\n    first: int\n    second: int\n\nstruct Kept:\n    count: int\n    flag: bool\n\ndef early(count: int) -> int:\n    mut grid = list[list[str]]()\n    mut kept = dict[str, Kept]()\n    mut spots = dict[Early, list[str]]()\n    for at in range(count):\n        grid.append([f\"{at}\"])\n        kept[f\"{at}\"] = Kept(count=at, flag=True)\n        spots[Early(first=at, second=at)] = [f\"{at}\"]\n    return len(grid) + len(kept) + len(spots)\n\n";
+        let with_early = format!(
+            "{before}{}",
+            program.replace(
+                "def main(stdout: Stdout):\n",
+                "def main(stdout: Stdout):\n    stdout.print(early(2))\n"
+            )
+        );
+        for function in ["shapes", "nested", "leaf"] {
+            let (alone, after) = (text_of(program, function)?, text_of(&with_early, function)?);
+            assert!(!alone.is_empty(), "no `{function}`");
+            assert!(
+                alone == after,
+                "`{function}` reads differently with types added before it:\n{alone}\n---\n{after}"
+            );
+        }
         Ok(())
     }
 

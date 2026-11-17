@@ -27739,7 +27739,7 @@ fn a_program_built_for_a_heap_audit_keeps_no_native_blocks() -> std::io::Result<
         for work in std::fs::read_dir(dir.join("work"))?.flatten() {
             for kept in std::fs::read_dir(work.path())?.flatten() {
                 if kept.path().extension().is_some_and(|ext| ext == "ll")
-                    && std::fs::read_to_string(kept.path())?.contains("@fen_drop_")
+                    && std::fs::read_to_string(kept.path())?.contains("@\"fen_drop_")
                 {
                     with_a_drop += 1;
                 }

@@ -108,9 +108,15 @@ impl Emit<'_, '_, '_> {
         entry_words(key) - 1 + held
     }
 
-    /// The number of the shape of a dict with these keys and values, which the runtime sets.
+    /// The number of the shape of a dict with these keys and values, which the runtime sets: in a
+    /// symbol naming them by what they are, not by numbers that move (see `ty_named`).
     pub(crate) fn dict_shape(&mut self, key: Word, value: Word) -> String {
-        let symbol = format!("d_{key:?}_{value:?}");
+        let layouts = self.module.layouts;
+        let symbol = format!(
+            "d_{}_{}",
+            crate::kinds::word_named(layouts, key),
+            crate::kinds::word_named(layouts, value)
+        );
         self.module.shared.dicts.insert(symbol.clone(), (key, value));
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         let shape = self.temp();

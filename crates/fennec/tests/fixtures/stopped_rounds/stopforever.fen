@@ -1,0 +1,28 @@
+# A stop that races a round: one round's handler is in a loop of sleeps that never ends
+# when the serving task's block ends and stops it. A plain run never ended (#1915).
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def answered(request: Request, clock: Clock, stdout: Stdout) -> Response:
+    if request.path == "/slow":
+        stdout.print("the slow one began")
+        mut slept = 0
+        while slept >= 0:
+            clock.sleep(1min)
+            slept += 1
+        stdout.print("the slow one slept", slept, "minutes")
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, clock: Clock, stdout: Stdout):
+    server.serve((request) => answered(request, clock=clock, stdout=stdout))
+    stdout.print("the server never said")
+
+def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as slow:
+            slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+            with launch(() => serving(server, clock=clock, stdout=stdout), stop_after=100ms)?:
+                got = net.get(f"http://127.0.0.1:{port}/one")?
+                stdout.print(got.text())
+    stdout.print("the server is over")

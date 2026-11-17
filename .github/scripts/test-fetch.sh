@@ -8,7 +8,7 @@ work="$(mktemp -d)"
 holder=""
 trap '[ -z "$holder" ] || kill "$holder" 2> /dev/null || true; rm -rf "$work"' EXIT
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
-git init --quiet --bare "$work/origin.git"
+git init --quiet --bare --initial-branch=main "$work/origin.git"
 git clone --quiet "$work/origin.git" "$work/checkout" 2> /dev/null
 cd "$work/checkout"
 echo one > file

@@ -31,7 +31,7 @@ git init --quiet --bare --initial-branch=main "$work/origin.git"
 git clone --quiet "$work/origin.git" "$work/a" 2> /dev/null
 cd "$work/a" || exit 1
 mkdir -p .github/scripts
-cp "$here/.github/scripts/open-pr.sh" .github/scripts/
+cp "$here/.github/scripts/open-pr.sh" "$here/.github/scripts/fetch.sh" .github/scripts/
 printf 'one\ntwo\n' > shared
 git add -A
 git commit --quiet -m base

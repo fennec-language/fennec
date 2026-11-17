@@ -1,0 +1,11 @@
+# Main waits at a block's end for a task waiting to receive on a channel nobody sends to.
+from std.concurrent import Channel, Crashed, channel
+
+def waits(numbers: Channel[int], stdout: Stdout):
+    heard = numbers.receive() else -1
+    stdout.print("heard", heard)
+
+def main(stdout: Stdout) fails Crashed:
+    with channel[int](size=1) as numbers:
+        with launch(() => waits(numbers, stdout=stdout))?:
+            stdout.print("launched")

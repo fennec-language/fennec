@@ -67,6 +67,8 @@ pub(in crate::embed) struct Pool {
     mail: Vec<Mail>,
     /// How many workers are asleep, read without a lock so a push to a busy pool takes none.
     sleeping: AtomicUsize,
+    /// What each worker published for the deadlock check as it last went to sleep.
+    published: Vec<Mutex<crate::embed::deadlock::Published>>,
 }
 
 /// Work sent to one worker, and how to wake it from its poll.
@@ -170,7 +172,9 @@ impl Pool {
             stealers,
             mail,
             sleeping: AtomicUsize::new(0),
+            published: (0..threads).map(|_| Mutex::default()).collect(),
         }));
+        crate::embed::deadlock::pool_made(pool);
         for (at, (deque, poll)) in deques.into_iter().zip(polls).enumerate() {
             let setup = setup.cloned();
             let started = std::thread::Builder::new()
@@ -317,10 +321,62 @@ impl Pool {
         self.sleeping.fetch_add(1, Ordering::SeqCst);
         fence(Ordering::SeqCst);
         if self.is_empty() && !mail.any.load(Ordering::SeqCst) {
-            io.poll(io.timeout());
+            if io.idle_stuck().is_none() {
+                io.poll(io.timeout());
+            } else {
+                // With nothing left but stuck waits, it sleeps a moment first, as a wait that blocks
+                // its thread does (see `deadlock::PATIENCE`), and only then leaves what the deadlock
+                // check needs: most sleeps are shorter, and cost the check nothing.
+                io.poll(Some(crate::embed::deadlock::PATIENCE));
+                if !io.has_ready() && self.is_empty() && !mail.any.load(Ordering::SeqCst) {
+                    self.sleep_idle(at, io);
+                }
+            }
         }
         self.sleeping.fetch_sub(1, Ordering::SeqCst);
         mail.asleep.store(false, Ordering::SeqCst);
+    }
+
+    /// Whether any worker has mail it hasn't taken, for the deadlock check: a wake or a stop on its
+    /// way. A worker that's taken its mail is awake until the mail has run.
+    pub(in crate::embed) fn has_mail(&self) -> bool {
+        self.mail.iter().any(|mail| mail.any.load(Ordering::SeqCst))
+    }
+
+    /// What each worker published for the deadlock check as it last went to sleep.
+    pub(in crate::embed) fn published(&self) -> &[Mutex<crate::embed::deadlock::Published>] {
+        &self.published
+    }
+
+    /// Wakes worker `at` from its poll, with nothing sent it: for the deadlock check, which asked it
+    /// for the notes it left out, which it leaves as it goes to sleep again.
+    pub(in crate::embed) fn wake(&self, at: usize) {
+        if let Some(mail) = self.mail.get(at) {
+            let _ = mail.waker.wake();
+        }
+    }
+
+    /// Sleeps in the worker's poll, for the deadlock check leaving whether it has nothing but stuck
+    /// waits, their notes when a check could pass, and a look, as it may be the last to go to sleep.
+    /// Whatever wakes it is mail or a job, which only something still moving sends, or a check
+    /// asking for the notes it left out.
+    fn sleep_idle(&self, at: usize, io: &mut Io) {
+        let slot = self.published.get(at);
+        let idle = io.idle_stuck();
+        let left = crate::embed::deadlock::sleeps_stuck(idle.unwrap_or(0));
+        if let Some(slot) = slot {
+            let notes = io.stuck_notes();
+            slot.lock().unwrap_or_else(PoisonError::into_inner).set(idle.is_some(), left.all_stuck(), notes);
+        }
+        crate::embed::deadlock::look();
+        io.poll(io.timeout());
+        // Awake, its slot says so and the generation moves before it reads any mail, as it returns
+        // to `work`: a check that finds no mail rests on that order (see `deadlock::proven`), as a
+        // worker reading mail while its slot still said it slept could let one pass with mail run.
+        if let (Some(slot), Some(stuck)) = (slot, idle) {
+            slot.lock().unwrap_or_else(PoisonError::into_inner).woke();
+            crate::embed::deadlock::woke_idle(stuck);
+        }
     }
 
     /// Whether worker `at` has mail, or the pool has jobs waiting, for a task that's run its slice
@@ -642,16 +698,32 @@ pub(super) fn window(words: usize) -> usize {
 /// here and now.
 pub(super) fn as_task(range: impl FnOnce() -> i64 + 'static) {
     if WORKER.get() {
-        STARTING.with_borrow_mut(|starting| starting.push(Box::new(range)));
+        // A context from now, before the job making it returns, until the range ends.
+        let context = crate::embed::deadlock::Context::began();
+        STARTING.with_borrow_mut(|starting| {
+            starting.push(Box::new(move || {
+                let ended = range();
+                drop(context);
+                ended
+            }));
+        });
     } else {
         let _ = range();
     }
 }
 
-/// Runs a task on the pool's workers, when they get to it.
+/// Runs a task on the pool's workers, when they get to it. It's a context for the deadlock check
+/// from now until it has run: unlike a range of a `parallel` call, whose caller waits for it,
+/// counted as running, nothing that runs need wait for a stream's chunk.
 pub(super) fn spawn(task: impl FnOnce() + Send + 'static) {
     match pool() {
-        Some(pool) => pool.push(Box::new(task)),
+        Some(pool) => {
+            let context = crate::embed::deadlock::Context::began();
+            pool.push(Box::new(move || {
+                task();
+                drop(context);
+            }));
+        }
         None => task(),
     }
 }

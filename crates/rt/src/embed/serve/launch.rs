@@ -24,6 +24,7 @@ use fennec_parked::TaskId;
 use fennec_syntax::{Diagnostic, Span};
 use mio::Token;
 
+use super::super::deadlock::{self, Awaited, Kind, Note};
 use super::super::parallel::Pool;
 use super::super::{State, attempt, guarded, heap, threads, with};
 use super::{Io, Parked};
@@ -40,6 +41,8 @@ const FAILED: i64 = 2;
 
 /// What a task's launcher and the worker it runs on share.
 struct Launched {
+    /// The number its launcher holds, which a deadlock's report names it by.
+    number: i64,
     /// How far it's been told to stop: `threads::STOPPING`, then `threads::STOPPED_HARD`.
     stop: Arc<AtomicU8>,
     pool: &'static Pool,
@@ -98,6 +101,36 @@ fn tasks<T>(use_them: impl FnOnce(&mut HashMap<i64, Arc<Launched>>) -> T) -> T {
     use_them(TASKS.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
 }
 
+/// The number of the launched task `who` is, if it's still to be waited for: what a deadlock's
+/// report names it by.
+pub(in crate::embed) fn task_number(who: &deadlock::Who) -> Option<i64> {
+    tasks(|tasks| tasks.values().find_map(|launched| launched.number_of(who)))
+}
+
+/// A block's end waits on its task, for the deadlock check: while the task hasn't ended.
+impl Awaited for Launched {
+    fn holds(&self, _kind: Kind) -> bool {
+        matches!(*self.end.lock().unwrap_or_else(PoisonError::into_inner), End::Running(_))
+    }
+
+    fn said(&self, _kind: Kind) -> String {
+        format!("at the end of a `with launch` block, for task {}", self.number)
+    }
+
+    fn number_of(&self, who: &deadlock::Who) -> Option<i64> {
+        let this = match who {
+            deadlock::Who::Task(stop) => Arc::ptr_eq(&self.stop, stop),
+            deadlock::Who::Parked { pool, at, task } => {
+                *pool == std::ptr::from_ref(self.pool).addr()
+                    && *at == self.worker
+                    && *self.task.lock().unwrap_or_else(PoisonError::into_inner) == Some(*task)
+            }
+            deadlock::Who::Main | deadlock::Who::Other => false,
+        };
+        this.then_some(self.number)
+    }
+}
+
 /// `fennec_launch(body, env)`: starts a task running `body` with a copy of `env`, a block or 0, and
 /// gives back the number `fennec_launch_end` takes. Fails only when there's no pool to run it on.
 pub extern "C" fn launch(body: TaskBody, env: i64) -> i64 {
@@ -139,7 +172,9 @@ pub(in crate::embed) fn launch_on(pool: &'static Pool, body: TaskBody, env: i64)
         Ok(Some((copy, lent)))
     });
     let Some((copy, lent)) = given else { return 0 };
+    let number = NEXT_TASK.fetch_add(1, Ordering::Relaxed);
     let launched = Arc::new(Launched {
+        number,
         stop: Arc::new(AtomicU8::new(0)),
         pool,
         worker,
@@ -149,7 +184,6 @@ pub(in crate::embed) fn launch_on(pool: &'static Pool, body: TaskBody, env: i64)
         launcher: threads::Launcher::here(),
         left_behind: AtomicBool::new(false),
     });
-    let number = NEXT_TASK.fetch_add(1, Ordering::Relaxed);
     tasks(|tasks| tasks.insert(number, Arc::clone(&launched)));
     let accounts = threads::Accounts::for_task(lent, Arc::clone(&launched.stop));
     pool.run_on(
@@ -159,7 +193,14 @@ pub(in crate::embed) fn launch_on(pool: &'static Pool, body: TaskBody, env: i64)
             let told = Box::new(move |task| {
                 *launched.task.lock().unwrap_or_else(PoisonError::into_inner) = Some(task);
             });
-            io.start_task(Box::new(move || run(&running, body, copy)), accounts, told);
+            // A context until its end, begun while the mail that starts it still is one.
+            let context = deadlock::Context::began();
+            let task = move || {
+                let ended = run(&running, body, copy);
+                drop(context);
+                ended
+            };
+            io.start_task(Box::new(task), accounts, told);
         }),
     );
     number
@@ -356,17 +397,44 @@ fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome 
             let End::Ended(outcome) = std::mem::replace(&mut *end, End::Taken) else { continue };
             return outcome;
         }
+        // With no time limit, it's a stuck wait, which leaves a note for the deadlock check.
+        let on = || Arc::clone(launched) as Arc<dyn Awaited>;
         let parked = if let (true, Some((_, at))) = (super::can_park(), super::super::parallel::here()) {
             let token = super::next_token();
             *end = End::Running(Some((at, token)));
             drop(end);
-            Some(super::park_on_token(token, deadline, false))
+            let stuck = deadline.is_none().then(|| Note::parked(on(), Kind::BlockEnd));
+            Some(super::park_on_token(token, deadline, false, stuck))
         } else if let Some(deadline) = deadline {
             let left = deadline.saturating_duration_since(Instant::now());
             let waited = launched.ended.wait_timeout(end, left).unwrap_or_else(PoisonError::into_inner);
             waited.1.timed_out().then_some(Parked::TimedOut)
         } else {
+            // A stuck wait once it's waited a moment (see `deadlock::PATIENCE`): a task that ends by
+            // then costs the check nothing.
+            let (end, waited) =
+                launched.ended.wait_timeout(end, deadlock::PATIENCE).unwrap_or_else(PoisonError::into_inner);
+            if !waited.timed_out() || !matches!(*end, End::Running(_)) {
+                continue;
+            }
+            // Counted with the end held, so the task's end, which takes it, comes before or after.
+            let look = deadlock::thread_waits(Note::parked(on(), Kind::BlockEnd).blocking(), false);
+            let end = if look {
+                // The check looks at this task's end, so it's let go of meanwhile, and looked at
+                // again after: an end that came then has told no one.
+                drop(end);
+                deadlock::look();
+                let end = launched.end.lock().unwrap_or_else(PoisonError::into_inner);
+                if !matches!(*end, End::Running(_)) {
+                    deadlock::thread_woke();
+                    continue;
+                }
+                end
+            } else {
+                end
+            };
             drop(launched.ended.wait(end).unwrap_or_else(PoisonError::into_inner));
+            deadlock::thread_woke();
             None
         };
         // A cancelled launcher can't wait, and its task may need this very worker to run. So the task's

@@ -250,6 +250,6 @@ pub(super) fn section(sides: &[(&str, Chatted)]) -> String {
              from saying a line to hearing it back from the server, for the clients that aren't slow. \
              Each is the best of its side's runs. Every side has a hub that owns the rooms and a task, \
              thread or goroutine to read and one to write each connection. Rust's are on tokio, as a \
-             Rust server would be, and on a thread for each.\n";
+             Rust server would be, and on a thread for each, and Go's on goroutines.\n";
     text
 }

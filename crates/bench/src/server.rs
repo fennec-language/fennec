@@ -202,13 +202,14 @@ fn best_of(name: &str, runs: usize, executable: &Path) -> Result<Measured, Strin
     best.ok_or_else(|| "nothing ran".to_owned())
 }
 
-/// The Go twin, when Go is installed.
-fn go_twin(dir: &Path, out: &Path) -> Result<Option<std::path::PathBuf>, String> {
+/// The Go twin of the server `name`, `name.go`, when Go is installed.
+fn go_twin(dir: &Path, out: &Path, name: &str) -> Result<Option<std::path::PathBuf>, String> {
     if Command::new("go").arg("version").output().is_err() {
         return Ok(None);
     }
-    let executable = std::env::current_dir().map_err(|err| err.to_string())?.join(out).join("echo_go");
-    let source = dir.join("echo.go");
+    let executable =
+        std::env::current_dir().map_err(|err| err.to_string())?.join(out).join(format!("{name}_go"));
+    let source = dir.join(format!("{name}.go"));
     let built = Command::new("go").arg("build").arg("-o").arg(&executable).arg(&source).output();
     let built = built.map_err(|err| format!("couldn't run go: {err}"))?;
     if built.status.success() {
@@ -247,18 +248,21 @@ pub(crate) fn run(fennec: &Path, dir: &Path, runs: usize, markdown: Option<&Path
     let ours = built(fennec, &dir.join("echo.fen"), out.join("echo"), true)?;
     let rust_twins = twins(dir, out)?;
     let rust = rust_twins.join("echo");
-    let go = go_twin(dir, out)?;
+    let go = go_twin(dir, out, "echo")?;
     let mut sides =
         vec![("Fennec", best_of("Fennec", runs, &ours)?), ("Rust", best_of("Rust", runs, &rust)?)];
     if let Some(go) = go {
         sides.push(("Go", best_of("Go", runs, &go)?));
     }
     let our_chat = built(fennec, &dir.join("chat.fen"), out.join("chat"), true)?;
-    let chats = vec![
+    let mut chats = vec![
         ("Fennec", chat::best_of("Fennec", runs, &our_chat)?),
         ("Rust, tokio", chat::best_of("Rust's tokio", runs, &rust_twins.join("chat"))?),
         ("Rust, threads", chat::best_of("Rust's threaded", runs, &rust_twins.join("chat_threads"))?),
     ];
+    if let Some(go) = go_twin(dir, out, "chat")? {
+        chats.push(("Go", chat::best_of("Go", runs, &go)?));
+    }
     let text = format!("{}\n{}", section(&sides), chat::section(&chats));
     println!("{text}");
     if let Some(path) = markdown {

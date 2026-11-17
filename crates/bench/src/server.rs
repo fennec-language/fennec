@@ -39,30 +39,42 @@ struct Measured {
     per_connection: f64,
 }
 
+/// What a client's error says: which client, what it was doing, and what went wrong.
+fn failed(at: usize, step: &str) -> impl Fn(std::io::Error) -> String + '_ {
+    move |err| format!("client {at}, {step}: {err}")
+}
+
 /// What a client's thread does: each request's time, for a client that isn't slow to send.
 fn client(port: u16, at: usize, all_open: &Barrier) -> Result<Vec<f64>, String> {
-    let fail = |err: std::io::Error| format!("client {at}: {err}");
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).map_err(fail)?;
-    stream.set_read_timeout(Some(NO_ANSWER)).map_err(fail)?;
-    stream.set_nodelay(true).map_err(fail)?;
-    let mut answers = BufReader::new(stream.try_clone().map_err(fail)?);
+    let made = TcpStream::connect(("127.0.0.1", port)).map_err(failed(at, "connecting"));
+    // Every client reaches the barrier, so one that couldn't connect doesn't hold the others.
+    let set_up = made.and_then(|stream| {
+        stream.set_read_timeout(Some(NO_ANSWER)).map_err(failed(at, "setting its timeout"))?;
+        stream.set_nodelay(true).map_err(failed(at, "setting no delay"))?;
+        Ok(stream)
+    });
     all_open.wait();
+    // Read and written through the one socket, so a client holds one file, not two: 900 clients
+    // stay under a limit of 1,024 open files, as `CONNECTIONS` says.
+    let stream = set_up?;
+    let (mut writing, mut answers) = (&stream, BufReader::new(&stream));
     let slow = at.is_multiple_of(SLOW_EVERY);
     let mut times = Vec::with_capacity(ROUNDS);
     let mut answer = String::new();
     for round in 0..ROUNDS {
         let line = format!("client {at} sends line {round}\n");
         let started = Instant::now();
+        let sending = format!("sending line {round}");
         if slow {
             let (first, rest) = line.split_at(line.len() / 2);
-            stream.write_all(first.as_bytes()).map_err(fail)?;
+            writing.write_all(first.as_bytes()).map_err(failed(at, &sending))?;
             std::thread::sleep(SLOW_SEND);
-            stream.write_all(rest.as_bytes()).map_err(fail)?;
+            writing.write_all(rest.as_bytes()).map_err(failed(at, &sending))?;
         } else {
-            stream.write_all(line.as_bytes()).map_err(fail)?;
+            writing.write_all(line.as_bytes()).map_err(failed(at, &sending))?;
         }
         answer.clear();
-        answers.read_line(&mut answer).map_err(fail)?;
+        answers.read_line(&mut answer).map_err(failed(at, &format!("reading the answer to line {round}")))?;
         if answer != line {
             return Err(format!("client {at} sent {line:?} and heard {answer:?}"));
         }
@@ -91,7 +103,7 @@ fn at_percent(sorted: &[f64], percent: usize) -> f64 {
     sorted.get(at).copied().unwrap_or(0.0)
 }
 
-fn drive(server: &Child, port: u16) -> Result<Measured, String> {
+fn drive(server: &mut Child, port: u16) -> Result<Measured, String> {
     let before = resident(server)?;
     let all_open = Arc::new(Barrier::new(CONNECTIONS + 1));
     let clients: Vec<_> = (0..CONNECTIONS)
@@ -108,8 +120,29 @@ fn drive(server: &Child, port: u16) -> Result<Measured, String> {
     std::thread::sleep(Duration::from_millis(200));
     let during = resident(server)?;
     let mut times = Vec::with_capacity(CONNECTIONS * ROUNDS);
+    let (mut first, mut failures) = (None, 0);
     for client in clients {
-        times.extend(client.join().map_err(|_| "a client stopped".to_owned())??);
+        match client.join() {
+            Ok(Ok(taken)) => times.extend(taken),
+            Ok(Err(err)) => {
+                failures += 1;
+                first.get_or_insert(err);
+            }
+            Err(_) => {
+                failures += 1;
+                first.get_or_insert_with(|| "a client's thread panicked".to_owned());
+            }
+        }
+    }
+    // How many failed and whether the server was still up tell a server that stopped from one
+    // that dropped a connection.
+    if let Some(first) = first {
+        let server = match server.try_wait() {
+            Ok(Some(status)) => format!("the server had stopped, {status}"),
+            Ok(None) => "the server was still running".to_owned(),
+            Err(err) => format!("couldn't tell whether the server was running: {err}"),
+        };
+        return Err(format!("{failures} of {CONNECTIONS} clients failed, {server}; the first: {first}"));
     }
     times.sort_by(f64::total_cmp);
     let count = f64::from(u32::try_from(CONNECTIONS).unwrap_or(1));
@@ -132,17 +165,18 @@ fn measured(executable: &Path) -> Result<Measured, String> {
     let mut first = String::new();
     BufReader::new(printed).read_line(&mut first).map_err(|err| err.to_string())?;
     let port = first.trim().parse().map_err(|_| format!("the server said {first:?}, not a port"));
-    let result = port.and_then(|port| drive(&server, port));
+    let result = port.and_then(|port| drive(&mut server, port));
     let _ = server.kill();
     let _ = server.wait();
     result
 }
 
 /// The best of each measure over a side's runs, as what's noise only makes things worse.
-fn best_of(runs: usize, executable: &Path) -> Result<Measured, String> {
+fn best_of(name: &str, runs: usize, executable: &Path) -> Result<Measured, String> {
     let mut best: Option<Measured> = None;
-    for _ in 0..runs {
-        let run = measured(executable)?;
+    for at in 1..=runs {
+        let run =
+            measured(executable).map_err(|err| format!("{name}'s server, run {at} of {runs}: {err}"))?;
         best = Some(best.map_or(run, |best| Measured {
             median: best.median.min(run.median),
             p99: best.p99.min(run.p99),
@@ -198,9 +232,10 @@ pub(crate) fn run(fennec: &Path, dir: &Path, runs: usize, markdown: Option<&Path
     let ours = built(fennec, &dir.join("echo.fen"), out.join("echo"), true)?;
     let rust = twins(dir, out)?.join("echo");
     let go = go_twin(dir, out)?;
-    let mut sides = vec![("Fennec", best_of(runs, &ours)?), ("Rust", best_of(runs, &rust)?)];
+    let mut sides =
+        vec![("Fennec", best_of("Fennec", runs, &ours)?), ("Rust", best_of("Rust", runs, &rust)?)];
     if let Some(go) = go {
-        sides.push(("Go", best_of(runs, &go)?));
+        sides.push(("Go", best_of("Go", runs, &go)?));
     }
     let text = section(&sides);
     println!("{text}");

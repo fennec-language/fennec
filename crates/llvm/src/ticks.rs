@@ -29,8 +29,11 @@ const RANGES: [&str; 4] = ["parallel.for", "parallel.map", "parallel.sum", "para
 const SHARING: [&str; 2] = ["parallel.serve", "intrinsics.launch"];
 
 /// The functions that can run as a parked task: in a program with a server's rounds or launched
-/// tasks, every closure but `parallel`'s ranges, every generator, and what they reach. Ticking
-/// more than runs as a task costs only the count, as the runtime's tick does nothing outside one.
+/// tasks, every closure but `parallel`'s ranges, every generator's resume, every `def str` the
+/// runtime calls to print a value, and what they reach. A generator's abandon isn't one: it runs
+/// from a queue its thread shares, which a task that made way there would leave to another.
+/// Ticking more than runs as a task costs the count, and the call in each loop, which LLVM can't
+/// see through; the runtime's tick does nothing outside a task.
 pub(crate) fn tasks<'p>(program: &'p Program, functions: &HashMap<&'p str, &'p Function>) -> HashSet<&'p str> {
     let shares = functions.values().flat_map(|function| &function.blocks).flat_map(|block| &block.insts).any(
         |inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if SHARING.contains(&name.as_str())),
@@ -38,12 +41,14 @@ pub(crate) fn tasks<'p>(program: &'p Program, functions: &HashMap<&'p str, &'p F
     if !shares {
         return HashSet::new();
     }
-    let generators = program
-        .generators
-        .iter()
-        .flat_map(|def| std::iter::once(def.resume.as_str()).chain(def.abandon.as_deref()));
-    let mut waiting: Vec<&'p str> =
-        functions.values().flat_map(|function| closures_run_here(function)).chain(generators).collect();
+    let generators = program.generators.iter().map(|def| def.resume.as_str());
+    let own_texts = program.own_texts.iter().map(|own| own.function.as_str());
+    let mut waiting: Vec<&'p str> = functions
+        .values()
+        .flat_map(|function| closures_run_here(function))
+        .chain(generators)
+        .chain(own_texts)
+        .collect();
     let mut found = HashSet::new();
     while let Some(name) = waiting.pop() {
         let Some((key, function)) = functions.get_key_value(name) else { continue };
@@ -175,12 +180,22 @@ def main(net: Net, stdout: Stdout) fails NetError:
 
     /// A handler reaches its round as a value, so in a program with a server every closure ticks,
     /// and what it reaches: a handler given to `serve` by name, one a `Router` keeps in its list,
-    /// a sort's key, which a builtin calls with no call of its own, and a generator a handler walks.
-    /// A function only `main` calls still doesn't.
+    /// a sort's key, which a builtin calls with no call of its own, a generator a handler walks, and
+    /// a `def str` the runtime calls to print a list's items. A function only `main` calls still
+    /// doesn't.
     #[test]
     fn a_handler_given_to_serve_or_kept_by_a_router_ticks() -> Result<(), String> {
         let source = "\
 from std.net import Captured, NetError, Request, Response, Router
+
+struct Spot:
+    x: int
+
+    def str(self, ref out: StrWriter):
+        mut at = 0
+        while at < self.x:
+            out.write(\"*\")
+            at += 1
 
 struct Ring:
     slots: list[int]
@@ -226,7 +241,7 @@ def routed(found: Captured) -> Response:
     return Response(status=200, body=f\"{tally(len(found.text_at(0)))}\".encode())
 
 def main(net: Net, stdout: Stdout) fails NetError:
-    stdout.print(alone(3), sorted([\"b\", \"a\"], key=(word) => rank(word)))
+    stdout.print(alone(3), sorted([\"b\", \"a\"], key=(word) => rank(word)), [Spot(x=2)])
     mut router = Router()
     router.handle(\"GET /{name}\", (request, found) => routed(found))
     with net.listen(0)? as first:
@@ -241,6 +256,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
         assert!(ticks("tally"), "a router's handler: {names:?}");
         assert!(ticks("rank"), "a sort's key: {names:?}");
         assert!(ticks("Ring.iter"), "a generator: {names:?}");
+        assert!(ticks("Spot.str"), "a `def str` the runtime calls: {names:?}");
         assert!(!ticks("alone"), "{names:?}");
         Ok(())
     }

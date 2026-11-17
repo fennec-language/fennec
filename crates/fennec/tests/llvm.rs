@@ -17690,6 +17690,192 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// On one thread, a handler only computing, given to `serve` by name or kept in a `Router`, still
+/// lets another request be answered: it reaches its round as a value, not by a call, and once never
+/// counted its loops' turns, so it held the thread until it finished.
+#[test]
+fn a_handler_only_computing_lets_the_others_answer() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let churn = "def churn(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while n < turns:
+        x = (x * 31 + 7) % 1000003
+        n += 1
+    return x
+";
+    let by_name = format!(
+        r#"from std.net import NetError, Request, Response
+
+{churn}
+def answered(request: Request) -> Response:
+    if request.path == "/spin":
+        return Response(status=200, body=f"spun {{churn(1_000_000_000_000)}}".encode())
+    return Response(status=200, body="pong".encode())
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(answered)
+"#
+    );
+    let routed = format!(
+        r#"from std.net import NetError, Response, Router
+
+{churn}
+def main(net: Net, stdout: Stdout) fails NetError:
+    mut router = Router()
+    router.handle("GET /spin", (request, found) => Response(status=200, body=f"spun {{churn(1_000_000_000_000)}}".encode()))
+    router.handle("GET /ping", (request, found) => Response(status=200, body="pong".encode()))
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(router)
+"#
+    );
+    for (name, source) in [("by-name", by_name), ("routed", routed)] {
+        let dir = folder(&format!("ticking-handlers-{name}"))?;
+        let program = dir.join("ticking.fen");
+        std::fs::write(&program, source)?;
+        let executable = dir.join("ticking");
+        let mut command = crate::executables::fennec_command();
+        command.args([
+            "build",
+            "--llvm",
+            "--release",
+            &program.to_string_lossy(),
+            "-o",
+            &executable.to_string_lossy(),
+        ]);
+        let built = command
+            .env("FENNEC_HOME", &dir)
+            .env_remove("FENNEC_THREADS_RUNTIME")
+            .output_before(FENNEC_DEADLINE)?;
+        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+        let mut server = Running(
+            Command::new(&executable)
+                .env("FENNEC_THREADS", "1")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()?,
+        );
+        let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+        let mut port = String::new();
+        printed.read_line(&mut port)?;
+        let port: u16 = port.trim().parse().unwrap_or(0);
+        // The spinning request is read and its handler computing before the ping comes.
+        let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        spinning.write_all(b"GET /spin HTTP/1.1\r\nhost: here\r\n\r\n")?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        // A minute tells the two apart: on main the ping waited for a handler that never ends.
+        ping.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        ping.write_all(b"GET /ping HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n")?;
+        let mut answer = String::new();
+        let read = std::io::Read::read_to_string(&mut ping, &mut answer);
+        drop(spinning);
+        drop(server);
+        std::fs::remove_dir_all(&dir)?;
+        assert!(
+            answer.starts_with("HTTP/1.1 200") && answer.ends_with("pong"),
+            "{name}: the ping wasn't answered while the other handler computed: {read:?} {answer:?}"
+        );
+    }
+    Ok(())
+}
+
+/// On one thread, a handler that makes way in the middle of a `parallel` range it runs itself, while
+/// another request comes and is answered, still finishes the range with the right values: the ping
+/// is answered first, and the range's answer comes after, whole.
+#[test]
+fn a_handler_making_way_mid_range_finishes_it_right() -> std::io::Result<()> {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("ticking-mid-range")?;
+    let program = dir.join("ranged.fen");
+    // `xored(n)` is every number below `n` xored together: for 2,000,000,001 that's 2,000,000,000.
+    // The handler calls it itself too, so it ticks inside the range's turns.
+    std::fs::write(
+        &program,
+        r#"from std.net import NetError, Request, Response
+
+def xored(turns: int) -> int:
+    mut x = 0
+    mut n = 0
+    while n < turns:
+        x = x ^ n
+        n += 1
+    return x
+
+def answered(request: Request) -> Response:
+    if request.path == "/spin":
+        values = [xored(turns) for turns in parallel([2_000_000_001, 2_000_000_001])]
+        return Response(status=200, body=f"spun {values} {xored(1)}".encode())
+    return Response(status=200, body="pong".encode())
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(answered)
+"#,
+    )?;
+    let executable = dir.join("ranged");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    let port: u16 = port.trim().parse().unwrap_or(0);
+    let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    spinning.write_all(b"GET /spin HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n")?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    ping.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+    ping.write_all(b"GET /ping HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n")?;
+    let mut pong = String::new();
+    let pinged = ping.read_to_string(&mut pong);
+    // Nothing of the range's answer yet: the ping didn't wait for it.
+    spinning.set_nonblocking(true)?;
+    let mut first = [0_u8; 1];
+    let early = spinning.peek(&mut first);
+    spinning.set_nonblocking(false)?;
+    spinning.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+    let mut spun = String::new();
+    let read = spinning.read_to_string(&mut spun);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(pong.ends_with("pong"), "the ping wasn't answered: {pinged:?} {pong:?}");
+    assert!(
+        early.as_ref().is_err_and(|err| err.kind() == std::io::ErrorKind::WouldBlock),
+        "the range had answered before the ping: {early:?}"
+    );
+    assert!(spun.ends_with("spun [2000000000, 2000000000] 0"), "{read:?} {spun:?}");
+    Ok(())
+}
+
 /// A program's resident memory in KB: `ps` gives it on Unix, and `tasklist` on Windows, as
 /// `"leaks.exe","1234","Console","1","12,345 K"`. No reading fails the test, so a check of it can't
 /// pass by reading nothing.

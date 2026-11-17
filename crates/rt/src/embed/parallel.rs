@@ -1031,6 +1031,11 @@ mod pool {
         false
     }
 
+    /// Without threads, there's no pool to stress.
+    pub(crate) fn stress_asked() -> bool {
+        false
+    }
+
     /// Without threads, no chunk runs ahead of a stream's reader.
     pub(super) fn streams_run_ahead() -> bool {
         false
@@ -1170,7 +1175,6 @@ pub use stream::{parallel_stream, stream_end, stream_next};
 
 #[cfg(test)]
 pub(in crate::embed) use pool::with_setup;
-pub(crate) use pool::workers_wanted;
 #[cfg(not(any(test, feature = "threads")))]
 use pool::{Latch, Pool};
 #[cfg(any(test, feature = "threads"))]
@@ -1178,6 +1182,7 @@ pub(in crate::embed) use pool::{Latch, Pool, for_server, here};
 #[cfg(any(test, feature = "threads"))]
 pub use pool::{has_worker_setup, run_worker_setup};
 pub use pool::{on_task_resume, set_worker_setup, stack_limit};
+pub(crate) use pool::{stress_asked, workers_wanted};
 
 #[cfg(test)]
 mod tests {

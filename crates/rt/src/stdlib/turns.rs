@@ -106,7 +106,7 @@ impl<T> Held<T> {
     pub(crate) fn turn(&self) -> Result<Option<Turn<'_, T>>, Stopped> {
         #[cfg(any(test, feature = "threads"))]
         {
-            use crate::embed::serve::{Parked, ParkedTask, can_park, next_token, park_on};
+            use crate::embed::serve::{Parked, ParkedTask, can_park, cut_short, next_token, park_on};
             if !can_park() {
                 return Ok(None);
             }
@@ -124,7 +124,15 @@ impl<T> Held<T> {
                 // A turn handed over before this task parks wakes it once it has: the wake goes
                 // through its worker's mail, which the worker takes only after the task parks.
                 if given.load(Ordering::Acquire) {
-                    return Ok(Some(Turn { held: self }));
+                    let turn = Turn { held: self };
+                    // Stopped after the turn was handed to it, before it ran, as when its worker
+                    // took the hand-over's wake ahead of the stop: it's failed as stopped, and the
+                    // turn goes on to the next in line. It did the work and went on before (#1988).
+                    if cut_short() {
+                        drop(turn);
+                        return Err(Stopped);
+                    }
+                    return Ok(Some(turn));
                 }
                 if park_on(token, None) == Parked::Cancelled {
                     let mut line = self.line();

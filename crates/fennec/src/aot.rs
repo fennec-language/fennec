@@ -414,6 +414,10 @@ fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::t
 }
 
 /// Lets a program written to `path` run.
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "only Unix has a mode to set, which can fail")
+)]
 fn executable_mode(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {

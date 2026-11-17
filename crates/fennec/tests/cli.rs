@@ -5869,6 +5869,44 @@ const EDITS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// A build of `edited.fen` in `dir` for [`an_edit_build_makes_what_a_build_without_the_cache_makes`]:
+/// its output, the objects it linked in order, and the program. It's from the cache in `dir`, or
+/// with none, and with types boxed or not.
+type EditBuilt = (Output, Vec<Vec<u8>>, Vec<u8>);
+
+fn edit_build(dir: &Path, name: &str, cached: bool, boxed: bool) -> std::io::Result<EditBuilt> {
+    use crate::executables::Within as _;
+    let objects = dir.join(format!("{name}-objects"));
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "edited.fen", "-o", name]).current_dir(dir).env("FENNEC_LINK_KEEP", &objects);
+    if cached {
+        command.env("FENNEC_HOME", dir.join("home")).env_remove("FENNEC_NO_CACHE");
+    } else {
+        command.env("FENNEC_HOME", dir.join("no-home")).env("FENNEC_NO_CACHE", "1");
+    }
+    if boxed {
+        command.env("FENNEC_BOXED_TYPES", "1");
+    } else {
+        command.env_remove("FENNEC_BOXED_TYPES");
+    }
+    let output = command.output_within()?;
+    assert!(output.status.success(), "{name}: {}", text(&output.stderr));
+    // A program the store had whole links nothing, so it keeps no objects.
+    let count = std::fs::read_dir(&objects).map_or(0, Iterator::count);
+    let linked =
+        (0..count).map(|at| std::fs::read(objects.join(format!("{at}.o")))).collect::<Result<_, _>>()?;
+    Ok((output, linked, std::fs::read(dir.join(name))?))
+}
+
+/// How many functions a build compiled, of how many, as it says.
+fn compiled_of(output: &Output) -> Option<(usize, usize)> {
+    let said = text(&output.stdout);
+    let (_, rest) = said.split_once("compiled ")?;
+    let (counts, _) = rest.split_once(" functions")?;
+    let (fresh, total) = counts.split_once(" of ")?;
+    Some((fresh.parse().ok()?, total.parse().ok()?))
+}
+
 /// What a dev build makes after an edit, from the cache the builds before it filled, is what a
 /// build with no cache at all makes: every object it links and the program, byte for byte. Each
 /// of the twelve edits changes what some function's object is made from in a way of its own (see
@@ -5877,48 +5915,11 @@ const EDITS: &[(&str, &[(&str, &str)])] = &[
 #[test]
 fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result<()> {
     use crate::executables::Within as _;
-    // A build's output, the objects it linked in order, and the program.
-    type Built = (Output, Vec<Vec<u8>>, Vec<u8>);
     if !crate::llvm::ready() {
         return Ok(());
     }
     let dir = scratch("edit-kinds")?;
-    // A build of what's in `edited.fen`, as `name`.
-    let build = |name: &str, cached: bool, boxed: bool| -> std::io::Result<Built> {
-        let objects = dir.join(format!("{name}-objects"));
-        let mut command = crate::executables::fennec_command();
-        command.args(["build", "edited.fen", "-o", name]).current_dir(&dir).env("FENNEC_LINK_KEEP", &objects);
-        if cached {
-            command.env("FENNEC_HOME", dir.join("home")).env_remove("FENNEC_NO_CACHE");
-        } else {
-            command.env("FENNEC_HOME", dir.join("no-home")).env("FENNEC_NO_CACHE", "1");
-        }
-        if boxed {
-            command.env("FENNEC_BOXED_TYPES", "1");
-        } else {
-            command.env_remove("FENNEC_BOXED_TYPES");
-        }
-        let output = command.output_within()?;
-        assert!(output.status.success(), "{name}: {}", text(&output.stderr));
-        // A program the store had whole links nothing, so it keeps no objects.
-        let count = std::fs::read_dir(&objects).map_or(0, Iterator::count);
-        let linked =
-            (0..count).map(|at| std::fs::read(objects.join(format!("{at}.o")))).collect::<Result<_, _>>()?;
-        Ok((output, linked, std::fs::read(dir.join(name))?))
-    };
-    let compiled = |output: &Output| {
-        let said = text(&output.stdout);
-        let counts: Vec<usize> = said
-            .split_once("compiled ")
-            .and_then(|(_, rest)| rest.split_once(" functions"))
-            .map(|(counts, _)| counts.split(" of ").filter_map(|count| count.parse().ok()).collect())
-            .unwrap_or_default();
-        match counts[..] {
-            [fresh, total] => (fresh, total),
-            _ => panic!("no count of what was compiled: {said}"),
-        }
-    };
-    let same = |what: &str, step: &str, cached: &Built, whole: &Built| {
+    let same = |what: &str, step: &str, cached: &EditBuilt, whole: &EditBuilt| {
         assert!(!whole.1.is_empty(), "{what}: the build without the cache kept no objects");
         assert_eq!(cached.1.len(), whole.1.len(), "{what}: {step} linked another number of objects");
         if let Some(at) = cached.1.iter().zip(&whole.1).position(|(cached, whole)| cached != whole) {
@@ -5929,7 +5930,7 @@ fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result
         assert!(ran.status.success(), "{what}: {}", text(&ran.stderr));
     };
     std::fs::write(dir.join("edited.fen"), EDITED_BASE)?;
-    let base = (build("base", true, false)?, build("base-whole", false, false)?);
+    let base = (edit_build(&dir, "base", true, false)?, edit_build(&dir, "base-whole", false, false)?);
     same("the first build", "base", &base.0, &base.1);
     let mut reused = Vec::new();
     for (at, (what, changes)) in EDITS.iter().enumerate() {
@@ -5940,21 +5941,31 @@ fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result
         }
         std::fs::write(dir.join("edited.fen"), &edited)?;
         let step = format!("edit{at}");
-        let cached = build(&step, true, false)?;
-        let whole = build(&format!("{step}-whole"), false, false)?;
-        same(what, &step, &cached, &whole);
-        reused.push((*what, compiled(&cached.0)));
+        let cached = edit_build(&dir, &step, true, false)?;
+        same(what, &step, &cached, &edit_build(&dir, &format!("{step}-whole"), false, false)?);
+        reused.push((*what, compiled_of(&cached.0)));
     }
-    // An edit to one body compiles that function and what holds a copy of it, and nothing else.
-    let (fresh, total) = reused.first().map_or((0, 0), |(_, counts)| *counts);
-    assert!(fresh > 0 && fresh < total, "a body's edit compiled {fresh} of {total} functions: {reused:?}");
+    // Every edit compiles again only some of the functions, and an edit to a body at least one.
+    let all_again: Vec<_> =
+        reused.iter().filter(|(_, counts)| counts.is_none_or(|(fresh, total)| fresh >= total)).collect();
+    assert!(all_again.is_empty(), "edits that reused nothing: {all_again:?}");
+    assert!(
+        reused.first().is_some_and(|(_, counts)| counts.is_some_and(|(fresh, _)| fresh > 0)),
+        "{reused:?}"
+    );
     std::fs::write(dir.join("edited.fen"), EDITED_BASE)?;
-    let boxed = (build("boxed", true, true)?, build("boxed-whole", false, true)?);
+    let boxed = (edit_build(&dir, "boxed", true, true)?, edit_build(&dir, "boxed-whole", false, true)?);
     same("types boxed", "boxed", &boxed.0, &boxed.1);
     assert!(boxed.0.2 != base.1.2, "boxing types changed nothing: the switch tests nothing here");
-    // Back as it was, the program is the first one again.
-    let back = build("back", true, false)?;
-    assert!(back.2 == base.1.2, "the program built after boxing types and back isn't the first one");
+    // Back as it was, the program is the first one again, from the store; and a program not built
+    // before reuses what was compiled with types in place.
+    assert!(
+        edit_build(&dir, "back", true, false)?.2 == base.1.2,
+        "the program after boxing and back changed"
+    );
+    std::fs::write(dir.join("edited.fen"), EDITED_BASE.replace("LIMIT = 40", "LIMIT = 42"))?;
+    let last = (edit_build(&dir, "last", true, false)?, edit_build(&dir, "last-whole", false, false)?);
+    same("types in place again", "last", &last.0, &last.1);
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

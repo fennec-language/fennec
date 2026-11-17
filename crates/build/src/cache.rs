@@ -8,8 +8,9 @@
 //! for a day.
 //!
 //! An entry is written to a temporary file of its own and renamed into place, so a reader never
-//! sees half of one, and reading and writing take no locks. Each ends in a hash of its bytes, and a
-//! read that doesn't match is a miss: a torn or changed entry is never used.
+//! sees half of one, and reading and writing take no locks. Each entry written as bytes ends in a
+//! hash of them, and a read that doesn't match is a miss: a torn or changed entry is never used. A
+//! kept object, below, is checked as it's written instead.
 //!
 //! A program kept as the file that was launched can't end in its hash, so it's kept under a name
 //! that holds it, `<name>.<hash>`, a file never written again, and the entry is a file beside it,
@@ -27,7 +28,8 @@
 //! naming its hash, was most of an edit's build. So it's checked as it's written rather than as
 //! it's read: whole before it has its name, as every entry is; synced first, so a power cut can't
 //! leave the name on less than the whole; written once and never again; and on Unix read-only
-//! from the moment it's made, so nothing writes into it by accident.
+//! from the moment it's made, so nothing but root writes into it by accident. One that's empty, as
+//! a disk that said it synced and didn't can leave it, is a miss, and written again.
 //! Cleanup is the one thing that takes a lock, so two cleanups never run at once. The daemon runs
 //! one every five minutes while it's idle, and any command starts one when none has run for an hour.
 
@@ -183,8 +185,13 @@ impl Cache {
             return None;
         }
         let path = object_at(&self.path(kind, name));
+        // No object is empty, so an empty file is one a power cut left, written again.
         let found = std::fs::metadata(&path).and_then(|metadata| {
-            if metadata.is_file() { metadata.modified() } else { Err(ErrorKind::NotFound.into()) }
+            if metadata.is_file() && metadata.len() > 0 {
+                metadata.modified()
+            } else {
+                Err(ErrorKind::NotFound.into())
+            }
         });
         let changed = match found {
             Ok(changed) => changed,
@@ -210,8 +217,14 @@ impl Cache {
             return Ok(None);
         }
         let path = object_at(&self.path(kind, name));
-        if !path.is_file() {
-            put_with(&path, &[bytes], Made::ReadOnly)?;
+        let whole = |path: &Path| {
+            std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+        };
+        if !whole(&path) {
+            // Another build may have kept it meanwhile, and on Windows, where a file a linker has
+            // open can't be renamed over, that's a failed rename here, though the object is there.
+            put_with(&path, &[bytes], Made::ReadOnly)
+                .or_else(|err| if whole(&path) { Ok(()) } else { Err(err) })?;
         }
         Ok(Some(path))
     }
@@ -501,9 +514,8 @@ fn put(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Made {
     Writable,
-    /// Read-only from the moment it's made, on Unix: a kept object, which nothing writes into once
-    /// it has its name. Windows can't remove a read-only file, which cleanup has to, so there it's
-    /// made as any other.
+    /// Read-only from the moment it's made, on Unix, where a file's mode is set as it's made at no
+    /// cost: a kept object, which nothing writes into once it has its name.
     ReadOnly,
 }
 

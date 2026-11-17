@@ -920,8 +920,11 @@ fn keep_objects(paths: &[PathBuf], folder: &Path) -> Result<(), String> {
     std::fs::create_dir_all(folder).map_err(|err| format!("couldn't make {}: {err}", folder.display()))?;
     // Named by where each is in the link, as the cache's files aren't.
     for (at, path) in paths.iter().enumerate() {
-        std::fs::copy(path, folder.join(format!("{at}.o")))
-            .map_err(|err| format!("couldn't keep {}: {err}", path.display()))?;
+        // A copy of a kept object is read-only as the object is, so one an earlier build left
+        // here goes first.
+        let kept = folder.join(format!("{at}.o"));
+        let _ = std::fs::remove_file(&kept);
+        std::fs::copy(path, &kept).map_err(|err| format!("couldn't keep {}: {err}", path.display()))?;
     }
     Ok(())
 }

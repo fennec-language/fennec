@@ -74,7 +74,7 @@ impl Interp {
     pub(crate) fn is_launch(&self, call: &'static Expr) -> bool {
         let ExprKind::Call { callee, .. } = &call.kind else { return false };
         matches!(&callee.kind, ExprKind::Name(name) if name == "launch" && !self.is_bound(name)
-            && !self.program.functions.contains_key(name.as_str()))
+            && self.program.function_at(name, callee.span).is_none())
     }
 
     /// `with launch(task)? as sends:`, its block run first and then its task.

@@ -1,7 +1,8 @@
 //! `fennec-bench server`: a server under load, against twins in Rust and Go. Many connections stay
 //! open at once, some clients are slow to send, and what counts is how long the slowest requests
 //! take and how much memory each connection costs. Each client is a thread of this program, which
-//! sends a line, waits for it back, and waits a little before the next.
+//! sends a line, waits for it back, and waits a little before the next. Then a chat server, whose
+//! lines go to every member of a room (see `chat`), by lines delivered a second as well.
 //!
 //! Nothing here fails for being slow: only a server that doesn't answer with what it was sent. It
 //! prints one Markdown section, and with `--markdown PATH` writes it there too for the report.
@@ -15,6 +16,8 @@ use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
 use crate::parallel::{built, twins};
+
+mod chat;
 
 const OUT_DIR: &str = "target/bench/server";
 /// How many connections are open at once. Staying under 1024 keeps it within a system's usual limit
@@ -134,14 +137,8 @@ fn drive(server: &mut Child, port: u16) -> Result<Measured, String> {
             }
         }
     }
-    // How many failed and whether the server was still up tell a server that stopped from one
-    // that dropped a connection.
     if let Some(first) = first {
-        let server = match server.try_wait() {
-            Ok(Some(status)) => format!("the server had stopped, {status}"),
-            Ok(None) => "the server was still running".to_owned(),
-            Err(err) => format!("couldn't tell whether the server was running: {err}"),
-        };
+        let server = server_state(server);
         return Err(format!("{failures} of {CONNECTIONS} clients failed, {server}; the first: {first}"));
     }
     times.sort_by(f64::total_cmp);
@@ -154,8 +151,21 @@ fn drive(server: &mut Child, port: u16) -> Result<Measured, String> {
     })
 }
 
-/// Starts a server, measures it, and stops it.
-fn measured(executable: &Path) -> Result<Measured, String> {
+/// Whether the server's still up, once clients have failed: that tells a server that stopped from
+/// one that dropped a connection.
+fn server_state(server: &mut Child) -> String {
+    match server.try_wait() {
+        Ok(Some(status)) => format!("the server had stopped, {status}"),
+        Ok(None) => "the server was still running".to_owned(),
+        Err(err) => format!("couldn't tell whether the server was running: {err}"),
+    }
+}
+
+/// Starts a server, measures it with `measure` given the port it printed, and stops it.
+fn with_server<T>(
+    executable: &Path,
+    measure: impl FnOnce(&mut Child, u16) -> Result<T, String>,
+) -> Result<T, String> {
     let mut server = Command::new(executable)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -165,10 +175,15 @@ fn measured(executable: &Path) -> Result<Measured, String> {
     let mut first = String::new();
     BufReader::new(printed).read_line(&mut first).map_err(|err| err.to_string())?;
     let port = first.trim().parse().map_err(|_| format!("the server said {first:?}, not a port"));
-    let result = port.and_then(|port| drive(&mut server, port));
+    let result = port.and_then(|port| measure(&mut server, port));
     let _ = server.kill();
     let _ = server.wait();
     result
+}
+
+/// Starts a server, measures it, and stops it.
+fn measured(executable: &Path) -> Result<Measured, String> {
+    with_server(executable, drive)
 }
 
 /// The best of each measure over a side's runs, as what's noise only makes things worse.
@@ -230,14 +245,21 @@ pub(crate) fn run(fennec: &Path, dir: &Path, runs: usize, markdown: Option<&Path
     let out = Path::new(OUT_DIR);
     std::fs::create_dir_all(out).map_err(|err| format!("couldn't make {}: {err}", out.display()))?;
     let ours = built(fennec, &dir.join("echo.fen"), out.join("echo"), true)?;
-    let rust = twins(dir, out)?.join("echo");
+    let rust_twins = twins(dir, out)?;
+    let rust = rust_twins.join("echo");
     let go = go_twin(dir, out)?;
     let mut sides =
         vec![("Fennec", best_of("Fennec", runs, &ours)?), ("Rust", best_of("Rust", runs, &rust)?)];
     if let Some(go) = go {
         sides.push(("Go", best_of("Go", runs, &go)?));
     }
-    let text = section(&sides);
+    let our_chat = built(fennec, &dir.join("chat.fen"), out.join("chat"), true)?;
+    let chats = vec![
+        ("Fennec", chat::best_of("Fennec", runs, &our_chat)?),
+        ("Rust, tokio", chat::best_of("Rust's tokio", runs, &rust_twins.join("chat"))?),
+        ("Rust, threads", chat::best_of("Rust's threaded", runs, &rust_twins.join("chat_threads"))?),
+    ];
+    let text = format!("{}\n{}", section(&sides), chat::section(&chats));
     println!("{text}");
     if let Some(path) = markdown {
         std::fs::write(path, &text).map_err(|err| format!("couldn't write {}: {err}", path.display()))?;

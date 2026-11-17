@@ -13585,6 +13585,60 @@ fn strings_compare_with_short_literals_as_pinned() -> std::io::Result<()> {
     )
 }
 
+/// A list parameter whose length nothing in its function changes has its length read at the
+/// start, and every check against it uses that, so LLVM can check an index that doesn't change in
+/// a loop once: read after a `continue`, stored into through `ref`, counted from the end, and
+/// measured with `len` (`kept_lengths`). Lists given by `ref` and changed in the loop that reads
+/// them, every way a function can change a list's length, keep nothing (`kept_lengths_changed`).
+/// Dev and release, plain and checking proofs, which check each kept length against the list's
+/// own, each prints what the reference evaluator prints.
+#[test]
+fn a_kept_length_is_the_lists_own_however_the_list_is_used() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let programs = [
+        (
+            "kept_lengths",
+            include_str!("fixtures/kept_lengths.fen"),
+            include_str!("fixtures/kept_lengths.out"),
+        ),
+        (
+            "kept_lengths_changed",
+            include_str!("fixtures/kept_lengths_changed.fen"),
+            include_str!("fixtures/kept_lengths_changed.out"),
+        ),
+    ];
+    for ((name, source, wanted), proofs) in
+        programs.iter().flat_map(|program| [(program, "0"), (program, "1")])
+    {
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder(name)?;
+            let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+            std::fs::write(&program, source)?;
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .arg(&program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env("FENNEC_CHECK_PROOFS", proofs)
+                .output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                *wanted,
+                "{name} {how:?}, proofs {proofs}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
 /// An index checked once stays inside its list until something shortens or replaces the
 /// list, or writes the index: a pop, a method popping or replacing a field, a new list, and
 /// negative indexes are each checked again, and the last read fails.

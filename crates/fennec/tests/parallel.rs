@@ -1251,7 +1251,7 @@ const UNIX_STOPPED_ROUNDS: [(&str, &str, &str); 1] =
 #[cfg(not(unix))]
 const UNIX_STOPPED_ROUNDS: [(&str, &str, &str); 0] = [];
 
-const STOPPED_ROUNDS: [(&str, &str, &str); 8] = [
+const STOPPED_ROUNDS: [(&str, &str, &str); 9] = [
     ("sleep", include_str!("fixtures/stopped_rounds/stophandler.fen"), "the slow one began"),
     ("sleeps in a loop", include_str!("fixtures/stopped_rounds/stopspin.fen"), "the slow one began"),
     ("sleeps for ever", include_str!("fixtures/stopped_rounds/stopforever.fen"), "the slow one began"),
@@ -1263,6 +1263,7 @@ const STOPPED_ROUNDS: [(&str, &str, &str); 8] = [
         "the slow one began",
     ),
     ("a lock, then a sleep", include_str!("fixtures/stopped_rounds/stoplock.fen"), "the slow one counted"),
+    ("its cleanup's wait", include_str!("fixtures/stopped_rounds/stopcleanup.fen"), "the slow one began 1"),
     (
         "a database's turn another has",
         include_str!("fixtures/stopped_rounds/stopturn.fen"),
@@ -1271,10 +1272,11 @@ const STOPPED_ROUNDS: [(&str, &str, &str); 8] = [
 ];
 
 /// What a program of `STOPPED_ROUNDS` prints, the round's line `first`: `stoplock.fen` counts the
-/// round it saw.
+/// round it saw, and `stopcleanup.fen`'s cleanup begins.
 pub(crate) fn stopped_round_printed(name: &str, first: &str) -> String {
     let end = if name == "a lock, then a sleep" { "the server is over 1" } else { "the server is over" };
-    format!("{first}\nhello /one\n{end}\n")
+    let cleanup = if name == "its cleanup's wait" { "the cleanup began\n" } else { "" };
+    format!("{first}\nhello /one\n{cleanup}{end}\n")
 }
 
 /// A server's round that's asleep, at its own block's end, running another program, pausing for a
@@ -1283,7 +1285,7 @@ pub(crate) fn stopped_round_printed(name: &str, first: &str) -> String {
 /// program's wait and a database's pause went on as if they'd ended, so it printed what it never
 /// should have, and a round that slept in a loop never ended, nor did its program (#1915). A
 /// channel's wait already ended it. One stopped waiting its turn ran its statement once the turn
-/// before it ended (#1951).
+/// before it ended (#1951). One stopped in its cleanup's wait said its cleanup crashed (#1948).
 #[test]
 fn a_round_stopped_in_any_wait_ends_there() -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {

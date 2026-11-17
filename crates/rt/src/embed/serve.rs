@@ -1602,7 +1602,7 @@ fn parked_as(woken: Option<Wake>) -> Parked {
 
 /// Fails the running task as one that was stopped.
 pub(crate) fn fail_as_stopped() {
-    super::fail_with(fennec_syntax::Diagnostic::new("this task was stopped", fennec_syntax::Span::default()));
+    super::fail_with(fennec_syntax::Diagnostic::new(super::STOPPED_FAILURE, fennec_syntax::Span::default()));
 }
 
 /// Whether this is a launched task that's been stopped. If so, it fails, as a crash does, so it

@@ -160,7 +160,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
         };
         let names: Vec<&str> = texts.iter().map(|(function, _)| function.as_str()).collect();
         assert!(ticks("spin"), "{names:?}");
-        assert!(!ticks("counted") && !ticks("main.parallel@"), "{names:?}");
+        assert!(!ticks("counted") && !ticks("main.parallel#"), "{names:?}");
         Ok(())
     }
 }

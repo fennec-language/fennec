@@ -552,12 +552,10 @@ impl World<'_> {
         let mut ty = ty.clone();
         for name in through {
             let Type::Named(owner) = &ty else { return None };
-            let def = self.program.structs.iter().find(|def| &def.name == owner)?;
-            ty = def.fields.iter().find(|(field, _)| field == name)?.1.clone();
+            ty = fields_of(self.program, owner)?.iter().find(|(field, _)| field == name)?.1.clone();
         }
         let Type::Named(owner) = &ty else { return None };
-        let def = self.program.structs.iter().find(|def| &def.name == owner)?;
-        let at = def.fields.iter().position(|(field, _)| field == last)?;
+        let at = fields_of(self.program, owner)?.iter().position(|(field, _)| field == last)?;
         Some((owner.clone(), at))
     }
 
@@ -751,7 +749,7 @@ impl<'w, 'p> Walk<'w, 'p> {
         // Nothing leads here yet, so nothing's known to reach it: it isn't walked this round.
         let mut state = state?;
         let let_go = self.let_go.get(block).cloned().unwrap_or_default();
-        state.retain(|local, _| !let_go.contains(local));
+        self.let_go_of(&let_go, &mut state);
         let before = self.entries.get(block).cloned().flatten();
         if let Some(before) = &before {
             state = self.joined(before.clone(), &state);
@@ -786,11 +784,23 @@ impl<'w, 'p> Walk<'w, 'p> {
             *count += 1;
         }
         let let_go = self.let_go.get(block).cloned().unwrap_or_default();
-        state.retain(|local, _| !let_go.contains(local));
+        self.let_go_of(&let_go, &mut state);
         if let Some(entry) = self.entries.get_mut(block) {
             *entry = Some(state.clone());
         }
         Some(state)
+    }
+
+    /// Lets go of locals where a block starts: one that isn't a list is what every write gives it,
+    /// and a list holds anything, since a list that's missing is one not yet made.
+    fn let_go_of(&self, let_go: &BTreeSet<usize>, state: &mut State) {
+        for local in let_go {
+            if self.is_list(LocalId(*local)) {
+                state.insert(*local, Fact::Any);
+            } else {
+                state.remove(local);
+            }
+        }
     }
 
     /// Two ways into a block, joined: a list holds what it holds either way, and another local is
@@ -820,11 +830,17 @@ impl<'w, 'p> Walk<'w, 'p> {
         if is_count(&lhs) || is_count(&rhs) {
             return state;
         }
+        // A side written after the comparison isn't what was compared where the block ends.
+        let rewritten =
+            |side: &Operand| matches!(side, Operand::Local(local) if written_after(block, at, *local));
+        if rewritten(&lhs) || rewritten(&rhs) {
+            return state;
+        }
         let sides = [(&lhs, &rhs, Some(op)), (&rhs, &lhs, crate::facts::flipped(op))];
         let mut narrowed = Vec::new();
         for (side, other, op) in sides {
             let (Operand::Local(local), Some(op)) = (side, op) else { continue };
-            if self.is_list(*local) || written_after(block, at, *local) {
+            if self.is_list(*local) {
                 continue;
             }
             let other = self.read(other, &state, from);
@@ -910,8 +926,7 @@ impl<'w, 'p> Walk<'w, 'p> {
     fn field_place(&self, object: &Operand, field: &str) -> Option<usize> {
         let Operand::Local(object) = object else { return None };
         let Type::Named(name) = &self.function.locals.get(object.0)?.ty else { return None };
-        let def = self.world.program.structs.iter().find(|def| &def.name == name)?;
-        def.fields.iter().position(|(name, _)| name == field)
+        fields_of(self.world.program, name)?.iter().position(|(name, _)| name == field)
     }
 
     /// A struct's fact with the field at `path` changed to also be `value`.
@@ -945,10 +960,7 @@ impl<'w, 'p> Walk<'w, 'p> {
             }
             InstKind::Make { dest, type_name, fields } => {
                 let fields: Vec<Fact> = fields.iter().map(|field| self.read(field, state, block)).collect();
-                for (at, fact) in fields.iter().enumerate() {
-                    self.note_field(type_name, at, fact);
-                }
-                moved |= self.write(*dest, &Fact::Struct(fields), state);
+                moved |= self.make(*dest, type_name, fields, state);
             }
             InstKind::GetField { dest, object, field } => {
                 let fact = self.field_read(object, field, state, block);
@@ -956,13 +968,7 @@ impl<'w, 'p> Walk<'w, 'p> {
             }
             InstKind::SetField { object, path, value } => {
                 let value = self.read(value, state, block);
-                let ty = self.function.locals.get(object.0).map(|local| local.ty.clone());
-                if let Some((name, at)) = ty.and_then(|ty| self.world.field_at(&ty, path)) {
-                    self.note_field(&name, at, &value);
-                }
-                let known = self.read(&Operand::Local(*object), state, block);
-                let changed = self.with_field(*object, &known, path, &value);
-                moved |= self.write(*object, &changed, state);
+                moved |= self.set_field(*object, path, &value, state, block);
             }
             InstKind::MakeTuple { dest, items } => {
                 let items = items.iter().map(|item| self.read(item, state, block)).collect();
@@ -980,32 +986,12 @@ impl<'w, 'p> Walk<'w, 'p> {
             }
             InstKind::GetIndex { dest, object, index } => {
                 self.note_index(object, index, true, state, place);
-                let fact = match object {
-                    Operand::Local(held) if self.is_list(*held) => {
-                        state.get(&held.0).cloned().unwrap_or(Fact::Any)
-                    }
-                    _ => Fact::Any,
-                };
+                // A list's items, as the walk has them; anything else's are unknown.
+                let fact = self.read(object, state, block).items();
                 moved |= self.put(*dest, &fact, state);
             }
-            InstKind::SetIndex { object, path, index, value } => {
-                self.note_index(&Operand::Local(*object), index, path.is_empty(), state, place);
-                let value = self.read(value, state, block);
-                // An item set in a list a struct's field holds, along `path` from the local.
-                let ty = self.function.locals.get(object.0).map(|local| local.ty.clone());
-                if let Some((name, at)) = ty.and_then(|ty| self.world.field_at(&ty, path)) {
-                    self.note_field(&name, at, &Fact::List(Box::new(value.clone())));
-                }
-                moved |= self.set_index(*object, path.is_empty(), &value, state);
-            }
-            InstKind::Builtin { dest, name, args, changes } => {
-                let given: Vec<Fact> = args.iter().map(|arg| self.read(arg, state, block)).collect();
-                if *changes {
-                    self.changed_by(name, args, &given, state);
-                }
-                let fact = self.gives(name, &given, place);
-                moved |= dest.is_some_and(|dest| self.put(dest, &fact, state));
-            }
+            InstKind::SetIndex { .. } => moved |= self.set_item(kind, state, place),
+            InstKind::Builtin { .. } => moved |= self.builtin(kind, state, place),
             InstKind::Call { dest, function, args } => {
                 moved |= self.call(*dest, function, args, state, block);
             }
@@ -1026,6 +1012,73 @@ impl<'w, 'p> Walk<'w, 'p> {
             }
         }
         moved
+    }
+
+    /// A struct made: each field joins what every write of it gives. A `shared` value is a handle
+    /// to a cell anything holding the handle can change, so nothing's known of what it holds
+    /// from where it was made.
+    fn make(&mut self, dest: LocalId, type_name: &str, fields: Vec<Fact>, state: &mut State) -> bool {
+        for (at, fact) in fields.iter().enumerate() {
+            self.note_field(type_name, at, fact);
+        }
+        let shared = self.world.program.structs.iter().any(|def| def.name == type_name && def.shared);
+        let made = if shared { Fact::Any } else { Fact::Struct(fields) };
+        self.write(dest, &made, state)
+    }
+
+    /// A field written along `path` from a local: what every write of that field gives joins
+    /// it, and the local's own fact takes it.
+    fn set_field(
+        &mut self,
+        object: LocalId,
+        path: &[String],
+        value: &Fact,
+        state: &mut State,
+        block: usize,
+    ) -> bool {
+        let ty = self.function.locals.get(object.0).map(|local| local.ty.clone());
+        if let Some((name, at)) = ty.and_then(|ty| self.world.field_at(&ty, path)) {
+            self.note_field(&name, at, value);
+        }
+        let known = self.read(&Operand::Local(object), state, block);
+        let changed = self.with_field(object, &known, path, value);
+        self.write(object, &changed, state)
+    }
+
+    /// An item set: in a list held in a local, or, along `path`, in a list a struct's field holds.
+    fn set_item(&mut self, kind: &InstKind, state: &mut State, place: Place) -> bool {
+        let InstKind::SetIndex { object, path, index, value } = kind else { return false };
+        self.note_index(&Operand::Local(*object), index, path.is_empty(), state, place);
+        let value = self.read(value, state, place.0);
+        let ty = self.function.locals.get(object.0).map(|local| local.ty.clone());
+        if let Some((name, at)) = ty.and_then(|ty| self.world.field_at(&ty, path)) {
+            self.note_field(&name, at, &Fact::List(Box::new(value.clone())));
+        }
+        self.set_index(*object, path.is_empty(), &value, state)
+    }
+
+    /// A builtin: what it changes and what it gives back. An intrinsic can write any local it's
+    /// handed, not only its first, as `channel_take` writes why it stopped.
+    fn builtin(&mut self, kind: &InstKind, state: &mut State, place: Place) -> bool {
+        let InstKind::Builtin { dest, name, args, changes } = kind else { return false };
+        let given: Vec<Fact> = args.iter().map(|arg| self.read(arg, state, place.0)).collect();
+        if *changes {
+            self.changed_by(name, args, &given, state);
+        }
+        let mut moved = false;
+        if name.starts_with("intrinsics.") {
+            for arg in args.iter().skip(usize::from(*changes)) {
+                let Operand::Local(local) = arg else { continue };
+                if self.is_list(*local) {
+                    Self::hold(state, *local, Fact::Any, true);
+                    self.note_put(*local, &Fact::Any);
+                } else {
+                    moved |= self.write(*local, &Fact::Any, state);
+                }
+            }
+        }
+        let fact = self.gives(name, &given, place);
+        moved | dest.is_some_and(|dest| self.put(dest, &fact, state))
     }
 
     /// A copy: a count's start joins what it's given, and the copy holds what was copied.
@@ -1058,6 +1111,8 @@ impl<'w, 'p> Walk<'w, 'p> {
     fn put(&mut self, dest: LocalId, fact: &Fact, state: &mut State) -> bool {
         if self.is_list(dest) {
             Self::hold(state, dest, fact.items(), true);
+            // A list parameter lent with `ref` written whole is what its caller holds after.
+            self.note_put(dest, &fact.items());
             false
         } else {
             self.write(dest, fact, state)
@@ -1336,14 +1391,20 @@ fn outside_structs(
     let mut outside = HashSet::new();
     while let Some(ty) = made_outside.pop() {
         named_in(&ty, &mut |name| {
-            if outside.insert(name.to_owned())
-                && let Some(def) = program.structs.iter().find(|def| def.name == name)
-            {
-                made_outside.extend(def.fields.iter().map(|(_, ty)| ty.clone()));
+            if outside.insert(name.to_owned()) {
+                made_outside.extend(fields_of(program, name).into_iter().flatten().map(|(_, ty)| ty.clone()));
+                let cases = program.enums.iter().filter(|def| def.name == name).flat_map(|def| &def.cases);
+                made_outside.extend(cases.flat_map(|case| &case.fields).map(|(_, ty)| ty.clone()));
             }
         });
     }
     outside
+}
+
+/// The fields of a struct or an error, by its name.
+fn fields_of<'p>(program: &'p Program, name: &str) -> Option<&'p [(String, Type)]> {
+    let def = program.structs.iter().chain(&program.errors).find(|def| def.name == name)?;
+    Some(&def.fields)
 }
 
 /// Calls `found` with each struct or other named type `ty` names, however deep.
@@ -1528,12 +1589,13 @@ fn float_binary(op: BinOp, left: Float, right: Float) -> Fact {
             (low, high, nan || zero_times_infinity)
         }
         BinOp::Div => {
+            // An infinity by an infinity is NaN, whatever else the divisor can be.
+            let infinities = (left.reaches(f64::INFINITY) || left.reaches(f64::NEG_INFINITY))
+                && (right.reaches(f64::INFINITY) || right.reaches(f64::NEG_INFINITY));
             if right.holds_zero() {
                 // A division by zero gives an infinity, or NaN for zero by zero.
-                (f64::NEG_INFINITY, f64::INFINITY, nan || left.holds_zero())
+                (f64::NEG_INFINITY, f64::INFINITY, nan || left.holds_zero() || infinities)
             } else {
-                let infinities = (left.reaches(f64::INFINITY) || left.reaches(f64::NEG_INFINITY))
-                    && (right.reaches(f64::INFINITY) || right.reaches(f64::NEG_INFINITY));
                 let (low, high) = bounds_of([
                     left.low / right.low,
                     left.low / right.high,
@@ -1565,11 +1627,16 @@ fn extreme(min: bool, first: &Fact, second: &Fact) -> Fact {
                 return Fact::Float(one.join(*other));
             }
             Fact::Float(if min {
-                Float {
-                    low: one.low.min(other.low),
-                    high: one.high.min(other.high),
-                    nan: one.nan && other.nan,
+                // The least of a NaN and a number is the number, so a side that can be NaN lets
+                // the result be as high as the other side goes.
+                let mut high = one.high.min(other.high);
+                if one.nan {
+                    high = high.max(other.high);
                 }
+                if other.nan {
+                    high = high.max(one.high);
+                }
+                Float { low: one.low.min(other.low), high, nan: one.nan && other.nan }
             } else {
                 Float {
                     low: one.low.max(other.low),
@@ -1692,12 +1759,14 @@ fn comparison_along(from: &Block, to: usize) -> Option<(BinOp, Operand, Operand,
     } else {
         return None;
     };
-    from.insts.iter().enumerate().rev().find_map(|(at, inst)| match &inst.kind {
+    // The last write of the condition, which must be the comparison itself.
+    let (at, last) = from.insts.iter().enumerate().rev().find(|(_, inst)| may_write(&inst.kind, *cond))?;
+    match &last.kind {
         InstKind::Binary { dest, op, lhs, rhs } if dest == cond => {
             Some((*op, lhs.clone(), rhs.clone(), holds, at))
         }
         _ => None,
-    })
+    }
 }
 
 /// The locals that hold the same value as `local` where a block ends, itself included: each copy
@@ -1735,7 +1804,13 @@ fn same_as(block: &Block, local: LocalId) -> Vec<LocalId> {
 /// Whether anything in a block after the instruction at `at` may write a local: as what it
 /// gives, as what it changes in place, or as what it hands a call or a builtin that may change it.
 fn written_after(block: &Block, at: usize, local: LocalId) -> bool {
-    block.insts.iter().skip(at + 1).any(|inst| match &inst.kind {
+    block.insts.iter().skip(at.saturating_add(1)).any(|inst| may_write(&inst.kind, local))
+}
+
+/// Whether an instruction may write a local: as what it gives, as what it changes in place, or
+/// as what it hands a call or a builtin that may change it.
+fn may_write(kind: &InstKind, local: LocalId) -> bool {
+    match kind {
         InstKind::SetField { object, .. } | InstKind::SetIndex { object, .. } if *object == local => true,
         InstKind::Call { args, .. } | InstKind::Builtin { args, .. }
             if args.contains(&Operand::Local(local)) =>
@@ -1743,7 +1818,7 @@ fn written_after(block: &Block, at: usize, local: LocalId) -> bool {
             true
         }
         other => other.dest() == Some(local),
-    })
+    }
 }
 
 /// For each parameter of a function, whether it's a list lent with `ref` whose every item the

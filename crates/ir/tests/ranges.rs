@@ -288,6 +288,72 @@ fn values_going_round_several_locals_settle() {
     checked(&program, &ranges);
 }
 
+/// A `shared` value is a cell anything holding its handle can change, so nothing's known of
+/// what it holds from where it was made: here its count is made as 0, and a lock makes it -3.
+#[test]
+fn a_shared_value_is_what_any_lock_leaves_it() {
+    let source = "struct Tally:\n    count: int\n\n\
+                  def main(stdout: Stdout):\n    shared tally = Tally(count=0)\n    lock tally as ref held:\n        held.count -= 3\n    lock tally as seen:\n        stdout.print([1, 2, 3][seen.count], seen.count // 2)\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    let unknown =
+        |wanted: &dyn Fn(&InstKind) -> bool| not_negative(&program, &ranges, "main", wanted).unwrap();
+    assert!(!unknown(&is_index).contains(&true), "{program}");
+    assert!(!unknown(&is_division).contains(&true), "{program}");
+}
+
+/// A list parameter lent with `ref` that its function writes whole holds what was written after
+/// the call, which its caller sees.
+#[test]
+fn a_list_lent_and_written_whole_holds_what_was_written() {
+    let source = "def lowered_by_ten(values: list[int]) -> list[int]:\n    return [value - 10 for value in values]\n\n\
+                  def shifted(ref values: list[int]):\n    values = lowered_by_ten(values)\n    return\n\n\
+                  def main(stdout: Stdout):\n    mut values = [1, 2, 3]\n    shifted(ref values)\n    stdout.print(values[0] // 4)\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(unsigned(&program, &ranges, "main").unwrap(), [false]);
+    checked(&program, &ranges);
+}
+
+/// Under floats' total order NaN is past every number, so `min` of a NaN and a number is the
+/// number: a side that can be NaN lets `min` be as high as the other side goes.
+#[test]
+fn min_of_what_can_be_nan_can_be_the_other_side() {
+    let source = "def main(stdout: Stdout):\n    for count in range(3):\n        big = 1e308 * float(count)\n        nothing = big * 0.0\n        stdout.print(int(min(nothing, 1e300)))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(fits(&program, &ranges, "main").unwrap(), [false]);
+    checked(&program, &ranges);
+}
+
+/// An infinity divided by an infinity is NaN, even where the divisor can also be zero.
+#[test]
+fn an_infinity_by_an_infinity_can_be_nan() {
+    let source = "def main(stdout: Stdout):\n    values = [1, 2]\n    top = 1e308 * 10.0\n    big = 1e308 * float(len(values))\n    ratio = top / big\n    if 1.0 < ratio:\n        stdout.print(\"more\")\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    let known = ranges.function("main").unwrap();
+    let proven: Vec<Place> = places(&program, "main", &is_comparison)
+        .unwrap()
+        .into_iter()
+        .filter(|place| known.not_nan(*place))
+        .collect();
+    assert_eq!(proven, []);
+    checked(&program, &ranges);
+}
+
+/// A struct held in an error's field is written through the error too, and what that write
+/// gives joins the field across the program.
+#[test]
+fn a_field_written_through_an_error_is_followed() {
+    let source = "struct Point:\n    across: int\n\n\
+                  error Missed:\n    at: Point\n\n\
+                  def main(stdout: Stdout):\n    mut missed = Missed(at=Point(across=1))\n    missed.at.across = -5\n    point = missed.at\n    stdout.print([1, 2][point.across])\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "main", &is_index).unwrap(), [false]);
+}
+
 /// A function something other than a call by name may call, here a function passed as a value,
 /// knows nothing of its parameters.
 #[test]

@@ -51,6 +51,7 @@ pub(crate) const MODULE: Module = Module {
         "bytes_builder",
         "bytes_push",
         "bytes_push_word",
+        "bytes_push_varint",
         "bytes_push_text",
         "bytes_push_bytes",
         "bytes_set",

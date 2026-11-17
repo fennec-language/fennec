@@ -125,6 +125,29 @@ fn a_message_holding_blocks_arrives_as_the_receiver_s_own_copy() {
     finish();
 }
 
+/// A message of more blocks than a copy keeps in a row, a list of forty strings each with a block
+/// of its own, arrives whole and in order, and nothing of it is left once both sides let go.
+#[test]
+fn a_message_of_many_blocks_arrives_whole() {
+    begin();
+    let before = blocks();
+    let channel = channel_new(1);
+    let texts: Vec<String> =
+        (0..40).map(|at| format!("line {at} of forty, long enough for a block of its own")).collect();
+    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let sent = list(&texts);
+    assert!(blocks() - before > 8, "it's more blocks than are kept in a row: {}", blocks() - before);
+    assert_eq!(channel_send(channel, sent, 1, FOREVER), DONE);
+    heap::free(sent);
+    let (got, received) = receive(channel, FOREVER);
+    assert_eq!(got, DONE);
+    assert_eq!(lines(received), texts);
+    with(|state| heap::release(state, u64::try_from(received).unwrap()));
+    channel_free(channel);
+    assert_eq!(blocks(), before);
+    finish();
+}
+
 /// The copy waits in a table of its own, so freeing the channel takes it into this thread's and
 /// lets go of it there, as anything it holds, a `shared` value's handle among them, needs.
 #[test]
@@ -242,6 +265,53 @@ fn noted(channel: i64) -> (usize, usize) {
     let found = find(channel).unwrap();
     let queue = found.queue();
     (queue.senders.len(), queue.receivers.len())
+}
+
+static FREED_UNDER: AtomicI64 = AtomicI64::new(0);
+static FOUND_FREED: AtomicI64 = AtomicI64::new(-1);
+
+/// Waits, parked, for a message on a channel that's freed while it waits.
+extern "C" fn waits_while_freed(_env: i64, _thread: i64) -> i64 {
+    let mut value = 0;
+    FOUND_FREED
+        .store(channel_receive(FREED_UNDER.load(Ordering::SeqCst), PATIENCE, &mut value), Ordering::SeqCst);
+    0
+}
+
+/// Waits until `ready` says so, failing the test rather than hanging it.
+fn until(what: &str, ready: impl Fn() -> bool) {
+    let started = Instant::now();
+    while !ready() {
+        assert!(started.elapsed() < Duration::from_secs(10), "never {what}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// A channel freed while a task is parked on it, and while a thread waits on it, wakes both, and
+/// each finds it closed at once. They waited on until their own time ran out, or their task was
+/// stopped, as freeing told nobody.
+#[test]
+fn a_channel_freed_while_a_task_and_a_thread_wait_on_it_wakes_both_as_closed() {
+    begin();
+    let quiet = channel_new(1);
+    FREED_UNDER.store(quiet, Ordering::SeqCst);
+    let task = launch(waits_while_freed);
+    until("parked", || noted(quiet).1 == 1);
+    let thread = std::thread::spawn(move || {
+        begin();
+        let mut value = 0;
+        let got = channel_receive(quiet, PATIENCE, &mut value);
+        finish();
+        got
+    });
+    until("asleep", || find(quiet).is_some_and(|found| found.queue().asleep.for_a_message == 1));
+    let freed_at = Instant::now();
+    channel_free(quiet);
+    assert_eq!(thread.join().unwrap(), CLOSED, "the thread found it closed");
+    assert_eq!(end(task), 0);
+    assert_eq!(FOUND_FREED.load(Ordering::SeqCst), CLOSED, "the task found it closed");
+    assert!(freed_at.elapsed() < Duration::from_secs(5), "they woke at once");
+    finish();
 }
 
 /// How many times each of these tests' tasks waits and gives up.

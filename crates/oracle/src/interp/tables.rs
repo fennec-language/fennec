@@ -9,11 +9,11 @@ use super::{Interp, Place, Run, Step, unsupported};
 use crate::value::{Id, Table, Value};
 
 impl Interp {
-    /// Whether `Table` names the standard library's, which the program doesn't declare one of its
-    /// own in place of, or import from somewhere else.
-    pub(crate) fn is_the_table(&self) -> bool {
+    /// Whether `Table`, written at `span`, names the standard library's, which the program doesn't
+    /// declare one of its own in place of, or that file import from somewhere else.
+    pub(crate) fn is_the_table(&self, span: Span) -> bool {
         !self.program.types.contains_key("Table")
-            && self.program.imported.get("Table").is_none_or(|from| from == "std.collections.Table")
+            && self.program.imported.get("Table", span).is_none_or(|from| from == "std.collections.Table")
     }
 
     /// `table.name(...)`.

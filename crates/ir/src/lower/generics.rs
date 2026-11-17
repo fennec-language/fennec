@@ -6,45 +6,11 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 
+use fennec_check::copies::{Copies, Refusal};
 use fennec_check::{Signature, Type};
 
 use super::{Context, Lowered, Lowering};
 use fennec_syntax::{Expr, ExprKind, Stmt};
-
-/// How deeply a type a generic function is copied for can nest. A generic that calls itself
-/// with a bigger type each time, as `f[T]` calling `f(list[T])` does, would need a copy for every
-/// size, and this is what stops it.
-const DEEPEST_TYPE: usize = 32;
-
-/// A backstop on how many copies of generic functions a program can ask for, which grows with the
-/// program: this many for each of its functions, the standard library's it can reach among them,
-/// and never fewer than [`LEAST_COPIES_ALLOWED`]. A chain of generics, each asking for copies of
-/// the next with two types, doubles them at every step, well within [`DEEPEST_TYPE`]: a chain
-/// of 30 would ask for a billion, and this stops it. A program of ordinary generics asks for a
-/// few copies a function, so it never comes near.
-const COPIES_PER_FUNCTION: usize = 16;
-
-/// The least the backstop allows, for a program of only a few functions.
-const LEAST_COPIES_ALLOWED: usize = 2000;
-
-/// How deeply a type nests.
-fn depth(ty: &Type) -> usize {
-    let deepest = |types: &[Type]| types.iter().map(depth).max().unwrap_or(0);
-    1 + match ty {
-        Type::List(item)
-        | Type::Buffer(item)
-        | Type::Array(item, _)
-        | Type::Iterator(item)
-        | Type::Set(item)
-        | Type::Optional(item)
-        | Type::Table(item)
-        | Type::Id(item) => depth(item),
-        Type::Dict(first, second) | Type::Result(first, second) => depth(first).max(depth(second)),
-        Type::Tuple(items) | Type::Generic(_, items) | Type::Union(items) => deepest(items),
-        Type::Arrow(params, returns) => deepest(params).max(depth(returns)),
-        _ => 0,
-    }
-}
 
 /// What each type parameter stands for.
 pub(super) type Subst = BTreeMap<String, Type>;
@@ -79,10 +45,8 @@ pub(super) struct Instances {
     seen: RefCell<HashSet<String>>,
     /// Why the last copy asked for was refused, for the call that asked to say.
     refused: RefCell<Option<String>>,
-    /// The generic functions a copy of which was refused for its depth. Each new copy of one is
-    /// refused too: every copy already made would otherwise go on asking for more down to the
-    /// same depth, each branch of a generic that calls itself in two ways doubling them.
-    runaway: RefCell<HashSet<String>>,
+    /// The copies made, as the rules every walk over them shares count them.
+    copies: RefCell<Copies>,
 }
 
 impl Instances {
@@ -218,39 +182,19 @@ impl Context<'_> {
     /// never finish, a generic that calls itself with a bigger type each time, with why kept for
     /// the call to say.
     fn request(&self, base: &str, subst: Subst) -> Option<String> {
-        if let Some((param, ty)) = subst.iter().find(|(_, ty)| depth(ty) > DEEPEST_TYPE) {
-            self.instances.runaway.borrow_mut().insert(base.to_owned());
-            *self.instances.refused.borrow_mut() = Some(format!(
-                "would need a copy of `{base}` with `{param}` as `{ty}`, a type nested {} deep, \
-                 past the {DEEPEST_TYPE} a copy can be: a generic that calls itself with a bigger \
-                 type each time needs a copy for every size, so it can't be built",
-                depth(ty)
-            ));
-            return None;
+        let refused = |refusal: Refusal| {
+            *self.instances.refused.borrow_mut() = Some(refusal.said(base));
+            None
+        };
+        if let Some(refusal) = self.instances.copies.borrow_mut().too_deep(base, &subst) {
+            return refused(refusal);
         }
         let args: Vec<String> = subst.values().map(ToString::to_string).collect();
         let name = format!("{base}[{}]", args.join(", "));
         let mut seen = self.instances.seen.borrow_mut();
         if !seen.contains(&name) {
-            if self.instances.runaway.borrow().contains(base) {
-                *self.instances.refused.borrow_mut() = Some(format!(
-                    "would need another copy of `{base}`, which calls itself with a bigger type \
-                     each time: one of its copies needs a type nested past the {DEEPEST_TYPE} a \
-                     copy can be, so no more are made"
-                ));
-                return None;
-            }
-            let functions = self.functions.len();
-            let most = (COPIES_PER_FUNCTION * functions).max(LEAST_COPIES_ALLOWED);
-            if seen.len() >= most {
-                *self.instances.refused.borrow_mut() = Some(format!(
-                    "would need copy {} of a generic function, past the {most} a program of \
-                     {functions} functions can ask for, {COPIES_PER_FUNCTION} for each: generics \
-                     that ask for copies of each other with more than one type each can double \
-                     them at every step, so it can't be built",
-                    seen.len() + 1
-                ));
-                return None;
+            if let Err(refusal) = self.instances.copies.borrow_mut().make(base, self.functions.len()) {
+                return refused(refusal);
             }
             seen.insert(name.clone());
             let instance = FunctionInstance { base: base.to_owned(), name: name.clone(), subst };

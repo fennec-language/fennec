@@ -1105,6 +1105,36 @@ fn a_crash_of_a_launched_task_cuts_short_the_pieces_its_launcher_waits_for() -> 
     Ok(())
 }
 
+/// A launched task that fails cuts short every wait its block is in, as a crash does: its
+/// launcher, waiting for a reply it will never get though it holds a sender of the replies itself,
+/// takes `None`, and the failure comes out where the block ends. A send waiting for room fails
+/// with `Closed`. `docs/language.md` says so, and the oracle holds the fixture to the same output.
+#[test]
+fn a_failure_of_a_launched_task_cuts_short_the_waits_its_launcher_is_in() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-failed-waits-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/failed_while_its_launcher_waits.fen");
+    let built = build_on_threads(&dir, source, "failed_while_its_launcher_waits")?;
+    let wanted = include_str!("fixtures/workers/failed_while_its_launcher_waits.out");
+    for threads in ["1", "4", "16"] {
+        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
+        assert_eq!(
+            ran.status.code(),
+            Some(0),
+            "on {threads} threads: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "on {threads} threads");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A launched task can serve: its rounds read what it gave them, and other tasks on its worker go on
 /// meanwhile.
 #[test]
@@ -1198,6 +1228,79 @@ fn requests_from_rounds_leave_the_blocking_threads_to_the_handlers_they_wait_for
     let source = include_str!("fixtures/workers/http_posts_while_handlers_block.fen");
     let built = build_on_threads(&dir, source, "http_posts_while_handlers_block")?;
     matches_on_workers(&built, "http_posts_while_handlers_block", Some(0), "100 of 100 answered\nstopped\n")?;
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A server's round in each kind of wait, when the task serving it is stopped, and what each
+/// program prints: the round's first line, `main`'s answer, and the end. A round is cancelled when
+/// its server stops, and fails as stopped at whatever wait it's in, so it goes no further.
+///
+/// On Windows another program's run is a blocking job, which a stop doesn't cut yet (#1950), and
+/// `sleep` is no program there, so that one is Unix only.
+pub(crate) fn stopped_rounds() -> Vec<(&'static str, &'static str, &'static str)> {
+    STOPPED_ROUNDS.iter().chain(UNIX_STOPPED_ROUNDS.iter()).copied().collect()
+}
+
+/// The rounds of `STOPPED_ROUNDS` that only Unix has.
+#[cfg(unix)]
+const UNIX_STOPPED_ROUNDS: [(&str, &str, &str); 1] =
+    [("another program", include_str!("fixtures/stopped_rounds/stopprocess.fen"), "the slow one began")];
+
+/// The rounds of `STOPPED_ROUNDS` that only Unix has: none elsewhere.
+#[cfg(not(unix))]
+const UNIX_STOPPED_ROUNDS: [(&str, &str, &str); 0] = [];
+
+const STOPPED_ROUNDS: [(&str, &str, &str); 7] = [
+    ("sleep", include_str!("fixtures/stopped_rounds/stophandler.fen"), "the slow one began"),
+    ("sleeps in a loop", include_str!("fixtures/stopped_rounds/stopspin.fen"), "the slow one began"),
+    ("sleeps for ever", include_str!("fixtures/stopped_rounds/stopforever.fen"), "the slow one began"),
+    ("its own block's end", include_str!("fixtures/stopped_rounds/stoplaunch.fen"), "the slow one began"),
+    ("a channel", include_str!("fixtures/stopped_rounds/stopchannel.fen"), "the slow one began"),
+    (
+        "a database another holds",
+        include_str!("fixtures/stopped_rounds/stopsqlite.fen"),
+        "the slow one began",
+    ),
+    ("a lock, then a sleep", include_str!("fixtures/stopped_rounds/stoplock.fen"), "the slow one counted"),
+];
+
+/// What a program of `STOPPED_ROUNDS` prints, the round's line `first`: `stoplock.fen` counts the
+/// round it saw.
+pub(crate) fn stopped_round_printed(name: &str, first: &str) -> String {
+    let end = if name == "a lock, then a sleep" { "the server is over 1" } else { "the server is over" };
+    format!("{first}\nhello /one\n{end}\n")
+}
+
+/// A server's round that's asleep, at its own block's end, running another program, pausing for a
+/// database or past a lock, when the task serving it is stopped, ends there, quietly, at 1 and 4
+/// threads. A round's sleep, its block's end, a program's wait and a database's pause went on as if
+/// they'd ended, so it printed what it never should have, and a round that slept in a loop never
+/// ended, nor did its program (#1915). A channel's wait already ended it.
+#[test]
+fn a_round_stopped_in_any_wait_ends_there() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-stopped-rounds-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    for (at, (name, source, first)) in stopped_rounds().into_iter().enumerate() {
+        let built = build_on_threads(&dir, source, &format!("stopped_{at}"))?;
+        for threads in ["1", "4"] {
+            let ran =
+                Command::new(&built).env("FENNEC_THREADS", threads).current_dir(&dir).output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(ran.status.code(), Some(0), "{name} on {threads} threads: {said}");
+            assert_eq!(
+                sorted_lines(&ran.stdout),
+                sorted_lines(stopped_round_printed(name, first).as_bytes()),
+                "{name} on {threads} threads: {said}"
+            );
+            assert!(!said.contains("error"), "{name} on {threads} threads: {said}");
+        }
+    }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

@@ -489,6 +489,7 @@ impl Emit<'_, '_, '_> {
     ) -> Result<(), String> {
         let index_operand = index;
         let (index, _) = self.operand(index)?;
+        self.save_for_take(root, list_path)?;
         let list = self.list_for_item_at(root, list_path, &index)?;
         let item_kind = self.place_kind(root, list_path)?;
         let Kind::List(item) = item_kind else { return Err("an item of something else".to_owned()) };
@@ -661,7 +662,8 @@ impl Emit<'_, '_, '_> {
                         index
                     } else {
                         let known_as = self.list_key(root, &along);
-                        self.position_once(known_as, (&list, index_operand, &index), span)
+                        let from = along.is_empty().then_some(root);
+                        self.position_once((known_as, from), (&list, index_operand, &index), span)
                     };
                     let memory = held.memory(self.module.layouts);
                     at = self.item_address(&list, &memory, &position);
@@ -701,6 +703,32 @@ impl Emit<'_, '_, '_> {
             slot
         };
         self.line(&format!("store ptr {at}, ptr {slot}"));
+    }
+
+    /// In a build that checks proofs, before a failure has a lock put back what it changed: no
+    /// value is out of its place. The rollback puts back what the dicts and lists hold, and unlike
+    /// a crash's way out, a failure's doesn't put back what's taken out first. A failure leaves a
+    /// lock's body through a branch of its own, so none comes between a take and its put back,
+    /// which are in one block; this says so if that ever stops holding. Only the places taken out
+    /// earlier in the function's text are known here.
+    pub(crate) fn proof_nothing_out(&mut self) {
+        if !self.checks_proofs() {
+            return;
+        }
+        let mut slots: Vec<(usize, String)> =
+            self.places_out.iter().map(|(value, slot)| (*value, slot.clone())).collect();
+        slots.sort_unstable();
+        let span = self.here_span();
+        for (_, slot) in slots {
+            let (home, out) = (self.temp(), self.temp());
+            self.line(&format!("{home} = load ptr, ptr {slot}"));
+            self.line(&format!("{out} = icmp ne ptr {home}, null"));
+            self.proof_held(
+                &out,
+                "nothing is out of its place when a failure has a lock put back what it changed",
+                span,
+            );
+        }
     }
 
     /// Where a crash leaves the function: each place still out goes back, before what holds it is
@@ -1496,6 +1524,14 @@ impl Emit<'_, '_, '_> {
         Ok(same)
     }
 
+    /// Whether the items of the list in `list` hold no blocks: nothing counted, held or inline,
+    /// as the runtime's `holds_blocks` says of its element.
+    pub(crate) fn items_hold_no_blocks(&self, list: LocalId) -> Result<bool, String> {
+        let Kind::List(item) = self.kind_of(list)?.clone() else { return Ok(false) };
+        let held = self.item_kind(item)?;
+        Ok(!held.counted() && !self.holds_inline(&held))
+    }
+
     pub(crate) fn item_kind(&self, item: ListItem) -> Result<Kind, String> {
         Kind::from_ty(self.module.layouts, item.ty())
             .ok_or_else(|| "a list item this backend doesn't take yet".to_owned())
@@ -1555,10 +1591,11 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Where an index points in a list, checked once: until something shortens or replaces
-    /// the list, or writes the index, it's read back from where the first check left it.
+    /// the list, or writes the index, it's read back from where the first check left it. `from` is
+    /// the local the list was read from, whose length may be kept (`length_of_list`).
     fn position_once(
         &mut self,
-        place: Option<FieldPath>,
+        (place, from): (Option<FieldPath>, Option<LocalId>),
         (list, index_operand, index): (&str, &Operand, &str),
         span: Span,
     ) -> String {
@@ -1575,10 +1612,11 @@ impl Emit<'_, '_, '_> {
             self.proof_inside(list, &position, "index checked before still inside its list", span);
             return position;
         }
+        let length = self.length_of_list(from, list);
         let position = if self.index_not_negative() {
-            self.position_not_negative(list, index, span)
+            self.position_not_negative(&length, index, span)
         } else {
-            self.position(list, index, span)
+            self.position_in(&length, index, span)
         };
         if let Some(fact) = fact {
             let slot = if let Some(slot) = self.inside_slots.get(&fact) {
@@ -1605,13 +1643,12 @@ impl Emit<'_, '_, '_> {
 
     /// Where an index proven not negative points: one unsigned comparison with the length, with
     /// no way back from the end. A build that checks proofs checks it isn't negative.
-    fn position_not_negative(&mut self, list: &str, index: &str, span: Span) -> String {
+    fn position_not_negative(&mut self, length: &str, index: &str, span: Span) -> String {
         if self.checks_proofs() {
             let negative = self.temp();
             self.line(&format!("{negative} = icmp slt i64 {index}, 0"));
             self.proof_held(&negative, "index not negative", span);
         }
-        let length = self.list_length(list);
         let (inside, ok, fail) = (self.temp(), self.label("ok"), self.label("outside"));
         self.line(&format!("{inside} = icmp ult i64 {index}, {length}"));
         self.line(&format!("br i1 {inside}, label %{ok}, label %{fail}, !prof !8"));
@@ -1740,7 +1777,10 @@ impl Emit<'_, '_, '_> {
             Some((home, path)) if over_loop && path.is_empty() && !handed(self, *home) => {
                 self.unshared(*home)
             }
-            Some((home, path)) => self.list_for_item_at(*home, path, &index)?,
+            Some((home, path)) => {
+                self.save_for_take(*home, path)?;
+                self.list_for_item_at(*home, path, &index)?
+            }
             None => list,
         };
         let position = if inside {
@@ -1749,11 +1789,12 @@ impl Emit<'_, '_, '_> {
             self.proof_inside(&list, &index, proof, span);
             index
         } else {
-            let place = match object {
-                Operand::Local(local) => self.list_key(*local, &[]),
+            let from = match object {
+                Operand::Local(local) => Some(*local),
                 _ => None,
             };
-            self.position_once(place, (&list, index_operand, &index), span)
+            let place = from.and_then(|local| self.list_key(local, &[]));
+            self.position_once((place, from), (&list, index_operand, &index), span)
         };
         let memory = held.memory(self.module.layouts);
         let at = self.item_address(&list, &memory, &position);
@@ -2229,7 +2270,8 @@ impl Emit<'_, '_, '_> {
                 index
             } else {
                 let place = self.list_key(object, path);
-                self.position_once(place, (&list, index_operand, &index), span)
+                let from = path.is_empty().then_some(object);
+                self.position_once((place, from), (&list, index_operand, &index), span)
             };
             self.item_address(&list, &memory, &position)
         };

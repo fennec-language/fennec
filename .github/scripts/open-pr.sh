@@ -31,7 +31,8 @@ stop() {
 branch=$(git symbolic-ref --short HEAD) || stop "nothing's checked out as a branch"
 [ "$branch" != main ] || stop "this is main: open a pull request from a branch of your own"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || stop "commit everything first"
-git fetch --quiet origin
+# Under the lock every worktree shares, as two gates fetching at once raced on one ref.
+.github/scripts/fetch.sh
 if ! git merge --quiet --no-edit origin/main; then
   echo "open-pr: merging main conflicts, in:" >&2
   git diff --name-only --diff-filter=U >&2

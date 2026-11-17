@@ -1,0 +1,37 @@
+# A stop that races a round: one round's handler is pausing between tries at a database `main`
+# holds to write, when the serving task's block ends and stops it, which cancels the round.
+from std import sqlite
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+from std.sql import SqlError
+
+def answered(request: Request, fs: Fs, stdout: Stdout) -> Response:
+    if request.path == "/slow":
+        stdout.print("the slow one began")
+        wrote = written(fs) except why:
+            stdout.print("the slow one never said", f"{why}")
+            return Response(status=500, body="no".encode())
+        stdout.print("the slow one never said either", wrote)
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def written(fs: Fs) -> int fails SqlError:
+    with sqlite.open(fs, "held.db")? as db:
+        return db.execute(t"insert into marks values (1)")?
+
+def serving(server: Server, fs: Fs, stdout: Stdout):
+    server.serve((request) => answered(request, fs=fs, stdout=stdout))
+    stdout.print("the server never said")
+
+def main(net: Net, fs: Fs, stdout: Stdout) fails NetError | Crashed | SqlError:
+    with sqlite.open(fs, "held.db")? as db:
+        _ = db.execute(t"create table if not exists marks (n int)")?
+        _ = db.execute(t"begin immediate")?
+        with net.listen(0)? as server:
+            port = server.port
+            with net.connect("127.0.0.1", port)? as slow:
+                slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+                with launch(() => serving(server, fs=fs, stdout=stdout), stop_after=300ms)?:
+                    got = net.get(f"http://127.0.0.1:{port}/one")?
+                    stdout.print(got.text())
+        _ = db.execute(t"commit")?
+    stdout.print("the server is over")

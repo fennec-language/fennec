@@ -22,7 +22,7 @@
 //! a test's does, the ranges' text is handed to it whole, by where each range starts.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use fennec_syntax::Diagnostic;
@@ -117,6 +117,17 @@ struct Run {
     /// Where the lowest range that failed so far starts. Ranges after it don't start, and
     /// ranges before it still run, since one of them failing is the failure passed up.
     stop: AtomicUsize,
+    /// In a replay, whether the recording said a stop or a cancel cut a range short: the code
+    /// that made the call was then, and its end is to be as quiet as the run's (#1949).
+    pieces_stopped: AtomicBool,
+    /// Which ranges a failure kept from starting, each by where it starts and ends, as they were
+    /// split: in a recording, noted to log when the call ends, and in a replay, those the recording
+    /// says. Which had begun when the failure was noted depends on timing, so a replay skips
+    /// exactly those its recording did, whatever its own timing, and runs every other (#1804).
+    skipped: Skipped,
+    /// Which ranges a stop of the launched task making the call kept from beginning, as `skipped`
+    /// has a failure's.
+    not_begun: Skipped,
     /// The failure from the lowest range that failed, by where it starts.
     failure: Mutex<Option<(usize, Failure)>>,
     /// The values of failures a lower range's beat, to let go of once they're the caller's.
@@ -142,6 +153,65 @@ struct Run {
     reduced: Mutex<Option<i64>>,
     /// Whether its body may wait, so each range on the pool runs as a parked task.
     waiting: bool,
+}
+
+/// Which of a call's ranges a failure kept from starting (see `Run::skipped`), or a stop (see
+/// `Run::not_begun`).
+enum Skipped {
+    /// Neither a recording nor a replay: what's live says.
+    Off,
+    /// A recording: each kept from starting, as noted, for `log` to log under the call.
+    Noted(Mutex<Vec<(usize, usize)>>),
+    /// A replay: those its recording logged, and only those.
+    Replayed(std::collections::HashSet<(usize, usize)>),
+}
+
+/// What a recording logs under a `parallel` call: the ranges a failure kept from starting, each
+/// as where it starts and ends.
+const SKIPPED: &str = "skipped";
+
+/// What a recording logs under a `parallel` call: the ranges a stop of the launched task making it
+/// kept from beginning, each as where it starts and ends.
+const NOT_BEGUN: &str = "not begun";
+
+impl Skipped {
+    /// For the call named `call`, in a recording or a replay, as logged under `entry`. A replay of a
+    /// call its recording logged nothing for keeps nothing from starting: one with no failure or
+    /// stop, or from a recording older than this.
+    fn for_call(call: Option<&crate::replay::Task>, entry: &str) -> Skipped {
+        let Some(call) = call else { return Skipped::Off };
+        if !crate::replay::replaying() {
+            return Skipped::Noted(Mutex::new(Vec::new()));
+        }
+        let recorded = crate::replay::logged_numbers(&call.name(), entry).unwrap_or_default();
+        Skipped::Replayed(
+            recorded
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .filter_map(|[from, to]| Some((usize::try_from(*from).ok()?, usize::try_from(*to).ok()?)))
+                .collect(),
+        )
+    }
+
+    /// In a recording, logs under the call, as `entry`, the ranges kept from starting, each once, in
+    /// order, if any were.
+    fn log(&self, call: Option<&crate::replay::Task>, entry: &str) {
+        let (Skipped::Noted(noted), Some(call)) = (self, call) else { return };
+        let mut noted = std::mem::take(&mut *noted.lock().unwrap_or_else(PoisonError::into_inner));
+        if noted.is_empty() {
+            return;
+        }
+        noted.sort_unstable();
+        noted.dedup();
+        let numbers: Vec<u64> = noted
+            .into_iter()
+            .flat_map(|(from, to)| {
+                [u64::try_from(from).unwrap_or(u64::MAX), u64::try_from(to).unwrap_or(u64::MAX)]
+            })
+            .collect();
+        crate::replay::log_numbers(&call.name(), entry, &numbers);
+    }
 }
 
 /// How a range failed.
@@ -188,6 +258,9 @@ impl Leaf {
 /// finish, and where its own goes once it's combined from them.
 struct Node {
     from: usize,
+    /// Where its range ends: with where it starts, what names its combining in a recording, as
+    /// nodes down a left side start at the same place.
+    to: usize,
     halves: Mutex<[Half; 2]>,
     up: Option<(Arc<Node>, usize)>,
 }
@@ -214,13 +287,19 @@ enum Half {
 
 impl Run {
     fn new(chunk: usize) -> Run {
+        let task = crate::replay::child();
+        let skipped = Skipped::for_call(task.as_ref(), SKIPPED);
+        let not_begun = Skipped::for_call(task.as_ref(), NOT_BEGUN);
         Run {
+            skipped,
+            not_begun,
             chunk,
             caller: Some(super::threads::index()),
             calling: pool::Calling::here(),
-            task: crate::replay::child(),
+            task,
             capture: super::capture_here(),
             stop: AtomicUsize::new(usize::MAX),
+            pieces_stopped: AtomicBool::new(false),
             failure: Mutex::new(None),
             beaten: Mutex::new(Vec::new()),
             lent: RwLock::new(None),
@@ -253,6 +332,45 @@ impl Run {
     /// ranges read: a range it runs itself has nothing lent and hands nothing over.
     fn on_caller(&self) -> bool {
         self.caller == Some(super::threads::index())
+    }
+
+    /// Whether a stop of the launched task making the call keeps the range from `from` to `to` from
+    /// beginning, failing it as stopped. When it comes depends on timing, so a recording notes
+    /// each, and a replay keeps from beginning exactly those, whatever its own stop says (#1916).
+    fn stop_keeps_from_beginning(&self, range: (usize, usize)) -> bool {
+        match &self.not_begun {
+            Skipped::Off => pool::cut_short(),
+            Skipped::Noted(noted) => {
+                let cut = pool::cut_short();
+                if cut {
+                    noted.lock().unwrap_or_else(PoisonError::into_inner).push(range);
+                }
+                cut
+            }
+            Skipped::Replayed(recorded) => {
+                let cut = recorded.contains(&range);
+                if cut {
+                    crate::replay::stopped_as_recorded();
+                }
+                cut
+            }
+        }
+    }
+
+    /// Whether the range from `from` to `to`, as the call split it, is kept from starting: by a
+    /// failure in a range before it, or in a replay, by its recording, which says which were.
+    fn skips(&self, (from, to): (usize, usize)) -> bool {
+        match &self.skipped {
+            Skipped::Off => from > self.stop.load(Ordering::Relaxed),
+            Skipped::Noted(noted) => {
+                let skipped = from > self.stop.load(Ordering::Relaxed);
+                if skipped {
+                    noted.lock().unwrap_or_else(PoisonError::into_inner).push((from, to));
+                }
+                skipped
+            }
+            Skipped::Replayed(recorded) => recorded.contains(&(from, to)),
+        }
     }
 
     /// Notes that the range starting at `from` failed, as its body's `code` says: with a value
@@ -306,6 +424,9 @@ impl Run {
             super::write_kept_output();
         }
         crate::replay::swap(&mut was);
+        if was.as_ref().is_some_and(crate::replay::Task::was_stopped) {
+            self.pieces_stopped.store(true, Ordering::Release);
+        }
         super::swap_capture(&mut capture);
         super::threads::made_scope_ends(self.on_caller());
         if let Some(before) = before {
@@ -342,10 +463,14 @@ impl Run {
     ///   as one stopped while it waited does, and one may hold an owner of a block the range
     ///   made. They're let go of here, while the block is still this thread's to count: once
     ///   it's handed over, letting go of it would reach nothing, and the block would never go.
-    fn ran(&self, from: usize, body: impl FnOnce() -> i64) -> i64 {
+    fn ran(&self, (from, to): (usize, usize), body: impl FnOnce() -> i64) -> i64 {
         let started = self.range_starts(from);
         let off_its_caller = started.before.is_some();
-        let code = if off_its_caller && self.waiting && pool::cut_short() { 1 } else { body() };
+        let code = if off_its_caller && self.waiting && self.stop_keeps_from_beginning((from, to)) {
+            1
+        } else {
+            body()
+        };
         if code != 0 && off_its_caller {
             with(|state| {
                 state.temps.clear();
@@ -359,6 +484,11 @@ impl Run {
     /// Passes the failure up, in the calling thread's runtime, after adopting what the ranges
     /// made: 1 if there was one, else 0.
     fn finish(self) -> i64 {
+        if self.pieces_stopped.load(Ordering::Acquire) {
+            crate::replay::mark_stopped();
+        }
+        self.skipped.log(self.task.as_ref(), SKIPPED);
+        self.not_begun.log(self.task.as_ref(), NOT_BEGUN);
         let made = self.made.into_inner().unwrap_or_else(PoisonError::into_inner);
         if self.calling.is_task_s() {
             // A task's own, as what it makes itself is: listed, for it to hand over when it ends.
@@ -394,11 +524,11 @@ impl Run {
 
     /// Runs `leaf` on each range of `from..to`, halving down to the chunk.
     fn each(&self, (from, to): (usize, usize), leaf: &(dyn Fn(usize, usize, i64) -> i64 + Sync)) {
-        if from > self.stop.load(Ordering::Relaxed) || from >= to {
+        if from >= to || self.skips((from, to)) {
             return;
         }
         if to - from <= self.chunk {
-            let code = self.ran(from, || leaf(from, to, i64::from(super::threads::index())));
+            let code = self.ran((from, to), || leaf(from, to, i64::from(super::threads::index())));
             if code != 0 {
                 self.failed(from, code);
             }
@@ -418,7 +548,7 @@ impl Run {
     /// Runs one range of a call on the pool: halving it as `each` does, it hands each right half
     /// to the pool and goes on with the left, so the ranges are the same as on one thread.
     fn each_on(self: &Arc<Self>, pool: &'static Pool, (from, mut to): (usize, usize), leaf: Leaf) {
-        while to - from > self.chunk && from <= self.stop.load(Ordering::Relaxed) {
+        while to - from > self.chunk && !self.skips((from, to)) {
             let middle = from + (to - from) / 2;
             self.done.more();
             let run = Arc::clone(self);
@@ -441,8 +571,8 @@ impl Run {
 
     /// Runs one range of a loop or a comprehension on this thread, as it was split.
     fn leaf_on(&self, (from, to): (usize, usize), leaf: Leaf) {
-        if from <= self.stop.load(Ordering::Relaxed) && from < to {
-            let code = self.ran(from, || leaf.run(from, to, i64::from(super::threads::index())));
+        if from < to && !self.skips((from, to)) {
+            let code = self.ran((from, to), || leaf.run(from, to, i64::from(super::threads::index())));
             if code != 0 {
                 self.failed(from, code);
             }
@@ -460,9 +590,9 @@ impl Run {
         mut up: Option<(Arc<Node>, usize)>,
         steps: (ReduceBody, Combine, i64),
     ) {
-        while to - from > self.chunk && from <= self.stop.load(Ordering::Relaxed) {
+        while to - from > self.chunk && !self.skips((from, to)) {
             let middle = from + (to - from) / 2;
-            let node = Arc::new(Node { from, halves: Mutex::new([Half::Running; 2]), up: up.take() });
+            let node = Arc::new(Node { from, to, halves: Mutex::new([Half::Running; 2]), up: up.take() });
             let (run, right) = (Arc::clone(self), Some((Arc::clone(&node), 1)));
             pool.push(Box::new(move || run.reduce_on(pool, (middle, to), right, steps)));
             up = Some((node, 0));
@@ -502,7 +632,7 @@ impl Run {
             };
             // The other half isn't in yet, and its thread goes on up from here when it is.
             let Some((left, right)) = both else { return };
-            partial = self.combined(node.from, left, right, steps);
+            partial = self.combined((node.from, node.to), left, right, steps);
             up = node.up.as_ref().map(|(above, side)| (Arc::clone(above), *side));
         }
         *self.reduced.lock().unwrap_or_else(PoisonError::into_inner) = partial;
@@ -512,7 +642,7 @@ impl Run {
     /// Two halves' partials combined, the earlier first: None if either failed, or this does.
     fn combined(
         &self,
-        from: usize,
+        (from, to): (usize, usize),
         left: Option<i64>,
         right: Option<i64>,
         steps: (ReduceBody, Combine, i64),
@@ -522,7 +652,7 @@ impl Run {
         // started and left unended would keep what was lent for the call on its thread.
         let (left, right) = (left?, right?);
         let mut combined = 0;
-        let code = self.ran(from, || combine(env, left, right, &mut combined));
+        let code = self.ran((from, to), || combine(env, left, right, &mut combined));
         if code != 0 {
             self.failed(from, code);
             return None;
@@ -533,13 +663,13 @@ impl Run {
     /// A reduction over `from..to`: each range's partial, combined with the next in order.
     fn reduce(&self, (from, to): (usize, usize), steps: (ReduceBody, Combine, i64)) -> Option<i64> {
         let (body, combine, env) = steps;
-        if from > self.stop.load(Ordering::Relaxed) {
+        if self.skips((from, to)) {
             return None;
         }
         let thread = i64::from(super::threads::index());
         if to - from <= self.chunk {
             let mut partial = 0;
-            let code = self.ran(from, || body(env, number(from), number(to), thread, &mut partial));
+            let code = self.ran((from, to), || body(env, number(from), number(to), thread, &mut partial));
             if code != 0 {
                 self.failed(from, code);
                 return None;
@@ -549,7 +679,7 @@ impl Run {
         let middle = from + (to - from) / 2;
         let left = self.reduce((from, middle), steps);
         let right = self.reduce((middle, to), steps);
-        self.combined(from, left, right, (body, combine, env))
+        self.combined((from, to), left, right, (body, combine, env))
     }
 }
 
@@ -1068,6 +1198,19 @@ mod tests {
             elements: vec![Rc::new(Element::Int)],
             ..Tables::default()
         }
+    }
+
+    /// A thread's call shares its ranges with a pool of two workers or more, and keeps them with a
+    /// pool of one, whose worker only ran them one after another while the thread waited, then
+    /// handed back each block they made: `game_tick`'s 4,096 result lists a tick, at one thread.
+    /// Under `FENNEC_PARALLEL_STRESS` every call goes to the pool, so there's nothing to check.
+    #[test]
+    fn a_threads_call_shares_its_ranges_only_with_a_pool_of_more_than_one_worker() {
+        if super::pool::stressed() {
+            return;
+        }
+        assert!(super::pool::shares(super::pool::with_threads(1)).is_none(), "a pool of one took it");
+        assert!(super::pool::shares(super::pool::with_threads(2)).is_some(), "a pool of two didn't");
     }
 
     fn begin() {

@@ -8,7 +8,8 @@
 //! reaches is refused, as is a generator made before the task and read in it. A block that fails
 //! or crashes cuts its task short at once, wherever it is, and a task that ends with messages left
 //! unread closes its inbox, so a send after that fails with `Closed` and one before it doesn't:
-//! both are refused. A `stop_after=` hangs on time, and is refused too. What the task ends with is
+//! both are refused. A `stop_after=` hangs on time, and is refused too. A task that crashes cuts
+//! short every wait its block is in, as a closed channel's, until the block ends (`actors.rs`). What the task ends with is
 //! what the `with` ends with, once the block has ended: the task's failure, or
 //! `Crashed(why="the task crashed")` for a crash.
 
@@ -73,7 +74,7 @@ impl Interp {
     pub(crate) fn is_launch(&self, call: &'static Expr) -> bool {
         let ExprKind::Call { callee, .. } = &call.kind else { return false };
         matches!(&callee.kind, ExprKind::Name(name) if name == "launch" && !self.is_bound(name)
-            && !self.program.functions.contains_key(name.as_str()))
+            && self.program.function_at(name, callee.span).is_none())
     }
 
     /// `with launch(task)? as sends:`, its block run first and then its task.

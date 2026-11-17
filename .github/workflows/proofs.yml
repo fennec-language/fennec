@@ -13,7 +13,10 @@ name: Proofs
 # it too, with each block's owners counted again as it ends (`.github/scripts/audit.sh`). The
 # runtime's tests run under Miri, which stops on undefined behavior in the crates under it
 # (`.github/scripts/miri.sh`). The game server and the web backend each run for an hour under
-# their own load, and what they hold has to level off (`.github/scripts/soak.sh`). The night's
+# their own load, and what they hold has to level off (`.github/scripts/soak.sh`). A generated
+# program of 20,000 and 50,000 lines is checked, built and tested, and each step held to its time and
+# memory, and to growing no faster than the program (`fennec-bench big-codebase`; 100,000 and
+# 200,000 lines weekly, in `big-codebase-weekly.yml`). The night's
 # report is kept as `nightly-report`, which
 # `.github/scripts/nightly-report.sh` copies into the lanes' notes. No pull request waits on this.
 on:
@@ -257,6 +260,41 @@ jobs:
         with:
           name: soak-${{ matrix.program }}-${{ matrix.in }}
           path: soak.md
+          if-no-files-found: ignore
+
+  # A program of 20,000 and 50,000 lines, generated the same each night: checked, built
+  # cold in dev and release, built again after a one-line edit, and tested, each step held to its
+  # time and memory in `bench/big-codebase.txt`, and to growing in step with the program, not
+  # faster (`fennec-bench big-codebase`).
+  big-codebase:
+    name: Check, build and test a big codebase at two sizes
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # GNU's `time` reads the most memory each step's processes held.
+      - name: Install LLVM's tools and GNU's time
+        run: |
+          rustup component add llvm-tools-preview
+          .github/scripts/apt.sh time
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build fennec, its runtimes, their bitcode and the bench
+        run: .github/scripts/big-codebase-build.sh
+      # 100,000 lines once the first nights say how long these two take. 200,000 is weekly, in
+      # `big-codebase-weekly.yml`.
+      - name: Measure each step at each size
+        run: ./target/release/fennec-bench big-codebase --lines 20000,50000 --markdown big-codebase.md
+      - name: Show the numbers on the run's summary page
+        if: always()
+        run: '[ -f big-codebase.md ] && cat big-codebase.md >> "$GITHUB_STEP_SUMMARY" || true'
+      # `nightly-report.sh` adds these to the night's report.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: big-codebase
+          path: big-codebase.md
           if-no-files-found: ignore
 
   # The runtime's tests under Miri, each on its own, split eight ways: see `miri.sh`, which says

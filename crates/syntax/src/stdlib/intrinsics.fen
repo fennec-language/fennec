@@ -145,6 +145,11 @@ export def bytes_push(ref data: bytes, byte: int)
 @intrinsic
 export def bytes_push_word(ref data: bytes, bits: int)
 
+## Adds a number at a builder's end as unsigned, 7 bits a byte, low first, with the top bit of
+## each saying more come: 1 to 10 bytes, with room made for them once.
+@intrinsic
+export def bytes_push_varint(ref data: bytes, n: int)
+
 ## Adds a text's bytes at a builder's end.
 @intrinsic
 export def bytes_push_text(ref data: bytes, text: str)

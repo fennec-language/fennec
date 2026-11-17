@@ -1098,6 +1098,11 @@ impl Io {
         let step = resume(self);
         super::swap_temporaries(&mut own);
         if !matches!(step, Step::Parked(_)) {
+            // A replayed round its recording says a stop or a cancel cut short ends quietly, as a
+            // cancelled round does in the run: its server's end clears what it failed with (#1918).
+            if own.replay.as_ref().is_some_and(crate::replay::Task::was_stopped) {
+                own.failure = None;
+            }
             super::take_failure_of(&mut own);
         }
         if matches!(step, Step::Parked(_)) && !own.is_empty() {
@@ -1344,9 +1349,7 @@ enum AfterAccept {
 
 fn accept_failed(error: &std::io::Error) -> AfterAccept {
     match error.kind() {
-        ErrorKind::Interrupted | ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset => {
-            AfterAccept::Next
-        }
+        _ if crate::stdlib::net::gone_before_taken(error) => AfterAccept::Next,
         ErrorKind::WouldBlock => AfterAccept::Stop,
         _ if matches!(error.raw_os_error(), Some(23 | 24)) => AfterAccept::Later,
         ErrorKind::OutOfMemory => AfterAccept::Later,
@@ -1584,7 +1587,15 @@ fn parked_as(woken: Option<Wake>) -> Parked {
                 Parked::Ready
             }
         }
-        Some(Wake::Cancelled) => Parked::Cancelled,
+        // Cancelled, as a server's rounds are when it stops, every wait it comes to ends at once:
+        // it fails as stopped, as at a channel, so it goes no further. Gone on as if its wait had
+        // ended, a round asleep ran on, and one that slept in a loop never ended (#1915).
+        Some(Wake::Cancelled) => {
+            if !super::failed() {
+                fail_as_stopped();
+            }
+            Parked::Cancelled
+        }
         _ => Parked::Ready,
     }
 }
@@ -1899,7 +1910,9 @@ pub(super) fn serve_replayed(
         let to = usize::try_from(n).unwrap_or(0) % workers.max(1);
         pool.run_on(to, Box::new(move |io: &mut Io| io.take_recorded(id, n)));
     }
-    server.left.wait();
+    // A task parks, as a live server's does, so its worker runs the rounds it was given (#1832).
+    let stopping = Stopper { server: Arc::clone(&server), pool };
+    wait_for_every_worker(&server.left, || stopping.stop());
     server.lent.lock().unwrap_or_else(PoisonError::into_inner).take();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }

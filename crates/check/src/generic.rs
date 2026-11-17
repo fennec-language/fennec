@@ -23,7 +23,8 @@ pub(crate) struct Chosen {
 impl FnCx<'_> {
     /// A function's signature for one use. A method called on `receiver` takes its type's
     /// parameters from it; the others are `explicit` types, in order, or new variables.
-    /// Returns the signature and each type filled in, to check against its bounds.
+    /// Returns the signature, each type filled in, to check against its bounds, and each type
+    /// parameter but the ones it inherits with the type it stands for, in order.
     pub(crate) fn instantiate(
         &mut self,
         key: &str,
@@ -31,9 +32,9 @@ impl FnCx<'_> {
         receiver: Option<&Type>,
         explicit: &[Type],
         span: Span,
-    ) -> (Signature, Vec<Chosen>) {
+    ) -> (Signature, Vec<Chosen>, Vec<(String, Type)>) {
         let Some(entry) = self.checker.program.functions.get(key) else {
-            return (signature.clone(), Vec::new());
+            return (signature.clone(), Vec::new(), Vec::new());
         };
         let owner = self.checker.program.owner_params(entry);
         let generics = self.checker.program.generics_of(entry);
@@ -70,7 +71,7 @@ impl FnCx<'_> {
             .map(|param| ParamType { ty: param.ty.substitute(&given), ..param.clone() })
             .collect();
         let returns = signature.returns.substitute(&given);
-        (Signature { params, returns, ..signature.clone() }, chosen)
+        (Signature { params, returns, ..signature.clone() }, chosen, given)
     }
 
     /// Checks the types filled in fit their bounds. One not worked out yet is checked when
@@ -270,7 +271,7 @@ impl FnCx<'_> {
             // A function with no `self` has no value to read its type's parameters from.
             let takes_self = self.checker.program.functions.get(&key).is_some_and(|f| f.def.takes_self());
             let given = if takes_self { types.to_vec() } else { [ty.type_args(), types.to_vec()].concat() };
-            let (actual, chosen) = self.instantiate(&key, &signature, Some(ty), &given, Span::default());
+            let (actual, chosen, _) = self.instantiate(&key, &signature, Some(ty), &given, Span::default());
             for Chosen { ty: chosen, bounds } in chosen {
                 let chosen = self.checker.settled(&chosen);
                 let asks_more =
@@ -348,8 +349,20 @@ impl FnCx<'_> {
         span: Span,
     ) -> Option<Signature> {
         let signature = self.checker.signature(key)?;
-        let (signature, chosen) = self.instantiate(key, &signature, Some(receiver), explicit, span);
+        let (signature, chosen, given) = self.instantiate(key, &signature, Some(receiver), explicit, span);
         self.check_bounds(chosen, span);
+        // A method with type parameters, its type's or its own, is followed for growth as a
+        // generic function is: `Boxed(value=[self.value]).grow(n - 1)` gives `T` a bigger type.
+        if !given.is_empty() && span != Span::default() {
+            let (names, types) = given.into_iter().unzip();
+            let call = crate::generic_copies::Call {
+                caller: self.key.clone(),
+                callee: key.to_owned(),
+                types,
+                names,
+            };
+            self.checker.generic_method_calls.insert((span.start, span.end), call);
+        }
         Some(signature)
     }
 

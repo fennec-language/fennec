@@ -1,0 +1,106 @@
+# Lists given by `ref` whose length changes inside the loop that reads them by index, each way a
+# function can change it: every builtin that grows, shrinks, reorders or replaces a list, a call
+# given it by `ref` after another argument, a generic function and a method given it by `ref`, and
+# a whole new value, directly and through a swap. None of them keeps its length, and each read
+# sees the length the change left: a kept length would break a proof in a build that checks them.
+
+def changed(ref items: list[int], how: int) -> int:
+    mut total = 0
+    mut at = 0
+    while at < len(items) and at < 9:
+        total += items[at] * (at + 1)
+        if at == 1:
+            match how:
+                case 0:
+                    items.extend([7, 8, 9])
+                case 1:
+                    items += [4, 4]
+                case 2:
+                    _ = items.pop()
+                case 3:
+                    items.remove(items[0])
+                case 4:
+                    items.insert(0, 11)
+                case 5:
+                    items.remove_where((item) => item > 2)
+                case 6:
+                    items.swap(0, -1)
+                case _:
+                    items.reverse()
+        at += 1
+    return total * 100 + len(items)
+
+def doubled_end(times: int, ref onto: list[int]):
+    for _ in range(times):
+        onto.append(onto[len(onto) - 1] * 2)
+    return
+
+def trimmed(keep: int, ref from_list: list[int]):
+    while len(from_list) > keep:
+        _ = from_list.pop()
+    return
+
+def walked(ref items: list[int]) -> int:
+    mut total = 0
+    mut at = 0
+    while at < len(items) and at < 10:
+        total += items[at]
+        if at == 1:
+            doubled_end(2, ref items)
+        if at == 4:
+            trimmed(5, ref items)
+        at += 1
+    return total * 100 + len(items)
+
+def replaced(ref items: list[int], ref other: list[int]) -> int:
+    mut total = 0
+    mut at = 0
+    while at < len(items) and at < 9:
+        total += items[at] * (at + 1)
+        if at == 1:
+            items = [7, 7, 7, 7, 7, 7]
+        if at == 3:
+            held = items
+            items = other
+            other = held
+        at += 1
+    return total * 100 + len(items) + len(other)
+
+struct Stack[T]:
+    held: list[T]
+
+    def push_onto(self, ref onto: list[T], times: int):
+        for _ in range(times):
+            onto.extend(self.held)
+        return
+
+def pushed[T](ref onto: list[T], item: T):
+    onto.append(item)
+    return
+
+def walk(ref items: list[int]) -> int:
+    mut total = 0
+    mut at = 0
+    stack = Stack(held=[5, 6])
+    while at < len(items) and at < 12:
+        total += items[at] * (at + 1)
+        if at == 1:
+            pushed(ref items, 9)
+        if at == 2:
+            stack.push_onto(ref items, times=2)
+        at += 1
+    return total + len(items)
+
+def main(stdout: Stdout):
+    for how in range(8):
+        mut items = [1, 2, 3, 4, 5]
+        stdout.print(changed(ref items, how=how), items)
+    mut walked_items = [1, 2, 3, 4]
+    stdout.print(walked(ref walked_items), walked_items)
+    mut first = [1, 2, 3]
+    mut other = [4, 5, 6, 8, 9]
+    stdout.print(replaced(ref first, ref other), first, other)
+    mut pushed_items = [1, 2, 3, 4]
+    stdout.print(walk(ref pushed_items))
+    stdout.print(len(pushed_items))
+    return

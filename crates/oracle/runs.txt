@@ -156,6 +156,7 @@ std_net_edges.fen
 std_net_hostile.fen
 std_odds.fen
 std_pack_hostile.fen
+std_pack_varints.fen
 std_packed.fen
 std_parse.fen
 std_pool.fen

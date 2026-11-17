@@ -1,0 +1,65 @@
+# A task crashes while a list is out of its place in a lock's own body: between the take and the
+# append, reading the appended text out of range, or multiplying past an int's range.
+from std.concurrent import Crashed
+
+struct Bag:
+    items: list[str]
+    nums: list[int]
+    seen: int
+
+struct Shelf:
+    named: dict[str, Bag]
+    rows: list[Bag]
+
+def first_bag() -> Bag:
+    return Bag(items=["first, a text long enough for a block of its own"], nums=[1], seen=0)
+
+def by_item(shelf: shared Shelf, texts: list[str], count: int, by_name: bool):
+    lock shelf as ref held:
+        for turn in range(count):
+            if by_name:
+                held.named["one"].items.append(texts[turn])
+            else:
+                held.rows[0].items.append(texts[turn])
+    return
+
+def by_sum(shelf: shared Shelf, big: int, count: int, by_name: bool):
+    lock shelf as ref held:
+        for turn in range(count):
+            if by_name:
+                held.named["one"].nums.append(big * turn)
+            else:
+                held.rows[0].nums.append(big * turn)
+    return
+
+def ran(shelf: shared Shelf, texts: list[str], count: int, by_name: bool, sums: bool) fails Crashed:
+    with launch(() => run_one(shelf, texts=texts, count=count, by_name=by_name, sums=sums)) as task:
+        pass
+    return
+
+def run_one(shelf: shared Shelf, texts: list[str], count: int, by_name: bool, sums: bool):
+    if sums:
+        by_sum(shelf, big=4611686018427387904, count=count, by_name=by_name)
+    else:
+        by_item(shelf, texts=texts, count=count, by_name=by_name)
+    return
+
+def held_now(shelf: shared Shelf) -> str:
+    lock shelf as held:
+        named = held.named["one"]
+        row = held.rows[0]
+        return f"{len(named.items)} {named.items[-1]} {len(named.nums)} {named.nums[-1]} | {len(row.items)} {row.items[-1]} {len(row.nums)} {row.nums[-1]}"
+
+def main(stdout: Stdout):
+    shared shelf = Shelf(named={"one": first_bag()}, rows=[first_bag()])
+    mut texts = list[str]()
+    for turn in range(30):
+        texts.append(f"text {turn}, a text long enough for a block of its own")
+    for sums in [False, True]:
+        for by_name in [True, False]:
+            for count in [3, 2, 31, 1, 40]:
+                ran(shelf, texts=texts, count=count, by_name=by_name, sums=sums) except Crashed():
+                    stdout.print("crashed", sums, by_name, count, held_now(shelf))
+                    continue
+                stdout.print("went", sums, by_name, count, held_now(shelf))
+    return

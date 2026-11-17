@@ -1,0 +1,27 @@
+# Every length a varint can take, 1 to 10 bytes, at both ends and of both signs, through std.pack
+# and back. The bytes are printed as hex, so a build that writes any of them differently prints
+# differently.
+from std import pack
+
+struct Many:
+    numbers: list[int]
+    words: list[str]
+
+def main(stdout: Stdout) fails ParseError:
+    mut numbers = [0, 1, -1, 63, -64, 64, -65, 127, 128, 8191, 8192, -8193, 16383, 16384]
+    # Each multiple of 7 bits, where a varint takes one more byte, and the number just under it.
+    for shift in range(7, 63, 7):
+        numbers.append(1 << shift)
+        numbers.append((1 << shift) - 1)
+        numbers.append(-(1 << shift))
+        numbers.append(-(1 << shift) - 1)
+    numbers.append(4611686018427387903)
+    numbers.append(9223372036854775807)
+    numbers.append(-9223372036854775807 - 1)
+    many = Many(numbers=numbers, words=["", "a", "x" * 200])
+    data = pack.dumps(many)
+    stdout.print(data.hex())
+    back = pack.loads[Many](data)?
+    stdout.print(back.numbers == numbers and back.words == many.words)
+    for number in numbers:
+        stdout.print(number, pack.dumps(number).hex())

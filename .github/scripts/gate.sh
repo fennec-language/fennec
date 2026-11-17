@@ -263,6 +263,8 @@ oracle_agrees() {
 # - The ThreadSanitizer suppressions keep to their rules, and the known failures' file to its form.
 # - A hello world and a program using only `fs` link no SQLite, TLS or cryptography beyond what
 #   `.github/linkage-known.txt` lists.
+# - The Rust docs build as CI's lint job builds them, with any warning an error: a public item's
+#   doc that links to a private one fails there.
 # - The workflows pass actionlint and zizmor, where they're installed.
 quick() {
   local failed=0 program said="$logs/quick.txt"
@@ -297,6 +299,11 @@ quick() {
   .github/scripts/tsan-suppressions-check.sh || { echo "tsan-suppressions-check" >> "$names"; failed=1; }
   .github/scripts/test-known-failures.sh > /dev/null || { echo "test-known-failures" >> "$names"; failed=1; }
   .github/scripts/linkage-check.sh target/debug/fennec || { echo "linkage-check" >> "$names"; failed=1; }
+  if ! RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked > "$said" 2>&1; then
+    cat "$said"
+    echo "cargo doc" >> "$names"
+    failed=1
+  fi
   if command -v actionlint > /dev/null && ! actionlint; then
     echo "actionlint" >> "$names"
     failed=1

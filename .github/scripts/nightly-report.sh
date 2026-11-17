@@ -11,7 +11,7 @@
 # each entry whole under it, as `flakes-<date>.md`, so every flake the gates saw is there to read.
 #
 # It says too whether main's CI is green on every system, naming each job that isn't, with
-# `main-ci.sh`.
+# `main-ci.sh`, and warns when GitHub holds more than 25 branches.
 #
 # It needs `gh`, signed in. A night still running, or one with no report, is said so, and nothing
 # is written. It exits 1 when the night failed, or a job of main's CI is red on any system, so
@@ -44,6 +44,13 @@ repository=${2:-fennec-language/fennec}
 # report, the day it goes red.
 main_ci=0
 "$here/main-ci.sh" "$repository" || main_ci=1
+# The weekly sweep (`sweep-branches.yml`) deletes the branches nothing needs, so past 25 something
+# is keeping them, or it isn't running: a warning, not a failed night.
+branches=$(gh api --paginate "repos/$repository/branches?per_page=100" --jq 'length' 2> /dev/null \
+  | awk '{ total += $1 } END { print total + 0 }')
+if [ "$branches" -gt 25 ]; then
+  echo "warning: $repository has $branches branches, more than 25: https://github.com/$repository/branches"
+fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 # The night's mutants, from the latest scheduled Mutation tests run, as `mutants-<date>.md`: each
@@ -72,6 +79,24 @@ elif gh run download "$mutants" --repo "$repository" --pattern 'mutants-nightly-
 else
   echo "mutants: the nightly run $mutants kept nothing to read"
 fi
+# The week's big codebase, from the latest scheduled weekly run, as `big-codebase-weekly-<date>.md`:
+# each step at 100,000 and 200,000 lines, and how each grew against the program.
+read -r weekly weekly_conclusion weekly_started <<< "$(gh run list --repo "$repository" --workflow big-codebase-weekly.yml \
+  --event schedule --limit 1 --json databaseId,conclusion,createdAt --jq '.[0] | "\(.databaseId) \(.conclusion // "running") \(.createdAt)"' 2> /dev/null)"
+if [ -n "${weekly:-}" ] && [ "$weekly_conclusion" != running ] && [ -n "$weekly_conclusion" ]; then
+  week=${weekly_started%%T*}
+  if [ ! -f "$folder/big-codebase-weekly-$week.md" ] \
+    && gh run download "$weekly" --repo "$repository" --name big-codebase-weekly --dir "$work/weekly" > /dev/null 2>&1; then
+    {
+      echo "# The big codebase at 100,000 and 200,000 lines, $week: $weekly_conclusion"
+      echo
+      echo "https://github.com/$repository/actions/runs/$weekly"
+      echo
+      cat "$work/weekly/big-codebase-weekly.md"
+    } > "$folder/big-codebase-weekly-$week.md"
+    echo "big codebase weekly on $week: $weekly_conclusion, in $folder/big-codebase-weekly-$week.md"
+  fi
+fi
 read -r run conclusion created <<< "$(gh run list --repo "$repository" --workflow proofs.yml --limit 1 \
   --json databaseId,conclusion,createdAt --jq '.[0] | "\(.databaseId) \(.conclusion // "running") \(.createdAt)"')"
 if [ -z "${run:-}" ]; then
@@ -92,6 +117,10 @@ cp "$work/nightly.md" "$folder/nightly-proofs-$day.md"
 # blocks over an hour, where they started and ended and how fast they rose.
 if gh run download "$run" --repo "$repository" --pattern 'soak-*' --dir "$work/soak" > /dev/null 2>&1; then
   cat "$work"/soak/soak.md "$work"/soak/*/soak.md 2> /dev/null >> "$folder/nightly-proofs-$day.md" || true
+fi
+# The big codebase's steps at each size, and how each grew against the program.
+if gh run download "$run" --repo "$repository" --name big-codebase --dir "$work/big" > /dev/null 2>&1; then
+  cat "$work/big/big-codebase.md" 2> /dev/null >> "$folder/nightly-proofs-$day.md" || true
 fi
 # The tests that failed, by name, so a failed night reads in one line.
 failed=$(sed -n 's/^Failed tests: //p' "$work/nightly.md" | head -n 1)

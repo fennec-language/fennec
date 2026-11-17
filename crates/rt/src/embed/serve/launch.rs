@@ -16,7 +16,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -50,6 +50,11 @@ struct Launched {
     ended: Condvar,
     /// The code that launched it, whose waits its crash cuts short.
     launcher: Arc<threads::Launcher>,
+    /// In a replay, whether its recording says its launcher was a server's round cancelled at its
+    /// block's end, which left it behind. What it did past then never reached the recording, so
+    /// asking for more than was recorded ends it as quietly as the run's end, not as a crash. Read
+    /// only where a task ends: its stop, which more reads, is left as the recording has it.
+    left_behind: AtomicBool,
 }
 
 enum End {
@@ -142,6 +147,7 @@ pub(in crate::embed) fn launch_on(pool: &'static Pool, body: TaskBody, env: i64)
         end: Mutex::new(End::Running(None)),
         ended: Condvar::new(),
         launcher: threads::Launcher::here(),
+        left_behind: AtomicBool::new(false),
     });
     let number = NEXT_TASK.fetch_add(1, Ordering::Relaxed);
     tasks(|tasks| tasks.insert(number, Arc::clone(&launched)));
@@ -221,7 +227,7 @@ fn run(launched: &Launched, body: TaskBody, copy: Option<(u64, Box<crate::embed:
 /// reported, and it's a crash. A crash holding a lock leaves what it guards half changed, until
 /// rollback is emitted, so the program ends.
 fn crashed(launched: &Launched) -> i64 {
-    if launched.stop.load(Ordering::Acquire) > 0 {
+    if launched.stop.load(Ordering::Acquire) > 0 || launched.left_behind.load(Ordering::Acquire) {
         with(|state| state.failure = None);
         super::super::set_failed(0);
         return ENDED;
@@ -263,6 +269,11 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
     if !replaying && (failed != 0 || threads::stopped()) {
         stop(&launched, threads::STOPPING);
     }
+    // In a replay, a round its recording says was cancelled here left its task behind: the task
+    // ends quietly if it runs past what was recorded of it, as it never reached the recording.
+    if replaying && crate::replay::will_be_stopped_in(crate::replay::StoppedIn::CancelledAtBlockEnd, false) {
+        launched.left_behind.store(true, Ordering::Release);
+    }
     let deadline = u64::try_from(stop_after_ns)
         .ok()
         .filter(|_| failed == 0 && !replaying)
@@ -273,12 +284,21 @@ pub extern "C" fn launch_end(task: i64, stop_after_ns: i64, failed: i64, failure
     let outcome = wait_for(&launched, deadline);
     match held {
         Some(held) => super::super::fail_with(held),
-        // Stopped while it waited, as its recording says.
-        None if replaying => crate::replay::stopped_at_block_end_as_recorded(),
-        // Stopped while it waited: it's cut short now its task has ended, which a recording notes.
+        // Stopped or cancelled while it waited, as its recording says.
+        None if replaying => {
+            if !crate::replay::stopped_in_as_recorded(crate::replay::StoppedIn::BlockEnd) {
+                let _ = crate::replay::stopped_in_as_recorded(crate::replay::StoppedIn::CancelledAtBlockEnd);
+            }
+        }
+        // Cancelled while it waited, as a server's round is when its server stops, or stopped: it's
+        // cut short now, which a recording notes. A cancelled round that went on ran past its block
+        // as if it had ended (#1915).
         None => {
-            if super::cut_short() {
-                crate::replay::stopped_at_block_end();
+            if fennec_parked::is_cancelled() && !super::super::failed() {
+                super::fail_as_stopped();
+                crate::replay::stopped_in(crate::replay::StoppedIn::CancelledAtBlockEnd);
+            } else if super::cut_short() {
+                crate::replay::stopped_in(crate::replay::StoppedIn::BlockEnd);
             }
         }
     }

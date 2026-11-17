@@ -69,9 +69,6 @@ impl Crossing {
 /// A function's type parameters as they are in one copy of it.
 type Given = Vec<(String, Type)>;
 
-/// The most copies of generic functions followed, as many as lowering makes before it stops.
-const MOST_COPIES: usize = 2000;
-
 /// The standard library's channels: a value of one of these hands its item to another task.
 const CHANNELS: [&str; 4] = ["Sender", "Receiver", "Inbox", "Channel"];
 
@@ -330,6 +327,8 @@ struct Walk<'c> {
     types: BTreeSet<Type>,
     /// Set when a type that crosses has a type parameter no copy placed.
     unplaced: bool,
+    /// Where every `with launch`'s task is, made once.
+    tasks: BTreeSet<(u32, u32)>,
 }
 
 impl<'c> Walk<'c> {
@@ -346,6 +345,7 @@ impl<'c> Walk<'c> {
                 methods.entry(owner.clone()).or_default().push(key.clone());
             }
         }
+        let tasks = checker.launches.values().map(|launch| at(&launch.task)).collect();
         Walk {
             checker,
             reached,
@@ -356,6 +356,7 @@ impl<'c> Walk<'c> {
             arrows: BTreeMap::new(),
             types: BTreeSet::new(),
             unplaced: false,
+            tasks,
         }
     }
 
@@ -369,18 +370,26 @@ impl<'c> Walk<'c> {
             .map(|key| (key.clone(), Vec::new()))
             .collect();
         let mut seeds = self.launched();
-        let mut generic = 0;
+        // Copies of generic functions go by the rules lowering's do (`crate::copies`): one it can't
+        // make is never built, so nothing crosses in it, and it isn't followed. Past the backstop,
+        // everything counts as crossing.
+        let mut made = crate::copies::Copies::default();
+        let functions = self.checker.program.functions.len();
         while let Some((key, given)) = queue.pop() {
+            if !given.is_empty() && made.too_deep(&key, given.iter().map(|(name, ty)| (name, ty))).is_some() {
+                continue;
+            }
             if !self.copies.insert((key.clone(), given.clone())) {
                 continue;
             }
-            // A generic function that calls itself with a bigger type makes copies without end, as
-            // lowering stops it: past as many as lowering makes, everything counts as crossing.
             if !given.is_empty() {
-                generic += 1;
-                if generic > MOST_COPIES {
-                    self.unplaced = true;
-                    break;
+                match made.make(&key, functions) {
+                    Ok(()) => {}
+                    Err(crate::copies::Refusal::TooMany { .. }) => {
+                        self.unplaced = true;
+                        break;
+                    }
+                    Err(_) => continue,
                 }
             }
             let types: BTreeMap<(u32, u32), Type> = match self.checker.typed.get(&key) {
@@ -442,14 +451,16 @@ impl<'c> Walk<'c> {
                     });
                     spots.nested = Some(reads);
                 }
-            } else if let Some(test) =
-                self.checker.program.tests.iter().find(|test| format!("test \"{}\"", test.name) == key)
-            {
+            } else if let Some(test) = self.checker.program.test(key) {
                 spots_in(&test.body, &mut spots);
             }
-            for launch in self.checker.launches.values() {
-                if self.checker.typed.get(key).is_some_and(|body| body.expr(launch.task.span).is_some()) {
-                    spots.whole.push(at(&launch.task));
+            if let Some(body) = self.checker.typed.get(key) {
+                // Whichever is fewer is looked through, the tasks or the body's expressions, so
+                // neither many launches nor long functions pay for every pair of the two.
+                if self.tasks.len() <= body.exprs.len() {
+                    spots.whole.extend(self.tasks.iter().filter(|task| body.exprs.contains_key(task)));
+                } else {
+                    spots.whole.extend(body.exprs.keys().filter(|span| self.tasks.contains(span)));
                 }
             }
             self.spots.insert(key.to_owned(), spots);

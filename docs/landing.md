@@ -32,6 +32,21 @@ It does the three steps below in order, and stops at the first that fails, with 
 Say in the text that the gate passed, and what you measured. Don't open a pull request by joining these
 steps by hand in one command: a failed merge or gate goes unnoticed that way, and has more than once.
 
+## Branches and worktrees
+
+- **A branch pushed only for a CI run**, such as one to dispatch a workflow from before it's on
+  `main`, is deleted as soon as the run finishes: `git push origin --delete <branch>`.
+- **Every Monday**, `sweep-branches.yml` deletes the branches on GitHub with no open pull request
+  and no commit in seven days. It never touches `main`, `staging`, `bench-history`, Dependabot's
+  branches or the merge queue's. Its summary lists each branch it deleted with its last commit, so
+  one taken by mistake can be pushed again. The morning's `nightly-report.sh` warns when there are
+  more than 25 branches.
+- **On this Mac**, `.github/scripts/sweep-worktrees.sh` removes the worktrees under
+  `.claude/worktrees` whose branch has landed, that nothing has used for six hours, that nothing is
+  running in, and that have nothing uncommitted. It keeps their branches. It never touches a
+  `-keep`, `-base` or `-gate` worktree, or a session's own. Run it weekly, or with `--dry-run` to see
+  what it would do.
+
 ## The Linux VM
 
 The gate's Linux check runs in a Linux VM of Fennec's own: the colima profile `fennec`, whose Docker context is `colima-fennec`. Nothing in Fennec uses Docker's default context, which on a shared Mac can be another project's VM.
@@ -39,9 +54,10 @@ The gate's Linux check runs in a Linux VM of Fennec's own: the colima profile `f
 - **Make it,** once, with 4 CPUs, 8 GB of memory and 40 GB of disk, without making it Docker's context:
 
   ```bash
-  colima start fennec --cpu 4 --memory 8 --disk 40 --activate=false
+  colima start fennec --cpu 4 --memory 8 --disk 40 --dns 192.168.5.2 --activate=false
   ```
 
+- **Its names** resolve through 192.168.5.2, the gateway of Lima's user-v2 network the VM is on: left to itself, Colima points the VM at 192.168.5.3, which that network doesn't have. For a VM made without `--dns`, set `dns: [192.168.5.2]` in `~/.colima/fennec/colima.yaml`, and `nameserver 192.168.5.2` in the VM's `/etc/resolv.conf` (`colima ssh -p fennec`). The check warns when the VM can't resolve `index.crates.io`.
 - **Day to day, nothing to do.** The check starts the VM when it needs it, which the step's time includes, and stops it after 30 minutes with no check. One check runs at a time, whichever worktree's gate starts it.
 - **Its disk.** Every worktree shares one target volume and one of fetched crates. Past 75% of the disk, the check removes its `fennec-` volumes and builds them again.
 - **Without it,** where there's no profile, it won't start, or its disk is full, the step warns that the Linux check is unavailable and the gate goes on. CI's Linux jobs still check.

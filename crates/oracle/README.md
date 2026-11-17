@@ -98,7 +98,11 @@ says they are, at the version the workspace pins.
 - A failure passes up as a Rust error, `except` handles only the failure of the call it follows,
   and `else` the missing value at the end of a chain.
 - A generator runs on a thread of its own, and it and its reader take turns, so a run is the same
-  every time. A `with` source runs the caller's block at its `lend`.
+  every time. A `with` source runs the caller's block at its `lend`. Its `lend ... except:` cleanup
+  runs when the block fails: a failure out of the cleanup is noted on the block's, as it prints,
+  when it's a `fail` or a line whose whole value is a `?`, and takes the block's place when it's a
+  `?` deeper in a line or on a `with`. An error's notes are read with `notes()` and added with
+  `add_note`, and never printed; `==` on errors that carry any is refused.
 - A `shared` value is one cell, which every copy of it reaches. A `lock` copies what each cell
   holds into the name it gives it, runs its block, and as the block ends writes back what each
   `ref` name holds, unless a failure or a crash left it, which undoes the block's changes, while

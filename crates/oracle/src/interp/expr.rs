@@ -37,6 +37,7 @@ impl Interp {
                     ty: "Duration".to_owned(),
                     case: None,
                     fields: vec![("nanos".to_owned(), Value::Int(*nanos))],
+                    notes: Vec::new(),
                 };
                 Ok(Value::Instance(Held::new(duration)))
             }

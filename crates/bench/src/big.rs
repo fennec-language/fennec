@@ -99,14 +99,6 @@ impl Step {
     fn named(name: &str) -> Option<Step> {
         Step::ALL.into_iter().find(|step| step.name() == name)
     }
-
-    /// Whether growing faster than the program fails the step. The two edits that move the rest
-    /// only report for now: a parallel body's name still carries where it starts, so they build
-    /// again every parallel body after the edit, and its callers, until the checker names them
-    /// another way.
-    fn limited(self) -> bool {
-        !matches!(self, Step::EditDevLonger | Step::EditDevLine)
-    }
 }
 
 /// One step at one size: the medians of its runs.
@@ -514,11 +506,11 @@ fn growth(found: &[Found], programs: &[Program]) -> Vec<(Step, usize, usize, u12
     grew
 }
 
-/// Each limited step that grew faster than the program by more than the limit allows.
+/// Each step that grew faster than the program by more than the limit allows.
 fn grew_too_fast(growth: &[(Step, usize, usize, u128)]) -> Vec<String> {
     growth
         .iter()
-        .filter(|(step, _, _, factor)| step.limited() && *factor > GROWTH_LIMIT)
+        .filter(|(_, _, _, factor)| *factor > GROWTH_LIMIT)
         .map(|(step, from, to, factor)| {
             format!(
                 "{} grew {} times faster than the program from {from} lines to {to}",
@@ -535,9 +527,6 @@ fn growth_table(growth: &[(Step, usize, usize, u128)]) -> String {
         let mut line = format!("  {:<15}", step.name());
         for (_, from, to, factor) in growth.iter().filter(|(at, ..)| *at == step) {
             let _ = write!(line, " {from}->{to}: {}", hundredths(*factor));
-        }
-        if !step.limited() {
-            line.push_str(" (reported only)");
         }
         text.push_str(&line);
         text.push('\n');
@@ -640,8 +629,7 @@ fn markdown(
             .filter(|(at, ..)| *at == step)
             .map(|(_, from, to, factor)| format!("{from} to {to}: {}", hundredths(*factor)))
             .collect();
-        let only = if step.limited() { "" } else { " (reported only, for now)" };
-        let _ = writeln!(text, "- {}: {}{only}", step.name(), factors.join(", "));
+        let _ = writeln!(text, "- {}: {}", step.name(), factors.join(", "));
     }
     if failures.is_empty() {
         text.push_str("\nEvery step held to its budget.\n");
@@ -838,16 +826,20 @@ mod tests {
     }
 
     #[test]
-    fn the_edits_that_move_the_rest_report_their_growth_but_never_fail_on_it() {
+    fn the_edits_that_move_the_rest_fail_on_growing_too_fast_as_every_step_does() {
         let grew = [
             (Step::EditDevLonger, 50, 100, 300),
-            (Step::EditDevLine, 50, 100, 300),
+            (Step::EditDevLine, 50, 100, 126),
             (Step::EditDev, 50, 100, 125),
             (Step::Test, 50, 100, 126),
         ];
         assert_eq!(
             grew_too_fast(&grew),
-            ["test grew 1.26 times faster than the program from 50 lines to 100"]
+            [
+                "edit-dev-longer grew 3.00 times faster than the program from 50 lines to 100",
+                "edit-dev-line grew 1.26 times faster than the program from 50 lines to 100",
+                "test grew 1.26 times faster than the program from 50 lines to 100",
+            ]
         );
     }
 

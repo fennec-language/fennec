@@ -22,8 +22,20 @@ check() {
 # Both are written as they'll run, so what's in them expands when they do.
 # shellcheck disable=SC2016
 printf '#!/usr/bin/env bash\n[ -z "${GATE_FAILS:-}" ] || { echo "FAILED: tests"; exit 1; }\necho gate passed\n' > "$GATE"
-# shellcheck disable=SC2016
-printf '#!/usr/bin/env bash\necho "$*" >> "$OPENED"\nwhile [ $# -gt 0 ]; do [ "$1" = --body-file ] && cat "$2" > "$OPENED.body"; shift; done\n' > "$GH"
+# A `gh` that keeps one pull request's text in "$OPENED.body": `pr list` names OPEN_PR, if set, as
+# the one open, `pr view` gives its text, and `pr create` and `pr edit` write it, unless EDIT_FAILS
+# has the edit fail or EDIT_IGNORED has it say it worked and change nothing.
+cat > "$GH" << 'GH'
+#!/usr/bin/env bash
+echo "$*" >> "$OPENED"
+case "$1 $2" in
+  "pr list") echo "${OPEN_PR:-}"; exit 0 ;;
+  "pr view") cat "$OPENED.body"; exit 0 ;;
+  "pr edit") [ -z "${EDIT_FAILS:-}" ] || exit 1; [ -z "${EDIT_IGNORED:-}" ] || exit 0 ;;
+esac
+while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cat "$2" > "$OPENED.body"; shift; done
+exit 0
+GH
 chmod +x "$GATE" "$GH"
 echo "What it does." > "$work/body.md"
 
@@ -102,11 +114,61 @@ check "a clean branch is pushed at its own commit" "0 $(git rev-parse HEAD)" "$?
 git merge-base --is-ancestor origin/main HEAD
 check "with main merged in" 0 "$?"
 check "and its pull request opened" "pr create --base main --head clean --title Clean --body-file" "$(sed 's/ [^ ]*$//' "$OPENED")"
-# A gate other than gate.sh is a short one, and the text says so first, then what was written.
-check "saying it had a SHORT gate, then its text" "**SHORT gate**: only \`$GATE\` ran, not \`.github/scripts/gate.sh\` and its steps. Don't merge on it.|What it does." \
-  "$(sed -n '1p;3p' "$OPENED.body" | paste -sd '|' -)"
+# A gate other than gate.sh is a short one, and the text says so first, with the commit it gated
+# and when, then what was written.
+short="only \`$GATE\` ran, not \`.github/scripts/gate.sh\` and its steps. Don't merge on it."
+when='[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC'
+# The line said for the commit checked out, with when it was gated made the same each time.
+said_for_head() {
+  echo "**SHORT gate** at \`$(git rev-parse --short=12 HEAD)\`, WHEN: $short"
+}
+first_of_text() {
+  sed -n 1p "$OPENED.body" | sed -E "s/$when/WHEN/"
+}
+check "saying it had a SHORT gate, at this commit, then its text" "$(said_for_head)|What it does." \
+  "$(first_of_text)|$(sed -n 3p "$OPENED.body")"
 grep -q "SHORT gate: only $GATE ran" "$work/said"
 check "and saying it where it ran" 0 "$?"
+
+# Gated again, for a pull request already open: nothing new is opened, and the text on GitHub keeps
+# everything but how it was gated.
+branch_from_base regated
+echo z > own
+git add own
+git commit --quiet -m "gated again"
+: > "$OPENED"
+REGATE=1 .github/scripts/open-pr.sh "Regated" "$work/body.md" > "$work/out" 2> "$work/said"
+check "gated again with no pull request open, it stops before the gate and pushes nothing" "1 " "$? $(pushed regated)"
+grep -q "no open pull request for regated" "$work/said"
+check "and says so" 0 "$?"
+grep -q "gate passed" "$work/out"
+check "without running the gate" 1 "$?"
+
+# Written as GitHub would hold it, backquotes and all.
+# shellcheck disable=SC2016
+printf '**Gated in full** at `0123456789ab`, 2026-01-01 00:00 UTC: every step of `gate.sh` passed: tests.\n\nWritten again by hand.\n' > "$OPENED.body"
+: > "$OPENED"
+OPEN_PR=7 REGATE=1 .github/scripts/open-pr.sh "Regated" "$work/body.md" > /dev/null 2> "$work/said"
+check "gated again with its pull request open, it's pushed at its own commit" "0 $(git rev-parse HEAD)" "$? $(pushed regated)"
+check "the old line gives way to this gate's, and the text written by hand stays" "$(said_for_head)||Written again by hand." \
+  "$(first_of_text)|$(sed -n '2p;3p' "$OPENED.body" | paste -sd '|' -)"
+grep -q "pr create" "$OPENED"
+check "and no other pull request is opened" 1 "$?"
+
+printf 'A text with no line saying how it was gated.\n' > "$OPENED.body"
+OPEN_PR=7 REGATE=1 .github/scripts/open-pr.sh "Regated" "$work/body.md" > /dev/null 2> "$work/said"
+check "a text that never said how it was gated gets the line first" "0 $(said_for_head)||A text with no line saying how it was gated." \
+  "$? $(first_of_text)|$(sed -n '2p;3p' "$OPENED.body" | paste -sd '|' -)"
+
+printf 'Unchanged.\n' > "$OPENED.body"
+EDIT_FAILS=1 OPEN_PR=7 REGATE=1 .github/scripts/open-pr.sh "Regated" "$work/body.md" > /dev/null 2> "$work/said"
+check "an edit that fails fails it" "1 Unchanged." "$? $(cat "$OPENED.body")"
+grep -q "doesn't say it was gated again: put this first in its text by hand" "$work/said"
+check "saying what to put there" 0 "$?"
+EDIT_IGNORED=1 OPEN_PR=7 REGATE=1 .github/scripts/open-pr.sh "Regated" "$work/body.md" > /dev/null 2> "$work/said"
+check "an edit that changes nothing fails it too" 1 "$?"
+grep -q "text starts 'Unchanged.'" "$work/said"
+check "saying what the text starts with" 0 "$?"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures failed"

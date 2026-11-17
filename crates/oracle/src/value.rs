@@ -73,6 +73,9 @@ pub(crate) struct Instance {
     /// The case, for an enum or an error with cases.
     pub(crate) case: Option<String>,
     pub(crate) fields: Vec<(String, Value)>,
+    /// An error's notes, as `add_note` adds them and a failing cleanup's failure is noted on the
+    /// block's: never printed, as the compiled program keeps them in a hidden word of their own.
+    pub(crate) notes: Vec<String>,
 }
 
 impl Instance {
@@ -174,7 +177,12 @@ impl Value {
     }
 
     pub(crate) fn instance(ty: &str, case: Option<&str>, fields: Vec<(String, Value)>) -> Value {
-        Value::Instance(Held::new(Instance { ty: ty.to_owned(), case: case.map(str::to_owned), fields }))
+        Value::Instance(Held::new(Instance {
+            ty: ty.to_owned(),
+            case: case.map(str::to_owned),
+            fields,
+            notes: Vec::new(),
+        }))
     }
 }
 
@@ -312,6 +320,7 @@ pub(crate) fn same(left: &Value, right: &Value) -> bool {
         (Value::Instance(a), Value::Instance(b)) => {
             a.ty == b.ty
                 && a.case == b.case
+                && a.notes == b.notes
                 && a.fields.len() == b.fields.len()
                 && a.fields.iter().zip(&b.fields).all(|((m, x), (n, y))| m == n && same(x, y))
         }

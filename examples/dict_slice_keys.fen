@@ -160,9 +160,7 @@ def every_slice(stdout: Stdout):
                 full[start:stop] in numbers
                 and (numbers.get(full[start:stop]) else -1) == made_numbers[whole]
                 and short_values[full[start:stop]] == made_short[whole]
-                # Both read with `get`: a value in a block read with `d[key]` straight into `==`
-                # is never let go of (fennec#1986).
-                and (long_values.get(full[start:stop]) else "") == (made_long.get(whole) else "")
+                and long_values[full[start:stop]] == made_long[whole]
             ):
                 read += 1
     stdout.print(

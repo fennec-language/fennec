@@ -39,6 +39,10 @@ pub(super) struct OnFailure<'a> {
     pub(super) scopes: Vec<std::collections::HashMap<String, LocalId>>,
     pub(super) body: &'a fennec_check::Body,
     pub(super) subst: super::generics::Subst,
+    /// How many things to leave there were where the block starts. A failure from inside leaves
+    /// what was entered since before the cleanup runs, so a `for ref` loop inside a `ref` case
+    /// writes its item back before the case is put back.
+    pub(super) leaving: usize,
 }
 
 impl Lowering<'_> {
@@ -496,10 +500,66 @@ impl Lowering<'_> {
         }
     }
 
-    /// Leaves with a failure that came from inside what's being called: the `with` block
-    /// around it runs its cleanup first, which ends by failing.
+    /// Leaves with a failure that came from inside what's being called: what was entered inside
+    /// the `with` block around it is left, and then the block runs its cleanup, which ends by
+    /// failing.
     pub(super) fn pass_up_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
+        let Some(depth) = self.on_failure.last().map(|around| around.leaving) else {
+            return self.return_error(error, span);
+        };
+        // What was entered inside the block is left first, the last first, and once: the cleanup
+        // is lowered with only what's outside the block to leave, and what's inside is put back
+        // after, for the code that goes on where nothing failed.
+        let entered = self.leaving.clone();
+        let lowered = self.leave_inside(depth, error, span).and_then(|error| self.clean_up(error, span));
+        self.leaving = entered;
+        lowered
+    }
+
+    /// Leaves what was entered since there were `depth` things to leave, the last first, as a
+    /// failure leaves them: a `for ref` loop's item is written back, a lock's changes are rolled
+    /// back before it's given back, and a generator is let go of with a failure of its own cleanup
+    /// noted on this one. Each is taken off as it's left, so a failure while letting go of a
+    /// generator leaves only what was entered before it.
+    fn leave_inside(&mut self, depth: usize, error: Operand, span: Span) -> Lowered<Operand> {
+        if self.leaving.len() <= depth {
+            return Ok(error);
+        }
+        let ty = type_in(&self.locals, &error).ok_or("a value has no type")?;
+        let generators =
+            self.leaving.iter().skip(depth).any(|entered| matches!(entered, Leaving::Generator { .. }));
+        let held = if generators && self.takes_notes(&ty) {
+            let held = self.temporary(ty);
+            self.emit(InstKind::Copy { dest: held, value: error.clone() }, span);
+            Some(held)
+        } else {
+            None
+        };
+        let (out, with) = (self.failing_out, self.failing_with);
+        self.failing_out = true;
+        if held.is_some() {
+            self.failing_with = held;
+        }
+        let mut undone = Ok(());
+        while undone.is_ok()
+            && self.leaving.len() > depth
+            && let Some(last) = self.leaving.last().cloned()
+        {
+            undone = self.undo(&last, span);
+            self.leaving.pop();
+        }
+        self.failing_out = out;
+        self.failing_with = with;
+        undone.map(|()| held.map_or(error, Operand::Local))
+    }
+
+    /// Runs the cleanup of the `with` block a failure leaves, with the failure in its name. It's
+    /// lowered with what's in sight where it's written, and ends by failing. It's ordinary code
+    /// while it runs, though it's lowered from inside a failure leaving, as when a generator let go
+    /// of fails as it closes: a lock it takes is given back with its changes kept.
+    fn clean_up(&mut self, error: Operand, span: Span) -> Lowered<()> {
         let Some(around) = self.on_failure.pop() else { return self.return_error(error, span) };
+        let failing = (std::mem::take(&mut self.failing_out), self.failing_with.take());
         let rounds = std::mem::take(&mut self.plain_rounds);
         let mut scopes = around.scopes.clone();
         scopes.push(std::collections::HashMap::new());
@@ -517,6 +577,7 @@ impl Lowering<'_> {
         self.body = outer_body;
         self.subst = outer_subst;
         self.plain_rounds = rounds;
+        (self.failing_out, self.failing_with) = failing;
         self.on_failure.push(around);
         lowered
     }

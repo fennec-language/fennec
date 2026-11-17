@@ -4307,7 +4307,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         })
         .collect();
     let on_workers = crate::parallel::run_on_workers(program);
-    let tasks = crate::ticks::tasks(&functions);
+    let tasks = crate::ticks::tasks(program, &functions);
     Whole {
         functions,
         analyses,

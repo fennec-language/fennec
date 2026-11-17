@@ -83,19 +83,20 @@ impl<'a> Lowering<'a> {
         let (item, error) = parts(&signature.returns)?;
         let body = context.signatures.types().body(&instance.base).ok_or("it has no types")?;
         let returns = error.map_or(Type::Unit, |error| Type::Result(Box::new(Type::Unit), Box::new(error)));
+        let (stmts, apart) = super::own_apart(def, body, (captures, None), &signature.params)?;
         let mut lowering = Lowering::new(instance, context, body, returns);
         lowering.begin_generator(item);
         let mut params = Vec::new();
         for (name, ty) in captures {
-            params.push(lowering.declare(name, ty.clone()));
+            params.push(lowering.declare(&super::declared_as(name, &apart), ty.clone()));
         }
         for param in &signature.params {
             if param.is_mut {
                 return Err("a generator has a `mut` parameter".to_owned());
             }
-            params.push(lowering.declare(&param.name, param.ty.clone()));
+            params.push(lowering.declare(&super::declared_as(&param.name, &apart), param.ty.clone()));
         }
-        lowering.stmts(&def.body, Tail::Drop)?;
+        lowering.stmts(&stmts, Tail::Drop)?;
         lowering.end_function(def.span)?;
         lowering.finish_generator(&params, &signature.returns, def.span)
     }

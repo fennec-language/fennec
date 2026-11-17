@@ -5,14 +5,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use fennec_ir::{FormatPart, Function, GeneratorDef, InstKind, LocalId, Operand, Program, Terminator};
-use fennec_layout::Layouts;
+use fennec_layout::{Layouts, ListItem, Word};
 use fennec_rt::embed::layout::COUNT;
 use fennec_syntax::{BinOp, Span, UnaryOp};
 
-use crate::analysis::{Analysis, Whole, callees, visit, whole};
+use crate::analysis::{Analysis, callees, visit, whole};
 use crate::holding::{Holding, filled, holding, step};
 use crate::kinds::{Kind, struct_definitions};
-use crate::uniqueness::{FieldPath, Tracked, coming_in, unsettled, written_order};
+use crate::reads::Reads;
+use crate::share::{Added, Kept, Place, Share, place};
+use crate::uniqueness::{Callees, FieldPath, Tracked, coming_in, unsettled, written_order};
 use crate::{CheckKind, CheckLeft, Shared};
 
 /// The level of processor code is built for.
@@ -297,8 +299,22 @@ pub(crate) fn facts_stripped() -> bool {
 pub(crate) fn emit_with(
     program: &Program,
     cpu: Cpu,
-    mut shared: Shared,
+    shared: Shared,
 ) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    // A dev build of `fennec` keeps what each unit read and shares, to check it's all it shares.
+    let (units, shared, layouts, _) = emit_keeping(program, cpu, shared, cfg!(debug_assertions))?;
+    Ok((units, shared, layouts))
+}
+
+/// What [`emit_with`] gives, and, when `keeping`, what each unit read of the whole program, what
+/// it added to what units share and what it asked the layouts to number, checked to be all it
+/// added (see `share::audit`).
+pub(crate) fn emit_keeping(
+    program: &Program,
+    cpu: Cpu,
+    mut shared: Shared,
+    keeping: bool,
+) -> Result<(Vec<Unit>, Shared, Layouts, Vec<Kept>), String> {
     let header = crate::header()?;
     let attributes = attributes(cpu);
     if PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed) {
@@ -320,11 +336,11 @@ pub(crate) fn emit_with(
     let mut units = Vec::with_capacity(program.functions.len());
     // Every module of a program agrees, since what it declares has to match what's defined.
     let threads = crate::parallel::uses_parallel(program);
-    shared.native = crate::native::native_types(program, &layouts);
+    let native = crate::native::native_types(program, &layouts);
     let waits = crate::waits::may_wait(program, true);
     let closures =
         program.functions.iter().flat_map(|function| &function.blocks).flat_map(|block| &block.insts);
-    shared.waiting_closures = closures
+    let waiting_closures: BTreeSet<String> = closures
         .filter_map(|inst| match &inst.kind {
             InstKind::MakeClosure { function, .. } if waits.marked.contains_key(function) => {
                 Some(function.clone())
@@ -332,18 +348,40 @@ pub(crate) fn emit_with(
             _ => None,
         })
         .collect();
-    shared.waiting = waits.marked.into_keys().collect();
+    let waiting: BTreeSet<String> = waits.marked.into_keys().collect();
+    // What units read of these is noted, so they're kept apart from what units write while
+    // they're written, and put in `shared` after, for the entry.
+    let reads = Reads::new(&everything, &native, (&waiting, !waiting_closures.is_empty()), keeping);
     // Every function it can't take yet is named, not just the first.
     let mut refused = Vec::new();
+    let mut kept = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
-        match unit(function, (&everything, threads), &layouts, &mut shared, (header, &attributes)) {
-            Ok(text) => units.push(Unit { function: function.name.clone(), text }),
+        if keeping {
+            layouts.note_asked();
+        }
+        let made = unit(function, (&reads, threads), &layouts, &mut shared, (header, &attributes));
+        let read = reads.take();
+        let asked = layouts.asked();
+        match made {
+            Ok((text, share)) => {
+                units.push(Unit { function: function.name.clone(), text });
+                if keeping {
+                    let reads = read.into_iter().map(|(what, name)| (what, name.into_owned())).collect();
+                    kept.push(Kept { function: function.name.clone(), reads, share, asked });
+                }
+            }
             Err(why) => refused.push(format!("`{}`: {why}", function.name)),
         }
     }
     if !refused.is_empty() {
         return Err(refused.join("\n"));
     }
+    if keeping {
+        crate::share::audit(program, &shared, &layouts, &kept)?;
+    }
+    shared.native = native;
+    shared.waiting_closures = waiting_closures;
+    shared.waiting = waiting;
     for own in &program.own_texts {
         let (id, boxed) = match Kind::of(&layouts, &own.ty)? {
             Kind::Struct(id) | Kind::Enum(id) => (id, false),
@@ -360,7 +398,7 @@ pub(crate) fn emit_with(
             unit.text = crate::facts::stripped(&unit.text);
         }
     }
-    Ok((units, shared, layouts))
+    Ok((units, shared, layouts, kept))
 }
 
 /// Whether a function only hands its work on: one block, a few instructions, and one call, to
@@ -378,13 +416,13 @@ fn size(function: &Function) -> usize {
 
 /// Whether a function is small enough to copy into its callers, with everything it calls, which
 /// must be too, `depth` calls deep. A recursive one isn't.
-fn copyable(whole: &Whole<'_>, function: &Function, depth: usize) -> bool {
+fn copyable(reads: &Reads<'_, '_>, function: &Function, depth: usize) -> bool {
     size(function) <= COPIED
-        && !whole.constants.contains(function.name.as_str())
+        && !reads.constant(function.name.as_str())
         && callees(function).all(|name| {
             depth > 0
                 && name != function.name
-                && whole.functions.get(name).is_some_and(|callee| copyable(whole, callee, depth - 1))
+                && reads.function(name).is_some_and(|callee| copyable(reads, callee, depth - 1))
         })
 }
 
@@ -425,9 +463,15 @@ struct Definition<'d> {
 
 /// What one module holds so far.
 pub(crate) struct Module<'w, 'p> {
-    pub(crate) whole: &'w Whole<'p>,
+    /// What the whole program's analysis worked out, every read of it noted.
+    pub(crate) reads: &'w Reads<'w, 'p>,
     pub(crate) layouts: &'w Layouts,
-    pub(crate) shared: &'w mut Shared,
+    /// What units share, which a unit adds to only through methods that keep what it adds in
+    /// `share`.
+    shared: &'w mut Shared,
+    share: Share,
+    /// Where each function whose places this unit keeps starts (see `share::anchor`).
+    anchors: HashMap<&'p str, Option<u32>>,
     /// Whether the program runs `parallel`'s ranges on other threads, which keep their own stack
     /// limit and failure flag.
     pub(crate) threads: bool,
@@ -444,17 +488,19 @@ pub(crate) struct Module<'w, 'p> {
 
 fn unit<'p>(
     function: &'p Function,
-    (whole, threads): (&Whole<'p>, bool),
+    (reads, threads): (&Reads<'_, 'p>, bool),
     layouts: &Layouts,
     shared: &mut Shared,
     (header, attributes): (&str, &str),
-) -> Result<String, String> {
+) -> Result<(String, Share), String> {
     let mut module = Module {
-        whole,
+        reads,
         layouts,
         shared,
+        share: Share::new(reads.noting()),
+        anchors: HashMap::new(),
         threads,
-        cells: threads && whole.cells,
+        cells: threads && reads.cells(),
         declares: BTreeSet::new(),
         defined: HashSet::new(),
         bodies: String::new(),
@@ -473,10 +519,10 @@ fn unit<'p>(
     let mut copies: Vec<&Function> = Vec::new();
     let mut waiting: Vec<&str> = callees(function).chain(made(function)).collect();
     while let Some(name) = waiting.pop() {
-        let Some(callee) = whole.functions.get(name).copied() else { continue };
+        let Some(callee) = reads.function(name) else { continue };
         if name == function.name
             || copies.iter().any(|copy| copy.name == name)
-            || !copyable(whole, callee, COPY_DEPTH)
+            || !copyable(reads, callee, COPY_DEPTH)
         {
             continue;
         }
@@ -522,20 +568,113 @@ fn unit<'p>(
     out += &module.bodies;
     out.extend(module.helpers.values().map(String::as_str));
     out += attributes;
-    Ok(out)
+    Ok((out, module.share))
 }
 
 impl<'p> Module<'_, 'p> {
+    /// Whether checks left out because of a proof are, or are written anyway: one of the build's
+    /// settings.
+    pub(crate) fn proofs(&self) -> crate::Proofs {
+        self.shared.proofs
+    }
+
+    /// Whether native blocks are made known to the runtime: one of the build's settings.
+    pub(crate) fn native_blocks(&self) -> crate::NativeBlocks {
+        self.shared.native_blocks
+    }
+
+    /// Whether code says where it is for a run to say what each place cost: one of the build's
+    /// settings.
+    pub(crate) fn tracing_costs(&self) -> bool {
+        self.shared.tracing_costs
+    }
+
+    /// Whether each check written is noted: one of the build's settings.
+    pub(crate) fn noting_checks(&self) -> bool {
+        self.shared.noting_checks
+    }
+
+    /// Where `function` starts, for its places to be kept from.
+    fn anchor(&mut self, function: &'p Function) -> Option<u32> {
+        *self.anchors.entry(&function.name).or_insert_with(|| crate::share::anchor(function))
+    }
+
+    pub(crate) fn add_string(&mut self, symbol: &str, text: &str) {
+        self.shared.strings.insert(symbol.to_owned(), text.to_owned());
+        if self.share.keeping() {
+            self.share.add(Some(Added::String(symbol.to_owned(), text.to_owned())));
+        }
+    }
+
+    pub(crate) fn add_literal(&mut self, symbol: &str, text: &str) {
+        self.shared.literals.insert(symbol.to_owned(), text.to_owned());
+        if self.share.keeping() {
+            self.share.add(Some(Added::Literal(symbol.to_owned(), text.to_owned())));
+        }
+    }
+
+    pub(crate) fn add_element(&mut self, symbol: &str, item: ListItem) {
+        self.shared.elements.insert(symbol.to_owned(), item);
+        if self.share.keeping() {
+            self.share.add(crate::share::element(self.layouts, symbol, item));
+        }
+    }
+
+    pub(crate) fn add_shape(&mut self, symbol: &str, id: u32) {
+        self.shared.shapes.insert(symbol.to_owned(), id);
+        if self.share.keeping() {
+            self.share.add(crate::share::shape(self.layouts, symbol, id));
+        }
+    }
+
+    pub(crate) fn add_dict(&mut self, symbol: &str, words: (Word, Word)) {
+        self.shared.dicts.insert(symbol.to_owned(), words);
+        if self.share.keeping() {
+            self.share.add(crate::share::dict(self.layouts, symbol, words));
+        }
+    }
+
+    /// A function's table of places as it stands: each new place adds to it, so what's kept is
+    /// the last, where the first was.
+    pub(crate) fn add_places(&mut self, symbol: &str, function: &'p Function, sites: &[u32]) {
+        self.shared.places.insert(symbol.to_owned(), sites.to_vec());
+        if !self.share.keeping() {
+            return;
+        }
+        let anchor = self.anchor(function);
+        let kept: Vec<Place> = sites.iter().map(|at| place(*at, anchor)).collect();
+        let table = Added::Places(symbol.to_owned(), function.name.clone(), kept);
+        let earlier = self.share.added.as_mut().and_then(|added| {
+            added.iter_mut().find(|added| matches!(added, Added::Places(known, ..) if known == symbol))
+        });
+        match earlier {
+            Some(earlier) => *earlier = table,
+            None => self.share.add(Some(table)),
+        }
+    }
+
+    pub(crate) fn add_check(&mut self, function: &'p Function, span: Span, what: CheckKind) {
+        if self.share.keeping() {
+            let start = place(span.start, self.anchor(function));
+            let length = span.end.saturating_sub(span.start);
+            self.share.add(Some(Added::Check(function.name.clone(), start, length, what.clone())));
+        }
+        self.shared.checks.push(CheckLeft { function: function.name.clone(), span, what });
+    }
+
+    pub(crate) fn add_site(&mut self, at: u32, what: String) {
+        if self.share.keeping() {
+            self.share.add(Some(Added::Site(at, what.clone())));
+        }
+        self.shared.sites.entry(at).or_insert(what);
+    }
+
     pub(crate) fn add_helper(&mut self, name: &str, text: String) {
         self.helpers.entry(name.to_owned()).or_insert(text);
     }
 
     pub(crate) fn function_named(&self, name: &str) -> Result<&'p Function, String> {
-        self.whole
-            .functions
-            .get(name)
-            .copied()
-            .ok_or_else(|| format!("it uses `{name}`, which isn't lowered"))
+        self.reads.function(name).ok_or_else(|| format!("it uses `{name}`, which isn't lowered"))
     }
 
     /// Has a function declared if it isn't in this module.
@@ -549,11 +688,11 @@ impl<'p> Module<'_, 'p> {
 
     /// A generator, by its name or the name of one of its functions.
     pub(crate) fn generator(&self, name: &str) -> Option<&'p GeneratorDef> {
-        self.whole.generators.get(name).copied()
+        self.reads.generator(name)
     }
 
     pub(crate) fn flagged(&self, name: &str) -> bool {
-        self.whole.can_fail.contains(name)
+        self.reads.can_fail(name)
     }
 
     pub(crate) fn declare(&mut self, line: &str) {
@@ -592,7 +731,7 @@ impl<'p> Module<'_, 'p> {
         let returns = self.kind(&function.returns)?;
         // An address only this parameter has: told to LLVM, or checked on the way in by a build
         // that checks proofs (see `Emit::addresses_apart`).
-        let alone = if self.shared.proofs == crate::Proofs::Checked { "" } else { "noalias " };
+        let alone = if self.proofs() == crate::Proofs::Checked { "" } else { "noalias " };
         if returns.in_memory() {
             params.push(if named { format!("ptr {alone}captures(none) %ret") } else { "ptr".to_owned() });
         }
@@ -641,6 +780,10 @@ impl<'p> Module<'_, 'p> {
             .flat_map(|block| &block.insts)
             .any(|inst| inst.span != Span::default() && !inst.span.in_prelude());
         self.shared.starts.insert(start_symbol.clone(), start);
+        if self.share.keeping() {
+            let kept = place(start, self.anchor(function));
+            self.share.add(Some(Added::Start(start_symbol.clone(), function.name.clone(), kept)));
+        }
         self.declare(&format!("@\"{start_symbol}\" = external dso_local global i64"));
         let failed = if self.flagged(&function.name) {
             let leave = if ret == "void" { "ret void".to_owned() } else { format!("ret {ret} poison") };
@@ -648,9 +791,9 @@ impl<'p> Module<'_, 'p> {
         } else {
             "unreachable".to_owned()
         };
-        let known = self.whole.analyses.get(function.name.as_str()).ok_or("no analysis")?;
+        let known = self.reads.analysis(function.name.as_str()).ok_or("no analysis")?;
         let mut kinds = Vec::with_capacity(function.locals.len());
-        let joined = self.whole.builders.get(function.name.as_str());
+        let joined = self.reads.builders(function.name.as_str());
         let builder = if self.layouts.text_headers() { Kind::TextBlock } else { Kind::Str };
         for (at, local) in function.locals.iter().enumerate() {
             // Pieces only ever joined are the string they're joined into, a block that grows.
@@ -771,6 +914,9 @@ impl<'p> Module<'_, 'p> {
             self.declares.insert(format!("{flag} = external dso_local global i8"));
             let _ = writeln!(self.bodies, "  store i8 1, ptr {flag}");
             self.shared.ran.insert(function.name.clone());
+            if self.share.keeping() {
+                self.share.add(Some(Added::Ran(function.name.clone())));
+            }
         }
         self.bodies += &out;
         self.bodies += &cold;
@@ -1097,8 +1243,8 @@ impl Emit<'_, '_, '_> {
             self.alone_dicts.insert(slot);
         }
         // What callers see to before calling.
-        let whole = self.module.whole;
-        if let Some(needs) = whole.needs.get(function.name.as_str()) {
+        let reads = self.module.reads;
+        if let Some(needs) = reads.needs(function.name.as_str()) {
             self.alone_fields.clone_from(needs);
         }
         for (at, kind) in kinds.iter().take(function.params).enumerate() {
@@ -1156,8 +1302,9 @@ impl Emit<'_, '_, '_> {
         let mut alone_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
         let mut inside_left: HashMap<usize, Vec<FieldPath>> = HashMap::new();
         let on_entry = std::mem::take(&mut self.alone_fields);
-        let settles = (&whole.settles, Tracked::Owners);
-        let lengths = (&whole.lengths, Tracked::Lengths);
+        let (settled, lengthened) = (reads.settles(), reads.lengths());
+        let settles: (&dyn Callees, Tracked) = (&settled, Tracked::Owners);
+        let lengths: (&dyn Callees, Tracked) = (&lengthened, Tracked::Lengths);
         // Each block after every one leading to it, but for loops, so what's known carries on.
         let mut done = HashSet::new();
         for at in written_order(function) {
@@ -1197,7 +1344,7 @@ impl Emit<'_, '_, '_> {
                     self.get_field(field_local, &Operand::Local(item), &field)?;
                 }
                 if let InstKind::Call { function: callee, args, .. } = &inst.kind {
-                    for (param, path) in whole.needs.get(callee.as_str()).map_or(&[][..], Vec::as_slice) {
+                    for (param, path) in reads.needs(callee.as_str()).map_or(&[][..], Vec::as_slice) {
                         if let Some(Operand::Local(given)) = args.get(param.0) {
                             self.see_to(*given, path)?;
                         }
@@ -1409,8 +1556,7 @@ impl Emit<'_, '_, '_> {
     /// be another thread's.
     pub(crate) fn on_workers(&self) -> bool {
         self.module.threads
-            && (self.runs == Runs::Anywhere
-                || self.module.whole.on_workers.contains(self.function.name.as_str()))
+            && (self.runs == Runs::Anywhere || self.module.reads.on_workers(self.function.name.as_str()))
     }
 
     /// Writes `write` for a block that's made, leaving a null one be.
@@ -1560,7 +1706,7 @@ impl Emit<'_, '_, '_> {
             self.sites.len() - 1
         });
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
-        self.module.shared.places.insert(symbol.clone(), self.sites.clone());
+        self.module.add_places(&symbol, self.function, &self.sites);
         (number, symbol)
     }
 
@@ -1766,7 +1912,7 @@ impl Emit<'_, '_, '_> {
 
     /// Whether checks left out because of a proof are written anyway, as assertions.
     pub(crate) fn checks_proofs(&self) -> bool {
-        self.module.shared.proofs == crate::Proofs::Checked
+        self.module.proofs() == crate::Proofs::Checked
     }
 
     /// In a build that checks proofs, ends the program if `broken`, an `i1`, is true: what the
@@ -1994,9 +2140,8 @@ impl Emit<'_, '_, '_> {
 
     /// Notes a check as it's written, when checks are being noted.
     pub(crate) fn note_check(&mut self, span: Span, what: CheckKind) {
-        if self.module.shared.noting_checks {
-            let function = self.function.name.clone();
-            self.module.shared.checks.push(CheckLeft { function, span, what });
+        if self.module.noting_checks() {
+            self.module.add_check(self.function, span, what);
         }
     }
 
@@ -2018,7 +2163,7 @@ impl Emit<'_, '_, '_> {
     /// What a call to a function fails with is noted in that function, and a call through a
     /// closure or into a generator in what runs there.
     pub(crate) fn note_runtime_check(&mut self) {
-        if !self.module.shared.noting_checks {
+        if !self.module.noting_checks() {
             return;
         }
         let function = self.function;
@@ -2277,9 +2422,8 @@ impl Emit<'_, '_, '_> {
     /// Whether the instruction being written multiplies two ints proven not negative (see `signs`).
     fn operands_not_negative(&self) -> bool {
         self.module
-            .whole
-            .non_negative
-            .get(self.function.name.as_str())
+            .reads
+            .non_negative(self.function.name.as_str())
             .is_some_and(|found| found.contains(&self.at))
     }
 
@@ -2827,11 +2971,10 @@ impl Emit<'_, '_, '_> {
                 Ok(())
             });
         }
-        let callee = *self
+        let callee = self
             .module
-            .whole
-            .functions
-            .get(name)
+            .reads
+            .function(name)
             .ok_or_else(|| format!("it calls `{name}`, which isn't lowered"))?;
         let ret = self.module.ret_text(callee)?;
         if !self.module.defined.contains(name) {
@@ -3283,11 +3426,11 @@ impl Emit<'_, '_, '_> {
 
     /// Says where this is, in a build that traces what things cost, if what's here can cost.
     fn trace_site(&mut self, inst: &InstKind, span: Span) {
-        if !self.module.shared.tracing_costs {
+        if !self.module.tracing_costs() {
             return;
         }
         let Some(what) = what_can_cost(inst) else { return };
-        self.module.shared.sites.entry(span.start).or_insert(what);
+        self.module.add_site(span.start, what);
         self.declare("declare void @fennec_trace_at(i64) nounwind");
         self.line(&format!("call void @fennec_trace_at(i64 {})", span.start));
     }
@@ -3684,7 +3827,7 @@ impl Emit<'_, '_, '_> {
     fn last_reads(&self, untracked: &BTreeSet<usize>) -> crate::dying::Dying {
         let function = self.function;
         let name = function.name.as_str();
-        if self.module.whole.generators.contains_key(name) {
+        if self.module.reads.generator(name).is_some() {
             return crate::dying::Dying::new();
         }
         // What's read by an instruction whose result stands for it, borrows from it or takes from
@@ -3910,7 +4053,7 @@ impl Emit<'_, '_, '_> {
     fn keeps_its_value(&mut self) -> bool {
         let returns = self.returns.clone();
         let name = self.function.name.as_str();
-        self.module.whole.constants.contains(name)
+        self.module.reads.constant(name)
             && (!self.module.threads || !self.module.flagged(name))
             && self.text_of(&returns) != "void"
     }
@@ -3918,9 +4061,8 @@ impl Emit<'_, '_, '_> {
     /// Starts `main` in a program that uses `parallel`: every constant that's kept gets kept here,
     /// so a worker only ever reads it, and two can't race to be the first.
     fn work_out_constants(&mut self) -> Result<(), String> {
-        let mut constants: Vec<&str> =
-            self.module.whole.constants.iter().copied().filter(|name| !self.module.flagged(name)).collect();
-        constants.sort_unstable();
+        let constants: Vec<&str> =
+            self.module.reads.constants().into_iter().filter(|name| !self.module.flagged(name)).collect();
         for name in constants {
             self.call(None, name, &[], Span::default())?;
         }
@@ -4948,6 +5090,105 @@ def main(stdout: Stdout):
                 "`{function}` reads differently with types added before it:\n{alone}\n---\n{after}"
             );
         }
+        Ok(())
+    }
+
+    /// What each unit of `source` read, shared and asked to be numbered, as a build keeping
+    /// units keeps it.
+    fn kept_of(source: &str) -> Result<(Vec<Kept>, Program), String> {
+        let program = lowered(source)?;
+        let (_, _, _, kept) = emit_keeping(&program, Cpu::Usual, Shared::default(), true)?;
+        Ok((kept, program))
+    }
+
+    /// A unit notes what it read of the whole program: its own analysis, a small function it
+    /// holds a copy of, whether what it calls can fail. It keeps what it added to what units
+    /// share, a kind of list item by its type's name, and what it asked to be numbered.
+    #[test]
+    fn a_unit_notes_what_it_reads_and_keeps_what_it_shares() -> Result<(), String> {
+        use crate::reads::What;
+        use fennec_layout::{Asked, Named};
+        let source = "error Short:\n    excess: int\n\ndef tiny(value: int) -> int:\n    return value + 1\n\ndef bound(value: int) -> int fails Short:\n    if value < 0:\n        fail Short(excess=value)\n    return value\n\ndef total(items: list[list[int]]) -> int:\n    mut summed = 0\n    for item in items:\n        summed += tiny(len(item))\n    return summed\n\ndef main(stdout: Stdout):\n    stdout.print(total([[1], [2, 3]]))\n    checked_value = bound(tiny(4)) except Short(): -1\n    stdout.print(checked_value)\n    return\n";
+        let (kept, _) = kept_of(source)?;
+        let of = |name: &str| kept.iter().find(|kept| kept.function == name).ok_or(format!("no unit {name}"));
+        let read = |kept: &Kept, what: What, name: &str| {
+            kept.reads.iter().any(|(was, read)| *was == what && read == name)
+        };
+        let total = of("total")?;
+        assert!(
+            read(total, What::Analysis, "total") && read(total, What::Function, "tiny"),
+            "{:?}",
+            total.reads
+        );
+        let main = of("main")?;
+        assert!(read(main, What::CanFail, "bound"), "{:?}", main.reads);
+        let lists = Named::Block(Box::new(Named::List(Box::new(Named::Int))));
+        assert!(
+            total
+                .asked
+                .as_ref()
+                .is_some_and(|asked| asked.contains(&Asked::Block(Named::List(Box::new(Named::Int))))),
+            "{:?}",
+            total.asked
+        );
+        let shared = kept.iter().filter_map(|kept| kept.share.added.as_ref()).flatten();
+        assert!(
+            shared.into_iter().any(|added| matches!(added, Added::Element(_, item) if *item == lists)),
+            "no unit kept the list of lists' kind of item"
+        );
+        Ok(())
+    }
+
+    /// What a unit keeps of the places it shares moves with its function: kept from a program,
+    /// then added again for the same program with lines added above every function, it gives
+    /// what writing that program gives, every place moved.
+    #[test]
+    fn a_kept_share_moves_with_its_function() -> Result<(), String> {
+        let source = "def picked(items: list[int], index: int) -> int:\n    return items[index] // (index + 1)\n\ndef main(stdout: Stdout):\n    stdout.print(picked([3, 5, 7], 1))\n    return\n";
+        let (before, _) = kept_of(source)?;
+        let (after, program) = kept_of(&format!("# Two lines\n# above everything.\n{source}"))?;
+        let anchors: HashMap<&str, Option<u32>> = program
+            .functions
+            .iter()
+            .chain(&program.constants)
+            .map(|function| (function.name.as_str(), crate::share::anchor(function)))
+            .collect();
+        let anchor_of = |name: &str| anchors.get(name).copied();
+        let layouts = crate::layouts_of(&program)?;
+        let (mut moved, mut written) = (Shared::default(), Shared::default());
+        for (before, after) in before.iter().zip(&after) {
+            assert_eq!(before.function, after.function);
+            before.share.add_to(&mut moved, &layouts, &anchor_of).ok_or("didn't add again")?;
+            after.share.add_to(&mut written, &layouts, &anchor_of).ok_or("didn't add")?;
+        }
+        assert!(!written.places.values().all(Vec::is_empty), "no places to move: {:?}", written.places);
+        assert_eq!(moved.places, written.places);
+        assert_eq!(moved.starts, written.starts);
+        Ok(())
+    }
+
+    /// A unit's kinds of block, asked for again in its place among units written fresh, get the
+    /// numbers writing it would give, though a unit before it asks for more than it did when
+    /// it was kept: so the numbers every unit after it gets come out as writing them all would.
+    #[test]
+    fn asking_again_numbers_a_kind_as_writing_did_after_others_asked_more() -> Result<(), String> {
+        let helper = "def helper() -> int:\n    nested = [[1, 2], [3]]\n    names = {\"a\": [\"b\"]}\n    return len(nested) + len(names)\n\n";
+        let main = "def main(stdout: Stdout):\n    stdout.print(early(), helper())\n    return\n";
+        let plain = "def early() -> int:\n    return 1\n\n";
+        let asking = "def early() -> int:\n    places = {\"x\": [[1.5]]}\n    return len(places)\n\n";
+        let (kept, _) = kept_of(&format!("{plain}{helper}{main}"))?;
+        let (fresh, program) = kept_of(&format!("{asking}{helper}{main}"))?;
+        let at = |kept: &[Kept], name: &str| kept.iter().position(|kept| kept.function == name);
+        assert!(at(&fresh, "early") < at(&fresh, "helper"), "early is written first");
+        let layouts = crate::layouts_of(&program)?;
+        let _ = crate::native::native_types(&program, &layouts);
+        let kept_helper = kept.iter().find(|kept| kept.function == "helper").ok_or("no helper")?;
+        for unit in &fresh {
+            let unit = if unit.function == "helper" { kept_helper } else { unit };
+            layouts.ask_again(unit.asked.as_deref().ok_or("unnamed")?).ok_or("didn't ask again")?;
+        }
+        let (_, _, written, _) = emit_keeping(&program, Cpu::Usual, Shared::default(), true)?;
+        assert_eq!(layouts.fingerprint(), written.fingerprint());
         Ok(())
     }
 

@@ -195,3 +195,46 @@ fn empty_into(value: Value, into: &mut Vec<Value>) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Held, copied};
+    use crate::value::{Instance, Value};
+
+    /// A list a million deep, each level a struct holding a list, is let go of on a thread with
+    /// 256 KB of stack: letting go of one level never lets go of the next inside it.
+    #[test]
+    fn a_value_a_million_deep_is_let_go_of_in_a_little_stack() {
+        let let_go = std::thread::Builder::new().stack_size(256 << 10).spawn(|| {
+            let mut value = Value::Int(0);
+            for _ in 0..1_000_000 {
+                let list = Value::List(Held::new(vec![value]));
+                value = Value::instance("Node", None, vec![("children".to_owned(), list)]);
+            }
+            drop(value);
+        });
+        assert!(let_go.map(std::thread::JoinHandle::join).is_ok_and(|joined| joined.is_ok()));
+    }
+
+    /// A copy shares its parts until one copy is changed, which clones them, one level deep, once,
+    /// and counts what it cloned; the other copy keeps what it had. A copy no other shares is
+    /// changed, and taken out, where it is.
+    #[test]
+    fn a_change_to_a_shared_copy_clones_it_once_and_counts_that() {
+        let _ = copied();
+        let first: Held<Vec<Value>> = Held::new(vec![Value::Int(1), Value::Int(2)]);
+        let mut second = first.clone();
+        second.push(Value::Int(3));
+        assert_eq!(copied(), 2);
+        second.push(Value::Int(4));
+        assert_eq!(copied(), 0);
+        assert_eq!((first.len(), second.len()), (2, 4));
+        let taken = second.into_inner();
+        assert_eq!((taken.len(), copied()), (4, 0));
+        let shared = Held::new(Instance { ty: "Bag".to_owned(), case: None, fields: Vec::new() });
+        let held = shared.clone();
+        let mut changed = held.clone();
+        changed.ty = "Box".to_owned();
+        assert_eq!((shared.ty.as_str(), held.ty.as_str(), changed.ty.as_str()), ("Bag", "Bag", "Box"));
+    }
+}

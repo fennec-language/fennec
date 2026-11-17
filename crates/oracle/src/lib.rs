@@ -19,8 +19,9 @@ pub use interp::disk::Workdir;
 pub use load::{Program, Refused, load, load_source};
 
 /// The stack the oracle runs on: the checker and the evaluator both recurse for each nested
-/// expression and call.
-const STACK_BYTES: usize = 1 << 30;
+/// expression and call, and printing or comparing a value for each level it nests, 500,000 at
+/// most (`interp::MOST_NESTING`). Only what's used of it is ever made.
+const STACK_BYTES: usize = 2 << 30;
 
 /// How a run ended.
 #[derive(Clone, Debug, PartialEq, Eq)]

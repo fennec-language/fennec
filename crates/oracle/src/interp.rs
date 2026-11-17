@@ -44,15 +44,17 @@ const MOST_DEPTH: usize = 1_500;
 
 /// How deep a value's parts may nest where they're gone through one level inside another, as
 /// printing one, comparing two or saving one does: deeper ones are refused there, before such a
-/// walk could run out of its thread's stack. `fennec-fuzz` writes values 200,000 deep. Copying a
-/// value and letting go of one take a little stack however deep it is (`value/held.rs`), so those
-/// are never refused.
-const MOST_NESTING: usize = 250_000;
+/// walk could run out of its thread's stack. `fennec-fuzz` writes trees 200,000 deep, which is
+/// 400,000 levels, each node's list of children one and the node the next. Copying a value and
+/// letting go of one take a little stack however deep it is (`value/held.rs`), so those are never
+/// refused.
+const MOST_NESTING: usize = 500_000;
 
 /// The stack each level of such a walk is allowed: printing a value takes about 1,000 bytes a
 /// level and comparing two about 450, measured, so this is four times the most. A thread may go as
 /// deep as its stack allows at this, up to `MOST_NESTING`: the run's own thread, with
-/// `STACK_BYTES`, the whole of it, and a task's or a generator's, with 64 MB, 16,384 levels.
+/// `STACK_BYTES`, 2 GB, the whole of it, and a task's or a generator's, with 64 MB, 16,384
+/// levels.
 const STACK_PER_LEVEL: usize = 4_096;
 
 thread_local! {

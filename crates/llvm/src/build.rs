@@ -358,13 +358,23 @@ fn toolchain_tools() -> Result<PathBuf, String> {
     Ok(Path::new(&root).join("lib/rustlib").join(host).join("bin"))
 }
 
-/// An object's bytes and whether it's fresh, or why it couldn't be made.
-type Compiled = Result<(Vec<u8>, bool), String>;
+/// An object and whether it's fresh, or why it couldn't be made.
+type Compiled = Result<(Object, bool), String>;
 
-/// What compiling gave: every object's bytes, the fresh ones counted.
+/// One object to link: its bytes, or the cache's file holding them, which the linker reads where
+/// it lies. A dev build's functions are kept files, so a build after an edit writes out only the
+/// objects it compiled, where it wrote every one before and deleted them after: on a Mac that was
+/// most of the build (`Cache::keep_bytes`).
+#[derive(Debug)]
+pub enum Object {
+    Bytes(Vec<u8>),
+    Kept(PathBuf),
+}
+
+/// What compiling gave: every object, the fresh ones counted.
 #[derive(Debug, Default)]
 pub struct Built {
-    pub objects: Vec<Vec<u8>>,
+    pub objects: Vec<Object>,
     pub compiled: usize,
 }
 
@@ -480,13 +490,13 @@ pub fn compile_whole(
                 scope.spawn(move || one(tools, &unit.text, work, &format!("f{at}"), Way::Quickly))
             })
             .collect();
-        let mut objects = vec![whole_object(tools, &inputs, &kept, work, runtime)?];
+        let mut objects = vec![Object::Bytes(whole_object(tools, &inputs, &kept, work, runtime)?)];
         for compiling in quick {
-            objects.push(
+            objects.push(Object::Bytes(
                 compiling
                     .join()
                     .unwrap_or_else(|_| Err("compiling a huge function stopped unexpectedly".to_owned()))?,
-            );
+            ));
         }
         Ok(Built { objects, compiled: units.len() })
     })
@@ -593,23 +603,32 @@ pub fn compile(
                     let keyed = cache.and_then(|(cache, hashes)| {
                         Some((cache, object_key(&version, &pipeline, hashes.get(at)?)))
                     });
-                    let cached = keyed.as_ref().and_then(|(cache, key)| cache.read(KIND, key));
+                    // The cache's own file, which the linker reads where it lies; or, kept the
+                    // way every entry was once, its bytes.
+                    let cached = keyed.as_ref().and_then(|(cache, key)| {
+                        cache
+                            .kept_entry(KIND, key)
+                            .map(Object::Kept)
+                            .or_else(|| cache.read(KIND, key).map(Object::Bytes))
+                    });
                     let result = match cached {
-                        Some(bytes) => Ok((bytes, false)),
+                        Some(object) => Ok((object, false)),
                         None => {
                             // Which way is the text's own doing, so the key needn't say.
                             let way = if huge(&unit.text) { Way::Quickly } else { Way::Optimized };
                             one(tools, &unit.text, work, &format!("f{at}"), way)
                         }
-                        .map(|bytes| {
-                            if let Some((cache, key)) = &keyed {
-                                // A failed write only means compiling it again next time.
-                                fennec_build::kept(
-                                    "keep a compiled function",
-                                    cache.write(KIND, key, &bytes),
-                                );
+                        .map(|bytes| match &keyed {
+                            // A failed write only means compiling it again next time, and linking
+                            // these bytes this time.
+                            Some((cache, key)) => {
+                                let kept = cache.keep_bytes(KIND, key, &bytes);
+                                match fennec_build::kept("keep a compiled function", kept).flatten() {
+                                    Some(kept) => (Object::Kept(kept), true),
+                                    None => (Object::Bytes(bytes), true),
+                                }
                             }
-                            (bytes, true)
+                            None => (Object::Bytes(bytes), true),
                         }),
                     };
                     if let Ok(mut results) = results.lock() {
@@ -625,11 +644,11 @@ pub fn compile(
     results.sort_by_key(|(at, _)| *at);
     let mut built = Built::default();
     for (_, result) in results {
-        let (bytes, fresh) = result?;
-        built.objects.push(bytes);
+        let (object, fresh) = result?;
+        built.objects.push(object);
         built.compiled += usize::from(fresh);
     }
-    built.objects.push(entry?);
+    built.objects.push(Object::Bytes(entry?));
     Ok(built)
 }
 

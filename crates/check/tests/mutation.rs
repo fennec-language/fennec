@@ -580,6 +580,71 @@ fn a_ref_case_changes_a_field_of_a_place() {
     assert!(found[0].starts_with("a `match` with a `ref` case gives back nothing"), "{found:?}");
 }
 
+/// A `ref` case is refused where it can't be put back: over anything but an enum's case, as a
+/// struct or a union, where it would name the place it changes for something else, and in
+/// `assert ... fails`, which has nothing to change. Each of these was let through before, and
+/// writing it in then went round and round.
+#[test]
+fn a_ref_case_is_refused_where_it_cant_be_put_back() {
+    let struct_case = problems(
+        "struct Point:\n    x: int\n    y: int\n\n\
+         def main(stdout: Stdout):\n    mut point = Point(x=1, y=2)\n    match point:\n        case Point(ref x, _):\n            x += 1\n    stdout.print(point)\n",
+    );
+    assert_eq!(struct_case.len(), 1, "{struct_case:?}");
+    assert!(
+        struct_case[0].starts_with("a `ref` case changes a field of one of an enum's cases"),
+        "{struct_case:?}"
+    );
+    let union_case = problems(
+        "struct Circle:\n    radius: float\n\nstruct Square:\n    side: float\n\ntype Shape = Circle | Square\n\n\
+         def main(stdout: Stdout):\n    mut shape: Shape = Circle(radius=1.0)\n    match shape:\n        case Circle(ref radius):\n            radius += 1.0\n        case Square(ref side):\n            side += 1.0\n    stdout.print(shape)\n",
+    );
+    assert_eq!(union_case.len(), 2, "{union_case:?}");
+    assert!(
+        union_case
+            .iter()
+            .all(|found| found.starts_with("a `ref` case changes a field of one of an enum's cases")),
+        "{union_case:?}"
+    );
+    let renamed = problems(
+        "enum Kind:\n    Group(size: int)\n    Empty\n\n\
+         def main(stdout: Stdout):\n    mut kinds = [Kind.Group(size=1)]\n    match kinds[0]:\n        case .Group(ref kinds):\n            kinds += 1\n        case _:\n            pass\n    stdout.print(kinds)\n",
+    );
+    assert!(
+        renamed.iter().any(|found| found.starts_with(
+            "`kinds` holds what this `match` changes, so a case can't name something else `kinds`"
+        )),
+        "{renamed:?}"
+    );
+    let asserted = problems(
+        "error Oops:\n    line: int\n\ndef load() -> int fails Oops:\n    fail Oops(line=3)\n\n\
+         def main(stdout: Stdout):\n    stdout.print(0)\n\ntest \"it fails\"():\n    assert load() fails Oops(ref line)\n",
+    );
+    assert!(
+        asserted.iter().any(|found| found.starts_with("`ref` has nothing to change in `assert ... fails`")),
+        "{asserted:?}"
+    );
+    // The other shapes a review found going round and round: an error with no cases, and a union
+    // matched at an index. Each is refused, and checking it ends.
+    let refused = "a `ref` case changes a field of one of an enum's cases";
+    let error_case = problems(
+        "error Oops:\n    line: int\n\n\
+         def main(stdout: Stdout):\n    mut oops = Oops(line=1)\n    match oops:\n        case Oops(ref line):\n            line += 1\n    stdout.print(oops)\n",
+    );
+    assert!(error_case.iter().any(|found| found.starts_with(refused)), "{error_case:?}");
+    let indexed_union = problems(
+        "struct Circle:\n    radius: float\n\nstruct Square:\n    side: float\n\ntype Shape = Circle | Square\n\n\
+         def main(stdout: Stdout):\n    mut shapes: list[Shape] = [Circle(radius=1.0)]\n    at = 0\n    match shapes[at]:\n        case Circle(ref radius):\n            radius += 1.0\n        case Square(ref side):\n            side += 1.0\n    stdout.print(shapes)\n",
+    );
+    assert!(indexed_union.iter().any(|found| found.starts_with(refused)), "{indexed_union:?}");
+    // An optional enum ends too, refused or written in.
+    let optional = problems(
+        "enum Slot:\n    Held(count: int)\n    Empty\n\n\
+         def main(stdout: Stdout):\n    mut slot: Slot? = Slot.Held(count=1)\n    match slot:\n        case .Held(ref count):\n            count += 1\n        case _:\n            pass\n    stdout.print(slot)\n",
+    );
+    assert!(optional.len() <= 2, "{optional:?}");
+}
+
 /// `embed` is now `embed_file`, and `fennec fix` renames it.
 #[test]
 fn embed_is_renamed_to_embed_file() {

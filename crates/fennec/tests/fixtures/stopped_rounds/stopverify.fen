@@ -1,0 +1,43 @@
+# A round's handler checks a password over and over, each a piece of work on the blocking threads
+# with no capability's call between, and counts each in a shared tally, when the serving task's
+# block ends and stops it, which cancels the round. `main` prints the tally.
+# A replay stops it at the piece of work its recording says, by number: matched as the next entry,
+# the mark stopped it at the first. From Fable 5.2's review of #1993.
+from std.concurrent import Crashed
+from std.crypto import PasswordError, Secret, check_password, hash_password
+from std.net import NetError, Request, Response, Server
+
+struct Tally:
+    seen: int
+
+def checked(tally: shared Tally, stored: str) fails PasswordError:
+    for turn in range(200):
+        right = check_password(Secret.of("the password"), stored)?
+        lock tally as ref held:
+            held.seen += 1 if right else 0
+
+def answered(request: Request, tally: shared Tally, stored: str, stdout: Stdout) -> Response:
+    if request.path == "/slow":
+        stdout.print("the slow one began")
+        checked(tally, stored=stored) except why:
+            stdout.print("the slow one's check failed", f"{why}")
+        stdout.print("the slow one never said")
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, tally: shared Tally, stored: str, stdout: Stdout):
+    server.serve((request) => answered(request, tally=tally, stored=stored, stdout=stdout))
+    stdout.print("the server never said")
+
+def main(net: Net, entropy: Entropy, stdout: Stdout) fails NetError | Crashed:
+    stored = hash_password(Secret.of("the password"), entropy)
+    shared tally = Tally(seen=0)
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as slow:
+            slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+            with launch(() => serving(server, tally=tally, stored=stored, stdout=stdout), stop_after=300ms)?:
+                got = net.get(f"http://127.0.0.1:{port}/one")?
+                stdout.print(got.text())
+    lock tally as held:
+        stdout.print("checked", held.seen)
+    stdout.print("the server is over")

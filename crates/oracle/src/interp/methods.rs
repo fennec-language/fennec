@@ -7,7 +7,7 @@ use super::builtins::{invalid, not_a_number};
 use super::calls::{ArgVal, Receiver};
 use super::expr::{dict_insert, set_insert, sized};
 use super::{Interp, MOST_ITEMS, Run, as_int, crash, position, unsupported};
-use crate::value::{Cap, Text, Value};
+use crate::value::{Cap, Held, Text, Value};
 
 impl Interp {
     /// `receiver.name(...)` for a built-in value.
@@ -86,12 +86,12 @@ impl Interp {
             Value::Cap(Cap::Fs(reach)) => self.fs_method(&reach, name, &args, &named, span),
             Value::Str(text) => str_method(&text, name, &args, &named, span),
             Value::Bytes(data) if named.is_empty() => bytes_method(&data, name, &args, span),
-            Value::List(items) => self.list_method(receiver, items, name, (&args, named), expr),
+            Value::List(items) => self.list_method(receiver, items.into_inner(), name, (&args, named), expr),
             // The methods below take no named argument.
             _ if !named.is_empty() => unsupported(format!("the method `{name}` with a named argument")),
             Value::Cap(cap) => self.cap_method(cap, name, &args, span),
             Value::Dict(pairs) => dict_method(&pairs, name, &args, span),
-            Value::Set(items) => self.set_method(items, name, &args),
+            Value::Set(items) => self.set_method(items.into_inner(), name, &args),
             Value::Int(_) | Value::Sized(..) => int_method(&value, name, &args, span),
             Value::Float(x) => match name {
                 "is_nan" if args.is_empty() => Ok(Value::Bool(x.is_nan())),
@@ -275,7 +275,7 @@ impl Interp {
                 Some(Value::Str(text)) => super::paths::method(text, name, args, span),
                 _ => unsupported("a Path without its text"),
             },
-            "File" => self.file_method(&Value::Instance(Box::new(instance.clone())), name, args, span),
+            "File" => self.file_method(&Value::Instance(Held::new(instance.clone())), name, args, span),
             _ => match (name, args, instance.field("reason")) {
                 ("message", [], Some(reason)) => Ok(reason.clone()),
                 _ => unsupported(format!("the IoError method `{name}`")),
@@ -303,7 +303,7 @@ impl Interp {
                 }
                 _ => unsupported("`stdout.write` of several values"),
             },
-            (Cap::Stdin, "lines") => Ok(Value::List(Vec::new())),
+            (Cap::Stdin, "lines") => Ok(Value::List(Held::new(Vec::new()))),
             (Cap::Stdin, "read_line") => Ok(Value::None),
             (Cap::Args, "len") => Ok(Value::Int(0)),
             // Standard error is written as the program writes it, and never compared.
@@ -338,7 +338,7 @@ impl Interp {
                     case: None,
                     fields: vec![("nanos".to_owned(), Value::Int(nanos))],
                 };
-                Ok(Value::Instance(Box::new(moment)))
+                Ok(Value::Instance(Held::new(moment)))
             }
             (Cap::Clock, "sleep") => match args {
                 [Value::Instance(duration)] if duration.ty == "Duration" => {
@@ -553,7 +553,7 @@ fn str_method(text: &str, name: &str, args: &[Value], named: &[(String, Value)],
                     found.push(Value::Str(Text::from(part.strip_suffix('\r').unwrap_or(part).to_owned())));
                 }
             }
-            Value::List(found)
+            Value::List(Held::new(found))
         }
         ("ljust" | "rjust" | "center", 1) => {
             let width = int(args.first())?;
@@ -625,7 +625,7 @@ impl Interp {
                 return unsupported("`sort` with a named argument it doesn't take");
             }
             let sorted = self.sorted(items, key.as_ref(), reverse, expr)?;
-            return self.put_back(receiver, Value::List(sorted), span);
+            return self.put_back(receiver, Value::List(Held::new(sorted)), span);
         }
         if !named.is_empty() {
             return unsupported(format!("the list method `{name}` with a named argument"));
@@ -641,7 +641,7 @@ impl Interp {
                         other => return unsupported(format!("`remove_where` given a {}", other.kind())),
                     }
                 }
-                self.put_back(receiver, Value::List(kept), span)
+                self.put_back(receiver, Value::List(Held::new(kept)), span)
             }
             ("get", [Value::Int(at)]) => {
                 let size = as_int(items.len());
@@ -679,7 +679,7 @@ impl Interp {
                 }
                 let Some(at) = found else { return crash("the item to remove isn't in the list", span) };
                 items.remove(at);
-                self.put_back(receiver, Value::List(items), span)
+                self.put_back(receiver, Value::List(Held::new(items)), span)
             }
             _ => unsupported(format!("the list method `{name}`")),
         }
@@ -707,7 +707,7 @@ impl Interp {
                 for item in other {
                     set_insert(&mut found, item.clone())?;
                 }
-                Ok(Value::Set(found))
+                Ok(Value::Set(Held::new(found)))
             }
             "intersection" | "difference" => {
                 let mut found = Vec::new();
@@ -716,7 +716,7 @@ impl Interp {
                         found.push(item);
                     }
                 }
-                Ok(Value::Set(found))
+                Ok(Value::Set(Held::new(found)))
             }
             "is_subset" | "is_disjoint" => {
                 let mut all = true;
@@ -731,7 +731,7 @@ impl Interp {
                 Ok(Value::Bool(if name == "is_subset" { all } else { none }))
             }
             "is_superset" => {
-                let mine = Value::Set(items);
+                let mine = Value::Set(Held::new(items));
                 for item in other {
                     if !self.contains(&mine, item)? {
                         return Ok(Value::Bool(false));
@@ -907,7 +907,10 @@ fn dict_method(pairs: &[(Value, Value)], name: &str, args: &[Value], span: Span)
         ("keys", []) => Ok(Value::List(pairs.iter().map(|(key, _)| key.clone()).collect())),
         ("values", []) => Ok(Value::List(pairs.iter().map(|(_, value)| value.clone()).collect())),
         ("items", []) => Ok(Value::List(
-            pairs.iter().map(|(key, value)| Value::Tuple(vec![key.clone(), value.clone()])).collect(),
+            pairs
+                .iter()
+                .map(|(key, value)| Value::Tuple(Held::new(vec![key.clone(), value.clone()])))
+                .collect(),
         )),
         _ => {
             let _ = span;

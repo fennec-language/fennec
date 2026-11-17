@@ -212,7 +212,7 @@ impl Interp {
     /// The items a call's rounds take, in order, with its limit worked out after them.
     fn parallel_items(&mut self, call: Written) -> Run<Vec<Value>> {
         let items = match self.eval(call.source)? {
-            Value::List(items) => items,
+            Value::List(items) => items.into_inner(),
             Value::Table(table) => table.live().map(|(_, item)| item.clone()).collect(),
             other => return unsupported(format!("`parallel` over a {}", other.kind())),
         };

@@ -187,6 +187,7 @@ impl FnCx<'_> {
                 subject,
                 "a `ref` case changes what the `match` is over, so it has to be held in a mut name",
             );
+            self.root_kept(subject, arms);
         } else {
             self.error(
                 Diagnostic::new(
@@ -237,9 +238,35 @@ impl FnCx<'_> {
                     .with_help("name the field, as `ref target`, and match what's inside it in the case's body, as `match target:`"),
                 );
             }
-            cases.push(owner.as_ref().map(|owner| self.field_names(owner, Some(name))));
+            // A `ref` names a field of one of an enum's cases, which the case is rebuilt from to
+            // put it back: anything else has no such fields.
+            let fields = owner.as_ref().and_then(|owner| self.enum_case_fields(owner, name));
+            if fields.is_none() {
+                let message = format!(
+                    "a `ref` case changes a field of one of an enum's cases, and this `match` is over {}",
+                    a(&self.checker.settled(ty))
+                );
+                self.error(Diagnostic::new(message, arm.span).with_help(
+                    "change what it holds through its own fields, or with `ref` on a name, as `ref held = items[at]`",
+                ));
+            }
+            cases.push(fields);
         }
         self.checker.ref_matches.insert((span.start, span.end), cases);
+    }
+
+    /// A `ref` case is put back into the name its place is in, so no case can give that name to
+    /// something else.
+    fn root_kept(&mut self, subject: &Expr, arms: &[MatchArm]) {
+        let Some(root) = place_root(subject) else { return };
+        for arm in arms.iter().filter(|arm| arm.pattern.holds_ref()) {
+            if pattern_names(&arm.pattern).iter().any(|bound| bound == root) {
+                let message = format!(
+                    "`{root}` holds what this `match` changes, so a case can't name something else `{root}`"
+                );
+                self.error(Diagnostic::new(message, arm.span).with_help("give it a name of its own"));
+            }
+        }
     }
 
     /// A result's type with the errors `taken` by earlier cases left out of its error, when that
@@ -398,6 +425,12 @@ impl FnCx<'_> {
         self.push(false);
         self.bind_pattern(pattern, &error, span);
         self.pop();
+        if pattern.holds_ref() {
+            self.error(
+                Diagnostic::new("`ref` has nothing to change in `assert ... fails`", span)
+                    .with_help("name the field, as `Oops(line)`, or leave it out"),
+            );
+        }
     }
 
     fn bind_pattern(&mut self, pattern: &Pattern, subject: &Type, span: Span) {
@@ -419,8 +452,9 @@ impl FnCx<'_> {
             }
             Pattern::Bind(name) => self.declare(name, value, false, span),
             // A name for the field itself, which the case's body may change: the `match` is over
-            // a place it changes, checked where the `match` is.
-            Pattern::RefBind(name) => self.declare(name, value, true, span),
+            // a place it changes, checked where the `match` is. Once the case is written in, it's
+            // a name the body may change, whose value the case is put back with.
+            Pattern::RefBind(name) | Pattern::MutBind(name) => self.declare(name, value, true, span),
             Pattern::Or(alternatives) => self.bind_alternatives(alternatives, subject, span),
             Pattern::Tuple(patterns) => {
                 let items = match value {
@@ -708,6 +742,13 @@ impl FnCx<'_> {
     }
 
     /// The names of a type's fields, or of one of its cases', in order.
+    /// The fields of one of an enum's cases, by name, when `owner` is an enum with such a case.
+    fn enum_case_fields(&self, owner: &str, case: &str) -> Option<Vec<String>> {
+        let info = self.checker.program.type_info(owner)?;
+        let found = info.def.cases.iter().find(|known| known.name == case)?;
+        Some(found.fields.iter().map(|field| field.name.clone()).collect())
+    }
+
     fn field_names(&self, owner: &str, case: Option<&str>) -> Vec<String> {
         self.checker
             .program
@@ -965,7 +1006,7 @@ impl FnCx<'_> {
 /// Whether a pattern matches anything, so a case using it covers every value of that case.
 fn always_matches(pattern: &Pattern) -> bool {
     match pattern {
-        Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) => true,
+        Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::MutBind(_) => true,
         Pattern::Tuple(patterns) => patterns.iter().all(always_matches),
         Pattern::Or(patterns) => patterns.iter().any(always_matches),
         Pattern::Literal(_) | Pattern::Variant { .. } => false,
@@ -992,6 +1033,26 @@ fn mut_arg(expr: &Expr) -> Option<Span> {
 
 /// Whether an expression is a place that reads the same each time: a name, a field of one, or an
 /// item at a position written as a name or a number, as the case is put back there where it ends.
+/// The name a place is in: `ui` in `ui[widget_id].kind`.
+fn place_root(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some(name),
+        ExprKind::Attr { object, .. } | ExprKind::Index { object, .. } => place_root(object),
+        _ => None,
+    }
+}
+
+/// The names a pattern binds, a `ref` name's included.
+fn pattern_names(pattern: &Pattern) -> Vec<String> {
+    match pattern {
+        Pattern::Bind(name) | Pattern::RefBind(name) | Pattern::MutBind(name) => vec![name.clone()],
+        Pattern::Variant { args: parts, .. } | Pattern::Tuple(parts) | Pattern::Or(parts) => {
+            parts.iter().flat_map(pattern_names).collect()
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => Vec::new(),
+    }
+}
+
 fn plain_place(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Name(_) => true,

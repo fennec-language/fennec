@@ -271,7 +271,7 @@ impl Kind {
             | Kind::Maybe(_) => "ptr".to_owned(),
             Kind::Enum(id) => format!("[{} x i64]", layouts.get(*id).map_or(1, |layout| layout.size / WORD)),
             Kind::Struct(id) => {
-                format!("%\"s.{}\"", layouts.get(*id).map_or("?", |layout| layout.name.as_str()))
+                format!("%\"s.{}\"", layout_named(layouts, *id))
             }
         }
     }
@@ -296,12 +296,75 @@ pub(crate) fn element_symbol(layouts: &Layouts, item: ListItem) -> String {
         ListItem::Bool => "e_bool".to_owned(),
         ListItem::U64 => "e_u64".to_owned(),
         ListItem::F32 => "e_f32".to_owned(),
-        ListItem::Struct(id) => format!("e_s_{}", layouts.get(id).map_or("?", |layout| layout.name.as_str())),
+        ListItem::Struct(id) => format!("e_s_{}", layout_named(layouts, id)),
         ListItem::Str => "e_str".to_owned(),
-        ListItem::Boxed(id) => format!("e_b_{}", layouts.get(id).map_or("?", |layout| layout.name.as_str())),
+        ListItem::Boxed(id) => format!("e_b_{}", layout_named(layouts, id)),
         // Named by what it holds, so the name stays the same while the program's numbering moves.
-        ListItem::Block(id) => format!("e_k_{:?}", layouts.block(id)),
+        ListItem::Block(id) => format!("e_k_{}", block_named(layouts, id)),
     }
+}
+
+/// A name for a type that stays the same while the program's numbering moves, for a symbol that
+/// modules share: each layout by its name, and each kind of block by what it holds, all the way
+/// down. A layout's number follows the order of the program's definitions, and a kind of block's
+/// the order each was first asked for, so a symbol holding either named another type once a type
+/// was added before it, or a module was written before another.
+pub(crate) fn ty_named(layouts: &Layouts, ty: Ty) -> String {
+    match ty {
+        Ty::Struct(id) => format!("Struct({})", layout_named(layouts, id)),
+        Ty::Boxed(id) => format!("Boxed({})", layout_named(layouts, id)),
+        Ty::Dict(key, value) => format!("Dict({},{})", word_named(layouts, key), word_named(layouts, value)),
+        Ty::List(item) => format!("List({})", item_named(layouts, item)),
+        Ty::Maybe(block) => format!("Maybe({})", block_kind_named(layouts, block)),
+        Ty::Block(id) => block_named(layouts, id),
+        other => format!("{other:?}"),
+    }
+}
+
+/// [`ty_named`] for a dict's key or value word.
+pub(crate) fn word_named(layouts: &Layouts, word: Word) -> String {
+    match word {
+        Word::Plain(id) => format!("Plain({})", layout_named(layouts, id)),
+        Word::Block(id) => format!("Block({})", block_named(layouts, id)),
+        Word::InPlace(number) => match layouts.dict_value(number) {
+            Some(id) => format!("InPlace({})", layout_named(layouts, id)),
+            None => format!("InPlace(#{number})"),
+        },
+        other => format!("{other:?}"),
+    }
+}
+
+/// [`ty_named`] for a list's item.
+fn item_named(layouts: &Layouts, item: ListItem) -> String {
+    match item {
+        ListItem::Struct(id) => format!("Struct({})", layout_named(layouts, id)),
+        ListItem::Boxed(id) => format!("Boxed({})", layout_named(layouts, id)),
+        ListItem::Block(id) => format!("Block({})", block_named(layouts, id)),
+        other => format!("{other:?}"),
+    }
+}
+
+/// [`ty_named`] for what an optional held in one word holds.
+fn block_kind_named(layouts: &Layouts, block: Block) -> String {
+    match block {
+        Block::Boxed(id) => format!("Boxed({})", layout_named(layouts, id)),
+        Block::List(item) => format!("List({})", item_named(layouts, item)),
+        Block::Dict(key, value) => {
+            format!("Dict({},{})", word_named(layouts, key), word_named(layouts, value))
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+/// The type a kind of block holds, by [`ty_named`].
+fn block_named(layouts: &Layouts, id: u32) -> String {
+    layouts.block(id).map_or_else(|| format!("#{id}"), |held| ty_named(layouts, held))
+}
+
+/// A layout by its name, or by its number if it has none: a bug, but never one that gives two
+/// layouts one name, so two symbols one definition.
+pub(crate) fn layout_named(layouts: &Layouts, id: u32) -> std::borrow::Cow<'_, str> {
+    layouts.get(id).map_or_else(|| format!("#{id}").into(), |layout| layout.name.as_str().into())
 }
 
 /// The line defining a plain struct's type, and those of the structs in it.

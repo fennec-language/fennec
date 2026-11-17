@@ -1,0 +1,13 @@
+source 4e10516d8ea897c8625607138e20de959dea862445c16ff2bad132a804ea8c14
+code 1
+stdout 9
+0 2
+2 61
+stderr 262
+error: index 4 is out of range for length 4
+ --> <dir>/adjacent_first_outside.fen:4:18
+  |
+4 |         total += starts[near] * 10 + starts[near + 1]
+  |                  ^^^^^^^^^^^^
+  = in `spans`
+  = called from `main` at <dir>/adjacent_first_outside.fen:9:18

@@ -90,13 +90,16 @@ than 5% slower than the best, on either side. Each kernel is also built the dev 
 `fennec build --llvm` without `--release`, cached a function at a time, and raced against the
 twin too, so a slip in dev builds shows. Both builds are timed, each from an empty Fennec home
 so no cache helps. The Suite report workflow runs it on
-x86 Linux, where Valgrind counts, and on Arm macOS, after every push to `main` and on demand.
+x86-64 Linux and Arm Linux, where Valgrind counts, and on Arm macOS, after every push to `main`
+and on demand. Arm Linux shares its OS with one and its architecture with the other, so a gap
+between machines shows whether it comes from the code made for x86-64 or from the OS.
 Where Valgrind counts, it also simulates the caches, so each kernel shows its first-level data
 cache and last-level misses, Fennec's and the Rust twin's, beside its instructions. The caches
 are fixed (32 KiB first level, 8 MiB last level, 64-byte lines), so the counts are as
 repeatable as the instruction counts, whichever machine runs them.
-It puts one table on the run's summary page and adds each push's numbers to `history.jsonl`
-on the `bench-history` branch. Being slow never fails it.
+It puts the scoreboard's eight real programs on the run's summary page first, one column a
+machine, then a table of every kernel, and adds each push's numbers to `history.jsonl` on the
+`bench-history` branch. Being slow never fails it.
 
 A kernel can have Go and Java twins too, `name.go` and `name.java` beside `name.fen`. They do
 the same work in each language's plain standard library and print the same thing. They're

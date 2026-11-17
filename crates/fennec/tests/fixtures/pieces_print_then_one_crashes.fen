@@ -1,0 +1,14 @@
+# A `for` loop over `parallel` whose pieces print, one item crashing: a loop's body that fails
+# with `?` runs as a plain loop, so a crash is how a piece of a loop fails. From Fable 5.2's review
+# of #1804: how many print depends on how its ranges were cut, which `FENNEC_PARALLEL_STRESS` changes.
+def busy(turns: int) -> int:
+    return sum(step % 7 for step in range(turns)) % 2
+
+def checked(number: int, stdout: Stdout):
+    worked = busy(100000)
+    stdout.print("did", number, 1000 // (77 - number) + worked)
+
+def main(stdout: Stdout):
+    for number in parallel(range(200)):
+        checked(number, stdout=stdout)
+    stdout.print("never said")

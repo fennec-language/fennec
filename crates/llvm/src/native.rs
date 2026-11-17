@@ -294,10 +294,11 @@ impl crate::emit::Emit<'_, '_, '_> {
 
     /// Defines `@"fen_drop_{name}"(block)`, which frees a native block of layout `id` whose last
     /// owner let it go: it lets go of the blocks its case holds, freeing each that loses its
-    /// last owner, then frees the block. It's named by the layout's `name`, which stays the same
-    /// while the program's numbering moves, so a module's text does too. Those of its own type wait their turn in one loop
-    /// rather than each being freed by a call, so no chain of them needs any stack: not through
-    /// its last field, nor any other, as a recursion through `left` once did 200,000 calls deep.
+    /// last owner, then frees the block. Those of its own type wait their turn in one loop rather
+    /// than each being freed by a call, so no chain of them needs any stack: not through its last
+    /// field, nor any other, as a recursion through `left` once did 200,000 calls deep. It's named
+    /// by the layout's `name`, which stays the same while the program's numbering moves, so a
+    /// module's text does too.
     fn define_drop(&mut self, id: u32, name: &str) -> Result<(), String> {
         use fennec_rt::embed::layout::FIELDS;
         let (_, free) = allocator();

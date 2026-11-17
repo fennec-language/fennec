@@ -271,7 +271,7 @@ impl Kind {
             | Kind::Maybe(_) => "ptr".to_owned(),
             Kind::Enum(id) => format!("[{} x i64]", layouts.get(*id).map_or(1, |layout| layout.size / WORD)),
             Kind::Struct(id) => {
-                format!("%\"s.{}\"", layouts.get(*id).map_or("?", |layout| layout.name.as_str()))
+                format!("%\"s.{}\"", layout_named(layouts, *id))
             }
         }
     }
@@ -296,9 +296,9 @@ pub(crate) fn element_symbol(layouts: &Layouts, item: ListItem) -> String {
         ListItem::Bool => "e_bool".to_owned(),
         ListItem::U64 => "e_u64".to_owned(),
         ListItem::F32 => "e_f32".to_owned(),
-        ListItem::Struct(id) => format!("e_s_{}", layouts.get(id).map_or("?", |layout| layout.name.as_str())),
+        ListItem::Struct(id) => format!("e_s_{}", layout_named(layouts, id)),
         ListItem::Str => "e_str".to_owned(),
-        ListItem::Boxed(id) => format!("e_b_{}", layouts.get(id).map_or("?", |layout| layout.name.as_str())),
+        ListItem::Boxed(id) => format!("e_b_{}", layout_named(layouts, id)),
         // Named by what it holds, so the name stays the same while the program's numbering moves.
         ListItem::Block(id) => format!("e_k_{}", block_named(layouts, id)),
     }
@@ -361,9 +361,10 @@ fn block_named(layouts: &Layouts, id: u32) -> String {
     layouts.block(id).map_or_else(|| format!("#{id}"), |held| ty_named(layouts, held))
 }
 
-/// A layout by its name.
-pub(crate) fn layout_named(layouts: &Layouts, id: u32) -> &str {
-    layouts.get(id).map_or("?", |layout| layout.name.as_str())
+/// A layout by its name, or by its number if it has none: a bug, but never one that gives two
+/// layouts one name, so two symbols one definition.
+pub(crate) fn layout_named(layouts: &Layouts, id: u32) -> std::borrow::Cow<'_, str> {
+    layouts.get(id).map_or_else(|| format!("#{id}").into(), |layout| layout.name.as_str().into())
 }
 
 /// The line defining a plain struct's type, and those of the structs in it.

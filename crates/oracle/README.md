@@ -84,6 +84,13 @@ says they are, at the version the workspace pins.
   `fennec-kit`, which also fetches and builds other kits, so this is written here on its own. A kit
   that depends on another, a file whose own names hide a name an import binds, and `embed_file`
   are unsupported.
+- What each file imports from the standard library is its own, as the checker has it: a name is
+  looked up in the imports of the file it's written in, by `fennec_check::place`, so two files may
+  import `pick` from different places, and std's code run from its source has its own imports. A
+  name written bare reaches a function or constant by the checker's own rule, `fennec_check::reaches`:
+  std's code reaches only std's names, so a program's own `reversed` never stands in for the builtin
+  std's `Tree` calls. A program's constant with the name of one a module run from its source
+  declares is unsupported, since the tables hold both under one name.
 - Every assignment, argument and return copies, so value semantics hold by construction. A `ref`
   parameter, a `for ref` loop's name and a local `ref` stand for a place, written where it is.
 - A failure passes up as a Rust error, `except` handles only the failure of the call it follows,
@@ -106,9 +113,12 @@ says they are, at the version the workspace pins.
   they run here too, and are refused if they'd change a `shared` value or their item, use a
   channel, or fail after a `break`. Each round is one of its own to the channels it uses, as a
   task is, so which round's message comes first is tried every way, and two rounds taking from
-  one channel are refused. Of a channel made outside a round, refused as what runs beside it could
-  come first: a receive while rounds after it haven't run here, a close, and any use in a stream's
-  item. A stream, `(f(x) for x in parallel(xs))`, works out each item as its reader
+  one channel at once are refused. A round that receives from a channel made outside it, or waits
+  for room on one, hands the rounds after it to a thread of their own, given a copy of the names
+  they read, as they run beside it: their messages are there before it takes the next, and it can
+  wait on them. Refused: that round stopping the call, as the rounds after it ran where they may
+  not have; and, of a channel made outside a round, a close, and any use in a stream's item. A
+  stream, `(f(x) for x in parallel(xs))`, works out each item as its reader
   asks, and an item's failure is the reader's when it gets there. Refused, as their order isn't
   promised: printing or the file system inside a round, a `shared` value one round changes and
   another reaches, any `lock` in a stream's item, and a generator made outside a round, read in

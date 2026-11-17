@@ -180,8 +180,8 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> Result<bool, String
 fn options(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
         fennec: PathBuf::from("target/release/fennec"),
-        // As the nightly runs it. At 100,000 lines and more, `fennec check` stops at the checker's
-        // own cap on copies of generic functions, until its part of #1896 lands.
+        // As the nightly runs it. 100,000 and 200,000 lines run weekly, on a runner with the
+        // memory 200,000 lines' release build needs, about 6 GB.
         sizes: vec![20_000, 50_000],
         seed: 1,
         runs: 1,

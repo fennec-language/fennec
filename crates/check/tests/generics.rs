@@ -1127,8 +1127,9 @@ fn a_type_that_writes_its_own_serialize_is_shaped_by_what_it_saves() {
 
 /// A generic function that comes back to itself with a bigger type each time can't be built: it
 /// would need a copy for every size. The check refuses it at the call that makes the type bigger,
-/// whether it calls itself or comes back through another generic. One that comes back with the
-/// same type, or calls another with a bigger type and isn't called back, is fine.
+/// whether it calls itself, comes back through another generic, is a generic type's method, or
+/// calls back from a function nested in it. One that comes back with the same type, a method
+/// included, or calls another with a bigger type and isn't called back, is fine.
 #[test]
 fn a_generic_that_comes_back_to_itself_with_a_bigger_type_is_refused() {
     let grows = "def grow[T](x: T, n: int) -> int:\n    if n == 0:\n        return 0\n    return grow([x], n - 1)\n\n\
@@ -1148,10 +1149,30 @@ fn a_generic_that_comes_back_to_itself_with_a_bigger_type_is_refused() {
             "`ping` comes back to itself through `pong` with a bigger type each time: here `pong`'s `U` is `(T, int)`, so it would need a copy for every size, and can't be built @ pong((x, 1), n - 1)"
         ]
     );
+    let method = "struct Boxed[T]:\n    value: T\n\n    def grow(self, n: int) -> int:\n        if n == 0:\n            return 0\n        \
+        return Boxed(value=[self.value]).grow(n - 1)\n\n\
+        def main(stdout: Stdout):\n    stdout.print(Boxed(value=1).grow(3))\n";
+    assert_eq!(
+        problems(method),
+        [
+            "`Boxed.grow` calls itself with a bigger type each time: here its `T` is `list[T]`, so it would need a copy for every size, and can't be built @ Boxed(value=[self.value]).grow(n - 1)"
+        ]
+    );
+    let nested = "def outer[T](value: T, n: int) -> int:\n    def inner(held: T) -> int:\n        if n == 0:\n            return 0\n        \
+        return outer([held], n - 1)\n    return inner(value)\n\n\
+        def main(stdout: Stdout):\n    stdout.print(outer(1, 3))\n";
+    assert_eq!(
+        problems(nested),
+        [
+            "`outer` calls itself with a bigger type each time: here its `T` is `list[T]`, so it would need a copy for every size, and can't be built @ outer([held], n - 1)"
+        ]
+    );
     let fine = "def same[T](x: T, n: int) -> int:\n    if n == 0:\n        return 0\n    return same(x, n - 1)\n\n\
+        struct Kept[T]:\n    value: T\n\n    def again(self, n: int) -> int:\n        if n == 0:\n            return 0\n        \
+        return Kept(value=self.value).again(n - 1)\n\n\
         def wrap[T](x: T) -> int:\n    return 1\n\n\
         def once[T](x: T) -> int:\n    return wrap([x]) + wrap((x, 2))\n\n\
-        def main(stdout: Stdout):\n    stdout.print(same(1, 3), once('a'))\n";
+        def main(stdout: Stdout):\n    stdout.print(same(1, 3), once('a'), Kept(value=2).again(3))\n";
     let empty: [&str; 0] = [];
     assert_eq!(problems(fine), empty);
 }

@@ -102,6 +102,10 @@ pub(crate) struct Analysis {
     /// Locals standing for a list that a `for` loop goes through while changing only the item
     /// it's on: a copy of the list would say the same, and cost a whole list.
     aliases: HashMap<usize, LocalId>,
+    /// List locals whose length nothing in the function changes: their length is read where
+    /// they're given their value and kept, so checks against it can leave a loop (see
+    /// `steady_lengths`).
+    pub(crate) steady_lengths: HashSet<usize>,
     /// A block ending in a jump to a loop that fills a list made in that block: the list, and
     /// how many items the loop adds at most.
     pub(crate) reservations: HashMap<usize, (usize, Operand)>,
@@ -629,6 +633,7 @@ fn analyze(
         let written = writes.get(*list).copied().unwrap_or(2);
         !grown.contains(list) && written == u32::from(*list >= params)
     });
+    known.steady_lengths = steady_lengths(function, &grown, &known);
     find_guarded_reads(function, (&facts, &multi), &mut known);
     known.below.retain(|local, _| facts.range_in(LocalId(*local), 0).is_some_and(|range| range.0 >= 0));
     find_reservations(function, &stepped, &mut known);
@@ -636,6 +641,90 @@ fn analyze(
     find_unmade_enumerates(function, &mut known);
     find_counts_inside(function, &mut known);
     known
+}
+
+/// The list parameters whose length nothing in the function can change, so it can be read once,
+/// at the start, and kept. Only parameters: a list made here has its length written here, which
+/// LLVM sees and carries to every check itself; a kept copy of it only got in the way, and
+/// fannkuch, whose lists are all made in its function, ran 6% more instructions. A parameter's
+/// length is only ever in memory, behind calls LLVM can't see past. Left out is a list that's
+/// grown or shrunk here (`grown`: a builtin that changes it, or a call that changes what it's
+/// given), given another value, handed to a closure, which may change what it's given, standing
+/// for or stood for by another local, or taken out of its place. A list made alone again before
+/// a change (`fennec_list_unshare`) keeps its length, so it stays. A build that checks proofs
+/// checks each use of a kept length against the list's own.
+fn steady_lengths(function: &Function, grown: &HashSet<usize>, known: &Analysis) -> HashSet<usize> {
+    // Only a list read in a loop gains from it: elsewhere its length is read once anyway.
+    let looped = blocks_in_loops(function);
+    let mut read_in_loops = HashSet::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        if looped.contains(&at) {
+            for inst in &block.insts {
+                visit(
+                    &inst.kind,
+                    |operand| {
+                        if let Operand::Local(local) = operand {
+                            read_in_loops.insert(local.0);
+                        }
+                    },
+                    |_| {},
+                );
+            }
+        }
+    }
+    let handed: HashSet<usize> = function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .filter_map(|inst| match &inst.kind {
+            InstKind::CallClosure { args, .. } => Some(args),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|arg| match arg {
+            Operand::Local(local) => Some(local.0),
+            _ => None,
+        })
+        .collect();
+    let named_twice: HashSet<usize> = known.aliases.iter().flat_map(|(alias, of)| [*alias, of.0]).collect();
+    (0..function.locals.len())
+        .filter(|at| {
+            matches!(function.locals.get(*at).map(|local| &local.ty), Some(Type::List(_)))
+                && !grown.contains(at)
+                && *at < function.params
+                && known.writes.get(*at).copied() == Some(0)
+                && !handed.contains(at)
+                && !named_twice.contains(at)
+                && !known.taken.contains(at)
+                && known.reads.get(*at).is_some_and(|reads| *reads > 0)
+                && read_in_loops.contains(at)
+        })
+        .collect()
+}
+
+/// The blocks inside a loop: for each jump back to a loop's start, every block that reaches the
+/// jump without going through the start, and the start.
+fn blocks_in_loops(function: &Function) -> HashSet<usize> {
+    let mut coming_from: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        for target in block.end.targets() {
+            coming_from.entry(target.0).or_default().push(at);
+        }
+    }
+    let mut found = HashSet::new();
+    let mut back: Vec<(usize, usize)> = crate::emit::back_edges(function).into_iter().collect();
+    back.sort_unstable();
+    for (from, start) in back {
+        let mut seen = HashSet::from([start]);
+        let mut waiting = vec![from];
+        while let Some(at) = waiting.pop() {
+            if seen.insert(at) {
+                waiting.extend(coming_from.get(&at).into_iter().flatten().copied());
+            }
+        }
+        found.extend(seen);
+    }
+    found
 }
 
 /// One side of a comparison: a local, or a number written out.
@@ -3188,6 +3277,7 @@ impl Analysis {
             slice_keys: HashMap::new(),
             unmade: HashSet::new(),
             aliases: HashMap::new(),
+            steady_lengths: HashSet::new(),
             reservations: HashMap::new(),
             zero_filled: HashSet::new(),
             zero_counts: HashMap::new(),
@@ -4301,6 +4391,69 @@ mod tests {
         ] {
             assert!(!within_room(&filled(body))?, "skipped the check: {body}");
         }
+        Ok(())
+    }
+
+    /// The named list locals of a function called `go` whose length is kept (`steady_lengths`),
+    /// with each call changing what its `ref` parameters are given, as a build has it: `grow`, and
+    /// std's methods taking `ref self`, like `extend`.
+    fn steady(body: &str) -> Result<Vec<String>, String> {
+        let source = format!(
+            "def grow(ref xs: list[int]):\n    xs.append(1)\n    return\n\ndef total(xs: list[int]) -> int:\n    return sum(xs)\n\n{body}"
+        );
+        let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
+        let changes = |name: &str| {
+            program
+                .functions
+                .iter()
+                .find(|callee| callee.name == name)
+                .map_or_else(Vec::new, |callee| callee.mut_params.clone())
+        };
+        let known = analyze(function, &changes, &|_, _| false, &[], &|_| false);
+        let mut names: Vec<String> = known
+            .steady_lengths
+            .iter()
+            .filter_map(|at| function.locals.get(*at).and_then(|local| local.name.clone()))
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// A list parameter only read and stored into in a loop keeps its length, a plain one or a
+    /// `ref` one, so a check against it can leave the loop. One appended to, popped, handed by
+    /// `ref` to a call that changes it, or given another value, doesn't, nor one read outside any
+    /// loop, which gains nothing, nor a list made in the function.
+    #[test]
+    fn a_list_only_read_and_stored_into_keeps_its_length() -> Result<(), String> {
+        let kept = "def go(xs: list[int], ref ys: list[int]) -> int:\n    zs = [1, 2, 3]\n    mut total = 0\n    for at in range(len(xs)):\n        ys[at % len(ys)] = xs[at] + zs[at % 3]\n        total += xs[at]\n    return total\n";
+        // `zs` is made here, with its length written where LLVM sees it, so it's left alone.
+        assert_eq!(steady(kept)?, ["xs", "ys"]);
+        // Each change in the loop that reads the list, so only the change can be what leaves it out.
+        let looped = |change: &str| {
+            format!(
+                "def go(ref xs: list[int]) -> int:\n    mut got = 0\n    for at in range(3):\n        {change}\n        got += xs[at]\n    return got\n"
+            )
+        };
+        for (change, left_out) in [
+            ("xs.append(1)", "appended to"),
+            ("_ = xs.pop()", "popped"),
+            ("xs.extend([1, 2])", "extended"),
+            ("xs.swap(0, 1)", "swapped, which a builtin that changes the list does"),
+            ("grow(ref xs)", "handed by ref to a call that changes it"),
+            ("xs = [4, 5, 6]", "given a new value"),
+        ] {
+            let body = looped(change);
+            assert_eq!(steady(&body)?, Vec::<String>::new(), "kept though {left_out}: {body}");
+        }
+        // Handed to a call by value, a list keeps its length: the call has its own copy.
+        let handed = "def go(xs: list[int]) -> int:\n    mut got = 0\n    for at in range(3):\n        got += total(xs) + xs[at]\n    return got\n";
+        assert_eq!(steady(handed)?, ["xs"]);
+        // Read outside any loop, its length is read once anyway, so nothing is kept.
+        let once = "def go(xs: list[int]) -> int:\n    return xs[0] + len(xs)\n";
+        assert_eq!(steady(once)?, Vec::<String>::new());
         Ok(())
     }
 

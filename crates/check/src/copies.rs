@@ -131,7 +131,10 @@ impl Copies {
 /// looked at: it's not the program's to change.
 pub(crate) fn growing(checker: &crate::checker::Checker) -> Vec<fennec_syntax::Diagnostic> {
     let mut graph = Graph::default();
-    for (&(start, end), call) in &checker.generic_calls {
+    // Calls to generic functions, and to methods whose type, or which themselves, have type
+    // parameters.
+    let calls = checker.generic_calls.iter().chain(&checker.generic_method_calls);
+    for (&(start, end), call) in calls {
         let written = checker.program.functions.get(&call.caller).is_some_and(|entry| !entry.prelude);
         if !written {
             continue;
@@ -141,7 +144,9 @@ pub(crate) fn growing(checker: &crate::checker::Checker) -> Vec<fennec_syntax::D
             let mut held = Vec::new();
             params_in(&ty, 0, &mut held);
             for (param, depth) in held {
-                let from = graph.node(&call.caller, &param);
+                // A nested function's `T` from the function around it is that function's `T`.
+                let owner = declaring(checker, &call.caller, &param);
+                let from = graph.node(&owner, &param);
                 let to = graph.node(&call.callee, name);
                 let span = fennec_syntax::Span { start, end };
                 graph.edges.push(Edge {
@@ -149,7 +154,7 @@ pub(crate) fn growing(checker: &crate::checker::Checker) -> Vec<fennec_syntax::D
                     to,
                     depth,
                     span,
-                    call: (call.caller.clone(), call.callee.clone()),
+                    call: (owner, call.callee.clone()),
                     name: name.clone(),
                     ty: ty.clone(),
                 });
@@ -182,6 +187,19 @@ pub(crate) fn growing(checker: &crate::checker::Checker) -> Vec<fennec_syntax::D
     found
 }
 
+/// The function whose own type parameter `param` is, seen from `function`: a nested function's
+/// parameter from the function around it is that one's, however deep.
+fn declaring(checker: &crate::checker::Checker, function: &str, param: &str) -> String {
+    let mut key = function;
+    while let Some(entry) = checker.program.functions.get(key)
+        && entry.inherited.iter().any(|generic| generic.name == param)
+        && let Some((outer, _)) = key.rsplit_once('.')
+    {
+        key = outer;
+    }
+    key.to_owned()
+}
+
 /// Each type parameter in `ty`, with how many types hold it there: 0 for `T` itself, 1 for the `T`
 /// in `list[T]`.
 fn params_in(ty: &Type, depth: usize, held: &mut Vec<(String, usize)>) {
@@ -202,7 +220,7 @@ struct Edge {
     /// How many types hold the caller's parameter in the one given: more than 0 makes it bigger.
     depth: usize,
     span: fennec_syntax::Span,
-    /// The caller and the callee.
+    /// The function whose type parameter grows, and the callee.
     call: (String, String),
     /// The callee's parameter, and the type it's given.
     name: String,
@@ -235,5 +253,50 @@ impl Graph {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Copies, DEEPEST_TYPE, Refusal, most_copies, type_depth};
+    use crate::types::Type;
+
+    fn nested(depth: usize) -> Type {
+        (1..depth).fold(Type::Int, |inner, _| Type::List(Box::new(inner)))
+    }
+
+    /// Each type that holds another counts, whichever of its parts nests deepest.
+    #[test]
+    fn a_types_depth_counts_what_holds_it() {
+        assert_eq!(type_depth(&Type::Int), 1);
+        assert_eq!(type_depth(&nested(3)), 3);
+        let pair = Type::Tuple(vec![Type::Str, nested(4)]);
+        assert_eq!(type_depth(&Type::Dict(Box::new(Type::Str), Box::new(pair))), 6);
+    }
+
+    /// A copy whose type nests past the depth is refused and marks its function as running away,
+    /// whose new copies are then refused, while other functions' still are made. Past the backstop,
+    /// which grows with the program, no copy is made.
+    #[test]
+    fn copies_stop_at_the_depth_the_runaway_mark_and_the_backstop() {
+        let mut copies = Copies::default();
+        let fine = ("T".to_owned(), nested(DEEPEST_TYPE));
+        assert_eq!(copies.too_deep("grow", [(&fine.0, &fine.1)]), None);
+        assert_eq!(copies.make("grow", 10), Ok(()));
+        let deep = ("T".to_owned(), nested(DEEPEST_TYPE + 1));
+        let refused = copies.too_deep("grow", [(&deep.0, &deep.1)]);
+        assert!(
+            matches!(refused, Some(Refusal::TooDeep { depth, .. }) if depth == DEEPEST_TYPE + 1),
+            "{refused:?}"
+        );
+        assert_eq!(copies.make("grow", 10), Err(Refusal::RunsAway));
+        assert_eq!(copies.make("other", 10), Ok(()));
+        assert_eq!(most_copies(10), 2000);
+        assert_eq!(most_copies(1000), 16_000);
+        let mut many = Copies::default();
+        for _ in 0..most_copies(10) {
+            assert_eq!(many.make("each", 10), Ok(()));
+        }
+        assert_eq!(many.make("each", 10), Err(Refusal::TooMany { copy: 2001, most: 2000, functions: 10 }));
     }
 }

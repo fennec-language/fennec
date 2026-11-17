@@ -523,6 +523,82 @@ fn a_name_two_files_of_a_kit_define_is_refused() {
     assert!(why.contains("`area` is defined in `squares` and in `circles`"), "{why}");
 }
 
+/// What each file imports from the standard library is its own, as the checker has it: `pick` is
+/// `floor` in the file that imports it so and `ceil` in the file that imports that, `dumps` is
+/// JSON's in one and TOML's in the other, and the program's `id_at` is its own beside the
+/// `id_at` `std.collections` imports for its `Deque`. The oracle refused each, where one table of
+/// imports for every file couldn't hold both. What it prints is what the compiled program printed.
+#[test]
+fn what_each_file_imports_is_its_own() {
+    let main = "\
+from std.collections import Deque
+from std.json import dumps
+from std.math import floor as pick, sqrt as id_at
+from shapes import Point
+import other
+
+def main(stdout: Stdout):
+    stdout.print(pick(2.7), other.lifted(2.7), id_at(16.0))
+    stdout.print(dumps(Point(x=1, y=2)))
+    stdout.print(other.saved(Point(x=3, y=4)))
+    mut queue = Deque.of([1, 2])
+    queue.appendleft(0)
+    stdout.print(len(queue), queue[0])
+";
+    let other = "\
+from std.math import ceil as pick
+from std.toml import dumps
+from shapes import Point
+
+def lifted(number: float) -> int:
+    return pick(number)
+
+def saved(point: Point) -> str:
+    return dumps(point)
+";
+    let files = [
+        ("kit.toml", KIT_TOML),
+        ("src/main.fen", main),
+        ("src/other.fen", other),
+        ("src/shapes.fen", "struct Point:\n    x: int\n    y: int\n"),
+    ];
+    let (printed, ended) = kit_ran("own_imports", &files).unwrap();
+    assert_eq!(ended, Ended::Exited(0), "it printed:\n{printed}");
+    assert_eq!(printed, "2 3 4.0\n{'x': 1, 'y': 2}\nx = 3\ny = 4\n\n3 0\n".replace('\'', "\""));
+}
+
+/// A program's own function with a builtin's name is its own, and std's code still calls the
+/// builtin, by the checker's rule: std's `Tree.descendants` reverses with `reversed` and
+/// `url.parse` fills in a `Url` with `copy`. The oracle ran the program's `reversed` from std's
+/// code, and printed `right, left, leaf`. What it prints is what the compiled program printed.
+#[test]
+fn a_program_defining_builtin_names_changes_nothing_std_does() {
+    prints(
+        "
+        from std import collections, url
+
+        def copy(number: int) -> int:
+            return number + 7
+
+        def reversed(items: list[str]) -> list[str]:
+            return items
+
+        def main(stdout: Stdout):
+            mut tree = collections.Tree[str]()
+            root = tree.add('root')
+            left = tree.add('left', parent=root)
+            _ = tree.add('leaf', parent=left)
+            _ = tree.add('right', parent=root)
+            stdout.print(', '.join([tree[node] for node in tree.descendants(root)]))
+            found = url.parse('http://example.com/a?b=1#top') except why:
+                stdout.print(f'{why}')
+                return
+            stdout.print(found.scheme, found.fragment, found.path, copy(1), reversed(['a', 'b']))
+        ",
+        "left, leaf, right\nhttp top /a 8 [\"a\", \"b\"]\n",
+    );
+}
+
 #[test]
 fn json_writes_a_value_as_its_type_saves_it_and_reads_it_back() {
     prints(
@@ -1290,20 +1366,16 @@ fn tasks_talk_through_channels_and_listeners() {
 }
 
 /// A task that crashes cuts short every wait its block is in, as a closed channel does, so a
-/// receive in the block gives `None` and the block reaches its end, where the crash comes out. A
-/// wait the block starts after the crash is cut short too. What it prints is what the compiled
-/// program printed. `workers/crash_while_pieces_wait.fen` waits so in each of a `parallel` call's
-/// pieces, which is refused until a round that waits lets the rounds after it run.
+/// receive in the block, itself or in each of its `parallel` pieces, gives `None` and the block
+/// reaches its end, where the crash comes out. A wait the block starts after the crash is cut
+/// short too. The same from main and from a task. What it prints is what the compiled program
+/// printed (`workers/crash_while_pieces_wait.fen`).
 #[test]
 fn a_crashing_task_cuts_short_every_wait_its_block_is_in() {
-    let (_, ended) = ran(include_str!("../../fennec/tests/fixtures/workers/crash_while_pieces_wait.fen"));
-    assert_eq!(
-        ended,
-        Ended::Unsupported(
-            "a receive in a `parallel` round before the rounds after it have run, whose messages could come first"
-                .to_owned()
-        )
-    );
+    let (printed, ended) =
+        ran(include_str!("../../fennec/tests/fixtures/workers/crash_while_pieces_wait.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/workers/crash_while_pieces_wait.out"));
     prints(
         "
         from std.concurrent import Channel, Crashed, channel
@@ -1434,14 +1506,15 @@ fn each_parallel_round_is_a_sender_of_its_own() {
     );
 }
 
-/// A round's receive from a channel made outside it, while rounds after it haven't run here, is
-/// refused: in the compiled program they run beside it, and their messages could be the next, or
-/// it could be waiting on one. Where the rounds after it have all run, or the channel is the
-/// round's own, it runs; and taking from a channel in turn, where each knows the last take
-/// happened, is in order.
+/// A round that receives, from a channel made outside it, hands the rounds after it to a thread
+/// of their own, as they run beside it in the compiled program: so their messages are there
+/// before it takes the next, and it can wait on one of them, in a comprehension, a chain of them,
+/// a `for` loop or a nested call. Each output is what the compiled program printed.
 #[test]
-fn a_round_receiving_before_the_rounds_after_it_have_run_is_refused() {
-    let (_, ended) = ran("
+fn a_round_that_waits_lets_the_rounds_after_it_run() {
+    // `workers/task_comprehensions.fen`'s first pieces: one waits for what the other sends.
+    prints(
+        "
         from std.concurrent import Channel, channel
 
         def piece(number: int, between: Channel[int]) -> int:
@@ -1453,14 +1526,192 @@ fn a_round_receiving_before_the_rounds_after_it_have_run_is_refused() {
         def main(stdout: Stdout):
             with channel[int](size=1) as between:
                 stdout.print([piece(number, between=between) for number in parallel(range(2))])
+        ",
+        "[7, 0]\n",
+    );
+    prints(
+        "
+        from std.concurrent import Channel, channel
+
+        def link(number: int, first: Channel[int], second: Channel[int]) -> int:
+            if number == 0: return first.receive() else -1
+            if number == 1:
+                got = second.receive() else -1
+                first.send(got * 2) except why:
+                    return -len(f'{why}')
+                return got
+            second.send(21) except why:
+                return -len(f'{why}')
+            return 0
+
+        def main(stdout: Stdout):
+            with channel[int](size=1) as first:
+                with channel[int](size=1) as second:
+                    stdout.print([link(number, first=first, second=second) for number in parallel(range(3))])
+        ",
+        "[42, 21, 0]\n",
+    );
+    prints(
+        "
+        from std.concurrent import Channel, channel
+
+        def main(stdout: Stdout):
+            with channel[int](size=1) as between:
+                with channel[int](size=4) as out:
+                    for number in parallel(range(2)):
+                        if number == 0:
+                            got = between.receive() else -1
+                            out.send(got) except why:
+                                stdout.print(f'{why}')
+                        else:
+                            between.send(5) except why:
+                                stdout.print(f'{why}')
+                    stdout.print(out.receive() else -1)
+        ",
+        "5\n",
+    );
+    prints(
+        "
+        from std.concurrent import Channel, channel
+
+        def inner(at: int, number: int, between: Channel[int]) -> int:
+            if number == 0 and at == 0: return between.receive() else -1
+            if number == 1 and at == 1:
+                between.send(9) except why:
+                    return -len(f'{why}')
+            return 0
+
+        def outer(number: int, between: Channel[int]) -> list[int]:
+            return [inner(at, number=number, between=between) for at in parallel(range(2))]
+
+        def main(stdout: Stdout):
+            with channel[int](size=1) as between:
+                stdout.print([outer(number, between=between) for number in parallel(range(2))])
+        ",
+        "[[9, 0], [0, 0]]\n",
+    );
+}
+
+/// Of rounds that run beside each other, refused: two taking from one channel, which gets which
+/// hanging on time; one that waits for what no round sends, which hangs; and the round that
+/// handed the rest on stopping the call, as the rounds after it ran where they may not have.
+#[test]
+fn rounds_beside_each_other_are_refused_where_time_decides() {
+    let (_, ended) = ran("
+        from std.concurrent import Channel, Closed, channel
+
+        def piece(number: int, jobs: Channel[int]) -> int:
+            return (jobs.receive() else -1) * 10 + number
+
+        def main(stdout: Stdout) fails Closed:
+            with channel[int](size=4) as jobs:
+                for job in range(1, 4):
+                    jobs.send(job)?
+                made = [piece(number, jobs=jobs) for number in parallel(range(2))]
+                stdout.print(made)
+            return
         ");
     assert_eq!(
         ended,
         Ended::Unsupported(
-            "a receive in a `parallel` round before the rounds after it have run, whose messages could come first"
+            "two tasks taking messages from one channel, which gets which hanging on time".to_owned()
+        )
+    );
+    let (_, ended) = ran("
+        from std.concurrent import Channel, channel
+
+        def piece(number: int, between: Channel[int]) -> int:
+            return between.receive() else -1
+
+        def main(stdout: Stdout):
+            with channel[int](size=1) as between:
+                stdout.print([piece(number, between=between) for number in parallel(range(1))])
+        ");
+    assert_eq!(ended, Ended::Unsupported("every task waits on another, so the program hangs".to_owned()));
+    let (_, ended) = ran("
+        from std.concurrent import Channel, channel
+
+        error Odd:
+            at: int
+
+        def piece(number: int, between: Channel[int]) -> int fails Odd:
+            if number == 0:
+                got = between.receive() else -1
+                fail Odd(at=got)
+            between.send(3) except why:
+                return -len(f'{why}')
+            return number
+
+        def run(between: Channel[int]) -> int fails Odd:
+            made = [piece(number, between=between)? for number in parallel(range(3))]
+            return len(made)
+
+        def main(stdout: Stdout):
+            with channel[int](size=1) as between:
+                got = run(between) except why:
+                    stdout.print(f'{why}')
+                    return
+                stdout.print(got)
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "a `parallel` round that stops the call after the rounds after it ran beside it".to_owned()
+        )
+    );
+}
+
+/// A `shared` value a round makes is its own, which no other round reaches, until it's sent on a
+/// channel: then another round may have it, and two locking it to change it, in an order time
+/// decides, are refused. Here round 0 changes it after sending it and round 1 after taking it,
+/// so the compiled program can print `[12, 0]` or `[21, 0]`.
+#[test]
+fn a_shared_value_sent_from_its_round_is_no_longer_its_own() {
+    let (_, ended) = ran("
+        from std.concurrent import Channel, channel
+
+        struct Count:
+            total = 0
+
+        struct Holder:
+            count: shared Count
+
+        def piece(number: int, between: Channel[Holder], back: Channel[int]) -> int:
+            if number == 0:
+                shared mine = Count()
+                between.send(Holder(count=mine)) except why:
+                    return -len(f'{why}')
+                lock mine as ref counting:
+                    counting.total = counting.total * 10 + 1
+                _ = back.receive() else -1
+                lock mine as seen:
+                    return seen.total
+            shared spare = Count()
+            got = between.receive() else Holder(count=spare)
+            lock got.count as ref counting:
+                counting.total = counting.total * 10 + 2
+            back.send(0) except why:
+                return -len(f'{why}')
+            return 0
+
+        def main(stdout: Stdout):
+            with channel[Holder](size=1) as between:
+                with channel[int](size=1) as back:
+                    stdout.print([piece(number, between=between, back=back) for number in parallel(range(2))])
+        ");
+    assert_eq!(
+        ended,
+        Ended::Unsupported(
+            "a `shared` value one `parallel` round changes and another reaches, in an order that isn't promised"
                 .to_owned()
         )
     );
+}
+
+/// Taking from a channel in turn, where each knows the last take happened, is in order, and so is
+/// taking from a round's own channel, which no other round reaches: both run.
+#[test]
+fn taking_from_a_channel_in_turn_or_from_a_rounds_own_runs() {
     prints(
         "
         from std.concurrent import Channel, channel

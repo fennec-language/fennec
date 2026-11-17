@@ -254,7 +254,7 @@ impl Lowering<'_> {
             Type::Result(_, error) => Type::Result(Box::new(Type::Int), error.clone()),
             _ => Type::Int,
         };
-        let inner = format!("{}.task@{}", self.name, span.start);
+        let inner = self.lifted_name("task", span.start);
         let instance =
             FunctionInstance { base: self.base.clone(), name: inner.clone(), subst: self.subst.clone() };
         let mut lifted = Lowering::new(&instance, self.context, self.body, returns.clone());
@@ -277,7 +277,7 @@ impl Lowering<'_> {
         }
         self.lifted.extend(lifted.finished(captures.len() + 1, Vec::new()));
 
-        let key = format!("{}.serve@{}", self.name, span.start);
+        let key = self.lifted_name("serve", span.start);
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut task = Lowering::new(&instance, self.context, self.body, Type::Int);
@@ -332,8 +332,8 @@ impl Lowering<'_> {
             return Err("`launch` given a task that takes something".to_owned());
         }
         // Each `with launch` is written in from the same source, so its span is the same as the
-        // others': what this function has lifted so far tells them apart.
-        let key = format!("{}.launch@{}.{}", self.name, span.start, self.lifted.len());
+        // others': each is a new one.
+        let key = self.fresh_lifted_name("launch");
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut task = Lowering::new(&instance, self.context, self.body, Type::Int);
@@ -519,7 +519,7 @@ impl Lowering<'_> {
         let (Operand::Local(list_local), Operand::Local(range_local)) = (&list, &range) else {
             return Err("a stream's list and range aren't locals".to_owned());
         };
-        let key = format!("{}.stream@{}", self.name, span.start);
+        let key = self.lifted_name("stream", span.start);
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);
@@ -697,7 +697,7 @@ impl Lowering<'_> {
         }
         let (names, returns) = named_in(runs);
         let captures = self.captures(names, &[name]);
-        let key = format!("{}.parallel@{}", self.name, span.start);
+        let key = self.lifted_name("parallel", span.start);
         // A range whose items can fail is a function that can, called by the one the runtime runs,
         // which hands its failure over and gives back that it failed.
         let (inner, inner_returns) = match fails {

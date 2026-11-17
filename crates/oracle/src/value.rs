@@ -11,7 +11,7 @@ use crate::interp::stream::Source;
 
 mod held;
 mod text;
-pub(crate) use held::{Held, copied};
+pub(crate) use held::{Held, spend, spent};
 pub(crate) use text::Text;
 
 /// A value while the program runs.
@@ -96,7 +96,7 @@ pub(crate) enum Func {
     /// while that call is still running.
     Nested { def: &'static FnDef, frame: u64 },
     /// An arrow function, with the names it reads copied when it was made.
-    Lambda { params: Vec<String>, body: &'static Expr, captured: Vec<(String, Value)> },
+    Lambda { params: Vec<String>, body: &'static Expr, captured: Held<Vec<(String, Value)>> },
 }
 
 /// A capability `main` was given. Standard output is real; the arguments and standard input

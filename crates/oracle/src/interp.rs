@@ -89,6 +89,12 @@ pub(crate) fn deeper() -> Run<Deeper> {
             return unsupported("ran too long: a value nested too deeply");
         }
         walked.set(depth);
+        // Each part a walk goes into is counted against the run's steps, as copying part by part
+        // was: comparing two lists counts their items, and a dict's lookup comparing its keys one
+        // at a time, as main's oracle did uncounted, counts none.
+        if depth > 1 {
+            crate::value::spend(1);
+        }
         Ok(Deeper)
     })
 }
@@ -373,9 +379,9 @@ impl Interp {
         }
     }
 
-    /// Counts a step, and the parts cloned since the last, stopping a run that's gone on too long.
+    /// Counts a step, and the work done since the last, stopping a run that's gone on too long.
     pub(crate) fn tick(&self) -> Run<()> {
-        let steps = 1 + crate::value::copied();
+        let steps = 1 + crate::value::spent();
         if self.shared.steps.fetch_add(steps, Ordering::Relaxed) > self.shared.most_steps {
             return unsupported("ran too long");
         }

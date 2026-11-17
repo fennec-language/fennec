@@ -182,7 +182,11 @@ impl Interp {
             }
             ExprKind::Lambda { params, body } => {
                 let captured = self.captured(&[body], params)?;
-                Ok(Value::Func(Box::new(Func::Lambda { params: params.clone(), body, captured })))
+                Ok(Value::Func(Box::new(Func::Lambda {
+                    params: params.clone(),
+                    body,
+                    captured: Held::new(captured),
+                })))
             }
             ExprKind::Match { subject, arms } => {
                 let subject = self.eval(subject)?;

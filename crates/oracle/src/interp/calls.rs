@@ -453,7 +453,9 @@ impl Interp {
                 Func::Nested { def, frame } => {
                     Ok(Target::Def { def, parent: Some(frame), receiver: None, types: Bound::new() })
                 }
-                Func::Lambda { params, body, captured } => Ok(Target::Lambda { params, body, captured }),
+                Func::Lambda { params, body, captured } => {
+                    Ok(Target::Lambda { params, body, captured: captured.into_inner() })
+                }
             },
             other => unsupported(format!("calling a {}", other.kind())),
         }

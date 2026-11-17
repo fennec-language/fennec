@@ -2,6 +2,7 @@
 //! `def ==` and `def <` are called where it has them.
 
 use std::cmp::Ordering;
+use std::fmt::Write as _;
 
 use super::calls::{ArgVal, Receiver};
 use super::{Binding, Interp, Place, Run, unsupported};
@@ -23,63 +24,89 @@ impl Interp {
 
     /// A value as it shows inside a collection, strings in quotes.
     pub(crate) fn repr(&mut self, value: &Value) -> Run<String> {
+        let mut out = String::new();
+        self.repr_into(value, &mut out)?;
+        Ok(out)
+    }
+
+    /// Writes a value as it shows inside a collection onto `out`. Each part is written onto the
+    /// same text, so a value nested deep takes time in proportion to what it prints.
+    fn repr_into(&mut self, value: &Value, out: &mut String) -> Run<()> {
         let _deeper = super::deeper()?;
-        Ok(match value {
-            Value::Unit => String::new(),
-            Value::None => "None".to_owned(),
-            Value::Bool(true) => "True".to_owned(),
-            Value::Bool(false) => "False".to_owned(),
-            Value::Int(n) => n.to_string(),
-            Value::Sized(_, n) => n.to_string(),
-            Value::Float(x) => text::float(*x),
-            Value::F32(x) => text::float32(*x),
-            Value::Str(text) => text::quoted(text),
+        match value {
+            Value::Unit => {}
+            Value::None => out.push_str("None"),
+            Value::Bool(true) => out.push_str("True"),
+            Value::Bool(false) => out.push_str("False"),
+            Value::Int(n) => out.push_str(&n.to_string()),
+            Value::Sized(_, n) => out.push_str(&n.to_string()),
+            Value::Float(x) => out.push_str(&text::float(*x)),
+            Value::F32(x) => out.push_str(&text::float32(*x)),
+            Value::Str(text) => out.push_str(&text::quoted(text)),
             Value::Bytes(data) => {
                 let shown: Vec<String> = data.iter().map(u8::to_string).collect();
-                format!("bytes([{}])", shown.join(", "))
+                let _ = write!(out, "bytes([{}])", shown.join(", "));
             }
-            Value::List(items) => format!("[{}]", self.joined(items)?),
-            Value::Tuple(items) if items.len() == 1 => format!("({},)", self.joined(items)?),
-            Value::Tuple(items) => format!("({})", self.joined(items)?),
-            Value::Set(items) if items.is_empty() => "set()".to_owned(),
-            Value::Set(items) => format!("{{{}}}", self.joined(items)?),
+            Value::List(items) => self.joined_into(("[", items, "]"), out)?,
+            Value::Tuple(items) if items.len() == 1 => self.joined_into(("(", items, ",)"), out)?,
+            Value::Tuple(items) => self.joined_into(("(", items, ")"), out)?,
+            Value::Set(items) if items.is_empty() => out.push_str("set()"),
+            Value::Set(items) => self.joined_into(("{", items, "}"), out)?,
             Value::Dict(pairs) => {
-                let mut shown = Vec::with_capacity(pairs.len());
-                for (key, value) in pairs {
-                    shown.push(format!("{}: {}", self.repr(key)?, self.repr(value)?));
+                out.push('{');
+                for (at, (key, value)) in pairs.iter().enumerate() {
+                    if at > 0 {
+                        out.push_str(", ");
+                    }
+                    self.repr_into(key, out)?;
+                    out.push_str(": ");
+                    self.repr_into(value, out)?;
                 }
-                format!("{{{}}}", shown.join(", "))
+                out.push('}');
             }
-            Value::Instance(instance) => self.instance_repr(instance)?,
+            Value::Instance(instance) => self.instance_repr_into(instance, out)?,
             Value::Stream(stream) => match &stream.shown {
-                Some(shown) => format!("<{shown}>"),
+                Some(shown) => {
+                    let _ = write!(out, "<{shown}>");
+                }
                 None => return unsupported("printing a generator whose type isn't known"),
             },
             Value::Table(table) => {
                 let items: Vec<Value> = table.live().map(|(_, item)| item.clone()).collect();
-                format!("Table([{}])", self.joined(&items)?)
+                self.joined_into(("Table([", &items, "])"), out)?;
             }
-            Value::Id(id) => format!("Id({})", id.slot),
+            Value::Id(id) => {
+                let _ = write!(out, "Id({})", id.slot);
+            }
             Value::Func(_) => return unsupported("printing a function"),
             Value::Cap(_) => return unsupported("printing a capability"),
             Value::Shared(_) => return unsupported("printing a `shared` value"),
             Value::Channel(_) => return unsupported("printing a channel"),
             Value::Room(_) => return unsupported(ROOM_UNPROMISED),
             Value::Unknown(why) => return unsupported(why.clone()),
-        })
-    }
-
-    fn joined(&mut self, items: &[Value]) -> Run<String> {
-        let mut shown = Vec::with_capacity(items.len());
-        for item in items {
-            shown.push(self.repr(item)?);
         }
-        Ok(shown.join(", "))
+        Ok(())
     }
 
-    fn instance_repr(&mut self, instance: &Instance) -> Run<String> {
+    /// Writes items between an opening and a closing, each as it shows inside a collection,
+    /// with `, ` between them.
+    fn joined_into(&mut self, (open, items, close): (&str, &[Value], &str), out: &mut String) -> Run<()> {
+        out.push_str(open);
+        for (at, item) in items.iter().enumerate() {
+            if at > 0 {
+                out.push_str(", ");
+            }
+            self.repr_into(item, out)?;
+        }
+        out.push_str(close);
+        Ok(())
+    }
+
+    fn instance_repr_into(&mut self, instance: &Instance, out: &mut String) -> Run<()> {
         if let Some(def) = self.program.method(&instance.ty, "str") {
-            return self.own_str(def, instance);
+            let shown = self.own_str(def, instance)?;
+            out.push_str(&shown);
+            return Ok(());
         }
         // A generic type's value prints with no type arguments, as it's written, `Holder(item=3)`,
         // whatever `T` is: decided 2026-11-14, after the compiled program was found printing
@@ -89,18 +116,25 @@ impl Interp {
         if !self.program.types.contains_key(instance.ty.as_str()) && !printed_by_std {
             return unsupported(format!("printing a {}", instance.ty));
         }
-        let name = match &instance.case {
-            Some(case) => format!("{}.{case}", fennec_syntax::rename::shown_type_name(&instance.ty)),
-            None => fennec_syntax::rename::shown_type_name(&instance.ty).to_owned(),
-        };
+        out.push_str(fennec_syntax::rename::shown_type_name(&instance.ty));
+        if let Some(case) = &instance.case {
+            out.push('.');
+            out.push_str(case);
+        }
         if instance.fields.is_empty() && instance.case.is_some() {
-            return Ok(name);
+            return Ok(());
         }
-        let mut fields = Vec::with_capacity(instance.fields.len());
-        for (field, value) in &instance.fields {
-            fields.push(format!("{field}={}", self.repr(value)?));
+        out.push('(');
+        for (at, (field, value)) in instance.fields.iter().enumerate() {
+            if at > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(field);
+            out.push('=');
+            self.repr_into(value, out)?;
         }
-        Ok(format!("{name}({})", fields.join(", ")))
+        out.push(')');
+        Ok(())
     }
 
     /// A type's own `def str(self, ref out: StrWriter)`, called with a writer of its own.

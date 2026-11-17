@@ -3,30 +3,45 @@
 //! the same time however big it is, as the compiled program's copies do, where copying it part by
 //! part made building a deep value in a loop take time in proportion to its depth squared.
 //!
-//! What's cloned when a copy is changed is counted against the run's steps (`copied`), so a run
-//! that copies a lot is still stopped. Letting go of a value goes through its parts one at a time,
-//! never one call inside another, so a value nested 200,000 deep, as `fennec-fuzz` writes, is let
-//! go of in a little stack.
+//! The parts made, the parts cloned when a copy is changed, and the levels a walk through a value
+//! goes are counted against the run's steps (`spend`, `spent`), so a run that does a lot of any of
+//! them is still stopped, as copying part by part was. Letting go of a value goes through its
+//! parts one at a time, never one call inside another, so a value nested 200,000 deep, as
+//! `fennec-fuzz` writes, is let go of in a little stack.
 
 use std::cell::Cell;
 use std::sync::Arc;
 
-use super::{Instance, Value};
+use super::{Func, Instance, Value};
 
 thread_local! {
-    /// How many parts this thread has cloned since `copied` last took the count.
-    static COPIED: Cell<u64> = const { Cell::new(0) };
+    /// The work this thread has done since `spent` last took the count.
+    static SPENT: Cell<u64> = const { Cell::new(0) };
 }
 
-/// How many parts this thread has cloned to change a shared value since the last call, for the
-/// run's steps.
-pub(crate) fn copied() -> u64 {
-    COPIED.with(|copied| copied.replace(0))
+/// Counts `work` done on this thread, for the run's steps.
+pub(crate) fn spend(work: usize) {
+    let work = u64::try_from(work).unwrap_or(u64::MAX);
+    SPENT.with(|spent| spent.set(spent.get().saturating_add(work)));
+}
+
+/// The work this thread has done since the last call, for the run's steps.
+pub(crate) fn spent() -> u64 {
+    SPENT.with(|spent| spent.replace(0))
+}
+
+/// What making or cloning a value as a part costs: a step, and a step for each of a `Table`'s
+/// slots, which a copy of it clones.
+fn cost(value: &Value) -> usize {
+    match value {
+        Value::Table(table) => 1 + table.slots.len(),
+        _ => 1,
+    }
 }
 
 /// What a value's parts are, for letting go of them one at a time.
 pub(crate) trait Parts: Clone + Default {
-    /// How many values it holds, for what cloning it costs.
+    /// What making or cloning it costs, a step for each value it holds and more for a `Table`.
     fn count(&self) -> usize;
     /// Takes the values it holds out into `into`.
     fn take_into(&mut self, into: &mut Vec<Value>);
@@ -34,7 +49,7 @@ pub(crate) trait Parts: Clone + Default {
 
 impl Parts for Vec<Value> {
     fn count(&self) -> usize {
-        self.len()
+        self.iter().map(cost).sum()
     }
 
     fn take_into(&mut self, into: &mut Vec<Value>) {
@@ -44,7 +59,7 @@ impl Parts for Vec<Value> {
 
 impl Parts for Vec<(Value, Value)> {
     fn count(&self) -> usize {
-        self.len() * 2
+        self.iter().map(|(key, value)| cost(key) + cost(value)).sum()
     }
 
     fn take_into(&mut self, into: &mut Vec<Value>) {
@@ -55,9 +70,20 @@ impl Parts for Vec<(Value, Value)> {
     }
 }
 
+/// The names an arrow function reads, with the values it copied when it was made.
+impl Parts for Vec<(String, Value)> {
+    fn count(&self) -> usize {
+        self.iter().map(|(_, value)| cost(value)).sum()
+    }
+
+    fn take_into(&mut self, into: &mut Vec<Value>) {
+        into.extend(self.drain(..).map(|(_, value)| value));
+    }
+}
+
 impl Parts for Instance {
     fn count(&self) -> usize {
-        self.fields.len()
+        self.fields.iter().map(|(_, value)| cost(value)).sum()
     }
 
     fn take_into(&mut self, into: &mut Vec<Value>) {
@@ -69,7 +95,9 @@ impl Parts for Instance {
 pub(crate) struct Held<T: Parts>(Arc<T>);
 
 impl<T: Parts> Held<T> {
+    /// Holds parts just made, which are counted against the run's steps.
     pub(crate) fn new(parts: T) -> Held<T> {
+        spend(parts.count());
         Held(Arc::new(parts))
     }
 
@@ -77,8 +105,7 @@ impl<T: Parts> Held<T> {
     /// shares them, which is counted against the run's steps.
     pub(crate) fn own(&mut self) -> &mut T {
         if Arc::get_mut(&mut self.0).is_none() {
-            let count = u64::try_from(self.0.count()).unwrap_or(u64::MAX);
-            COPIED.with(|copied| copied.set(copied.get().saturating_add(count)));
+            spend(self.0.count());
         }
         Arc::make_mut(&mut self.0)
     }
@@ -192,13 +219,28 @@ fn empty_into(value: Value, into: &mut Vec<Value>) {
             }
         }
         Value::Table(mut table) => into.extend(table.slots.drain(..).filter_map(|slot| slot.item)),
+        Value::Func(func) => {
+            if let Func::Lambda { mut captured, .. } = *func
+                && let Some(parts) = Arc::get_mut(&mut captured.0)
+            {
+                parts.take_into(into);
+            }
+        }
+        // A `shared` value's cell, when this was the last copy of it.
+        Value::Shared(mut cell) => {
+            if let Some(cell) = Arc::get_mut(&mut cell)
+                && let Ok(held) = cell.held.get_mut()
+            {
+                into.push(std::mem::replace(held, Value::Unit));
+            }
+        }
         _ => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Held, copied};
+    use super::{Held, spent};
     use crate::value::{Instance, Value};
 
     /// A list a million deep, each level a struct holding a list, is let go of on a thread with
@@ -221,16 +263,17 @@ mod tests {
     /// changed, and taken out, where it is.
     #[test]
     fn a_change_to_a_shared_copy_clones_it_once_and_counts_that() {
-        let _ = copied();
         let first: Held<Vec<Value>> = Held::new(vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(spent(), 2);
         let mut second = first.clone();
+        assert_eq!(spent(), 0);
         second.push(Value::Int(3));
-        assert_eq!(copied(), 2);
+        assert_eq!(spent(), 2);
         second.push(Value::Int(4));
-        assert_eq!(copied(), 0);
+        assert_eq!(spent(), 0);
         assert_eq!((first.len(), second.len()), (2, 4));
         let taken = second.into_inner();
-        assert_eq!((taken.len(), copied()), (4, 0));
+        assert_eq!((taken.len(), spent()), (4, 0));
         let shared = Held::new(Instance { ty: "Bag".to_owned(), case: None, fields: Vec::new() });
         let held = shared.clone();
         let mut changed = held.clone();

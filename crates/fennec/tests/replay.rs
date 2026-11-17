@@ -128,6 +128,58 @@ fn a_replay_that_asks_for_other_inputs_than_its_recording_stops_naming_both() ->
     );
     assert_ne!(fewer.2, Some(0));
     assert!(fewer.1.contains("ended where its recording asked for `Env.get` next"), "{}", fewer.1);
+    // A crash in place of the last: the recording has it left over all the same, and the replay
+    // says so, as well as how it crashed. It said only the crash (#1917).
+    std::fs::write(
+        &program,
+        DICE.replace(
+            "stdout.print(list(args), env.get(\"HOME\") != None)",
+            "stdout.print(list(args), 1 // (len(list(args)) - len(list(args))))",
+        ),
+    )?;
+    let crashed = outcome(
+        &fennec_command().args(["replay", &log.to_string_lossy()]).current_dir(&dir).output_within()?,
+    );
+    assert_ne!(crashed.2, Some(0));
+    assert!(crashed.1.contains("ended where its recording asked for `Env.get` next"), "{}", crashed.1);
+    assert!(crashed.1.contains("the replay crashed first: division by zero"), "{}", crashed.1);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A run recorded with `FENNEC_PARALLEL_STRESS` replays as it ran without it, and one recorded
+/// without it replays as it ran with it: a replay has the setting its recording had. It cuts a
+/// call's ranges to one item each, and ranges are named by where they start, so a replay with it
+/// changed ran other ranges, and printed a line or two of the run's hundred, with nothing said but
+/// the program's crash (#1917).
+#[test]
+fn a_replay_has_the_parallel_stress_its_recording_had() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stress")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, include_str!("fixtures/pieces_print_then_one_crashes.fen"))?;
+    let log = dir.join("recorded.log");
+    for (recorded_stressed, replayed_stressed) in [(true, false), (false, true)] {
+        let _ = std::fs::remove_file(&log);
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", "4").env_remove("FENNEC_PARALLEL_STRESS");
+        if recorded_stressed {
+            record.env("FENNEC_PARALLEL_STRESS", "1");
+        }
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = without_build_hints(outcome(&record.output_before(DEADLINE)?));
+        assert_eq!(recorded.2, Some(1), "{}", recorded.1);
+        let mut replay = fennec_command();
+        replay.env("FENNEC_THREADS", "4").env_remove("FENNEC_PARALLEL_STRESS");
+        if replayed_stressed {
+            replay.env("FENNEC_PARALLEL_STRESS", "1");
+        }
+        replay.args(["replay", &log.to_string_lossy()]).current_dir(&dir);
+        let replayed = without_build_hints(outcome(&replay.output_before(DEADLINE)?));
+        assert_eq!(replayed, recorded, "recorded stressed {recorded_stressed}");
+    }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -820,43 +872,123 @@ fn a_round_stopped_in_any_wait_replays_as_it_ran() -> std::io::Result<()> {
     Ok(())
 }
 
-/// A block stopped at its end, and a round cancelled at its end, replay as they ran. A replay once
-/// marked the task of any block recorded as stopped at its end stopped before it waited: a task
-/// serving there then stopped its server with a round still to send, and a task a cancelled round
-/// left behind began none of its `parallel` call's pieces. Only a cancelled round's task is now
-/// let end quietly past its recording, which is all that needed it. From Fable 5.2's review.
+/// A block stopped at its end replays as it ran: a task waiting there for a task that serves. A
+/// replay once marked the task of any block recorded as stopped at its end stopped before it waited:
+/// a task serving there then stopped its server with a round still to send. From Fable 5.2's
+/// review.
 #[test]
-fn a_block_stopped_or_cancelled_at_its_end_replays_as_it_ran() -> std::io::Result<()> {
+fn a_block_stopped_at_its_end_replays_as_it_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "block-ends",
+        "stopped waiting for a task that serves",
+        include_str!("fixtures/stopped_rounds/outerchat.fen"),
+    )
+}
+
+/// A round cancelled at its block's end replays as it ran: the task it leaves behind is let end
+/// quietly past its recording. A replay once marked it stopped before its round waited, and it
+/// began none of its `parallel` call's pieces. From Fable 5.2's review. A recording that kept its
+/// sleep, which the program's end cut short, but not that the sleep was cut short, replayed the
+/// task past it, printing what the run never did, about once in 35 runs.
+#[test]
+fn a_round_cancelled_at_its_end_replays_as_it_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "cancelled-ends",
+        "a cancelled round's task left behind",
+        include_str!("fixtures/stopped_rounds/leftparallel.fen"),
+    )
+}
+
+/// A server's round stopped in one of its pieces of blocking work, a password's check, with no
+/// capability's call between them, replays stopped at the same piece: its recording says which, by
+/// number. Matched as the next entry, the mark stopped a replay at its first, and the replay failed
+/// waiting for the writes to a tally the run had made. From Fable 5.2's review of #1993.
+#[test]
+fn a_round_stopped_in_one_of_its_pieces_of_work_replays_as_it_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "work-round",
+        "a round checking passwords",
+        include_str!("fixtures/stopped_rounds/stopverify.fen"),
+    )
+}
+
+/// The same for a launched task stopped at its block's end.
+#[test]
+fn a_task_stopped_in_one_of_its_pieces_of_work_replays_as_it_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "work-task",
+        "a task checking passwords",
+        include_str!("fixtures/stopped_rounds/taskverify.fen"),
+    )
+}
+
+/// `source`, recorded at 1 and 4 threads, replays as it ran twice at 1, 4 and 16, with nothing said
+/// on its standard error.
+fn replays_as_it_ran(folder_name: &str, name: &str, source: &str) -> std::io::Result<()> {
     if !ready() || !threads_runtime_built() {
         return Ok(());
     }
-    let dir = folder("block-ends")?;
-    for (name, source) in [
-        ("stopped waiting for a task that serves", include_str!("fixtures/stopped_rounds/outerchat.fen")),
-        ("a cancelled round's task left behind", include_str!("fixtures/stopped_rounds/leftparallel.fen")),
-    ] {
-        let program = dir.join("program.fen");
-        std::fs::write(&program, source)?;
-        for recorded_threads in ["1", "4"] {
-            let log = dir.join(format!("recorded-{recorded_threads}.log"));
-            let mut record = fennec_command();
-            record.env("FENNEC_THREADS", recorded_threads);
-            record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
-            let recorded = outcome(&record.output_before(DEADLINE)?);
-            assert_eq!(recorded.2, Some(0), "{name} recorded at {recorded_threads}: {}", recorded.1);
-            for round in 0..2 {
-                for threads in ["1", "4", "16"] {
-                    let replayed = outcome(
-                        &fennec_command()
-                            .env("FENNEC_THREADS", threads)
-                            .args(["replay", &log.to_string_lossy()])
-                            .current_dir(&dir)
-                            .output_before(DEADLINE)?,
-                    );
-                    let at = format!("{name} recorded at {recorded_threads}, replay {round} at {threads}");
-                    assert_eq!((&replayed.0, replayed.2), (&recorded.0, recorded.2), "{at}: {}", replayed.1);
-                    assert!(!replayed.1.contains("error"), "{at}: {}", replayed.1);
-                }
+    let dir = folder(folder_name)?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, source)?;
+    for recorded_threads in ["1", "4"] {
+        let log = dir.join(format!("recorded-{recorded_threads}.log"));
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", recorded_threads);
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = outcome(&record.output_before(DEADLINE)?);
+        assert_eq!(recorded.2, Some(0), "{name} recorded at {recorded_threads}: {}", recorded.1);
+        for round in 0..2 {
+            for threads in ["1", "4", "16"] {
+                let replayed = outcome(
+                    &fennec_command()
+                        .env("FENNEC_THREADS", threads)
+                        .args(["replay", &log.to_string_lossy()])
+                        .current_dir(&dir)
+                        .output_before(DEADLINE)?,
+                );
+                let at = format!("{name} recorded at {recorded_threads}, replay {round} at {threads}");
+                assert_eq!((&replayed.0, replayed.2), (&recorded.0, recorded.2), "{at}: {}", replayed.1);
+                assert!(!replayed.1.contains("error"), "{at}: {}", replayed.1);
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A server's round asleep in a piece of a `parallel` call when its serving task is stopped replays
+/// as quietly as it ran. A replay marked the piece stopped, under the piece's own name, while the
+/// round's end looks at the round's, so it said `error: this task was stopped` (#1949). From
+/// Fable 5.2's review.
+#[test]
+fn a_round_stopped_in_a_parallel_piece_replays_quietly() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stopped-in-a-piece")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, include_str!("fixtures/stopped_rounds/stopparallel.fen"))?;
+    for recorded_threads in ["1", "4"] {
+        let log = dir.join(format!("recorded-{recorded_threads}.log"));
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", recorded_threads);
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = outcome(&record.output_before(DEADLINE)?);
+        assert_eq!(recorded.2, Some(0), "recorded at {recorded_threads}: {}", recorded.1);
+        assert!(!recorded.1.contains("error"), "recorded at {recorded_threads}: {}", recorded.1);
+        for round in 0..3 {
+            for threads in ["1", "4", "16"] {
+                let replayed = outcome(
+                    &fennec_command()
+                        .env("FENNEC_THREADS", threads)
+                        .args(["replay", &log.to_string_lossy()])
+                        .current_dir(&dir)
+                        .output_before(DEADLINE)?,
+                );
+                let at = format!("recorded at {recorded_threads}, replay {round} at {threads}");
+                assert_eq!((&replayed.0, replayed.2), (&recorded.0, recorded.2), "{at}: {}", replayed.1);
+                assert!(!replayed.1.contains("error"), "{at}: {}", replayed.1);
             }
         }
     }

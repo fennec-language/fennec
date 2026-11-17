@@ -73,6 +73,13 @@ pub fn trusted(path: &Path) -> bool {
 }
 
 /// Why a path isn't trusted, said as "… can be written by anyone".
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only Unix has owners to judge by, so elsewhere every path is trusted"
+    )
+)]
 fn judge(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {

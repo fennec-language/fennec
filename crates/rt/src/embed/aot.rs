@@ -324,11 +324,20 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
     entry(i64::try_from(limit).unwrap_or(0));
     let (output, failure, leftovers) = super::finish_for_exit();
     crate::replay::ended();
-    // A replay that ended with its recording not all read isn't the run that was recorded.
-    let failure = failure.or_else(|| {
-        crate::replay::unfinished()
-            .map(|why| fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default()))
-    });
+    // A replay that ended with its recording not all read isn't the run that was recorded, and
+    // says so, whether it ended well or crashed: a crash said only itself (#1917).
+    let failure = match (failure, crate::replay::unfinished()) {
+        (failure, None) => failure,
+        (None, Some(why)) => Some(fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default())),
+        (Some(crash), Some(why)) => {
+            // The crash's call chain isn't this one's.
+            let _ = super::take_trace();
+            Some(
+                fennec_syntax::Diagnostic::new(why, fennec_syntax::Span::default())
+                    .with_help(format!("the replay crashed first: {}", crash.message)),
+            )
+        }
+    };
     report_counts(&leftovers.counts, leftovers.boxes);
     (output, failure.map(|failure| rendered(&sources, &failure)).unwrap_or_default())
 }
@@ -445,6 +454,14 @@ pub(super) fn counts_line(counts: &heap::Counts, parallel_calls: u64, blocked_wa
 /// Ends the program at once with `code`.
 pub(crate) fn stop_now(code: i32) -> ! {
     crate::replay::ended();
+    end_at_once(code)
+}
+
+/// Ends the process at once with `code`, the way the runtime library ends an executable's (its
+/// `stop`, which on Windows ends it with `TerminateProcess`), without saying a recording ended:
+/// for a second Ctrl-C, which cuts the run short. Outside an executable, where nothing gave a way
+/// to end, it aborts.
+pub(crate) fn end_at_once(code: i32) -> ! {
     if let Some(stop) = STOP.get() {
         stop(code);
     }

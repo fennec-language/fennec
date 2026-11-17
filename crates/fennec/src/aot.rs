@@ -414,6 +414,10 @@ fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::t
 }
 
 /// Lets a program written to `path` run.
+#[cfg_attr(
+    not(unix),
+    expect(clippy::unnecessary_wraps, reason = "only Unix has a mode to set, which can fail")
+)]
 fn executable_mode(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -498,7 +502,7 @@ fn root_hash(
 
 /// What compiling a program with LLVM gives.
 struct Compiled {
-    objects: Vec<Vec<u8>>,
+    objects: Vec<fennec_llvm::Object>,
     /// How many functions there are.
     total: usize,
     /// How many of them weren't already in the cache.
@@ -785,11 +789,14 @@ fn compile_emitted(
     })
 }
 
-/// Links object files with the runtime library, giving back how long linking took. When the
-/// runtime's Rust is in the objects already, only its C parts are linked, so nothing of it is
-/// there twice.
+/// Links object files with the runtime library, giving back how long linking took: all of it,
+/// writing out the objects that aren't files already and clearing them away after, not only the
+/// linker. Every object written and deleted again for each build was once most of a build after
+/// a one-line edit on a Mac, and showed nowhere. A dev build's functions are the cache's own
+/// files, read where they lie. When the runtime's Rust is in the objects already, only its C parts
+/// are linked, so nothing of it is there twice.
 fn link_objects(
-    objects: &[Vec<u8>],
+    objects: &[fennec_llvm::Object],
     output: &Path,
     runtime: Runtime,
     runtime_in: bool,
@@ -797,19 +804,25 @@ fn link_objects(
     (statically, release): (bool, bool),
 ) -> Result<std::time::Duration, String> {
     let runtime = runtime_library(runtime, statically)?;
+    let started = Instant::now();
     let work = crate::own_temp("link");
     std::fs::create_dir_all(&work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let mut paths = Vec::with_capacity(objects.len());
     for (at, object) in objects.iter().enumerate() {
-        let path = work.join(format!("{at}.o"));
-        std::fs::write(&path, object).map_err(|err| format!("couldn't write an object file: {err}"))?;
-        paths.push(path);
+        match object {
+            fennec_llvm::Object::Kept(path) => paths.push(path.clone()),
+            fennec_llvm::Object::Bytes(bytes) => {
+                let path = work.join(format!("{at}.o"));
+                std::fs::write(&path, bytes)
+                    .map_err(|err| format!("couldn't write an object file: {err}"))?;
+                paths.push(path);
+            }
+        }
     }
     // A program linked on its own holds the notices musl's license asks to go with it.
     if statically {
         paths.push(crate::notices::object(&work)?);
     }
-    let started = Instant::now();
     let runtime = if runtime_in { c_parts(&runtime, &work)? } else { runtime };
     // Linked under one name always, then moved where it goes: macOS's linker makes a program's
     // UUID, and the signature over it, from the name it's written to, so the same program built
@@ -839,7 +852,6 @@ fn link_objects(
         command.args(args).args(["-framework", "Security", "-framework", "CoreFoundation"]);
     }
     let linked = command.output();
-    let took = started.elapsed();
     if let Some(kept) = kept {
         keep_objects(&paths, &kept)?;
     }
@@ -849,6 +861,7 @@ fn link_objects(
         Ok(())
     };
     let _ = std::fs::remove_dir_all(&work);
+    let took = started.elapsed();
     moved.map_err(|err| format!("couldn't put the program at {}: {err}", output.display()))?;
     let linked = linked.map_err(|err| {
         if cfg!(target_os = "macos") && err.kind() == std::io::ErrorKind::NotFound {
@@ -905,11 +918,10 @@ fn link_failure(linked: &std::process::Output) -> String {
 /// Copies the objects a link used into `folder`, by their place in the link, as `0.o` and on.
 fn keep_objects(paths: &[PathBuf], folder: &Path) -> Result<(), String> {
     std::fs::create_dir_all(folder).map_err(|err| format!("couldn't make {}: {err}", folder.display()))?;
-    for path in paths {
-        if let Some(name) = path.file_name() {
-            std::fs::copy(path, folder.join(name))
-                .map_err(|err| format!("couldn't keep {}: {err}", path.display()))?;
-        }
+    // Named by where each is in the link, as the cache's files aren't.
+    for (at, path) in paths.iter().enumerate() {
+        std::fs::copy(path, folder.join(format!("{at}.o")))
+            .map_err(|err| format!("couldn't keep {}: {err}", path.display()))?;
     }
     Ok(())
 }
@@ -942,7 +954,7 @@ const LINKS_FOR: &[&str] = &[];
 fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, tls: bool) -> Command {
     let mut command = Command::new("cc");
     command.args(LINKS_FOR);
-    name_objects(&mut command, objects);
+    name_objects(&mut command, objects, output);
     command
         .arg(runtime)
         .args(SYSTEM_LIBRARIES)
@@ -996,7 +1008,7 @@ fn static_linker(objects: &[PathBuf], runtime: &Path, output: &Path, release: bo
         (command, "-Wl,")
     };
     command.arg(musl.join("crt1.o")).arg(musl.join("crti.o")).arg(musl.join("crtbegin.o"));
-    name_objects(&mut command, objects);
+    name_objects(&mut command, objects, output);
     command
         .arg(format!("{pass}--start-group"))
         .arg(runtime)
@@ -1044,7 +1056,7 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, _tls: bool) -> Com
         .arg("-L")
         .arg(&libraries)
         .arg(libraries.join("crt2.o"));
-    name_objects(&mut command, objects);
+    name_objects(&mut command, objects, output);
     command.arg(runtime).args(WINDOWS_LIBRARIES).arg("-o").arg(output);
     command
 }
@@ -1055,20 +1067,22 @@ fn linker(objects: &[PathBuf], runtime: &Path, output: &Path, _tls: bool) -> Com
 /// reach 14,000 functions. `cc` reads the file on macOS and Linux, and hands its linker one of its
 /// own when the line it runs it with would be too long. LLD reads it everywhere. Where the file
 /// can't be written, they go on the command line as before.
-fn name_objects(command: &mut Command, objects: &[PathBuf]) {
-    match response_file(objects) {
+fn name_objects(command: &mut Command, objects: &[PathBuf], output: &Path) {
+    match output.parent().and_then(|folder| response_file(objects, folder)) {
         Some(file) => command.arg(format!("@{}", file.display())),
         None => command.args(objects),
     };
 }
 
-/// A file naming each object on a line of its own, quoted, beside the first of them: `None` when
-/// there are none, or it couldn't be written. LLD and `cc` read a backslash in one as an escape:
+/// A file naming each object on a line of its own, quoted, in `folder`, where the link writes its
+/// program: `None` when there are none, or it couldn't be written. The objects may be the cache's
+/// own files, so it's never written beside them. LLD and `cc` read a backslash in one as an escape:
 /// on Windows each becomes `/`, which it takes in a path as well, and elsewhere, where one can
 /// be part of a name, it's escaped, as a quote is.
-fn response_file(objects: &[PathBuf]) -> Option<PathBuf> {
+fn response_file(objects: &[PathBuf], folder: &Path) -> Option<PathBuf> {
     use std::fmt::Write as _;
-    let file = objects.first()?.parent()?.join("objects.rsp");
+    objects.first()?;
+    let file = folder.join("objects.rsp");
     let mut named = String::new();
     for object in objects {
         let path = object.display().to_string();
@@ -1288,15 +1302,17 @@ mod tests {
     }
 
     /// The objects a linker is given go in a file, each quoted on a line of its own, so a
-    /// program in many parts doesn't make a command line longer than the system takes.
+    /// program in many parts doesn't make a command line longer than the system takes. The file
+    /// is in the link's own folder, never beside the objects, which may be the cache's.
     #[test]
     fn the_objects_to_link_go_in_a_file_each_on_a_line() {
         let work = fennec_temp::Temp::at(
             std::env::temp_dir().join(format!("fennec-response-file-{}", std::process::id())),
         );
         std::fs::create_dir_all(&work).unwrap();
-        let objects: Vec<_> = (0..2_000).map(|at| work.join(format!("{at}.o"))).collect();
-        let file = super::response_file(&objects).unwrap();
+        let elsewhere = work.join("cache");
+        let objects: Vec<_> = (0..2_000).map(|at| elsewhere.join(format!("{at}.o"))).collect();
+        let file = super::response_file(&objects, &work).unwrap();
         assert_eq!(file, work.join("objects.rsp"));
         let named = std::fs::read_to_string(&file).unwrap();
         assert_eq!(named.lines().count(), 2_000);
@@ -1307,7 +1323,7 @@ mod tests {
             assert!(!named.contains('\\'), "a backslash would be read as an escape");
         }
         assert!(named.len() > 32_767, "a file this size wouldn't fit on a command line");
-        assert_eq!(super::response_file(&[]), None);
+        assert_eq!(super::response_file(&[], &work), None);
         std::fs::remove_dir_all(&work).unwrap();
     }
 }

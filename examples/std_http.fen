@@ -112,6 +112,22 @@ test "headers past the limit are refused"(net: Net):
         == ("431 Request Header Fields Too Large: the headers are too big")
     )
 
+test "a request line longer than a whole head may be is refused as a target too long"(net: Net):
+    target = "a" * 16400
+    assert (
+        refused(net, f"GET /{target} HTTP/1.1\r\n\r\n")?
+        == ("414 URI Too Long: the request line is too long")
+    )
+    # Past what the runtime reads into a line, whatever ends it.
+    assert (
+        refused(net, "G" * 1048600 + "\n")? == ("414 URI Too Long: the request line is too long")
+    )
+    # A header line that long is still a header too big.
+    assert (
+        refused(net, "GET / HTTP/1.1\r\nX: " + "y" * 1048600 + "\r\n\r\n")?
+        == ("431 Request Header Fields Too Large: a line of the request is too long")
+    )
+
 test "a response header that would start another is answered as a 500"(net: Net):
     said = answered(net, "GET / HTTP/1.1\r\nConnection: close\r\n\r\n", respond=smuggling)?
     assert said.startswith("HTTP/1.1 500 Internal Server Error")

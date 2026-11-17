@@ -161,14 +161,27 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
         threads::take_back(lent);
         threads::settle(finished.owners);
     }
-    let ended = passed_up(&passed);
-    if !threads::stopped() {
+    ended_serving(&passed)
+}
+
+/// What a call serving gives back once its server has ended: what `passed_up` says, unless the
+/// task was stopped, or the round cancelled, while it served. Then it stopped its server with it,
+/// and fails as any wait cut short does, which a recording notes.
+fn ended_serving(passed: &Passed) -> i64 {
+    let ended = passed_up(passed);
+    let cancelled = fennec_parked::is_cancelled();
+    if !threads::stopped() && !cancelled {
         return ended;
     }
-    // A task stopped while it served stopped its server with it, and now fails as any wait cut
-    // short does, which a recording notes.
     let_go_of_passed_up();
-    let cut = super::cut_short();
+    let cut = if cancelled {
+        if !super::super::failed() {
+            super::fail_as_stopped();
+        }
+        true
+    } else {
+        super::cut_short()
+    };
     if cut {
         crate::replay::stopped_in(crate::replay::StoppedIn::Serving);
     }

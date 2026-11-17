@@ -431,6 +431,7 @@ impl Encode for Pattern {
             Pattern::Tuple(items) => (4, items).encode_tagged(to),
             Pattern::Or(alternatives) => (5, alternatives).encode_tagged(to),
             Pattern::RefBind(name) => (6, name).encode_tagged(to),
+            Pattern::MutBind(name) => (7, name).encode_tagged(to),
         }
     }
 }
@@ -450,6 +451,7 @@ impl Decode for Pattern {
             4 => Pattern::Tuple(Decode::decode(from)?),
             5 => Pattern::Or(Decode::decode(from)?),
             6 => Pattern::RefBind(Decode::decode(from)?),
+            7 => Pattern::MutBind(Decode::decode(from)?),
             _ => return None,
         })
     }

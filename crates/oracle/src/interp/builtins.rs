@@ -10,7 +10,7 @@ use super::expr::{set_insert, sized};
 use super::stream::Source;
 use super::{Flow, Interp, MOST_ITEMS, Run, as_int, crash, unsupported};
 use crate::text;
-use crate::value::{Cap, Value};
+use crate::value::{Cap, Held, Text, Value};
 
 /// The arguments of a builtin call, by position and by name.
 struct Given {
@@ -89,7 +89,7 @@ impl Interp {
             },
             "str" => {
                 let value = self.one(&mut given, name)?;
-                self.display(&value).map(Value::Str)
+                self.display(&value).map(|shown| Value::Str(shown.into()))
             }
             "int" | "i64" => match self.one(&mut given, name)? {
                 Value::Int(n) => Ok(Value::Int(n)),
@@ -156,7 +156,7 @@ impl Interp {
                     items
                         .into_iter()
                         .enumerate()
-                        .map(|(at, item)| Value::Tuple(vec![Value::Int(as_int(at)), item]))
+                        .map(|(at, item)| Value::Tuple(Held::new(vec![Value::Int(as_int(at)), item])))
                         .collect(),
                 ))
             }
@@ -170,7 +170,9 @@ impl Interp {
                 }
                 let left = self.collect(left, span)?;
                 let right = self.collect(right, span)?;
-                Ok(Value::List(left.into_iter().zip(right).map(|(a, b)| Value::Tuple(vec![a, b])).collect()))
+                Ok(Value::List(
+                    left.into_iter().zip(right).map(|(a, b)| Value::Tuple(Held::new(vec![a, b]))).collect(),
+                ))
             }
             "sorted" => {
                 let over = Self::first(&mut given, name)?;
@@ -182,7 +184,7 @@ impl Interp {
                         Some(_) => return unsupported("`sorted` with a `reverse` that isn't a bool"),
                     };
                 let items = self.collect(over, span)?;
-                self.sorted(items, key.as_ref(), reverse, expr).map(Value::List)
+                self.sorted(items, key.as_ref(), reverse, expr).map(|items| Value::List(Held::new(items)))
             }
             // A tuple's items come back as a list, as the checker types `reversed` of one.
             "reversed" => match self.one(&mut given, name)? {
@@ -211,18 +213,18 @@ impl Interp {
             }
             "list" => {
                 let over = Self::first(&mut given, name)?;
-                self.collect(over, span).map(Value::List)
+                self.collect(over, span).map(|items| Value::List(Held::new(items)))
             }
             "set" => {
                 if given.positional.is_empty() {
-                    return Ok(Value::Set(Vec::new()));
+                    return Ok(Value::Set(Held::new(Vec::new())));
                 }
                 let over = Self::first(&mut given, name)?;
                 let mut set = Vec::new();
                 for item in self.collect(over, span)? {
                     set_insert(&mut set, item)?;
                 }
-                Ok(Value::Set(set))
+                Ok(Value::Set(Held::new(set)))
             }
             "copy" => {
                 let Value::Instance(mut instance) = self.one_keeping_named(&mut given, name)? else {
@@ -235,7 +237,7 @@ impl Interp {
                         None => return unsupported(format!("`copy` with the field `{field}`")),
                     }
                 }
-                self.ruled(*instance, span)
+                self.ruled(instance.into_inner(), span)
             }
             "round" => {
                 let value = Self::first(&mut given, name)?;
@@ -319,7 +321,7 @@ impl Interp {
     /// How many items something holds, as `len` says.
     pub(crate) fn length(&mut self, value: Value, span: Span) -> Run<i64> {
         Ok(as_int(match value {
-            Value::Str(text) => text.chars().count(),
+            Value::Str(text) => text.char_count(),
             Value::Bytes(data) => data.len(),
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.len(),
             Value::Dict(pairs) => pairs.len(),
@@ -573,7 +575,7 @@ fn range(first: i64, end: i64, by: i64, span: Span) -> Run<Value> {
         items.push(Value::Int(i64::try_from(at).unwrap_or(0)));
         at += i128::from(by);
     }
-    Ok(Value::List(items))
+    Ok(Value::List(Held::new(items)))
 }
 
 /// A sized number made from another, which has to fit: one that doesn't is a bug.
@@ -638,7 +640,8 @@ pub(crate) fn not_a_number(input: &str, what: &str, span: Span) -> Flow {
 
 /// A failure with an `InvalidValue` saying `message`.
 pub(crate) fn invalid(message: String, span: Span) -> Flow {
-    let error = Value::instance("InvalidValue", None, vec![("message".to_owned(), Value::Str(message))]);
+    let error =
+        Value::instance("InvalidValue", None, vec![("message".to_owned(), Value::Str(Text::from(message)))]);
     Flow::Fail(error, span)
 }
 

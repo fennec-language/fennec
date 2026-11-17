@@ -1,0 +1,22 @@
+a value long enough to be held in a block of its own, 0
+a value long enough to be held in a block of its own, 1
+a value long enough to be held in a block of its own, 2
+0 177
+a value long enough to be held in a block of its own, 0 a value long enough to be held in a block of its own, 10
+a value long enough to be held in a block of its own, 10 a value long enough to be held in a block of its own, 10!
+a value long enough to be held in a block of its own, 1 a value long enough to be held in a block of its own, 11
+a value long enough to be held in a block of its own, 11 a value long enough to be held in a block of its own, 11!
+a value long enough to be held in a block of its own, 2 a value long enough to be held in a block of its own, 12
+a value long enough to be held in a block of its own, 12 a value long enough to be held in a block of its own, 12!
+done 3
+v0
+v1
+v2
+0 9
+v0 v10
+v10 v10!
+v1 v11
+v11 v11!
+v2 v12
+v12 v12!
+done 3

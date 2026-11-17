@@ -48,7 +48,7 @@ use super::calls::ArgVal;
 use super::parallel::{ChannelUse, Handed, RoundsRan, Scope, Work};
 use super::tasks::Launched;
 use super::{Flow, Interp, Run, unsupported};
-use crate::value::{Channel, Value, same};
+use crate::value::{Channel, Text, Value, same};
 
 /// What a run where every task waits on another says.
 const HANGS: &str = "every task waits on another, so the program hangs";
@@ -82,6 +82,24 @@ impl Orders {
         let chosen = self.script.get(self.made.len()).copied().filter(|chosen| *chosen < count).unwrap_or(0);
         self.made.push((chosen, count));
         chosen
+    }
+
+    /// A send to a task's inbox, which the task could end before: one way, the send now, until a
+    /// run finds the task ended with the message left (`may_race`). The script then takes the
+    /// other, the task going on until it waits or ends before the send. Gives back where the
+    /// choice is, and whether it's the other way.
+    fn race_point(&mut self) -> (usize, bool) {
+        let at = self.made.len();
+        let task_first = self.script.get(at).copied() == Some(1);
+        self.made.push((usize::from(task_first), if task_first { 2 } else { 1 }));
+        (at, task_first)
+    }
+
+    /// Gives the send at `at` its other way, which a later run tries.
+    fn may_race(&mut self, at: usize) {
+        if let Some(choice) = self.made.get_mut(at) {
+            choice.1 = choice.1.max(2);
+        }
     }
 }
 
@@ -128,8 +146,8 @@ struct Actor {
     clock: Clock,
     /// Which one launched it, for a task.
     launcher: Option<usize>,
-    /// The tasks it launched that crashed while it's still in their blocks, which cuts short every
-    /// wait it's in there, as `docs/language.md` says, until their blocks end.
+    /// The tasks it launched that failed or crashed while it's still in their blocks, which cuts
+    /// short every wait it's in there, as `docs/language.md` says, until their blocks end.
     cut_short: Vec<usize>,
     /// For a thread running a `parallel` call's rounds handed on to it, the one that handed them
     /// on: they're in every block it's in.
@@ -180,11 +198,13 @@ fn happened_before(earlier: &Clock, later: &Clock) -> bool {
     earlier.iter().enumerate().all(|(at, steps)| *steps <= later.get(at).copied().unwrap_or(0))
 }
 
-/// A message sent: who sent it, what, and the sender's clock as it sent it.
+/// A message sent: who sent it, what, and the sender's clock as it sent it, and for one sent to a
+/// task's inbox, where its send's choice is (`Orders::race_point`).
 struct Sent {
     sender: usize,
     value: Value,
     clock: Clock,
+    race: Option<usize>,
 }
 
 enum Doing {
@@ -202,6 +222,9 @@ enum Wait {
     Room(i64),
     /// For this task to end.
     Task(usize),
+    /// For this task to wait or end: a send to its inbox taking the way where the task goes on
+    /// first.
+    Settled(usize),
 }
 
 /// A channel.
@@ -221,6 +244,8 @@ struct Chan {
     waiting_sends: Vec<Sent>,
     /// Whether it's a task's inbox the task has left by ending.
     left: bool,
+    /// The task whose inbox it is.
+    task: Option<usize>,
 }
 
 /// A listener to a channel to every listener: the channel, and how many of its messages it's read.
@@ -239,7 +264,10 @@ impl State {
             Doing::Waiting(Wait::Task(task), _) => {
                 self.actors.get(task).is_none_or(|task| matches!(task.state, Doing::Ended))
             }
-            // A wait in the block of a task that crashed is cut short.
+            Doing::Waiting(Wait::Settled(task), _) => {
+                self.actors.get(task).is_none_or(|task| !matches!(task.state, Doing::Ready))
+            }
+            // A wait in the block of a task that failed or crashed is cut short.
             Doing::Waiting(Wait::Room(_) | Wait::Message(_), _) if !found.cut_short.is_empty() => true,
             Doing::Waiting(Wait::Room(number), _) => {
                 self.channels.get(&number).is_none_or(|chan| chan.closed || chan.queue.len() < chan.size)
@@ -394,9 +422,10 @@ impl Interp {
                 done: Arc::clone(&done),
             };
             let shared = Arc::clone(&self.shared);
-            let thread = std::thread::Builder::new()
-                .stack_size(TASK_STACK)
-                .spawn(move || rest_thread(&shared, slot, rest));
+            let thread = std::thread::Builder::new().stack_size(TASK_STACK).spawn(move || {
+                super::walks_within(TASK_STACK);
+                rest_thread(&shared, slot, rest);
+            });
             if thread.is_err() {
                 self.give_up();
                 return unsupported("a thread for a `parallel` call's rounds couldn't start");
@@ -441,7 +470,7 @@ impl Interp {
                     }
                 }
                 Value::Instance(instance) => {
-                    waiting.extend(instance.fields.into_iter().map(|(_, field)| field));
+                    waiting.extend(instance.into_inner().fields.into_iter().map(|(_, field)| field));
                 }
                 Value::Table(table) => waiting.extend(table.live().map(|(_, item)| item.clone())),
                 Value::Shared(cell) => {
@@ -600,6 +629,11 @@ impl Interp {
         let end = |sends: bool, number: i64| Value::Channel(Channel { sends, number });
         let given: Vec<Value> = channel.map(|number| end(false, number)).into_iter().collect();
         let (number, launched) = self.start_task(task, given, channel)?;
+        if let Some(channel) = channel
+            && let Some(chan) = self.sched_state()?.channels.get_mut(&channel)
+        {
+            chan.task = Some(number);
+        }
         self.push_scope(Scope::Launch(launched))?;
         let mark = self.mark();
         let lent = channel.map_or(Value::Int(0), |number| end(true, number));
@@ -609,6 +643,9 @@ impl Interp {
         let pending = match ran {
             Ok(()) => None,
             Err(flow @ (Flow::Return(_) | Flow::Break | Flow::Continue)) => Some(flow),
+            // A send to the inbox of a task that's failed or crashed fails with `Closed`, and the
+            // block ends with the task's failure in its place (#1724).
+            Err(flow @ Flow::Fail(..)) if is_closed(&flow) && self.task_stopped(number)? => Some(flow),
             Err(Flow::Fail(..) | Flow::Crash(..)) => {
                 self.give_up();
                 return unsupported("a `with launch` block that fails, which cuts its task short at once");
@@ -632,18 +669,35 @@ impl Interp {
             }
         }
         if let Some(channel) = channel {
-            let mut state = self.sched_state()?;
             // A task that ends with messages left closes its inbox, and whether the block's sends
-            // after that failed with `Closed`, and so how the `with` ends, hangs on time.
-            if state.channels.remove(&channel).is_some_and(|chan| !chan.queue.is_empty()) {
-                return unsupported("a launched task that ends with messages left in its inbox");
+            // of them came after that and failed with `Closed` hangs on time. One the task knew of
+            // as it ended was sent before in every order. For each other, a later run tries the
+            // task going on first, and the runs have to end the same.
+            let mut state = self.sched_state()?;
+            let unread = state.channels.remove(&channel).map(|chan| chan.queue).unwrap_or_default();
+            let ended_at = state.actors.get(number).map(|task| task.clock.clone()).unwrap_or_default();
+            drop(state);
+            let mut races = Vec::new();
+            for sent in unread.iter().filter(|sent| !happened_before(&sent.clock, &ended_at)) {
+                match sent.race {
+                    Some(at) => races.push(at),
+                    None => return unsupported("a launched task that ends with messages left in its inbox"),
+                }
+            }
+            if !races.is_empty() {
+                let Ok(mut orders) = self.shared.sched.orders.lock() else {
+                    return unsupported("the orders of messages were lost");
+                };
+                for at in races {
+                    orders.may_race(at);
+                }
             }
         }
         match ended {
             Ok(()) => pending.map_or(Ok(()), Err),
             Err(Flow::Fail(error, _)) => Err(Flow::Fail(error, span)),
             Err(Flow::Crash(..)) => {
-                let why = Value::Str("the task crashed".to_owned());
+                let why = Value::Str(Text::from("the task crashed".to_owned()));
                 Err(Flow::Fail(Value::instance("Crashed", None, vec![("why".to_owned(), why)]), span))
             }
             Err(Flow::Return(_) | Flow::Break | Flow::Continue) => {
@@ -651,6 +705,15 @@ impl Interp {
             }
             Err(other) => Err(other),
         }
+    }
+
+    /// Whether the task numbered `number` has ended by failing or crashing.
+    fn task_stopped(&self, number: usize) -> Run<bool> {
+        let state = self.sched_state()?;
+        Ok(state.actors.get(number).is_some_and(|task| {
+            matches!(task.state, Doing::Ended)
+                && matches!(task.ended, Some(Err(Flow::Fail(..) | Flow::Crash(..))))
+        }))
     }
 
     /// Starts `task` on a thread of its own, given `given`, after what's run so far, and gives
@@ -687,9 +750,10 @@ impl Interp {
             number
         };
         let shared = Arc::clone(&self.shared);
-        let thread = std::thread::Builder::new()
-            .stack_size(TASK_STACK)
-            .spawn(move || task_thread(&shared, (number, inbox), &task, (task_expr, given)));
+        let thread = std::thread::Builder::new().stack_size(TASK_STACK).spawn(move || {
+            super::walks_within(TASK_STACK);
+            task_thread(&shared, (number, inbox), &task, (task_expr, given));
+        });
         if thread.is_err() {
             self.give_up();
             return unsupported("a task's thread couldn't start");
@@ -714,6 +778,7 @@ impl Interp {
             receivers: BTreeMap::new(),
             waiting_sends: Vec::new(),
             left: false,
+            task: None,
         };
         state.channels.insert(number, chan);
         Ok(number)
@@ -809,6 +874,22 @@ impl Interp {
     pub(crate) fn channel_send(&mut self, number: i64, message: &Value, timeout: i64) -> Run<Value> {
         self.channel_in_rounds(number, ChannelUse::Send)?;
         let me = self.actor;
+        // A send to a task's inbox, which the task could end before, without taking it.
+        let inbox_of = self.sched_state()?.channels.get(&number).and_then(|chan| chan.task);
+        let (race, task_first) = match inbox_of {
+            Some(task) => {
+                let Ok(mut orders) = self.shared.sched.orders.lock() else {
+                    return unsupported("the orders of messages were lost");
+                };
+                let (at, task_first) = orders.race_point();
+                drop(orders);
+                if task_first {
+                    let _ = self.wait_for(Wait::Settled(task), false)?;
+                }
+                (Some(at), task_first)
+            }
+            None => (None, false),
+        };
         loop {
             let sender = {
                 let mut state = lock_state(&self.shared)?;
@@ -828,7 +909,12 @@ impl Interp {
                 }
                 let Some(chan) = state.channels.get_mut(&number) else { return Ok(Value::Int(1)) };
                 chan.waiting_sends.retain(|sent| sent.sender != sender);
+                // The task ended before this send: on a run trying that way, the send fails, as a
+                // send to a closed channel does. On another, whether it got in hangs on time.
                 if chan.left {
+                    if task_first {
+                        return Ok(Value::Int(1));
+                    }
                     return unsupported(
                         "a send to the inbox of a task that's ended, which got in or not by time",
                     );
@@ -836,7 +922,7 @@ impl Interp {
                 if chan.closed {
                     return Ok(Value::Int(1));
                 }
-                let sent = Sent { sender, value: message.clone(), clock };
+                let sent = Sent { sender, value: message.clone(), clock, race };
                 if chan.every {
                     chan.sent.push(sent);
                     if chan.sent.len() > chan.size {
@@ -918,16 +1004,16 @@ impl Interp {
     }
 }
 
-/// Whether `me`'s waits are cut short, by a task it launched crashing while it's in that task's
-/// block, as `docs/language.md` says: a cut wait ends as a closed channel's does, after the
-/// crash, so `who`, `me` or the round it runs, takes in what the crashed task had done.
+/// Whether `me`'s waits are cut short, by a task it launched failing or crashing while it's in
+/// that task's block, as `docs/language.md` says: a cut wait ends as a closed channel's does, after
+/// the task's end, so `who`, `me` or the round it runs, takes in what the task had done.
 fn cut_short(state: &mut State, me: usize, who: usize) -> bool {
-    let crashed: Vec<usize> = state.actors.get(me).map(|actor| actor.cut_short.clone()).unwrap_or_default();
-    if crashed.is_empty() {
+    let stopped: Vec<usize> = state.actors.get(me).map(|actor| actor.cut_short.clone()).unwrap_or_default();
+    if stopped.is_empty() {
         return false;
     }
     let clocks: Vec<Clock> =
-        crashed.iter().filter_map(|&task| state.actors.get(task).map(|task| task.clock.clone())).collect();
+        stopped.iter().filter_map(|&task| state.actors.get(task).map(|task| task.clock.clone())).collect();
     if let Some(actor) = state.actors.get_mut(who) {
         for clock in &clocks {
             merge(&mut actor.clock, clock);
@@ -1172,16 +1258,19 @@ fn task_thread(
         return;
     }
     let Ok(mut state) = sched.state.lock() else { return };
-    let crashed = matches!(ended, Err(Flow::Crash(..)));
+    // The runtime cuts the block's waits short when its task fails as when it crashes, so its
+    // launcher waiting on a reply that will never come reaches the block's end, and the failure
+    // comes out there.
+    let stopped = matches!(ended, Err(Flow::Crash(..) | Flow::Fail(..)));
     let mut launcher = None;
     if let Some(actor) = state.actors.get_mut(number) {
         actor.state = Doing::Ended;
         actor.ended = Some(ended);
         launcher = actor.launcher;
     }
-    // A task that crashes cuts short every wait its block is in: its launcher's, and those of
+    // A task that fails or crashes cuts short every wait its block is in: its launcher's, and those of
     // the threads running rounds it handed on, which are in the block too.
-    if crashed && let Some(launcher) = launcher {
+    if stopped && let Some(launcher) = launcher {
         let mut block = vec![launcher];
         while let Some(more) = state.actors.iter().enumerate().position(|(at, actor)| {
             !block.contains(&at)
@@ -1212,4 +1301,9 @@ fn task_thread(
     }
     drop(state);
     sched.turn.notify_all();
+}
+
+/// Whether a failure is a `Closed`, as a send to a closed channel fails with.
+fn is_closed(flow: &Flow) -> bool {
+    matches!(flow, Flow::Fail(Value::Instance(instance), _) if instance.ty == "Closed")
 }

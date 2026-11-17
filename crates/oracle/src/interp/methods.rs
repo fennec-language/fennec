@@ -7,7 +7,7 @@ use super::builtins::{invalid, not_a_number};
 use super::calls::{ArgVal, Receiver};
 use super::expr::{dict_insert, set_insert, sized};
 use super::{Interp, MOST_ITEMS, Run, as_int, crash, position, unsupported};
-use crate::value::{Cap, Value};
+use crate::value::{Cap, Held, Text, Value};
 
 impl Interp {
     /// `receiver.name(...)` for a built-in value.
@@ -86,12 +86,12 @@ impl Interp {
             Value::Cap(Cap::Fs(reach)) => self.fs_method(&reach, name, &args, &named, span),
             Value::Str(text) => str_method(&text, name, &args, &named, span),
             Value::Bytes(data) if named.is_empty() => bytes_method(&data, name, &args, span),
-            Value::List(items) => self.list_method(receiver, items, name, (&args, named), expr),
+            Value::List(items) => self.list_method(receiver, items.into_inner(), name, (&args, named), expr),
             // The methods below take no named argument.
             _ if !named.is_empty() => unsupported(format!("the method `{name}` with a named argument")),
             Value::Cap(cap) => self.cap_method(cap, name, &args, span),
             Value::Dict(pairs) => dict_method(&pairs, name, &args, span),
-            Value::Set(items) => self.set_method(items, name, &args),
+            Value::Set(items) => self.set_method(items.into_inner(), name, &args),
             Value::Int(_) | Value::Sized(..) => int_method(&value, name, &args, span),
             Value::Float(x) => match name {
                 "is_nan" if args.is_empty() => Ok(Value::Bool(x.is_nan())),
@@ -235,7 +235,7 @@ impl Interp {
             },
             ("str", "from_code", [Value::Int(code)]) => {
                 match u32::try_from(*code).ok().and_then(char::from_u32) {
-                    Some(c) => Ok(Value::Str(c.to_string())),
+                    Some(c) => Ok(Value::Str(Text::from(c.to_string()))),
                     None => Err(invalid(format!("{code} isn't the code of a character"), span)),
                 }
             }
@@ -259,7 +259,7 @@ impl Interp {
         if ty == "Env" && self.program.from_std.get("std.env.Env").is_some_and(|found| found == "Env") {
             return Some(match (name, args) {
                 ("get", [Value::Str(variable)]) if named.is_empty() => {
-                    Ok(std::env::var(variable).map_or(Value::None, Value::Str))
+                    Ok(std::env::var(variable.as_str()).map_or(Value::None, |found| Value::Str(found.into())))
                 }
                 _ => unsupported(format!("the Env method `{name}`")),
             });
@@ -275,7 +275,7 @@ impl Interp {
                 Some(Value::Str(text)) => super::paths::method(text, name, args, span),
                 _ => unsupported("a Path without its text"),
             },
-            "File" => self.file_method(&Value::Instance(Box::new(instance.clone())), name, args, span),
+            "File" => self.file_method(&Value::Instance(Held::new(instance.clone())), name, args, span),
             _ => match (name, args, instance.field("reason")) {
                 ("message", [], Some(reason)) => Ok(reason.clone()),
                 _ => unsupported(format!("the IoError method `{name}`")),
@@ -303,13 +303,13 @@ impl Interp {
                 }
                 _ => unsupported("`stdout.write` of several values"),
             },
-            (Cap::Stdin, "lines") => Ok(Value::List(Vec::new())),
+            (Cap::Stdin, "lines") => Ok(Value::List(Held::new(Vec::new()))),
             (Cap::Stdin, "read_line") => Ok(Value::None),
             (Cap::Args, "len") => Ok(Value::Int(0)),
             // Standard error is written as the program writes it, and never compared.
             (Cap::Stderr, "write_line" | "write_text") => match args {
                 [Value::Str(text)] => {
-                    let mut text = text.clone();
+                    let mut text = text.as_str().to_owned();
                     if name == "write_line" {
                         text.push('\n');
                     }
@@ -338,7 +338,7 @@ impl Interp {
                     case: None,
                     fields: vec![("nanos".to_owned(), Value::Int(nanos))],
                 };
-                Ok(Value::Instance(Box::new(moment)))
+                Ok(Value::Instance(Held::new(moment)))
             }
             (Cap::Clock, "sleep") => match args {
                 [Value::Instance(duration)] if duration.ty == "Duration" => {
@@ -377,7 +377,7 @@ impl Interp {
     fn writer_method(&mut self, receiver: Receiver, name: &str, args: &[Value], span: Span) -> Run<Value> {
         let text = match (name, args) {
             ("write", [Value::Str(text)]) => text.clone(),
-            ("value", [value]) => self.display(value)?,
+            ("value", [value]) => Text::from(self.display(value)?),
             ("text", []) => {
                 let value = match &receiver {
                     Receiver::Place(place) => self.read_place(place, span)?,
@@ -393,7 +393,7 @@ impl Interp {
                         text.push_str(part);
                     }
                 }
-                return Ok(Value::Str(text));
+                return Ok(Value::Str(Text::from(text)));
             }
             _ => return unsupported(format!("the StrWriter method `{name}`")),
         };
@@ -459,12 +459,12 @@ fn read_only(
 fn str_method(text: &str, name: &str, args: &[Value], named: &[(String, Value)], span: Span) -> Run<Value> {
     let fill = match named {
         [] => " ".to_owned(),
-        [(label, Value::Str(fill))] if label == "fill" => fill.clone(),
+        [(label, Value::Str(fill))] if label == "fill" => fill.as_str().to_owned(),
         _ => return unsupported(format!("`{name}` with a named argument")),
     };
     let string = |value: Option<&Value>| -> Run<String> {
         match value {
-            Some(Value::Str(text)) => Ok(text.clone()),
+            Some(Value::Str(text)) => Ok(text.as_str().to_owned()),
             _ => unsupported(format!("`{name}` with an argument that isn't a str")),
         }
     };
@@ -476,23 +476,27 @@ fn str_method(text: &str, name: &str, args: &[Value], named: &[(String, Value)],
     };
     let chars = |text: &str| as_int(text.chars().count());
     Ok(match (name, args.len()) {
-        ("upper", 0) => Value::Str(text.to_uppercase()),
+        ("upper", 0) => Value::Str(Text::from(text.to_uppercase())),
         ("encode", 0) => Value::Bytes(text.as_bytes().to_vec()),
-        ("lower", 0) => Value::Str(text.to_lowercase()),
-        ("strip", 0) => Value::Str(text.trim().to_owned()),
-        ("lstrip", 0) => Value::Str(text.trim_start().to_owned()),
-        ("rstrip", 0) => Value::Str(text.trim_end().to_owned()),
+        ("lower", 0) => Value::Str(Text::from(text.to_lowercase())),
+        ("strip", 0) => Value::Str(Text::from(text.trim().to_owned())),
+        ("lstrip", 0) => Value::Str(Text::from(text.trim_start().to_owned())),
+        ("rstrip", 0) => Value::Str(Text::from(text.trim_end().to_owned())),
         ("split", 0) => {
-            Value::List(text.split_whitespace().map(|part| Value::Str(part.to_owned())).collect())
+            Value::List(text.split_whitespace().map(|part| Value::Str(Text::from(part.to_owned()))).collect())
         }
         ("split", 1) => {
             let between = string(args.first())?;
             if between.is_empty() {
                 return crash("can't split by an empty string", span);
             }
-            Value::List(text.split(between.as_str()).map(|part| Value::Str(part.to_owned())).collect())
+            Value::List(
+                text.split(between.as_str()).map(|part| Value::Str(Text::from(part.to_owned()))).collect(),
+            )
         }
-        ("replace", 2) => Value::Str(text.replace(string(args.first())?.as_str(), &string(args.get(1))?)),
+        ("replace", 2) => {
+            Value::Str(Text::from(text.replace(string(args.first())?.as_str(), &string(args.get(1))?)))
+        }
         ("find", 1) => {
             let part = string(args.first())?;
             match text.find(part.as_str()) {
@@ -518,7 +522,7 @@ fn str_method(text: &str, name: &str, args: &[Value], named: &[(String, Value)],
                     other => return unsupported(format!("`join` of a {}", other.kind())),
                 }
             }
-            Value::Str(joined.join(text))
+            Value::Str(Text::from(joined.join(text)))
         }
         ("code", 0) => {
             let mut all = text.chars();
@@ -543,25 +547,25 @@ fn str_method(text: &str, name: &str, args: &[Value], named: &[(String, Value)],
             for (at, part) in parts.into_iter().enumerate() {
                 if at == last {
                     if !part.is_empty() {
-                        found.push(Value::Str(part.to_owned()));
+                        found.push(Value::Str(Text::from(part.to_owned())));
                     }
                 } else {
-                    found.push(Value::Str(part.strip_suffix('\r').unwrap_or(part).to_owned()));
+                    found.push(Value::Str(Text::from(part.strip_suffix('\r').unwrap_or(part).to_owned())));
                 }
             }
-            Value::List(found)
+            Value::List(Held::new(found))
         }
         ("ljust" | "rjust" | "center", 1) => {
             let width = int(args.first())?;
             let pad = width - chars(text);
             let padding = |count: i64| -> Run<String> { padding(&fill, count, span) };
             match name {
-                "ljust" => Value::Str(format!("{text}{}", padding(pad)?)),
-                "rjust" => Value::Str(format!("{}{text}", padding(pad)?)),
-                _ if pad <= 0 => Value::Str(text.to_owned()),
+                "ljust" => Value::Str(Text::from(format!("{text}{}", padding(pad)?))),
+                "rjust" => Value::Str(Text::from(format!("{}{text}", padding(pad)?))),
+                _ if pad <= 0 => Value::Str(Text::from(text.to_owned())),
                 _ => {
                     let left = pad / 2 + i64::from(pad % 2 == 1 && width % 2 == 1);
-                    Value::Str(format!("{}{text}{}", padding(left)?, padding(pad - left)?))
+                    Value::Str(Text::from(format!("{}{text}{}", padding(left)?, padding(pad - left)?)))
                 }
             }
         }
@@ -570,21 +574,21 @@ fn str_method(text: &str, name: &str, args: &[Value], named: &[(String, Value)],
             let zeros = "0".repeat(usize::try_from(width - chars(text)).unwrap_or(0));
             if text.starts_with('-') || text.starts_with('+') {
                 let (sign, rest) = text.split_at(1);
-                Value::Str(format!("{sign}{zeros}{rest}"))
+                Value::Str(Text::from(format!("{sign}{zeros}{rest}")))
             } else {
-                Value::Str(format!("{zeros}{text}"))
+                Value::Str(Text::from(format!("{zeros}{text}")))
             }
         }
         ("removeprefix", 1) => {
             let prefix = string(args.first())?;
-            Value::Str(text.strip_prefix(prefix.as_str()).unwrap_or(text).to_owned())
+            Value::Str(Text::from(text.strip_prefix(prefix.as_str()).unwrap_or(text).to_owned()))
         }
         ("removesuffix", 1) => {
             let suffix = string(args.first())?;
-            Value::Str(
+            Value::Str(Text::from(
                 if suffix.is_empty() { text } else { text.strip_suffix(suffix.as_str()).unwrap_or(text) }
                     .to_owned(),
-            )
+            ))
         }
         ("count", 1) => {
             let part = string(args.first())?;
@@ -621,7 +625,7 @@ impl Interp {
                 return unsupported("`sort` with a named argument it doesn't take");
             }
             let sorted = self.sorted(items, key.as_ref(), reverse, expr)?;
-            return self.put_back(receiver, Value::List(sorted), span);
+            return self.put_back(receiver, Value::List(Held::new(sorted)), span);
         }
         if !named.is_empty() {
             return unsupported(format!("the list method `{name}` with a named argument"));
@@ -637,7 +641,7 @@ impl Interp {
                         other => return unsupported(format!("`remove_where` given a {}", other.kind())),
                     }
                 }
-                self.put_back(receiver, Value::List(kept), span)
+                self.put_back(receiver, Value::List(Held::new(kept)), span)
             }
             ("get", [Value::Int(at)]) => {
                 let size = as_int(items.len());
@@ -675,7 +679,7 @@ impl Interp {
                 }
                 let Some(at) = found else { return crash("the item to remove isn't in the list", span) };
                 items.remove(at);
-                self.put_back(receiver, Value::List(items), span)
+                self.put_back(receiver, Value::List(Held::new(items)), span)
             }
             _ => unsupported(format!("the list method `{name}`")),
         }
@@ -703,7 +707,7 @@ impl Interp {
                 for item in other {
                     set_insert(&mut found, item.clone())?;
                 }
-                Ok(Value::Set(found))
+                Ok(Value::Set(Held::new(found)))
             }
             "intersection" | "difference" => {
                 let mut found = Vec::new();
@@ -712,7 +716,7 @@ impl Interp {
                         found.push(item);
                     }
                 }
-                Ok(Value::Set(found))
+                Ok(Value::Set(Held::new(found)))
             }
             "is_subset" | "is_disjoint" => {
                 let mut all = true;
@@ -727,7 +731,7 @@ impl Interp {
                 Ok(Value::Bool(if name == "is_subset" { all } else { none }))
             }
             "is_superset" => {
-                let mine = Value::Set(items);
+                let mine = Value::Set(Held::new(items));
                 for item in other {
                     if !self.contains(&mine, item)? {
                         return Ok(Value::Bool(false));
@@ -903,7 +907,10 @@ fn dict_method(pairs: &[(Value, Value)], name: &str, args: &[Value], span: Span)
         ("keys", []) => Ok(Value::List(pairs.iter().map(|(key, _)| key.clone()).collect())),
         ("values", []) => Ok(Value::List(pairs.iter().map(|(_, value)| value.clone()).collect())),
         ("items", []) => Ok(Value::List(
-            pairs.iter().map(|(key, value)| Value::Tuple(vec![key.clone(), value.clone()])).collect(),
+            pairs
+                .iter()
+                .map(|(key, value)| Value::Tuple(Held::new(vec![key.clone(), value.clone()])))
+                .collect(),
         )),
         _ => {
             let _ = span;
@@ -970,11 +977,11 @@ fn padding(fill: &str, count: i64, span: Span) -> Run<String> {
 fn bytes_method(data: &[u8], name: &str, args: &[Value], span: Span) -> Run<Value> {
     match (name, args) {
         ("decode", []) => match std::str::from_utf8(data) {
-            Ok(text) => Ok(Value::Str(text.to_owned())),
+            Ok(text) => Ok(Value::Str(Text::from(text.to_owned()))),
             Err(error) => Err(invalid(format!("these bytes aren't UTF-8 text: {error}"), span)),
         },
-        ("hex", []) => Ok(Value::Str(hex(data, ""))),
-        ("hex", [Value::Str(sep)]) => Ok(Value::Str(hex(data, sep))),
+        ("hex", []) => Ok(Value::Str(Text::from(hex(data, "")))),
+        ("hex", [Value::Str(sep)]) => Ok(Value::Str(Text::from(hex(data, sep)))),
         _ => unsupported(format!("the bytes method `{name}`")),
     }
 }

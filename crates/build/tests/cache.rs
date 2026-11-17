@@ -124,6 +124,10 @@ fn an_entry_with_a_changed_byte_is_a_miss() {
     #[cfg(unix)]
     std::fs::set_permissions(&kept, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
     #[cfg(not(unix))]
+    #[expect(
+        clippy::permissions_set_readonly_false,
+        reason = "Windows only, where it clears the read-only attribute; the lint's worry is Unix's mode"
+    )]
     {
         let mut permissions = std::fs::metadata(&kept).unwrap().permissions();
         permissions.set_readonly(false);
@@ -160,6 +164,33 @@ fn a_program_kept_again_leaves_the_old_one_for_cleanup() {
     assert!(!old.exists(), "the program no entry names any more stayed");
     assert!(new.exists(), "the program the entry names went");
     assert_eq!(cache.read("programs", "root").as_deref(), Some(&b"the new program"[..]));
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+/// An object kept as a file, for the linker to read where it lies, stays through any cleanup while
+/// a build may be linking it: one just kept, and one a build just found, which marks it as used,
+/// both stay however far over its cap the cache is, since cleanup never takes an entry used in
+/// the last `KEPT_RECENT`. One nothing has used for longer goes, with the entry naming it.
+#[test]
+fn an_object_a_link_names_stays_through_cleanup() {
+    let home = home("kept-object-cleanup").unwrap();
+    let cache = Cache::new(&home);
+    let found = cache.keep_bytes("llvm", "found", b"an object a build found").unwrap().unwrap();
+    let old = cache.keep_bytes("llvm", "old", b"an object nothing has used").unwrap().unwrap();
+    let long_ago = SystemTime::now() - fennec_build::KEPT_RECENT - Duration::from_secs(600);
+    set_time(&found, long_ago).unwrap();
+    set_time(&old, long_ago).unwrap();
+    // A build finds what it links before linking it.
+    assert_eq!(cache.kept_entry("llvm", "found"), Some(found.clone()));
+    let fresh = cache.keep_bytes("llvm", "fresh", b"an object a build just made").unwrap().unwrap();
+    let cleanup = cache.cleanup(0).unwrap();
+    assert_eq!(cleanup.removed, 1, "{cleanup:?}");
+    assert!(found.exists(), "cleanup took an object a build had just found to link");
+    assert!(fresh.exists(), "cleanup took an object a build had just made");
+    assert!(!old.exists(), "an object nothing used for long stayed");
+    assert_eq!(cache.kept_entry("llvm", "found"), Some(found));
+    assert_eq!(cache.kept_entry("llvm", "fresh"), Some(fresh));
+    assert_eq!(cache.kept_entry("llvm", "old"), None);
     std::fs::remove_dir_all(&home).unwrap();
 }
 

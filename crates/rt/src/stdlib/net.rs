@@ -3296,22 +3296,37 @@ pub(crate) mod tests {
         drop(server);
     }
 
-    /// What a client still sending does while the server's end closes: after a moment it sends a
-    /// megabyte in pieces, each a moment apart, and closes. Gives back whether every piece went.
-    pub(crate) fn still_sending(mut client: std::net::TcpStream) -> std::thread::JoinHandle<bool> {
+    /// A client still sending while the server's end closes: 16 megabytes in pieces, back to back,
+    /// more than the sockets hold, and then it closes its side. It has sent the first piece when
+    /// this gives it back, so it's partway through whenever the close starts. Its thread gives back
+    /// whether every piece went, and when it had sent the last.
+    ///
+    /// It never sleeps. A close reads until the other side has been quiet for `LINGER_QUIET`, and
+    /// this client used to sleep 50 ms before its first piece and 5 ms before each after: on a busy
+    /// machine one of those sleeps ran past the quiet, the close took the client for done, and its
+    /// next piece was refused (main's CI on macOS, run 44032657746). Now it can look quiet only if
+    /// its thread, ready to run, isn't run for that long.
+    pub(crate) fn still_sending(
+        mut client: std::net::TcpStream,
+    ) -> std::thread::JoinHandle<(bool, std::time::Instant)> {
         use std::io::Write as _;
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+        let (begun, beginning) = std::sync::mpsc::channel();
+        let sending = std::thread::spawn(move || {
             let piece = vec![b'z'; 1 << 16];
-            (0..16).all(|_| {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-                client.write_all(&piece).is_ok()
-            })
-        })
+            let first = client.write_all(&piece).is_ok();
+            let _ = begun.send(());
+            let rest = first && (1..256).all(|_| client.write_all(&piece).is_ok());
+            // Noted before the close of its side, which the server's close waits for.
+            let done = std::time::Instant::now();
+            (rest && client.shutdown(std::net::Shutdown::Write).is_ok(), done)
+        });
+        let _ = beginning.recv();
+        sending
     }
 
     /// A connection a server took, kept as one, to a client that's `still_sending`.
-    pub(crate) fn served_while_the_client_sends() -> (i64, std::thread::JoinHandle<bool>) {
+    pub(crate) fn served_while_the_client_sends() -> (i64, std::thread::JoinHandle<(bool, std::time::Instant)>)
+    {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -3334,9 +3349,11 @@ pub(crate) mod tests {
         super::never_blocking(&stream).unwrap();
         let started = std::time::Instant::now();
         close(handle);
-        let lasted = started.elapsed();
-        assert!(sending.join().unwrap(), "a piece the client sent was refused");
-        assert!(lasted >= std::time::Duration::from_millis(100), "it closed after {lasted:?}");
+        let closed = std::time::Instant::now();
+        let (sent, done) = sending.join().unwrap();
+        assert!(sent, "a piece the client sent was refused");
+        assert!(closed >= done, "it closed before the client had sent everything");
+        let lasted = closed.duration_since(started);
         assert!(lasted < super::LINGER, "it closed after {lasted:?}");
         assert_eq!(crate::embed::serve::waits_not_registered_here(), 0, "a wait slept and looked again");
     }

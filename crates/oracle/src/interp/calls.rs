@@ -8,7 +8,7 @@ use fennec_syntax::{Arg, CompKind, Expr, ExprKind, Field, FnDef, Span};
 use super::typed::Bound;
 use super::{Binding, Flow, Interp, MOST_ITEMS, Place, Run, crash, unsupported};
 use crate::load::Kind;
-use crate::value::{Func, Value};
+use crate::value::{Func, Held, Text, Value};
 
 /// An argument as it's passed: a value, the place a `ref` argument names, or a generator written
 /// straight into a builtin's call, which reads it there.
@@ -281,7 +281,7 @@ impl Interp {
                     && args.iter().all(|arg| arg.name.as_deref() == Some("capacity"))
                     && !self.program.types.contains_key("Buffer") =>
             {
-                Target::Given(Value::List(Vec::new()))
+                Target::Given(Value::List(Held::new(Vec::new())))
             }
             // `std.layout`'s `SoaList[T]()`, which the checker types as a `list[T]`: its items are
             // laid out field by field, which nothing a program does can see.
@@ -295,13 +295,13 @@ impl Interp {
                         .get(name, object.span)
                         .is_some_and(|from| from == "std.layout.SoaList") =>
             {
-                Target::Given(Value::List(Vec::new()))
+                Target::Given(Value::List(Held::new(Vec::new())))
             }
             ExprKind::Name(name) if matches!(name.as_str(), "list" | "dict" | "set") && args.is_empty() => {
                 Target::Given(match name.as_str() {
-                    "list" => Value::List(Vec::new()),
-                    "dict" => Value::Dict(Vec::new()),
-                    _ => Value::Set(Vec::new()),
+                    "list" => Value::List(Held::new(Vec::new())),
+                    "dict" => Value::Dict(Held::new(Vec::new())),
+                    _ => Value::Set(Held::new(Vec::new())),
                 })
             }
             ExprKind::Name(name) if self.program.types.contains_key(&*self.type_named(name)) => {
@@ -357,7 +357,7 @@ impl Interp {
         }
         let Some(place) = self.place_of(&arg.value)? else { return Ok(None) };
         let counted = self.peek_place(&place, span, |value| match value {
-            Value::Str(text) => Some(text.chars().count()),
+            Value::Str(text) => Some(text.char_count()),
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => Some(items.len()),
             Value::Dict(pairs) => Some(pairs.len()),
             Value::Table(table) => Some(table.len()),
@@ -415,7 +415,7 @@ impl Interp {
         }
         // An empty `StrWriter`, as the standard library's own code makes one to write into.
         if name == "StrWriter" {
-            let parts = vec![("_parts".to_owned(), Value::List(Vec::new()))];
+            let parts = vec![("_parts".to_owned(), Value::List(Held::new(Vec::new())))];
             return Ok(Target::Given(Value::instance("StrWriter", None, parts)));
         }
         // A name imported from a module run from its own source, under the name it's run by.
@@ -453,7 +453,9 @@ impl Interp {
                 Func::Nested { def, frame } => {
                     Ok(Target::Def { def, parent: Some(frame), receiver: None, types: Bound::new() })
                 }
-                Func::Lambda { params, body, captured } => Ok(Target::Lambda { params, body, captured }),
+                Func::Lambda { params, body, captured } => {
+                    Ok(Target::Lambda { params, body, captured: captured.into_inner() })
+                }
             },
             other => unsupported(format!("calling a {}", other.kind())),
         }
@@ -817,7 +819,7 @@ impl Interp {
             Type::Float => Value::Float(0.0),
             Type::Sized(num) if num.is_float() => Value::F32(0.0),
             Type::Bool => Value::Bool(false),
-            Type::Str | Type::LiteralStr => Value::Str(String::new()),
+            Type::Str | Type::LiteralStr => Value::Str(Text::from(String::new())),
             Type::Optional(_) => Value::None,
             Type::Array(item, size) => {
                 let size = usize::try_from(*size).unwrap_or(usize::MAX);
@@ -825,7 +827,7 @@ impl Interp {
                 for _ in 0..size {
                     items.push(self.zero_of(item, span)?);
                 }
-                Value::List(items)
+                Value::List(Held::new(items))
             }
             Type::Named(name) if self.program.types.contains_key(name.as_str()) => {
                 self.construct(name, None, Vec::new(), span)?
@@ -894,13 +896,14 @@ impl Interp {
     pub(crate) fn ruled(&mut self, instance: crate::value::Instance, span: Span) -> Run<Value> {
         if let Some(broken) = self.broken_rule(&instance)? {
             if matches!(self.program.type_at(span), Some(Type::Result(..))) {
-                let message = Value::Str(format!("{}.{broken} breaks its `where` rule", instance.ty));
+                let message =
+                    Value::Str(Text::from(format!("{}.{broken} breaks its `where` rule", instance.ty)));
                 let error = Value::instance("InvalidValue", None, vec![("message".to_owned(), message)]);
                 return Err(Flow::Fail(error, span));
             }
             return crash(format!("this breaks the `where` rule on `{}.{broken}`", instance.ty), span);
         }
-        Ok(Value::Instance(Box::new(instance)))
+        Ok(Value::Instance(Held::new(instance)))
     }
 
     /// The first field whose `where` rule a struct breaks, if any.
@@ -1023,11 +1026,11 @@ impl Interp {
         let ty = self.type_argument(written)?;
         Ok(match path {
             "std.intrinsics.shape_hash" => Value::Int(self.shape_hash(&ty)?),
-            "std.intrinsics.layout" => Value::Str(self.layout(&ty)?),
+            "std.intrinsics.layout" => Value::Str(Text::from(self.layout(&ty)?)),
             // `pack_lock()` is empty, so no type's layout is locked.
             "std.intrinsics.shape_locked" => Value::Bool(false),
             _ => match ty.source() {
-                Some(name) => Value::Str(name),
+                Some(name) => Value::Str(Text::from(name)),
                 None => return unsupported("the name of a type that can't be written"),
             },
         })

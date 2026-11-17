@@ -106,6 +106,9 @@ pub(crate) struct Analysis {
     /// they're given their value and kept, so checks against it can leave a loop (see
     /// `steady_lengths`).
     pub(crate) steady_lengths: HashSet<usize>,
+    /// Reads of a list's item at `i` followed in the same block by one at `i + 1`, by the read's
+    /// place: `i`, and the read's own index, `i` or `i + 1` (see `find_adjacent_reads`).
+    pub(crate) adjacent_reads: HashMap<(usize, usize), (LocalId, LocalId)>,
     /// A block ending in a jump to a loop that fills a list made in that block: the list, and
     /// how many items the loop adds at most.
     pub(crate) reservations: HashMap<usize, (usize, Operand)>,
@@ -640,6 +643,7 @@ fn analyze(
     find_slice_keys(function, in_entries, &mut known);
     find_unmade_enumerates(function, &mut known);
     find_counts_inside(function, &mut known);
+    find_adjacent_reads(function, &mut known);
     known
 }
 
@@ -725,6 +729,69 @@ fn blocks_in_loops(function: &Function) -> HashSet<usize> {
         found.extend(seen);
     }
     found
+}
+
+/// How many instructions after a read of `xs[i]` the read of `xs[i + 1]` is looked for, so a long
+/// block of reads costs a few looks each rather than one for every instruction after it.
+const ADJACENT_READS_APART: usize = 32;
+
+/// Reads of a list's item at `i` followed in the same block by one at `i + 1`, with nothing
+/// between them that could change the list or `i`: `starts[near]`, then `starts[near + 1]`. Both
+/// are tested against one test that `i` is from 0 to below the length less one, which puts both
+/// inside; only when it fails is each checked on its own, in order, so one outside fails as it
+/// would alone. Two checks with two different failures were two compares and branches that LLVM
+/// couldn't merge.
+fn find_adjacent_reads(function: &Function, known: &mut Analysis) {
+    for (at, block) in function.blocks.iter().enumerate() {
+        for (first, inst) in block.insts.iter().enumerate() {
+            let InstKind::GetIndex { object: Operand::Local(list), index: Operand::Local(low), .. } =
+                &inst.kind
+            else {
+                continue;
+            };
+            let mut high = None;
+            for (later, next) in block.insts.iter().enumerate().skip(first + 1).take(ADJACENT_READS_APART) {
+                match &next.kind {
+                    InstKind::Binary { dest, op: BinOp::Add, lhs, rhs }
+                        if high.is_none()
+                            && known.writes.get(dest.0) == Some(&1)
+                            && matches!(
+                                (lhs, rhs),
+                                (Operand::Local(from), Operand::Int(1)) | (Operand::Int(1), Operand::Local(from))
+                                    if from == low
+                            ) =>
+                    {
+                        high = Some(*dest);
+                    }
+                    InstKind::GetIndex {
+                        object: Operand::Local(again),
+                        index: Operand::Local(at_high),
+                        ..
+                    } if again == list && Some(*at_high) == high => {
+                        known.adjacent_reads.insert((at, first), (*low, *low));
+                        known.adjacent_reads.insert((at, later), (*low, *at_high));
+                        break;
+                    }
+                    other => {
+                        // Only reads and arithmetic may come between, writing neither the list
+                        // nor `i`.
+                        let mut written = Vec::new();
+                        visit(other, |_| {}, |local| written.push(local));
+                        let quiet = matches!(
+                            other,
+                            InstKind::Binary { .. }
+                                | InstKind::GetIndex { .. }
+                                | InstKind::GetField { .. }
+                                | InstKind::Copy { .. }
+                        );
+                        if !quiet || written.contains(list) || written.contains(low) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// One side of a comparison: a local, or a number written out.
@@ -3278,6 +3345,7 @@ impl Analysis {
             unmade: HashSet::new(),
             aliases: HashMap::new(),
             steady_lengths: HashSet::new(),
+            adjacent_reads: HashMap::new(),
             reservations: HashMap::new(),
             zero_filled: HashSet::new(),
             zero_counts: HashMap::new(),
@@ -3750,6 +3818,16 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
     let mut leaned_on = HashSet::new();
     for local in 0..function.locals.len() {
         let id = LocalId(local);
+        // A bool or a number holds no block, so it leans on nothing, however it was read: a
+        // match binding whose `bool` field was read first, with no owner of its own, was counted
+        // as leaned on and copied into a `mut` where it could be moved, and every change then
+        // copied its lists (#1953).
+        if matches!(
+            function.locals.get(local).map(|held| &held.ty),
+            Some(Type::Unit | Type::None | Type::Bool | Type::Int | Type::Float)
+        ) {
+            continue;
+        }
         leaned_on.extend(known.lender(id).map(|from| from.0));
         leaned_on.extend(known.alias(id).map(|from| from.0));
         leaned_on.extend(known.field_of(id).map(|(from, _)| from.0));
@@ -4454,6 +4532,39 @@ mod tests {
         // Read outside any loop, its length is read once anyway, so nothing is kept.
         let once = "def go(xs: list[int]) -> int:\n    return xs[0] + len(xs)\n";
         assert_eq!(steady(once)?, Vec::<String>::new());
+        Ok(())
+    }
+
+    /// How many reads of a function called `go` are paired with the read of the next index.
+    fn adjacent(body: &str) -> Result<usize, String> {
+        let mut module = fennec_syntax::parse(body).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let function = program.functions.iter().find(|function| function.name == "go").ok_or("no `go`")?;
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
+        Ok(known.adjacent_reads.len())
+    }
+
+    /// `xs[i]` then `xs[i + 1]` are paired, so one test can put both inside; not when something
+    /// that could change the list or `i` comes between, when the second index isn't `i + 1`, or
+    /// when `xs[i + 1]` is read first.
+    #[test]
+    fn a_read_and_the_read_of_the_next_index_are_paired() -> Result<(), String> {
+        let paired = "def go(xs: list[int], i: int) -> int:\n    return xs[i] * 10 + xs[i + 1]\n";
+        assert_eq!(adjacent(paired)?, 2);
+        for body in [
+            "def go(ref xs: list[int], i: int) -> int:\n    a = xs[i]\n    xs.append(a)\n    return a + xs[i + 1]\n",
+            "def go(xs: list[int], i: int) -> int:\n    return xs[i] * 10 + xs[i + 2]\n",
+            "def go(xs: list[int], ys: list[int], i: int) -> int:\n    return xs[i] * 10 + ys[i + 1]\n",
+            // `i` given a new value between the two reads, by a read.
+            "def go(xs: list[int], start: int) -> int:\n    mut i = start\n    a = xs[i]\n    i = xs[0]\n    return a + xs[i + 1]\n",
+            // The list given a new value between the two reads.
+            "def go(xs: list[int], ys: list[int], i: int) -> int:\n    mut zs = xs\n    a = zs[i]\n    zs = ys\n    return a + zs[i + 1]\n",
+            // The next index read first isn't paired (yet).
+            "def go(xs: list[int], i: int) -> int:\n    return xs[i + 1] - xs[i]\n",
+        ] {
+            assert_eq!(adjacent(body)?, 0, "{body}");
+        }
         Ok(())
     }
 

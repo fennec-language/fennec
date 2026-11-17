@@ -211,7 +211,11 @@ impl Renamer<'_> {
                     self.pattern(arg);
                 }
             }
-            Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::Literal(_) => {}
+            Pattern::Wildcard
+            | Pattern::Bind(_)
+            | Pattern::RefBind(_)
+            | Pattern::MutBind(_)
+            | Pattern::Literal(_) => {}
         }
     }
 }

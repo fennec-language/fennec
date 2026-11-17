@@ -6,6 +6,7 @@
 //! fennec-fuzz show [llvm] <file>
 //! fennec-fuzz worker <target> <seed> <first input> <input to stop at> <progress file>
 //! fennec-fuzz input <target> <seed> <input> <file>
+//! fennec-fuzz oracle [--seed N] [--inputs N]
 //! ```
 //!
 //! Inputs run in a worker process, so a crash, a stack overflow or running out of memory can't
@@ -21,7 +22,10 @@
 //! named runs every one but `llvm`, which builds every input twice and runs only when named, and
 //! leaves out the other native ones, saying so, where nothing can be built. `programs` runs only
 //! when named too: random, well-typed programs built both ways and checked against a reference
-//! evaluator written here, which `fennec-fuzz show programs <file>` writes out.
+//! evaluator written here, which `fennec-fuzz show programs <file>` writes out. `fennec-fuzz oracle`
+//! runs the first of a run's random programs, 200 unless `--inputs` says, through the oracle
+//! alone, and says how many it ran and why it refused the rest, since the builds are held to the
+//! oracle only on the programs it runs.
 #![expect(clippy::print_stdout, reason = "the fuzzer reports what it finds")]
 #![expect(clippy::print_stderr, reason = "the fuzzer reports how it was misused")]
 
@@ -72,6 +76,7 @@ fn main() -> ExitCode {
         ["worker", name, seed, first, end, progress] => worker(name, seed, (first, end), Path::new(progress)),
         ["input", name, seed, number, file] => input(name, (seed, number), Path::new(file)),
         ["run", rest @ ..] => run(rest),
+        ["oracle", rest @ ..] => oracle_share(rest),
         _ => Err("usage: fennec-fuzz run [--seed N] [--seconds N] [--inputs N] [--stuck SECONDS] [--found DIR] [target...]"
             .to_owned()),
     };
@@ -146,6 +151,21 @@ fn worker(name: &str, seed: &str, (first, end): (&str, &str), progress: &Path) -
         }
         Ok(())
     }))
+}
+
+/// Runs the first programs of a run of `programs` with `--seed`, 200 unless `--inputs` says,
+/// through the oracle alone, and says how many it ran and why it refused the rest.
+fn oracle_share(args: &[&str]) -> Result<ExitCode, String> {
+    let options = options(args)?;
+    if let Some(name) = options.names.first() {
+        return Err(format!("`oracle` runs only the random programs, and takes no target like `{name}`"));
+    }
+    let target = &targets::RANDOM_PROGRAMS;
+    let corpus = target.corpus(&repository());
+    let count = if options.inputs == u64::MAX { 200 } else { options.inputs };
+    let inputs = (0..count).map(|number| mutate::input(&corpus, target.tokens, options.seed, number));
+    println!("{}: {}", target.name, programs::oracle_share(inputs));
+    Ok(ExitCode::SUCCESS)
 }
 
 /// What `run` was asked to do.

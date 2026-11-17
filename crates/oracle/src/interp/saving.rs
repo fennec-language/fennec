@@ -30,7 +30,7 @@ use super::calls::{ArgVal, Receiver, Target};
 use super::json::type_name;
 use super::{Flow, Interp, Place, Run, unsupported};
 use crate::load::Kind;
-use crate::value::Value;
+use crate::value::{Held, Text, Value};
 
 impl Interp {
     /// `object.serialize(ref out)`, when it's modeled here: its type, as the checker typed
@@ -77,8 +77,10 @@ impl Interp {
                 self.tell(out, "sequence", vec![Value::List(items.clone())], vec![(**inner).clone()], span)
             }
             (Type::Dict(key, held), Value::Dict(pairs)) => {
-                let pairs =
-                    pairs.iter().map(|(key, value)| Value::Tuple(vec![key.clone(), value.clone()])).collect();
+                let pairs = pairs
+                    .iter()
+                    .map(|(key, value)| Value::Tuple(Held::new(vec![key.clone(), value.clone()])))
+                    .collect();
                 let types = vec![(**key).clone(), (**held).clone()];
                 self.tell(out, "map", vec![Value::List(pairs)], types, span)
             }
@@ -87,7 +89,7 @@ impl Interp {
                     return unsupported("a tuple whose type can't be written");
                 };
                 let count = Value::Int(i64::try_from(items.len()).unwrap_or(i64::MAX));
-                self.tell(out, "items", vec![Value::Str(name), count], Vec::new(), span)?;
+                self.tell(out, "items", vec![Value::Str(Text::from(name)), count], Vec::new(), span)?;
                 for (item, item_type) in items.iter().zip(types) {
                     self.tell(out, "item", vec![item.clone()], vec![item_type.clone()], span)?;
                 }
@@ -103,7 +105,7 @@ impl Interp {
                     return unsupported("a union's member that can't be written");
                 };
                 let at = Value::Int(i64::try_from(*at).unwrap_or(i64::MAX));
-                self.tell(out, "member", vec![Value::Str(name), at], Vec::new(), span)?;
+                self.tell(out, "member", vec![Value::Str(Text::from(name)), at], Vec::new(), span)?;
                 self.tell(out, "value", vec![held.clone()], vec![(*member).clone()], span)?;
                 self.tell(out, "end_member", Vec::new(), Vec::new(), span)
             }
@@ -147,14 +149,14 @@ impl Interp {
             .filter(|field| !field.skipped)
             .collect();
         let count = Value::Int(i64::try_from(fields.len()).unwrap_or(i64::MAX));
-        let shown = Value::Str(shown.to_owned());
+        let shown = Value::Str(Text::from(shown.to_owned()));
         let mut ends = 1;
         match &instance.case {
             None => self.tell(out, "record", vec![shown, count], Vec::new(), span)?,
             Some(case) => {
                 let at = declared.def.cases.iter().position(|known| known.name == *case).unwrap_or_default();
                 let at = Value::Int(i64::try_from(at).unwrap_or(i64::MAX));
-                let case_name = Value::Str(case.clone());
+                let case_name = Value::Str(Text::from(case.clone()));
                 if fields.is_empty() {
                     return self.tell(out, "enum_case", vec![shown, case_name, at], Vec::new(), span);
                 }
@@ -171,7 +173,7 @@ impl Interp {
                 Some(renamed) => ("renamed", renamed),
                 None => ("field", field.name),
             };
-            self.tell(out, method, vec![Value::Str(shown), held], vec![field.ty], span)?;
+            self.tell(out, method, vec![Value::Str(Text::from(shown)), held], vec![field.ty], span)?;
         }
         for _ in 0..ends {
             self.tell(out, "end", Vec::new(), Vec::new(), span)?;
@@ -255,11 +257,11 @@ impl Interp {
                 };
                 let mut found: Vec<Value> = Vec::with_capacity(items.len());
                 for item in items {
-                    if !self.contains(&Value::Set(found.clone()), &item)? {
+                    if !self.contains(&Value::Set(Held::new(found.clone())), &item)? {
                         found.push(item);
                     }
                 }
-                Ok(Value::Set(found))
+                Ok(Value::Set(Held::new(found)))
             }
             Type::Dict(key, held) => self.dict_from(key, held, src, span),
             Type::Named(name) => self.instance_from(name, &[], src, span),
@@ -284,7 +286,7 @@ impl Interp {
                 self.put_once((read, value), &mut found, src, span)?;
             }
             self.ask(src, "end_map", Vec::new(), Vec::new(), span)?;
-            return Ok(Value::Dict(found));
+            return Ok(Value::Dict(Held::new(found)));
         }
         let Value::List(pairs) = self.ask(src, "map", Vec::new(), vec![key.clone(), held.clone()], span)?
         else {
@@ -292,12 +294,12 @@ impl Interp {
         };
         for pair in pairs {
             let Value::Tuple(both) = pair else { return unsupported("a pair that isn't one") };
-            let Ok([read, value]) = <[Value; 2]>::try_from(both) else {
+            let Ok([read, value]) = <[Value; 2]>::try_from(both.into_inner()) else {
                 return unsupported("a pair that isn't one");
             };
             self.put_once((read, value), &mut found, src, span)?;
         }
-        Ok(Value::Dict(found))
+        Ok(Value::Dict(Held::new(found)))
     }
 
     /// Puts a pair read into a dict, failing as `src` says where a key comes twice.
@@ -310,8 +312,13 @@ impl Interp {
     ) -> Run<()> {
         if super::find_key(found, &key)?.is_some() {
             let twice = super::json::read::twice_key(&self.display(&key)?);
-            let error =
-                self.ask(src, "here", vec![Value::Str(format!("has {twice} twice"))], Vec::new(), span)?;
+            let error = self.ask(
+                src,
+                "here",
+                vec![Value::Str(Text::from(format!("has {twice} twice")))],
+                Vec::new(),
+                span,
+            )?;
             return Err(Flow::Fail(error, span));
         }
         found.push((key, value));
@@ -337,15 +344,18 @@ impl Interp {
             .cases
             .iter()
             .map(|case| {
-                Value::Tuple(vec![Value::Str(case.name.clone()), Value::Bool(!case.fields.is_empty())])
+                Value::Tuple(Held::new(vec![
+                    Value::Str(Text::from(case.name.clone())),
+                    Value::Bool(!case.fields.is_empty()),
+                ]))
             })
             .collect();
-        let asked = vec![Value::Str(shown.to_owned()), Value::List(cases)];
+        let asked = vec![Value::Str(Text::from(shown.to_owned())), Value::List(cases)];
         let Value::Int(at) = self.ask(src, "enum_case", asked, Vec::new(), span)? else {
             return unsupported("an `enum_case` that isn't an int");
         };
         let Some(case) = usize::try_from(at).ok().and_then(|at| def.cases.get(at)) else {
-            let message = Value::Str(format!("`{shown}` has no such case"));
+            let message = Value::Str(Text::from(format!("`{shown}` has no such case")));
             let error = self.ask(src, "rule", vec![message], Vec::new(), span)?;
             return Err(Flow::Fail(error, span));
         };
@@ -366,7 +376,8 @@ impl Interp {
         src: &Place,
         span: Span,
     ) -> Run<Value> {
-        let shown = Value::Str(case.unwrap_or(fennec_syntax::rename::shown_type_name(name)).to_owned());
+        let shown =
+            Value::Str(Text::from(case.unwrap_or(fennec_syntax::rename::shown_type_name(name)).to_owned()));
         let saved: Vec<&super::json::SavedField> = fields.iter().filter(|field| !field.skipped).collect();
         if saved.iter().any(|field| holds_union(&field.ty)) {
             return unsupported("loading a union through a format's own `Deserializer`");
@@ -390,7 +401,10 @@ impl Interp {
             .zip(saved.iter().map(|field| field.name.as_str()))
             .chain(fields.iter().filter(|field| field.skipped).map(|field| ("", field.name.as_str())))
             .map(|(as_saved, own)| {
-                Value::Tuple(vec![Value::Str(as_saved.to_owned()), Value::Str(own.to_owned())])
+                Value::Tuple(Held::new(vec![
+                    Value::Str(Text::from(as_saved.to_owned())),
+                    Value::Str(Text::from(own.to_owned())),
+                ]))
             })
             .collect();
         let listed = Value::List(listed);
@@ -428,7 +442,7 @@ impl Interp {
                 None if field.field.default.is_some() => {}
                 None if optional => given.push(ArgVal::Value(Some(field.name.clone()), Value::None)),
                 None => {
-                    let missing = Value::Str(field.saved_name().to_owned());
+                    let missing = Value::Str(Text::from(field.saved_name().to_owned()));
                     let error = self.ask(src, "missing", vec![missing], Vec::new(), span)?;
                     return Err(Flow::Fail(error, span));
                 }

@@ -271,6 +271,37 @@ impl Emit<'_, '_, '_> {
         self.text_from_block(block)
     }
 
+    /// The header for a string's block that what holds it goes on owning, with no owner of its
+    /// own, for a borrowed local, which nothing lets go of (#1986). A string past 23 bytes is its
+    /// block's address and length, with no call. A shorter one comes back inline from
+    /// `fennec_text_of`, which lets go of the block: it's given an owner first for that.
+    pub(crate) fn text_of_held_block(&mut self, block: &str) -> String {
+        let (length_at, length, long) = (self.temp(), self.temp(), self.temp());
+        self.line(&format!(
+            "{length_at} = getelementptr inbounds i8, ptr {block}, i64 {}",
+            fennec_rt::embed::layout::TEXT_BYTES
+        ));
+        self.line(&format!("{length} = load i64, ptr {length_at}"));
+        self.line(&format!("{long} = icmp ugt i64 {length}, 23"));
+        let (whole, short, held) =
+            (self.label("long_text"), self.label("short_text"), self.label("text_held"));
+        self.line(&format!("br i1 {long}, label %{whole}, label %{short}"));
+        self.start_block(&whole);
+        let address = self.temp();
+        self.line(&format!("{address} = ptrtoint ptr {block} to i64"));
+        let as_block = self.header_of([&address, &length, "0"]);
+        let whole_in = self.current.clone();
+        self.line(&format!("br label %{held}"));
+        self.start_block(&short);
+        let inline = self.text_from_borrowed_block(block);
+        let short_in = self.current.clone();
+        self.line(&format!("br label %{held}"));
+        self.start_block(&held);
+        let header = self.temp();
+        self.line(&format!("{header} = phi {HEADER} [ {as_block}, %{whole_in} ], [ {inline}, %{short_in} ]"));
+        header
+    }
+
     /// A slot on this function's stack for a header.
     pub(crate) fn place_for_text(&mut self) -> String {
         let at = self.label("%text");
@@ -772,7 +803,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether an inline header's text is all ASCII, so its length counts its characters.
-    fn inline_ascii(&mut self, header: &str) -> String {
+    pub(crate) fn inline_ascii(&mut self, header: &str) -> String {
         let [a, b, c] = [0, 1, 2].map(|at| self.header_word(header, at));
         let (low, both, all, high, plain) = (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{low} = and i64 {c}, 72057594037927935"));

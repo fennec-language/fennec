@@ -125,20 +125,24 @@ fn lower_from(
             lower_into(&mut program, &generics::FunctionInstance::plain(key), def, &context);
         }
     }
-    constants::lower_all(&context, &mut program, wanted);
-    // Copies of generics, and the standard library's functions, come in as they're reached.
+    let mut constants_so_far = constants::Constants::default();
+    constants::lower_all(&context, &mut program, wanted, &mut constants_so_far);
+    // Copies of generics, and the standard library's functions, come in as they're reached. What's
+    // called and not lowered is followed as functions are added, so each one lowered costs what it
+    // adds, not what the program has so far.
+    let mut unlowered = calls::Unlowered::default();
     loop {
         let waiting = context.instances.waiting.borrow_mut().pop();
         let next = waiting.or_else(|| {
-            calls::external(&program)
-                .into_iter()
-                .find(|key| reachable_later.contains_key(key))
+            unlowered.read(&program);
+            unlowered
+                .first(|key| reachable_later.contains_key(key))
                 .map(|key| generics::FunctionInstance::plain(&key))
         });
         let Some(next) = next else { break };
         if let Some(def) = every.get(&next.base) {
             lower_into(&mut program, &next, def, &context);
-            constants::lower_all(&context, &mut program, wanted);
+            constants::lower_all(&context, &mut program, wanted, &mut constants_so_far);
         } else {
             let why = format!("it has no definition: `{}`", next.base);
             program.not_lowered.push(NotLowered { function: next.name, why });
@@ -400,9 +404,9 @@ struct Lowering<'a> {
     context: &'a Context<'a>,
     body: &'a Body,
     returns: Type,
-    /// Where each arrow function written in this function starts, in the order they're lowered:
-    /// an arrow's place here is the number in its name.
-    arrows: Vec<u32>,
+    /// Each function lifted out of this one, by its kind and where it starts, in the order
+    /// they're lowered: one's place among those of its kind is the number in its name.
+    lifted_at: Vec<(&'static str, u32)>,
     locals: Vec<Local>,
     blocks: Vec<Open>,
     current: BlockId,
@@ -537,6 +541,30 @@ fn grown_by_adding(name: &str, value: &Expr) -> Option<Vec<Expr>> {
 }
 
 impl<'a> Lowering<'a> {
+    /// The name of a function lifted out of this one: this one's name, its kind, and its number
+    /// among those of its kind here, as `main.parallel#0`. Not where it is in the source: text
+    /// added above it would rename it, and every function that names it, which a build then
+    /// compiles again for nothing. The same one lowered again, by where it starts, keeps its
+    /// number.
+    fn lifted_name(&mut self, kind: &'static str, at: u32) -> String {
+        let same = |(known, _): &&(&str, u32)| *known == kind;
+        let known = self.lifted_at.iter().filter(same).position(|(_, known)| *known == at);
+        let number = known.unwrap_or_else(|| {
+            let number = self.lifted_at.iter().filter(same).count();
+            self.lifted_at.push((kind, at));
+            number
+        });
+        format!("{}.{kind}#{number}", self.name)
+    }
+
+    /// The name of a function lifted out of this one that's new each time it's lowered, even
+    /// from the same place in the source, as each `with launch` written in from the same one is.
+    fn fresh_lifted_name(&mut self, kind: &'static str) -> String {
+        let number = self.lifted_at.iter().filter(|(known, _)| *known == kind).count();
+        self.lifted_at.push((kind, u32::MAX));
+        format!("{}.{kind}#{number}", self.name)
+    }
+
     fn new(
         instance: &generics::FunctionInstance,
         context: &'a Context<'a>,
@@ -550,7 +578,7 @@ impl<'a> Lowering<'a> {
             context,
             body,
             returns,
-            arrows: Vec::new(),
+            lifted_at: Vec::new(),
             locals: Vec::new(),
             blocks: vec![Open::default()],
             current: BlockId(0),
@@ -810,7 +838,12 @@ impl<'a> Lowering<'a> {
                 }
             }
             StmtKind::OnFailure { name, cleanup, body } => {
-                self.on_failure.push(failure::OnFailure { name: name.clone(), cleanup: cleanup.clone() });
+                let scopes = self.scopes.len();
+                self.on_failure.push(failure::OnFailure {
+                    name: name.clone(),
+                    cleanup: cleanup.clone(),
+                    scopes,
+                });
                 let lowered = self.block(body, tail);
                 self.on_failure.pop();
                 lowered?;

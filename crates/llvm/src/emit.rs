@@ -2572,6 +2572,31 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("{both} = and i1 {minus_one}, {lowest}"));
             self.fail_if(&both, OVERFLOW, span);
         }
+        // By a positive number written out, the machine's remainder has the sign of what's divided,
+        // so it's below 0 exactly when the quotient rounded toward zero is one too many and the
+        // remainder `b` too few: a shift of the remainder's sign fixes both, with no compare.
+        if let Operand::Int(divisor @ 1..) = rhs {
+            let (quotient, remainder, sign) = (self.temp(), self.temp(), self.temp());
+            self.line(&format!("{quotient} = sdiv i64 {a}, {b}"));
+            self.line(&format!("{remainder} = srem i64 {a}, {b}"));
+            self.line(&format!("{sign} = ashr i64 {remainder}, 63"));
+            let result = self.temp();
+            if op == BinOp::FloorDiv {
+                self.line(&format!("{result} = add i64 {quotient}, {sign}"));
+            } else {
+                let more = self.temp();
+                self.line(&format!("{more} = and i64 {sign}, {divisor}"));
+                self.line(&format!("{result} = add i64 {remainder}, {more}"));
+                // The remainder is always from 0 up to the divisor: said to LLVM, a value worked
+                // out from it again, as in `x = x * k % m`, needs no fix-up for a sign it can't have.
+                let (low, high) = (self.temp(), self.temp());
+                self.line(&format!("{low} = icmp sge i64 {result}, 0"));
+                self.assumed(&low, "a remainder by a positive number isn't negative", span);
+                self.line(&format!("{high} = icmp slt i64 {result}, {divisor}"));
+                self.assumed(&high, "a remainder is below what it's by", span);
+            }
+            return result;
+        }
         let (quotient, remainder, signs, differ, nonzero, adjust) =
             (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{quotient} = sdiv i64 {a}, {b}"));
@@ -2589,16 +2614,6 @@ impl Emit<'_, '_, '_> {
             let more = self.temp();
             self.line(&format!("{more} = add i64 {remainder}, {b}"));
             self.line(&format!("{result} = select i1 {adjust}, i64 {more}, i64 {remainder}"));
-            // By a positive number, the remainder is always from 0 up to it: said to LLVM, a value
-            // worked out from it again, as in `x = x * k % m`, needs no fix-up for a sign it can't
-            // have, and is the machine's remainder alone.
-            if let Operand::Int(divisor @ 1..) = rhs {
-                let (low, high) = (self.temp(), self.temp());
-                self.line(&format!("{low} = icmp sge i64 {result}, 0"));
-                self.assumed(&low, "a remainder by a positive number isn't negative", span);
-                self.line(&format!("{high} = icmp slt i64 {result}, {divisor}"));
-                self.assumed(&high, "a remainder is below what it's by", span);
-            }
         }
         result
     }
@@ -4760,11 +4775,11 @@ def main(stdout: Stdout):
         let (units, shared, _) = emit(&lowered(source)?)?;
         assert!(!shared.native.is_empty(), "Named's blocks are native");
         let text: String = units.iter().map(|unit| unit.text.as_str()).collect();
-        let drops: Vec<&str> = text.split("define internal void @fen_drop_").skip(1).collect();
+        let drops: Vec<&str> = text.split("define internal void @\"fen_drop_").skip(1).collect();
         assert!(!drops.is_empty(), "{text}");
         for drop in drops {
             let body = drop.split("\n}\n").next().unwrap_or_default();
-            assert!(!body.contains("call void @fen_drop_"), "{body}");
+            assert!(!body.contains("call void @\"fen_drop_"), "{body}");
             assert!(body.contains("%waiting"), "{body}");
         }
         Ok(())
@@ -4853,6 +4868,51 @@ def main(stdout: Stdout):
         );
         assert!(text.contains("release, align 8"), "{text}");
         assert!(!text.contains("unordered"), "{text}");
+        Ok(())
+    }
+
+    /// The symbols modules share name types by what they are, so a function's text is the same
+    /// after a type is added before its own, or another function asks for new kinds of blocks
+    /// first: a dict's shape (plain struct keys, struct values in the entry, list values), a kind
+    /// of list item that's a block (lists of lists of lists too), an enum's case with no fields,
+    /// kept in a global, and a native block's drop. They named layouts and kinds of blocks by
+    /// numbers that follow the order of definitions and of asking, so each such edit wrote these
+    /// functions again, and a function written once and used after could name another type. Each
+    /// symbol is checked to be in the text, so the test can't pass on a text without it.
+    #[test]
+    fn a_function_reads_the_same_after_types_are_added_before_it() -> Result<(), String> {
+        let program = "struct Spot:\n    x: int\n    y: int\n\nstruct Info:\n    hits: int\n    seen: bool\n\nenum Twig:\n    Leaf\n    Node(left: Twig, right: Twig, tag: str)\n\ndef shapes(keys: list[Spot]) -> int:\n    mut by_spot = dict[Spot, int]()\n    mut infos = dict[str, Info]()\n    mut runs = dict[str, list[int]]()\n    for key in keys:\n        by_spot[key] = key.x\n        infos[f\"{key.x}\"] = Info(hits=key.y, seen=True)\n        runs[f\"{key.y}\"] = [key.x]\n    return len(by_spot) + len(infos) + len(runs)\n\ndef nested(count: int) -> int:\n    mut rows = list[list[list[int]]]()\n    for at in range(count):\n        rows.append([[at]])\n    return len(rows)\n\ndef leaf() -> Twig:\n    return .Leaf\n\ndef main(stdout: Stdout):\n    stdout.print(shapes([Spot(x=1, y=2)]) + nested(3))\n    stdout.print(leaf() is Twig.Leaf)\n";
+        let before = "struct Early:\n    first: int\n    second: int\n\nstruct Kept:\n    count: int\n    flag: bool\n\ndef early(count: int) -> int:\n    mut grid = list[list[str]]()\n    mut kept = dict[str, Kept]()\n    mut spots = dict[Early, list[str]]()\n    for at in range(count):\n        grid.append([f\"{at}\"])\n        kept[f\"{at}\"] = Kept(count=at, flag=True)\n        spots[Early(first=at, second=at)] = [f\"{at}\"]\n    return len(grid) + len(kept) + len(spots)\n\n";
+        let with_early = format!(
+            "{before}{}",
+            program.replace(
+                "def main(stdout: Stdout):\n",
+                "def main(stdout: Stdout):\n    stdout.print(early(2))\n"
+            )
+        );
+        let symbols: [(&str, &[&str]); 3] = [
+            (
+                "shapes",
+                &[
+                    "@\"d_Plain(Spot)_Int\"",
+                    "@\"d_Text_InPlace(Info)\"",
+                    "@\"d_Text_Block(List(Int))\"",
+                    "@\"fen_drop_Twig\"",
+                ],
+            ),
+            ("nested", &["@\"e_k_List(Block(List(Int)))\"", "@\"e_k_List(Int)\""]),
+            ("leaf", &["@\"fen_case_Twig_0\""]),
+        ];
+        for (function, named) in symbols {
+            let (alone, after) = (text_of(program, function)?, text_of(&with_early, function)?);
+            for symbol in named {
+                assert!(alone.contains(symbol), "`{function}` doesn't use {symbol}:\n{alone}");
+            }
+            assert!(
+                alone == after,
+                "`{function}` reads differently with types added before it:\n{alone}\n---\n{after}"
+            );
+        }
         Ok(())
     }
 

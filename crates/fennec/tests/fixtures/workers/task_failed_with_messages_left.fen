@@ -1,0 +1,25 @@
+# A task fails on a message while its launcher's block still sends: the messages after it are left
+# in its inbox, or the sends of them fail with `Closed`, by time, and either way the block ends with
+# the task's failure.
+from std.concurrent import Closed, Crashed, Inbox
+
+error Refused:
+    code: int
+
+def guarding(inbox: Inbox[int], stdout: Stdout) fails Refused:
+    for number in inbox:
+        stdout.print("task", number)
+        if number == 7:
+            fail Refused(code=number)
+
+def guard_all(items: list[int], stdout: Stdout) fails Closed | Crashed | Refused:
+    with launch((inbox) => guarding(inbox, stdout)?)? as sends:
+        for item in items:
+            sends.send(item)?
+
+def main(stdout: Stdout):
+    guard_all([7, 6, 5], stdout) except why:
+        stdout.print(f"{why}")
+    guard_all([1, 7, 6], stdout) except why:
+        stdout.print(f"{why}")
+    stdout.print("done")

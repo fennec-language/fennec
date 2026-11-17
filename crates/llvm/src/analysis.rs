@@ -3750,6 +3750,16 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
     let mut leaned_on = HashSet::new();
     for local in 0..function.locals.len() {
         let id = LocalId(local);
+        // A bool or a number holds no block, so it leans on nothing, however it was read: a
+        // match binding whose `bool` field was read first, with no owner of its own, was counted
+        // as leaned on and copied into a `mut` where it could be moved, and every change then
+        // copied its lists (#1953).
+        if matches!(
+            function.locals.get(local).map(|held| &held.ty),
+            Some(Type::Unit | Type::None | Type::Bool | Type::Int | Type::Float)
+        ) {
+            continue;
+        }
         leaned_on.extend(known.lender(id).map(|from| from.0));
         leaned_on.extend(known.alias(id).map(|from| from.0));
         leaned_on.extend(known.field_of(id).map(|(from, _)| from.0));

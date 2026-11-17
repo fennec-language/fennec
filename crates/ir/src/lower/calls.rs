@@ -2,6 +2,8 @@
 //! Fennec, and to what the engines provide. An argument to a `mut` parameter that's a field
 //! is read into a temporary and written back after the call.
 
+use std::collections::{BTreeSet, HashSet};
+
 use fennec_check::Type;
 use fennec_syntax::{Arg, BinOp, Expr, ExprKind, Span};
 
@@ -23,26 +25,59 @@ type Lock = (Operand, bool);
 
 /// The standard library's functions a program's calls reach, which aren't lowered yet.
 pub(super) fn external(program: &Program) -> Vec<String> {
-    let mut found: Vec<String> = program
-        .functions
-        .iter()
-        .chain(&program.constants)
-        .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.insts)
-        .filter_map(|inst| match &inst.kind {
-            InstKind::Call { function, .. } | InstKind::MakeClosure { function, .. } => {
-                Some(function.clone())
+    let mut unlowered = Unlowered::default();
+    unlowered.read(program);
+    unlowered.called.into_iter().collect()
+}
+
+/// What the program's functions call that isn't lowered, found as functions are added: each
+/// read looks only at what was added since the last.
+#[derive(Default)]
+pub(super) struct Unlowered {
+    /// How many of the program's functions, constants and functions it couldn't lower were read.
+    functions: usize,
+    constants: usize,
+    skipped: usize,
+    /// The functions lowered, or that couldn't be.
+    known: HashSet<String>,
+    /// What's called and isn't lowered, in order.
+    called: BTreeSet<String>,
+}
+
+impl Unlowered {
+    /// Reads what's been added to the program since the last read.
+    pub(super) fn read(&mut self, program: &Program) {
+        let functions = program.functions.get(self.functions..).unwrap_or_default();
+        let constants = program.constants.get(self.constants..).unwrap_or_default();
+        let skipped = program.not_lowered.get(self.skipped..).unwrap_or_default();
+        let known = functions
+            .iter()
+            .map(|function| &function.name)
+            .chain(skipped.iter().map(|skipped| &skipped.function));
+        for name in known {
+            self.called.remove(name);
+            self.known.insert(name.clone());
+        }
+        let insts = functions
+            .iter()
+            .chain(constants)
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.insts);
+        for inst in insts {
+            if let InstKind::Call { function, .. } | InstKind::MakeClosure { function, .. } = &inst.kind
+                && !self.known.contains(function)
+            {
+                self.called.insert(function.clone());
             }
-            _ => None,
-        })
-        .filter(|name| {
-            !program.functions.iter().any(|function| function.name == *name)
-                && !program.not_lowered.iter().any(|skipped| skipped.function == *name)
-        })
-        .collect();
-    found.sort();
-    found.dedup();
-    found
+        }
+        (self.functions, self.constants, self.skipped) =
+            (program.functions.len(), program.constants.len(), program.not_lowered.len());
+    }
+
+    /// The first of what's called and isn't lowered, in order, that `pick` picks.
+    pub(super) fn first(&self, pick: impl Fn(&str) -> bool) -> Option<String> {
+        self.called.iter().find(|name| pick(name)).cloned()
+    }
 }
 
 /// The name methods of a built-in type are keyed under.

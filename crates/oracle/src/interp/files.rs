@@ -13,7 +13,7 @@ use fennec_syntax::{Span, WithName};
 use super::disk::{Disk, Done, Fault, Reached};
 use super::stream::{FileLines, Source};
 use super::{Flow, Interp, Run, unsupported};
-use crate::value::{Cap, Reach, Value};
+use crate::value::{Cap, Reach, Text, Value};
 
 /// The methods of an `Fs` that change what's on the disk, which one narrowed with `read_only`
 /// refuses. Closing a file read through one is fine: it changes nothing.
@@ -31,7 +31,7 @@ enum Whither {
 
 /// An `IoError` of this case, saying this.
 pub(crate) fn io_error(case: &str, reason: String) -> Value {
-    Value::instance("IoError", Some(case), vec![("reason".to_owned(), Value::Str(reason))])
+    Value::instance("IoError", Some(case), vec![("reason".to_owned(), Value::Str(Text::from(reason)))])
 }
 
 fn failing<T>(case: &str, reason: String, span: Span) -> Run<T> {
@@ -119,7 +119,7 @@ impl Interp {
             let reached = reached(disk, &whither)?;
             disk.read_text(reached)
         })
-        .map(Value::Str)
+        .map(|text| Value::Str(text.into()))
     }
 
     /// `exists`, `remove`, `list_dir`, `walk` and `metadata`.
@@ -167,10 +167,10 @@ impl Interp {
     /// The text of a path a method of `Fs` is given: a `str`, or a `Path`'s.
     pub(crate) fn path_text(&self, value: &Value) -> Run<String> {
         match value {
-            Value::Str(text) => Ok(text.clone()),
+            Value::Str(text) => Ok(text.as_str().to_owned()),
             Value::Instance(path) if path.ty == "Path" && self.is_std_type("Path") => {
                 match path.field("text") {
-                    Some(Value::Str(text)) => Ok(text.clone()),
+                    Some(Value::Str(text)) => Ok(text.as_str().to_owned()),
                     _ => unsupported("a Path without its text"),
                 }
             }
@@ -231,7 +231,7 @@ impl Interp {
             return unsupported("an `IoError` with these fields");
         }
         match self.arg_as_value(arg)? {
-            Value::Str(reason) => Ok(io_error(case, reason)),
+            Value::Str(reason) => Ok(io_error(case, reason.into_string())),
             other => unsupported(format!("an `IoError` whose reason is a {}", other.kind())),
         }
     }
@@ -342,10 +342,12 @@ impl Interp {
                 self.disk(span, |disk| disk.still_open(handle))?;
                 Ok(Value::Unit)
             }
-            ("read_line", []) => {
-                Ok(self.disk(span, |disk| disk.read_line(handle))?.map_or(Value::None, Value::Str))
+            ("read_line", []) => Ok(self
+                .disk(span, |disk| disk.read_line(handle))?
+                .map_or(Value::None, |line| Value::Str(line.into()))),
+            ("read_text", []) => {
+                self.disk(span, |disk| disk.read_rest(handle)).map(|text| Value::Str(text.into()))
             }
-            ("read_text", []) => self.disk(span, |disk| disk.read_rest(handle)).map(Value::Str),
             ("lines", []) => {
                 let made = self.shared.rounds_started.load(std::sync::atomic::Ordering::SeqCst);
                 let lines = FileLines { disk: std::sync::Arc::clone(&self.shared.disk), handle, span, made };
@@ -375,7 +377,7 @@ fn paths(texts: Vec<String>) -> Value {
 
 /// A `Path` with this text.
 pub(crate) fn path_value(text: String) -> Value {
-    Value::instance("Path", None, vec![("text".to_owned(), Value::Str(text))])
+    Value::instance("Path", None, vec![("text".to_owned(), Value::Str(Text::from(text)))])
 }
 
 /// The failure for a path that holds a NUL, which no system takes: it's shown with the NUL

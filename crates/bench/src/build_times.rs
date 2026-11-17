@@ -126,7 +126,7 @@ impl Setup {
             && Command::new("/usr/bin/time")
                 .arg("--version")
                 .output()
-                .is_ok_and(|output| String::from_utf8_lossy(&output.stderr).contains("GNU"));
+                .is_ok_and(|output| says_gnu_time(&output.stdout, &output.stderr));
         Ok(Setup { fennec, counter, gnu_time, work })
     }
 
@@ -545,6 +545,13 @@ pub(crate) fn counted(setup: &Setup, run: &Invocation<'_>) -> Result<Counted, St
     Ok(Counted { wall, by_tool, peak_kb, said: String::from_utf8_lossy(&output.stdout).into_owned() })
 }
 
+/// Whether `time --version` said it's GNU's. GNU's `time` says so on standard output, though a
+/// `time` that fails says it on standard error, so both are read: reading standard error alone
+/// took GNU's for missing, and the Linux runs measured no memory.
+fn says_gnu_time(stdout: &[u8], stderr: &[u8]) -> bool {
+    [stdout, stderr].iter().any(|said| String::from_utf8_lossy(said).contains("GNU"))
+}
+
 /// The command line up to `fennec`'s own arguments: GNU's `time`, reading the most memory a
 /// process and the ones it waited for held, where it's there and macOS's `time -l` isn't; then
 /// what counts instructions; then `fennec`.
@@ -762,6 +769,7 @@ fn executable(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
+#[expect(clippy::unnecessary_wraps, reason = "the same signature as Unix's, where setting the mode can fail")]
 fn executable(_: &Path) -> Result<(), String> {
     Ok(())
 }
@@ -844,7 +852,18 @@ fn write_budgets(path: &Path, measured: &[(String, Step, Found)]) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::{apple_counts, apple_peak, apple_real, billions, median, over, perf_count};
+    use super::{apple_counts, apple_peak, apple_real, billions, median, over, perf_count, says_gnu_time};
+
+    /// GNU's `time --version` says it on standard output, as Debian's does.
+    #[test]
+    fn gnu_time_is_known_by_what_it_says_on_either_stream() {
+        assert!(says_gnu_time(
+            b"time (GNU Time) UNKNOWN\nCopyright (C) 2018 Free Software Foundation, Inc.\n",
+            b""
+        ));
+        assert!(says_gnu_time(b"", b"time (GNU Time) 1.9\n"));
+        assert!(!says_gnu_time(b"", b"usage: time [-al] command\n"));
+    }
 
     #[test]
     fn a_count_over_its_budget_by_more_than_the_slack_is_over() {

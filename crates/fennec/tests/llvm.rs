@@ -12753,6 +12753,67 @@ def main(stdout: Stdout):
     stdout.print(failed, failed_many)
 "#;
 
+/// A match binding whose field is read first is still moved into a `mut` at its last use: a
+/// field read that copies out a bool leans on nothing. It was copied there instead, and each of
+/// these 2,000 appends copied the list again, 48 MB in all (#1953). It prints what the reference
+/// evaluator prints, makes no copies and leaves nothing.
+#[test]
+fn a_binding_read_first_is_still_moved_at_its_last_use() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("moved_after_reads", MOVED_AFTER_READS, "2000\n")?;
+    let counts = counts_of("moved_after_reads_counts", MOVED_AFTER_READS)?;
+    assert!(counts.starts_with("copies 0 copied_bytes 0 ") && counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
+const MOVED_AFTER_READS: &str = r#"struct Inner:
+    keys = list[str]()
+    flag = False
+
+enum Value:
+    Off(on: bool)
+    Table(table: Inner)
+
+struct Outer:
+    values = list[Value]()
+
+TAKEN = Value.Off(on=False)
+
+def taken(ref outer: Outer, place: int) -> Value:
+    held = outer.values[place]
+    outer.values[place] = TAKEN
+    return held
+
+def read_first(ref outer: Outer, key: str):
+    match taken(ref outer, 0):
+        case .Table(inner):
+            if inner.flag:
+                return
+            mut child = inner
+            child.keys.append(key)
+            outer.values[0] = .Table(table=child)
+        case _:
+            return
+    return
+
+def keys_held(outer: Outer) -> int:
+    match outer.values[0]:
+        case .Table(inner):
+            return len(inner.keys)
+        case _:
+            return -1
+
+def main(stdout: Stdout):
+    mut outer = Outer()
+    outer.values.append(.Table(table=Inner()))
+    for count in range(2000):
+        read_first(ref outer, f"key {count}, long enough for a block of its own")
+    stdout.print(keys_held(outer))
+    return
+"#;
+
 /// A program that reads a value where letting go of it too soon is easiest to get wrong prints the
 /// same in a dev build and a release, built as written and checking proofs, and holds as many
 /// blocks at its end after 30 rounds as after 3. Too soon would read what's freed, which the

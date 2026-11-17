@@ -46,6 +46,8 @@ case "$hours" in
     ;;
 esac
 gh=${GH:-gh}
+# Beside this script, wherever it was run from.
+here="$(cd "$(dirname "$0")" && pwd)"
 # The main checkout's, wherever this runs from: the common git folder is its `.git`.
 common="$(git rev-parse --path-format=absolute --git-common-dir)"
 checkout="$(dirname "$common")"
@@ -57,7 +59,7 @@ worktrees="$checkout/.claude/worktrees"
 worktrees="$(cd "$worktrees" && pwd -P)"
 # From the checkout, so `gh` asks about this repository's pull requests.
 cd "$checkout"
-git fetch --quiet origin main
+"$here/fetch.sh" main
 
 folders="$(mktemp)"
 commands="$(mktemp)"

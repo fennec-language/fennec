@@ -6,7 +6,8 @@
 //! first served.
 //!
 //! Outside a task, or where a task can't park, nothing waits for a turn here: the work waits on
-//! the thing's own lock where it runs, as it always did.
+//! the thing's own lock where it runs, as it always did. A task stopped, or a round cancelled,
+//! while it waits its turn fails as stopped there, and the work it waited to do isn't done.
 
 #[cfg(any(test, feature = "threads"))]
 use std::collections::VecDeque;
@@ -37,6 +38,10 @@ struct Waiting {
     task: crate::embed::serve::ParkedTask,
     given: Arc<AtomicBool>,
 }
+
+/// A task stopped, or a round cancelled, while it waited its turn: it's failed as stopped, and
+/// what it waited to do mustn't be done.
+pub(crate) struct Stopped;
 
 /// A task's turn, which goes to the next in line when it's dropped.
 #[cfg_attr(
@@ -86,26 +91,32 @@ impl<T> Held<T> {
         self.line.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// This task's turn, waited for parked: `None` where a task can't park, or when it was
-    /// stopped while it waited, for the work to wait on the lock where it runs instead.
+    /// This task's turn, waited for parked: `None` where a task can't park, for the work to wait
+    /// on the lock where it runs instead, and `Stopped` when it was stopped while it waited, for
+    /// the work not to be done. Done anyway, a statement a stopped round waited to run ran once
+    /// the one before it ended, and so did a write to a file (#1951).
     #[cfg_attr(
         not(any(test, feature = "threads")),
-        expect(clippy::unused_self, reason = "a turn is waited for only where tasks park")
+        expect(
+            clippy::unused_self,
+            clippy::unnecessary_wraps,
+            reason = "a turn is waited for, and a stop comes in the wait, only where tasks park"
+        )
     )]
-    pub(crate) fn turn(&self) -> Option<Turn<'_, T>> {
+    pub(crate) fn turn(&self) -> Result<Option<Turn<'_, T>>, Stopped> {
         #[cfg(any(test, feature = "threads"))]
         {
             use crate::embed::serve::{Parked, ParkedTask, can_park, next_token, park_on};
             if !can_park() {
-                return None;
+                return Ok(None);
             }
             let mut line = self.line();
             if !line.taken {
                 line.taken = true;
-                return Some(Turn { held: self });
+                return Ok(Some(Turn { held: self }));
             }
             let token = next_token();
-            let task = ParkedTask::here(token)?;
+            let Some(task) = ParkedTask::here(token) else { return Ok(None) };
             let given = Arc::new(AtomicBool::new(false));
             line.waiting.push_back(Waiting { task, given: Arc::clone(&given) });
             drop(line);
@@ -113,7 +124,7 @@ impl<T> Held<T> {
                 // A turn handed over before this task parks wakes it once it has: the wake goes
                 // through its worker's mail, which the worker takes only after the task parks.
                 if given.load(Ordering::Acquire) {
-                    return Some(Turn { held: self });
+                    return Ok(Some(Turn { held: self }));
                 }
                 if park_on(token, None) == Parked::Cancelled {
                     let mut line = self.line();
@@ -124,13 +135,13 @@ impl<T> Held<T> {
                     } else {
                         line.waiting.retain(|waiting| !Arc::ptr_eq(&waiting.given, &given));
                     }
-                    return None;
+                    return Err(Stopped);
                 }
             }
         }
         #[cfg(not(any(test, feature = "threads")))]
         {
-            None
+            Ok(None)
         }
     }
 }

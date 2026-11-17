@@ -79,6 +79,7 @@ fn a_short_run_of_every_target_finds_nothing() {
         "formatter",
         "checker",
         "lengths",
+        "ranges",
         "csv",
         "json",
         "json-rules",

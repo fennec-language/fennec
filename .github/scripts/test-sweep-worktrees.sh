@@ -9,7 +9,7 @@ sleeper=""
 trap '[ -z "$sleeper" ] || { kill "$sleeper" && wait "$sleeper"; } 2> /dev/null || true; rm -rf "$work"' EXIT
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 old="2026-01-01T00:00:00"
-git init --quiet --bare "$work/origin.git"
+git init --quiet --bare --initial-branch=main "$work/origin.git"
 git clone --quiet "$work/origin.git" "$work/checkout" 2> /dev/null
 cd "$work/checkout"
 echo one > file

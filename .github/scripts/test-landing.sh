@@ -25,7 +25,7 @@ cd "$work/a" || exit 1
 git config core.hooksPath .githooks
 mkdir -p .githooks .github/scripts
 cp "$here/.githooks/pre-push" .githooks/
-cp "$here/.github/scripts/fennec-land" .github/scripts/
+cp "$here/.github/scripts/fennec-land" "$here/.github/scripts/fetch.sh" .github/scripts/
 cat > .github/scripts/gate.sh <<'GATE'
 #!/usr/bin/env bash
 echo ran >> "$GATE_RAN"

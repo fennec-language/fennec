@@ -153,7 +153,7 @@ const PACKED: [&str; 10] = [
 
 const ANYTHING: [&str; 4] = ["\0", "\u{7f}", "é", "🦊"];
 
-pub(crate) const TARGETS: [Target; 18] = [
+pub(crate) const TARGETS: [Target; 19] = [
     Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer, stuck: STUCK },
     Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser, stuck: STUCK },
     Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter, stuck: STUCK },
@@ -163,6 +163,13 @@ pub(crate) const TARGETS: [Target; 18] = [
         corpus: &["crates/fuzz/seeds/programs", "crates/fuzz/seeds/llvm"],
         tokens: &ANYTHING,
         run: lengths,
+        stuck: STUCK,
+    },
+    Target {
+        name: "ranges",
+        corpus: &["crates/fuzz/seeds/programs", "crates/fuzz/seeds/llvm"],
+        tokens: &ANYTHING,
+        run: ranges,
         stuck: STUCK,
     },
     Target { name: "json", corpus: &["crates/fuzz/seeds/json"], tokens: &JSON, run: json, stuck: STUCK },
@@ -404,6 +411,27 @@ fn lengths(input: &[u8]) -> Result<(), String> {
 
 /// How far the `lengths` target runs each program.
 const LENGTH_STEPS: u64 = 100_000;
+
+/// What's known of ints' and floats' values holds while a program runs in the IR's evaluator:
+/// each value written and each parameter given holds what's known of it, and each `//`, `%`, `*`
+/// and list index said not negative, `int(x)` said to fit and comparison said not NaN has
+/// operands that are. The program is one of the two kinds the bytes can write, as for `lengths`.
+fn ranges(input: &[u8]) -> Result<(), String> {
+    let source = if input.len().is_multiple_of(2) {
+        crate::programs::written(input)
+    } else {
+        crate::generate::program(input)
+    };
+    let Ok(module) = fennec_syntax::parse(&source) else { return Ok(()) };
+    let Ok(signatures) = fennec_check::check(&module) else { return Ok(()) };
+    let program = fennec_ir::lower(&module, &signatures);
+    let ranges = fennec_ir::ranges::Ranges::of(&program);
+    let ran = fennec_ir::eval::check_ranges(&program, &ranges, LENGTH_STEPS);
+    match ran.broken {
+        Some(broken) => Err(format!("{broken}\n--- program\n{source}")),
+        None => Ok(()),
+    }
+}
 
 /// The standard library's JSON reader, built natively, on any text.
 fn json(input: &[u8]) -> Result<(), String> {

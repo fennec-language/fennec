@@ -267,6 +267,53 @@ fn noted(channel: i64) -> (usize, usize) {
     (queue.senders.len(), queue.receivers.len())
 }
 
+static FREED_UNDER: AtomicI64 = AtomicI64::new(0);
+static FOUND_FREED: AtomicI64 = AtomicI64::new(-1);
+
+/// Waits, parked, for a message on a channel that's freed while it waits.
+extern "C" fn waits_while_freed(_env: i64, _thread: i64) -> i64 {
+    let mut value = 0;
+    FOUND_FREED
+        .store(channel_receive(FREED_UNDER.load(Ordering::SeqCst), PATIENCE, &mut value), Ordering::SeqCst);
+    0
+}
+
+/// Waits until `ready` says so, failing the test rather than hanging it.
+fn until(what: &str, ready: impl Fn() -> bool) {
+    let started = Instant::now();
+    while !ready() {
+        assert!(started.elapsed() < Duration::from_secs(10), "never {what}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// A channel freed while a task is parked on it, and while a thread waits on it, wakes both, and
+/// each finds it closed at once. They waited on until their own time ran out, or their task was
+/// stopped, as freeing told nobody.
+#[test]
+fn a_channel_freed_while_a_task_and_a_thread_wait_on_it_wakes_both_as_closed() {
+    begin();
+    let quiet = channel_new(1);
+    FREED_UNDER.store(quiet, Ordering::SeqCst);
+    let task = launch(waits_while_freed);
+    until("parked", || noted(quiet).1 == 1);
+    let thread = std::thread::spawn(move || {
+        begin();
+        let mut value = 0;
+        let got = channel_receive(quiet, PATIENCE, &mut value);
+        finish();
+        got
+    });
+    until("asleep", || find(quiet).is_some_and(|found| found.queue().asleep.for_a_message == 1));
+    let freed_at = Instant::now();
+    channel_free(quiet);
+    assert_eq!(thread.join().unwrap(), CLOSED, "the thread found it closed");
+    assert_eq!(end(task), 0);
+    assert_eq!(FOUND_FREED.load(Ordering::SeqCst), CLOSED, "the task found it closed");
+    assert!(freed_at.elapsed() < Duration::from_secs(5), "they woke at once");
+    finish();
+}
+
 /// How many times each of these tests' tasks waits and gives up.
 const TRIES: i64 = 50;
 /// What each test's task waits on: a quiet channel, a full one, and a listener nothing's sent to.

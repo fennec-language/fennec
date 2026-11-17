@@ -1098,6 +1098,11 @@ impl Io {
         let step = resume(self);
         super::swap_temporaries(&mut own);
         if !matches!(step, Step::Parked(_)) {
+            // A replayed round its recording says a stop or a cancel cut short ends quietly, as a
+            // cancelled round does in the run: its server's end clears what it failed with (#1918).
+            if own.replay.as_ref().is_some_and(crate::replay::Task::was_stopped) {
+                own.failure = None;
+            }
             super::take_failure_of(&mut own);
         }
         if matches!(step, Step::Parked(_)) && !own.is_empty() {
@@ -1582,7 +1587,15 @@ fn parked_as(woken: Option<Wake>) -> Parked {
                 Parked::Ready
             }
         }
-        Some(Wake::Cancelled) => Parked::Cancelled,
+        // Cancelled, as a server's rounds are when it stops, every wait it comes to ends at once:
+        // it fails as stopped, as at a channel, so it goes no further. Gone on as if its wait had
+        // ended, a round asleep ran on, and one that slept in a loop never ended (#1915).
+        Some(Wake::Cancelled) => {
+            if !super::failed() {
+                fail_as_stopped();
+            }
+            Parked::Cancelled
+        }
         _ => Parked::Ready,
     }
 }

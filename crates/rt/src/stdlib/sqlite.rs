@@ -559,7 +559,11 @@ mod real {
             drop(turn);
             match done {
                 Err(err) if busy(&err) && started.elapsed() < BUSY_WAIT => {
-                    pause(wait);
+                    // A task stopped, or a round cancelled, in its pause fails as stopped there,
+                    // and tries no more.
+                    if pause(wait) {
+                        return Err(err);
+                    }
                     wait = (wait * 2).min(Duration::from_millis(50));
                 }
                 done => return done,
@@ -567,8 +571,9 @@ mod real {
         }
     }
 
-    /// Waits `length`: a task parks for it, so its thread runs others meanwhile.
-    fn pause(length: Duration) {
+    /// Waits `length`: a task parks for it, so its thread runs others meanwhile. Gives back whether
+    /// a stop or a cancel cut it short, which fails the task as stopped.
+    fn pause(length: Duration) -> bool {
         #[cfg(any(test, feature = "threads"))]
         if crate::embed::serve::can_park() {
             let deadline = Instant::now() + length;
@@ -577,12 +582,13 @@ mod real {
                 if crate::embed::serve::park_on(token, Some(deadline))
                     == crate::embed::serve::Parked::Cancelled
                 {
-                    return;
+                    return true;
                 }
             }
-            return;
+            return false;
         }
         std::thread::sleep(length);
+        false
     }
 
     /// The `Err` a failure of SQLite's is, as the case of `SqlError` it is.

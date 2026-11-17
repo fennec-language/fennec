@@ -1,0 +1,56 @@
+# List parameters whose length nothing in their function changes, indexed in loops, so each
+# check is made against a length read at the function's start: read after a `continue`, stored
+# into through `ref`, counted from the end, and measured with `len`; beside lists made in their
+# function and a copy grown in a call, which keep nothing. What a build prints is what the
+# reference evaluator prints, and a build that checks proofs checks each kept length against the
+# list's own.
+
+def scaled(values: list[float], factors: list[float], every: int) -> float:
+    mut total = 0.0
+    for at in range(len(values)):
+        if at % every == 0:
+            continue
+        total += values[at] * factors[at % len(factors)]
+    return total
+
+def spread(ref out: list[int], given: list[int]):
+    for at in range(len(given)):
+        for back in range(1, 4):
+            out[(at + back) % len(out)] += given[at] * back
+    return
+
+def filled(starts: list[int]) -> list[int]:
+    mut counts = starts
+    for at in range(1, len(counts)):
+        counts[at] += counts[at - 1]
+    return counts
+
+def from_the_end(items: list[str]) -> str:
+    mut joined = ""
+    for back in range(1, len(items) + 1):
+        joined += items[-back]
+    return joined
+
+def grown_copy(items: list[int]) -> int:
+    mut mine = items
+    mine.append(len(items))
+    return len(mine)
+
+def measured(items: list[int]) -> int:
+    mut total = 0
+    for at in range(len(items)):
+        total = total * 3 + grown_copy(items) + items[at] * at + len(items)
+    return total
+
+def main(stdout: Stdout):
+    values = [float(at) * 0.5 for at in range(40)]
+    factors = [1.0, 2.0, 3.0]
+    stdout.print(scaled(values, factors=factors, every=3))
+    mut out = [0, 0, 0, 0, 0]
+    spread(ref out, given=[1, 2, 3, 4, 5, 6, 7])
+    stdout.print(out)
+    starts = [1, 0, 2, 0, 3, 0, 4]
+    stdout.print(filled(starts), starts)
+    stdout.print(from_the_end(["a", "b", "c", "d"]))
+    stdout.print(measured([3, 1, 4, 1, 5]))
+    return

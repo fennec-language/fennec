@@ -354,6 +354,72 @@ fn a_field_written_through_an_error_is_followed() {
     assert_eq!(not_negative(&program, &ranges, "main", &is_index).unwrap(), [false]);
 }
 
+/// An intrinsic can write any local it's handed, not only its first: taking from a channel
+/// writes why it stopped into a later argument, so nothing's known of that local after.
+#[test]
+fn what_an_intrinsic_is_handed_it_can_write() {
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/channel_to_every.fen"))
+            .unwrap();
+    let program = lowered(&source).unwrap();
+    let ranges = Ranges::of(&program);
+    let mut handed = 0;
+    for function in &program.functions {
+        let known = ranges.function(&function.name).unwrap();
+        for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+            let InstKind::Builtin { name, args, changes, .. } = &inst.kind else { continue };
+            if !name.starts_with("intrinsics.channel_take") {
+                continue;
+            }
+            for arg in args.iter().skip(usize::from(*changes)) {
+                let fennec_ir::Operand::Local(local) = arg else { continue };
+                handed += 1;
+                assert_eq!(known.local(*local), None, "{} {local:?}", function.name);
+            }
+        }
+    }
+    assert!(handed > 0, "no local was handed to `channel_take`");
+}
+
+/// A comparison says nothing of either side where the block ends if either is written after it,
+/// nor of the branch if its condition is: no lowering does that, so these change the IR by hand.
+#[test]
+fn a_branch_says_nothing_after_its_comparison_is_overwritten() {
+    let source = "def pick(values: list[int], at: int, low: int) -> int:\n    if at >= low:\n        return values[at]\n    return 0\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(pick([1, 2, 3], 2, 0), pick([1, 2, 3], -2, 0))\n";
+    let program = lowered(source).unwrap();
+    assert_eq!(not_negative(&program, &Ranges::of(&program), "pick", &is_index).unwrap(), [true]);
+    // `low` rewritten after `at >= low`: `at` was at least 0 there, not at least 5.
+    let rewritten = |program: &mut Program, written: fn(&InstKind) -> InstKind| {
+        let pick = program.functions.iter_mut().find(|function| function.name == "pick").unwrap();
+        let block = pick
+            .blocks
+            .iter_mut()
+            .find(|block| matches!(block.end, fennec_ir::Terminator::Branch { .. }))
+            .unwrap();
+        let at = block
+            .insts
+            .iter()
+            .position(|inst| matches!(inst.kind, InstKind::Binary { op: BinOp::GtEq, .. }))
+            .unwrap();
+        let compared = block.insts[at].clone();
+        block.insts.insert(at + 1, fennec_ir::Inst { kind: written(&compared.kind), span: compared.span });
+    };
+    let mut changed = program.clone();
+    rewritten(&mut changed, |compared| {
+        let InstKind::Binary { rhs: fennec_ir::Operand::Local(low), .. } = compared else { unreachable!() };
+        InstKind::Copy { dest: *low, value: fennec_ir::Operand::Int(5) }
+    });
+    assert_eq!(not_negative(&changed, &Ranges::of(&changed), "pick", &is_index).unwrap(), [false]);
+    // The condition rewritten after the comparison: the branch no longer says `at >= low`.
+    let mut changed = program;
+    rewritten(&mut changed, |compared| {
+        let InstKind::Binary { dest, .. } = compared else { unreachable!() };
+        InstKind::Copy { dest: *dest, value: fennec_ir::Operand::Bool(true) }
+    });
+    assert_eq!(not_negative(&changed, &Ranges::of(&changed), "pick", &is_index).unwrap(), [false]);
+}
+
 /// A function something other than a call by name may call, here a function passed as a value,
 /// knows nothing of its parameters.
 #[test]

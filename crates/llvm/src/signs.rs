@@ -1065,9 +1065,15 @@ def main(stdout: Stdout):
             let Ok(checked) = fennec_check::check_and_resolve(&mut module) else { continue };
             let program = fennec_ir::lower(&module, &checked);
             let ranges = fennec_ir::ranges::Ranges::of(&program);
-            for (function, proven) in non_negative(&program) {
+            // In order, so what's missing reads the same each run.
+            let proven: std::collections::BTreeMap<String, std::collections::BTreeSet<(usize, usize)>> =
+                non_negative(&program)
+                    .into_iter()
+                    .map(|(function, places)| (function, places.into_iter().collect()))
+                    .collect();
+            for (function, places_here) in proven {
                 let known = ranges.function(&function);
-                for place in proven {
+                for place in places_here {
                     places += 1;
                     if !known.is_some_and(|known| known.not_negative(place)) {
                         missing.push(format!("{}: `{function}` at {place:?}", path.display()));

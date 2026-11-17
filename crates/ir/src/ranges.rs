@@ -386,26 +386,8 @@ impl Ranges {
     /// Works out what's known about a program's values.
     #[must_use]
     pub fn of(program: &Program) -> Self {
-        let functions: HashMap<&str, &Function> =
-            every(program).map(|function| (function.name.as_str(), function)).collect();
-        let other_ways = called_other_ways(program);
-        let closures = closures(program);
-        let outside = outside_structs(program, &other_ways, &closures);
-        let sets_every: HashMap<&str, Vec<bool>> =
-            functions.iter().map(|(name, function)| (*name, sets_every_item(function))).collect();
-        let mut world = World {
-            program,
-            functions: &functions,
-            params: BTreeMap::new(),
-            returns: BTreeMap::new(),
-            leaves: BTreeMap::new(),
-            sets_every: &sets_every,
-            other_ways: &other_ways,
-            closures: &closures,
-            outside: &outside,
-            fields: BTreeMap::new(),
-            grew: BTreeMap::new(),
-        };
+        let whole = Whole::of(program);
+        let mut world = whole.world();
         let mut found = BTreeMap::new();
         for _ in 0..MOST_ROUNDS {
             let mut next = Next::default();
@@ -432,6 +414,46 @@ impl Ranges {
         }
         // Still moving after every round: nothing worked out can be trusted.
         Ranges { functions: BTreeMap::new(), unsettled: Some(Unsettled::Program) }
+    }
+}
+
+/// What's worked out once about a whole program, before any round.
+struct Whole<'p> {
+    program: &'p Program,
+    functions: HashMap<&'p str, &'p Function>,
+    other_ways: HashSet<&'p str>,
+    closures: HashMap<&'p str, usize>,
+    outside: HashSet<String>,
+    sets_every: HashMap<&'p str, Vec<bool>>,
+}
+
+impl<'p> Whole<'p> {
+    fn of(program: &'p Program) -> Self {
+        let functions: HashMap<&str, &Function> =
+            every(program).map(|function| (function.name.as_str(), function)).collect();
+        let other_ways = called_other_ways(program);
+        let closures = closures(program);
+        let outside = outside_structs(program, &other_ways, &closures);
+        let sets_every =
+            functions.iter().map(|(name, function)| (*name, sets_every_item(function))).collect();
+        Whole { program, functions, other_ways, closures, outside, sets_every }
+    }
+
+    /// Nothing known across functions yet.
+    fn world(&self) -> World<'_> {
+        World {
+            program: self.program,
+            functions: &self.functions,
+            params: BTreeMap::new(),
+            returns: BTreeMap::new(),
+            leaves: BTreeMap::new(),
+            sets_every: &self.sets_every,
+            other_ways: &self.other_ways,
+            closures: &self.closures,
+            outside: &self.outside,
+            fields: BTreeMap::new(),
+            grew: BTreeMap::new(),
+        }
     }
 }
 
@@ -2002,4 +2024,30 @@ fn dominators(function: &Function) -> Vec<Vec<bool>> {
 /// Whether every way from the start to `block` goes through `by`.
 fn dominates(dominators: &[Vec<bool>], by: usize, block: usize) -> bool {
     dominators.get(block).and_then(|known| known.get(by)).copied().unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A list let go where a block starts holds anything there, so what's appended to it after
+    /// joins anything. A list missing from what's known is one not yet made, which would take
+    /// only what's appended.
+    #[test]
+    fn a_list_let_go_holds_anything() {
+        let source = "def main(stdout: Stdout):\n    mut values = [1, 2]\n    values.append(3)\n    stdout.print(values)\n";
+        let mut module = fennec_syntax::parse(source).unwrap();
+        let checked = fennec_check::check_and_resolve(&mut module).unwrap();
+        let program = crate::lower(&module, &checked);
+        let whole = Whole::of(&program);
+        let world = whole.world();
+        let main = program.functions.iter().find(|function| function.name == "main").unwrap();
+        let walk = Walk::new(&world, main);
+        let list = (0..main.locals.len()).map(LocalId).find(|local| walk.is_list(*local)).unwrap();
+        let mut state = State::from([(list.0, Fact::Int(1, 2))]);
+        walk.let_go_of(&BTreeSet::from([list.0]), &mut state);
+        assert_eq!(state.get(&list.0), Some(&Fact::Any));
+        Walk::hold(&mut state, list, Fact::Int(3, 3), false);
+        assert_eq!(state.get(&list.0), Some(&Fact::Any));
+    }
 }

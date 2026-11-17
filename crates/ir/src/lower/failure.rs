@@ -28,13 +28,17 @@ pub(super) fn definitions(signatures: &Signatures) -> Vec<StructDef> {
 
 /// A `with` block's cleanup, run with the failure in `name` when one leaves from inside what the
 /// block calls.
-pub(super) struct OnFailure {
+pub(super) struct OnFailure<'a> {
     pub(super) name: String,
     pub(super) cleanup: Vec<Stmt>,
-    /// How many scopes are in sight where the cleanup is written. It runs with only those, so a
-    /// name a loop or a case inside the block gives isn't one it reads: a `ref` case is put back
-    /// with its own names wherever the failure leaves from.
-    pub(super) scopes: usize,
+    /// Where the cleanup is written: the names in sight there, the types of what it's checked
+    /// with, and what its type parameters stand for. It's lowered with those, wherever the failure
+    /// leaves from: inside a loop or a case that names something the same, a `ref` case is put back
+    /// with its own names, and inside a field's default or a `where` rule, lowered with their own
+    /// names and types, it's still lowered with its own.
+    pub(super) scopes: Vec<std::collections::HashMap<String, LocalId>>,
+    pub(super) body: &'a fennec_check::Body,
+    pub(super) subst: super::generics::Subst,
 }
 
 impl Lowering<'_> {
@@ -497,8 +501,11 @@ impl Lowering<'_> {
     pub(super) fn pass_up_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
         let Some(around) = self.on_failure.pop() else { return self.return_error(error, span) };
         let rounds = std::mem::take(&mut self.plain_rounds);
-        let inside = self.scopes.split_off(around.scopes.min(self.scopes.len()));
-        self.scopes.push(std::collections::HashMap::new());
+        let mut scopes = around.scopes.clone();
+        scopes.push(std::collections::HashMap::new());
+        let outer_scopes = std::mem::replace(&mut self.scopes, scopes);
+        let outer_body = std::mem::replace(&mut self.body, around.body);
+        let outer_subst = std::mem::replace(&mut self.subst, around.subst.clone());
         let ty = match &self.returns {
             Type::Result(_, failure) => (**failure).clone(),
             other => other.clone(),
@@ -506,8 +513,9 @@ impl Lowering<'_> {
         let held = self.declare(&around.name, ty);
         self.emit(InstKind::Copy { dest: held, value: error }, span);
         let lowered = self.stmts(&around.cleanup, Tail::Drop);
-        self.scopes.pop();
-        self.scopes.extend(inside);
+        self.scopes = outer_scopes;
+        self.body = outer_body;
+        self.subst = outer_subst;
         self.plain_rounds = rounds;
         self.on_failure.push(around);
         lowered

@@ -445,7 +445,7 @@ struct Lowering<'a> {
     popping: bool,
     /// What the `with` blocks being lowered run when a failure leaves from inside what they
     /// call, innermost last.
-    on_failure: Vec<failure::OnFailure>,
+    on_failure: Vec<failure::OnFailure<'a>>,
     /// How many `parallel` loops being lowered as ordinary loops hold this statement. A failure
     /// in one hasn't had its block's cleanup written in.
     plain_rounds: usize,
@@ -838,11 +838,12 @@ impl<'a> Lowering<'a> {
                 }
             }
             StmtKind::OnFailure { name, cleanup, body } => {
-                let scopes = self.scopes.len();
                 self.on_failure.push(failure::OnFailure {
                     name: name.clone(),
                     cleanup: cleanup.clone(),
-                    scopes,
+                    scopes: self.scopes.clone(),
+                    body: self.body,
+                    subst: self.subst.clone(),
                 });
                 let lowered = self.block(body, tail);
                 self.on_failure.pop();

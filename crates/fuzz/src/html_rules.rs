@@ -126,9 +126,9 @@ pub(crate) fn html(input: &[u8]) -> Result<(), String> {
         let page = if template == "{nested}" { nested.clone() } else { wanted(template) };
         let wrong = match rule {
             Rule::Escaped => (!made || text != page).then(|| format!("should make {page:?}")),
-            Rule::Link if made && !followed_safely(&value) => {
-                Some("made a link a browser would follow somewhere unsafe".to_owned())
-            }
+            Rule::Link if made && !followed_safely(&value) => Some(
+                "a browser would follow that link somewhere not http, https, mailto or relative".to_owned(),
+            ),
             Rule::Link => (made && text != page).then(|| format!("should make {page:?}")),
             Rule::Refused => made.then(|| "should be refused".to_owned()),
             Rule::Anything => None,
@@ -152,10 +152,9 @@ mod tests {
         {
             assert!(followed_safely(safe), "{safe}");
         }
-        for unsafe_link in
-            ["javascript:x", " \u{1}JavaScript:x", "java\tscript:x", "data:text/html,x", "a+b:c"]
+        for dangerous in ["javascript:x", " \u{1}JavaScript:x", "java\tscript:x", "data:text/html,x", "a+b:c"]
         {
-            assert!(!followed_safely(unsafe_link), "{unsafe_link}");
+            assert!(!followed_safely(dangerous), "{dangerous}");
         }
     }
 }

@@ -32,20 +32,24 @@ def serving(server: Server, db: Database, clock: Clock, stdout: Stdout):
     server.serve((request) => answered(db, request=request, clock=clock, stdout=stdout))
     stdout.print("the server never said")
 
+# The slow round and the late one, served until the serving task's block ends and stops it.
+def served(net: Net, db: Database, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as slow:
+            slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+            with net.connect("127.0.0.1", port)? as late:
+                late.write("GET /late HTTP/1.1\r\nhost: here\r\n\r\n")?
+                with launch(() => serving(server, db=db, clock=clock, stdout=stdout), stop_after=300ms)?:
+                    got = net.get(f"http://127.0.0.1:{port}/one")?
+                    stdout.print(got.text())
+
 def main(net: Net, fs: Fs, clock: Clock, stdout: Stdout) fails NetError | Crashed | SqlError:
     mut rows = 0
     with sqlite.open(fs, "turn.db")? as db:
         _ = db.execute(t"create table if not exists marks (n int)")?
         _ = db.execute(t"delete from marks")?
-        with net.listen(0)? as server:
-            port = server.port
-            with net.connect("127.0.0.1", port)? as slow:
-                slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
-                with net.connect("127.0.0.1", port)? as late:
-                    late.write("GET /late HTTP/1.1\r\nhost: here\r\n\r\n")?
-                    with launch(() => serving(server, db=db, clock=clock, stdout=stdout), stop_after=300ms)?:
-                        got = net.get(f"http://127.0.0.1:{port}/one")?
-                        stdout.print(got.text())
+        served(net, db=db, clock=clock, stdout=stdout)?
         for kept in db.query[Counted](t"select count(*) as rows from marks")?:
             rows = kept.rows
     if rows == 0:

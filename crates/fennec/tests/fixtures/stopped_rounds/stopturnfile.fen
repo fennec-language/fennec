@@ -3,6 +3,7 @@
 # the program's input, which the test writes two lines to only seconds later. The waiting round's
 # read is never done, so `main` reads the second line (#1951).
 from std.concurrent import Crashed
+from std.fs import File
 from std.net import NetError, Request, Response, Server
 
 def answered(file: File, request: Request, clock: Clock, stdout: Stdout) -> Response:
@@ -24,17 +25,21 @@ def serving(server: Server, file: File, clock: Clock, stdout: Stdout):
     server.serve((request) => answered(file, request=request, clock=clock, stdout=stdout))
     stdout.print("the server never said")
 
+# The slow round and the late one, served until the serving task's block ends and stops it.
+def served(net: Net, file: File, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as slow:
+            slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+            with net.connect("127.0.0.1", port)? as late:
+                late.write("GET /late HTTP/1.1\r\nhost: here\r\n\r\n")?
+                with launch(() => serving(server, file=file, clock=clock, stdout=stdout), stop_after=300ms)?:
+                    got = net.get(f"http://127.0.0.1:{port}/one")?
+                    stdout.print(got.text())
+
 def main(net: Net, fs: Fs, clock: Clock, stdout: Stdout) fails NetError | Crashed | IoError:
     with fs.open("/dev/stdin")? as file:
-        with net.listen(0)? as server:
-            port = server.port
-            with net.connect("127.0.0.1", port)? as slow:
-                slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
-                with net.connect("127.0.0.1", port)? as late:
-                    late.write("GET /late HTTP/1.1\r\nhost: here\r\n\r\n")?
-                    with launch(() => serving(server, file=file, clock=clock, stdout=stdout), stop_after=300ms)?:
-                        got = net.get(f"http://127.0.0.1:{port}/one")?
-                        stdout.print(got.text())
+        served(net, file=file, clock=clock, stdout=stdout)?
         rest = file.read_line()? else "nothing"
         if rest == "two":
             stdout.print("the server is over")

@@ -773,6 +773,45 @@ fn a_block_stopped_or_cancelled_at_its_end_replays_as_it_ran() -> std::io::Resul
     Ok(())
 }
 
+/// A server's round asleep in a piece of a `parallel` call when its serving task is stopped replays
+/// as quietly as it ran. A replay marked the piece stopped, under the piece's own name, while the
+/// round's end looks at the round's, so it said `error: this task was stopped` (#1949). From
+/// Fable 5.2's review.
+#[test]
+fn a_round_stopped_in_a_parallel_piece_replays_quietly() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stopped-in-a-piece")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, include_str!("fixtures/stopped_rounds/stopparallel.fen"))?;
+    for recorded_threads in ["1", "4"] {
+        let log = dir.join(format!("recorded-{recorded_threads}.log"));
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", recorded_threads);
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = outcome(&record.output_before(DEADLINE)?);
+        assert_eq!(recorded.2, Some(0), "recorded at {recorded_threads}: {}", recorded.1);
+        assert!(!recorded.1.contains("error"), "recorded at {recorded_threads}: {}", recorded.1);
+        for round in 0..3 {
+            for threads in ["1", "4", "16"] {
+                let replayed = outcome(
+                    &fennec_command()
+                        .env("FENNEC_THREADS", threads)
+                        .args(["replay", &log.to_string_lossy()])
+                        .current_dir(&dir)
+                        .output_before(DEADLINE)?,
+                );
+                let at = format!("recorded at {recorded_threads}, replay {round} at {threads}");
+                assert_eq!((&replayed.0, replayed.2), (&recorded.0, recorded.2), "{at}: {}", replayed.1);
+                assert!(!replayed.1.contains("error"), "{at}: {}", replayed.1);
+            }
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A server that stops when the program's asked to, with 2 seconds' grace, and says so after.
 #[cfg(unix)]
 const STOPPING_SERVER: &str = "from std.net import Request, Response

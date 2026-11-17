@@ -10275,6 +10275,88 @@ def main(stdout: Stdout) fails Nope:
     )
 }
 
+/// A function whose last line is a `with` whose block always fails leaves on every way, once the
+/// source is written in: with a cleanup that fails too, in each branch of an `if`, and with no
+/// cleanup. Before, the written-in body seemed to end giving back nothing, and the build stopped
+/// with an internal error. The oracle prints the same, debug and release.
+#[test]
+fn a_function_ending_in_a_with_that_fails_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("with_fails_last", WITH_FAILS_LAST, "unguard 3\n3\n2 []\n0\n")?;
+    prints_in_both_builds("with_fails_last_ways", WITH_FAILS_LAST_WAYS, "unguard 7\nunguard 2\n7 -2 8\n")
+}
+
+const WITH_FAILS_LAST: &str = r#"error Refused:
+    code: int
+
+struct Tally:
+    count: int
+
+def guarded(code: int, stdout: Stdout) -> with Tally fails Refused:
+    lend Tally(count=code) except:
+        stdout.print("unguard", code)
+        if code % 3 == 0:
+            fail Refused(code=code + 1000)
+
+def run(code: int, stdout: Stdout) -> int fails Refused:
+    with guarded(code, stdout)? as tally:
+        fail Refused(code=tally.count)
+
+def inner() -> int fails Refused:
+    fail Refused(code=1)
+
+def outer() -> int fails Refused:
+    value = inner() except why:
+        fail Refused(code=why.code + 1)
+    return value
+
+def main(stdout: Stdout):
+    got = run(3, stdout) except why:
+        why.code
+    stdout.print(got)
+    again = outer() except why:
+        stdout.print(why.code, why.notes())
+        0
+    stdout.print(again)
+"#;
+
+const WITH_FAILS_LAST_WAYS: &str = r#"error Refused:
+    code: int
+
+struct Tally:
+    count: int
+
+def guarded(code: int, stdout: Stdout) -> with Tally:
+    lend Tally(count=code) except:
+        stdout.print("unguard", code)
+    stdout.print("closed", code)
+
+def plain(code: int) -> with Tally:
+    lend Tally(count=code)
+
+def branches(code: int, stdout: Stdout) -> int fails Refused:
+    with guarded(code, stdout) as tally:
+        if tally.count > 5:
+            fail Refused(code=tally.count)
+        else:
+            fail Refused(code=-tally.count)
+
+def bare(code: int) -> str fails Refused:
+    with plain(code) as tally:
+        fail Refused(code=tally.count * 2)
+
+def main(stdout: Stdout):
+    first = branches(7, stdout) except why:
+        why.code
+    second = branches(2, stdout) except why:
+        why.code
+    third = bare(4) except why:
+        f"{why.code}"
+    stdout.print(first, second, third)
+"#;
+
 /// A function whose last line is a `with` whose block always returns gives back a value on every
 /// way, once the source is written in: alone, in each branch of an `if`, and in each case of
 /// a `match`.

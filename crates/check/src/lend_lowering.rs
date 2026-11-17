@@ -735,6 +735,8 @@ impl Lowering<'_> {
         written.extend(body);
         if always_returns && ways.returned == Some(true) && !ways.broke && !ways.continued {
             written.extend(returned_always(&returned, at));
+        } else if always_returns && ways.failed && ways.returned.is_none() && !ways.broke && !ways.continued {
+            written.extend(failed_always(&failed, at));
         } else {
             written.extend(taken_again(ways, &exit, &returned, at));
         }
@@ -1008,6 +1010,14 @@ fn returned_always(returned: &str, at: Span) -> Vec<Stmt> {
         span: here(at),
     };
     vec![stmt(StmtKind::Assert(given), at), stmt(StmtKind::Return(Some(name(returned, at))), at)]
+}
+
+/// What's written after a source's body whose block always fails: `assert failed is not None`,
+/// which narrows it, and `fail failed`. The failure left where the block did, through the source's
+/// cleanup, so nothing reaches this; it says to the check that the body always leaves, as the
+/// block did.
+fn failed_always(failed: &str, at: Span) -> Vec<Stmt> {
+    vec![stmt(StmtKind::Assert(is_held(failed, at)), at), stmt(StmtKind::Fail(name(failed, at)), at)]
 }
 
 /// Whether every way through a block leaves it by `return` or `fail`.

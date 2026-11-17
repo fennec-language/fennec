@@ -4779,8 +4779,23 @@ def main(stdout: Stdout):
             .collect();
         assert!(!growing.is_empty(), "nothing pushes into a builder");
         for text in growing {
-            assert!(text.contains(", i64 24\n"), "no room read from the header: {text}");
-            assert!(!text.contains("@llvm.ctlz.i64("), "a room worked out from the length: {text}");
+            // `%at = getelementptr inbounds i8, ptr %block, i64 24`, `%room = load i64, ptr %at`,
+            // then `icmp ule i64 %wanted, %room`: the room compared is the word read.
+            let lines: Vec<&str> = text.lines().map(str::trim).collect();
+            let read = lines.windows(2).filter_map(|pair| {
+                let [address, loaded] = pair else { return None };
+                let at =
+                    address.strip_suffix(", i64 24")?.split_once(" = getelementptr inbounds i8, ptr ")?.0;
+                loaded.strip_suffix(&format!(" = load i64, ptr {at}"))
+            });
+            let compared: Vec<&str> = read
+                .filter(|room| {
+                    lines
+                        .iter()
+                        .any(|line| line.contains("icmp ule i64 ") && line.ends_with(&format!(", {room}")))
+                })
+                .collect();
+            assert!(!compared.is_empty(), "no room read from the header and compared: {text}");
         }
         Ok(())
     }

@@ -182,7 +182,7 @@ fn names_in(target: &Expr) -> Vec<String> {
 
 fn pattern_binds(pattern: &Pattern, held: &str) -> bool {
     match pattern {
-        Pattern::Bind(name) | Pattern::RefBind(name) => name == held,
+        Pattern::Bind(name) | Pattern::RefBind(name) | Pattern::MutBind(name) => name == held,
         Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
             patterns.iter().any(|pattern| pattern_binds(pattern, held))
         }
@@ -261,7 +261,7 @@ fn named_place(body: &[Stmt], at: usize) -> Option<(Vec<Stmt>, Vec<Stmt>)> {
     let (name, place) = each.kind.local_ref()?;
     let tag = format!("{name}__place{}", each.span.start);
     let mut held = Vec::new();
-    let named = indexes_held(place, &tag, &mut held);
+    let named = indexes_held(place, &|count| format!("{tag}_{count}"), &mut held);
     let mut rest = body.get(at + 1..).unwrap_or_default().to_vec();
     roots_kept(&mut rest, &roots_in(&named), &tag);
     // Each use of the name that means the `ref`, not one under something that names it again.
@@ -278,7 +278,7 @@ fn by_place(each: &Stmt, through: Through) -> Option<Vec<Stmt>> {
     let [item] = names.as_slice() else { return None };
     let tag = format!("{item}__live{}", each.span.start);
     let mut held = Vec::new();
-    let items = indexes_held(iter, &tag, &mut held);
+    let items = indexes_held(iter, &|count| format!("{tag}_{count}"), &mut held);
     let count = format!("{tag}_at");
     let span = each.span;
     let looped = match through {
@@ -300,22 +300,23 @@ fn by_place(each: &Stmt, through: Through) -> Option<Vec<Stmt>> {
     Some(held)
 }
 
-/// `items` with each index along it that isn't a number held in a name ahead of the loop.
-fn indexes_held(items: &Expr, tag: &str, held: &mut Vec<Stmt>) -> Expr {
+/// `items` with each index along it that isn't a number held in a name ahead of the loop, named
+/// by `holder` from how many are held before it.
+pub(crate) fn indexes_held(items: &Expr, holder: &dyn Fn(usize) -> String, held: &mut Vec<Stmt>) -> Expr {
     let kind = match &items.kind {
         ExprKind::Attr { object, name: field, optional } => ExprKind::Attr {
-            object: Box::new(indexes_held(object, tag, held)),
+            object: Box::new(indexes_held(object, holder, held)),
             name: field.clone(),
             optional: *optional,
         },
         ExprKind::Index { object, index } => {
-            let object = Box::new(indexes_held(object, tag, held));
+            let object = Box::new(indexes_held(object, holder, held));
             let index = if matches!(index.kind, ExprKind::Int(_)) {
                 index.clone()
             } else {
-                let holder = format!("{tag}_{}", held.len());
-                held.push(assign(&holder, index.as_ref().clone(), false, None));
-                Box::new(name(&holder, index.span))
+                let named = holder(held.len());
+                held.push(assign(&named, index.as_ref().clone(), false, None));
+                Box::new(name(&named, index.span))
             };
             ExprKind::Index { object, index }
         }

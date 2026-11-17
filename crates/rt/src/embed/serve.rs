@@ -99,6 +99,8 @@ thread_local! {
     static IDLE_READS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
     /// When the task running on this worker was last resumed.
     static SLICE: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// The task this worker is running, for a server it starts to know where it was started.
+    static RESUMED: Cell<Option<TaskId>> = const { Cell::new(None) };
     /// Whether, when it was, anything else on the worker wanted the thread: another task ready or
     /// waiting, or a server served.
     static OTHERS: Cell<bool> = const { Cell::new(false) };
@@ -531,7 +533,14 @@ impl Conn {
             self.parked.set(false);
             match woken {
                 Some(Wake::Ready(TIMED_OUT)) => Waited::TimedOut,
-                Some(Wake::Cancelled) => Waited::Cancelled,
+                // A round cancelled in its connection's wait fails as stopped, as at any other wait,
+                // so it goes no further: a `NetError` it could catch let it go on (#1950).
+                Some(Wake::Cancelled) => {
+                    if !super::failed() {
+                        fail_as_stopped();
+                    }
+                    Waited::Cancelled
+                }
                 // A stop cuts the wait short, as any other's, unless it's a cleanup's in its grace.
                 Some(Wake::Ready(STOPPED)) if cut_short() => Waited::Cancelled,
                 Some(Wake::Ready(_)) => Waited::Ready,
@@ -664,6 +673,8 @@ struct Server {
     /// how long its rounds then have to finish.
     stop: Option<Duration>,
     draining: Arc<AtomicBool>,
+    /// The worker and the task on it that serves it, when a task does: a round, say.
+    served_by: Option<(usize, TaskId)>,
 }
 
 /// A recorded round, replayed: what it runs with the handle of its connection.
@@ -916,6 +927,23 @@ impl Io {
     /// Leaves a server: its tasks here are cancelled, each told, ending and closing its
     /// connection, and what this worker served goes into the server's total.
     fn leave(&mut self, id: u64) {
+        // A server one of its rounds here serves is left here first, as it would be when the round
+        // ends it. Cancelled, the round stops that server and waits for every worker to leave it,
+        // and this one couldn't take the mail that has it leave while it runs the round: the round,
+        // and the program, never ended (#1950).
+        let Some(rounds) = self.servers.get(&id).map(|here| here.tasks.clone()) else { return };
+        let mut inner: Vec<u64> = self
+            .servers
+            .iter()
+            .filter(|(_, other)| {
+                other.server.served_by.is_some_and(|(at, task)| at == self.at && rounds.contains(&task))
+            })
+            .map(|(inner, _)| *inner)
+            .collect();
+        inner.sort_unstable();
+        for inner in inner {
+            self.leave(inner);
+        }
         let Some(mut here) = self.servers.remove(&id) else { return };
         self.waiting.retain(|_, (task, ..)| !here.tasks.contains(task));
         self.ready.retain(|(task, _)| !here.tasks.contains(task));
@@ -1095,7 +1123,9 @@ impl Io {
     fn with_own_temporaries(&mut self, task: TaskId, resume: impl FnOnce(&mut Io) -> Step) -> Step {
         let mut own = self.temporaries.remove(&task).unwrap_or_default();
         super::swap_temporaries(&mut own);
+        let outer = RESUMED.replace(Some(task));
         let step = resume(self);
+        RESUMED.set(outer);
         super::swap_temporaries(&mut own);
         if !matches!(step, Step::Parked(_)) {
             // A replayed round its recording says a stop or a cancel cut short ends quietly, as a
@@ -1322,9 +1352,15 @@ fn wait_for_every_worker(left: &Latch, stop: impl Fn()) {
     let mut stopped = false;
     while !left.is_done() {
         let _ = park_on_token(next_token(), Some(Instant::now() + SERVER_END_LOOKS), false);
-        if !stopped && super::threads::stopped() {
+        // A round cancelled while it serves stops its server too, as a task stopped does. It can't
+        // park, so it waits for the other workers to leave the server a moment at a time.
+        let cancelled = fennec_parked::is_cancelled();
+        if !stopped && (super::threads::stopped() || cancelled) {
             stopped = true;
             stop();
+        }
+        if cancelled && !left.is_done() {
+            std::thread::sleep(SERVER_END_LOOKS);
         }
     }
 }
@@ -1661,6 +1697,8 @@ fn off_thread_on<R: Send + 'static>(
             done
         }
     };
+    // Whether it's failing already, as a cleanup is, so a stop now isn't what cut the work short.
+    let failing = super::failed();
     let token = Token(NEXT_TOKEN.get());
     NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
     let result: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
@@ -1685,13 +1723,34 @@ fn off_thread_on<R: Send + 'static>(
             }
         }
     }
-    loop {
+    let done = loop {
         if let Some(done) = result.lock().unwrap_or_else(PoisonError::into_inner).take() {
-            return done;
+            break done;
         }
         // Cancelled before it finished: the work runs to its end, and this waits for it.
         let _ = yield_task_always();
+    };
+    // A round cancelled, or a task stopped, while its work ran fails as stopped now it's done, as at
+    // any other wait, and goes no further. It went on past the work before (#1950). A replay stops it
+    // where its recording says it was. A crash's cleanup goes on: its work is done, and failing now
+    // would only say its cleanup crashed.
+    if super::threads::cleaning_up() {
+        return done;
     }
+    if crate::replay::replaying() {
+        let _ = crate::replay::work_ended(false);
+        return done;
+    }
+    let cut = if fennec_parked::is_cancelled() {
+        if !super::failed() {
+            fail_as_stopped();
+        }
+        !failing
+    } else {
+        cut_short() && !failing
+    };
+    let _ = crate::replay::work_ended(cut);
+    done
 }
 
 /// For tests: how many pieces of work each thread's tasks have on the blocking threads, not yet
@@ -1849,6 +1908,7 @@ pub(super) fn serve(
         tls,
         stop,
         draining: Arc::new(AtomicBool::new(false)),
+        served_by: served_by(),
     });
     // The worker that accepts joins last, so every other worker has joined before it hands one
     // a connection: each worker takes what it's given in turn.
@@ -1871,6 +1931,12 @@ pub(super) fn serve(
     }
     server.lent.lock().unwrap_or_else(PoisonError::into_inner).take();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
+/// The worker and the task on it that's starting a server here, when a task is.
+fn served_by() -> Option<(usize, TaskId)> {
+    let (_, at) = super::parallel::here()?;
+    Some((at, RESUMED.get()?))
 }
 
 /// Replays a recorded server: its `rounds` recorded rounds run on `pool`'s workers as `serve` runs
@@ -1897,6 +1963,7 @@ pub(super) fn serve_replayed(
         tls: None,
         stop: None,
         draining: Arc::new(AtomicBool::new(false)),
+        served_by: served_by(),
     });
     for at in 0..workers {
         let joining = Arc::clone(&server);

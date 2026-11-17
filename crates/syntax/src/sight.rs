@@ -367,7 +367,9 @@ fn case_pattern(
 ) {
     match pattern {
         Pattern::Literal(value) => hide_expr(value, outside, hide),
-        Pattern::Bind(name) | Pattern::RefBind(name) => bind(inside, name, Binder::Case, hide),
+        Pattern::Bind(name) | Pattern::RefBind(name) | Pattern::MutBind(name) => {
+            bind(inside, name, Binder::Case, hide);
+        }
         Pattern::Variant { args, .. } | Pattern::Tuple(args) | Pattern::Or(args) => {
             for arg in args {
                 case_pattern(arg, outside, inside, hide);

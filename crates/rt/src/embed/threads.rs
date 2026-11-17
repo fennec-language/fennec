@@ -283,6 +283,12 @@ pub(super) fn in_range_of_task() -> bool {
     RANGE_OF_TASK.get()
 }
 
+/// Whether the task running on this thread is cleaning up after a crash.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn cleaning_up() -> bool {
+    CLEANING.get() > 0
+}
+
 /// The task running on this thread starts cleaning up after a crash, or ends doing so.
 pub(crate) fn cleaning(starts: bool) {
     #[cfg(any(test, feature = "threads"))]

@@ -1,0 +1,35 @@
+# A round's handler is asleep inside a `with` whose cleanup waits a moment, when the serving
+# task's block ends and stops it, which cancels the round. A round has no grace, so its cleanup's
+# wait is cut short too, and the rest of its cleanup is skipped. That isn't the cleanup crashing,
+# which it said it was (#1948). From Fable 5.2's review.
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def held(clock: Clock, stdout: Stdout) -> with int:
+    lend 1 except:
+        stdout.print("the cleanup began")
+        clock.sleep(10ms)
+        stdout.print("the cleanup ended")
+    stdout.print("the block ended by itself")
+
+def answered(request: Request, clock: Clock, stdout: Stdout) -> Response:
+    if request.path == "/slow":
+        with held(clock, stdout=stdout) as it:
+            stdout.print("the slow one began", it)
+            clock.sleep(2h)
+            stdout.print("the slow one never said")
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, clock: Clock, stdout: Stdout):
+    server.serve((request) => answered(request, clock=clock, stdout=stdout))
+    stdout.print("the server never said")
+
+def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as slow:
+            slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+            with launch(() => serving(server, clock=clock, stdout=stdout), stop_after=100ms)?:
+                got = net.get(f"http://127.0.0.1:{port}/one")?
+                stdout.print(got.text())
+    stdout.print("the server is over")

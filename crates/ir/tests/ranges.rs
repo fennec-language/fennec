@@ -218,6 +218,208 @@ fn a_call_that_sets_every_item_leaves_only_what_it_put_in() {
     assert_eq!(fits(&program, &ranges, "main").unwrap(), [false]);
 }
 
+/// A local written more than once holds, after each write, only what that write gave it, and a
+/// branch narrows it where it holds, even where it's written again later.
+#[test]
+fn a_local_holds_what_its_last_write_gave_it() {
+    let source = "def scaled(start: int) -> int:\n    mut value = start - 10\n    value = value * 0\n    value = value + 3\n    return value * 2\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(scaled(4))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "scaled", &is_product).unwrap(), [false, true]);
+    checked(&program, &ranges);
+}
+
+/// A test that a local isn't `-1`, the end of a list linked by index, moves the least it can be
+/// from `-1` to `0` where it holds, so an index read with it after the test isn't negative.
+#[test]
+fn a_not_equals_test_moves_an_end_of_a_range() {
+    let source = "def walk(links: list[int], first: int) -> int:\n    mut at = first\n    mut seen = 0\n    while at != -1:\n        seen += 1\n        at = links[at]\n    return seen\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(walk([1, 2, -1], 0))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "walk", &is_index).unwrap(), [true]);
+    checked(&program, &ranges);
+}
+
+/// A struct's int field holds what every write of it in the program gives it, so a field read
+/// from a struct held in a list, whose own value isn't followed, is known too.
+#[test]
+fn a_field_holds_what_every_write_of_it_gives() {
+    let source = "struct Task:\n    next: int\n\n\
+                  def follow(tasks: list[Task], links: list[int], at: int) -> int:\n    return links[tasks[at].next]\n\n\
+                  def main(stdout: Stdout):\n    mut tasks = [Task(next=0)]\n    tasks.append(Task(next=1))\n    tasks[0].next = 1\n    stdout.print(follow(tasks, [5, 6], 1))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "follow", &is_index).unwrap(), [true, true]);
+    checked(&program, &ranges);
+    let negative = source.replace("tasks[0].next = 1", "tasks[0].next = -1");
+    let program = lowered(&negative).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "follow", &is_index).unwrap(), [true, false]);
+}
+
+/// A closure's first parameters are what it captured where it was made.
+#[test]
+fn a_closure_knows_what_it_captured() {
+    let source = "def apply(value: int, change: (int) -> int) -> int:\n    return change(value)\n\n\
+                  def main(stdout: Stdout):\n    step = 3\n    stdout.print(apply(4, (count) => step * 2 + count))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    let closure = program
+        .functions
+        .iter()
+        .find(|function| function.name.contains("arrow"))
+        .map(|function| function.name.clone());
+    let closure = closure.unwrap_or_else(|| panic!("no closure in:\n{program}"));
+    assert_eq!(not_negative(&program, &ranges, &closure, &is_product).unwrap(), [true]);
+    checked(&program, &ranges);
+}
+
+/// Values that go round several locals in turn, as `sum`'s eight running totals do, grow each
+/// local only every few rounds. Widening is counted by where the loop starts, not by local, so
+/// they settle.
+#[test]
+fn values_going_round_several_locals_settle() {
+    let source = "def main(stdout: Stdout):\n    mut first = 0.0\n    mut second = 0.0\n    mut third = 0.0\n    mut fourth = 0.0\n    mut fifth = 0.0\n    mut sixth = 0.0\n    mut seventh = 0.0\n    mut eighth = 0.0\n    for round in range(100):\n        added = first + float(round)\n        first = second\n        second = third\n        third = fourth\n        fourth = fifth\n        fifth = sixth\n        sixth = seventh\n        seventh = eighth\n        eighth = added\n    stdout.print(first + second + third + fourth + fifth + sixth + seventh + eighth)\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(ranges.unsettled(), None);
+    checked(&program, &ranges);
+}
+
+/// A `shared` value is a cell anything holding its handle can change, so nothing's known of
+/// what it holds from where it was made: here its count is made as 0, and a lock makes it -3.
+#[test]
+fn a_shared_value_is_what_any_lock_leaves_it() {
+    let source = "struct Tally:\n    count: int\n\n\
+                  def main(stdout: Stdout):\n    shared tally = Tally(count=0)\n    lock tally as ref held:\n        held.count -= 3\n    lock tally as seen:\n        stdout.print([1, 2, 3][seen.count], seen.count // 2)\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    let unknown =
+        |wanted: &dyn Fn(&InstKind) -> bool| not_negative(&program, &ranges, "main", wanted).unwrap();
+    assert!(!unknown(&is_index).contains(&true), "{program}");
+    assert!(!unknown(&is_division).contains(&true), "{program}");
+}
+
+/// A list parameter lent with `ref` that its function writes whole holds what was written after
+/// the call, which its caller sees.
+#[test]
+fn a_list_lent_and_written_whole_holds_what_was_written() {
+    let source = "def lowered_by_ten(values: list[int]) -> list[int]:\n    return [value - 10 for value in values]\n\n\
+                  def shifted(ref values: list[int]):\n    values = lowered_by_ten(values)\n    return\n\n\
+                  def main(stdout: Stdout):\n    mut values = [1, 2, 3]\n    shifted(ref values)\n    stdout.print(values[0] // 4)\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(unsigned(&program, &ranges, "main").unwrap(), [false]);
+    checked(&program, &ranges);
+}
+
+/// Under floats' total order NaN is past every number, so `min` of a NaN and a number is the
+/// number: a side that can be NaN lets `min` be as high as the other side goes.
+#[test]
+fn min_of_what_can_be_nan_can_be_the_other_side() {
+    let source = "def main(stdout: Stdout):\n    for count in range(3):\n        big = 1e308 * float(count)\n        nothing = big * 0.0\n        stdout.print(int(min(nothing, 1e300)))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(fits(&program, &ranges, "main").unwrap(), [false]);
+    checked(&program, &ranges);
+}
+
+/// An infinity divided by an infinity is NaN, even where the divisor can also be zero.
+#[test]
+fn an_infinity_by_an_infinity_can_be_nan() {
+    let source = "def main(stdout: Stdout):\n    values = [1, 2]\n    top = 1e308 * 10.0\n    big = 1e308 * float(len(values))\n    ratio = top / big\n    if 1.0 < ratio:\n        stdout.print(\"more\")\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    let known = ranges.function("main").unwrap();
+    let proven: Vec<Place> = places(&program, "main", &is_comparison)
+        .unwrap()
+        .into_iter()
+        .filter(|place| known.not_nan(*place))
+        .collect();
+    assert_eq!(proven, []);
+    checked(&program, &ranges);
+}
+
+/// A struct held in an error's field is written through the error too, and what that write
+/// gives joins the field across the program.
+#[test]
+fn a_field_written_through_an_error_is_followed() {
+    let source = "struct Point:\n    across: int\n\n\
+                  error Missed:\n    at: Point\n\n\
+                  def main(stdout: Stdout):\n    mut missed = Missed(at=Point(across=1))\n    missed.at.across = -5\n    point = missed.at\n    stdout.print([1, 2][point.across])\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "main", &is_index).unwrap(), [false]);
+}
+
+/// An intrinsic can write any local it's handed, not only its first: taking from a channel
+/// writes why it stopped into a later argument, so nothing's known of that local after.
+#[test]
+fn what_an_intrinsic_is_handed_it_can_write() {
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/channel_to_every.fen"))
+            .unwrap();
+    let program = lowered(&source).unwrap();
+    let ranges = Ranges::of(&program);
+    let mut handed = 0;
+    for function in &program.functions {
+        let known = ranges.function(&function.name).unwrap();
+        for inst in function.blocks.iter().flat_map(|block| &block.insts) {
+            let InstKind::Builtin { name, args, changes, .. } = &inst.kind else { continue };
+            if !name.starts_with("intrinsics.channel_take") {
+                continue;
+            }
+            for arg in args.iter().skip(usize::from(*changes)) {
+                let fennec_ir::Operand::Local(local) = arg else { continue };
+                handed += 1;
+                assert_eq!(known.local(*local), None, "{} {local:?}", function.name);
+            }
+        }
+    }
+    assert!(handed > 0, "no local was handed to `channel_take`");
+}
+
+/// A comparison says nothing of either side where the block ends if either is written after it,
+/// nor of the branch if its condition is: no lowering does that, so these change the IR by hand.
+#[test]
+fn a_branch_says_nothing_after_its_comparison_is_overwritten() {
+    let source = "def pick(values: list[int], at: int, low: int) -> int:\n    if at >= low:\n        return values[at]\n    return 0\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(pick([1, 2, 3], 2, 0), pick([1, 2, 3], -2, 0))\n";
+    let program = lowered(source).unwrap();
+    assert_eq!(not_negative(&program, &Ranges::of(&program), "pick", &is_index).unwrap(), [true]);
+    // `low` rewritten after `at >= low`: `at` was at least 0 there, not at least 5.
+    let rewritten = |program: &mut Program, written: fn(&InstKind) -> InstKind| {
+        let pick = program.functions.iter_mut().find(|function| function.name == "pick").unwrap();
+        let block = pick
+            .blocks
+            .iter_mut()
+            .find(|block| matches!(block.end, fennec_ir::Terminator::Branch { .. }))
+            .unwrap();
+        let at = block
+            .insts
+            .iter()
+            .position(|inst| matches!(inst.kind, InstKind::Binary { op: BinOp::GtEq, .. }))
+            .unwrap();
+        let compared = block.insts[at].clone();
+        block.insts.insert(at + 1, fennec_ir::Inst { kind: written(&compared.kind), span: compared.span });
+    };
+    let mut changed = program.clone();
+    rewritten(&mut changed, |compared| {
+        let InstKind::Binary { rhs: fennec_ir::Operand::Local(low), .. } = compared else { unreachable!() };
+        InstKind::Copy { dest: *low, value: fennec_ir::Operand::Int(5) }
+    });
+    assert_eq!(not_negative(&changed, &Ranges::of(&changed), "pick", &is_index).unwrap(), [false]);
+    // The condition rewritten after the comparison: the branch no longer says `at >= low`.
+    let mut changed = program;
+    rewritten(&mut changed, |compared| {
+        let InstKind::Binary { dest, .. } = compared else { unreachable!() };
+        InstKind::Copy { dest: *dest, value: fennec_ir::Operand::Bool(true) }
+    });
+    assert_eq!(not_negative(&changed, &Ranges::of(&changed), "pick", &is_index).unwrap(), [false]);
+}
+
 /// A function something other than a call by name may call, here a function passed as a value,
 /// knows nothing of its parameters.
 #[test]

@@ -105,6 +105,11 @@ const MAGIC_UNNAMED: &[u8; 8] = b"FENREPL1";
 /// The entry that says how many workers the recorded run had, logged first, under no task.
 const WORKERS: &str = "workers";
 
+/// The entry that says the recorded run had `FENNEC_PARALLEL_STRESS`, logged next, under no task,
+/// when it did. It cuts a `parallel` call's ranges to one item each, and ranges are named by where
+/// they start, so a replay with it otherwise ran other ranges, with nothing said (#1917).
+const STRESSED: &str = "parallel stress";
+
 /// The entry that says a stop cut short the call logged just before it, in the same task: the
 /// task failed as stopped in it.
 const CUT_SHORT: &str = "cut short";
@@ -151,6 +156,8 @@ struct Player {
     streams: HashMap<String, VecDeque<(String, Vec<u8>)>>,
     /// How many workers the recorded run had, when the log says.
     workers: Option<usize>,
+    /// Whether the recorded run had `FENNEC_PARALLEL_STRESS`.
+    stressed: bool,
     /// Whether the recording logged standard output's bursts, so a replay writes them in that
     /// order: not one made before that was recorded, nor one of a run that printed nothing.
     orders_output: bool,
@@ -473,7 +480,7 @@ pub(crate) fn stopped_as_recorded() {
     // Without threads there are no tasks to stop, so no recording a runtime like this one made says
     // a wait was cut short. One made with them that does still fails here, as it did.
     #[cfg(not(any(test, feature = "threads")))]
-    crate::embed::fail_with(Diagnostic::new("this task was stopped", Span::default()));
+    crate::embed::fail_with(Diagnostic::new(crate::embed::STOPPED_FAILURE, Span::default()));
 }
 
 /// In a replay, marks the running task as one its recording said a stop or a cancel cut short (see
@@ -509,6 +516,19 @@ pub(crate) fn workers() -> Option<usize> {
     }
 }
 
+/// In a replay, whether the recorded run had `FENNEC_PARALLEL_STRESS`, which the replay then has
+/// too, whatever it's run with.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "without threads there's no pool to stress")
+)]
+pub(crate) fn stressed() -> Option<bool> {
+    match mode() {
+        Mode::Replay(player) => Some(player.lock().unwrap_or_else(PoisonError::into_inner).stressed),
+        _ => None,
+    }
+}
+
 static MODE: OnceLock<Mode> = OnceLock::new();
 
 fn mode() -> &'static Mode {
@@ -536,6 +556,9 @@ fn recording(path: &Path) -> std::io::Result<Mode> {
     let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
     let workers = u64::try_from(crate::embed::workers_wanted()).unwrap_or(1);
     file.write_all(&entry("", WORKERS, &workers.to_le_bytes()))?;
+    if crate::embed::stress_asked() {
+        file.write_all(&entry("", STRESSED, &[]))?;
+    }
     Ok(Mode::Record(Mutex::new(file)))
 }
 
@@ -590,6 +613,7 @@ fn player_of(log: &[u8]) -> Option<Player> {
     let mut player = Player {
         streams: HashMap::new(),
         workers: None,
+        stressed: false,
         orders_output: false,
         held: HashMap::new(),
         whole: ![
@@ -609,6 +633,10 @@ fn player_of(log: &[u8]) -> Option<Player> {
         let payload = reader.payload()?;
         if task.is_empty() && call == END {
             player.whole = true;
+            continue;
+        }
+        if task.is_empty() && call == STRESSED {
+            player.stressed = true;
             continue;
         }
         if task.is_empty() && call == WORKERS {

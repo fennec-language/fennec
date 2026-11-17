@@ -321,25 +321,16 @@ impl Pool {
         self.sleeping.fetch_add(1, Ordering::SeqCst);
         fence(Ordering::SeqCst);
         if self.is_empty() && !mail.any.load(Ordering::SeqCst) {
-            // For the deadlock check: whether it leaves nothing but stuck waits, their notes, and a
-            // look, as it may be the last to go to sleep. Whatever wakes it is mail or a job, which
-            // only something still moving sends.
-            let slot = self.published.get(at);
-            let idle = io.idle_stuck();
-            let left = crate::embed::deadlock::sleeps_stuck(idle.unwrap_or(0));
-            if let Some(slot) = slot {
-                let notes = io.stuck_notes();
-                slot.lock().unwrap_or_else(PoisonError::into_inner).set(
-                    idle.is_some(),
-                    left.all_stuck(),
-                    notes,
-                );
-            }
-            crate::embed::deadlock::look();
-            io.poll(io.timeout());
-            if let (Some(slot), Some(stuck)) = (slot, idle) {
-                slot.lock().unwrap_or_else(PoisonError::into_inner).woke();
-                crate::embed::deadlock::woke_idle(stuck);
+            if io.idle_stuck().is_none() {
+                io.poll(io.timeout());
+            } else {
+                // With nothing left but stuck waits, it sleeps a moment first, as a wait that blocks
+                // its thread does (see `deadlock::PATIENCE`), and only then leaves what the deadlock
+                // check needs: most sleeps are shorter, and cost the check nothing.
+                io.poll(Some(crate::embed::deadlock::PATIENCE));
+                if !io.has_ready() && self.is_empty() && !mail.any.load(Ordering::SeqCst) {
+                    self.sleep_idle(at, io);
+                }
             }
         }
         self.sleeping.fetch_sub(1, Ordering::SeqCst);
@@ -362,6 +353,26 @@ impl Pool {
     pub(in crate::embed) fn wake(&self, at: usize) {
         if let Some(mail) = self.mail.get(at) {
             let _ = mail.waker.wake();
+        }
+    }
+
+    /// Sleeps in the worker's poll, for the deadlock check leaving whether it has nothing but stuck
+    /// waits, their notes when a check could pass, and a look, as it may be the last to go to sleep.
+    /// Whatever wakes it is mail or a job, which only something still moving sends, or a check
+    /// asking for the notes it left out.
+    fn sleep_idle(&self, at: usize, io: &mut Io) {
+        let slot = self.published.get(at);
+        let idle = io.idle_stuck();
+        let left = crate::embed::deadlock::sleeps_stuck(idle.unwrap_or(0));
+        if let Some(slot) = slot {
+            let notes = io.stuck_notes();
+            slot.lock().unwrap_or_else(PoisonError::into_inner).set(idle.is_some(), left.all_stuck(), notes);
+        }
+        crate::embed::deadlock::look();
+        io.poll(io.timeout());
+        if let (Some(slot), Some(stuck)) = (slot, idle) {
+            slot.lock().unwrap_or_else(PoisonError::into_inner).woke();
+            crate::embed::deadlock::woke_idle(stuck);
         }
     }
 

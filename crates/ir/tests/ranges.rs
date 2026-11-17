@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use fennec_ir::eval::check_ranges;
-use fennec_ir::ranges::{Place, Ranges};
+use fennec_ir::ranges::{Place, Ranges, Unsettled};
 use fennec_ir::{InstKind, Program, lower, validate};
 use fennec_syntax::BinOp;
 
@@ -174,6 +174,7 @@ fn a_function_that_doesnt_settle_leaves_nothing_known() {
     let program = lowered(&source).unwrap();
     let ranges = Ranges::of(&program);
     assert!(ranges.function("main").is_none(), "{:?}", unsigned(&program, &ranges, "main"));
+    assert_eq!(ranges.unsettled(), Some(&Unsettled::Function("main".to_owned())));
     checked(&program, &ranges);
 }
 
@@ -241,6 +242,26 @@ fn files_in(folder: &Path) -> std::io::Result<Vec<PathBuf>> {
     }
     files.sort();
     Ok(files)
+}
+
+/// Every kernel's, example's and real program's facts settle within their rounds. One that
+/// didn't would leave nothing known about it, which no other test would see.
+#[test]
+fn every_kernel_example_and_real_program_settles() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = files_in(&root.join("bench/kernels")).unwrap();
+    files.extend(files_in(&root.join("examples")).unwrap());
+    files.extend(files_in(&root.join("bench/realworld")).unwrap());
+    let mut programs = 0;
+    for path in files {
+        let source = fs::read_to_string(&path).unwrap();
+        let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
+        let Ok(checked) = fennec_check::check_and_resolve(&mut module) else { continue };
+        let program = lower(&module, &checked);
+        assert_eq!(Ranges::of(&program).unsettled(), None, "{}", path.display());
+        programs += 1;
+    }
+    assert!(programs >= 100, "only {programs} programs settled");
 }
 
 /// Every fact holds while every kernel and example runs in the IR's evaluator, as far as it can

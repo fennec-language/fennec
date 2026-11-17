@@ -330,6 +330,17 @@ struct Leaves {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Ranges {
     functions: BTreeMap<String, FunctionRanges>,
+    /// What didn't settle within its rounds, when something didn't, so nothing is known.
+    unsettled: Option<Unsettled>,
+}
+
+/// What was still moving after every round it had, so the program's facts were let go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unsettled {
+    /// A function's walk.
+    Function(String),
+    /// The rounds across the program's functions.
+    Program,
 }
 
 impl Ranges {
@@ -342,6 +353,14 @@ impl Ranges {
     /// Every function's, by name.
     pub fn functions(&self) -> impl Iterator<Item = (&str, &FunctionRanges)> {
         self.functions.iter().map(|(name, ranges)| (name.as_str(), ranges))
+    }
+
+    /// What was still moving after every round it had, if anything was, so that nothing about
+    /// the program is known. Widening settles every walk long before then; this says when one
+    /// didn't, so a lost fact never goes unseen.
+    #[must_use]
+    pub fn unsettled(&self) -> Option<&Unsettled> {
+        self.unsettled.as_ref()
     }
 
     /// Works out what's known about a program's values.
@@ -366,23 +385,28 @@ impl Ranges {
         for _ in 0..MOST_ROUNDS {
             let mut next = Next::default();
             found.clear();
-            let mut settled = true;
+            let mut unsettled = None;
             for function in every(program) {
                 match world.function(function, &mut next) {
                     Some(ranges) => {
                         found.insert(function.name.clone(), ranges);
                     }
-                    None => settled = false,
+                    None => {
+                        unsettled = unsettled.or_else(|| Some(Unsettled::Function(function.name.clone())));
+                    }
                 }
             }
             if !world.take(next) {
                 // A function's walk that never settled ended on facts still moving: neither what it
                 // found nor what it handed its callees can be trusted.
-                return if settled { Ranges { functions: found } } else { Ranges::default() };
+                return match unsettled {
+                    None => Ranges { functions: found, unsettled: None },
+                    Some(unsettled) => Ranges { functions: BTreeMap::new(), unsettled: Some(unsettled) },
+                };
             }
         }
         // Still moving after every round: nothing worked out can be trusted.
-        Ranges::default()
+        Ranges { functions: BTreeMap::new(), unsettled: Some(Unsettled::Program) }
     }
 }
 

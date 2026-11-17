@@ -387,9 +387,15 @@ pub(in crate::embed) fn for_server() -> Option<&'static Pool> {
 /// Whether `FENNEC_PARALLEL_STRESS` asks every loop to run on the pool, however few its items,
 /// and loops and comprehensions to split down to one item a range, for testing what bodies do on
 /// workers with programs small enough to test many of.
+/// A replay has it as its recording did, whatever it's run with.
 pub(super) fn stressed() -> bool {
     static STRESSED: OnceLock<bool> = OnceLock::new();
-    *STRESSED.get_or_init(|| std::env::var_os("FENNEC_PARALLEL_STRESS").is_some())
+    *STRESSED.get_or_init(|| crate::replay::stressed().unwrap_or_else(stress_asked))
+}
+
+/// Whether `FENNEC_PARALLEL_STRESS` is set: what a recording notes.
+pub(crate) fn stress_asked() -> bool {
+    std::env::var_os("FENNEC_PARALLEL_STRESS").is_some()
 }
 
 /// Whether a stream's reader waits, for a test, for the workers to run every chunk in its window

@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use fennec_syntax::sight::Binder;
 use fennec_syntax::{
     Expr, ExprKind, FnDef, Item, MatchArm, Module, Pattern, Span, Stmt, StmtKind, TypeExpr, WithName,
 };
@@ -30,6 +31,9 @@ pub(crate) struct Source {
     pub(crate) gives: crate::types::Type,
     /// The names of its type parameters, a method's type's first.
     pub(crate) generics: Vec<String>,
+    /// A `with launch(...)`'s task, written in where its placeholder is once the source's own
+    /// names are hidden, so its own are the caller's.
+    pub(crate) task: Option<crate::launch::Task>,
 }
 
 /// Writes in every `with` over a source in `module`, saying whether there were any.
@@ -642,16 +646,12 @@ impl Lowering<'_> {
         let suffix = format!("__lend{}", self.made);
         let hidden = |name: &str| format!("{name}{suffix}");
         let def = source.def.as_ref();
-        let (mut written, mut renamed) = bound(def, callee, args, source.method, &hidden)?;
-        // The source's own names, hidden, so none is one of the caller's.
-        let mut locals = Vec::new();
-        declared_in(&def.body, &mut locals);
-        // And every name bound inside it, by a nested function, an arrow function or a case
-        // anywhere, so none is one of the caller's where the block is written in.
-        locals.extend(fennec_syntax::sight::names_bound(&def.body));
-        renamed.extend(locals.iter().map(|local| (local.clone(), hidden(local))));
+        let (mut written, renamed) = bound(def, callee, args, source.method, &hidden)?;
         let mut body = def.body.clone();
-        fennec_syntax::sight::rename_everywhere(&mut body, &renamed);
+        hidden_in_source(&mut body, &renamed, &hidden);
+        if let Some(task) = &source.task {
+            task.written_in(&mut body, &hidden)?;
+        }
         if let Some(instead) = self.instead.take() {
             fail_instead(&mut body, &instead);
         }
@@ -925,6 +925,26 @@ fn bound(
         }
     }
     Some((written, renamed))
+}
+
+/// A source's body, written in at a call with its parameters' uses as `renamed` says and every
+/// name it binds where the caller's block could be in its sight hidden, so none is one of the
+/// caller's: each declaration, loop, `with`, case, cleanup and nested function. Each is renamed
+/// with only the uses in its sight, so a name the body reads that means something else, as a
+/// function, keeps its meaning. An arrow function's, a comprehension's and a nested function's
+/// parameters can't have the block in their sight and keep their names, unless they're a name of
+/// the caller's a parameter's uses are written as, which they'd take for their own.
+fn hidden_in_source(body: &mut [Stmt], renamed: &[(String, String)], hidden: &dyn Fn(&str) -> String) {
+    let outside: Vec<(String, Option<String>)> =
+        renamed.iter().map(|(param, written)| (param.clone(), Some(written.clone()))).collect();
+    let callers: Vec<&String> =
+        renamed.iter().map(|(_, written)| written).filter(|written| !written.contains("__")).collect();
+    fennec_syntax::sight::hide_bound(body, &outside, &|binder, name| match binder {
+        Binder::Parameter | Binder::Arrow | Binder::Comprehension => {
+            callers.iter().any(|caller| *caller == name).then(|| hidden(name))
+        }
+        _ => Some(hidden(name)),
+    });
 }
 
 /// The caller's block's way out, taken again once the source's cleanup has run.
@@ -1764,10 +1784,13 @@ fn given_as(block: &mut Vec<Stmt>, (split, names): (bool, &[WithName]), held: &s
         block.insert(0, stmt(kind, at));
     } else {
         // Each use of the `with`'s name is the source's own name for what it lends, but not a use
-        // under something in the block that names it again.
-        fennec_syntax::sight::uses_in_sight(block, &[held.to_owned()], &mut |expr| {
-            expr.kind = ExprKind::Name(place.to_owned());
+        // under something in the block that names it again. When that's a name of the caller's,
+        // something in the block that names it again would take those uses: it's hidden first.
+        let inner = format!("given{}", at.start);
+        fennec_syntax::sight::hide_bound(block, &[(place.to_owned(), None)], &|_, name| {
+            (name == place).then(|| format!("{name}__{inner}"))
         });
+        fennec_syntax::sight::rename_in_sight(block, held, place);
     }
 }
 
@@ -2075,75 +2098,6 @@ fn arm(variant: &str, bound: &str, body: Vec<Stmt>, span: Span) -> MatchArm {
         fields: Vec::new(),
     };
     MatchArm { pattern, guard: None, body, span: here(span) }
-}
-
-/// The names a body declares: what it assigns, and what its loops and `with`s name.
-fn declared_in(body: &[Stmt], found: &mut Vec<String>) {
-    for stmt in body {
-        match &stmt.kind {
-            StmtKind::Assign { target, value, .. } => {
-                targets(target, found);
-                declared_in_match(value, found);
-            }
-            StmtKind::For { names, body, .. } => {
-                found.extend(names.iter().cloned());
-                declared_in(body, found);
-            }
-            StmtKind::With { names, body, .. } => {
-                found.extend(names.iter().map(|held| held.name.clone()));
-                declared_in(body, found);
-            }
-            StmtKind::While { body, .. } => declared_in(body, found),
-            StmtKind::OnFailure { cleanup, body, .. } => {
-                declared_in(cleanup, found);
-                declared_in(body, found);
-            }
-            StmtKind::If { branches, otherwise } => {
-                for (_, body) in branches {
-                    declared_in(body, found);
-                }
-                if let Some(body) = otherwise {
-                    declared_in(body, found);
-                }
-            }
-            StmtKind::Lend { otherwise, .. } => declared_in(otherwise, found),
-            StmtKind::Expr(value) => declared_in_match(value, found),
-            _ => {}
-        }
-    }
-}
-
-/// What a `match` written as a whole value declares: what its cases bind, and what they declare.
-fn declared_in_match(value: &Expr, found: &mut Vec<String>) {
-    if let ExprKind::Match { arms, .. } = &value.kind {
-        for arm in arms {
-            bound_by(&mut arm.pattern.clone(), &mut |held| found.push(held.clone()));
-            declared_in(&arm.body, found);
-        }
-    }
-}
-
-fn targets(target: &Expr, found: &mut Vec<String>) {
-    match &target.kind {
-        // `_ = value` throws the value away, so it declares nothing to rename, kept apart from
-        // the others as `_'1` or as written.
-        ExprKind::Name(name) if name != "_" && !name.starts_with("_'") => found.push(name.clone()),
-        ExprKind::Tuple(items) => items.iter().for_each(|item| targets(item, found)),
-        _ => {}
-    }
-}
-
-/// Each name a pattern binds.
-fn bound_by(pattern: &mut Pattern, each: &mut dyn FnMut(&mut String)) {
-    match pattern {
-        Pattern::Bind(held) | Pattern::RefBind(held) => each(held),
-        Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
-            for inner in patterns {
-                bound_by(inner, each);
-            }
-        }
-        Pattern::Wildcard | Pattern::Literal(_) => {}
-    }
 }
 
 #[cfg(test)]

@@ -88,6 +88,7 @@ impl FnCx<'_> {
                 method,
                 gives: gives.clone(),
                 generics,
+                task: None,
             };
             self.checker.sources.insert((span.start, span.end), source);
         }

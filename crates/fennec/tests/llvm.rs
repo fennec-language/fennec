@@ -1805,8 +1805,22 @@ fn a_lock_s_name_named_again_inside_its_block_is_that_name() -> std::io::Result<
     }
     // The coverage lane's shape, which checked and then stopped when the arrow ran: a bare
     // parameter, typed by what it's kept in, reading a field of a value of the locked one's type.
-    prints_in_both_builds("lock_named_by_a_bare_arrow", LOCK_NAMED_BY_A_BARE_ARROW, "3\n[1, 2, 5]\n")
+    prints_in_both_builds("lock_named_by_a_bare_arrow", LOCK_NAMED_BY_A_BARE_ARROW, "3\n[1, 2, 5]\n")?;
+    // A count from `enumerate` named like the lock's name is the loop's: before, each pass wrote
+    // it into what's locked.
+    prints_in_both_builds("lock_named_by_an_enumerate", LOCK_NAMED_BY_AN_ENUMERATE, "100\n[10, 21, 32]\n")
 }
+
+const LOCK_NAMED_BY_AN_ENUMERATE: &str = r"def main(stdout: Stdout):
+    shared count = 100
+    mut items = [10, 20, 30]
+    lock count as ref seen:
+        for seen, ref item in enumerate(items):
+            item += seen
+    lock count as now:
+        stdout.print(now)
+    stdout.print(items)
+";
 
 const LOCK_NAMED_BY_A_BARE_ARROW: &str = r"struct Bag:
     items: list[int]
@@ -1842,8 +1856,80 @@ fn a_with_s_name_named_again_inside_its_block_is_that_name() -> std::io::Result<
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds("with_named_again", WITH_NAMED_AGAIN, "1\n2\n30 205\n")
+    prints_in_both_builds("with_named_again", WITH_NAMED_AGAIN, "1\n2\n30 205\n")?;
+    // A source that binds a name a function it calls has, in a comprehension, still calls it.
+    prints_in_both_builds("with_source_calls_its_own", WITH_SOURCE_CALLS_ITS_OWN, "3\n")?;
+    // A source's declaration inside an `except` block is its own, not a caller's `mut` name of
+    // that name: before, it changed the caller's.
+    prints_in_both_builds("with_source_declares_its_own", WITH_SOURCE_DECLARES_ITS_OWN, "1\n2 1\n")?;
+    // A `ref` named like the `with`'s name holds for the rest of the block, as any `ref` does.
+    prints_in_both_builds("with_named_by_a_ref", WITH_NAMED_BY_A_REF, "[[7, 8, 5]]\n[4]\n")?;
+    // A loop in the block named like the caller's name a source lends is the loop's: the
+    // `with`'s name still means the caller's. Before, it read the loop's.
+    prints_in_both_builds("with_lends_a_name_named_again", WITH_LENDS_A_NAME_NAMED_AGAIN, "2\n")
 }
+
+const WITH_SOURCE_CALLS_ITS_OWN: &str = r"def total(items: list[int]) -> int:
+    return sum(items)
+
+def opened() -> with int:
+    groups = [[1, 2], [3]]
+    sizes = [len(total) for total in groups]
+    lend total(sizes)
+
+def main(stdout: Stdout):
+    with opened() as got:
+        stdout.print(got)
+";
+
+const WITH_SOURCE_DECLARES_ITS_OWN: &str = r#"error Bad:
+    pass
+
+def risky(n: int) -> int fails Bad:
+    if n < 0:
+        fail Bad()
+    return n
+
+def opened(ref log: list[str]) -> with int:
+    got = risky(-1) except why:
+        count = 7
+        log.append(f"{why} {count}")
+        0
+    lend got
+
+def main(stdout: Stdout):
+    mut count = 1
+    mut log = list[str]()
+    with opened(ref log) as n:
+        stdout.print(n + count)
+    count += 1
+    stdout.print(count, len(log))
+"#;
+
+const WITH_NAMED_BY_A_REF: &str = r"def opened(ref sizes: list[int]) -> with list[int]:
+    kept = [1, 2, 3, 4]
+    lend kept
+    sizes.append(len(kept))
+
+def main(stdout: Stdout):
+    mut grid = [[7, 8]]
+    mut sizes = list[int]()
+    with opened(ref sizes) as row:
+        ref row = grid[0]
+        row.append(5)
+    stdout.print(grid)
+    stdout.print(sizes)
+";
+
+const WITH_LENDS_A_NAME_NAMED_AGAIN: &str = r"def opened(ref buf: list[int]) -> with list[int]:
+    lend buf
+
+def main(stdout: Stdout):
+    mut data = [1, 2]
+    with opened(ref data) as row:
+        for data in [[7, 8, 9]]:
+            stdout.print(len(row))
+";
 
 const WITH_NAMED_AGAIN: &str = r"def opened() -> with int:
     value = 5
@@ -5306,6 +5392,56 @@ def main(stdout: Stdout):
     );
     Ok(())
 }
+
+/// A `ref` local, and a `for ref`'s name, named again inside what follows, by a loop, is the
+/// loop's there; and a loop named like what the `ref` reaches through leaves the `ref` reaching
+/// through what it did. Before, each stopped the build, as what the `ref` was written in as read
+/// the loop's name.
+#[test]
+fn a_ref_s_names_named_again_after_it_are_those_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("ref_named_again", REF_NAMED_AGAIN, "3\n[[1, 1], [2]]\n")?;
+    prints_in_both_builds("for_ref_named_again", FOR_REF_NAMED_AGAIN, "[[1, 1], [2, 1]]\n")
+}
+
+const REF_NAMED_AGAIN: &str = r"def main(stdout: Stdout):
+    mut groups = [[1], [2]]
+    ref first = groups[0]
+    for first in [[7, 7, 7]]:
+        stdout.print(len(first))
+    for groups in [[[9]]]:
+        first.append(len(groups))
+    stdout.print(groups)
+";
+
+const FOR_REF_NAMED_AGAIN: &str = r"def main(stdout: Stdout):
+    mut rows = [[1], [2]]
+    for ref row in rows:
+        for rows in [[[5, 5]]]:
+            row.append(len(rows))
+    stdout.print(rows)
+";
+
+/// The count `for at, ref item in enumerate(items)` gives is the loop's own, though a `mut` name
+/// outside it has that name, which keeps its value. Before, each pass wrote the count into it.
+#[test]
+fn an_enumerate_s_count_is_the_loop_s_own() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("enumerate_count_own", ENUMERATE_COUNT_OWN, "101 [10, 21, 32]\n")
+}
+
+const ENUMERATE_COUNT_OWN: &str = r"def main(stdout: Stdout):
+    mut at = 100
+    mut items = [10, 20, 30]
+    for at, ref item in enumerate(items):
+        item += at
+    at += 1
+    stdout.print(at, items)
+";
 
 /// `for at, ref item in enumerate(items)` changes each item where it is, natively, as the
 /// language says: numbers, structs and lists, a `continue` that still counts what it skips, and a
@@ -18219,6 +18355,35 @@ fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()>
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "done\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    Ok(())
+}
+
+/// A name of the caller's a launched task's arrow reads is the caller's, though what's written
+/// in for the launch has a parameter of that name, `stop_after`. Before, the task read that one,
+/// which was `None`.
+#[test]
+fn a_launched_task_reads_its_caller_s_names() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("launch_caller_names")?;
+    let program = dir.join("names.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    stop_after = 5\n    with launch(() => stdout.print(stop_after)) as task:\n        pass\n",
+    )?;
+    let executable = dir.join("names");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "5\n");
     Ok(())
 }
 

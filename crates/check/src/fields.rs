@@ -21,19 +21,26 @@ pub fn each_field_type(start: u32) -> String {
     format!("FieldValue{}{start}", fennec_syntax::visit::HIDDEN)
 }
 
-/// What `for f in fields(T):` loops over: `T`, as it's written.
+/// What `for f in fields(T):` loops over: `T`, as it's written. A `with` source's `fields` or type,
+/// written into its caller as its own (`sight::outer`), is that one.
 #[must_use]
 pub fn fields_of(iter: &Expr) -> Option<&str> {
     let ExprKind::Call { callee, args } = &iter.kind else { return None };
     let ExprKind::Name(called) = &callee.kind else { return None };
     match args.as_slice() {
         [Arg { name: None, is_mut: false, value: Expr { kind: ExprKind::Name(of), .. } }]
-            if called == "fields" =>
+            if fennec_syntax::sight::outer(called).unwrap_or(called) == "fields" =>
         {
-            Some(of)
+            Some(fennec_syntax::sight::outer(of).unwrap_or(of))
         }
         _ => None,
     }
+}
+
+/// Whether `fields(T)` writes `T` as a `with` source's own (`sight::outer`).
+fn names_outer(iter: &Expr) -> bool {
+    let ExprKind::Call { args, .. } = &iter.kind else { return false };
+    args.iter().any(|arg| matches!(&arg.value.kind, ExprKind::Name(of) if fennec_syntax::sight::outer(of).is_some()))
 }
 
 /// What a field a loop over `fields(T)` gives has.
@@ -49,8 +56,14 @@ impl FnCx<'_> {
         span: Span,
     ) -> Option<()> {
         let of = fields_of(iter)?;
-        if self.lookup("fields").is_some() || self.checker.program.functions.contains_key("fields") {
+        // A `with` source's `fields`, written in as its own (`sight::outer`), is the language's,
+        // whatever's in sight.
+        let outer = crate::parallel::called_as_outer(iter);
+        if (!outer && self.lookup("fields").is_some()) || self.checker.program.functions.contains_key("fields") {
             return None;
+        }
+        if outer || names_outer(iter) {
+            self.note_outer();
         }
         let [name] = names else {
             let help = format!("name each field once, as `for field in fields({of}):`");

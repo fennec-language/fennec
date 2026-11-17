@@ -88,6 +88,8 @@ fn a_short_run_of_every_target_finds_nothing() {
         "toml-rules",
         "http-client",
         "http-server",
+        "router",
+        "html",
         "postgres",
         "regex",
         "url",
@@ -97,19 +99,22 @@ fn a_short_run_of_every_target_finds_nothing() {
     // Those that run natively are left out, saying so, where nothing can be built.
     let native = [
         "csv",
+        "html",
         "http-client",
         "http-server",
         "json",
         "json-rules",
         "pack",
         "postgres",
+        "router",
         "toml",
         "toml-rules",
         "url",
         "utf8",
     ];
     let left_out = printed.contains(
-        "csv, http-client, http-server, json, json-rules, pack, postgres, toml, toml-rules, url, utf8: left out",
+        "csv, html, http-client, http-server, json, json-rules, pack, postgres, router, toml, toml-rules, url, \
+         utf8: left out",
     );
     for target in targets {
         if left_out && native.contains(&target) {
@@ -117,6 +122,73 @@ fn a_short_run_of_every_target_finds_nothing() {
         }
         assert!(printed.contains(&format!("{target}: 100 inputs, 0 failures")), "{target}: {printed}");
     }
+}
+
+/// Large inputs a stranger could send, each through the target that reads it, all run clean. A
+/// reader takes time and memory in proportion to what it's given, never that squared, and never
+/// what a length in it claims. `fennec-fuzz one` stops a reader past 10 seconds of CPU time or
+/// 512 MB, so one gone quadratic fails here rather than in a server.
+///
+/// Fuzzing's own inputs are a few hundred bytes, too small for that to show. These found that
+/// `json-rules` looked for each key among every key before it, the target's own mistake.
+/// Where nothing can be built natively, each passes without running.
+#[test]
+fn large_hostile_inputs_run_clean() {
+    let seeds = Path::new(env!("CARGO_MANIFEST_DIR")).join("seeds/pack");
+    // A packed `list[int]`'s header, up to where the count of its items starts, from its seed.
+    let ints = std::fs::read(seeds.join("ints.bin")).unwrap();
+    let header = ints.get(..16).unwrap_or_default();
+    let varint = |mut n: u64| {
+        let mut out = Vec::new();
+        while n >= 0x80 {
+            out.push(u8::try_from(n & 0x7f).unwrap_or_default() | 0x80);
+            n >>= 7;
+        }
+        out.push(u8::try_from(n).unwrap_or_default());
+        out
+    };
+    let keys: String = (0..200_000).map(|n| format!("\"k{n}\":\"v\"")).collect::<Vec<_>>().join(",");
+    let inputs: Vec<(&str, &str, Vec<u8>)> = vec![
+        ("json", "100,000 arrays open", "[".repeat(100_000).into_bytes()),
+        ("json", "a million digits", "1".repeat(1_000_000).into_bytes()),
+        ("json", "a 5 MB string", format!("\"{}\"", "a".repeat(5_000_000)).into_bytes()),
+        ("json-rules", "200,000 keys", format!("{{{keys}}}").into_bytes()),
+        ("json-rules", "100,000 objects open", "{\"a\":".repeat(100_000).into_bytes()),
+        ("toml", "100,000 arrays open", format!("a = {}", "[".repeat(100_000)).into_bytes()),
+        ("toml-rules", "a key of 100,000 parts", format!("a{} = 1", ".a".repeat(100_000)).into_bytes()),
+        ("pack", "a count of 2^63", [header, &varint(u64::MAX >> 1)].concat()),
+        ("pack", "a count of 10 million, and no items", [header, &varint(10_000_000)].concat()),
+        ("router", "a million slashes", "/".repeat(1_000_000).into_bytes()),
+        ("router", "a million escapes", format!("/notes/{}", "%41".repeat(1_000_000)).into_bytes()),
+        ("html", "a million `<`", "<".repeat(1_000_000).into_bytes()),
+        (
+            "html",
+            "a link after a million spaces",
+            format!("{}javascript:x", " ".repeat(1_000_000)).into_bytes(),
+        ),
+        ("http-server", "a million blank lines", "\r\n".repeat(1_000_000).into_bytes()),
+        (
+            "http-server",
+            "10,000 headers",
+            format!("GET / HTTP/1.1\r\n{}\r\n", "x-a: b\r\n".repeat(10_000)).into_bytes(),
+        ),
+        ("http-server", "20,000 requests in a row", "GET / HTTP/1.1\r\n\r\n".repeat(20_000).into_bytes()),
+    ];
+    let dir = std::env::temp_dir().join(format!("fennec-fuzz-large-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (at, (target, what, input)) in inputs.iter().enumerate() {
+        let file = dir.join(format!("{at}"));
+        std::fs::write(&file, input).unwrap();
+        let output = fuzz().args(["one", target]).arg(&file).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{target}, {what}: {}\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Each program the `llvm` target starts from builds both ways and prints what's pinned for it,

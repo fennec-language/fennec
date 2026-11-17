@@ -43,13 +43,13 @@ jobs:
             target: ""
             only: llvm json toml utf8
           # The standard library's readers of outside input, built natively, each held to its
-          # format's own rules: JSON, TOML, std.pack, CSV, URLs, the HTTP server and client, and
-          # Postgres's messages.
+          # format's own rules: JSON, TOML, std.pack, CSV, URLs, the HTTP server and client,
+          # Postgres's messages, the Router's paths and the values a page renders.
           - name: Readers
             toolchain: ""
             flags: ""
             target: ""
-            only: json-rules toml-rules pack csv url http-server http-client postgres
+            only: json-rules toml-rules pack csv url http-server http-client postgres router html
           # Random, well-typed programs, each built as a dev build and with --release, which have to
           # print the same as each other and as a reference evaluator.
           - name: Programs

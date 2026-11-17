@@ -641,7 +641,7 @@ fn wait<'a>(
         let left = deadline.saturating_duration_since(Instant::now());
         let (queue, waited) =
             channel.changed.wait_timeout(queue, left).unwrap_or_else(PoisonError::into_inner);
-        (queue, waited.timed_out(), None)
+        (queue, waited.timed_out(), false)
     } else {
         let Some((queue, stuck)) = wait_stuck(channel, queue, side) else {
             #[cfg(any(test, feature = "threads"))]
@@ -660,8 +660,8 @@ fn wait<'a>(
     debug_assert!(*counted > 0, "a thread woke on a channel that didn't count it asleep");
     *counted -= 1;
     drop(queue);
-    if let Some(number) = stuck {
-        deadlock::thread_woke(number);
+    if stuck {
+        deadlock::thread_woke();
     }
     #[cfg(any(test, feature = "threads"))]
     super::threads::Launcher::waited_here(said);
@@ -672,14 +672,14 @@ fn wait<'a>(
 /// asleep: waits until it's woken. A wait that could be a stuck one waits a moment first (see
 /// `deadlock::PATIENCE`), and only if nothing's changed by then is it noted and counted, looking for
 /// a deadlock if the counts say there may be one. Gives back the queue, held, once it's woken, with
-/// the number its note was counted by if it was, or `None` when the wait was over while it looked.
+/// whether its note was counted, or `None` when the wait was over while it looked.
 fn wait_stuck<'a>(
     channel: &'a Arc<Channel>,
     queue: MutexGuard<'a, Queue>,
     side: Side,
-) -> Option<(MutexGuard<'a, Queue>, Option<u64>)> {
+) -> Option<(MutexGuard<'a, Queue>, bool)> {
     let Some(note) = channel.stuck_note(side) else {
-        return Some((channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), None));
+        return Some((channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), false));
     };
     let (queue, waited) =
         channel.changed.wait_timeout(queue, deadlock::PATIENCE).unwrap_or_else(PoisonError::into_inner);
@@ -688,15 +688,15 @@ fn wait_stuck<'a>(
     #[cfg(not(any(test, feature = "threads")))]
     let cut_short = false;
     if !waited.timed_out() || cut_short || !channel.still_waits(&queue, side) {
-        return Some((queue, None));
+        return Some((queue, false));
     }
     // Noted and counted with the queue held, as it's counted asleep.
-    let (number, look) = deadlock::thread_waits(note.blocking(), true);
-    let queue = if look { looked(channel, queue, side, number)? } else { queue };
-    Some((channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), Some(number)))
+    let look = deadlock::thread_waits(note.blocking(), true);
+    let queue = if look { looked(channel, queue, side)? } else { queue };
+    Some((channel.changed.wait(queue).unwrap_or_else(PoisonError::into_inner), true))
 }
 
-/// For a wait that blocks its thread, noted and counted as `number`, when the counts say every
+/// For a wait that blocks its thread, noted and counted, when the counts say every
 /// context is stuck: lets go of `queue`, this channel's, while it looks for a deadlock, as the check
 /// looks at this channel, then looks at it again. A change that came meanwhile told nobody, as this
 /// thread wasn't asleep yet, so the wait's over if anything changed: it's taken back, and `None`
@@ -705,7 +705,6 @@ fn looked<'a>(
     channel: &'a Arc<Channel>,
     queue: MutexGuard<'a, Queue>,
     side: Side,
-    number: u64,
 ) -> Option<MutexGuard<'a, Queue>> {
     drop(queue);
     deadlock::look();
@@ -722,7 +721,7 @@ fn looked<'a>(
         Side::Receiving => queue.asleep.for_a_message -= 1,
     }
     drop(queue);
-    deadlock::thread_woke(number);
+    deadlock::thread_woke();
     None
 }
 

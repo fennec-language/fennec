@@ -12,7 +12,6 @@
 //! The design, with the review it was built to: `deadlock-detection-design-2026-11-16-runtime.md`
 //! in the lanes' notes.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -253,32 +252,47 @@ impl Note {
 /// it, when that's a channel's wait: a crash wakes it without changing what it waits on, so it holds
 /// only while none has. A parked wait's crash wake is mail, which the check sees, and which takes it
 /// out of its worker's waits.
+#[derive(Clone)]
 struct ThreadNote {
     note: Note,
     #[cfg(any(test, feature = "threads"))]
-    launchers: Vec<Arc<super::threads::Launcher>>,
+    launchers: [Option<Arc<super::threads::Launcher>>; 2],
 }
 
 impl ThreadNote {
     fn holds(&self) -> bool {
         #[cfg(any(test, feature = "threads"))]
-        if self.launchers.iter().any(|launcher| launcher.cut_short()) {
+        if self.launchers.iter().flatten().any(|launcher| launcher.cut_short()) {
             return false;
         }
         self.note.holds()
     }
 }
 
-/// The notes of stuck waits that block their threads, by a number each was given.
-static THREAD_NOTES: Mutex<Option<HashMap<u64, ThreadNote>>> = Mutex::new(None);
-static NEXT_THREAD_NOTE: AtomicU64 = AtomicU64::new(1);
+/// A thread's slot for the note of the stuck wait it's blocked in, while it is: a thread is in one
+/// wait at a time. Each thread that ever blocks in one has a slot of its own, made the first time,
+/// so a wait takes no lock but its own, and the check reads every thread's.
+type ThreadSlot = Arc<Mutex<Option<ThreadNote>>>;
 
-/// A thread is about to block in a stuck wait, leaving `note`, and counts it: gives the number to
-/// take it back by, and whether the counts now say every context is stuck, so it should look. A
-/// wait a crash of a task its code launched wakes says so, `crash_wakes`: a channel's.
-pub(crate) fn thread_waits(note: Note, crash_wakes: bool) -> (u64, bool) {
+/// Every slot of a thread that's still running.
+static THREAD_SLOTS: Mutex<Vec<std::sync::Weak<Mutex<Option<ThreadNote>>>>> = Mutex::new(Vec::new());
+
+thread_local! {
+    static THREAD_SLOT: ThreadSlot = {
+        let slot = ThreadSlot::default();
+        let mut slots = THREAD_SLOTS.lock().unwrap_or_else(PoisonError::into_inner);
+        slots.retain(|slot| slot.strong_count() > 0);
+        slots.push(Arc::downgrade(&slot));
+        slot
+    };
+}
+
+/// A thread is about to block in a stuck wait, leaving `note`, and counts it: gives whether the
+/// counts now say every context is stuck, so it should look. A wait a crash of a task its code
+/// launched wakes says so, `crash_wakes`: a channel's.
+pub(crate) fn thread_waits(note: Note, crash_wakes: bool) -> bool {
     #[cfg(any(test, feature = "threads"))]
-    let launchers = if crash_wakes { super::threads::Launcher::those_here() } else { Vec::new() };
+    let launchers = if crash_wakes { super::threads::Launcher::those_here() } else { [None, None] };
     #[cfg(not(any(test, feature = "threads")))]
     let _ = crash_wakes;
     let note = ThreadNote {
@@ -286,20 +300,14 @@ pub(crate) fn thread_waits(note: Note, crash_wakes: bool) -> (u64, bool) {
         #[cfg(any(test, feature = "threads"))]
         launchers,
     };
-    let number = NEXT_THREAD_NOTE.fetch_add(1, Ordering::Relaxed);
-    THREAD_NOTES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get_or_insert_with(HashMap::new)
-        .insert(number, note);
-    (number, stuck_began().all_stuck())
+    THREAD_SLOT.with(|slot| *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(note));
+    stuck_began().all_stuck()
 }
 
-/// A thread's stuck wait has ended, or is about to: its note goes, and it's uncounted.
-pub(crate) fn thread_woke(number: u64) {
-    if let Some(notes) = THREAD_NOTES.lock().unwrap_or_else(PoisonError::into_inner).as_mut() {
-        notes.remove(&number);
-    }
+/// This thread's stuck wait has ended, or is about to: its note goes, and it's uncounted.
+pub(crate) fn thread_woke() {
+    let taken = THREAD_SLOT.with(|slot| slot.lock().unwrap_or_else(PoisonError::into_inner).take());
+    drop(taken);
     stuck_ended();
 }
 
@@ -390,7 +398,7 @@ fn said(notes: &[Note]) -> String {
 }
 
 /// Looks for a deadlock, where the counts say there may be one: from a worker going to sleep, or a
-/// thread about to block in a stuck wait, holding no lock a note looks at, nor `THREAD_NOTES` or a
+/// thread about to block in a stuck wait, holding no lock a note looks at, nor a thread's or a
 /// worker's slot. Stops the program if it's proven; otherwise does nothing.
 pub(crate) fn look() {
     let before = counts();
@@ -415,13 +423,22 @@ fn proven(before: Counts) -> Option<Vec<Note>> {
     }
     #[cfg_attr(not(any(test, feature = "threads")), expect(unused_mut, reason = "only workers add notes"))]
     let mut notes: Vec<Note> = {
-        let thread_notes = THREAD_NOTES.lock().unwrap_or_else(PoisonError::into_inner);
-        let thread_notes: Vec<&ThreadNote> =
-            thread_notes.as_ref().map(|notes| notes.values().collect()).unwrap_or_default();
-        if !thread_notes.iter().all(|note| note.holds()) {
+        // Copied out, and asked whether they hold only once no slot is held: a thread takes its
+        // slot with what its wait is on held, a channel's queue or a task's end, which asking takes.
+        let slots: Vec<ThreadSlot> = THREAD_SLOTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect();
+        let thread_notes: Vec<ThreadNote> = slots
+            .iter()
+            .filter_map(|slot| slot.lock().unwrap_or_else(PoisonError::into_inner).clone())
+            .collect();
+        if !thread_notes.iter().all(ThreadNote::holds) {
             return None;
         }
-        thread_notes.iter().map(|note| note.note.clone()).collect()
+        thread_notes.into_iter().map(|note| note.note).collect()
     };
     #[cfg(any(test, feature = "threads"))]
     {

@@ -418,7 +418,7 @@ fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome 
                 continue;
             }
             // Counted with the end held, so the task's end, which takes it, comes before or after.
-            let (number, look) = deadlock::thread_waits(Note::parked(on(), Kind::BlockEnd).blocking(), false);
+            let look = deadlock::thread_waits(Note::parked(on(), Kind::BlockEnd).blocking(), false);
             let end = if look {
                 // The check looks at this task's end, so it's let go of meanwhile, and looked at
                 // again after: an end that came then has told no one.
@@ -426,7 +426,7 @@ fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome 
                 deadlock::look();
                 let end = launched.end.lock().unwrap_or_else(PoisonError::into_inner);
                 if !matches!(*end, End::Running(_)) {
-                    deadlock::thread_woke(number);
+                    deadlock::thread_woke();
                     continue;
                 }
                 end
@@ -434,7 +434,7 @@ fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome 
                 end
             };
             drop(launched.ended.wait(end).unwrap_or_else(PoisonError::into_inner));
-            deadlock::thread_woke(number);
+            deadlock::thread_woke();
             None
         };
         // A cancelled launcher can't wait, and its task may need this very worker to run. So the task's

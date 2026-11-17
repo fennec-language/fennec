@@ -5,9 +5,17 @@
 //! - `check`: `fennec check`, with nothing kept from before;
 //! - `cold-dev`: a dev build, with nothing kept;
 //! - `cold-release`: a release build, with nothing kept;
-//! - `edit-dev`: a dev build again, after a one-line edit to a module in the middle of it;
+//! - `edit-dev`: a dev build again, after a one-line edit to a module in the middle of it that
+//!   keeps the line's length, so it moves nothing after it;
 //! - `edit-release`: a release build again, after that edit;
-//! - `test`: `fennec test`, after that edit and the dev build.
+//! - `test`: `fennec test`, after that edit and the dev build;
+//! - `edit-dev-longer`: a dev build again, after the first line of the first file, a comment, is
+//!   made longer, which moves where everything after it is and changes nothing else;
+//! - `edit-dev-line`: a dev build again, after a comment line is added below that one, which
+//!   moves every line after it down one too.
+//!
+//! The last two change nothing a program does, so whatever they build again is work only where
+//! things are asked for: an edit near the top of a real program does that, and more.
 //!
 //! Each step gives its wall time and the most memory one of its processes held. Where they're
 //! counted, it gives the instructions it took too, by process: `fennec` itself, LLVM's tools and
@@ -59,11 +67,21 @@ enum Step {
     EditDev,
     EditRelease,
     Test,
+    EditDevLonger,
+    EditDevLine,
 }
 
 impl Step {
-    const ALL: [Step; 6] =
-        [Step::Check, Step::ColdDev, Step::ColdRelease, Step::EditDev, Step::EditRelease, Step::Test];
+    const ALL: [Step; 8] = [
+        Step::Check,
+        Step::ColdDev,
+        Step::ColdRelease,
+        Step::EditDev,
+        Step::EditRelease,
+        Step::Test,
+        Step::EditDevLonger,
+        Step::EditDevLine,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -73,6 +91,8 @@ impl Step {
             Step::EditDev => "edit-dev",
             Step::EditRelease => "edit-release",
             Step::Test => "test",
+            Step::EditDevLonger => "edit-dev-longer",
+            Step::EditDevLine => "edit-dev-line",
         }
     }
 
@@ -312,11 +332,14 @@ struct Program {
 fn measure_size(setup: &Setup, options: &Options, lines: usize) -> Result<(Program, Vec<Found>), String> {
     let folder = setup.work().join(lines.to_string());
     let made = generate::generate(&folder.join("program"), lines, options.seed)?;
-    let original =
-        std::fs::read_to_string(&made.edited).map_err(|err| format!("{}: {err}", made.edited.display()))?;
+    let read =
+        |path: &Path| std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()));
+    let (original, first) = (read(&made.edited)?, read(&made.first)?);
     let mut runs: Vec<Vec<(Step, Counted, f64)>> = Vec::new();
     for at in 0..options.runs {
-        std::fs::write(&made.edited, &original).map_err(|err| format!("{}: {err}", made.edited.display()))?;
+        for (path, text) in [(&made.edited, &original), (&made.first, &first)] {
+            std::fs::write(path, text).map_err(|err| format!("{}: {err}", path.display()))?;
+        }
         let homes = ["home-check", "home-dev", "home-release"].map(|name| folder.join(name));
         for home in &homes {
             let _ = std::fs::remove_dir_all(home);
@@ -326,12 +349,18 @@ fn measure_size(setup: &Setup, options: &Options, lines: usize) -> Result<(Progr
         let release = folder.join("app-release").to_string_lossy().into_owned();
         let mut steps = Vec::new();
         for step in Step::ALL {
-            if step == Step::EditDev {
-                made.edit(at + 1)?;
+            match step {
+                Step::EditDev => made.edit(at + 1)?,
+                Step::EditDevLonger => made.lengthen_first_line(at + 1)?,
+                // Below the line the last step made longer, so the two edits add up.
+                Step::EditDevLine => made.add_a_line(at + 1)?,
+                _ => {}
             }
             let (home, args): (&Path, Vec<&str>) = match step {
                 Step::Check => (check_home, vec!["check", "."]),
-                Step::ColdDev | Step::EditDev => (dev_home, vec!["build", ".", "-o", dev.as_str()]),
+                Step::ColdDev | Step::EditDev | Step::EditDevLonger | Step::EditDevLine => {
+                    (dev_home, vec!["build", ".", "-o", dev.as_str()])
+                }
                 Step::ColdRelease | Step::EditRelease => {
                     (release_home, vec!["build", "--release", ".", "-o", release.as_str()])
                 }

@@ -195,9 +195,13 @@ Its steps, at each size:
 - `check`: `fennec check`.
 - `cold-dev`: a dev build in a new Fennec folder.
 - `cold-release`: a release build in a new Fennec folder.
-- `edit-dev`: a dev build after a one-line edit to a module in the middle.
+- `edit-dev`: a dev build after a one-line edit to a module in the middle. The edit keeps the line's length, so it moves nothing after it.
 - `edit-release`: a release build after that edit.
 - `test`: `fennec test` after the edit.
+- `edit-dev-longer`: a dev build after the first line of the first file, a comment, is made longer. That moves where everything after it is and changes nothing else.
+- `edit-dev-line`: a dev build after a comment line is added below it, which moves every line after it down one.
+
+The last two change nothing a program does, so whatever they build again is waste, only where things are. An edit near the top of a real program moves the rest the same way.
 
 Each gives its wall time and the most memory one process held. Where counted, it also gives the instructions each kind of process took and how many times it ran. Each build says how many functions it sent through LLVM, and after the edit the rest came from the cache.
 

@@ -1246,11 +1246,27 @@ fn split_in_words(state: &mut State, text: &[u64; 3], separator: &[u64; 3]) -> O
 
 /// Adds the part of `length` bytes at byte `start` of `words`, a text's bytes, to a `split`'s
 /// items, as a header: inline when it fits, and otherwise a string of its own.
+///
+/// Inlined into the loop that finds the parts, as most parts are short: a long part's block is
+/// made by a function of its own, so its work doesn't make every short part save and restore the
+/// registers it needs.
+#[expect(
+    clippy::inline_always,
+    reason = "a `split` writes every part through this, and as a call of its own at each of its two places it cost about 20 instructions a part"
+)]
+#[inline(always)]
 fn put_part_of_words(state: &mut State, items: &mut Vec<u64>, words: &[u64], start: usize, length: usize) {
     if length <= super::text::INLINE_BYTES {
         items.extend(super::text::inline_from_words(words, start, length));
-        return;
+    } else {
+        items.extend(long_part_of_words(state, words, start, length));
     }
+}
+
+/// The header of the part of `length` bytes, more than fit inline, at byte `start` of `words`,
+/// a text's bytes: a string of its own, owned once.
+#[inline(never)]
+fn long_part_of_words(state: &mut State, words: &[u64], start: usize, length: usize) -> [u64; 3] {
     let count = length.div_ceil(8);
     let mut block = state.heap.fresh_written(TEXT_HEADER_WORDS + count, TEXT_HEADER_WORDS + count);
     if let Some(body) = block.get_mut(TEXT_HEADER_WORDS..) {
@@ -1267,7 +1283,7 @@ fn put_part_of_words(state: &mut State, items: &mut Vec<u64>, words: &[u64], sta
         start.copy_from_slice(&header);
     }
     let address = state.heap.insert(block).cast_unsigned();
-    items.extend([address, number(length), 0]);
+    [address, number(length), 0]
 }
 
 /// Adds a part `split` found to its items: inline in its header when it fits and lists hold

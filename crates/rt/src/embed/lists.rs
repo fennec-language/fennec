@@ -1514,16 +1514,24 @@ pub(super) fn list_of_items(state: &mut State, element: &Rc<Element>, words: &[u
 /// `text::string_element`). The kind of item is found by its variant, with nothing made to compare.
 pub(super) fn list_of_texts(state: &mut State, items: &[u64]) -> i64 {
     let headers = state.tables.text_headers;
-    let found = state.tables.elements.iter().position(|known| match **known {
-        Element::Text => headers,
-        Element::Str => !headers,
-        _ => false,
-    });
-    let at = if let Some(at) = found {
+    let at = if let Some(at) = state.tables.texts_element {
         at
     } else {
-        let element = super::text::string_element(state);
-        number_of_element(state, &element)
+        let found = state.tables.elements.iter().position(|known| match **known {
+            Element::Text => headers,
+            Element::Str => !headers,
+            _ => false,
+        });
+        let at = if let Some(at) = found {
+            at
+        } else {
+            let element = super::text::string_element(state);
+            number_of_element(state, &element)
+        };
+        // A kind's number never changes once given, and a list of strings is made often, as
+        // `split` makes one each call.
+        state.tables.texts_element = Some(at);
+        at
     };
     let stride = if headers { Element::Text.words() } else { Element::Str.words() };
     let block = build(state, at, stride, items, 0);

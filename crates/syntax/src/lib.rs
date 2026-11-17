@@ -12,6 +12,7 @@ mod modules;
 mod parser;
 pub mod read;
 pub mod rename;
+pub mod sight;
 mod sources;
 mod span;
 mod stdlib;

@@ -1134,7 +1134,7 @@ fn waits_that_time_out_together_wake_by_deadline_then_in_the_order_they_parked()
             2 => Some(later),
             _ => None,
         };
-        waiting.insert(token, (u64::try_from(token).unwrap(), mio::Interest::READABLE, deadline));
+        waiting.insert(token, (u64::try_from(token).unwrap(), mio::Interest::READABLE, deadline, None));
     }
     let woken = super::timed_out(&waiting, now);
     let wanted: Vec<usize> =

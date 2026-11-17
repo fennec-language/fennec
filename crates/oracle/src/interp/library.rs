@@ -8,7 +8,7 @@
 use fennec_syntax::Span;
 
 use super::{Run, crash, unsupported};
-use crate::value::{Text, Value};
+use crate::value::{Held, Text, Value};
 
 /// A constant of the standard library, by its whole name, like `std.math.PI`, or a case of one
 /// of `std.json`'s option enums, like `std.json.JsonNames.CamelCase`.
@@ -235,13 +235,16 @@ fn random(name: &str, args: &[Value], span: Span) -> Run<Value> {
             }
             let count = high.wrapping_sub(*low).wrapping_add(1).cast_unsigned();
             let (offset, after) = below(*seed, *drawn, count);
-            Ok(Value::Tuple(vec![Value::Int(low.wrapping_add(offset.cast_signed())), Value::Int(after)]))
+            Ok(Value::Tuple(Held::new(vec![
+                Value::Int(low.wrapping_add(offset.cast_signed())),
+                Value::Int(after),
+            ])))
         }
         ("random_float", [Value::Int(seed), Value::Int(drawn)]) => {
             // The top 53 bits, over 2 to the 53rd: from 0.0 up to, but not including, 1.0.
             #[expect(clippy::cast_precision_loss, reason = "53 bits fit a float's mantissa exactly")]
             let fraction = (splitmix(*seed, *drawn) >> 11) as f64 / 9_007_199_254_740_992.0;
-            Ok(Value::Tuple(vec![Value::Float(fraction), Value::Int(drawn.saturating_add(1))]))
+            Ok(Value::Tuple(Held::new(vec![Value::Float(fraction), Value::Int(drawn.saturating_add(1))])))
         }
         ("random_choice", [Value::Int(seed), Value::Int(drawn), Value::List(items)]) => {
             if items.is_empty() {
@@ -249,7 +252,7 @@ fn random(name: &str, args: &[Value], span: Span) -> Run<Value> {
             }
             let (at, after) = below(*seed, *drawn, u64::try_from(items.len()).unwrap_or(u64::MAX));
             let item = usize::try_from(at).ok().and_then(|at| items.get(at)).cloned().unwrap_or(Value::None);
-            Ok(Value::Tuple(vec![item, Value::Int(after)]))
+            Ok(Value::Tuple(Held::new(vec![item, Value::Int(after)])))
         }
         _ => unsupported(format!("std.random.{name}")),
     }

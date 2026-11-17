@@ -5,9 +5,17 @@
 //! - `check`: `fennec check`, with nothing kept from before;
 //! - `cold-dev`: a dev build, with nothing kept;
 //! - `cold-release`: a release build, with nothing kept;
-//! - `edit-dev`: a dev build again, after a one-line edit to a module in the middle of it;
+//! - `edit-dev`: a dev build again, after a one-line edit to a module in the middle of it that
+//!   keeps the line's length, so it moves nothing after it;
 //! - `edit-release`: a release build again, after that edit;
-//! - `test`: `fennec test`, after that edit and the dev build.
+//! - `test`: `fennec test`, after that edit and the dev build;
+//! - `edit-dev-longer`: a dev build again, after the first line of the first file, a comment, is
+//!   made longer, which moves where everything after it is and changes nothing else;
+//! - `edit-dev-line`: a dev build again, after a comment line is added below that one, which
+//!   moves every line after it down one too.
+//!
+//! The last two change nothing a program does, so whatever they build again is work only where
+//! things are asked for: an edit near the top of a real program does that, and more.
 //!
 //! Each step gives its wall time and the most memory one of its processes held. Where they're
 //! counted, it gives the instructions it took too, by process: `fennec` itself, LLVM's tools and
@@ -59,11 +67,21 @@ enum Step {
     EditDev,
     EditRelease,
     Test,
+    EditDevLonger,
+    EditDevLine,
 }
 
 impl Step {
-    const ALL: [Step; 6] =
-        [Step::Check, Step::ColdDev, Step::ColdRelease, Step::EditDev, Step::EditRelease, Step::Test];
+    const ALL: [Step; 8] = [
+        Step::Check,
+        Step::ColdDev,
+        Step::ColdRelease,
+        Step::EditDev,
+        Step::EditRelease,
+        Step::Test,
+        Step::EditDevLonger,
+        Step::EditDevLine,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -73,11 +91,21 @@ impl Step {
             Step::EditDev => "edit-dev",
             Step::EditRelease => "edit-release",
             Step::Test => "test",
+            Step::EditDevLonger => "edit-dev-longer",
+            Step::EditDevLine => "edit-dev-line",
         }
     }
 
     fn named(name: &str) -> Option<Step> {
         Step::ALL.into_iter().find(|step| step.name() == name)
+    }
+
+    /// Whether growing faster than the program fails the step. The two edits that move the rest
+    /// only report for now: a parallel body's name still carries where it starts, so they build
+    /// again every parallel body after the edit, and its callers, until the checker names them
+    /// another way.
+    fn limited(self) -> bool {
+        !matches!(self, Step::EditDevLonger | Step::EditDevLine)
     }
 }
 
@@ -180,9 +208,9 @@ pub(crate) fn command(args: impl Iterator<Item = String>) -> Result<bool, String
 fn options(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
         fennec: PathBuf::from("target/release/fennec"),
-        // As the nightly runs it. 100,000 and 200,000 lines run weekly, on a runner with the
-        // memory 200,000 lines' release build needs, about 6 GB.
-        sizes: vec![20_000, 50_000],
+        // As the nightly runs it. 200,000 lines runs weekly, on a runner with the memory its
+        // release build needs, about 6 GB; 100,000 lines' needs about 3.
+        sizes: vec![20_000, 50_000, 100_000],
         seed: 1,
         runs: 1,
         budgets: PathBuf::from("bench/big-codebase.txt"),
@@ -274,15 +302,7 @@ fn measure_all(options: &Options) -> Result<bool, String> {
     let growth = growth(&found, &programs);
     print!("{}", growth_table(&growth));
     failures.extend(over_budget(&found, &pinned, &system));
-    for (step, from, to, factor) in &growth {
-        if *factor > GROWTH_LIMIT {
-            failures.push(format!(
-                "{} grew {} times faster than the program from {from} lines to {to}",
-                step.name(),
-                hundredths(*factor)
-            ));
-        }
-    }
+    failures.extend(grew_too_fast(&growth));
     for failure in &failures {
         eprintln!("error: {failure}");
     }
@@ -312,11 +332,14 @@ struct Program {
 fn measure_size(setup: &Setup, options: &Options, lines: usize) -> Result<(Program, Vec<Found>), String> {
     let folder = setup.work().join(lines.to_string());
     let made = generate::generate(&folder.join("program"), lines, options.seed)?;
-    let original =
-        std::fs::read_to_string(&made.edited).map_err(|err| format!("{}: {err}", made.edited.display()))?;
+    let read =
+        |path: &Path| std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()));
+    let (original, first) = (read(&made.edited)?, read(&made.first)?);
     let mut runs: Vec<Vec<(Step, Counted, f64)>> = Vec::new();
     for at in 0..options.runs {
-        std::fs::write(&made.edited, &original).map_err(|err| format!("{}: {err}", made.edited.display()))?;
+        for (path, text) in [(&made.edited, &original), (&made.first, &first)] {
+            std::fs::write(path, text).map_err(|err| format!("{}: {err}", path.display()))?;
+        }
         let homes = ["home-check", "home-dev", "home-release"].map(|name| folder.join(name));
         for home in &homes {
             let _ = std::fs::remove_dir_all(home);
@@ -326,12 +349,18 @@ fn measure_size(setup: &Setup, options: &Options, lines: usize) -> Result<(Progr
         let release = folder.join("app-release").to_string_lossy().into_owned();
         let mut steps = Vec::new();
         for step in Step::ALL {
-            if step == Step::EditDev {
-                made.edit(at + 1)?;
+            match step {
+                Step::EditDev => made.edit(at + 1)?,
+                Step::EditDevLonger => made.lengthen_first_line(at + 1)?,
+                // Below the line the last step made longer, so the two edits add up.
+                Step::EditDevLine => made.add_a_line(at + 1)?,
+                _ => {}
             }
             let (home, args): (&Path, Vec<&str>) = match step {
                 Step::Check => (check_home, vec!["check", "."]),
-                Step::ColdDev | Step::EditDev => (dev_home, vec!["build", ".", "-o", dev.as_str()]),
+                Step::ColdDev | Step::EditDev | Step::EditDevLonger | Step::EditDevLine => {
+                    (dev_home, vec!["build", ".", "-o", dev.as_str()])
+                }
                 Step::ColdRelease | Step::EditRelease => {
                     (release_home, vec!["build", "--release", ".", "-o", release.as_str()])
                 }
@@ -485,12 +514,30 @@ fn growth(found: &[Found], programs: &[Program]) -> Vec<(Step, usize, usize, u12
     grew
 }
 
+/// Each limited step that grew faster than the program by more than the limit allows.
+fn grew_too_fast(growth: &[(Step, usize, usize, u128)]) -> Vec<String> {
+    growth
+        .iter()
+        .filter(|(step, _, _, factor)| step.limited() && *factor > GROWTH_LIMIT)
+        .map(|(step, from, to, factor)| {
+            format!(
+                "{} grew {} times faster than the program from {from} lines to {to}",
+                step.name(),
+                hundredths(*factor)
+            )
+        })
+        .collect()
+}
+
 fn growth_table(growth: &[(Step, usize, usize, u128)]) -> String {
     let mut text = String::from("how much faster than the program each step grew (1.00 is in step):\n");
     for step in Step::ALL {
-        let mut line = format!("  {:<12}", step.name());
+        let mut line = format!("  {:<15}", step.name());
         for (_, from, to, factor) in growth.iter().filter(|(at, ..)| *at == step) {
             let _ = write!(line, " {from}->{to}: {}", hundredths(*factor));
+        }
+        if !step.limited() {
+            line.push_str(" (reported only)");
         }
         text.push_str(&line);
         text.push('\n');
@@ -593,7 +640,8 @@ fn markdown(
             .filter(|(at, ..)| *at == step)
             .map(|(_, from, to, factor)| format!("{from} to {to}: {}", hundredths(*factor)))
             .collect();
-        let _ = writeln!(text, "- {}: {}", step.name(), factors.join(", "));
+        let only = if step.limited() { "" } else { " (reported only, for now)" };
+        let _ = writeln!(text, "- {}: {}{only}", step.name(), factors.join(", "));
     }
     if failures.is_empty() {
         text.push_str("\nEvery step held to its budget.\n");
@@ -755,7 +803,7 @@ fn budget_line(system: &str, lines: usize, step: Step, budget: &Budget) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use super::{Built, Found, Program, Step, ToolCount, growth, read_budgets, said_built};
+    use super::{Built, Found, Program, Step, ToolCount, grew_too_fast, growth, read_budgets, said_built};
     use std::time::Duration;
 
     fn found(lines: usize, step: Step, instructions: u64) -> Found {
@@ -787,6 +835,20 @@ mod tests {
         let grew = growth(&measured, &programs);
         assert_eq!(grew.iter().find(|(step, ..)| *step == Step::Check).map(|grew| grew.3), Some(100));
         assert_eq!(grew.iter().find(|(step, ..)| *step == Step::Test).map(|grew| grew.3), Some(200));
+    }
+
+    #[test]
+    fn the_edits_that_move_the_rest_report_their_growth_but_never_fail_on_it() {
+        let grew = [
+            (Step::EditDevLonger, 50, 100, 300),
+            (Step::EditDevLine, 50, 100, 300),
+            (Step::EditDev, 50, 100, 125),
+            (Step::Test, 50, 100, 126),
+        ];
+        assert_eq!(
+            grew_too_fast(&grew),
+            ["test grew 1.26 times faster than the program from 50 lines to 100"]
+        );
     }
 
     #[test]

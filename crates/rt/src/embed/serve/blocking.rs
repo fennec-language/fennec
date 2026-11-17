@@ -103,6 +103,14 @@ impl Blocking {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Whether nothing's running here or about to: no job queued or promised, no thread being
+    /// started, and every thread waiting for work. A deadlock is proven only with every pool idle,
+    /// as a job here can end in a wake.
+    pub(super) fn idle(&self) -> bool {
+        let state = self.lock();
+        state.jobs.is_empty() && state.promised == 0 && state.starting == 0 && state.waiting == state.threads
+    }
+
     /// Hands `job` to a thread: one waiting for work, or a new one while there are fewer than
     /// `most`. With `most` busy, it waits its turn. Gives back jobs only when no thread is running
     /// or being started to run them, because none could be started, for the caller to run where it

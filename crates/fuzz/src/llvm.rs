@@ -482,13 +482,15 @@ pub(crate) fn reader_source(name: &str) -> Option<String> {
     source.or_else(|| match name {
         "pack" => Some(crate::pack_rules::reader()),
         "toml-rules" => Some(crate::toml_rules::reader()),
+        "router" => Some(crate::router_rules::reader()),
+        "html" => Some(crate::html_rules::reader()),
         _ => None,
     })
 }
 
 /// The names of the targets that read their inputs through a Fennec program.
 pub(crate) fn reader_names() -> Vec<&'static str> {
-    READERS.iter().map(|(name, _)| *name).chain(["pack", "toml-rules"]).collect()
+    READERS.iter().map(|(name, _)| *name).chain(["pack", "toml-rules", "router", "html"]).collect()
 }
 
 /// The readers built so far in this process, by target.

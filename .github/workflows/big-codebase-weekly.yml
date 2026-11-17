@@ -38,8 +38,10 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, its runtimes, their bitcode and the bench
         run: .github/scripts/big-codebase-build.sh
+      # Each step runs three times and counts its median, as the nightly does. One run of the two
+      # sizes took 44 to 49 minutes on this runner on 2026-11-17, so three take about 150 of 360.
       - name: Measure each step at each size
-        run: ./target/release/fennec-bench big-codebase --lines 100000,200000 --markdown big-codebase-weekly.md
+        run: ./target/release/fennec-bench big-codebase --lines 100000,200000 --runs 3 --markdown big-codebase-weekly.md
       - name: Show the numbers on the run's summary page
         if: always()
         run: '[ -f big-codebase-weekly.md ] && cat big-codebase-weekly.md >> "$GITHUB_STEP_SUMMARY" || true'

@@ -51,7 +51,9 @@ fn listening_to<T>(use_it: impl FnOnce(&mut HashMap<i64, i64>) -> T) -> T {
 pub extern "C" fn channel_new_every(size: i64) -> i64 {
     let Some(size) = super::size_of(size) else { return 0 };
     let queue = Queue { every: Some(Listeners::default()), ..Queue::default() };
+    let number = NEXT.fetch_add(1, Ordering::Relaxed);
     let channel = Channel {
+        number,
         size,
         replay: crate::replay::place("c"),
         queue: Mutex::new(queue),
@@ -63,7 +65,6 @@ pub extern "C" fn channel_new_every(size: i64) -> i64 {
         #[cfg(any(test, feature = "threads"))]
         taken: Default::default(),
     };
-    let number = NEXT.fetch_add(1, Ordering::Relaxed);
     channels(|channels| channels.insert(number, Arc::new(channel)));
     number
 }

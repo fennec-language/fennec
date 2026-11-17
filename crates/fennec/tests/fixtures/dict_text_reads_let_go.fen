@@ -1,0 +1,74 @@
+# A dict's string values read only to be looked at: compared, measured, searched, printed, or
+# held in a local for a while. Each with values long enough for a block of their own and short
+# enough to be held inline, and with the dict changed after a read and before what was read is
+# used again.
+
+def made(at: int, in_blocks: bool) -> str:
+    if in_blocks:
+        return f"a value long enough to be held in a block of its own, {at}"
+    return f"v{at}"
+
+def looked_at(values: dict[str, str], others: dict[str, str], items: list[str], stdout: Stdout) -> int:
+    mut found = 0
+    for at in range(3):
+        key = f"k{at}"
+        if values[key] == "x":
+            found += 1
+        if "x" == values[key]:
+            found += 1
+        if values[key] == others[key]:
+            found += 1
+        if values[key] != "x":
+            found += 1
+        if values[key] < "b":
+            found += 1
+        found += len(values[key])
+        if "block" in values[key]:
+            found += 1
+        if values[key].startswith("a value"):
+            found += 1
+        if (values.get(key) else "") == "x":
+            found += 1
+        if items[at] == "x":
+            found += 1
+        held = values[key]
+        stdout.print(held)
+    return found
+
+def changed_after_reads(stdout: Stdout, in_blocks: bool):
+    mut values = dict[str, str]()
+    for at in range(3):
+        values[f"k{at}"] = made(at, in_blocks=in_blocks)
+    for at in range(3):
+        key = f"k{at}"
+        held = values[key]
+        values[key] = made(at + 10, in_blocks=in_blocks)
+        if held == values[key]:
+            stdout.print("same")
+        stdout.print(held, values[key])
+        kept = [values[key]]
+        values[key] += "!"
+        stdout.print(kept[0], values[key])
+        while values[key] != "done":
+            values[key] = "done"
+    stdout.print(values["k0"], len(values))
+    return
+
+def main(stdout: Stdout):
+    for in_blocks in [True, False]:
+        mut values = dict[str, str]()
+        mut others = dict[str, str]()
+        mut items = list[str]()
+        for at in range(3):
+            values[f"k{at}"] = made(at, in_blocks=in_blocks)
+            others[f"k{at}"] = made(at + 20, in_blocks=in_blocks)
+            items.append(made(at + 30, in_blocks=in_blocks))
+        mut found = 0
+        for at in range(3):
+            if values[f"k{at}"] == "x":
+                found += 1
+            if values[f"k{at}"] == others[f"k{at}"]:
+                found += 1
+        stdout.print(found, looked_at(values, others=others, items=items, stdout=stdout))
+        changed_after_reads(stdout, in_blocks=in_blocks)
+    return

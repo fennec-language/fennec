@@ -12501,8 +12501,27 @@ fn a_nested_function_s_arguments_land_where_they_name() -> std::io::Result<()> {
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds("nested_named_arguments", NESTED_NAMED_ARGUMENTS, "15 10 24\n[4, 6]\n15\n")
+    prints_in_both_builds("nested_named_arguments", NESTED_NAMED_ARGUMENTS, "15 10 24\n[4, 6]\n15\n")?;
+    // A nested function named as a `with` source's function, given a name apart where the source is
+    // written in, still takes its named argument.
+    prints_in_both_builds("nested_named_apart", NESTED_NAMED_APART, "521\n")
 }
+
+const NESTED_NAMED_APART: &str = r"def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def counted() -> int:
+    def total(by=1) -> int:
+        return 7 * by
+    with opened() as got:
+        return got * 100 + total(by=3)
+
+def main(stdout: Stdout):
+    stdout.print(counted())
+";
 
 const NESTED_NAMED_ARGUMENTS: &str = r"def noted(value: int, ref log: list[int]) -> int:
     log.append(value)

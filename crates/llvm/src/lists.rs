@@ -1618,10 +1618,13 @@ impl Emit<'_, '_, '_> {
             return position;
         }
         let length = self.length_of_list(from, list);
-        let position = if self.index_not_negative() {
-            self.position_not_negative(&length, index, span)
-        } else {
-            self.position_in(&length, index, span)
+        // A pair is found by the read's place, so it's taken only where this is that read's own
+        // index: a path's earlier steps, read at the same place, aren't the pair's.
+        let position = match self.known.adjacent_reads.get(&self.at).copied() {
+            Some((low, own)) if matches!(index_operand, Operand::Local(read_at) if *read_at == own) => {
+                self.adjacent_position((list, &length), low, index, span)
+            }
+            _ => self.position_checked(&length, index, span),
         };
         if let Some(fact) = fact {
             let slot = if let Some(slot) = self.inside_slots.get(&fact) {
@@ -1634,6 +1637,50 @@ impl Emit<'_, '_, '_> {
             self.line(&format!("store i64 {position}, ptr {slot}"));
             self.inside_items.push(fact);
         }
+        position
+    }
+
+    /// Where an index points in a list this long, checked on its own.
+    fn position_checked(&mut self, length: &str, index: &str, span: Span) -> String {
+        if self.index_not_negative() {
+            self.position_not_negative(length, index, span)
+        } else {
+            self.position_in(length, index, span)
+        }
+    }
+
+    /// Where a read paired with a read of the next index points (`find_adjacent_reads`): both
+    /// are inside when `low` is from 0 to below the length less one, which the two reads test
+    /// alike, so LLVM tests it once and both loads follow. When it fails, this read is checked
+    /// on its own, as any read is, so the first of the two that's outside fails, as it would.
+    fn adjacent_position(
+        &mut self,
+        (list, length): (&str, &str),
+        low: LocalId,
+        index: &str,
+        span: Span,
+    ) -> String {
+        let Ok((low, _)) = self.operand(&Operand::Local(low)) else {
+            return self.position_checked(length, index, span);
+        };
+        let (last, from_zero, below, both) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.line(&format!("{last} = sub i64 {length}, 1"));
+        self.line(&format!("{from_zero} = icmp sge i64 {low}, 0"));
+        self.line(&format!("{below} = icmp slt i64 {low}, {last}"));
+        self.line(&format!("{both} = and i1 {from_zero}, {below}"));
+        let (inside, alone, joined) = (self.label("both_inside"), self.label("alone"), self.label("placed"));
+        self.line(&format!("br i1 {both}, label %{inside}, label %{alone}, !prof !8"));
+        self.start_block(&alone);
+        let checked = self.position_checked(length, index, span);
+        let checked_in = self.current.clone();
+        self.line(&format!("br label %{joined}"));
+        self.start_block(&inside);
+        self.proof_inside(list, index, "both of two reads next to each other inside their list", span);
+        self.line(&format!("br label %{joined}"));
+        let inside_in = self.current.clone();
+        self.start_block(&joined);
+        let position = self.temp();
+        self.line(&format!("{position} = phi i64 [ {index}, %{inside_in} ], [ {checked}, %{checked_in} ]"));
         position
     }
 

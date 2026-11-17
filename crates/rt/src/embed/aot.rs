@@ -314,6 +314,8 @@ fn execute(entry: extern "C" fn(i64), bytes: &[u8]) -> (Vec<u8>, String) {
         return (Vec::new(), "error: this executable's program is damaged\n".to_owned());
     };
     super::start(tables, live_inputs());
+    // `main` is a context for the deadlock check for as long as the process runs.
+    super::deadlock::context_began();
     heap::share_abandons();
     LITERALS.set(literals);
     SOURCES.set(Some(sources.clone()));

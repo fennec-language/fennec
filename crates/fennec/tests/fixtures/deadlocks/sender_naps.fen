@@ -1,0 +1,13 @@
+# Main waits to receive while the only sender naps first: never a deadlock.
+from std.concurrent import Channel, Closed, Crashed, channel
+from std.time import Duration
+
+def naps_then_sends(numbers: Channel[int], clock: Clock):
+    clock.sleep(Duration.millis(30))
+    numbers.send(7) except Closed():
+        return
+
+def main(stdout: Stdout, clock: Clock) fails Crashed:
+    with channel[int](size=1) as numbers:
+        with launch(() => naps_then_sends(numbers, clock=clock))?:
+            stdout.print(numbers.receive() else -1)

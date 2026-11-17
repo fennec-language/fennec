@@ -175,10 +175,15 @@ impl Emit<'_, '_, '_> {
         if kind.in_memory() {
             return self.assign_memory(dest, at, access);
         }
-        // A string a dict holds as a block, read into a local that holds a header.
+        // A string a dict holds as a block, read into a local that holds a header: with an owner
+        // of its own, except in a borrowed local, which nothing lets go of (#1986).
         if *kind == Kind::TextBlock && matches!(wanted, Kind::Str | Kind::MaybeText) {
             let block = self.load_field(kind, at, access);
-            let header = self.text_from_borrowed_block(&block);
+            let header = if self.known.is_borrowed(dest) {
+                self.text_of_held_block(&block)
+            } else {
+                self.text_from_borrowed_block(&block)
+            };
             return self.assign(dest, &header);
         }
         let value = self.load_field(kind, at, access);

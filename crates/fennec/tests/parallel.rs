@@ -1357,6 +1357,34 @@ fn a_round_stopped_waiting_its_turn_at_a_file_doesnt_read_it() -> std::io::Resul
     Ok(())
 }
 
+/// A launched task stopped after the turn it waited for at a database was handed to it, but before
+/// it ran, doesn't run its insert. Its worker took the hand-over's wake ahead of the stop, and the
+/// task did the work and went on (#1988). No timing: `main` stops it only once it hears the query
+/// before it has ended. At 1 thread only, where the task's worker is the busy one: with more, it
+/// has a worker of its own, which runs its insert before the stop comes, as it should.
+#[test]
+fn a_task_stopped_once_its_turn_was_handed_over_does_no_work() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-handed-turn-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let built = build_on_threads(&dir, include_str!("fixtures/handed_turn.fen"), "handed_turn")?;
+    let ran = Command::new(&built).env("FENNEC_THREADS", "1").current_dir(&dir).output_within()?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(ran.status.code(), Some(0), "{said}");
+    assert_eq!(
+        String::from_utf8_lossy(&ran.stdout),
+        "the late one began\nthe slow query's task counted on True\nthe insert was never run\n",
+        "{said}"
+    );
+    assert!(!said.contains("error"), "{said}");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A launched task can read every constant the program has, not only its strings.
 #[test]
 fn a_task_reads_the_programs_constants() -> std::io::Result<()> {

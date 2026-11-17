@@ -88,8 +88,21 @@ fn fail(message: String) -> i64 {
 pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     // In a recording or a replay, the call serving is a task, whose children are its rounds.
     let call = crate::replay::child();
+    // A round already cancelled, as one that made way and was cancelled waiting its turn, serves
+    // nothing: it fails as stopped here, which a recording notes. It made a server, and waited for
+    // its own worker to leave it, which can't while it runs the round (#2004).
+    if fennec_parked::is_cancelled() {
+        if !super::super::failed() {
+            super::fail_as_stopped();
+        }
+        crate::replay::stopped_in(crate::replay::StoppedIn::Serving);
+        return 1;
+    }
     if let Some(rounds) = call.as_ref().and_then(|call| crate::replay::taken_at(&call.name(), "accept")) {
         return replayed(rounds, body, env, call.as_ref());
+    }
+    if crate::replay::stopped_in_as_recorded(crate::replay::StoppedIn::Serving) {
+        return 1;
     }
     let Some((listener, came_with)) = crate::stdlib::net::take_listener(server) else {
         return fail("this server isn't open to serve".to_owned());

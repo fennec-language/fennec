@@ -1302,15 +1302,17 @@ mod tests {
     }
 
     /// The objects a linker is given go in a file, each quoted on a line of its own, so a
-    /// program in many parts doesn't make a command line longer than the system takes.
+    /// program in many parts doesn't make a command line longer than the system takes. The file
+    /// is in the link's own folder, never beside the objects, which may be the cache's.
     #[test]
     fn the_objects_to_link_go_in_a_file_each_on_a_line() {
         let work = fennec_temp::Temp::at(
             std::env::temp_dir().join(format!("fennec-response-file-{}", std::process::id())),
         );
         std::fs::create_dir_all(&work).unwrap();
-        let objects: Vec<_> = (0..2_000).map(|at| work.join(format!("{at}.o"))).collect();
-        let file = super::response_file(&objects).unwrap();
+        let elsewhere = work.join("cache");
+        let objects: Vec<_> = (0..2_000).map(|at| elsewhere.join(format!("{at}.o"))).collect();
+        let file = super::response_file(&objects, &work).unwrap();
         assert_eq!(file, work.join("objects.rsp"));
         let named = std::fs::read_to_string(&file).unwrap();
         assert_eq!(named.lines().count(), 2_000);
@@ -1321,7 +1323,7 @@ mod tests {
             assert!(!named.contains('\\'), "a backslash would be read as an escape");
         }
         assert!(named.len() > 32_767, "a file this size wouldn't fit on a command line");
-        assert_eq!(super::response_file(&[]), None);
+        assert_eq!(super::response_file(&[], &work), None);
         std::fs::remove_dir_all(&work).unwrap();
     }
 }

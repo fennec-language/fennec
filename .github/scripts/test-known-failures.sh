@@ -62,6 +62,30 @@ printf 'error: could not compile `fennec` (test "fennec") due to 1 previous erro
 "$here/known-failures.sh" tests-failed "$work/build.txt" | grep -qx "a test that didn't build" \
   || fail "a test that didn't build wasn't named"
 
+# A test that didn't build from a corrupt build: macOS's ld, and Linux's, each naming a symbol LLVM
+# renamed. Only those are, not a link that fails on a symbol the code never defined.
+cp "$work/build.txt" "$work/corrupt-mac.txt"
+cat >> "$work/corrupt-mac.txt" <<'OUT'
+Undefined symbols for architecture arm64:
+            "_anon.1c02dfe7db20ef2752f1b7b16f154028.16.llvm.12048351171722726623", referenced from:
+                __RNvNtNtCsjoE15YGzsq5_13fennec_oracle6interp4show8held_now in libfennec_oracle-70e8.rlib[41]
+ld: symbol(s) not found for architecture arm64
+OUT
+cp "$work/build.txt" "$work/corrupt-linux.txt"
+printf '%s\n' "rust-lld: error: undefined symbol: _anon.1c02dfe7db20ef2752f1b7b16f154028.16.llvm.12048351171722726623" >> "$work/corrupt-linux.txt"
+cp "$work/build.txt" "$work/missing.txt"
+printf '%s\n' 'Undefined symbols for architecture arm64:' '            "_fennec_never_defined", referenced from:' >> "$work/missing.txt"
+for log in corrupt-mac corrupt-linux; do
+  "$here/known-failures.sh" corrupt-build "$work/$log.txt" || fail "$log wasn't taken for a corrupt build"
+  "$here/known-failures.sh" tests-failed "$work/$log.txt" | grep -qx "a test that didn't build, from a corrupt build" \
+    || fail "$log wasn't named as a corrupt build"
+done
+for log in missing build two; do
+  "$here/known-failures.sh" corrupt-build "$work/$log.txt" && fail "$log was taken for a corrupt build"
+done
+"$here/known-failures.sh" tests-failed "$work/missing.txt" | grep -qx "a test that didn't build" \
+  || fail "a link that misses a symbol the code never defined wasn't named as a plain failed build"
+
 # Every name the file holds, and the file's form, checked on a copy.
 root=$(git -C "$here" rev-parse --show-toplevel)
 copy="$work/repo"

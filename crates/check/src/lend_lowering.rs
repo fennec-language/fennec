@@ -1778,7 +1778,14 @@ fn note_on(held: &str, failure: Expr, span: Span) -> Stmt {
 /// The block the caller wrote, given what's lent: by its name, or split into several names.
 fn given_as(block: &mut Vec<Stmt>, (split, names): (bool, &[WithName]), held: &str, place: &str, at: Span) {
     if split {
-        let targets = names.iter().map(|named| name(&named.name, named.span)).collect();
+        // Each name it's split into is a hidden one, with the uses in its sight in the block:
+        // written as itself, the split would assign a name of the caller's of that name.
+        let hidden: Vec<String> =
+            names.iter().map(|named| format!("{}__given{}", named.name, at.start)).collect();
+        for (named, written) in names.iter().zip(&hidden) {
+            fennec_syntax::sight::rename_in_sight(block, &named.name, written);
+        }
+        let targets = names.iter().zip(&hidden).map(|(named, written)| name(written, named.span)).collect();
         let target = Expr { kind: ExprKind::Tuple(targets), span: here(at) };
         let kind = StmtKind::Assign { target, op: None, value: name(place, at), declare_mut: true, ty: None };
         block.insert(0, stmt(kind, at));

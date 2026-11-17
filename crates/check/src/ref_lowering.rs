@@ -324,7 +324,6 @@ fn indexes_held(items: &Expr, tag: &str, held: &mut Vec<Stmt>) -> Expr {
     Expr { kind, span: items.span }
 }
 
-/// A copy of an expression with spans of its own, so the types it's checked again with are its.
 /// The names a place reads, other than the hidden ones holding its indexes, which no program can
 /// write.
 fn roots_in(place: &Expr) -> Vec<String> {
@@ -350,6 +349,7 @@ fn roots_kept(body: &mut [Stmt], roots: &[String], tag: &str) {
     });
 }
 
+/// A copy of an expression with spans of its own, so the types it's checked again with are its.
 fn respanned(value: &Expr) -> Expr {
     let mut copy = value.clone();
     fennec_syntax::visit::in_expr(&mut copy, &mut |inner| inner.span = here(inner.span));

@@ -186,19 +186,14 @@ fn hide_stmt(each: &mut Stmt, sight: &mut Vec<InSight>, hide: &dyn Fn(Binder, &s
     }
 }
 
-/// A nested function: its defaults are seen from outside, its name is in sight from here on and
-/// inside it, with the new names of its parameters, which a call naming them names, and its body
-/// sees its parameters.
+/// A nested function: its name is in sight from here on and inside it, with the new names of its
+/// parameters, which a call naming them names, and its body sees its parameters. A parameter's
+/// default is a plain value, which names nothing in sight.
 fn hide_def(
     def: &mut crate::ast::FnDef,
     sight: &mut Vec<InSight>,
     hide: &dyn Fn(Binder, &str) -> Option<String>,
 ) {
-    for param in &mut def.params {
-        if let Some(default) = &mut param.default {
-            hide_expr(default, sight, hide);
-        }
-    }
     let params: Vec<(String, String)> = def
         .params
         .iter()

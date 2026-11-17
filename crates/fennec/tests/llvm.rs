@@ -1866,8 +1866,22 @@ fn a_with_s_name_named_again_inside_its_block_is_that_name() -> std::io::Result<
     prints_in_both_builds("with_named_by_a_ref", WITH_NAMED_BY_A_REF, "[[7, 8, 5]]\n[4]\n")?;
     // A loop in the block named like the caller's name a source lends is the loop's: the
     // `with`'s name still means the caller's. Before, it read the loop's.
-    prints_in_both_builds("with_lends_a_name_named_again", WITH_LENDS_A_NAME_NAMED_AGAIN, "2\n")
+    prints_in_both_builds("with_lends_a_name_named_again", WITH_LENDS_A_NAME_NAMED_AGAIN, "2\n")?;
+    // A name a `with` splits what's lent into is the block's own: before, it changed a `mut`
+    // name of the caller's of that name.
+    prints_in_both_builds("with_split_names_its_own", WITH_SPLIT_NAMES_ITS_OWN, "15\n1\n")
 }
+
+const WITH_SPLIT_NAMES_ITS_OWN: &str = r"def pair() -> with (int, int):
+    lend (7, 8)
+
+def main(stdout: Stdout):
+    mut first = 1
+    with pair() as first, second:
+        stdout.print(first + second)
+    first += 0
+    stdout.print(first)
+";
 
 const WITH_SOURCE_CALLS_ITS_OWN: &str = r"def total(items: list[int]) -> int:
     return sum(items)

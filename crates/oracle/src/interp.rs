@@ -209,6 +209,14 @@ pub(crate) struct Frame {
     pub(crate) types: typed::Bound,
 }
 
+/// A `lend ... except:` cleanup running for a block that failed: the frame it runs in, and once a
+/// statement of its own has failed, whether that failure takes the block's place rather than being
+/// noted on it.
+pub(crate) struct Cleanup {
+    pub(crate) frame: usize,
+    pub(crate) replaces: Option<bool>,
+}
+
 pub(crate) struct Interp {
     pub(crate) shared: Arc<Shared>,
     pub(crate) program: &'static Program,
@@ -229,6 +237,8 @@ pub(crate) struct Interp {
     pub(crate) write_backs: Vec<own_index::WriteBack>,
     /// How many such parts this run has read, which names each one's hidden local.
     pub(crate) parts_read: u64,
+    /// The `lend ... except:` cleanup running for a block that failed, if one is.
+    pub(crate) cleanup: Option<Cleanup>,
     /// What each type's own `def serialize` running for `json.dumps` has saved, the newest last.
     pub(crate) recordings: Vec<Option<json::write::Saved>>,
     /// What each type's own `def deserialize` running for `json.loads` reads, the newest last.
@@ -273,6 +283,7 @@ impl Interp {
             holding: 0,
             write_backs: Vec::new(),
             parts_read: 0,
+            cleanup: None,
             recordings: Vec::new(),
             loadings: Vec::new(),
             actor: 0,
@@ -303,6 +314,7 @@ impl Interp {
                         ty: "Env".to_owned(),
                         case: None,
                         fields: vec![("_given".to_owned(), Value::Int(0))],
+                        notes: Vec::new(),
                     };
                     given.push(calls::ArgVal::Value(None, Value::Instance(Box::new(env))));
                     continue;
@@ -698,7 +710,39 @@ impl Interp {
         }
     }
 
+    /// Runs a statement, and in a cleanup running for a failed block, notes how the cleanup failed
+    /// when it's this statement that failed first (`cleanup_failed_at`).
     fn stmt(&mut self, stmt: &'static Stmt) -> Run<()> {
+        let ran = self.stmt_ran(stmt);
+        if matches!(ran, Err(Flow::Fail(..))) {
+            self.cleanup_failed_at(stmt);
+        }
+        ran
+    }
+
+    /// The first statement of a cleanup's own that fails decides how: a `fail`, or a line whose
+    /// whole value is a `?`, as `kept = capped(code)?`, has its failure noted on the block's; any
+    /// other, a `?` deeper in a line or on a `with`, has it take the block's place, as
+    /// `docs/language.md` says. A statement inside one of the cleanup's blocks decides before the
+    /// block does, and one in a function it calls, in a frame of its own, never does.
+    fn cleanup_failed_at(&mut self, stmt: &Stmt) {
+        let cur = self.cur;
+        let Some(cleanup) =
+            self.cleanup.as_mut().filter(|cleanup| cleanup.frame == cur && cleanup.replaces.is_none())
+        else {
+            return;
+        };
+        let noted = match &stmt.kind {
+            StmtKind::Fail(_) => true,
+            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
+                matches!(value.kind, ExprKind::Try { .. })
+            }
+            _ => false,
+        };
+        cleanup.replaces = Some(!noted);
+    }
+
+    fn stmt_ran(&mut self, stmt: &'static Stmt) -> Run<()> {
         self.tick()?;
         match &stmt.kind {
             StmtKind::Expr(expr) => self.eval(expr).map(drop),

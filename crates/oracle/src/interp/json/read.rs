@@ -341,7 +341,8 @@ impl Interp {
                 let Node::Object(entries) = node else { return Err(reading.misfit(shown, node)) };
                 let fields = self.saved_fields(name, None, args)?;
                 let values = self.read_record(entries, &fields, shown, reading)?;
-                let instance = Instance { ty: name.to_owned(), case: None, fields: values };
+                let instance =
+                    Instance { ty: name.to_owned(), case: None, fields: values, notes: Vec::new() };
                 if let Some(broken) = self.broken_rule(&instance)? {
                     return Err(says(format!(
                         "in {}, {shown}.{broken} breaks its `where` rule",

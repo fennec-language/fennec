@@ -7,10 +7,11 @@ use super::builtins::{invalid, not_a_number};
 use super::calls::{ArgVal, Receiver};
 use super::expr::{dict_insert, set_insert, sized};
 use super::{Interp, MOST_ITEMS, Run, as_int, crash, position, unsupported};
-use crate::value::{Cap, Text, Value};
+use crate::value::{Cap, Instance, Text, Value};
 
 impl Interp {
     /// `receiver.name(...)` for a built-in value.
+    #[expect(clippy::too_many_lines, reason = "one step for each kind of value a method is called on")]
     pub(crate) fn method(
         &mut self,
         receiver: Receiver,
@@ -78,7 +79,9 @@ impl Interp {
             return self.writer_method(receiver, name, &args, span);
         }
         if let Value::Instance(instance) = &value
-            && let Some(done) = self.std_instance_method(instance, name, &args, &named, span)
+            && let Some(done) = self
+                .std_instance_method(instance, name, &args, &named, span)
+                .or_else(|| self.error_method(&receiver, instance, name, &args, span))
         {
             return done;
         }
@@ -247,7 +250,7 @@ impl Interp {
     /// a `File`'s, or an `IoError`'s `message()`. `None` for a value of any other type.
     fn std_instance_method(
         &mut self,
-        instance: &crate::value::Instance,
+        instance: &Instance,
         name: &str,
         args: &[Value],
         named: &[(String, Value)],
@@ -333,12 +336,7 @@ impl Interp {
                     ("Time", since.map_or(0, |since| since.as_nanos()))
                 };
                 let nanos = i64::try_from(read.saturating_add(u128::from(slept))).unwrap_or(i64::MAX);
-                let moment = crate::value::Instance {
-                    ty: ty.to_owned(),
-                    case: None,
-                    fields: vec![("nanos".to_owned(), Value::Int(nanos))],
-                };
-                Ok(Value::Instance(Box::new(moment)))
+                Ok(Value::instance(ty, None, vec![("nanos".to_owned(), Value::Int(nanos))]))
             }
             (Cap::Clock, "sleep") => match args {
                 [Value::Instance(duration)] if duration.ty == "Duration" => {
@@ -1028,4 +1026,49 @@ fn random_word() -> u64 {
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u64(DRAWN.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     hasher.finish()
+}
+
+impl Interp {
+    /// An error's notes: `notes()` reads them, and `add_note(text)` adds one where it's held.
+    /// `None` for any other method, or a value that isn't an error. A type of the program's own may
+    /// have methods of those names, which were found first.
+    fn error_method(
+        &mut self,
+        receiver: &Receiver,
+        instance: &Instance,
+        name: &str,
+        args: &[Value],
+        span: Span,
+    ) -> Option<Run<Value>> {
+        if !self.is_error(&instance.ty) {
+            return None;
+        }
+        match (name, args) {
+            ("notes", []) => {
+                let notes = instance.notes.iter().map(|note| Value::Str(Text::from(note.as_str())));
+                Some(Ok(Value::List(notes.collect())))
+            }
+            ("add_note", [Value::Str(note)]) => {
+                let Receiver::Place(place) = receiver else {
+                    return Some(unsupported("`add_note` on an error that isn't in a place"));
+                };
+                let note = note.as_str().to_owned();
+                let added = self.change_place(&place.clone(), span, false, |held| {
+                    if let Value::Instance(held) = held {
+                        held.notes.push(note);
+                    }
+                    Ok(())
+                });
+                Some(added.map(|()| Value::Unit))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a type is an error: one declared with `error`, the program's own or the standard
+    /// library's, or one of the core's the oracle models.
+    pub(crate) fn is_error(&self, ty: &str) -> bool {
+        self.program.types.get(ty).is_some_and(|declared| declared.kind == crate::load::Kind::Error)
+            || matches!(ty, "InvalidValue" | "ParseError" | "IoError")
+    }
 }

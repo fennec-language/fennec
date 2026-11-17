@@ -884,8 +884,12 @@ impl Interp {
             };
             made.push((field.name.clone(), value));
         }
-        let instance =
-            crate::value::Instance { ty: ty.to_owned(), case: case.map(str::to_owned), fields: made };
+        let instance = crate::value::Instance {
+            ty: ty.to_owned(),
+            case: case.map(str::to_owned),
+            fields: made,
+            notes: Vec::new(),
+        };
         self.ruled(instance, span)
     }
 

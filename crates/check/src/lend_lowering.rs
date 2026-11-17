@@ -1863,11 +1863,13 @@ fn cleanup_reads_kept(block: &mut [Stmt], cleanup: &[Stmt], at: Span) {
         }
     });
     // Each is in sight at the `with`, so assigning it in the block changes it there: only what binds
-    // it again is hidden.
+    // it again is hidden. A nested function's and an arrow's parameters keep theirs: the cleanup is
+    // never written inside either, and a nested function's are named by calls.
     let outside: Vec<(String, Option<String>)> = read.iter().map(|name| (name.clone(), None)).collect();
     let inner = format!("kept{}", at.start);
-    fennec_syntax::sight::hide_bound(block, &outside, &|_, name| {
-        read.contains(name).then(|| format!("{name}__{inner}"))
+    fennec_syntax::sight::hide_bound(block, &outside, &|binder, name| {
+        let surrounds = !matches!(binder, Binder::Parameter | Binder::Arrow);
+        (surrounds && read.contains(name)).then(|| format!("{name}__{inner}"))
     });
 }
 

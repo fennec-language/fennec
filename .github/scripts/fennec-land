@@ -4,6 +4,8 @@
 # round again. It stops at a merge conflict or any failed step, and pushes nothing then.
 set -u
 ATTEMPTS=5
+# Beside this script, wherever it was run from.
+here="$(cd "$(dirname "$0")" && pwd)"
 fail() {
   echo "fennec-land: $*" >&2
   exit 1
@@ -14,7 +16,7 @@ branch="$(git symbolic-ref --short HEAD)" || fail "this isn't on a branch"
 [ -z "$(git status --porcelain)" ] || fail "commit or put away what's changed first"
 
 for attempt in $(seq 1 "$ATTEMPTS"); do
-  git fetch --quiet origin staging || fail "couldn't fetch staging"
+  "$here/fetch.sh" staging || fail "couldn't fetch staging"
   if ! git merge --no-edit origin/staging; then
     fail "this conflicts with staging: resolve it, commit, and run this again"
   fi
@@ -25,7 +27,7 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
     exit 0
   fi
   # A push that lost the race says so once it's rejected; anything else is a real failure.
-  git fetch --quiet origin staging || fail "couldn't fetch staging"
+  "$here/fetch.sh" staging || fail "couldn't fetch staging"
   if git merge-base --is-ancestor origin/staging "$sha"; then
     fail "the gate or the push failed, and nobody else landed: see above"
   fi

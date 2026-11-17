@@ -820,6 +820,36 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
     }
 
+    /// Every way of writing a `match` with `ref` the compiled program once got wrong (`RefWay`),
+    /// from every start and with every text, checks, and the evaluator prints what the oracle
+    /// prints: each `ref` name's change put back into the field it names.
+    #[test]
+    fn the_ref_case_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, REF_STARTS, REF_TEXTS, REF_WAYS, RefCasing, Stmt};
+        let mut body = Vec::new();
+        let mut id = 0;
+        for way in REF_WAYS {
+            for start in 0..REF_STARTS {
+                for text in 0..REF_TEXTS.len() {
+                    id += 1;
+                    body.push(Stmt::RefCased(RefCasing { id, way, start, text }));
+                }
+            }
+        }
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
     /// Every way of writing a `Listened` statement checks, and the evaluator is sure what it
     /// prints: inboxes kept up or behind, read one at a time or in a loop, and a loop dropping
     /// the oldest, with a message sent before any of them listens or not.

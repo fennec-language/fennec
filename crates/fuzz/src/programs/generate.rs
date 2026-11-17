@@ -20,8 +20,9 @@ use super::ast::{
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
 use super::ast::{
-    CAPTURE_WAYS, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS,
-    ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
+    CAPTURE_WAYS, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_STARTS,
+    REF_TEXTS, REF_WAYS, RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping,
+    Waking, Yielding,
 };
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
@@ -74,6 +75,15 @@ const EVERY_LISTENER: bool = true;
 /// of #1785 found (finding 3), and this shape found it within a few dozen programs. On since
 /// #1812 fixed it; the seed `review_1785_lookup_swapped` is a program that failed before.
 const LOOKUPS_SWAPPED: bool = true;
+
+/// Whether random programs write a `match` with `ref` each way the compiled program put back wrong
+/// or couldn't build (`RefWay`): three `match`es deep, a whole new value through a pattern naming
+/// its fields out of order, a `ref` name a parameter has too, a guard reading a `ref` name, the
+/// index of what's matched changed in the case, and a `for ref` in the case whose item's change a
+/// `?` failing in a `while` condition, a later `elif` or after an `and` lost (#2025). The oracle
+/// found them, held to the compiled program. On since #2017 put each case back by its fields'
+/// names; the three `for ref` ways wait for #2025's fix.
+const REF_CASES: bool = true;
 
 /// Whether random programs write a name where another of the same name and type is in sight, each
 /// way the checker renamed by text rather than by what the name means where it's written
@@ -658,6 +668,7 @@ impl Writer<'_> {
             26 if ALIASING && self.choice(4) == 0 => self.aliasing(body),
             26 if LOOKUPS_SWAPPED && self.choice(4) == 0 => self.swaps(body),
             26 if PART_CRASHES && !self.threadless && self.choice(4) == 0 => self.shelves(body),
+            26 if REF_CASES && self.choice(4) == 0 => self.ref_cases(body),
             26 if NAME_CAPTURE && self.choice(4) == 0 => self.captures(body),
             26 => self.change_counts(body),
             // The guarded shapes are tried first, as they were before the shapes after them, so
@@ -1092,6 +1103,21 @@ impl Writer<'_> {
 
     /// A lookup kept while the struct whose dict it searched is set to another, then a store at
     /// the same key.
+    /// A `match` with `ref` written one of the ways the compiled program once got wrong.
+    fn ref_cases(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        // The `for ref` ways wait for #2025.
+        let ways: Vec<RefWay> = REF_WAYS
+            .into_iter()
+            .filter(|way| !matches!(way, RefWay::ForRefWhile | RefWay::ForRefElif | RefWay::ForRefAnd))
+            .collect();
+        let way = ways.get(self.choice(ways.len())).copied().unwrap_or(RefWay::Deep);
+        let start = self.choice(REF_STARTS);
+        let text = self.choice(REF_TEXTS.len());
+        body.push(Stmt::RefCased(RefCasing { id, way, start, text }));
+    }
+
     /// A name written where another of its name and type is in sight, one of `CAPTURE_WAYS`.
     fn captures(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;

@@ -10,8 +10,8 @@ use super::ast::{
     StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
 use super::ast::{
-    Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelve,
-    Shelving, SwapField, Swapping, Waking, Yielding,
+    Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
+    SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
 };
 
 /// What every program starts with, for its body to use.
@@ -776,6 +776,125 @@ fn shelved_written(shelving: &Shelving) -> String {
 }
 
 /// `listened{id}`, the function a `Listened` calls, after the functions it uses.
+/// The `Named` a `RefCased` starts from, as `REF_STARTS` counts them.
+fn ref_start_written(start: usize) -> &'static str {
+    match start {
+        0 => "Named.Leaf(name=\"a\")",
+        1 => "Named.Pair(left=.Leaf(name=\"a\"), right=.Leaf(name=\"b\"), label=\"x\", tags=[])",
+        _ => {
+            "Named.Pair(left=.Pair(left=.Leaf(name=\"a\"), right=.Leaf(name=\"b\"), label=\"in\", tags=[]), \
+             right=.Leaf(name=\"c\"), label=\"out\", tags=[\"t\"])"
+        }
+    }
+}
+
+/// `ref_cased{id}`, the function a `RefCased` calls, and for `Shadowed`, `ref_shadowed{id}`, whose
+/// parameter `at` is the index of what its `match` is over and the `ref` name of each case too.
+fn ref_cased_written(casing: &RefCasing) -> String {
+    let RefCasing { id, way, start, text } = *casing;
+    let start = ref_start_written(start);
+    let text = REF_TEXTS.get(text).copied().unwrap_or_default();
+    let mut out = String::new();
+    if way == RefWay::Shadowed {
+        let _ = write!(
+            out,
+            "def ref_shadowed{id}(ref row: list[Named], at: int):\n    match row[at]:\n        \
+             case .Pair(_, _, ref at, _):\n            at += \"{text}\"\n        \
+             case .Leaf(ref at):\n            at += \"{text}\"\n\n"
+        );
+    }
+    let failed = match way {
+        RefWay::ForRefWhile => Some(format!("while ref_failing{id}(len(tag))?:\n                    pass")),
+        RefWay::ForRefElif => Some(format!(
+            "if len(tag) == 0:\n                    pass\n                elif ref_failing{id}(len(tag))?:\n                    pass"
+        )),
+        RefWay::ForRefAnd => {
+            Some(format!("if len(tag) > 0 and ref_failing{id}(len(tag))?:\n                    pass"))
+        }
+        _ => None,
+    };
+    if let Some(failed) = &failed {
+        let _ = write!(
+            out,
+            "def ref_failing{id}(count: int) -> bool fails Refused:\n    if count > 0:\n        \
+             fail Refused(code=count)\n    return False\n\n\
+             def ref_forred{id}(ref named: Named) fails Refused:\n    match named:\n        \
+             case .Pair(_, _, _, ref tags):\n            for ref tag in tags:\n                \
+             tag += \"{text}\"\n                {failed}\n        \
+             case .Leaf(ref name):\n            name += \"{text}\"\n\n"
+        );
+    }
+    let _ = writeln!(out, "def ref_cased{id}(stdout: Stdout):");
+    let lines: Vec<String> = match way {
+        RefWay::Deep => vec![
+            format!("mut named = {start}"),
+            "match named:".to_owned(),
+            "    case .Pair(left=ref left, tags=_):".to_owned(),
+            "        match left:".to_owned(),
+            "            case .Pair(left=ref inner, tags=_):".to_owned(),
+            "                match inner:".to_owned(),
+            "                    case .Leaf(ref name):".to_owned(),
+            format!("                        name += \"{text}\""),
+            "                    case _:".to_owned(),
+            "                        pass".to_owned(),
+            "            case .Leaf(ref name):".to_owned(),
+            format!("                name += \"{text}\""),
+            "    case .Leaf(ref name):".to_owned(),
+            format!("        name += \"{text}\""),
+            "stdout.print(named_digest(named))".to_owned(),
+        ],
+        RefWay::NewValue => vec![
+            format!("mut named = {start}"),
+            "match named:".to_owned(),
+            "    case .Pair(label=_, left=ref left):".to_owned(),
+            format!("        left = .Leaf(name=\"{text}\")"),
+            "    case .Leaf(ref name):".to_owned(),
+            format!("        name = \"{text}\""),
+            "stdout.print(named_digest(named))".to_owned(),
+        ],
+        RefWay::Shadowed => vec![
+            format!("mut row = [{start}, Named.Leaf(name=\"z\")]"),
+            format!("ref_shadowed{id}(ref row, 0)"),
+            "stdout.print(named_digest(row[0]), named_digest(row[1]))".to_owned(),
+        ],
+        RefWay::Guarded => vec![
+            format!("mut named = {start}"),
+            "match named:".to_owned(),
+            "    case .Pair(_, _, ref label, ref tags) if len(label) < 3:".to_owned(),
+            format!("        label += \"{text}\""),
+            "        tags.append(label)".to_owned(),
+            "    case .Leaf(ref name) if len(name) > 0:".to_owned(),
+            format!("        name += \"{text}\""),
+            "    case _:".to_owned(),
+            "        pass".to_owned(),
+            "stdout.print(named_digest(named))".to_owned(),
+        ],
+        RefWay::IndexMoved => vec![
+            format!("mut row = [{start}, Named.Leaf(name=\"z\")]"),
+            "mut at = 0".to_owned(),
+            "match row[at]:".to_owned(),
+            "    case .Pair(_, _, ref label, _):".to_owned(),
+            "        at += 1".to_owned(),
+            format!("        label += \"{text}\""),
+            "    case .Leaf(ref name):".to_owned(),
+            "        at += 1".to_owned(),
+            format!("        name += \"{text}\""),
+            "stdout.print(named_digest(row[0]), named_digest(row[1]), at)".to_owned(),
+        ],
+        RefWay::ForRefWhile | RefWay::ForRefElif | RefWay::ForRefAnd => vec![
+            format!("mut named = {start}"),
+            format!("ref_forred{id}(ref named) except why:"),
+            "    stdout.print(\"refused\", why.code)".to_owned(),
+            "stdout.print(named_digest(named))".to_owned(),
+        ],
+    };
+    for line in lines {
+        let _ = writeln!(out, "    {line}");
+    }
+    out.push('\n');
+    out
+}
+
 /// `captured{id}`, the function a `Captured` calls, with what it calls. Each prints what the name
 /// written there means, and for a `lock`, what the lock's value holds after.
 fn captured_written(capturing: &Capturing) -> String {
@@ -2182,6 +2301,10 @@ impl Writer {
             Stmt::Shelved(shelving) => {
                 let _ = write!(self.helpers, "{}", shelved_written(shelving));
                 self.line(indent, &format!("shelved{}(stdout)", shelving.id));
+            }
+            Stmt::RefCased(casing) => {
+                let _ = write!(self.helpers, "{}", ref_cased_written(casing));
+                self.line(indent, &format!("ref_cased{}(stdout)", casing.id));
             }
             Stmt::Captured(capturing) => {
                 let _ = write!(self.helpers, "{}", captured_written(capturing));

@@ -1,8 +1,9 @@
 # A launched task waits its turn at a database's connection, which another task's slow query has.
 # When the slow query ends, the turn is handed to the waiting task, but its worker is busy: the
-# slow query's task goes on counting. Only then is the waiting task stopped. It hasn't run since
-# it began to wait, and its insert isn't run: it was, before (#1988). From Fable 5.2's review. At
-# 1 thread only: with more, the waiting task has a worker of its own, and inserts before the stop.
+# slow query's task goes on counting, under a lock, where a task can't make way for another. Only
+# then is the waiting task stopped. It hasn't run since it began to wait, and its insert isn't run:
+# it was, before (#1988). From Fable 5.2's review. At 1 thread only: with more, the waiting task
+# has a worker of its own, and inserts before the stop.
 from std import sqlite
 from std.concurrent import Channel, Closed, Crashed, channel
 from std.sql import SqlError
@@ -12,13 +13,17 @@ from std.sqlite import Database
 struct Counted:
     rows: int
 
+# What the slow query's task counted, kept under a lock while it counts.
+struct Tally:
+    total = 0
+
 def counted(turns: int) -> int:
     mut total = 0
     for turn in range(turns):
         total = (total + turn * 7) % 1000003
     return total
 
-def slow(db: Database, ended: Channel[int], stdout: Stdout):
+def slow(db: Database, ended: Channel[int], tally: shared Tally, stdout: Stdout):
     _ = db.query[Counted](
         t"with recursive c(x) as (select 1 union all select x + 1 from c where x < 2000000) select count(*) as rows from c",
     ) except why:
@@ -27,7 +32,12 @@ def slow(db: Database, ended: Channel[int], stdout: Stdout):
     # The query's over, so its turn has gone on to whoever waited: `main` hears, and stops them.
     ended.send(1) except Closed():
         return
-    stdout.print("the slow query's task counted on", counted(turns=400000000) > 0)
+    # A task counting in its own loop makes way every so often; under a lock it can't, so its
+    # worker stays busy until the stop has come.
+    lock tally as ref held:
+        held.total = counted(turns=400000000)
+    lock tally as held:
+        stdout.print("the slow query's task counted on", held.total > 0)
 
 def late(db: Database, stdout: Stdout):
     stdout.print("the late one began")
@@ -37,8 +47,9 @@ def late(db: Database, stdout: Stdout):
     stdout.print("the late one never said either")
 
 def ran(db: Database, stdout: Stdout) fails Crashed:
+    shared tally = Tally()
     with channel[int](size=1) as ended:
-        with launch(() => slow(db, ended=ended, stdout=stdout))?:
+        with launch(() => slow(db, ended=ended, tally=tally, stdout=stdout))?:
             with launch(() => late(db, stdout=stdout), stop_after=50ms)?:
                 _ = ended.receive() else 0
 

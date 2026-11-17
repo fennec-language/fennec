@@ -8,7 +8,7 @@ use fennec_syntax::{Arg, CompKind, Expr, ExprKind, Field, FnDef, Span};
 use super::typed::Bound;
 use super::{Binding, Flow, Interp, MOST_ITEMS, Place, Run, crash, unsupported};
 use crate::load::Kind;
-use crate::value::{Func, Text, Value};
+use crate::value::{Func, Held, Text, Value};
 
 /// An argument as it's passed: a value, the place a `ref` argument names, or a generator written
 /// straight into a builtin's call, which reads it there.
@@ -281,7 +281,7 @@ impl Interp {
                     && args.iter().all(|arg| arg.name.as_deref() == Some("capacity"))
                     && !self.program.types.contains_key("Buffer") =>
             {
-                Target::Given(Value::List(Vec::new()))
+                Target::Given(Value::List(Held::new(Vec::new())))
             }
             // `std.layout`'s `SoaList[T]()`, which the checker types as a `list[T]`: its items are
             // laid out field by field, which nothing a program does can see.
@@ -295,13 +295,13 @@ impl Interp {
                         .get(name, object.span)
                         .is_some_and(|from| from == "std.layout.SoaList") =>
             {
-                Target::Given(Value::List(Vec::new()))
+                Target::Given(Value::List(Held::new(Vec::new())))
             }
             ExprKind::Name(name) if matches!(name.as_str(), "list" | "dict" | "set") && args.is_empty() => {
                 Target::Given(match name.as_str() {
-                    "list" => Value::List(Vec::new()),
-                    "dict" => Value::Dict(Vec::new()),
-                    _ => Value::Set(Vec::new()),
+                    "list" => Value::List(Held::new(Vec::new())),
+                    "dict" => Value::Dict(Held::new(Vec::new())),
+                    _ => Value::Set(Held::new(Vec::new())),
                 })
             }
             ExprKind::Name(name) if self.program.types.contains_key(&*self.type_named(name)) => {
@@ -415,7 +415,7 @@ impl Interp {
         }
         // An empty `StrWriter`, as the standard library's own code makes one to write into.
         if name == "StrWriter" {
-            let parts = vec![("_parts".to_owned(), Value::List(Vec::new()))];
+            let parts = vec![("_parts".to_owned(), Value::List(Held::new(Vec::new())))];
             return Ok(Target::Given(Value::instance("StrWriter", None, parts)));
         }
         // A name imported from a module run from its own source, under the name it's run by.
@@ -825,7 +825,7 @@ impl Interp {
                 for _ in 0..size {
                     items.push(self.zero_of(item, span)?);
                 }
-                Value::List(items)
+                Value::List(Held::new(items))
             }
             Type::Named(name) if self.program.types.contains_key(name.as_str()) => {
                 self.construct(name, None, Vec::new(), span)?
@@ -901,7 +901,7 @@ impl Interp {
             }
             return crash(format!("this breaks the `where` rule on `{}.{broken}`", instance.ty), span);
         }
-        Ok(Value::Instance(Box::new(instance)))
+        Ok(Value::Instance(Held::new(instance)))
     }
 
     /// The first field whose `where` rule a struct breaks, if any.

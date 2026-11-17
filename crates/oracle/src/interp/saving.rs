@@ -30,7 +30,7 @@ use super::calls::{ArgVal, Receiver, Target};
 use super::json::type_name;
 use super::{Flow, Interp, Place, Run, unsupported};
 use crate::load::Kind;
-use crate::value::{Text, Value};
+use crate::value::{Held, Text, Value};
 
 impl Interp {
     /// `object.serialize(ref out)`, when it's modeled here: its type, as the checker typed
@@ -77,8 +77,10 @@ impl Interp {
                 self.tell(out, "sequence", vec![Value::List(items.clone())], vec![(**inner).clone()], span)
             }
             (Type::Dict(key, held), Value::Dict(pairs)) => {
-                let pairs =
-                    pairs.iter().map(|(key, value)| Value::Tuple(vec![key.clone(), value.clone()])).collect();
+                let pairs = pairs
+                    .iter()
+                    .map(|(key, value)| Value::Tuple(Held::new(vec![key.clone(), value.clone()])))
+                    .collect();
                 let types = vec![(**key).clone(), (**held).clone()];
                 self.tell(out, "map", vec![Value::List(pairs)], types, span)
             }
@@ -255,11 +257,11 @@ impl Interp {
                 };
                 let mut found: Vec<Value> = Vec::with_capacity(items.len());
                 for item in items {
-                    if !self.contains(&Value::Set(found.clone()), &item)? {
+                    if !self.contains(&Value::Set(Held::new(found.clone())), &item)? {
                         found.push(item);
                     }
                 }
-                Ok(Value::Set(found))
+                Ok(Value::Set(Held::new(found)))
             }
             Type::Dict(key, held) => self.dict_from(key, held, src, span),
             Type::Named(name) => self.instance_from(name, &[], src, span),
@@ -284,7 +286,7 @@ impl Interp {
                 self.put_once((read, value), &mut found, src, span)?;
             }
             self.ask(src, "end_map", Vec::new(), Vec::new(), span)?;
-            return Ok(Value::Dict(found));
+            return Ok(Value::Dict(Held::new(found)));
         }
         let Value::List(pairs) = self.ask(src, "map", Vec::new(), vec![key.clone(), held.clone()], span)?
         else {
@@ -292,12 +294,12 @@ impl Interp {
         };
         for pair in pairs {
             let Value::Tuple(both) = pair else { return unsupported("a pair that isn't one") };
-            let Ok([read, value]) = <[Value; 2]>::try_from(both) else {
+            let Ok([read, value]) = <[Value; 2]>::try_from(both.into_inner()) else {
                 return unsupported("a pair that isn't one");
             };
             self.put_once((read, value), &mut found, src, span)?;
         }
-        Ok(Value::Dict(found))
+        Ok(Value::Dict(Held::new(found)))
     }
 
     /// Puts a pair read into a dict, failing as `src` says where a key comes twice.
@@ -342,10 +344,10 @@ impl Interp {
             .cases
             .iter()
             .map(|case| {
-                Value::Tuple(vec![
+                Value::Tuple(Held::new(vec![
                     Value::Str(Text::from(case.name.clone())),
                     Value::Bool(!case.fields.is_empty()),
-                ])
+                ]))
             })
             .collect();
         let asked = vec![Value::Str(Text::from(shown.to_owned())), Value::List(cases)];
@@ -399,10 +401,10 @@ impl Interp {
             .zip(saved.iter().map(|field| field.name.as_str()))
             .chain(fields.iter().filter(|field| field.skipped).map(|field| ("", field.name.as_str())))
             .map(|(as_saved, own)| {
-                Value::Tuple(vec![
+                Value::Tuple(Held::new(vec![
                     Value::Str(Text::from(as_saved.to_owned())),
                     Value::Str(Text::from(own.to_owned())),
-                ])
+                ]))
             })
             .collect();
         let listed = Value::List(listed);

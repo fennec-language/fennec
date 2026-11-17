@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use super::calls::{ArgVal, Receiver};
 use super::{Binding, Interp, Place, Run, unsupported};
 use crate::text;
-use crate::value::{Cell, Func, Instance, Value};
+use crate::value::{Cell, Func, Held, Instance, Value};
 
 /// Why a `Buffer`'s room, beyond what's promised of it, is refused.
 pub(crate) const ROOM_UNPROMISED: &str = "a Buffer's exact room, which `docs/language.md` promises only to be at least what it holds, and n more right after `reserve(n)`";
@@ -23,6 +23,7 @@ impl Interp {
 
     /// A value as it shows inside a collection, strings in quotes.
     pub(crate) fn repr(&mut self, value: &Value) -> Run<String> {
+        let _deeper = super::deeper()?;
         Ok(match value {
             Value::Unit => String::new(),
             Value::None => "None".to_owned(),
@@ -104,10 +105,14 @@ impl Interp {
 
     /// A type's own `def str(self, ref out: StrWriter)`, called with a writer of its own.
     fn own_str(&mut self, def: &'static fennec_syntax::FnDef, instance: &Instance) -> Run<String> {
-        let writer = Value::instance("StrWriter", None, vec![("_parts".to_owned(), Value::List(Vec::new()))]);
+        let writer = Value::instance(
+            "StrWriter",
+            None,
+            vec![("_parts".to_owned(), Value::List(Held::new(Vec::new())))],
+        );
         let previous = self.push_frame(vec![("out".to_owned(), Binding::Value(writer))], None)?;
         let place = Place { frame: self.cur, name: "out".to_owned(), path: Vec::new() };
-        let receiver = Receiver::Value(Value::Instance(Box::new(instance.clone())));
+        let receiver = Receiver::Value(Value::Instance(Held::new(instance.clone())));
         let called =
             self.call_def(def, None, Some(receiver), vec![ArgVal::Ref(None, place.clone())], def.span);
         let written = called.and_then(|_| self.read_place(&place, def.span));
@@ -131,6 +136,7 @@ impl Interp {
 
     /// `left == right`, with a type's own `def ==` where it has one, however deep it's held.
     pub(crate) fn equal(&mut self, left: &Value, right: &Value) -> Run<bool> {
+        let _deeper = super::deeper()?;
         match (left, right) {
             (Value::Instance(a), Value::Instance(b)) => {
                 if let Some(def) = self.program.method(&a.ty, "==") {
@@ -227,6 +233,7 @@ impl Interp {
 
     /// The order of two values, with a type's own `def <` where it has one.
     pub(crate) fn compare(&mut self, left: &Value, right: &Value) -> Run<Ordering> {
+        let _deeper = super::deeper()?;
         match (left, right) {
             (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
             (Value::Sized(_, a), Value::Sized(_, b)) => Ok(a.cmp(b)),
@@ -291,6 +298,7 @@ fn held_now(cell: &Cell) -> Option<Value> {
 
 /// Equality with no type's own `def ==`: what a dict's keys and a set's items are told apart by.
 pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
+    let _deeper = super::deeper()?;
     Ok(match (left, right) {
         (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,
         (Value::Bool(a), Value::Bool(b)) => a == b,

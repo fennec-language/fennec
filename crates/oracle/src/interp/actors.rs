@@ -394,9 +394,10 @@ impl Interp {
                 done: Arc::clone(&done),
             };
             let shared = Arc::clone(&self.shared);
-            let thread = std::thread::Builder::new()
-                .stack_size(TASK_STACK)
-                .spawn(move || rest_thread(&shared, slot, rest));
+            let thread = std::thread::Builder::new().stack_size(TASK_STACK).spawn(move || {
+                super::walks_within(TASK_STACK);
+                rest_thread(&shared, slot, rest);
+            });
             if thread.is_err() {
                 self.give_up();
                 return unsupported("a thread for a `parallel` call's rounds couldn't start");
@@ -441,7 +442,7 @@ impl Interp {
                     }
                 }
                 Value::Instance(instance) => {
-                    waiting.extend(instance.fields.into_iter().map(|(_, field)| field));
+                    waiting.extend(instance.into_inner().fields.into_iter().map(|(_, field)| field));
                 }
                 Value::Table(table) => waiting.extend(table.live().map(|(_, item)| item.clone())),
                 Value::Shared(cell) => {
@@ -687,9 +688,10 @@ impl Interp {
             number
         };
         let shared = Arc::clone(&self.shared);
-        let thread = std::thread::Builder::new()
-            .stack_size(TASK_STACK)
-            .spawn(move || task_thread(&shared, (number, inbox), &task, (task_expr, given)));
+        let thread = std::thread::Builder::new().stack_size(TASK_STACK).spawn(move || {
+            super::walks_within(TASK_STACK);
+            task_thread(&shared, (number, inbox), &task, (task_expr, given));
+        });
         if thread.is_err() {
             self.give_up();
             return unsupported("a task's thread couldn't start");

@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use fennec_syntax::{BinOp, Expr, ExprKind, Span, Stmt, StmtKind};
 
 use crate::load::Program;
-use crate::value::{Cap, Reach, Text, Value};
+use crate::value::{Cap, Held, Reach, Text, Value};
 
 /// How many expressions and statements a run may take, across every thread, before it's stopped
 /// as one the oracle can't finish.
@@ -42,9 +42,54 @@ pub(crate) const MOST_STEPS: u64 = 40_000_000;
 /// How deep calls may nest.
 const MOST_DEPTH: usize = 1_500;
 
-/// How deep a value may be nested: deeper ones are refused before copying one could run out of
-/// stack.
-const MOST_NESTING: usize = 5_000;
+/// How deep a value's parts may nest where they're gone through one level inside another, as
+/// printing one, comparing two or saving one does: deeper ones are refused there, before such a
+/// walk could run out of its thread's stack. `fennec-fuzz` writes values 200,000 deep. Copying a
+/// value and letting go of one take a little stack however deep it is (`value/held.rs`), so those
+/// are never refused.
+const MOST_NESTING: usize = 250_000;
+
+/// The stack each level of such a walk is allowed: printing a value takes about 1,000 bytes a
+/// level and comparing two about 450, measured, so this is four times the most. A thread may go as
+/// deep as its stack allows at this, up to `MOST_NESTING`: the run's own thread, with
+/// `STACK_BYTES`, the whole of it, and a task's or a generator's, with 64 MB, 16,384 levels.
+const STACK_PER_LEVEL: usize = 4_096;
+
+thread_local! {
+    /// How many levels into a value this thread's walk through one is.
+    static WALKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How deep this thread's walks may go, for the stack it was given: a thread whose stack the
+    /// oracle didn't choose goes as deep as the least stack a thread has, 2 MB.
+    static MOST_WALKED: std::cell::Cell<usize> = const { std::cell::Cell::new((2 << 20) / STACK_PER_LEVEL) };
+}
+
+/// Says how big this thread's stack is, which sets how deep its walks through a value may go.
+pub(crate) fn walks_within(stack_bytes: usize) {
+    MOST_WALKED.with(|most| most.set((stack_bytes / STACK_PER_LEVEL).min(MOST_NESTING)));
+}
+
+/// A level deeper into a value a walk is going through, for as long as it's held.
+pub(crate) struct Deeper;
+
+impl Drop for Deeper {
+    fn drop(&mut self) {
+        WALKED.with(|walked| walked.set(walked.get().saturating_sub(1)));
+    }
+}
+
+/// Goes a level deeper into a value a walk is going through, refusing one nested past what the
+/// thread's stack allows.
+pub(crate) fn deeper() -> Run<Deeper> {
+    let most = MOST_WALKED.with(std::cell::Cell::get);
+    WALKED.with(|walked| {
+        let depth = walked.get() + 1;
+        if depth > most {
+            return unsupported("ran too long: a value nested too deeply");
+        }
+        walked.set(depth);
+        Ok(Deeper)
+    })
+}
 
 /// The most bytes a program may print.
 const MOST_OUTPUT: usize = 64 << 20;
@@ -304,7 +349,7 @@ impl Interp {
                         case: None,
                         fields: vec![("_given".to_owned(), Value::Int(0))],
                     };
-                    given.push(calls::ArgVal::Value(None, Value::Instance(Box::new(env))));
+                    given.push(calls::ArgVal::Value(None, Value::Instance(Held::new(env))));
                     continue;
                 }
                 _ => return MainEnded::Unsupported("a capability main takes".to_owned()),
@@ -326,42 +371,23 @@ impl Interp {
         }
     }
 
-    /// Counts a step, stopping a run that's gone on too long.
+    /// Counts a step, and the parts cloned since the last, stopping a run that's gone on too long.
     pub(crate) fn tick(&self) -> Run<()> {
-        if self.shared.steps.fetch_add(1, Ordering::Relaxed) > self.shared.most_steps {
+        let steps = 1 + crate::value::copied();
+        if self.shared.steps.fetch_add(steps, Ordering::Relaxed) > self.shared.most_steps {
             return unsupported("ran too long");
         }
         Ok(())
     }
 
-    /// Counts a copy of a value against the run's steps, item by item, and refuses one nested
-    /// too deeply to copy and let go of safely.
+    /// Counts a copy of a value against the run's steps. A list, dict or struct shares its parts
+    /// with its copies until one is changed (`value/held.rs`), so its copy costs nothing more than
+    /// the step that made it, and what's cloned when it's changed is counted then. A `Table` copies
+    /// its slots.
     pub(crate) fn charge(&self, value: &Value) -> Run<()> {
-        let mut count: u64 = 0;
-        let mut waiting: Vec<(&Value, usize)> = vec![(value, 1)];
-        while let Some((held, depth)) = waiting.pop() {
-            count += 1;
-            if depth > MOST_NESTING {
-                return unsupported("ran too long: a value nested too deeply");
-            }
-            match held {
-                Value::List(items) | Value::Tuple(items) | Value::Set(items) => {
-                    waiting.extend(items.iter().map(|item| (item, depth + 1)));
-                }
-                Value::Dict(pairs) => {
-                    for (key, value) in pairs {
-                        waiting.push((key, depth + 1));
-                        waiting.push((value, depth + 1));
-                    }
-                }
-                Value::Instance(instance) => {
-                    waiting.extend(instance.fields.iter().map(|(_, field)| (field, depth + 1)));
-                }
-                Value::Table(table) => waiting.extend(table.live().map(|(_, item)| (item, depth + 1))),
-                _ => {}
-            }
-        }
-        if count > 1 && self.shared.steps.fetch_add(count, Ordering::Relaxed) > self.shared.most_steps {
+        let Value::Table(table) = value else { return Ok(()) };
+        let count = u64::try_from(table.slots.len()).unwrap_or(u64::MAX);
+        if self.shared.steps.fetch_add(count, Ordering::Relaxed) > self.shared.most_steps {
             return unsupported("ran too long");
         }
         Ok(())

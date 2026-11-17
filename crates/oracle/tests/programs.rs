@@ -65,6 +65,173 @@ fn a_name_holds_its_own_value_and_ref_changes_yours() {
     );
 }
 
+/// `case .Button(ref clicks):` changes a field of what the `match` is over, a place reached
+/// through a `ref` parameter and an index here: the name holds a copy, put back where the case
+/// ends, however it ends, a failure included. A `ref` name matched again with `ref` puts its own
+/// change back first. What it prints is what the compiled program printed.
+#[test]
+fn a_case_with_ref_changes_the_field_it_names() {
+    prints(
+        "
+        enum Kind:
+            Button(clicks: int)
+            Label(text: str)
+            Slider(at: int, most: int)
+
+        struct Widget:
+            name: str
+            kind: Kind
+
+        enum Named:
+            Leaf(name: str)
+            Pair(left: Named, right: Named, tags: list[str])
+
+        error Refused:
+            code: int
+
+        def click(ref widgets: list[Widget], at: int):
+            match widgets[at].kind:
+                case .Button(ref clicks):
+                    clicks += 1
+                case .Slider(ref pos, most):
+                    if pos < most:
+                        pos += 10
+                case .Label(ref text):
+                    text += '?'
+
+        def slide(ref kind: Kind) fails Refused:
+            match kind:
+                case .Slider(ref pos, ref most):
+                    most += 1
+                    pos += 5
+                    if pos > 6:
+                        fail Refused(code=pos)
+                case _:
+                    pass
+
+        def main(stdout: Stdout):
+            mut widgets = [
+                Widget(name='go', kind=.Button(0)),
+                Widget(name='vol', kind=.Slider(at=1, most=50)),
+                Widget(name='hi', kind=.Label('hello')),
+            ]
+            for at in range(3):
+                click(ref widgets, at)
+            click(ref widgets, 0)
+            stdout.print(widgets)
+            mut tree = Named.Pair(left=.Leaf('a'), right=.Leaf('c'), tags=['t'])
+            match tree:
+                case .Pair(left=ref left, right=_, tags=ref tags):
+                    tags.append('u')
+                    match left:
+                        case .Leaf(ref name):
+                            name += '!'
+                        case _:
+                            pass
+                case _:
+                    pass
+            stdout.print(tree)
+            mut kind = Kind.Slider(at=1, most=9)
+            slide(ref kind) except why:
+                stdout.print(f'{why}')
+            stdout.print(kind)
+            slide(ref kind) except why:
+                stdout.print(f'{why}')
+            stdout.print(kind)
+        ",
+        "[Widget(name=\"go\", kind=Kind.Button(clicks=2)), Widget(name=\"vol\", kind=Kind.Slider(at=11, most=50)), \
+         Widget(name=\"hi\", kind=Kind.Label(text=\"hello?\"))]\n\
+         Named.Pair(left=Named.Leaf(name=\"a!\"), right=Named.Leaf(name=\"c\"), tags=[\"t\", \"u\"])\n\
+         Kind.Slider(at=6, most=10)\nRefused(code=11)\nKind.Slider(at=11, most=11)\n",
+    );
+}
+
+/// A `ref` case is put back into the place it matched however it's written: three `match`es deep,
+/// a part given a whole new value, parts named out of their fields' order or left out, a `ref`
+/// name a parameter the place reads has too, a guard reading a `ref` name, and a body that changes
+/// an index of the place. The compiled program put several of these back wrong, or stopped
+/// building, until the checker lane's fix; these are its programs, and what it prints now
+/// (`llvm::a_ref_case_is_put_back_where_it_matched_however_it_s_written`).
+#[test]
+fn a_ref_case_is_put_back_where_it_matched_however_it_s_written() {
+    prints(
+        "
+        enum Named:
+            Leaf(name: str)
+            Pair(left: Named, tags: list[str])
+
+        def main(stdout: Stdout):
+            mut tree = Named.Pair(left=.Pair(left=.Leaf(name='a'), tags=[]), tags=[])
+            match tree:
+                case .Pair(left=ref left, tags=_):
+                    match left:
+                        case .Pair(left=ref inner, tags=_):
+                            match inner:
+                                case .Leaf(ref name):
+                                    name += '!'
+                                case _:
+                                    pass
+                        case _:
+                            pass
+                case _:
+                    pass
+            stdout.print(tree)
+            mut other = Named.Pair(left=.Leaf(name='b'), tags=['t'])
+            match other:
+                case .Pair(tags=ref tags, left=ref left):
+                    tags.append('u')
+                    left = .Leaf(name='replaced')
+                case _:
+                    pass
+            stdout.print(other)
+        ",
+        "Named.Pair(left=Named.Pair(left=Named.Leaf(name=\"a!\"), tags=[]), tags=[])\n\
+         Named.Pair(left=Named.Leaf(name=\"replaced\"), tags=[\"t\", \"u\"])\n",
+    );
+    prints(
+        "
+        enum Kind:
+            Button(clicks: int)
+            Slider(at: int, most: int)
+
+        def click(ref kinds: list[Kind], at: int):
+            match kinds[at]:
+                case .Slider(ref at, most) if at < most:
+                    at += 10
+                case .Button(ref clicks):
+                    clicks += 1
+                case _:
+                    pass
+
+        def main(stdout: Stdout):
+            mut kinds = [Kind.Button(clicks=0), Kind.Slider(at=1, most=50), Kind.Slider(at=60, most=50)]
+            for at in range(3):
+                click(ref kinds, at)
+            stdout.print(kinds)
+        ",
+        "[Kind.Button(clicks=1), Kind.Slider(at=11, most=50), Kind.Slider(at=60, most=50)]\n",
+    );
+    prints(
+        "
+        enum Slot:
+            Empty
+            Held(count: int)
+
+        def main(stdout: Stdout):
+            mut slots = [Slot.Held(count=1), Slot.Held(count=10)]
+            mut at = 0
+            match slots[at]:
+                case .Held(ref count):
+                    at += 1
+                    count += 5
+                case _:
+                    pass
+            stdout.print(slots, at)
+        ",
+        "[Slot.Held(count=6), Slot.Held(count=10)] 1\n",
+    );
+}
+
 #[test]
 fn except_handles_the_failure_of_its_call() {
     prints(

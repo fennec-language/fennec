@@ -193,11 +193,12 @@ impl Cache {
         let path = self.path(kind, name);
         let sum = sum_of(bytes);
         let kept = kept_at(&path, &sum);
-        // The same bytes kept before are there already, and never written again.
+        // The same bytes kept before are there already, and never written again. They're on the
+        // disk before the entry names them, so the entry needn't be.
         if !kept.is_file() {
             put(&kept, &[bytes])?;
         }
-        put(&sum_path(&path), &[sum.as_bytes()])?;
+        put_unsynced(&sum_path(&path), &[sum.as_bytes()])?;
         Ok(Some(kept))
     }
 
@@ -472,6 +473,19 @@ fn temporary_beside(path: &Path) -> PathBuf {
 /// Writes `parts` to `path` whole: to a temporary file of its own, made new, which refuses a file
 /// or a link already at that name, then synced, then renamed into place.
 fn put(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
+    put_with(path, parts, true)
+}
+
+/// [`put`] without syncing, for a file a power cut can lose or tear without a wrong read: a kept
+/// object's `.sum`, which names the hash the object's own bytes are checked against, so a lost,
+/// empty or torn one is a miss. On a Mac a sync flushes the disk's own cache; a second one for each
+/// object made a cold dev build take 7% more instructions and twice the waits.
+fn put_unsynced(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
+    put_with(path, parts, false)
+}
+
+/// [`put`], synced or not.
+fn put_with(path: &Path, parts: &[&[u8]], sync: bool) -> std::io::Result<()> {
     use std::io::Write as _;
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)?;
@@ -486,7 +500,7 @@ fn put(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
         let written = parts
             .iter()
             .try_for_each(|part| file.write_all(part))
-            .and_then(|()| file.sync_all())
+            .and_then(|()| if sync { file.sync_all() } else { Ok(()) })
             .and_then(|()| std::fs::rename(&temporary, path));
         if written.is_err() {
             let _ = std::fs::remove_file(&temporary);

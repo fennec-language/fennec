@@ -182,7 +182,10 @@ impl Lowering<'_> {
                     for (held, (_, handle)) in names.iter_mut().zip(&renamed) {
                         held.name.clone_from(handle);
                     }
-                    fennec_syntax::visit::in_stmts(body, &mut |expr| {
+                    // Each use of a held name means what's locked, but not a use under something
+                    // in the block that names it again.
+                    let held: Vec<String> = renamed.iter().map(|(held, _)| held.clone()).collect();
+                    fennec_syntax::sight::uses_in_sight(body, &held, &mut |expr| {
                         if let ExprKind::Name(name) = &expr.kind
                             && let Some((_, handle)) = renamed.iter().find(|(held, _)| held == name)
                         {

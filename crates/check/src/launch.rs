@@ -222,7 +222,8 @@ pub(crate) fn source(launch: &Launch) -> Option<crate::lend_lowering::Source> {
         }
         _ => None,
     };
-    with_task(&mut def, launch, inbox.as_ref())?;
+    let ExprKind::Lambda { .. } = &launch.task.kind else { return None };
+    let task = Task { arrow: launch.task.clone(), inbox };
     let lent =
         launch.message.clone().map_or(Type::Int, |message| Type::Generic("Sender".to_owned(), vec![message]));
     Some(crate::lend_lowering::Source {
@@ -230,6 +231,7 @@ pub(crate) fn source(launch: &Launch) -> Option<crate::lend_lowering::Source> {
         method: false,
         gives: Type::Generic(crate::lend::WITH.to_owned(), vec![lent]),
         generics: Vec::new(),
+        task: Some(task),
     })
 }
 
@@ -309,28 +311,57 @@ fn source_text(inbox: bool) -> String {
     lines.into_iter().flatten().map(|line| line + "\n").collect()
 }
 
-/// Writes the task's arrow in as the closure the source starts, where its placeholder is, with its
-/// inbox, when it has one, as the receiving end of the channel the source made: `inbox`, which
-/// reads `channel__made`.
-fn with_task(def: &mut fennec_syntax::FnDef, launch: &Launch, inbox: Option<&Expr>) -> Option<()> {
-    // The arrow, with its inbox written in, where the placeholder is.
-    let ExprKind::Lambda { params, body } = &launch.task.kind else { return None };
-    let mut called = body.as_ref().clone();
-    if let (Some(name), Some(inbox)) = (params.first(), inbox) {
-        fennec_syntax::visit::in_expr(&mut called, &mut |expr| {
-            if matches!(&expr.kind, ExprKind::Name(named) if named == name) {
-                *expr = inbox.clone();
+/// A `with launch(...)`'s task: its arrow, and what makes its inbox from the source's channel,
+/// when it has one.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Task {
+    arrow: Expr,
+    inbox: Option<Expr>,
+}
+
+impl Task {
+    /// Writes the task's arrow in as the closure the source starts, where its placeholder is, with
+    /// its inbox, when it has one, as the receiving end of the channel the source made. It's
+    /// written in once the source's own names are hidden, each as `hidden` gives it, so a name of
+    /// the caller's the arrow reads is the caller's: none of the source's can take it.
+    pub(crate) fn written_in(
+        &self,
+        body: &mut [fennec_syntax::Stmt],
+        hidden: &dyn Fn(&str) -> String,
+    ) -> Option<()> {
+        let ExprKind::Lambda { params, body: arrow } = &self.arrow.kind else { return None };
+        let mut called = arrow.as_ref().clone();
+        if let (Some(name), Some(inbox)) = (params.first(), &self.inbox) {
+            // The inbox reads the source's channel by its hidden name.
+            let mut inbox = inbox.clone();
+            fennec_syntax::visit::in_expr(&mut inbox, &mut |expr| {
+                if let ExprKind::Name(read) = &mut expr.kind
+                    && read == "channel__made"
+                {
+                    *read = hidden(read);
+                }
+            });
+            // Each use of the arrow's parameter that means it, not one under something inside
+            // that names it again.
+            fennec_syntax::sight::uses_in_sight_of_expr(
+                &mut called,
+                std::slice::from_ref(name),
+                &mut |expr| {
+                    *expr = inbox.clone();
+                },
+            );
+        }
+        let closure = Expr {
+            kind: ExprKind::Lambda { params: Vec::new(), body: Box::new(called) },
+            span: self.arrow.span,
+        };
+        let mut placed = false;
+        fennec_syntax::visit::in_stmts(body, &mut |expr| {
+            if matches!(&expr.kind, ExprKind::Name(name) if name == "task__placeholder") {
+                *expr = closure.clone();
+                placed = true;
             }
         });
+        placed.then_some(())
     }
-    let closure = Expr {
-        kind: ExprKind::Lambda { params: Vec::new(), body: Box::new(called) },
-        span: launch.task.span,
-    };
-    fennec_syntax::visit::in_function(def, &mut |expr| {
-        if matches!(&expr.kind, ExprKind::Name(name) if name == "task__placeholder") {
-            *expr = closure.clone();
-        }
-    });
-    Some(())
 }

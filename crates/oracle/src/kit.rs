@@ -480,7 +480,11 @@ impl<'k> Scope<'k> {
                     self.pattern(item);
                 }
             }
-            Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::Literal(_) => {}
+            Pattern::Wildcard
+            | Pattern::Bind(_)
+            | Pattern::RefBind(_)
+            | Pattern::MutBind(_)
+            | Pattern::Literal(_) => {}
         }
     }
 

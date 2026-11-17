@@ -187,7 +187,7 @@ fn pattern<'a>(pattern: &'a Pattern, change: &mut dyn FnMut(&'a Expr)) {
                 self::pattern(arg, change);
             }
         }
-        Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) => {}
+        Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::MutBind(_) => {}
     }
 }
 

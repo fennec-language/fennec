@@ -777,7 +777,7 @@ impl Interp {
     ) -> Run<bool> {
         match pattern {
             Pattern::Wildcard => Ok(true),
-            Pattern::Bind(name) => {
+            Pattern::Bind(name) | Pattern::MutBind(name) => {
                 bound.push((name.clone(), value.clone()));
                 Ok(true)
             }

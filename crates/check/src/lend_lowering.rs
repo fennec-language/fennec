@@ -503,22 +503,33 @@ impl Lowering<'_> {
                     self.stmts(body);
                 }
             }
-            StmtKind::While { body, .. }
-            | StmtKind::For { body, .. }
-            | StmtKind::With { body, .. }
-            | StmtKind::OnFailure { body, .. } => {
+            StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
                 self.stmts(body);
             }
-            StmtKind::Def(def) => self.function(def),
-            StmtKind::Expr(value) | StmtKind::Assign { value, .. } => {
-                if let ExprKind::Match { arms, .. } = &mut value.kind {
-                    for arm in arms {
-                        self.stmts(&mut arm.body);
-                    }
-                }
+            StmtKind::OnFailure { cleanup, body, .. } => {
+                self.stmts(cleanup);
+                self.stmts(body);
             }
+            StmtKind::Lend { value, otherwise, .. } => {
+                self.cases_in(value);
+                self.stmts(otherwise);
+            }
+            StmtKind::Def(def) => self.function(def),
+            StmtKind::Expr(value)
+            | StmtKind::Assign { value, .. }
+            | StmtKind::Return(Some(value))
+            | StmtKind::Fail(value)
+            | StmtKind::Yield(value)
+            | StmtKind::Assert(value) => self.cases_in(value),
             _ => {}
         }
+    }
+
+    /// The blocks inside an expression, written in first: each `match`'s cases, wherever it is,
+    /// as the blocks of an `except` or `else` are. Only the outermost `match`es' cases are walked
+    /// here, since walking a case reaches each `match` inside it, so each block is walked once.
+    fn cases_in(&mut self, value: &mut Expr) {
+        outer_cases(value, &mut |cases| self.stmts(cases));
     }
 
     /// A `match` with `ref` cases, each written as a case that binds the field as a plain name
@@ -527,47 +538,56 @@ impl Lowering<'_> {
     fn ref_match(&mut self, value: &Expr, at: Span) -> Option<Vec<Stmt>> {
         let ExprKind::Match { subject, arms } = &value.kind else { return None };
         let cases = self.ref_matches.get(&(value.span.start, value.span.end))?;
+        // Written in once: what's written in has no `ref` left in it.
+        if !arms.iter().any(|arm| arm.pattern.holds_ref()) {
+            return None;
+        }
+        // Every case is ready to be written in before anything is: a `match` with one that can't
+        // be is left whole, which lowering then refuses, rather than this pass saying it wrote
+        // something, round after round.
+        let ready = cases.len() == arms.len()
+            && arms.iter().zip(cases).all(|(arm, fields)| match fields {
+                Some(fields) => rewritable(&arm.pattern, fields),
+                None => !arm.pattern.holds_ref(),
+            });
+        if !ready {
+            return None;
+        }
+        // The place the `match` is over, each index along it held in a name first: the case is
+        // put back where it was matched, whatever its body does to those names, as a `ref` name
+        // keeps the place it was given.
+        self.made += 1;
+        let made = self.made;
+        let mut written_in = Vec::new();
+        let subject = crate::ref_lowering::indexes_held(
+            subject,
+            &|count| format!("place{count}__ref{made}"),
+            &mut written_in,
+        );
         let mut written = arms.clone();
         for (arm, fields) in written.iter_mut().zip(cases) {
             let Some(fields) = fields else { continue };
-            self.ref_case(arm, subject, fields, at)?;
+            self.ref_case(arm, &subject, fields, at)?;
         }
-        let kind = ExprKind::Match { subject: subject.clone(), arms: written };
-        Some(vec![stmt(StmtKind::Expr(Expr { kind, span: value.span }), at)])
+        let kind = ExprKind::Match { subject: Box::new(subject), arms: written };
+        written_in.push(stmt(StmtKind::Expr(Expr { kind, span: value.span }), at));
+        Some(written_in)
     }
 
-    /// One `ref` case, written in: its `ref`s and `_`s bound to hidden names, the `ref`s copied
-    /// to mut names of their own for the body, and the case put back, made from them, on every
-    /// way out.
+    /// One `ref` case, written in: each `ref` bound as a name the body may change, each `_` bound
+    /// to a hidden name, and the case put back, made from them, on every way out. Its guard and
+    /// body are left as they're written, so each name in them means what it did. Each part is
+    /// taken in its field's place, whether it's written by position or by name, and a field it
+    /// leaves out is a `_`. The place it's put back into holds its indexes in names of their own
+    /// (`ref_match`), so a name the case binds, as `at` in
+    /// `match widgets[at].kind: case .Slider(ref at, most):`, isn't one it reads.
     fn ref_case(&mut self, arm: &mut MatchArm, subject: &Expr, fields: &[String], at: Span) -> Option<()> {
-        let Pattern::Variant { name: case, args, .. } = &mut arm.pattern else { return None };
-        if args.len() != fields.len() {
-            return None;
-        }
+        let Pattern::Variant { name: case, args, fields: named, .. } = &mut arm.pattern else { return None };
+        *args = in_fields_order(std::mem::take(args), named, fields)?;
+        *named = fields.to_vec();
         self.made += 1;
         let made = self.made;
-        let mut copies = Vec::new();
-        let mut parts = Vec::new();
-        for (at_field, (arg, field)) in args.iter_mut().zip(fields).enumerate() {
-            let value = match arg {
-                Pattern::RefBind(held) => {
-                    let bound = format!("{held}__ref{made}");
-                    copies.push(assign(held, name(&bound, at), true, None));
-                    let value = name(held, at);
-                    *arg = Pattern::Bind(bound);
-                    value
-                }
-                Pattern::Bind(held) => name(held, at),
-                Pattern::Wildcard => {
-                    let bound = format!("field{at_field}__ref{made}");
-                    *arg = Pattern::Bind(bound.clone());
-                    name(&bound, at)
-                }
-                Pattern::Literal(literal) => literal.clone(),
-                _ => return None,
-            };
-            parts.push(fennec_syntax::Arg { name: Some(field.clone()), is_mut: false, value });
-        }
+        let parts = parts_bound(args, fields, made, at)?;
         let variant = Expr { kind: ExprKind::Variant(case.clone()), span: here(at) };
         let rebuilt =
             Expr { kind: ExprKind::Call { callee: Box::new(variant), args: parts }, span: here(at) };
@@ -595,8 +615,7 @@ impl Lowering<'_> {
         exits(&mut block, &mut caller, false);
         let ways = caller.ways;
         let mut block = self.on_failure(std::slice::from_ref(&put_back), block, at);
-        let mut body = copies;
-        body.extend(self.ways_kept(ways, (&exit, &returned, &failed), at)?);
+        let mut body = self.ways_kept(ways, (&exit, &returned, &failed), at)?;
         if ways.any() {
             block.push(stmt(StmtKind::Break, at));
             let always = Expr { kind: ExprKind::Bool(true), span: here(at) };
@@ -2126,6 +2145,67 @@ fn targets(target: &Expr, found: &mut Vec<String>) {
     }
 }
 
+/// A `ref` case's parts, one for each of its fields in their order, as the case's fields made
+/// from what they bind, to put it back with. A `ref` part is bound as a name the body may change,
+/// and a `_` to a hidden name, so it's put back as it was.
+fn parts_bound(
+    args: &mut [Pattern],
+    fields: &[String],
+    made: usize,
+    at: Span,
+) -> Option<Vec<fennec_syntax::Arg>> {
+    let mut written = Vec::new();
+    for (at_field, (arg, field)) in args.iter_mut().zip(fields).enumerate() {
+        let value = match arg {
+            Pattern::RefBind(held) => {
+                let value = name(held, at);
+                *arg = Pattern::MutBind(std::mem::take(held));
+                value
+            }
+            Pattern::Bind(held) => name(held, at),
+            Pattern::Wildcard => {
+                let bound = format!("field{at_field}__ref{made}");
+                *arg = Pattern::Bind(bound.clone());
+                name(&bound, at)
+            }
+            Pattern::Literal(literal) => literal.clone(),
+            _ => return None,
+        };
+        written.push(fennec_syntax::Arg { name: Some(field.clone()), is_mut: false, value });
+    }
+    Some(written)
+}
+
+/// Whether a `ref` case can be written in: its parts fit its fields, and each is a `ref`, a name,
+/// a `_` or a literal.
+fn rewritable(pattern: &Pattern, fields: &[String]) -> bool {
+    let Pattern::Variant { args, fields: named, .. } = pattern else { return false };
+    let kinds = args.iter().all(|arg| {
+        matches!(arg, Pattern::RefBind(_) | Pattern::Bind(_) | Pattern::Wildcard | Pattern::Literal(_))
+    });
+    kinds && in_fields_order(args.clone(), named, fields).is_some()
+}
+
+/// A case's parts in its fields' order, one for each field: a part written by name goes in its
+/// field's place, and a field no part is written for, by name or past the last by position, is a
+/// `_`. Nothing when there are more parts than fields, or one names no field.
+fn in_fields_order(args: Vec<Pattern>, named: &[String], fields: &[String]) -> Option<Vec<Pattern>> {
+    if args.len() > fields.len() {
+        return None;
+    }
+    if named.is_empty() {
+        let mut placed = args;
+        placed.resize(fields.len(), Pattern::Wildcard);
+        return Some(placed);
+    }
+    let mut placed = vec![Pattern::Wildcard; fields.len()];
+    for (field, arg) in named.iter().zip(args) {
+        let at = fields.iter().position(|known| known == field)?;
+        *placed.get_mut(at)? = arg;
+    }
+    Some(placed)
+}
+
 /// Renames names in a body, those it reads and those its loops and `with`s give.
 fn rename(body: &mut [Stmt], renamed: &[(String, String)]) {
     let fresh = |name: &str| renamed.iter().find(|(from, _)| from == name).map(|(_, to)| to.clone());
@@ -2166,7 +2246,7 @@ fn rename(body: &mut [Stmt], renamed: &[(String, String)]) {
 /// Each name a pattern binds.
 fn bound_by(pattern: &mut Pattern, each: &mut dyn FnMut(&mut String)) {
     match pattern {
-        Pattern::Bind(held) | Pattern::RefBind(held) => each(held),
+        Pattern::Bind(held) | Pattern::RefBind(held) | Pattern::MutBind(held) => each(held),
         Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
             for inner in patterns {
                 bound_by(inner, each);

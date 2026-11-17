@@ -949,7 +949,14 @@ impl Heap {
         }
     }
 
-    pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
+    pub(crate) fn insert(&mut self, block: Box<[u64]>) -> i64 {
+        self.insert_made_by(block, false)
+    }
+
+    /// `insert`, for a block made here, or by another thread (`adopted`), whose block goes in
+    /// the table without making a page for it (`Table::insert_adopted`).
+    #[inline]
+    fn insert_made_by(&mut self, mut block: Box<[u64]>, adopted: bool) -> i64 {
         self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
         let address = block.as_ptr().addr();
         if block.first().is_some_and(|count| *count >= IMMORTAL) {
@@ -965,7 +972,11 @@ impl Heap {
                 self.list_made(address);
             }
         }
-        self.blocks.insert(block);
+        if adopted {
+            self.blocks.insert_adopted(block);
+        } else {
+            self.blocks.insert(block);
+        }
         i64::try_from(address).unwrap_or(0)
     }
 
@@ -1161,7 +1172,7 @@ impl Heap {
         let counts = self.counts;
         for mut block in blocks {
             mark_owner(&mut block, self.owner_bits);
-            self.insert(block);
+            self.insert_made_by(block, true);
         }
         self.counts = counts;
         self.publish_counts();
@@ -1171,7 +1182,7 @@ impl Heap {
     pub(crate) fn adopt_blocks(&mut self, blocks: Vec<Box<[u64]>>) {
         for mut block in blocks {
             mark_owner(&mut block, self.owner_bits);
-            self.blocks.insert(block);
+            self.blocks.insert_adopted(block);
         }
     }
 

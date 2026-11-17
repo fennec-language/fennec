@@ -267,6 +267,29 @@ impl Table {
         self.len += 1;
     }
 
+    /// `insert`, for a block another thread made, as a message's is: placed when its page is
+    /// made, and otherwise in the hash map, as its page would cover that thread's memory, mostly
+    /// that thread's own blocks. Each thread a server's messages reached made a page there for
+    /// each, and kept it while any block on it lived: about 22 KB of a chat server's 113 KB a
+    /// connection, at 4 threads.
+    pub(super) fn insert_adopted(&mut self, block: Box<[u64]>) {
+        let address = at(&block);
+        if block.len() < PLACED_WORDS || self.hashed {
+            self.insert_short(address, block);
+            return;
+        }
+        match place_mut(&mut self.regions, address) {
+            Some(slot) => {
+                if slot.is_some() {
+                    two_owners(address);
+                }
+                self.len += 1;
+                *slot = Some(block);
+            }
+            None => self.insert_short(address, block),
+        }
+    }
+
     /// `insert`, for a block on a page with no block yet.
     #[cold]
     #[inline(never)]
@@ -459,6 +482,42 @@ mod tests {
         }
         assert_eq!(table.len(), 0);
         assert!(table.pages() < 200, "{} pages kept for no blocks", table.pages());
+    }
+
+    /// A block another thread made makes no page: it's placed when its page is made, and otherwise
+    /// kept in the hash map. Either way it's found, released and taken out as any other is.
+    #[test]
+    fn a_block_another_thread_made_makes_no_page() {
+        let mut table = Table::default();
+        // 64 KB each, so each starts on a page of its own.
+        let adopted: Vec<Box<[u64]>> = (0..4).map(|_| vec![1; 1 << 13].into()).collect();
+        let addresses: Vec<usize> = adopted.iter().map(|block| at(block)).collect();
+        for block in adopted {
+            table.insert_adopted(block);
+        }
+        assert_eq!(table.pages(), 0, "no page is made for blocks another thread made");
+        assert_eq!(table.len(), 4);
+        // One made here makes its page, and a block adopted onto that page is placed there.
+        let here: Box<[u64]> = vec![2; 1 << 13].into();
+        let (here_at, here_len) = (at(&here), here.len());
+        table.insert(here);
+        assert_eq!(table.pages(), 1);
+        for address in &addresses {
+            assert_eq!(table.get(*address).map(<[u64]>::len), Some(1 << 13));
+            assert!(matches!(table.release_one(*address), Released::Gone(_)));
+            assert!(table.get(*address).is_none());
+        }
+        assert_eq!(table.get(here_at).map(<[u64]>::len), Some(here_len));
+        let beside: Box<[u64]> = vec![3; 2].into();
+        let beside_at = at(&beside);
+        let page_of = |address: usize| address >> PAGE_BITS;
+        if page_of(beside_at) == page_of(here_at) {
+            table.insert_adopted(beside);
+            assert_eq!(table.pages(), 1, "a block adopted onto a page that's made is placed there");
+            assert!(table.remove(beside_at).is_some());
+        }
+        assert!(table.remove(here_at).is_some());
+        assert_eq!(table.len(), 0);
     }
 
     /// A block that's never freed is counted apart from the live ones, by its count or its owner:

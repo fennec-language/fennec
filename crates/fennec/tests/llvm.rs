@@ -13209,6 +13209,51 @@ fn a_generator_loop_inside_a_with_is_let_go_before_the_with_s_cleanup() -> std::
     )
 }
 
+/// In a `test`, which holds no failure, a `with` block's cleanup is written in before each failure
+/// in it: so a loop whose list fails to load, `for row in load_rows()?:`, still runs the cleanup,
+/// whose `assert` says it ran. The loop keeps its `?` only where the block holds its failure.
+#[test]
+fn a_loop_whose_list_fails_to_load_in_a_test_runs_the_with_s_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("loop_fails_to_load_in_a_test")?;
+    let program = dir.join("loop_fails_to_load_in_a_test.fen");
+    std::fs::write(&program, LOOP_FAILS_TO_LOAD_IN_A_TEST)?;
+    let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    let said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    assert!(said.contains("the left side is \"outer\" and the right side is \"the cleanup ran\""), "{said}");
+    assert!(said.contains("0 passed, 1 failed"), "{said}");
+    Ok(())
+}
+
+const LOOP_FAILS_TO_LOAD_IN_A_TEST: &str = r#"error Bad:
+    pass
+
+struct Door:
+    name: str
+
+def opened(name: str) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        assert name == "the cleanup ran"
+
+def load_rows(n: int) -> list[int] fails Bad:
+    if n < 0:
+        fail Bad()
+    return [n]
+
+def main(stdout: Stdout):
+    stdout.print("main")
+
+test "a loop whose list fails to load runs the cleanup"():
+    with opened("outer") as door:
+        for row in load_rows(-1)?:
+            assert row == 0
+"#;
+
 const GENERATOR_LOOP_IN_A_WITH: &str = r#"error Oops:
     code: int
 

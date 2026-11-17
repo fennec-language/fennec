@@ -6,7 +6,19 @@
 # `tests-failed <file>` names what failed in `cargo test --no-fail-fast`'s output instead: each
 # test by its exact name, and a test binary that failed without naming one, by not building or by
 # crashing, as that, which nothing known matches.
+#
+# `corrupt-build <file>` says, by its status, whether a failed build's output reads as a corrupt
+# build rather than code that doesn't link: undefined symbols LLVM renamed, `….llvm.<number>`,
+# referenced from the workspace's own objects. Those come from objects a stopped cargo left half
+# written, and `.github/scripts/clean-workspace.sh` mends them.
 set -euo pipefail
+# macOS's ld says `"_anon.….llvm.123", referenced from:`; Linux's, `undefined reference to` or
+# `undefined symbol:` before the name.
+corrupt='\.llvm\.[0-9]+", referenced from:|undefined (reference to|symbol:?) .*\.llvm\.[0-9]+'
+if [ "${1:-}" = corrupt-build ]; then
+  grep -Eq "$corrupt" "$2"
+  exit
+fi
 if [ "${1:-}" = tests-failed ]; then
   said=$2
   sed -n 's/^---- \(.*\) stdout ----$/\1/p' "$said"
@@ -16,7 +28,9 @@ if [ "${1:-}" = tests-failed ]; then
   if [ "$binaries" -gt "$named" ]; then
     echo "a test binary that failed without naming a test"
   fi
-  if grep -q "^error: could not compile" "$said"; then
+  if grep -Eq "$corrupt" "$said"; then
+    echo "a test that didn't build, from a corrupt build"
+  elif grep -q "^error: could not compile" "$said"; then
     echo "a test that didn't build"
   fi
   exit 0

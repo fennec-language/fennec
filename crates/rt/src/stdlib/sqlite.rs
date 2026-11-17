@@ -553,7 +553,14 @@ mod real {
         let started = Instant::now();
         let mut wait = Duration::from_millis(1);
         loop {
-            let turn = conn.turn();
+            let Ok(turn) = conn.turn() else {
+                // Stopped, or cancelled, waiting its turn at the connection: it's failed as
+                // stopped, and what it waited to run isn't run.
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+                    Some("stopped while it waited its turn at the database".to_owned()),
+                ));
+            };
             let (held, work) = (Arc::clone(conn), Arc::clone(&work));
             let done = blocking(move || work(&held.lock_for_work()));
             drop(turn);

@@ -269,7 +269,12 @@ fn finish(file: &Value, fake: &mut FakeWrite<'_>) -> Result<(), String> {
     if let Some((target, data)) = fake_written {
         return fake(&target, &data);
     }
-    let turn = file.turn();
+    let Ok(turn) = file.turn() else {
+        // Stopped, or cancelled, waiting its turn to finish it: it's failed as stopped, so what was
+        // written never takes its target's place, and is thrown away as a failed block's is.
+        throw_away(file);
+        return Err(STOPPED.to_owned());
+    };
     let held = Arc::clone(&file);
     let done = blocking(move || match &mut *held.lock_for_work() {
         OpenFile::Writing { out, at, durable } => finish_writing(out, at, *durable),
@@ -289,15 +294,25 @@ pub(crate) fn written(file: &Value) -> bool {
 /// `fs._discard(file)`: a file written is thrown away, leaving its target as it was.
 fn discard(file: &Value) {
     let Some(file) = taken(file) else { return };
-    let turn = file.turn();
-    let held = Arc::clone(&file);
+    // Stopped, or cancelled, waiting its turn, it's thrown away all the same, once the turn before
+    // it ends: it's no work of the program's, only what's left of it, and nothing else would.
+    let turn = file.turn().ok().flatten();
+    throw_away(Arc::clone(&file));
+    drop(turn);
+}
+
+/// A file being written is thrown away, on a blocking thread, once no one else has it.
+fn throw_away(file: Shared) {
     blocking(move || {
-        if let OpenFile::Writing { at, .. } = &*held.lock_for_work() {
+        if let OpenFile::Writing { at, .. } = &*file.lock_for_work() {
             at.throw_away();
         }
     });
-    drop(turn);
 }
+
+/// Why a file's work wasn't done, for a task stopped, or a round cancelled, while it waited its
+/// turn at the file. The task has failed as stopped, so nothing reads it.
+const STOPPED: &str = "stopped while it waited its turn at this file";
 
 /// What a `File`'s method gives back, as plain data that can come back from another thread.
 enum Given {
@@ -329,8 +344,9 @@ pub(crate) fn real_file(handle: i64, method: &str, args: &[Value], span: Span) -
         }
         _ => return Err(Diagnostic::new(format!("a File has no method `{method}` that takes these"), span)),
     };
-    // The file's turn, waited for parked, so the blocking thread below finds it free.
-    let turn = file.turn();
+    // The file's turn, waited for parked, so the blocking thread below finds it free. Stopped, or
+    // cancelled, while it waits, it's failed as stopped, and doesn't do what it waited to.
+    let Ok(turn) = file.turn() else { return Ok(io_error(STOPPED)) };
     let held = Arc::clone(&file);
     let done = blocking(move || file_work(&mut held.lock_for_work(), &method, data, size));
     drop(turn);

@@ -17,8 +17,8 @@
 //!
 //! `llvm` and the targets in `targets::NATIVE` build what they run natively, so they need `fennec`
 //! beside this program and LLVM's tools. Those that read outside input, `json-rules`, `toml-rules`,
-//! `pack`, `csv`, `url`, `http-server`, `http-client` and `postgres`, hold what they read to the
-//! format's own rules, each in its own module, not only to not crashing. Running with no targets
+//! `pack`, `csv`, `url`, `http-server`, `http-client`, `postgres`, `router` and `html`, hold what
+//! they read to the format's own rules, each in its own module, not only to not crashing. Running with no targets
 //! named runs every one but `llvm`, which builds every input twice and runs only when named, and
 //! leaves out the other native ones, saying so, where nothing can be built. `programs` runs only
 //! when named too: random, well-typed programs built both ways and checked against a reference
@@ -32,6 +32,7 @@
 mod csv_rules;
 mod engines;
 mod generate;
+mod html_rules;
 mod http_rules;
 mod json_rules;
 mod llvm;
@@ -41,6 +42,7 @@ mod pack_rules;
 mod parked;
 mod postgres_rules;
 mod programs;
+mod router_rules;
 mod supervise;
 mod targets;
 mod toml_rules;

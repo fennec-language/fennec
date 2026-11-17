@@ -13766,7 +13766,7 @@ fn two_reads_next_to_each_other_fail_as_each_would_alone() -> std::io::Result<()
     Ok(())
 }
 
-const ADJACENT_SECOND_OUTSIDE: &str = r#"def summed(starts: list[int], upto: int, stdout: Stdout) -> int:
+const ADJACENT_SECOND_OUTSIDE: &str = r"def summed(starts: list[int], upto: int, stdout: Stdout) -> int:
     mut total = 0
     for near in range(upto):
         total += starts[near] * 10 + starts[near + 1]
@@ -13776,9 +13776,9 @@ const ADJACENT_SECOND_OUTSIDE: &str = r#"def summed(starts: list[int], upto: int
 def main(stdout: Stdout):
     stdout.print(summed([0, 2, 4, 6], upto=5, stdout=stdout))
     return
-"#;
+";
 
-const ADJACENT_FIRST_OUTSIDE: &str = r#"def spans(starts: list[int], nears: list[int], stdout: Stdout) -> int:
+const ADJACENT_FIRST_OUTSIDE: &str = r"def spans(starts: list[int], nears: list[int], stdout: Stdout) -> int:
     mut total = 0
     for near in nears:
         total += starts[near] * 10 + starts[near + 1]
@@ -13788,9 +13788,9 @@ const ADJACENT_FIRST_OUTSIDE: &str = r#"def spans(starts: list[int], nears: list
 def main(stdout: Stdout):
     stdout.print(spans([0, 2, 5, 9], nears=[0, 2, 4], stdout=stdout))
     return
-"#;
+";
 
-const ADJACENT_FROM_THE_END: &str = r#"def ends(starts: list[int], stdout: Stdout) -> int:
+const ADJACENT_FROM_THE_END: &str = r"def ends(starts: list[int], stdout: Stdout) -> int:
     mut total = 0
     for near in range(-4, 2):
         total += starts[near] * 100 + starts[near + 1]
@@ -13800,9 +13800,9 @@ const ADJACENT_FROM_THE_END: &str = r#"def ends(starts: list[int], stdout: Stdou
 def main(stdout: Stdout):
     stdout.print(ends([1, 2, 3, 4], stdout=stdout))
     return
-"#;
+";
 
-const ADJACENT_BEFORE_THE_FRONT: &str = r#"def ends(starts: list[int], stdout: Stdout) -> int:
+const ADJACENT_BEFORE_THE_FRONT: &str = r"def ends(starts: list[int], stdout: Stdout) -> int:
     mut total = 0
     for near in range(-3, -7, -1):
         total += starts[near] * 100 + starts[near + 1]
@@ -13812,9 +13812,9 @@ const ADJACENT_BEFORE_THE_FRONT: &str = r#"def ends(starts: list[int], stdout: S
 def main(stdout: Stdout):
     stdout.print(ends([1, 2, 3, 4], stdout=stdout))
     return
-"#;
+";
 
-const ADJACENT_AFTER_WRITES: &str = r#"def filled(starts: list[int], stdout: Stdout) -> list[int]:
+const ADJACENT_AFTER_WRITES: &str = r"def filled(starts: list[int], stdout: Stdout) -> list[int]:
     mut made = list[int]()
     for near in range(len(starts)):
         made.append(starts[near] + starts[near + 1])
@@ -13824,7 +13824,7 @@ const ADJACENT_AFTER_WRITES: &str = r#"def filled(starts: list[int], stdout: Std
 def main(stdout: Stdout):
     stdout.print(filled([5, 6, 7], stdout=stdout))
     return
-"#;
+";
 
 /// An index checked once stays inside its list until something shortens or replaces the
 /// list, or writes the index: a pop, a method popping or replacing a field, a new list, and

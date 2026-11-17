@@ -3,13 +3,17 @@
 //! `fennec_task_tick` whether to let the others run. A task that's only computing then still lets
 //! a server's other rounds answer.
 //!
-//! Which code that is: what a `serve` handler's round reaches. `main` isn't a task, as it runs on
-//! the program's own thread, and neither are the ranges `parallel` splits a list into, which run
-//! to their end.
+//! Which code that is: in a program with a server's rounds (`parallel.serve`) or launched tasks
+//! (`intrinsics.launch`), which share the runtime's threads, every closure, every generator, and
+//! what they reach. A handler reaches a round as a value, given to `serve` or kept in a `Router`'s
+//! list, and a round runs closures builtins are given, like a sort's key, with no call of its own;
+//! so rather than follow values, every closure that could be one ticks. `main` isn't a task, as it
+//! runs on the program's own thread, and neither are the ranges `parallel` splits a list into,
+//! which run to their end. A program with neither keeps its code as it was.
 
 use std::collections::{HashMap, HashSet};
 
-use fennec_ir::{Function, InstKind, Operand};
+use fennec_ir::{Function, InstKind, Operand, Program};
 
 use crate::analysis::callees;
 use crate::emit::Emit;
@@ -20,22 +24,26 @@ pub(crate) const TICKS: i64 = 4096;
 /// The builtins whose closures run as `parallel`'s ranges of a list, not as tasks.
 const RANGES: [&str; 4] = ["parallel.for", "parallel.map", "parallel.sum", "parallel.stream"];
 
-/// The functions that can run as a parked task: each round of a server, and what it reaches.
-pub(crate) fn tasks<'p>(functions: &HashMap<&'p str, &'p Function>) -> HashSet<&'p str> {
-    let mut waiting: Vec<&'p str> = Vec::new();
-    #[expect(clippy::iter_over_hash_type, reason = "it starts a walk whose result is a set")]
-    for function in functions.values() {
-        let made = made_closures(function);
-        for inst in function.blocks.iter().flat_map(|block| &block.insts) {
-            if let InstKind::Builtin { name, args, .. } = &inst.kind
-                && name == "parallel.serve"
-                && let Some(Operand::Local(task)) = args.get(1)
-                && let Some(round) = made.get(&task.0)
-            {
-                waiting.push(round);
-            }
-        }
+/// The builtins whose closures share the runtime's threads with each other, so need to make way:
+/// a server's rounds and launched tasks.
+const SHARING: [&str; 2] = ["parallel.serve", "intrinsics.launch"];
+
+/// The functions that can run as a parked task: in a program with a server's rounds or launched
+/// tasks, every closure but `parallel`'s ranges, every generator, and what they reach. Ticking
+/// more than runs as a task costs only the count, as the runtime's tick does nothing outside one.
+pub(crate) fn tasks<'p>(program: &'p Program, functions: &HashMap<&'p str, &'p Function>) -> HashSet<&'p str> {
+    let shares = functions.values().flat_map(|function| &function.blocks).flat_map(|block| &block.insts).any(
+        |inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if SHARING.contains(&name.as_str())),
+    );
+    if !shares {
+        return HashSet::new();
     }
+    let generators = program
+        .generators
+        .iter()
+        .flat_map(|def| std::iter::once(def.resume.as_str()).chain(def.abandon.as_deref()));
+    let mut waiting: Vec<&'p str> =
+        functions.values().flat_map(|function| closures_run_here(function)).chain(generators).collect();
     let mut found = HashSet::new();
     while let Some(name) = waiting.pop() {
         let Some((key, function)) = functions.get_key_value(name) else { continue };
@@ -149,18 +157,125 @@ def main(net: Net, stdout: Stdout) fails NetError:
             conn.write(f\"{spin(len(line))}\\n\")?
 ";
         let texts = texts(source)?;
-        let ticks = |name: &str| {
-            texts.iter().filter(|(function, _)| function == name || function.starts_with(name)).any(
-                |(_, text)| {
-                    text.split("\ndefine ")
-                        .filter(|defined| defined.contains(&format!("@\"f_{name}")))
-                        .any(|defined| defined.contains("@fennec_task_tick()"))
-                },
-            )
-        };
+        let ticks = |name: &str| ticking(&texts, name);
         let names: Vec<&str> = texts.iter().map(|(function, _)| function.as_str()).collect();
         assert!(ticks("spin"), "{names:?}");
         assert!(!ticks("counted") && !ticks("main.parallel#"), "{names:?}");
+        Ok(())
+    }
+
+    /// Whether the function `name`, or one whose name starts with it, counts its loops' turns.
+    fn ticking(texts: &[(String, String)], name: &str) -> bool {
+        texts.iter().filter(|(function, _)| function == name || function.starts_with(name)).any(|(_, text)| {
+            text.split("\ndefine ")
+                .filter(|defined| defined.contains(&format!("@\"f_{name}")))
+                .any(|defined| defined.contains("@fennec_task_tick()"))
+        })
+    }
+
+    /// A handler reaches its round as a value, so in a program with a server every closure ticks,
+    /// and what it reaches: a handler given to `serve` by name, one a `Router` keeps in its list,
+    /// a sort's key, which a builtin calls with no call of its own, and a generator a handler walks.
+    /// A function only `main` calls still doesn't.
+    #[test]
+    fn a_handler_given_to_serve_or_kept_by_a_router_ticks() -> Result<(), String> {
+        let source = "\
+from std.net import Captured, NetError, Request, Response, Router
+
+struct Ring:
+    slots: list[int]
+
+    def iter(self) -> Iterator[int]:
+        mut at = 0
+        while at < len(self.slots):
+            yield self.slots[at]
+            at += 1
+
+def count(limit: int) -> int:
+    mut turns = 0
+    while turns < limit:
+        turns += 1
+    return turns
+
+def tally(limit: int) -> int:
+    mut turns = 0
+    while turns < limit:
+        turns += 2
+    return turns
+
+def rank(word: str) -> int:
+    mut score = 0
+    for at in range(len(word)):
+        score += at
+    return score
+
+def alone(limit: int) -> int:
+    mut turns = 0
+    for n in range(limit):
+        turns += n
+    return turns
+
+def respond(request: Request) -> Response:
+    ring = Ring(slots=[1, 2])
+    mut total = count(len(request.path))
+    for slot in ring:
+        total += slot
+    return Response(status=200, body=f\"{total}\".encode())
+
+def routed(found: Captured) -> Response:
+    return Response(status=200, body=f\"{tally(len(found.text_at(0)))}\".encode())
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    stdout.print(alone(3), sorted([\"b\", \"a\"], key=(word) => rank(word)))
+    mut router = Router()
+    router.handle(\"GET /{name}\", (request, found) => routed(found))
+    with net.listen(0)? as first:
+        first.serve(respond)
+    with net.listen(0)? as second:
+        second.serve(router)
+";
+        let texts = texts(source)?;
+        let ticks = |name: &str| ticking(&texts, name);
+        let names: Vec<&str> = texts.iter().map(|(function, _)| function.as_str()).collect();
+        assert!(ticks("respond") && ticks("count"), "a handler given by name: {names:?}");
+        assert!(ticks("tally"), "a router's handler: {names:?}");
+        assert!(ticks("rank"), "a sort's key: {names:?}");
+        assert!(ticks("Ring.iter"), "a generator: {names:?}");
+        assert!(!ticks("alone"), "{names:?}");
+        Ok(())
+    }
+
+    /// A launched task shares the runtime's threads with others, so it ticks with no server in the
+    /// program. In a program with neither, nothing does, closures included.
+    #[test]
+    fn a_launched_task_ticks_and_a_program_without_tasks_doesnt() -> Result<(), String> {
+        let looping = "\
+def count(limit: int) -> int:
+    mut turns = 0
+    while turns < limit:
+        turns += 1
+    return turns
+
+def rank(word: str) -> int:
+    mut score = 0
+    for at in range(len(word)):
+        score += at
+    return score
+
+";
+        let launched = format!(
+            "from std.concurrent import Crashed\n\n{looping}def main(stdout: Stdout) fails Crashed:\n    stdout.print(rank(\"ab\"))\n    with launch(() => stdout.print(count(3)))?:\n        stdout.print(\"launched\")\n"
+        );
+        let texts_launched = texts(&launched)?;
+        let names: Vec<&str> = texts_launched.iter().map(|(function, _)| function.as_str()).collect();
+        assert!(ticking(&texts_launched, "count"), "{names:?}");
+        assert!(!ticking(&texts_launched, "rank"), "{names:?}");
+        let alone = format!(
+            "{looping}def main(stdout: Stdout):\n    stdout.print(count(3), sorted([\"b\", \"a\"], key=(word) => rank(word)))\n"
+        );
+        let texts_alone = texts(&alone)?;
+        let names: Vec<&str> = texts_alone.iter().map(|(function, _)| function.as_str()).collect();
+        assert!(!ticking(&texts_alone, "count") && !ticking(&texts_alone, "rank"), "{names:?}");
         Ok(())
     }
 }

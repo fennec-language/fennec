@@ -110,7 +110,7 @@ impl Lengths {
 }
 
 /// Every function of the program, a constant's included.
-fn every(program: &Program) -> impl Iterator<Item = &Function> {
+pub(crate) fn every(program: &Program) -> impl Iterator<Item = &Function> {
     program.functions.iter().chain(&program.constants)
 }
 
@@ -122,7 +122,7 @@ fn is_list(ty: &Type) -> bool {
 /// The functions something other than a direct call may call, so whose parameters may be
 /// anything: `main`, a closure's (a task's and a parallel loop's among them), a generator's, a
 /// constant's, and one no call in the program names, like a test.
-fn called_other_ways(program: &Program) -> HashSet<&str> {
+pub(crate) fn called_other_ways(program: &Program) -> HashSet<&str> {
     let mut other_ways: HashSet<&str> = HashSet::from(["main"]);
     let mut called = HashSet::new();
     for inst in every(program).flat_map(|function| &function.blocks).flat_map(|block| &block.insts) {

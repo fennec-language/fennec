@@ -1524,6 +1524,14 @@ impl Emit<'_, '_, '_> {
         Ok(same)
     }
 
+    /// Whether the items of the list in `list` hold no blocks: nothing counted, held or inline,
+    /// as the runtime's `holds_blocks` says of its element.
+    pub(crate) fn items_hold_no_blocks(&self, list: LocalId) -> Result<bool, String> {
+        let Kind::List(item) = self.kind_of(list)?.clone() else { return Ok(false) };
+        let held = self.item_kind(item)?;
+        Ok(!held.counted() && !self.holds_inline(&held))
+    }
+
     pub(crate) fn item_kind(&self, item: ListItem) -> Result<Kind, String> {
         Kind::from_ty(self.module.layouts, item.ty())
             .ok_or_else(|| "a list item this backend doesn't take yet".to_owned())

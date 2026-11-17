@@ -6,7 +6,7 @@ use fennec_layout::ListItem;
 use fennec_rt::embed::checks::{NOT_AN_INT, ZERO_STEP};
 use fennec_syntax::{BinOp, Span};
 
-use crate::emit::{Emit, ITEM_ACCESS, float_text, symbol};
+use crate::emit::{Emit, HEADER_ACCESS, ITEM_ACCESS, float_text, symbol};
 use crate::kinds::Kind;
 
 /// The most items `range` makes a list of.
@@ -212,9 +212,22 @@ impl Emit<'_, '_, '_> {
             ("list.sort.key", [Operand::Local(list), key], _) => self.sort_by_in_place(*list, key, span),
             ("list.clear", [Operand::Local(list)], _) => {
                 let owned = self.unshared(*list);
-                self.declare("declare void @fennec_list_clear(ptr) nounwind");
-                self.line(&format!("call void @fennec_list_clear(ptr {owned})"));
-                Ok(())
+                // A list whose items hold no blocks is cleared by its length alone, as the runtime
+                // clears one (#1942): the room past a list's length needn't be zero, since growing
+                // into it zeroes what it adds. One whose items hold blocks lets go of them first.
+                self.items_hold_no_blocks(*list).map(|plain| {
+                    if plain {
+                        let at = self.temp();
+                        self.line(&format!(
+                            "{at} = getelementptr inbounds i8, ptr {owned}, i64 {}",
+                            fennec_rt::embed::layout::LIST_LENGTH
+                        ));
+                        self.line(&format!("store i64 0, ptr {at}{HEADER_ACCESS}"));
+                    } else {
+                        self.declare("declare void @fennec_list_clear(ptr) nounwind");
+                        self.line(&format!("call void @fennec_list_clear(ptr {owned})"));
+                    }
+                })
             }
             ("sorted", [text], [Some(Kind::Str)]) => dest.and_then(|dest| self.sorted_chars(dest, text)),
             ("SoaList", [], []) => dest.and_then(|dest| {

@@ -70,9 +70,16 @@ step() {
   kept_failure "$name"
   tail -n 60 "$logs/step.log"
   grep gate-watch "$log"
-  # Kept under the code it tested: if that passes later, this was a flake, and goes in the
-  # ledger. See `flakes.sh`.
-  .github/scripts/flakes.sh failed "$name" "$logs/step.log"
+  # A corrupt build isn't the code, nor a flake: it's said plainly, with what mends it, and isn't
+  # kept for the ledger.
+  if .github/scripts/known-failures.sh corrupt-build "$logs/step.log"; then
+    echo "  this reads as a corrupt build: undefined \`….llvm.<number>\` symbols, from objects a stopped"
+    echo "  cargo left half written. Run .github/scripts/clean-workspace.sh, then the gate again."
+  else
+    # Kept under the code it tested: if that passes later, this was a flake, and goes in the
+    # ledger. See `flakes.sh`.
+    .github/scripts/flakes.sh failed "$name" "$logs/step.log"
+  fi
   outcomes+=("$name|failed")
   return 1
 }

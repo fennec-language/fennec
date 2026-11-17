@@ -148,7 +148,7 @@ const FIRST_LOOP: usize = 100;
 
 /// The jumps that go back to the start of a loop they're in, from block to block: their target
 /// is still being walked, depth first from the entry, when they're reached.
-fn back_edges(function: &Function) -> HashSet<(usize, usize)> {
+pub(crate) fn back_edges(function: &Function) -> HashSet<(usize, usize)> {
     let blocks = function.blocks.len();
     let (mut walking, mut done) = (vec![false; blocks], vec![false; blocks]);
     let mut found = HashSet::new();
@@ -208,7 +208,8 @@ pub(crate) const HEADER_ACCESS: &str = ", !tbaa !4";
 pub(crate) const ITEM_ACCESS: &str = ", !tbaa !6";
 /// A boxed struct's or enum's fields never overlap a block's header or a list's items.
 pub(crate) const FIELD_ACCESS: &str = ", !tbaa !10";
-pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7";
+/// A length is always written, so it's never undefined or poison.
+pub(crate) const LENGTH_ACCESS: &str = ", !tbaa !4, !range !7, !noundef !1";
 /// A struct's field wherever the struct is, which could be an item or a boxed field, but is
 /// never a block's header. So changing one, like a parser's place in its text, doesn't make a
 /// string's lengths read again.
@@ -1069,6 +1070,13 @@ impl Emit<'_, '_, '_> {
                 self.line(&format!("store {text} %p{at}, ptr %l{at}"));
             }
         }
+        // Each list parameter whose length nothing here changes has its length read now and kept.
+        let mut steady: Vec<usize> = self.known.steady_lengths.iter().copied().collect();
+        steady.sort_unstable();
+        for at in steady {
+            let _ = writeln!(self.allocas, "  %sl{at} = alloca i64");
+            self.keep_length(LocalId(at));
+        }
         // What every call gives a parameter, which what's proven from it leans on.
         if self.checks_proofs() && !self.known.param_ranges.is_empty() {
             let span = entry_span;
@@ -1888,11 +1896,41 @@ impl Emit<'_, '_, '_> {
         }
     }
 
+    /// Reads the length of a list parameter whose length nothing in this function changes into
+    /// the place it's kept (`%sl`, see `steady_lengths`), at the function's start.
+    ///
+    /// A length is loaded as `!noundef` (`LENGTH_ACCESS`): a kept length LLVM had to take as
+    /// maybe poison was frozen where a loop was split on it, which stopped it splitting the loop
+    /// further, as it does on a length read in the loop, and fannkuch ran 6% more instructions.
+    fn keep_length(&mut self, local: LocalId) {
+        let (list, slot) = (self.temp(), self.slot(local));
+        self.line(&format!("{list} = load ptr, ptr {slot}"));
+        let length = self.list_length(&list);
+        self.line(&format!("store i64 {length}, ptr %sl{}", local.0));
+    }
+
+    /// The length of `list`, read from the local `from`: the length kept for it if nothing in this
+    /// function changes its length, which LLVM can see doesn't change in a loop and so can check
+    /// once, or else the one in the list. A build that checks proofs checks the two are the same.
+    pub(crate) fn length_of_list(&mut self, from: Option<LocalId>, list: &str) -> String {
+        let Some(local) = from.filter(|local| self.known.steady_lengths.contains(&local.0)) else {
+            return self.list_length(list);
+        };
+        let length = self.temp();
+        self.line(&format!("{length} = load i64, ptr %sl{}", local.0));
+        if self.checks_proofs() {
+            let (own, differs) = (self.list_length(list), self.temp());
+            self.line(&format!("{differs} = icmp ne i64 {length}, {own}"));
+            self.proof_held_here(&differs, "a list's length is the one kept for it", Span::default());
+        }
+        length
+    }
+
     /// Loads a length from `at` into `dest`. LLVM is told it's from 0 to the most items anything
     /// can have, or a build that checks proofs checks that.
     pub(crate) fn load_length(&mut self, dest: &str, at: &str) {
         if self.checks_proofs() {
-            self.line(&format!("{dest} = load i64, ptr {at}{HEADER_ACCESS}"));
+            self.line(&format!("{dest} = load i64, ptr {at}{HEADER_ACCESS}, !noundef !1"));
             let broken = self.temp();
             self.line(&format!("{broken} = icmp ugt i64 {dest}, {}", crate::analysis::MOST_ITEMS));
             self.proof_held_here(
@@ -2946,8 +2984,13 @@ impl Emit<'_, '_, '_> {
                     }
                     _ => None,
                 };
-                let (list, _) = self.operand(counted.as_ref().or(first).ok_or("no argument")?)?;
-                let length = self.list_length(&list);
+                let looked_at = counted.as_ref().or(first).ok_or("no argument")?;
+                let (list, _) = self.operand(looked_at)?;
+                let from = match looked_at {
+                    Operand::Local(local) => Some(*local),
+                    _ => None,
+                };
+                let length = self.length_of_list(from, &list);
                 self.assign(dest.ok_or("no result")?, &length)
             }
             "list.append" => self.append(args),
@@ -4034,6 +4077,34 @@ mod tests {
             .into_iter()
             .find(|unit| unit.function == function)
             .map_or_else(String::new, |unit| unit.text))
+    }
+
+    /// A list whose items hold no blocks, ints or a struct of plain fields, is cleared by setting
+    /// its length to 0, with no call; one whose items hold blocks calls the runtime, which lets
+    /// go of them.
+    #[test]
+    fn a_list_of_plain_items_is_cleared_by_its_length() -> Result<(), String> {
+        let source = "struct Spot:\n    x: int\n    y: float\n\ndef ints(ref xs: list[int]):\n    xs.clear()\n    return\n\ndef spots(ref xs: list[Spot]):\n    xs.clear()\n    return\n\ndef names(ref xs: list[str]):\n    xs.clear()\n    return\n\ndef main(stdout: Stdout):\n    mut a = [1]\n    mut b = [Spot(x=1, y=2.0)]\n    mut c = [\"c\"]\n    ints(ref a)\n    spots(ref b)\n    names(ref c)\n    stdout.print(len(a), len(b), len(c))\n    return\n";
+        for plain in ["ints", "spots"] {
+            let text = text_of(source, plain)?;
+            assert!(!text.contains("@fennec_list_clear(") && text.contains("store i64 0, ptr"), "{text}");
+        }
+        let text = text_of(source, "names")?;
+        assert!(text.contains("call void @fennec_list_clear("), "{text}");
+        Ok(())
+    }
+
+    /// A list parameter only read in a loop has its length read once, at the start, into `%sl`,
+    /// and the loop's index check compares with that. One the loop appends to has its length
+    /// read from the list each time, and keeps nothing.
+    #[test]
+    fn a_list_parameter_read_in_a_loop_has_its_length_kept() -> Result<(), String> {
+        let source = "def summed(xs: list[int], n: int) -> int:\n    mut got = 0\n    for at in range(n):\n        got += xs[at * 2]\n    return got\n\ndef grown(ref xs: list[int], n: int) -> int:\n    mut got = 0\n    for at in range(n):\n        xs.append(at)\n        got += xs[at * 2]\n    return got\n\ndef main(stdout: Stdout):\n    mut ys = [1, 2, 3, 4, 5, 6]\n    stdout.print(summed(ys, n=3), grown(ref ys, n=2))\n    return\n";
+        let summed = text_of(source, "summed")?;
+        assert!(summed.contains("%sl0 = alloca i64") && summed.contains("load i64, ptr %sl0"), "{summed}");
+        let grown = text_of(source, "grown")?;
+        assert!(!grown.contains("%sl"), "{grown}");
+        Ok(())
     }
 
     /// A program's image describes the shapes of what it makes and what those hold, not the

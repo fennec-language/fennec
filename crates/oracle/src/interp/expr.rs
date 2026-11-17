@@ -210,16 +210,18 @@ impl Interp {
         if let Some(value) = self.lookup(name, span)? {
             return Ok(value);
         }
-        if let Some(value) = self.constant(name)? {
+        if self.program.constant_at(name, span)
+            && let Some(value) = self.constant(name)?
+        {
             return Ok(value);
         }
-        if self.program.functions.contains_key(name) {
+        if self.program.function_at(name, span).is_some() {
             return Ok(Value::Func(Box::new(Func::Named(name.to_owned()))));
         }
         if matches!(name, "len" | "str" | "abs" | "int" | "float") {
             return Ok(Value::Func(Box::new(Func::Builtin(name.to_owned()))));
         }
-        if let Some(from) = self.program.imported.get(name) {
+        if let Some(from) = self.program.imported.get(name, span) {
             return self.library_value(&from.clone());
         }
         unsupported(format!("the name `{name}`"))
@@ -526,7 +528,7 @@ impl Interp {
     fn attr(&mut self, object: &'static Expr, name: &str, span: Span) -> Run<Value> {
         if let ExprKind::Name(owner) = &object.kind
             && !self.is_bound(owner)
-            && !self.program.constants.contains_key(owner.as_str())
+            && !self.program.constant_at(owner, object.span)
         {
             let owner = &self.type_named(owner).into_owned();
             if let Some(declared) = self.program.types.get(owner.as_str()) {
@@ -541,7 +543,7 @@ impl Interp {
                 }
                 return unsupported(format!("`{owner}.{name}`"));
             }
-            if let Some(from) = self.program.imported.get(owner.as_str()) {
+            if let Some(from) = self.program.imported.get(owner, object.span) {
                 return self.library_value(&format!("{from}.{name}"));
             }
             return unsupported(format!("`{owner}.{name}`"));

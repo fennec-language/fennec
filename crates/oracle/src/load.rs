@@ -4,8 +4,61 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use fennec_check::Type;
+use fennec_check::{Place, Type};
 use fennec_syntax::{Expr, FnDef, Item, Module, Sources, Span, TypeDef};
+
+/// What each file's imports bring in, by the name each is bound under, with the standard library
+/// module it's from. A name is looked up in the imports of the file it's used in, by the checker's
+/// own rule, so one file's import never changes what another file's code calls: two files may
+/// import `pick` from different places, and each means its own. Std's code run from its own source
+/// has its own imports.
+pub(crate) struct Imports {
+    /// Each file of the program, by the span its text covers: none for a program of one text.
+    files: Vec<Span>,
+    /// What each file imports, in the order of `files`.
+    of_files: Vec<HashMap<String, String>>,
+    /// What std's own code imports.
+    of_std: HashMap<String, String>,
+}
+
+impl Imports {
+    fn new(files: Vec<Span>) -> Imports {
+        let count = files.len().max(1);
+        Imports { files, of_files: vec![HashMap::new(); count], of_std: HashMap::new() }
+    }
+
+    /// Whether the code at `span` is std's: its text is, since the oracle runs no code the checker
+    /// writes into a program's function.
+    fn std_code(&self, span: Span) -> bool {
+        fennec_check::place(&self.files, span) == Place::Std
+    }
+
+    /// The module the name `name`, used at `span`, is imported from there.
+    pub(crate) fn get(&self, name: &str, span: Span) -> Option<&String> {
+        let imports = match fennec_check::place(&self.files, span) {
+            Place::Std => &self.of_std,
+            Place::File(at) => self.of_files.get(at)?,
+            Place::Written => return None,
+        };
+        imports.get(name)
+    }
+
+    /// What the import at `span` brings its names into.
+    fn of_import(&mut self, span: Span) -> Result<&mut HashMap<String, String>, Refused> {
+        match fennec_check::import_place(&self.files, span) {
+            Place::Std => Ok(&mut self.of_std),
+            Place::File(at) => {
+                self.of_files.get_mut(at).ok_or_else(|| Refused::Invalid("an import in no file".to_owned()))
+            }
+            Place::Written => Err(Refused::Unsupported("an import the checker wrote".to_owned())),
+        }
+    }
+
+    /// The module each name any file or std's code imports is from.
+    fn every_module(&self) -> impl Iterator<Item = &String> {
+        self.of_files.iter().chain([&self.of_std]).flat_map(HashMap::values)
+    }
+}
 
 /// Why a program can't be run here.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,8 +102,8 @@ pub struct Program {
     pub(crate) constants: HashMap<String, &'static Expr>,
     /// Each `type Name = A | B`, by name, as the names of its members.
     pub(crate) aliases: HashMap<String, Vec<String>>,
-    /// The names an import brings in, each with the standard library module it's from.
-    pub(crate) imported: HashMap<String, String>,
+    /// The names each file's imports bring in, each with the standard library module it's from.
+    pub(crate) imported: Imports,
     /// What each name of a standard library module run from its own source is called in these
     /// tables, by its whole name: `std.math.Vec3` is `Vec3`, and `std.math.dot` is `math.dot`.
     pub(crate) from_std: HashMap<String, String>,
@@ -100,10 +153,31 @@ impl Program {
         self.types_at.get(&(span.start, span.end))
     }
 
-    /// What a name the program imports from a standard library module run from its own source
-    /// is called in the tables.
-    pub(crate) fn std_name(&self, imported_as: &str) -> Option<&str> {
-        self.from_std.get(self.imported.get(imported_as)?).map(String::as_str)
+    /// What a name imported at `span` from a standard library module run from its own source is
+    /// called in the tables.
+    pub(crate) fn std_name(&self, imported_as: &str, span: Span) -> Option<&str> {
+        self.from_std.get(self.imported.get(imported_as, span)?).map(String::as_str)
+    }
+
+    /// Whether the code at `span` reaches the top-level function or constant `name`, which is
+    /// std's when `std` says so, by the checker's own rule: std's code reaches only std's names,
+    /// so a program's own `reversed` is never the one std's `Tree` calls. No code here is a
+    /// dependency's, since a kit with dependencies is refused, so no caller carries a kit's mark.
+    fn reaches(&self, span: Span, name: &str, std: bool) -> bool {
+        fennec_check::reaches("", self.imported.std_code(span), name, std)
+    }
+
+    /// The top-level function `name`, written bare at `span`, names there.
+    pub(crate) fn function_at(&self, name: &str, span: Span) -> Option<&'static FnDef> {
+        let def = *self.functions.get(name)?;
+        self.reaches(span, name, fennec_check::compiler_written(def.span)).then_some(def)
+    }
+
+    /// Whether the top-level constant `name`, written bare at `span`, is one there.
+    pub(crate) fn constant_at(&self, name: &str, span: Span) -> bool {
+        self.constants
+            .get(name)
+            .is_some_and(|value| self.reaches(span, name, fennec_check::compiler_written(value.span)))
     }
 
     /// The method `name` of the type called `ty`, written in the type or in an `extend` of it.
@@ -218,20 +292,33 @@ const MODELED_HERE: &[&str] = &["Table", "Id", "Stdout", "Stdin", "Stderr", "Std
 
 /// What the tables are made from: the program's own declarations, and those of each standard
 /// library module it imports that's run from its own source.
-#[derive(Default)]
 struct Gathered {
     functions: HashMap<String, &'static FnDef>,
     types: HashMap<String, Declared>,
     extensions: HashMap<String, Vec<&'static FnDef>>,
     constants: HashMap<String, &'static Expr>,
     aliases: HashMap<String, Vec<String>>,
-    imported: HashMap<String, String>,
+    imported: Imports,
     from_std: HashMap<String, String>,
     /// The type parameters of the `extend` each method is in, by where its definition is.
     extended_generics: HashMap<usize, Vec<String>>,
 }
 
 impl Gathered {
+    /// Nothing gathered yet, for a program of the files `files` covers.
+    fn new(files: Vec<Span>) -> Gathered {
+        Gathered {
+            functions: HashMap::new(),
+            types: HashMap::new(),
+            extensions: HashMap::new(),
+            constants: HashMap::new(),
+            aliases: HashMap::new(),
+            imported: Imports::new(files),
+            from_std: HashMap::new(),
+            extended_generics: HashMap::new(),
+        }
+    }
+
     /// Takes in one of a module's items: the program's own, or, with `std` naming it, one of a
     /// standard library module's, which mustn't share a name with anything already taken in.
     fn take(&mut self, item: &'static Item, std: Option<&str>) -> Result<(), Refused> {
@@ -284,7 +371,7 @@ impl Gathered {
                 None
             }
             Item::Import(import) => {
-                bring_in(import, &mut self.imported)?;
+                bring_in(import, self.imported.of_import(import.span)?)?;
                 None
             }
             Item::Interface(_) | Item::Test(_) => None,
@@ -353,7 +440,9 @@ impl Gathered {
             .copied()
             .filter(|module| {
                 let whole = format!("std.{module}");
-                self.imported.values().any(|from| *from == whole || from.starts_with(&format!("{whole}.")))
+                self.imported
+                    .every_module()
+                    .any(|from| *from == whole || from.starts_with(&format!("{whole}.")))
                     || self.main_takes(module)
             })
             .collect();
@@ -396,7 +485,7 @@ fn tables(
     sources: Sources,
     types_at: HashMap<(u32, u32), Type>,
 ) -> Result<Program, Refused> {
-    let mut gathered = Gathered::default();
+    let mut gathered = Gathered::new(module.files.clone());
     for item in &module.items {
         gathered.take(item, None)?;
     }
@@ -493,8 +582,8 @@ fn given_to_main(main: &FnDef) -> Result<(), Refused> {
     Ok(())
 }
 
-/// Notes the names a standard library import brings in, each with the module it's from. Two
-/// files of a program that bring in one name from different places are unsupported.
+/// Notes the names a standard library import brings in, each with the module it's from, among
+/// what its file imports. A file that brings in one name from two places is unsupported.
 fn bring_in(import: &fennec_syntax::Import, imported: &mut HashMap<String, String>) -> Result<(), Refused> {
     let module_name = import.module.iter().skip(1).cloned().collect::<Vec<_>>().join(".");
     let mut brought = Vec::new();

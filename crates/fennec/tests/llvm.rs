@@ -5152,6 +5152,96 @@ def main(stdout: Stdout):
     stdout.print(kind)
 "#;
 
+/// A `ref` case is put back into the place it matched, however its parts are written and named,
+/// as the language says. A case three `match`es deep changes the value two levels up; a part
+/// given a whole new value is put back; parts named out of their fields' order, or left out, go
+/// to their own fields; a `ref` name may be one a parameter the place reads already has, and a
+/// guard may read it; and a body that changes an index of the place still puts the case back
+/// where it was matched, as a `ref` name keeps its place. Each of these was put back wrong, or
+/// stopped the build, before.
+#[test]
+fn a_ref_case_is_put_back_where_it_matched_however_it_s_written() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "ref_case_nested",
+        r#"enum Named:
+    Leaf(name: str)
+    Pair(left: Named, tags: list[str])
+
+def main(stdout: Stdout):
+    mut tree = Named.Pair(left=.Pair(left=.Leaf(name="a"), tags=[]), tags=[])
+    match tree:
+        case .Pair(left=ref left, tags=_):
+            match left:
+                case .Pair(left=ref inner, tags=_):
+                    match inner:
+                        case .Leaf(ref name):
+                            name += "!"
+                        case _:
+                            pass
+                case _:
+                    pass
+        case _:
+            pass
+    stdout.print(tree)
+    mut other = Named.Pair(left=.Leaf(name="b"), tags=["t"])
+    match other:
+        case .Pair(tags=ref tags, left=ref left):
+            tags.append("u")
+            left = .Leaf(name="replaced")
+        case _:
+            pass
+    stdout.print(other)
+"#,
+        "Named.Pair(left=Named.Pair(left=Named.Leaf(name=\"a!\"), tags=[]), tags=[])\n\
+         Named.Pair(left=Named.Leaf(name=\"replaced\"), tags=[\"t\", \"u\"])\n",
+    )?;
+    prints_in_both_builds(
+        "ref_case_names",
+        r"enum Kind:
+    Button(clicks: int)
+    Slider(at: int, most: int)
+
+def click(ref kinds: list[Kind], at: int):
+    match kinds[at]:
+        case .Slider(ref at, most) if at < most:
+            at += 10
+        case .Button(ref clicks):
+            clicks += 1
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut kinds = [Kind.Button(clicks=0), Kind.Slider(at=1, most=50), Kind.Slider(at=60, most=50)]
+    for at in range(3):
+        click(ref kinds, at)
+    stdout.print(kinds)
+",
+        "[Kind.Button(clicks=1), Kind.Slider(at=11, most=50), Kind.Slider(at=60, most=50)]\n",
+    )?;
+    prints_in_both_builds(
+        "ref_case_index_changed",
+        r"enum Slot:
+    Empty
+    Held(count: int)
+
+def main(stdout: Stdout):
+    mut slots = [Slot.Held(count=1), Slot.Held(count=10)]
+    mut at = 0
+    match slots[at]:
+        case .Held(ref count):
+            at += 1
+            count += 5
+        case _:
+            pass
+    stdout.print(slots, at)
+",
+        "[Slot.Held(count=6), Slot.Held(count=10)] 1\n",
+    )
+}
+
 /// `for key, ref value in x.items()` changes each value of a dict, or item of a `Table`, where it
 /// is, natively, with its key or its `Id`, and a `continue` leaves the rest of that one as it was.
 #[test]

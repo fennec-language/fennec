@@ -301,7 +301,7 @@ fn by_place(each: &Stmt, through: Through) -> Option<Vec<Stmt>> {
 }
 
 /// `items` with each index along it that isn't a number held in a name ahead of the loop.
-fn indexes_held(items: &Expr, tag: &str, held: &mut Vec<Stmt>) -> Expr {
+pub(crate) fn indexes_held(items: &Expr, tag: &str, held: &mut Vec<Stmt>) -> Expr {
     let kind = match &items.kind {
         ExprKind::Attr { object, name: field, optional } => ExprKind::Attr {
             object: Box::new(indexes_held(object, tag, held)),

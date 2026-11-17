@@ -769,6 +769,7 @@ fn executable(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
+#[expect(clippy::unnecessary_wraps, reason = "the same signature as Unix's, where setting the mode can fail")]
 fn executable(_: &Path) -> Result<(), String> {
     Ok(())
 }

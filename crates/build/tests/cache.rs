@@ -124,6 +124,10 @@ fn an_entry_with_a_changed_byte_is_a_miss() {
     #[cfg(unix)]
     std::fs::set_permissions(&kept, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
     #[cfg(not(unix))]
+    #[expect(
+        clippy::permissions_set_readonly_false,
+        reason = "Windows only, where it clears the read-only attribute; the lint's worry is Unix's mode"
+    )]
     {
         let mut permissions = std::fs::metadata(&kept).unwrap().permissions();
         permissions.set_readonly(false);

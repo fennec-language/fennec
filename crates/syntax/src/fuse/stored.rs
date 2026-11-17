@@ -104,13 +104,13 @@ impl Declared {
 
 fn pattern_names(pattern: &Pattern, names: &mut Vec<String>) {
     match pattern {
-        Pattern::Bind(name) => names.push(name.clone()),
+        Pattern::Bind(name) | Pattern::RefBind(name) | Pattern::MutBind(name) => names.push(name.clone()),
         Pattern::Variant { args, .. } | Pattern::Tuple(args) | Pattern::Or(args) => {
             for arg in args {
                 pattern_names(arg, names);
             }
         }
-        _ => {}
+        Pattern::Wildcard | Pattern::Literal(_) => {}
     }
 }
 

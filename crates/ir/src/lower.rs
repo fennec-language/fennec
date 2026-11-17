@@ -404,9 +404,9 @@ struct Lowering<'a> {
     context: &'a Context<'a>,
     body: &'a Body,
     returns: Type,
-    /// Where each arrow function written in this function starts, in the order they're lowered:
-    /// an arrow's place here is the number in its name.
-    arrows: Vec<u32>,
+    /// Each function lifted out of this one, by its kind and where it starts, in the order
+    /// they're lowered: one's place among those of its kind is the number in its name.
+    lifted_at: Vec<(&'static str, u32)>,
     locals: Vec<Local>,
     blocks: Vec<Open>,
     current: BlockId,
@@ -541,6 +541,30 @@ fn grown_by_adding(name: &str, value: &Expr) -> Option<Vec<Expr>> {
 }
 
 impl<'a> Lowering<'a> {
+    /// The name of a function lifted out of this one: this one's name, its kind, and its number
+    /// among those of its kind here, as `main.parallel#0`. Not where it is in the source: text
+    /// added above it would rename it, and every function that names it, which a build then
+    /// compiles again for nothing. The same one lowered again, by where it starts, keeps its
+    /// number.
+    fn lifted_name(&mut self, kind: &'static str, at: u32) -> String {
+        let same = |(known, _): &&(&str, u32)| *known == kind;
+        let known = self.lifted_at.iter().filter(same).position(|(_, known)| *known == at);
+        let number = known.unwrap_or_else(|| {
+            let number = self.lifted_at.iter().filter(same).count();
+            self.lifted_at.push((kind, at));
+            number
+        });
+        format!("{}.{kind}#{number}", self.name)
+    }
+
+    /// The name of a function lifted out of this one that's new each time it's lowered, even
+    /// from the same place in the source, as each `with launch` written in from the same one is.
+    fn fresh_lifted_name(&mut self, kind: &'static str) -> String {
+        let number = self.lifted_at.iter().filter(|(known, _)| *known == kind).count();
+        self.lifted_at.push((kind, u32::MAX));
+        format!("{}.{kind}#{number}", self.name)
+    }
+
     fn new(
         instance: &generics::FunctionInstance,
         context: &'a Context<'a>,
@@ -554,7 +578,7 @@ impl<'a> Lowering<'a> {
             context,
             body,
             returns,
-            arrows: Vec::new(),
+            lifted_at: Vec::new(),
             locals: Vec::new(),
             blocks: vec![Open::default()],
             current: BlockId(0),
@@ -814,7 +838,12 @@ impl<'a> Lowering<'a> {
                 }
             }
             StmtKind::OnFailure { name, cleanup, body } => {
-                self.on_failure.push(failure::OnFailure { name: name.clone(), cleanup: cleanup.clone() });
+                let scopes = self.scopes.len();
+                self.on_failure.push(failure::OnFailure {
+                    name: name.clone(),
+                    cleanup: cleanup.clone(),
+                    scopes,
+                });
                 let lowered = self.block(body, tail);
                 self.on_failure.pop();
                 lowered?;

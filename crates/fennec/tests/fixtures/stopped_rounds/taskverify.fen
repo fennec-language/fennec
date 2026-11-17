@@ -1,0 +1,29 @@
+# A launched task checks a password over and over, each a piece of work on the blocking threads
+# with no capability's call between, and counts each in a shared tally, when its block ends and
+# stops it. `main` prints the tally.
+# A replay stops it at the piece of work its recording says, by number: matched as the next entry,
+# the mark stopped it at the first. From Fable 5.2's review of #1993.
+from std.concurrent import Crashed
+from std.crypto import Secret, check_password, hash_password
+
+struct Tally:
+    seen: int
+
+def checked(tally: shared Tally, stored: str, stdout: Stdout):
+    stdout.print("the task began")
+    for turn in range(200):
+        right = check_password(Secret.of("the password"), stored) except why:
+            stdout.print("the task's check failed", f"{why}")
+            return
+        lock tally as ref held:
+            held.seen += 1 if right else 0
+    stdout.print("the task never said")
+
+def main(entropy: Entropy, clock: Clock, stdout: Stdout) fails Crashed:
+    stored = hash_password(Secret.of("the password"), entropy)
+    shared tally = Tally(seen=0)
+    with launch(() => checked(tally, stored=stored, stdout=stdout), stop_after=10ms)?:
+        clock.sleep(300ms)
+    lock tally as held:
+        stdout.print("checked", held.seen)
+    stdout.print("the task is over")

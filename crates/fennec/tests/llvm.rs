@@ -717,6 +717,25 @@ fn a_slice_key_into_a_dict_of_tuples_is_made_a_string_first() -> std::io::Result
     )
 }
 
+/// A dict's string value read only to be looked at is let go of (#1986). A value held as a block
+/// was read into a borrowed local, which nothing lets go of, with an owner of its own: `d[k] ==
+/// "x"`, `!=`, `<`, `len`, `startswith`, a local holding it, and `d[k] += "!"` each left one block
+/// for every value. Values long enough for blocks of their own and short ones held inline, and a
+/// dict changed after a read and before what was read is used again. It prints what the
+/// reference evaluator prints, with nothing left, in entries and boxed.
+#[test]
+fn a_dicts_string_read_only_to_look_at_is_let_go_of() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_text_reads_let_go",
+        include_str!("fixtures/dict_text_reads_let_go.fen"),
+        include_str!("fixtures/dict_text_reads_let_go.out"),
+    )
+}
+
 /// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
 /// `mine.visits`, `mine = other` and then `mine.visits[key] = fresh` wrote where the lookup had
 /// found the key: in the dict `mine` held before, which the caller still had, so the caller's
@@ -5151,6 +5170,228 @@ def main(stdout: Stdout):
     stdout.print(first, second)
     stdout.print(kind)
 "#;
+
+/// A `ref` case is put back into the place it matched, however its parts are written and named,
+/// as the language says. A case three `match`es deep changes the value two levels up; a part
+/// given a whole new value is put back; parts named out of their fields' order, or left out, go
+/// to their own fields; a `ref` name may be one a parameter the place reads already has, and a
+/// guard may read it; and a body that changes an index of the place still puts the case back
+/// where it was matched, as a `ref` name keeps its place. Each of these was put back wrong, or
+/// stopped the build, before.
+#[test]
+fn a_ref_case_is_put_back_where_it_matched_however_it_s_written() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "ref_case_nested",
+        r#"enum Named:
+    Leaf(name: str)
+    Pair(left: Named, tags: list[str])
+
+def main(stdout: Stdout):
+    mut tree = Named.Pair(left=.Pair(left=.Leaf(name="a"), tags=[]), tags=[])
+    match tree:
+        case .Pair(left=ref left, tags=_):
+            match left:
+                case .Pair(left=ref inner, tags=_):
+                    match inner:
+                        case .Leaf(ref name):
+                            name += "!"
+                        case _:
+                            pass
+                case _:
+                    pass
+        case _:
+            pass
+    stdout.print(tree)
+    mut other = Named.Pair(left=.Leaf(name="b"), tags=["t"])
+    match other:
+        case .Pair(tags=ref tags, left=ref left):
+            tags.append("u")
+            left = .Leaf(name="replaced")
+        case _:
+            pass
+    stdout.print(other)
+"#,
+        "Named.Pair(left=Named.Pair(left=Named.Leaf(name=\"a!\"), tags=[]), tags=[])\n\
+         Named.Pair(left=Named.Leaf(name=\"replaced\"), tags=[\"t\", \"u\"])\n",
+    )?;
+    prints_in_both_builds(
+        "ref_case_names",
+        r"enum Kind:
+    Button(clicks: int)
+    Slider(at: int, most: int)
+
+def click(ref kinds: list[Kind], at: int):
+    match kinds[at]:
+        case .Slider(ref at, most) if at < most:
+            at += 10
+        case .Button(ref clicks):
+            clicks += 1
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut kinds = [Kind.Button(clicks=0), Kind.Slider(at=1, most=50), Kind.Slider(at=60, most=50)]
+    for at in range(3):
+        click(ref kinds, at)
+    stdout.print(kinds)
+",
+        "[Kind.Button(clicks=1), Kind.Slider(at=11, most=50), Kind.Slider(at=60, most=50)]\n",
+    )?;
+    prints_in_both_builds(
+        "ref_case_index_changed",
+        r"enum Slot:
+    Empty
+    Held(count: int)
+
+def main(stdout: Stdout):
+    mut slots = [Slot.Held(count=1), Slot.Held(count=10)]
+    mut at = 0
+    match slots[at]:
+        case .Held(ref count):
+            at += 1
+            count += 5
+        case _:
+            pass
+    stdout.print(slots, at)
+",
+        "[Slot.Held(count=6), Slot.Held(count=10)] 1\n",
+    )
+}
+
+/// A name inside a `ref` case's body that's the same as a `ref` part's stays its own: a loop's, a
+/// nested function's parameter, and a `with` source's own. A `ref` case in an `except` block is
+/// put back too.
+#[test]
+fn a_ref_case_s_body_keeps_its_own_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "ref_case_inner_names",
+        r"enum Kind:
+    Slider(value: int)
+    Empty
+
+error Oops:
+    code: int
+
+def opened() -> with int:
+    value = 5
+    lend value
+
+def risky(flag: bool) -> int fails Oops:
+    if flag: fail Oops(code=1)
+    return 0
+
+def main(stdout: Stdout):
+    mut looped = Kind.Slider(value=1)
+    mut seen = 0
+    mode = 0
+    match looped:
+        case .Slider(ref value):
+            match mode:
+                case 0:
+                    for value in [10, 20]:
+                        seen += value
+                case _:
+                    pass
+            value += 1
+        case _:
+            pass
+    mut nested = Kind.Slider(value=1)
+    match nested:
+        case .Slider(ref value):
+            def bumped(value: int) -> int:
+                return value + 100
+            value = bumped(5)
+        case _:
+            pass
+    mut lent = Kind.Slider(value=1)
+    match lent:
+        case .Slider(ref value):
+            with opened() as added:
+                value += added
+        case _:
+            pass
+    mut handled = Kind.Slider(value=1)
+    caught = risky(True) except why:
+        match handled:
+            case .Slider(ref value):
+                value += 7
+            case _:
+                pass
+        why.code
+    stdout.print(looped, seen, nested, lent, handled, caught)
+",
+        "Kind.Slider(value=2) 30 Kind.Slider(value=105) Kind.Slider(value=6) Kind.Slider(value=8) 1\n",
+    )
+}
+
+/// A failure that leaves a `ref` case from deep inside it, as a `?` in a `while`'s condition or
+/// after `and`, puts the case back with the case's own names, though a loop or a case inside
+/// names something the same: what the case holds, not what's in sight where the failure is.
+#[test]
+fn a_ref_case_is_put_back_with_its_own_names_on_a_failure_from_deep_inside() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "ref_case_failed_deep",
+        r#"error Oops:
+    code: int
+
+enum Kind:
+    Slider(value: int)
+    Empty
+
+enum Named:
+    Leaf(name: str)
+    Pair(left: Named, name: str)
+
+def small(count: int) -> bool fails Oops:
+    if count > 1:
+        fail Oops(code=count)
+    return count < 1
+
+def bump(ref kind: Kind) fails Oops:
+    match kind:
+        case .Slider(ref value):
+            value = 100
+            for value in [5]:
+                while small(value)?:
+                    pass
+        case _:
+            pass
+
+def renamed(ref named: Named, deep: bool) fails Oops:
+    match named:
+        case .Pair(ref left, ref name):
+            name = "outer"
+            match left:
+                case .Leaf(ref name):
+                    name = "inner"
+                    if deep and small(7)?:
+                        pass
+                case _:
+                    pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut kind = Kind.Slider(value=0)
+    bump(ref kind) except why:
+        stdout.print(why.code)
+    mut named = Named.Pair(left=.Leaf(name="a"), name="b")
+    renamed(ref named, deep=True) except why:
+        stdout.print(why.code)
+    stdout.print(kind, named)
+"#,
+        "5\n7\nKind.Slider(value=100) Named.Pair(left=Named.Leaf(name=\"inner\"), name=\"outer\")\n",
+    )
+}
 
 /// `for key, ref value in x.items()` changes each value of a dict, or item of a `Table`, where it
 /// is, natively, with its key or its `Id`, and a `continue` leaves the rest of that one as it was.
@@ -13748,6 +13989,84 @@ fn a_kept_length_is_the_lists_own_however_the_list_is_used() -> std::io::Result<
     Ok(())
 }
 
+/// Two reads next to each other, `starts[near]` then `starts[near + 1]`, are tested together
+/// for both being inside, and only when that fails is each checked on its own, in order: so the
+/// first outside fails as it would alone, with the same message and trace, after what came before
+/// it ran. Outside past the end on the second read and on the first, from the end with a
+/// negative `near` that's inside, before the front, and after a loop has printed and appended.
+#[test]
+fn two_reads_next_to_each_other_fail_as_each_would_alone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_pinned("adjacent_second_outside", ADJACENT_SECOND_OUTSIDE)?;
+    same_as_pinned("adjacent_first_outside", ADJACENT_FIRST_OUTSIDE)?;
+    same_as_pinned("adjacent_from_the_end", ADJACENT_FROM_THE_END)?;
+    same_as_pinned("adjacent_before_the_front", ADJACENT_BEFORE_THE_FRONT)?;
+    same_as_pinned("adjacent_after_writes", ADJACENT_AFTER_WRITES)?;
+    Ok(())
+}
+
+const ADJACENT_SECOND_OUTSIDE: &str = r"def summed(starts: list[int], upto: int, stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(upto):
+        total += starts[near] * 10 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(summed([0, 2, 4, 6], upto=5, stdout=stdout))
+    return
+";
+
+const ADJACENT_FIRST_OUTSIDE: &str = r"def spans(starts: list[int], nears: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in nears:
+        total += starts[near] * 10 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(spans([0, 2, 5, 9], nears=[0, 2, 4], stdout=stdout))
+    return
+";
+
+const ADJACENT_FROM_THE_END: &str = r"def ends(starts: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(-4, 2):
+        total += starts[near] * 100 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(ends([1, 2, 3, 4], stdout=stdout))
+    return
+";
+
+const ADJACENT_BEFORE_THE_FRONT: &str = r"def ends(starts: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(-3, -7, -1):
+        total += starts[near] * 100 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(ends([1, 2, 3, 4], stdout=stdout))
+    return
+";
+
+const ADJACENT_AFTER_WRITES: &str = r"def filled(starts: list[int], stdout: Stdout) -> list[int]:
+    mut made = list[int]()
+    for near in range(len(starts)):
+        made.append(starts[near] + starts[near + 1])
+        stdout.print(made)
+    return made
+
+def main(stdout: Stdout):
+    stdout.print(filled([5, 6, 7], stdout=stdout))
+    return
+";
+
 /// An index checked once stays inside its list until something shortens or replaces the
 /// list, or writes the index: a pop, a method popping or replacing a field, a new list, and
 /// negative indexes are each checked again, and the last read fails.
@@ -17756,8 +18075,15 @@ def main(net: Net, stdout: Stdout) fails NetError:
                 stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
                 stream.write_all(b"a line long enough to need a block of its own\n")?;
                 let mut back = String::new();
-                let read = std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+                let mut reader = std::io::BufReader::new(stream);
+                let read = reader.read_line(&mut back).unwrap_or(0);
                 assert_eq!(read, 0, "a crashing round answered: {back}");
+                // Reset, not closed. The server closes first, so a closed connection waits out
+                // TIME_WAIT on the server's side, and 12,000 of them in a minute, with the other
+                // tests' connections, can use up Windows' ephemeral ports: a connect that came round
+                // to a port still waiting got no answer and timed out (10060, main's CI run
+                // 44024631906). A reset leaves nothing waiting on either side.
+                socket2::SockRef::from(reader.get_ref()).set_linger(Some(std::time::Duration::ZERO))?;
             }
             Ok(())
         };
@@ -25230,6 +25556,48 @@ fn slices_as_dict_keys_match_what_was_pinned() -> std::io::Result<()> {
     )
 }
 
+/// A slice of a short line, held inline in its header, is looked up and added as a key where its
+/// bytes are, with no block of its own: a block is made for each string value the dict keeps and
+/// nothing else. Each lookup and each add made the line a block for the runtime, and the runtime
+/// copied the slice again, so these 3,000 lines made 18,013 blocks where they now make about
+/// 3,000. `examples/dict_slice_keys.fen` holds what such keys read back as.
+#[test]
+fn a_slice_of_a_short_line_as_a_key_makes_no_block_of_its_own() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("inline_slice_keys")?;
+    std::fs::write(dir.join("inline_slice_keys.fen"), INLINE_SLICE_KEYS)?;
+    let (printed, counts) = printed_and_counts(&dir, "inline_slice_keys", &["--llvm"])?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(printed, "3000 3000 3000 v2999\n");
+    let made = counts.split(' ').skip_while(|word| *word != "allocations").nth(1);
+    let made: u64 = made.and_then(|count| count.parse().ok()).unwrap_or(u64::MAX);
+    assert!(made < 4_000 && counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
+/// 3,000 short lines, each set as a key by its slice, then each read back by a slice.
+const INLINE_SLICE_KEYS: &str = r#"def main(stdout: Stdout):
+    mut headers = dict[str, str]()
+    mut counts = dict[str, int]()
+    for count in range(3000):
+        line = f"k{count}: v{count}"
+        colon = line.find(": ") else:
+            continue
+        headers[line[:colon]] = line[colon + 2:]
+        counts[line[:colon]] = count
+    mut found = 0
+    for count in range(3000):
+        line = f"k{count}: x"
+        colon = line.find(": ") else:
+            continue
+        if line[:colon] in headers and (counts.get(line[:colon]) else -1) == count:
+            found += 1
+    stdout.print(len(headers), len(counts), found, headers["k2999"])
+    return
+"#;
+
 /// A slice as a dict's key, set, read with `get`, tested with `in`, popped and added to a set,
 /// for values of every kind a dict holds: a string, an int, a float, a bool, a list, a struct, a
 /// struct holding a list, and a dict. Each does what the same key does made another way, by an
@@ -26066,6 +26434,88 @@ def main(stdout: Stdout):
     stdout.print(got)
     return
 "#;
+
+/// A line added above everything in a kit's first file, or in the file after it, compiles nothing
+/// again: no function's text says where it is among all the files. Each function lifted out of
+/// another, here a `parallel` comprehension's body, a generator and the loops over `zip` and
+/// `enumerate`, is named by its number in the function it's lifted from, not by where it starts,
+/// which a line added above it moved, and every function that names it with it. A failure still
+/// says the right line of its file.
+#[test]
+fn a_line_added_above_a_kit_s_files_compiles_nothing_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("lines-above-kit")?;
+    std::fs::create_dir_all(dir.join("src"))?;
+    std::fs::write(dir.join("kit.toml"), "name = \"lines\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")?;
+    let out = dir.join("lines").to_string_lossy().into_owned();
+    let kit = dir.to_string_lossy().into_owned();
+    // Builds the kit as `main` and `work` are, runs it, and says how many functions it compiled
+    // and the line of `work.fen` it failed at.
+    let build = |main: &str, work: &str| -> std::io::Result<(usize, String)> {
+        std::fs::write(dir.join("src/main.fen"), main)?;
+        std::fs::write(dir.join("src/work.fen"), work)?;
+        let built = fennec(&["build", "--llvm", &kit, "-o", &out], &dir)?;
+        let said =
+            format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
+        assert!(built.status.success(), "{said}");
+        let ran = Command::new(&out).output_within()?;
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "[2, 4, 6, 8] 30 20 [2, 4]\n", "{said}");
+        let failed = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let line =
+            failed.split("work.fen:").nth(1).and_then(|rest| rest.split(':').next()).unwrap_or_default();
+        let compiled = said.split("compiled ").nth(1).and_then(|rest| rest.split(' ').next());
+        Ok((compiled.and_then(|count| count.parse().ok()).unwrap_or(usize::MAX), line.to_owned()))
+    };
+    let line_of = |text: &str| {
+        text.lines().position(|line| line.contains("return values[at]")).map_or(0, |at| at + 1).to_string()
+    };
+    let above = "## a line above everything\n";
+    let (compiled, line) = build(LINES_ABOVE_MAIN, LINES_ABOVE_WORK)?;
+    assert!(compiled > 5, "the first build compiles everything: {compiled}");
+    assert_eq!(line, line_of(LINES_ABOVE_WORK));
+    let main = format!("{above}{LINES_ABOVE_MAIN}");
+    let (compiled, line) = build(&main, LINES_ABOVE_WORK)?;
+    assert_eq!(compiled, 0, "a line added at the top of the first file");
+    assert_eq!(line, line_of(LINES_ABOVE_WORK));
+    let work = format!("{above}{LINES_ABOVE_WORK}");
+    let (compiled, line) = build(&main, &work)?;
+    assert_eq!(compiled, 0, "a line added at the top of the second file");
+    assert_eq!(line, line_of(&work), "the failure is a line further down its file");
+    std::fs::remove_dir_all(&dir)
+}
+
+const LINES_ABOVE_MAIN: &str = "import work
+
+def main(stdout: Stdout):
+    values = [1, 2, 3, 4]
+    stdout.print(work.doubled(values), work.paired(values, second=values), work.numbered(values), work.evens(values))
+    stdout.print(work.picked(values, 9))
+";
+
+const LINES_ABOVE_WORK: &str = "export def doubled(values: list[int]) -> list[int]:
+    return [value * 2 for value in parallel(values)]
+
+export def paired(first: list[int], second: list[int]) -> int:
+    mut total = 0
+    for one, other in zip(first, second):
+        total += one * other
+    return total
+
+export def numbered(values: list[int]) -> int:
+    mut total = 0
+    for at, value in enumerate(values):
+        total += at * value
+    return total
+
+export def evens(values: list[int]) -> list[int]:
+    picked = (value for value in values if value % 2 == 0)
+    return [value for value in picked]
+
+export def picked(values: list[int], at: int) -> int:
+    return values[at]
+";
 
 /// ASCII is stripped here, sharing a string with nothing to take off; other text goes to the
 /// runtime.
@@ -27720,7 +28170,7 @@ fn a_program_built_for_a_heap_audit_keeps_no_native_blocks() -> std::io::Result<
         for work in std::fs::read_dir(dir.join("work"))?.flatten() {
             for kept in std::fs::read_dir(work.path())?.flatten() {
                 if kept.path().extension().is_some_and(|ext| ext == "ll")
-                    && std::fs::read_to_string(kept.path())?.contains("@fen_drop_")
+                    && std::fs::read_to_string(kept.path())?.contains("@\"fen_drop_")
                 {
                     with_a_drop += 1;
                 }

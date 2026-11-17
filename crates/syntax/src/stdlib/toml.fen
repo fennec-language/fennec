@@ -722,11 +722,9 @@ def insert_dotted(
         place = len(table.values) - 1
     match taken(ref table, place):
         case .Table(inner):
-            # Made `mut` before it's looked at, so it's this function's alone and changed where
-            # it is, not copied.
+            if inner.inline: fail no_table(parser, key, at, False, False)
+            if not inner.dotted: fail no_table(parser, key, at, True, False)
             mut child = inner
-            if child.inline: fail no_table(parser, key, at, False, False)
-            if not child.dotted: fail no_table(parser, key, at, True, False)
             insert_dotted(ref child, keys, step + 1, value, where)?
             table.values[place] = .Table(table=child)
         case .Tables(_):
@@ -752,8 +750,8 @@ def define(
             held = len(table.values) - 1
         match taken(ref table, held):
             case .Table(inner):
+                if inner.inline: fail no_table(parser, key, at, False, False)
                 mut child = inner
-                if child.inline: fail no_table(parser, key, at, False, False)
                 define(ref child, keys, step + 1, array, where)?
                 table.values[held] = .Table(table=child)
             case .Tables(tables):
@@ -784,14 +782,14 @@ def define(
             children.append(TomlTable(header=True))
             table.values[place] = .Tables(tables=children)
         case .Table(inner):
-            mut child = inner
-            if array or child.inline:
+            if array or inner.inline:
                 fail parser.bad_at(
                     f"`{cut_input(name)}` is already defined as something else, so it can't be `{cut_input(shown)}`",
                     at,
                 )
-            if child.header or child.dotted:
+            if inner.header or inner.dotted:
                 fail parser.bad_at(f"the table `[{cut_input(name)}]` is defined twice", at)
+            mut child = inner
             child.header = True
             table.values[place] = .Table(table=child)
         case _:

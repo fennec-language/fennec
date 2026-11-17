@@ -20,8 +20,8 @@ use super::ast::{
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
 use super::ast::{
-    Calling, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField,
-    Swapping, Waking, Yielding,
+    CAPTURE_WAYS, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS,
+    ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
 };
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
@@ -74,6 +74,15 @@ const EVERY_LISTENER: bool = true;
 /// of #1785 found (finding 3), and this shape found it within a few dozen programs. On since
 /// #1812 fixed it; the seed `review_1785_lookup_swapped` is a program that failed before.
 const LOOKUPS_SWAPPED: bool = true;
+
+/// Whether random programs write a name where another of the same name and type is in sight, each
+/// way the checker renamed by text rather than by what the name means where it's written
+/// (`CaptureWay`): a nested function's parameter under `with ... as` that name, a loop's, a
+/// case's, a nested function's or an arrow's name under `lock ... as ref` that name, and a `with`
+/// source calling a function its caller has a same-typed parameter named as (#1997). The checker
+/// lane's sweep found them, each a silent wrong answer, or a refusal or crash where none is due.
+/// Off until its fixes land, and on with them.
+const NAME_CAPTURE: bool = false;
 
 /// Whether random programs crash inside a `ref self` method, or a change by hand, on part of a
 /// list or dict: under a `shared` value's lock, which has to undo the whole lock, or held by the
@@ -649,6 +658,7 @@ impl Writer<'_> {
             26 if ALIASING && self.choice(4) == 0 => self.aliasing(body),
             26 if LOOKUPS_SWAPPED && self.choice(4) == 0 => self.swaps(body),
             26 if PART_CRASHES && !self.threadless && self.choice(4) == 0 => self.shelves(body),
+            26 if NAME_CAPTURE && self.choice(4) == 0 => self.captures(body),
             26 => self.change_counts(body),
             // The guarded shapes are tried first, as they were before the shapes after them, so
             // each of their cases still comes up as often.
@@ -1082,6 +1092,15 @@ impl Writer<'_> {
 
     /// A lookup kept while the struct whose dict it searched is set to another, then a store at
     /// the same key.
+    /// A name written where another of its name and type is in sight, one of `CAPTURE_WAYS`.
+    fn captures(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let way = CAPTURE_WAYS.get(self.choice(CAPTURE_WAYS.len())).copied().unwrap_or(CaptureWay::WithDef);
+        let n = i64::from(self.byte() % 20);
+        body.push(Stmt::Captured(Capturing { id, way, n }));
+    }
+
     fn swaps(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;
         let id = self.made;

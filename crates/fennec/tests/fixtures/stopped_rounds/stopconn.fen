@@ -1,0 +1,30 @@
+# A stop that races a round: a task loops over a server's connections itself, and one round is
+# reading its connection, whose client sends nothing, when the task's block ends and stops it, which
+# cancels the round. The read fails it as stopped: before, it gave a `NetError` the round could
+# catch and go on from (#1950).
+from std.concurrent import Crashed
+from std.net import Connection, NetError, Server
+
+def answered(conn: Connection, stdout: Stdout):
+    line = conn.read_line() except why:
+        stdout.print("the quiet one never said", f"{why}")
+        return
+    asked = line else ""
+    conn.write(f"hello {asked}\n") except why:
+        stdout.print("the asking one was never answered", f"{why}")
+
+def serving(server: Server, stdout: Stdout):
+    for conn in parallel(server):
+        answered(conn, stdout=stdout)
+    stdout.print("the server never said")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as quiet:
+            stdout.print("the quiet one connected", quiet.peer != "")
+            with launch(() => serving(server, stdout=stdout), stop_after=100ms)?:
+                with net.connect("127.0.0.1", port)? as asking:
+                    asking.write("/one\n")?
+                    stdout.print(asking.read_line()? else "nothing")
+    stdout.print("the server is over")

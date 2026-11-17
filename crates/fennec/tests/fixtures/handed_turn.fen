@@ -1,0 +1,56 @@
+# A launched task waits its turn at a database's connection, which another task's slow query has.
+# When the slow query ends, the turn is handed to the waiting task, but its worker is busy: the
+# slow query's task goes on counting. Only then is the waiting task stopped. It hasn't run since
+# it began to wait, and its insert isn't run: it was, before (#1988). From Fable 5.2's review. At
+# 1 thread only: with more, the waiting task has a worker of its own, and inserts before the stop.
+from std import sqlite
+from std.concurrent import Channel, Closed, Crashed, channel
+from std.sql import SqlError
+from std.sqlite import Database
+
+# How many rows a query counted.
+struct Counted:
+    rows: int
+
+def counted(turns: int) -> int:
+    mut total = 0
+    for turn in range(turns):
+        total = (total + turn * 7) % 1000003
+    return total
+
+def slow(db: Database, ended: Channel[int], stdout: Stdout):
+    _ = db.query[Counted](
+        t"with recursive c(x) as (select 1 union all select x + 1 from c where x < 2000000) select count(*) as rows from c",
+    ) except why:
+        stdout.print("the slow query failed", f"{why}")
+        return
+    # The query's over, so its turn has gone on to whoever waited: `main` hears, and stops them.
+    ended.send(1) except Closed():
+        return
+    stdout.print("the slow query's task counted on", counted(turns=400000000) > 0)
+
+def late(db: Database, stdout: Stdout):
+    stdout.print("the late one began")
+    _ = db.execute(t"insert into marks values (1)") except why:
+        stdout.print("the late one never said", f"{why}")
+        return
+    stdout.print("the late one never said either")
+
+def ran(db: Database, stdout: Stdout) fails Crashed:
+    with channel[int](size=1) as ended:
+        with launch(() => slow(db, ended=ended, stdout=stdout))?:
+            with launch(() => late(db, stdout=stdout), stop_after=50ms)?:
+                _ = ended.receive() else 0
+
+def main(fs: Fs, stdout: Stdout) fails Crashed | SqlError:
+    mut rows = 0
+    with sqlite.open(fs, "handed.db")? as db:
+        _ = db.execute(t"create table if not exists marks (n int)")?
+        _ = db.execute(t"delete from marks")?
+        ran(db, stdout=stdout)?
+        for kept in db.query[Counted](t"select count(*) as rows from marks")?:
+            rows = kept.rows
+    if rows == 0:
+        stdout.print("the insert was never run")
+    else:
+        stdout.print("the late one's insert was run anyway:", rows)

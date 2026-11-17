@@ -128,6 +128,58 @@ fn a_replay_that_asks_for_other_inputs_than_its_recording_stops_naming_both() ->
     );
     assert_ne!(fewer.2, Some(0));
     assert!(fewer.1.contains("ended where its recording asked for `Env.get` next"), "{}", fewer.1);
+    // A crash in place of the last: the recording has it left over all the same, and the replay
+    // says so, as well as how it crashed. It said only the crash (#1917).
+    std::fs::write(
+        &program,
+        DICE.replace(
+            "stdout.print(list(args), env.get(\"HOME\") != None)",
+            "stdout.print(list(args), 1 // (len(list(args)) - len(list(args))))",
+        ),
+    )?;
+    let crashed = outcome(
+        &fennec_command().args(["replay", &log.to_string_lossy()]).current_dir(&dir).output_within()?,
+    );
+    assert_ne!(crashed.2, Some(0));
+    assert!(crashed.1.contains("ended where its recording asked for `Env.get` next"), "{}", crashed.1);
+    assert!(crashed.1.contains("the replay crashed first: division by zero"), "{}", crashed.1);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A run recorded with `FENNEC_PARALLEL_STRESS` replays as it ran without it, and one recorded
+/// without it replays as it ran with it: a replay has the setting its recording had. It cuts a
+/// call's ranges to one item each, and ranges are named by where they start, so a replay with it
+/// changed ran other ranges, and printed a line or two of the run's hundred, with nothing said but
+/// the program's crash (#1917).
+#[test]
+fn a_replay_has_the_parallel_stress_its_recording_had() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("stress")?;
+    let program = dir.join("program.fen");
+    std::fs::write(&program, include_str!("fixtures/pieces_print_then_one_crashes.fen"))?;
+    let log = dir.join("recorded.log");
+    for (recorded_stressed, replayed_stressed) in [(true, false), (false, true)] {
+        let _ = std::fs::remove_file(&log);
+        let mut record = fennec_command();
+        record.env("FENNEC_THREADS", "4").env_remove("FENNEC_PARALLEL_STRESS");
+        if recorded_stressed {
+            record.env("FENNEC_PARALLEL_STRESS", "1");
+        }
+        record.args(["run", "--record", &log.to_string_lossy()]).arg(&program).current_dir(&dir);
+        let recorded = without_build_hints(outcome(&record.output_before(DEADLINE)?));
+        assert_eq!(recorded.2, Some(1), "{}", recorded.1);
+        let mut replay = fennec_command();
+        replay.env("FENNEC_THREADS", "4").env_remove("FENNEC_PARALLEL_STRESS");
+        if replayed_stressed {
+            replay.env("FENNEC_PARALLEL_STRESS", "1");
+        }
+        replay.args(["replay", &log.to_string_lossy()]).current_dir(&dir);
+        let replayed = without_build_hints(outcome(&replay.output_before(DEADLINE)?));
+        assert_eq!(replayed, recorded, "recorded stressed {recorded_stressed}");
+    }
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -844,6 +896,29 @@ fn a_round_cancelled_at_its_end_replays_as_it_ran() -> std::io::Result<()> {
         "cancelled-ends",
         "a cancelled round's task left behind",
         include_str!("fixtures/stopped_rounds/leftparallel.fen"),
+    )
+}
+
+/// A server's round stopped in one of its pieces of blocking work, a password's check, with no
+/// capability's call between them, replays stopped at the same piece: its recording says which, by
+/// number. Matched as the next entry, the mark stopped a replay at its first, and the replay failed
+/// waiting for the writes to a tally the run had made. From Fable 5.2's review of #1993.
+#[test]
+fn a_round_stopped_in_one_of_its_pieces_of_work_replays_as_it_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "work-round",
+        "a round checking passwords",
+        include_str!("fixtures/stopped_rounds/stopverify.fen"),
+    )
+}
+
+/// The same for a launched task stopped at its block's end.
+#[test]
+fn a_task_stopped_in_one_of_its_pieces_of_work_replays_as_it_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "work-task",
+        "a task checking passwords",
+        include_str!("fixtures/stopped_rounds/taskverify.fen"),
     )
 }
 

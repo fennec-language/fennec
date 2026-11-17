@@ -13,7 +13,7 @@
 //!
 //! It's the only place that knows how a source runs, so a native one can replace it alone.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use fennec_syntax::sight::Binder;
@@ -71,6 +71,7 @@ pub(crate) fn lower(
         failing: Vec::new(),
         fails: Vec::new(),
         instead: None,
+        binds: Vec::new(),
     };
     for item in &mut module.items {
         match item {
@@ -82,7 +83,11 @@ pub(crate) fn lower(
             Item::Test(test) => {
                 lowering.returns.push(None);
                 lowering.fails.push(None);
+                let given: Vec<String> =
+                    test.capabilities.iter().chain(&test.inputs).map(|param| param.name.clone()).collect();
+                lowering.binds.push(fennec_syntax::sight::bound_in(&test.body, &given));
                 lowering.stmts(&mut test.body);
+                lowering.binds.pop();
                 lowering.fails.pop();
                 lowering.returns.pop();
             }
@@ -100,7 +105,7 @@ pub(crate) fn lower(
 /// Writes each `with` that opens several handles, `with a()? as x, b()? as y:`, as one inside
 /// another, saying whether there were any. Then they finish innermost first, and when one fails
 /// to open, the ones opened before it run their `else:`, as their blocks failed.
-pub(crate) fn nest(module: &mut Module, opened_apart: &std::collections::BTreeSet<(u32, u32)>) -> bool {
+pub(crate) fn nest(module: &mut Module, opened_apart: &BTreeSet<(u32, u32)>) -> bool {
     if opened_apart.is_empty() {
         return false;
     }
@@ -122,7 +127,7 @@ pub(crate) fn nest(module: &mut Module, opened_apart: &std::collections::BTreeSe
     nested
 }
 
-fn nest_in(body: &mut [Stmt], opened_apart: &std::collections::BTreeSet<(u32, u32)>, nested: &mut bool) {
+fn nest_in(body: &mut [Stmt], opened_apart: &BTreeSet<(u32, u32)>, nested: &mut bool) {
     for each in body {
         match &mut each.kind {
             StmtKind::If { branches, otherwise } => {
@@ -196,6 +201,9 @@ struct Lowering<'s> {
     fails: Vec<Option<TypeExpr>>,
     /// What the source being written in does in place of failing, for `with src else fail E:`.
     instead: Option<Expr>,
+    /// The names each function being walked binds anywhere, its parameters among them, innermost
+    /// last: a source written in there calls a function of its own by one of these through a mark.
+    binds: Vec<BTreeSet<String>>,
 }
 
 thread_local! {
@@ -331,10 +339,13 @@ impl Lowering<'_> {
         self.returns.push(def.ret.clone());
         self.failing.push(def.fails.is_some());
         self.fails.push(def.fails.clone());
+        let params: Vec<String> = def.params.iter().map(|param| param.name.clone()).collect();
+        self.binds.push(fennec_syntax::sight::bound_in(&def.body, &params));
         if def.ret.is_some() {
             self.tail_returned(&mut def.body);
         }
         self.stmts(&mut def.body);
+        self.binds.pop();
         self.fails.pop();
         self.failing.pop();
         self.returns.pop();
@@ -667,7 +678,7 @@ impl Lowering<'_> {
         let def = source.def.as_ref();
         let (mut written, renamed) = bound(def, callee, args, source.method, &hidden)?;
         let mut body = def.body.clone();
-        hidden_in_source(&mut body, &renamed, &hidden);
+        hidden_in_source(&mut body, &renamed, &hidden, &self.binds);
         if let Some(task) = &source.task {
             task.written_in(&mut body, &hidden)?;
         }
@@ -701,6 +712,9 @@ impl Lowering<'_> {
             // starts and unmarked wherever the block ends or fails, before any cleanup runs.
             let crash = on_crash(otherwise, at);
             let unmarked = unmarked_first(crash.as_ref(), otherwise);
+            if self.held_failure().is_none() {
+                cleanup_reads_kept(&mut block, &unmarked, at);
+            }
             let funneled = self.ready_failures(&mut block, &unmarked);
             caller.ways = Ways::default();
             caller.failed = funneled.then_some(failed.as_str());
@@ -953,17 +967,33 @@ fn bound(
 /// function, keeps its meaning. An arrow function's, a comprehension's and a nested function's
 /// parameters can't have the block in their sight and keep their names, unless they're a name of
 /// the caller's a parameter's uses are written as, which they'd take for their own.
-fn hidden_in_source(body: &mut [Stmt], renamed: &[(String, String)], hidden: &dyn Fn(&str) -> String) {
+///
+/// A name the body reads from outside, a function or constant of the program's, that the caller
+/// binds anywhere (`binds`) is written as meaning the source's (`sight::as_outer`), so nothing in
+/// sight where it's written in takes it.
+fn hidden_in_source(
+    body: &mut [Stmt],
+    renamed: &[(String, String)],
+    hidden: &dyn Fn(&str) -> String,
+    binds: &[BTreeSet<String>],
+) {
     let outside: Vec<(String, Option<String>)> =
         renamed.iter().map(|(param, written)| (param.clone(), Some(written.clone()))).collect();
     let callers: Vec<&String> =
         renamed.iter().map(|(_, written)| written).filter(|written| !written.contains("__")).collect();
-    fennec_syntax::sight::hide_bound(body, &outside, &|binder, name| match binder {
-        Binder::Parameter | Binder::Arrow | Binder::Comprehension => {
-            callers.iter().any(|caller| *caller == name).then(|| hidden(name))
-        }
-        _ => Some(hidden(name)),
-    });
+    // A function or constant the source names, which something the caller binds would name there.
+    let taken = |name: &str| binds.iter().any(|bound| bound.contains(name));
+    fennec_syntax::sight::hide_bound_and_free(
+        body,
+        &outside,
+        &|binder, name| match binder {
+            Binder::Parameter | Binder::Arrow | Binder::Comprehension => {
+                callers.iter().any(|caller| *caller == name).then(|| hidden(name))
+            }
+            _ => Some(hidden(name)),
+        },
+        &|name, _| taken(name).then(|| fennec_syntax::sight::as_outer(name)),
+    );
 }
 
 /// The caller's block's way out, taken again once the source's cleanup has run.
@@ -1820,6 +1850,29 @@ fn given_as(block: &mut Vec<Stmt>, (split, names): (bool, &[WithName]), held: &s
     }
 }
 
+/// Where no failure is held to run the source's cleanup once after the block, as in a `test`, the
+/// cleanup is written in before each failure inside the block, under what the block binds there.
+/// So what the block binds of a name the cleanup reads is hidden first, with the uses in its sight,
+/// and the cleanup reads what the name means at the `with`: a name of the caller's that a `ref`
+/// parameter's uses are written as.
+fn cleanup_reads_kept(block: &mut [Stmt], cleanup: &[Stmt], at: Span) {
+    let mut read = BTreeSet::new();
+    fennec_syntax::visit::in_stmts(&mut cleanup.to_vec(), &mut |expr| {
+        if let ExprKind::Name(name) = &expr.kind {
+            read.insert(name.clone());
+        }
+    });
+    // Each is in sight at the `with`, so assigning it in the block changes it there: only what binds
+    // it again is hidden. A nested function's and an arrow's parameters keep theirs: the cleanup is
+    // never written inside either, and a nested function's are named by calls.
+    let outside: Vec<(String, Option<String>)> = read.iter().map(|name| (name.clone(), None)).collect();
+    let inner = format!("kept{}", at.start);
+    fennec_syntax::sight::hide_bound(block, &outside, &|binder, name| {
+        let surrounds = !matches!(binder, Binder::Parameter | Binder::Arrow);
+        (surrounds && read.contains(name)).then(|| format!("{name}__{inner}"))
+    });
+}
+
 /// A cleanup that unmarks what a crash runs before it runs, when there's one.
 fn unmarked_first(crash: Option<&(Stmt, Stmt, Stmt)>, otherwise: &[Stmt]) -> Vec<Stmt> {
     match crash {
@@ -1838,7 +1891,7 @@ fn unmarked_first(crash: Option<&(Stmt, Stmt, Stmt)>, otherwise: &[Stmt]) -> Vec
 fn fail_instead(body: &mut [Stmt], instead: &Expr) {
     instead_of_fails(body, instead);
     let leaving = Box::new(instead.clone());
-    let mut in_arrows = std::collections::BTreeSet::new();
+    let mut in_arrows = BTreeSet::new();
     fennec_syntax::visit::in_stmts(body, &mut |expr| {
         if let ExprKind::Lambda { body, .. } = &mut expr.kind {
             fennec_syntax::visit::in_expr(body, &mut |inner| {

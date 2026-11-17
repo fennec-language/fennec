@@ -353,8 +353,10 @@ impl Uses {
 
     pub(crate) fn expr(&mut self, expr: &Expr) {
         match &expr.kind {
+            // A `with` source's own name, written into its caller where something there names it
+            // too, reaches the top-level one. A case's name is never written so.
             ExprKind::Name(name) | ExprKind::Variant(name) => {
-                self.names.insert(name.clone());
+                self.names.insert(fennec_syntax::sight::outer(name).unwrap_or(name).to_owned());
             }
             ExprKind::Attr { object, name, .. } => {
                 self.members.insert(name.clone());

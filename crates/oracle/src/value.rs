@@ -9,6 +9,9 @@ use fennec_syntax::{Expr, FnDef};
 
 use crate::interp::stream::Source;
 
+mod text;
+pub(crate) use text::Text;
+
 /// A value while the program runs.
 #[derive(Clone, Debug)]
 pub(crate) enum Value {
@@ -24,7 +27,7 @@ pub(crate) enum Value {
     Float(f64),
     /// An `f32`, rounded to 32 bits after each operation, as `docs/language.md` says.
     F32(f32),
-    Str(String),
+    Str(Text),
     /// `bytes`: a byte string, printed as `bytes([104, 105])`.
     Bytes(Vec<u8>),
     List(Vec<Value>),
@@ -294,7 +297,8 @@ pub(crate) fn same(left: &Value, right: &Value) -> bool {
         (Value::Sized(x, a), Value::Sized(y, b)) => x == y && a == b,
         (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
         (Value::F32(a), Value::F32(b)) => a.to_bits() == b.to_bits(),
-        (Value::Str(a), Value::Str(b)) | (Value::Unknown(a), Value::Unknown(b)) => a == b,
+        (Value::Str(a), Value::Str(b)) => a == b,
+        (Value::Unknown(a), Value::Unknown(b)) => a == b,
         (Value::List(a), Value::List(b))
         | (Value::Tuple(a), Value::Tuple(b))
         | (Value::Set(a), Value::Set(b)) => all_same(a, b),

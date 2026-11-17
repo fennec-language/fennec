@@ -1105,6 +1105,36 @@ fn a_crash_of_a_launched_task_cuts_short_the_pieces_its_launcher_waits_for() -> 
     Ok(())
 }
 
+/// A launched task that fails cuts short every wait its block is in, as a crash does: its
+/// launcher, waiting for a reply it will never get though it holds a sender of the replies itself,
+/// takes `None`, and the failure comes out where the block ends. A send waiting for room fails
+/// with `Closed`. `docs/language.md` says so, and the oracle holds the fixture to the same output.
+#[test]
+fn a_failure_of_a_launched_task_cuts_short_the_waits_its_launcher_is_in() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-failed-waits-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let source = include_str!("fixtures/workers/failed_while_its_launcher_waits.fen");
+    let built = build_on_threads(&dir, source, "failed_while_its_launcher_waits")?;
+    let wanted = include_str!("fixtures/workers/failed_while_its_launcher_waits.out");
+    for threads in ["1", "4", "16"] {
+        let ran = Command::new(&built).env("FENNEC_THREADS", threads).output_within()?;
+        assert_eq!(
+            ran.status.code(),
+            Some(0),
+            "on {threads} threads: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "on {threads} threads");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A launched task can serve: its rounds read what it gave them, and other tasks on its worker go on
 /// meanwhile.
 #[test]

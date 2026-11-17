@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use fennec_ir::eval::check_ranges;
-use fennec_ir::ranges::{Place, Ranges};
+use fennec_ir::ranges::{Place, Ranges, Unsettled};
 use fennec_ir::{InstKind, Program, lower, validate};
 use fennec_syntax::BinOp;
 
@@ -160,6 +160,24 @@ fn an_index_or_a_product_is_not_negative_when_its_ints_arent() {
     assert_eq!(not_negative(&program, &ranges, "doubled_tail", &is_product).unwrap(), [false]);
 }
 
+/// A function whose walk doesn't settle in its rounds ends on facts still moving, which can't be
+/// trusted, so nothing in the program is known. Here each level takes the one after it, which a
+/// walk sees a round later, so the first level hears of the last one's -5 only on the thirtieth
+/// round, though a run gets it there by the thirtieth time round the loop.
+#[test]
+fn a_function_that_doesnt_settle_leaves_nothing_known() {
+    let mut source = String::from("def main(stdout: Stdout):\n");
+    source.extend((1..=30).map(|level| format!("    mut level_{level} = 0\n")));
+    source.push_str("    for _ in range(40):\n");
+    source.extend((1..30).map(|level| format!("        level_{level} = level_{}\n", level + 1)));
+    source.push_str("        level_30 = -5\n    stdout.print(level_1 // 2)\n");
+    let program = lowered(&source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert!(ranges.function("main").is_none(), "{:?}", unsigned(&program, &ranges, "main"));
+    assert_eq!(ranges.unsettled(), Some(&Unsettled::Function("main".to_owned())));
+    checked(&program, &ranges);
+}
+
 /// By floats' total order NaN sorts last: the false side of `at > high` can't be NaN, and the
 /// false side of `at < low` can. So a float kept between two bounds by a `>` test fits an int
 /// whatever it was given, NaN included, and one kept only by a `<` test doesn't.
@@ -224,6 +242,26 @@ fn files_in(folder: &Path) -> std::io::Result<Vec<PathBuf>> {
     }
     files.sort();
     Ok(files)
+}
+
+/// Every kernel's, example's and real program's facts settle within their rounds. One that
+/// didn't would leave nothing known about it, which no other test would see.
+#[test]
+fn every_kernel_example_and_real_program_settles() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = files_in(&root.join("bench/kernels")).unwrap();
+    files.extend(files_in(&root.join("examples")).unwrap());
+    files.extend(files_in(&root.join("bench/realworld")).unwrap());
+    let mut programs = 0;
+    for path in files {
+        let source = fs::read_to_string(&path).unwrap();
+        let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
+        let Ok(checked) = fennec_check::check_and_resolve(&mut module) else { continue };
+        let program = lower(&module, &checked);
+        assert_eq!(Ranges::of(&program).unsettled(), None, "{}", path.display());
+        programs += 1;
+    }
+    assert!(programs >= 100, "only {programs} programs settled");
 }
 
 /// Every fact holds while every kernel and example runs in the IR's evaluator, as far as it can

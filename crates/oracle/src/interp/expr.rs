@@ -12,7 +12,7 @@ use fennec_syntax::{
 use super::{Flow, Interp, MOST_ITEMS, Run, crash, position, unsupported};
 use crate::load::Kind;
 use crate::text::{self, Number};
-use crate::value::{Func, Value};
+use crate::value::{Func, Text, Value};
 
 impl Interp {
     #[expect(clippy::too_many_lines, reason = "one arm for each kind of expression")]
@@ -42,7 +42,7 @@ impl Interp {
             }
             ExprKind::Duration(_) => unsupported("durations"),
             ExprKind::Bytes(_) | ExprKind::Folder(_) => unsupported("embedded files"),
-            ExprKind::Str(text) => Ok(Value::Str(text.clone())),
+            ExprKind::Str(text) => Ok(Value::Str(Text::from(text.clone()))),
             ExprKind::FStr(parts) => self.fstring(parts),
             ExprKind::Bool(truth) => Ok(Value::Bool(*truth)),
             ExprKind::None => Ok(Value::None),
@@ -282,7 +282,7 @@ impl Interp {
                 }
             }
         }
-        Ok(Value::Str(out))
+        Ok(Value::Str(Text::from(out)))
     }
 
     /// `value else default` and `value except ...`: the default for a missing value, or the
@@ -398,7 +398,9 @@ impl Interp {
             }
             (Value::Float(a), Value::Float(b)) => float_arithmetic(op, a, b, span),
             (Value::F32(a), Value::F32(b)) => f32_arithmetic(op, a, b, span),
-            (Value::Str(a), Value::Str(b)) if op == BinOp::Add => Ok(Value::Str(a + &b)),
+            (Value::Str(a), Value::Str(b)) if op == BinOp::Add => {
+                Ok(Value::Str(Text::from(a.into_string() + &b)))
+            }
             (Value::Bytes(mut a), Value::Bytes(b)) if op == BinOp::Add => {
                 a.extend(b);
                 Ok(Value::Bytes(a))
@@ -408,7 +410,7 @@ impl Interp {
                 if a.len().saturating_mul(times) > MOST_ITEMS {
                     return unsupported("ran too long: a string too long");
                 }
-                Ok(Value::Str(a.repeat(times)))
+                Ok(Value::Str(Text::from(a.repeat(times))))
             }
             (Value::List(mut a), Value::List(b)) if op == BinOp::Add => {
                 a.extend(b);
@@ -578,9 +580,8 @@ impl Interp {
                 items.into_iter().nth(at).map_or_else(|| crash("index out of range", span), Ok)
             }
             (Value::Str(text), Value::Int(at)) => {
-                let count = text.chars().count();
-                let at = position(at, count, span)?;
-                Ok(Value::Str(text.chars().nth(at).map(String::from).unwrap_or_default()))
+                let at = position(at, text.char_count(), span)?;
+                Ok(Value::Str(text.char_at(at).map(Text::from).unwrap_or_default()))
             }
             // A byte of `bytes` is an int, 0 to 255.
             (Value::Bytes(data), Value::Int(at)) => {
@@ -1070,10 +1071,10 @@ fn slice(object: Value, start: Option<Value>, end: Option<Value>) -> Run<Value> 
             Ok(Value::Tuple(items.into_iter().skip(from).take(to.saturating_sub(from)).collect()))
         }
         Value::Str(text) => {
-            let count = text.chars().count();
+            let count = text.char_count();
             let from = bound(start, count, 0)?;
             let to = bound(end, count, count)?;
-            Ok(Value::Str(text.chars().skip(from).take(to.saturating_sub(from)).collect()))
+            Ok(Value::Str(Text::from(text.chars_between(from, to))))
         }
         Value::Bytes(data) => {
             let from = bound(start, data.len(), 0)?;

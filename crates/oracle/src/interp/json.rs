@@ -16,7 +16,7 @@ use fennec_syntax::{Expr, ExprKind, Field};
 use super::calls::ArgVal;
 use super::{Interp, Place, Run, unsupported};
 use crate::load::Kind;
-use crate::value::Value;
+use crate::value::{Text, Value};
 
 /// How field names are spelled in JSON, as `names=` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -349,7 +349,7 @@ pub(crate) fn parse_error(message: String, line: i64, column: i64) -> Value {
         "ParseError",
         None,
         vec![
-            ("message".to_owned(), Value::Str(message)),
+            ("message".to_owned(), Value::Str(Text::from(message))),
             ("line".to_owned(), Value::Int(line)),
             ("column".to_owned(), Value::Int(column)),
         ],

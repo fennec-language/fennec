@@ -13184,6 +13184,165 @@ fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Resul
     Ok(())
 }
 
+/// A loop over a generator that can fail, `for x in made()?:`, inside a `with` block or a `ref`
+/// case owns the generator, as it does anywhere: a failure leaving the block lets go of it before
+/// the block's cleanup runs, and a failure of the generator's own cleanup is a note on the one
+/// leaving. Before, the checker held the generator in a name: it closed after the block's cleanup,
+/// and its cleanup's failure ended the program.
+#[test]
+fn a_generator_loop_inside_a_with_is_let_go_before_the_with_s_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generator_loop_in_a_with",
+        GENERATOR_LOOP_IN_A_WITH,
+        "closed inner\nfailed outer\nOops(code=91) []\n\
+         closing noted\nfailed outer\nOops(code=91) [\"Shut(name=\\\"noted\\\")\"]\n\
+         closing tried\nfailed outer\nOops(code=94) [\"Shut(name=\\\"tried\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "generator_loop_in_a_ref_case",
+        GENERATOR_LOOP_IN_A_REF_CASE,
+        "closed let go\nOops(code=82)\nclosing noted\nOops(code=92) [\"Shut(name=\\\"noted\\\")\"]\n\
+         Bag.Full(counts=[82, 2]) Bag.Full(counts=[92, 2])\n",
+    )
+}
+
+const GENERATOR_LOOP_IN_A_WITH: &str = r#"error Oops:
+    code: int
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def ordered(stdout: Stdout) fails Oops | Shut:
+    with opened("outer", stdout) as door:
+        for step in kept("inner", stdout)?:
+            fail Oops(code=90 + step)
+
+def noted(stdout: Stdout) fails Oops | Shut:
+    with opened("outer", stdout) as door:
+        for step in held_stuck("noted", stdout)?:
+            fail Oops(code=90 + step)
+
+def noted_by_try(stdout: Stdout) fails Oops | Shut:
+    with opened("outer", stdout) as door:
+        for step in held_stuck("tried", stdout)?:
+            _ = risky(93 + step)?
+
+def main(stdout: Stdout):
+    ordered(stdout) except why:
+        stdout.print(why, why.notes())
+    noted(stdout) except why:
+        stdout.print(why, why.notes())
+    noted_by_try(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_LOOP_IN_A_REF_CASE: &str = r#"error Oops:
+    code: int
+
+error Shut:
+    name: str
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+struct Door:
+    name: str
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int]:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def let_go(ref bag: Bag, stdout: Stdout) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                for step in held("let go", stdout):
+                    count += 80 + step
+                    while small(count)?:
+                        pass
+        case _:
+            pass
+
+def noted(ref bag: Bag, stdout: Stdout) fails Oops | Shut:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                for step in held_stuck("noted", stdout)?:
+                    count += 90 + step
+                    while small(count)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut first = Bag.Full(counts=[1, 2])
+    let_go(ref first, stdout) except why:
+        stdout.print(why)
+    mut second = Bag.Full(counts=[1, 2])
+    noted(ref second, stdout) except why:
+        stdout.print(why, why.notes())
+    stdout.print(first, second)
+"#;
+
 /// A failure already leaving through a loop whose generator's cleanup fails too is the one that
 /// leaves, carrying the cleanup's as a note, as a `with` block's failing `else:` does.
 #[test]

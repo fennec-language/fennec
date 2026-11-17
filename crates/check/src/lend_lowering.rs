@@ -1150,6 +1150,13 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
         // is the loop's, not the block's.
         let own_loop = in_loop || matches!(stmt.kind, StmtKind::While { .. } | StmtKind::For { .. });
         let round = matches!(&stmt.kind, StmtKind::For { iter, .. } if crate::parallel::parallel_items(iter).is_some());
+        // A loop over a generator that can fail, `for x in made()?:`, lets go of it as a failure
+        // leaves, noting a failure of the generator's own cleanup on that one: so a failure inside
+        // it leaves as a failure, not held and leaving the loop as a `break` would.
+        let lets_go_failing = matches!(
+            &stmt.kind,
+            StmtKind::For { iter: Expr { kind: ExprKind::Try { context: None, .. }, .. }, .. }
+        );
         for value in stmt_exprs(stmt) {
             outer_cases(value, &mut |cases| exits(cases, caller, own_loop));
         }
@@ -1182,9 +1189,9 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
                 let before = caller.ways.returned.is_some();
                 let fails_before = caller.fails_made;
                 // A round's failure leaves where the loop ends: it isn't the block's to write.
-                let failed = if round { caller.failed.take() } else { None };
+                let failed = if round || lets_go_failing { caller.failed.take() } else { None };
                 exits(body, caller, true);
-                if round {
+                if round || lets_go_failing {
                     caller.failed = failed;
                 }
                 // A `return` or a failure inside it leaves this loop too.
@@ -1414,6 +1421,13 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
     }
     let span = held.span;
     match &mut held.kind {
+        // A loop over a generator that can fail, `for x in made()?:`, owns the generator: it lets
+        // go of it when it's left, before the cleanup runs, with a failure of the generator's own
+        // cleanup noted on the one leaving. Its failures reach the cleanup as any from inside a
+        // call does, so only the `?`s inside what it's of come out, and the loop's stays.
+        StmtKind::For { iter: Expr { kind: ExprKind::Try { value: inner, context: None }, .. }, .. } => {
+            hoist_inside(inner, otherwise, before, made, span);
+        }
         StmtKind::Expr(value)
         | StmtKind::Fail(value)
         | StmtKind::Yield(value)

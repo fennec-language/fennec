@@ -814,7 +814,12 @@ impl<'a> Lowering<'a> {
                 }
             }
             StmtKind::OnFailure { name, cleanup, body } => {
-                self.on_failure.push(failure::OnFailure { name: name.clone(), cleanup: cleanup.clone() });
+                let scopes = self.scopes.len();
+                self.on_failure.push(failure::OnFailure {
+                    name: name.clone(),
+                    cleanup: cleanup.clone(),
+                    scopes,
+                });
                 let lowered = self.block(body, tail);
                 self.on_failure.pop();
                 lowered?;

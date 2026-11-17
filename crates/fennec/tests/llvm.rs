@@ -5242,6 +5242,138 @@ def main(stdout: Stdout):
     )
 }
 
+/// A name inside a `ref` case's body that's the same as a `ref` part's stays its own: a loop's, a
+/// nested function's parameter, and a `with` source's own. A `ref` case in an `except` block is
+/// put back too.
+#[test]
+fn a_ref_case_s_body_keeps_its_own_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "ref_case_inner_names",
+        r"enum Kind:
+    Slider(value: int)
+    Empty
+
+error Oops:
+    code: int
+
+def opened() -> with int:
+    value = 5
+    lend value
+
+def risky(flag: bool) -> int fails Oops:
+    if flag: fail Oops(code=1)
+    return 0
+
+def main(stdout: Stdout):
+    mut looped = Kind.Slider(value=1)
+    mut seen = 0
+    mode = 0
+    match looped:
+        case .Slider(ref value):
+            match mode:
+                case 0:
+                    for value in [10, 20]:
+                        seen += value
+                case _:
+                    pass
+            value += 1
+        case _:
+            pass
+    mut nested = Kind.Slider(value=1)
+    match nested:
+        case .Slider(ref value):
+            def bumped(value: int) -> int:
+                return value + 100
+            value = bumped(5)
+        case _:
+            pass
+    mut lent = Kind.Slider(value=1)
+    match lent:
+        case .Slider(ref value):
+            with opened() as added:
+                value += added
+        case _:
+            pass
+    mut handled = Kind.Slider(value=1)
+    caught = risky(True) except why:
+        match handled:
+            case .Slider(ref value):
+                value += 7
+            case _:
+                pass
+        why.code
+    stdout.print(looped, seen, nested, lent, handled, caught)
+",
+        "Kind.Slider(value=2) 30 Kind.Slider(value=105) Kind.Slider(value=6) Kind.Slider(value=8) 1\n",
+    )
+}
+
+/// A failure that leaves a `ref` case from deep inside it, as a `?` in a `while`'s condition or
+/// after `and`, puts the case back with the case's own names, though a loop or a case inside
+/// names something the same: what the case holds, not what's in sight where the failure is.
+#[test]
+fn a_ref_case_is_put_back_with_its_own_names_on_a_failure_from_deep_inside() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "ref_case_failed_deep",
+        r#"error Oops:
+    code: int
+
+enum Kind:
+    Slider(value: int)
+    Empty
+
+enum Named:
+    Leaf(name: str)
+    Pair(left: Named, name: str)
+
+def small(count: int) -> bool fails Oops:
+    if count > 1:
+        fail Oops(code=count)
+    return count < 1
+
+def bump(ref kind: Kind) fails Oops:
+    match kind:
+        case .Slider(ref value):
+            value = 100
+            for value in [5]:
+                while small(value)?:
+                    pass
+        case _:
+            pass
+
+def renamed(ref named: Named, deep: bool) fails Oops:
+    match named:
+        case .Pair(ref left, ref name):
+            name = "outer"
+            match left:
+                case .Leaf(ref name):
+                    name = "inner"
+                    if deep and small(7)?:
+                        pass
+                case _:
+                    pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut kind = Kind.Slider(value=0)
+    bump(ref kind) except why:
+        stdout.print(why.code)
+    mut named = Named.Pair(left=.Leaf(name="a"), name="b")
+    renamed(ref named, deep=True) except why:
+        stdout.print(why.code)
+    stdout.print(kind, named)
+"#,
+        "5\n7\nKind.Slider(value=100) Named.Pair(left=Named.Leaf(name=\"inner\"), name=\"outer\")\n",
+    )
+}
+
 /// `for key, ref value in x.items()` changes each value of a dict, or item of a `Table`, where it
 /// is, natively, with its key or its `Id`, and a `continue` leaves the rest of that one as it was.
 #[test]

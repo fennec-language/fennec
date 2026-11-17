@@ -741,35 +741,77 @@ fn resolved_saying(
     checked: Checked,
     scope: checker::Scope,
 ) -> Result<(Signatures, bool), Vec<Diagnostic>> {
-    // The library's functions this program needs rewritten go through this round with its own.
-    let std_in = std_rewritten_in(module, &checked);
-    let round = resolved_round(module, &checked);
-    std_rewritten_out(module);
-    match round {
-        Round::Again => {
-            // Each `_` has a name of its own, as the first check gave it.
-            fennec_syntax::rename::discards_apart(module);
-            let mut second = checker::Checker::new(module);
-            second.again = true;
-            match second.run(scope) {
-                Ok(again) => resolved_saying(module, again, scope).map(|(signatures, _)| (signatures, false)),
-                Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
+    resolved_within(module, checked, scope, MOST_ROUNDS).map(|(signatures, first, _)| (signatures, first))
+}
+
+/// The most rounds of writing in what a check found, and checking again, a program is given. This
+/// is a limit: each round writes in something it found, which the next has no more of to find, so
+/// a program reaches the end in a few, as every program here does. One that hasn't by then is
+/// a mistake in the compiler, said as one, naming the function the last round changed, never a
+/// check that goes on round after round.
+const MOST_ROUNDS: usize = 64;
+
+/// `resolved_saying`, given at most `most` rounds, saying too how many it took.
+fn resolved_within(
+    module: &mut Module,
+    mut checked: Checked,
+    scope: checker::Scope,
+    most: usize,
+) -> Result<(Signatures, bool, usize), Vec<Diagnostic>> {
+    let mut first = true;
+    for round in 1.. {
+        // Only the last round's changes are looked at, to name what didn't stop changing.
+        let before = (round >= most).then(|| module.clone());
+        // The library's functions this program needs rewritten go through this round with its own.
+        let std_in = std_rewritten_in(module, &checked);
+        let written = resolved_round(module, &checked);
+        std_rewritten_out(module);
+        let again = match written {
+            Round::Again => {
+                // Each `_` has a name of its own, as the first check gave it.
+                fennec_syntax::rename::discards_apart(module);
+                true
             }
-        }
-        Round::Done if std_in => {
             // What was written in the library's functions is checked as what runs.
-            let mut second = checker::Checker::new(module);
-            second.again = true;
-            match second.run(scope) {
-                Ok(again) => resolved_saying(module, again, scope).map(|(signatures, _)| (signatures, false)),
-                Err(problems) => Err(problems.iter().map(not_checked_again).collect()),
-            }
-        }
-        Round::Done => {
+            Round::Done => std_in,
+        };
+        if !again {
             let moved = fennec_syntax::fuse::stored_stages(module);
-            Ok((checked.into_signatures(), !moved))
+            return Ok((checked.into_signatures(), first && !moved, round));
         }
+        if let Some(before) = before {
+            return Err(vec![still_changing(&before, module)]);
+        }
+        first = false;
+        let mut next = checker::Checker::new(module);
+        next.again = true;
+        checked =
+            next.run(scope).map_err(|problems| problems.iter().map(not_checked_again).collect::<Vec<_>>())?;
     }
+    unreachable!("the rounds go on until one returns")
+}
+
+/// What's said when writing in what the check found is still changing the program after every
+/// round it's given: a mistake in the compiler, naming the first function the last round changed.
+fn still_changing(before: &Module, after: &Module) -> Diagnostic {
+    let functions = |module: &Module| -> Vec<(String, fennec_syntax::FnDef)> {
+        let mut found = Vec::new();
+        fennec_syntax::visit::functions_mut(&mut module.clone(), &mut |def| {
+            found.push((def.name.clone(), def.clone()));
+        });
+        found
+    };
+    let (was, now) = (functions(before), functions(after));
+    let changed = now
+        .iter()
+        .find(|(name, def)| !was.iter().any(|(known, old)| known == name && old == def))
+        .map(|(name, def)| (name.clone(), def.span));
+    let (name, span) = changed.unwrap_or_else(|| ("the program".to_owned(), Span::default()));
+    let message = format!(
+        "internal error: writing in what the check found kept changing `{name}` after {MOST_ROUNDS} rounds"
+    );
+    Diagnostic::new(message, span)
+        .with_help("this is a mistake in the compiler, not in the program: please report it with the program")
 }
 
 /// Whether a round of resolving wrote anything in, which is then checked again.
@@ -1043,7 +1085,11 @@ fn unqualified_cases(module: &mut Module, signatures: &Signatures) {
                     unqualified(item, signatures);
                 }
             }
-            Pattern::Wildcard | Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::Literal(_) => {}
+            Pattern::Wildcard
+            | Pattern::Bind(_)
+            | Pattern::RefBind(_)
+            | Pattern::MutBind(_)
+            | Pattern::Literal(_) => {}
         }
     }
     fennec_syntax::visit::exprs_mut(module, &mut |expr| {
@@ -1425,4 +1471,75 @@ pub struct ParamType {
     pub is_mut: bool,
     /// What it holds when a call leaves it out.
     pub default: Option<Expr>,
+}
+
+#[cfg(test)]
+mod rounds {
+    use super::*;
+
+    /// Every kernel, the eight real programs among them, every example and every real-world
+    /// program is written in and checked again in a quarter of the rounds it's given, at most:
+    /// the bound is never what ends a real program's check.
+    #[test]
+    fn every_kernel_example_and_real_program_ends_well_inside_its_rounds() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for folder in ["bench/kernels", "examples", "bench/realworld"] {
+            for entry in std::fs::read_dir(root.join(folder)).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|extension| extension == "fen") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        library_parses().unwrap();
+        let (mut programs, mut most) = (0, (0, String::new()));
+        for path in files {
+            let source = std::fs::read_to_string(&path).unwrap();
+            let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
+            let _ = own_types_apart(&mut module);
+            if refuse_reserved(&module).is_err() {
+                continue;
+            }
+            let Ok(checked) = checked_typed_in(&module, checker::Scope::Reached) else { continue };
+            if refuse_old_forms(&module, &checked).is_err() {
+                continue;
+            }
+            let shown = path.display().to_string();
+            let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS);
+            let rounds = match resolved {
+                Ok((_, _, rounds)) => rounds,
+                Err(problems) => panic!("{shown}: {problems:?}"),
+            };
+            if rounds > most.0 {
+                most = (rounds, shown);
+            }
+            programs += 1;
+        }
+        assert!(programs >= 100, "only {programs} programs were checked");
+        assert!(most.0 * 4 <= MOST_ROUNDS, "{} took {} rounds", most.1, most.0);
+    }
+
+    /// Writing in what a check found, and checking again, is given a number of rounds. A program
+    /// still changing after them is a compiler error naming the function the last round changed,
+    /// never a check that goes on: here a `ref` case needs a second round and is given one.
+    #[test]
+    fn a_program_still_changing_after_its_rounds_is_an_error_naming_the_function() {
+        let source = "enum Slot:\n    Held(count: int)\n    Empty\n\n\
+                      def bump(ref slot: Slot):\n    match slot:\n        case .Held(ref count):\n            count += 1\n        case _:\n            pass\n\n\
+                      def main(stdout: Stdout):\n    mut slot = Slot.Held(count=1)\n    bump(ref slot)\n    stdout.print(slot)\n";
+        let mut module = fennec_syntax::parse(source).unwrap();
+        library_parses().unwrap();
+        let _ = own_types_apart(&mut module);
+        let checked = checker::Checker::new(&module).run(checker::Scope::Reached).unwrap();
+        let problems = resolved_within(&mut module, checked, checker::Scope::Reached, 1).unwrap_err();
+        let [problem] = problems.as_slice() else { panic!("{problems:?}") };
+        assert!(
+            problem
+                .message
+                .starts_with("internal error: writing in what the check found kept changing `bump`"),
+            "{problem:?}"
+        );
+    }
 }

@@ -17775,8 +17775,15 @@ def main(net: Net, stdout: Stdout) fails NetError:
                 stream.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
                 stream.write_all(b"a line long enough to need a block of its own\n")?;
                 let mut back = String::new();
-                let read = std::io::BufReader::new(stream).read_line(&mut back).unwrap_or(0);
+                let mut reader = std::io::BufReader::new(stream);
+                let read = reader.read_line(&mut back).unwrap_or(0);
                 assert_eq!(read, 0, "a crashing round answered: {back}");
+                // Reset, not closed. The server closes first, so a closed connection waits out
+                // TIME_WAIT on the server's side, and 12,000 of them in a minute, with the other
+                // tests' connections, can use up Windows' ephemeral ports: a connect that came round
+                // to a port still waiting got no answer and timed out (10060, main's CI run
+                // 44024631906). A reset leaves nothing waiting on either side.
+                socket2::SockRef::from(reader.get_ref()).set_linger(Some(std::time::Duration::ZERO))?;
             }
             Ok(())
         };

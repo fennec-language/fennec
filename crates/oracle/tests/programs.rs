@@ -65,6 +65,74 @@ fn a_name_holds_its_own_value_and_ref_changes_yours() {
     );
 }
 
+/// A copy changed after it was made from another, or after it was sent to a task, changes alone,
+/// at every level: a list, a list of lists, tuples in a list, a set, a dict of lists, a struct and
+/// a struct of structs, lists and dicts. So do an argument, a `for ref` loop's list and what an
+/// arrow captured, while a `ref` argument changes its caller's. The oracle shares a value's parts
+/// between its copies until one is changed, and this holds it to the compiled program, which
+/// printed the same at 1, 4 and 8 threads (`workers/copies_changed_after_sharing.fen`).
+#[test]
+fn a_copy_changed_after_sharing_changes_alone() {
+    let (printed, ended) =
+        ran(include_str!("../../fennec/tests/fixtures/workers/copies_changed_after_sharing.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/workers/copies_changed_after_sharing.out"));
+}
+
+/// A value nested 200,000 deep, as `fennec-fuzz` writes them, is made, copied, compared, printed
+/// and let go of: making one level a time copies nothing below it, and letting go of it takes
+/// a little stack. One nested deeper than a walk through it may go on its thread's stack is
+/// refused where it's printed. What it prints is what the compiled program printed.
+#[test]
+fn a_value_nested_200000_deep_is_made_and_let_go_of() {
+    prints(
+        "
+        enum Node:
+            Leaf(name: str)
+            Branch(label: str, children: list[Node])
+
+        def deep(depth: int, label: str) -> Node:
+            mut node = Node.Leaf(name=label)
+            for _ in range(depth):
+                node = .Branch(label=label, children=[node])
+            return node
+
+        def depth_of(node: Node) -> int:
+            mut count = 0
+            mut at = node
+            while True:
+                match at:
+                    case .Branch(children=children):
+                        count += 1
+                        at = children[0]
+                    case .Leaf():
+                        return count
+
+        def main(stdout: Stdout):
+            tall = deep(200000, 'hé🦊')
+            mut kept = tall
+            stdout.print(depth_of(kept), kept == tall)
+            kept = deep(3, 'x')
+            stdout.print(depth_of(tall), depth_of(kept), kept == tall)
+            small = deep(20000, 'a')
+            stdout.print(len(f'{small}'))
+        ",
+        "200000 True\n200000 3 False\n700019\n",
+    );
+    let (_, ended) = ran("
+        enum Node:
+            Leaf(name: str)
+            Branch(label: str, children: list[Node])
+
+        def main(stdout: Stdout):
+            mut node = Node.Leaf(name='a')
+            for _ in range(300000):
+                node = .Branch(label='a', children=[node])
+            stdout.print(node)
+        ");
+    assert_eq!(ended, Ended::Unsupported("ran too long: a value nested too deeply".to_owned()));
+}
+
 #[test]
 fn except_handles_the_failure_of_its_call() {
     prints(

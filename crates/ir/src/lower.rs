@@ -125,20 +125,24 @@ fn lower_from(
             lower_into(&mut program, &generics::FunctionInstance::plain(key), def, &context);
         }
     }
-    constants::lower_all(&context, &mut program, wanted);
-    // Copies of generics, and the standard library's functions, come in as they're reached.
+    let mut constants_so_far = constants::Constants::default();
+    constants::lower_all(&context, &mut program, wanted, &mut constants_so_far);
+    // Copies of generics, and the standard library's functions, come in as they're reached. What's
+    // called and not lowered is followed as functions are added, so each one lowered costs what it
+    // adds, not what the program has so far.
+    let mut unlowered = calls::Unlowered::default();
     loop {
         let waiting = context.instances.waiting.borrow_mut().pop();
         let next = waiting.or_else(|| {
-            calls::external(&program)
-                .into_iter()
-                .find(|key| reachable_later.contains_key(key))
+            unlowered.read(&program);
+            unlowered
+                .first(|key| reachable_later.contains_key(key))
                 .map(|key| generics::FunctionInstance::plain(&key))
         });
         let Some(next) = next else { break };
         if let Some(def) = every.get(&next.base) {
             lower_into(&mut program, &next, def, &context);
-            constants::lower_all(&context, &mut program, wanted);
+            constants::lower_all(&context, &mut program, wanted, &mut constants_so_far);
         } else {
             let why = format!("it has no definition: `{}`", next.base);
             program.not_lowered.push(NotLowered { function: next.name, why });

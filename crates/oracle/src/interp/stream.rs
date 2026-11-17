@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use fennec_syntax::{Expr, ExprKind, FnDef, Span};
 
 use super::{Binding, Flow, Interp, Run, Shared, unsupported};
-use crate::value::{Cap, Stream, Value};
+use crate::value::{Cap, Stream, Text, Value};
 
 /// The most generators that may be running at once.
 const MOST_GENERATORS: usize = 1_000;
@@ -146,7 +146,7 @@ impl Source {
                 let Ok(mut disk) = lines.disk.lock() else { return unsupported("the file system was lost") };
                 let read = disk.read_line(lines.handle);
                 drop(disk);
-                super::files::done(read, lines.span).map(|line| line.map(Value::Str))
+                super::files::done(read, lines.span).map(|line| line.map(|text| Value::Str(text.into())))
             }
         }
     }
@@ -168,7 +168,7 @@ impl Interp {
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.into_iter(),
             Value::Dict(pairs) => pairs.into_iter().map(|(key, _)| key).collect::<Vec<_>>().into_iter(),
             Value::Str(text) => {
-                text.chars().map(|c| Value::Str(c.to_string())).collect::<Vec<_>>().into_iter()
+                text.chars().map(|c| Value::Str(Text::from(c.to_string()))).collect::<Vec<_>>().into_iter()
             }
             Value::Bytes(data) => {
                 data.into_iter().map(|byte| Value::Int(i64::from(byte))).collect::<Vec<_>>().into_iter()

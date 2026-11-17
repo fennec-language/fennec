@@ -12,7 +12,7 @@ use super::{Names, Options, SavedField, spelled_as, type_name};
 use crate::interp::calls::{ArgVal, Receiver};
 use crate::interp::{Interp, Run, crash, unsupported};
 use crate::load::Kind;
-use crate::value::{Cap, Id, Value};
+use crate::value::{Cap, Id, Text, Value};
 
 /// What a value saves, as the calls its `serialize` makes.
 #[derive(Debug)]
@@ -67,7 +67,7 @@ impl Interp {
         let mut writer = Writer::new(options);
         if !has_ids(&saved) {
             writer.go(&saved, false);
-            return Ok(Value::Str(writer.text));
+            return Ok(Value::Str(Text::from(writer.text)));
         }
         let mut finder = Finder::default();
         finder.go(&saved, false);
@@ -76,7 +76,7 @@ impl Interp {
         }
         writer.tables = Some(finder.positions);
         writer.go(&saved, false);
-        Ok(Value::Str(writer.text))
+        Ok(Value::Str(Text::from(writer.text)))
     }
 
     /// What a value of type `ty` saves.
@@ -87,7 +87,7 @@ impl Interp {
             (Type::Float, Value::Float(x)) => Saved::Float(*x),
             (Type::Float, Value::Int(n)) => Saved::Float(crate::text::int_as_float(*n)),
             (Type::Bool, Value::Bool(truth)) => Saved::Bool(*truth),
-            (Type::Str | Type::LiteralStr, Value::Str(text)) => Saved::Text(text.clone()),
+            (Type::Str | Type::LiteralStr, Value::Str(text)) => Saved::Text(text.as_str().to_owned()),
             (Type::Optional(_) | Type::None, Value::None) => Saved::None,
             (Type::Optional(inner), held) => Saved::Some(Box::new(self.saved(held, inner)?)),
             (Type::List(inner), Value::List(items)) => {

@@ -400,7 +400,7 @@ impl<'a> Lowering<'a> {
         }
         let own: Vec<&str> = names.iter().map(String::as_str).collect();
         let captures = self.captures(mentioned, &own);
-        let key = format!("{}.generator@{}", self.name, expr.span.start);
+        let key = self.lifted_name("generator", expr.span.start);
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);
@@ -440,7 +440,7 @@ impl<'a> Lowering<'a> {
         let span = expr.span;
         let source_ty = self.ty(items)?;
         let source_value = self.expr(items)?;
-        let key = format!("{}.enumerate@{}", self.name, span.start);
+        let key = self.lifted_name("enumerate", span.start);
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);
@@ -481,7 +481,7 @@ impl<'a> Lowering<'a> {
         let span = expr.span;
         let (first_ty, second_ty) = (self.ty(first)?, self.ty(second)?);
         let args = vec![self.expr(first)?, self.expr(second)?];
-        let key = format!("{}.zip@{}", self.name, span.start);
+        let key = self.lifted_name("zip", span.start);
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);

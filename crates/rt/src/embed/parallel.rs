@@ -1031,6 +1031,11 @@ mod pool {
         false
     }
 
+    /// Without threads, there's no pool to stress.
+    pub(crate) fn stress_asked() -> bool {
+        false
+    }
+
     /// Without threads, no chunk runs ahead of a stream's reader.
     pub(super) fn streams_run_ahead() -> bool {
         false
@@ -1170,7 +1175,6 @@ pub use stream::{parallel_stream, stream_end, stream_next};
 
 #[cfg(test)]
 pub(in crate::embed) use pool::with_setup;
-pub(crate) use pool::workers_wanted;
 #[cfg(not(any(test, feature = "threads")))]
 use pool::{Latch, Pool};
 #[cfg(any(test, feature = "threads"))]
@@ -1178,6 +1182,7 @@ pub(in crate::embed) use pool::{Latch, Pool, for_server, here};
 #[cfg(any(test, feature = "threads"))]
 pub use pool::{has_worker_setup, run_worker_setup};
 pub use pool::{on_task_resume, set_worker_setup, stack_limit};
+pub(crate) use pool::{stress_asked, workers_wanted};
 
 #[cfg(test)]
 mod tests {
@@ -1638,13 +1643,14 @@ mod tests {
     /// The server's connection the task below closes, and how long closing it took, in
     /// milliseconds.
     static CLOSED_BY_A_TASK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-    static CLOSING_TOOK: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+    /// When the task's close began and ended.
+    static CLOSING: Mutex<Option<(std::time::Instant, std::time::Instant)>> = Mutex::new(None);
 
     /// Closes the server's connection, as a parked task.
     extern "C" fn closes_while_the_client_sends(_env: i64, _from: i64, _to: i64, _thread: i64) -> i64 {
         let started = std::time::Instant::now();
         crate::stdlib::net::shut(CLOSED_BY_A_TASK.load(Ordering::SeqCst));
-        CLOSING_TOOK.store(i64::try_from(started.elapsed().as_millis()).unwrap(), Ordering::SeqCst);
+        *CLOSING.lock().unwrap() = Some((started, std::time::Instant::now()));
         assert_eq!(crate::embed::serve::waits_not_registered_here(), 0);
         0
     }
@@ -1661,10 +1667,12 @@ mod tests {
         let leaf = super::Leaf::For(closes_while_the_client_sends, 0);
         let ended = super::each_on_pool(run, pool, 1, leaf).finish();
         assert_eq!(ended, 0);
-        assert!(sending.join().unwrap(), "a piece the client sent was refused");
-        let took = CLOSING_TOOK.load(Ordering::SeqCst);
-        let most = i64::try_from(crate::stdlib::net::LINGER.as_millis()).unwrap();
-        assert!((100..most).contains(&took), "closing took {took} ms");
+        let (sent, done) = sending.join().unwrap();
+        assert!(sent, "a piece the client sent was refused");
+        let (started, closed) = CLOSING.lock().unwrap().take().unwrap();
+        assert!(closed >= done, "it closed before the client had sent everything");
+        let took = closed.duration_since(started);
+        assert!(took < crate::stdlib::net::LINGER, "closing took {took:?}");
         finish();
     }
 

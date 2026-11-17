@@ -16,7 +16,7 @@ impl Interp {
     /// inside a collection.
     pub(crate) fn display(&mut self, value: &Value) -> Run<String> {
         match value {
-            Value::Str(text) => Ok(text.clone()),
+            Value::Str(text) => Ok(text.as_str().to_owned()),
             other => self.repr(other),
         }
     }

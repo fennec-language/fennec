@@ -1,7 +1,7 @@
 //! Constants. One whose value is a literal is written out where it's read, and any other is
 //! a function of no arguments that an engine runs once.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use fennec_check::Type;
 use fennec_syntax::{Expr, ExprKind, Item, Module, UnaryOp};
@@ -39,20 +39,43 @@ pub(super) fn written(module: &Module) -> HashMap<&str, Written<'_>> {
     found
 }
 
-/// Lowers the module's constants `wanted` picks, and any constant that anything reads.
-pub(super) fn lower_all(context: &Context<'_>, program: &mut Program, wanted: &dyn Fn(&str) -> bool) {
-    let mut waiting: Vec<String> = context
-        .constants
-        .iter()
-        .filter(|(name, written)| !written.prelude && literal(written.value).is_none() && wanted(name))
-        .map(|(name, _)| (*name).to_owned())
-        .collect();
-    waiting.sort();
-    waiting.extend(read_by(&program.functions));
+/// How far lowering the program's constants has got, so each time it's asked it reads only the
+/// functions lowered since the last.
+#[derive(Default)]
+pub(super) struct Constants {
+    /// Whether the module's own constants `wanted` picks have been lowered.
+    started: bool,
+    /// How many of the program's functions have had the constants they read lowered.
+    read: usize,
+    /// The constants lowered.
+    lowered: HashSet<String>,
+}
+
+/// Lowers the module's constants `wanted` picks, the first time, and any constant the functions
+/// lowered since the last time read. The program's constants are put in order once it's all
+/// lowered.
+pub(super) fn lower_all(
+    context: &Context<'_>,
+    program: &mut Program,
+    wanted: &dyn Fn(&str) -> bool,
+    so_far: &mut Constants,
+) {
+    let mut waiting: Vec<String> = Vec::new();
+    if !so_far.started {
+        so_far.started = true;
+        waiting = context
+            .constants
+            .iter()
+            .filter(|(name, written)| !written.prelude && literal(written.value).is_none() && wanted(name))
+            .map(|(name, _)| (*name).to_owned())
+            .collect();
+        waiting.sort();
+    }
+    waiting.extend(read_by(program.functions.get(so_far.read..).unwrap_or_default()));
     while let Some(name) = waiting.pop() {
         let done = |function: &Function| function.name == name;
         // An empty collection a field defaults to is made as it's first read, in `field_default`.
-        if program.constants.iter().any(done)
+        if so_far.lowered.contains(&name)
             || context.empties.borrow().iter().any(done)
             || program.not_lowered.iter().any(|skipped| skipped.function == name)
         {
@@ -62,12 +85,14 @@ pub(super) fn lower_all(context: &Context<'_>, program: &mut Program, wanted: &d
             Ok(mut functions) => {
                 waiting.extend(read_by(&functions));
                 program.functions.extend(functions.drain(1..));
+                so_far.lowered.extend(functions.iter().map(|function| function.name.clone()));
                 program.constants.extend(functions);
             }
             Err(why) => program.not_lowered.push(NotLowered { function: name, why }),
         }
     }
-    program.constants.sort_by(|first, second| first.name.cmp(&second.name));
+    // The functions lifted out of a constant were read as it was lowered.
+    so_far.read = program.functions.len();
 }
 
 /// The names of the constants functions read.

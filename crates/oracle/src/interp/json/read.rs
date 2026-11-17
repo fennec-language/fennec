@@ -17,7 +17,7 @@ use super::{Names, Options, SavedField, article, parse_error, spelled_as, type_n
 use crate::interp::calls::ArgVal;
 use crate::interp::{Flow, Interp, Run, unsupported};
 use crate::load::Kind;
-use crate::value::{Cap, Id, Instance, Table, Value};
+use crate::value::{Cap, Id, Instance, Table, Text, Value};
 
 /// How many fields a struct may have for the oracle to read it: past this, the standard library
 /// stops telling a field given twice.
@@ -165,7 +165,7 @@ impl Interp {
             (Type::Float, _) => Err(reading.misfit("float", node)),
             (Type::Bool, Node::Bool(truth)) => Ok(Value::Bool(*truth)),
             (Type::Bool, _) => Err(reading.misfit("bool", node)),
-            (Type::Str | Type::LiteralStr, Node::Str(text)) => Ok(Value::Str(text.clone())),
+            (Type::Str | Type::LiteralStr, Node::Str(text)) => Ok(Value::Str(Text::from(text.clone()))),
             (Type::Str | Type::LiteralStr, _) => Err(reading.misfit("str", node)),
             (Type::Optional(_), Node::Null) => Ok(Value::None),
             (Type::Optional(inner), _) => self.read(node, inner, reading, in_key),

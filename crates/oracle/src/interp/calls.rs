@@ -8,7 +8,7 @@ use fennec_syntax::{Arg, CompKind, Expr, ExprKind, Field, FnDef, Span};
 use super::typed::Bound;
 use super::{Binding, Flow, Interp, MOST_ITEMS, Place, Run, crash, unsupported};
 use crate::load::Kind;
-use crate::value::{Func, Value};
+use crate::value::{Func, Text, Value};
 
 /// An argument as it's passed: a value, the place a `ref` argument names, or a generator written
 /// straight into a builtin's call, which reads it there.
@@ -357,7 +357,7 @@ impl Interp {
         }
         let Some(place) = self.place_of(&arg.value)? else { return Ok(None) };
         let counted = self.peek_place(&place, span, |value| match value {
-            Value::Str(text) => Some(text.chars().count()),
+            Value::Str(text) => Some(text.char_count()),
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => Some(items.len()),
             Value::Dict(pairs) => Some(pairs.len()),
             Value::Table(table) => Some(table.len()),
@@ -817,7 +817,7 @@ impl Interp {
             Type::Float => Value::Float(0.0),
             Type::Sized(num) if num.is_float() => Value::F32(0.0),
             Type::Bool => Value::Bool(false),
-            Type::Str | Type::LiteralStr => Value::Str(String::new()),
+            Type::Str | Type::LiteralStr => Value::Str(Text::from(String::new())),
             Type::Optional(_) => Value::None,
             Type::Array(item, size) => {
                 let size = usize::try_from(*size).unwrap_or(usize::MAX);
@@ -894,7 +894,8 @@ impl Interp {
     pub(crate) fn ruled(&mut self, instance: crate::value::Instance, span: Span) -> Run<Value> {
         if let Some(broken) = self.broken_rule(&instance)? {
             if matches!(self.program.type_at(span), Some(Type::Result(..))) {
-                let message = Value::Str(format!("{}.{broken} breaks its `where` rule", instance.ty));
+                let message =
+                    Value::Str(Text::from(format!("{}.{broken} breaks its `where` rule", instance.ty)));
                 let error = Value::instance("InvalidValue", None, vec![("message".to_owned(), message)]);
                 return Err(Flow::Fail(error, span));
             }
@@ -1023,11 +1024,11 @@ impl Interp {
         let ty = self.type_argument(written)?;
         Ok(match path {
             "std.intrinsics.shape_hash" => Value::Int(self.shape_hash(&ty)?),
-            "std.intrinsics.layout" => Value::Str(self.layout(&ty)?),
+            "std.intrinsics.layout" => Value::Str(Text::from(self.layout(&ty)?)),
             // `pack_lock()` is empty, so no type's layout is locked.
             "std.intrinsics.shape_locked" => Value::Bool(false),
             _ => match ty.source() {
-                Some(name) => Value::Str(name),
+                Some(name) => Value::Str(Text::from(name)),
                 None => return unsupported("the name of a type that can't be written"),
             },
         })

@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use fennec_syntax::{BinOp, Expr, ExprKind, Span, Stmt, StmtKind};
 
 use crate::load::Program;
-use crate::value::{Cap, Reach, Value};
+use crate::value::{Cap, Reach, Text, Value};
 
 /// How many expressions and statements a run may take, across every thread, before it's stopped
 /// as one the oracle can't finish.
@@ -1096,9 +1096,8 @@ fn step_into<'v>(value: &'v Value, step: &Step, span: Span) -> Run<Reached<'v>> 
             items.get(at).map(Reached::Inside).map_or_else(|| crash("index out of range", span), Ok)
         }
         (Value::Str(text), Step::At(Value::Int(at))) => {
-            let count = text.chars().count();
-            let at = position(*at, count, span)?;
-            Ok(Reached::Made(Value::Str(text.chars().nth(at).map(String::from).unwrap_or_default())))
+            let at = position(*at, text.char_count(), span)?;
+            Ok(Reached::Made(Value::Str(text.char_at(at).map(Text::from).unwrap_or_default())))
         }
         (Value::Bytes(data), Step::At(Value::Int(at))) => {
             let at = position(*at, data.len(), span)?;

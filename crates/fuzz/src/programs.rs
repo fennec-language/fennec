@@ -790,6 +790,36 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
     }
 
+    /// Every way of writing a name another of its name and type could capture (`CaptureWay`)
+    /// checks, and the evaluator prints what the oracle prints: each name means what it does where
+    /// it's written. `LockDef` is left out while the checker refuses a nested function's
+    /// parameter named as a lock's name, as taking the lock, which its name-capture fix ends; it
+    /// joins the rest then.
+    #[test]
+    fn the_name_capture_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{CAPTURE_WAYS, CaptureWay, Capturing, Program, Stmt};
+        let mut body = Vec::new();
+        let mut id = 0;
+        for way in CAPTURE_WAYS.into_iter().filter(|way| *way != CaptureWay::LockDef) {
+            for n in [0, 7, 19] {
+                id += 1;
+                body.push(Stmt::Captured(Capturing { id, way, n }));
+            }
+        }
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
     /// Every way of writing a `Listened` statement checks, and the evaluator is sure what it
     /// prints: inboxes kept up or behind, read one at a time or in a loop, and a loop dropping
     /// the oldest, with a message sent before any of them listens or not.

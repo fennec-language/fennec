@@ -19,8 +19,8 @@ use super::ast::{
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
 use super::ast::{
-    Calling, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping,
-    Waking, Yielding,
+    Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelving,
+    SwapField, Swapping, Waking, Yielding,
 };
 use super::source::LONG_PIECE;
 
@@ -1640,6 +1640,7 @@ impl Machine {
             Stmt::Swapped(swapping) => self.swapped(swapping),
             Stmt::Shelved(shelving) => self.shelved(shelving),
             Stmt::Listened(listening) => self.listened(listening),
+            Stmt::Captured(capturing) => self.captured(*capturing),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -2098,6 +2099,27 @@ impl Machine {
 
     /// What `listened{id}` prints: what the loop dropping the oldest heard, the last `size` sent,
     /// then each inbox's messages, or `behind` for one that fell behind.
+    /// Each name meaning what it does where it's written: the nested function's, the loop's, the
+    /// case's or the arrow's own parameter or name, and the function the source calls, not the
+    /// caller's parameter of that name.
+    fn captured(&mut self, capturing: Capturing) {
+        let Capturing { way, n, .. } = capturing;
+        let inside = match way {
+            CaptureWay::WithDef => {
+                let _ = writeln!(self.out, "200 {n}");
+                return;
+            }
+            CaptureWay::SourceCall => {
+                let _ = writeln!(self.out, "{n} {}", n + 2);
+                return;
+            }
+            CaptureWay::LockLoop | CaptureWay::LockArrow => 3,
+            CaptureWay::LockCase => 4,
+            CaptureWay::LockDef => 5,
+        };
+        let _ = writeln!(self.out, "{inside}\n[1, 2, {n}]");
+    }
+
     fn listened(&mut self, listening: &Listening) {
         let Listening { size, sent, dropping, ref inboxes, .. } = *listening;
         let shown = |from: i64| -> String {

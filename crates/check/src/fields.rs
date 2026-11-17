@@ -40,7 +40,8 @@ pub fn fields_of(iter: &Expr) -> Option<&str> {
 /// Whether `fields(T)` writes `T` as a `with` source's own (`sight::outer`).
 fn names_outer(iter: &Expr) -> bool {
     let ExprKind::Call { args, .. } = &iter.kind else { return false };
-    args.iter().any(|arg| matches!(&arg.value.kind, ExprKind::Name(of) if fennec_syntax::sight::outer(of).is_some()))
+    args.iter()
+        .any(|arg| matches!(&arg.value.kind, ExprKind::Name(of) if fennec_syntax::sight::outer(of).is_some()))
 }
 
 /// What a field a loop over `fields(T)` gives has.
@@ -59,7 +60,9 @@ impl FnCx<'_> {
         // A `with` source's `fields`, written in as its own (`sight::outer`), is the language's,
         // whatever's in sight.
         let outer = crate::parallel::called_as_outer(iter);
-        if (!outer && self.lookup("fields").is_some()) || self.checker.program.functions.contains_key("fields") {
+        if (!outer && self.lookup("fields").is_some())
+            || self.checker.program.functions.contains_key("fields")
+        {
             return None;
         }
         if outer || names_outer(iter) {

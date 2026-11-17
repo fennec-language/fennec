@@ -110,15 +110,7 @@ pub(super) fn run(
             stop(&mut child);
             return Ok(Ending::TimedOut);
         }
-        // Where its end can't be watched for, a program whose outputs have closed is looked at
-        // again soon, and less often the longer it runs on.
-        let until = if running.outputs_closed() && !running.end_watched() {
-            let soon = now + look;
-            look = (look * 2).min(LONGEST_LOOK);
-            soon.min(deadline)
-        } else {
-            deadline
-        };
+        let until = looks_again(running.outputs_closed(), running.end_unseen(), now, &mut look, deadline);
         if park_on_fd(next_token(), running.poll.as_raw_fd(), Interest::READABLE, Some(until))
             == Parked::Cancelled
         {
@@ -127,6 +119,34 @@ pub(super) fn run(
         }
         // What woke the task is taken, so its poll isn't ready again until something new happens.
         running.poll.poll(&mut running.events, Some(Duration::ZERO))?;
+        if running.events.iter().any(|event| event.token() == EXITED) {
+            running.exit_said = true;
+        }
+    }
+}
+
+/// When a parked run looks at its program again, from `now`: soon, and less often each time it
+/// looks, once the program's outputs have closed but its end can't be waited for, and otherwise at
+/// `deadline`. `end_unseen` says whether the end is still to be said by what watches for it, which
+/// can't happen where nothing watches, or has happened already.
+///
+/// An end said isn't an end `try_wait` can see yet: on macOS kqueue says a program has exited a
+/// moment before `waitpid` can reap it, 8 times in 2,000 at load 88. A run whose outputs had closed
+/// then found its program running, and parked until its timeout, 600 s unless it set one, as nothing
+/// would say the end again (#1954).
+fn looks_again(
+    closed: bool,
+    end_unseen: bool,
+    now: Instant,
+    look: &mut Duration,
+    deadline: Instant,
+) -> Instant {
+    if closed && !end_unseen {
+        let soon = now + *look;
+        *look = (*look * 2).min(LONGEST_LOOK);
+        soon.min(deadline)
+    } else {
+        deadline
     }
 }
 
@@ -141,6 +161,8 @@ struct Running {
     stdin: Option<(Sender, Vec<u8>, usize)>,
     /// What says the program has ended, where something can.
     end: Option<End>,
+    /// Whether that has said so, which a program's end does once.
+    exit_said: bool,
     out: Vec<u8>,
     err: Vec<u8>,
     /// Where a read lands before it's kept: on the heap, as a task's stack is small.
@@ -181,6 +203,7 @@ impl Running {
             stderr,
             stdin,
             end,
+            exit_said: false,
             out: Vec::new(),
             err: Vec::new(),
             chunk: vec![0; 64 * 1024],
@@ -226,9 +249,10 @@ impl Running {
         self.stdout.is_none() && self.stderr.is_none()
     }
 
-    /// Whether the program's end wakes the task, so it needn't look for it.
-    fn end_watched(&self) -> bool {
-        self.end.is_some()
+    /// Whether the program's end is still to wake the task, so it needn't look for it: something
+    /// watches for it, and hasn't said it yet.
+    fn end_unseen(&self) -> bool {
+        self.end.is_some() && !self.exit_said
     }
 
     fn outputs(&mut self) -> (Vec<u8>, Vec<u8>) {
@@ -289,6 +313,43 @@ mod tests {
         assert!(events.is_empty(), "ready while the program still runs");
         poll.poll(&mut events, Some(Duration::from_secs(20))).expect("polled");
         assert!(events.iter().any(|event| event.token() == Token(7)), "never ready");
-        assert!(child.try_wait().expect("looked at").is_some(), "ready before the program ended");
+        // Said, the end is one `try_wait` sees within a moment: on macOS kqueue can say it a little
+        // before `waitpid` can reap the program (#1954).
+        let said = std::time::Instant::now();
+        while child.try_wait().expect("looked at").is_none() {
+            assert!(said.elapsed() < Duration::from_secs(5), "ready long before the program ended");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// A run whose program's outputs have closed parks until its deadline only while its end is
+    /// still to be said. Once it's been said, or where nothing can say it, it looks again soon, a
+    /// millisecond then twice as long each time, up to 50: an end said can come before the program
+    /// can be reaped, and is said only once (#1954). With its outputs open it waits for them.
+    #[test]
+    fn a_run_looks_again_soon_once_its_programs_end_is_said_or_cant_be() {
+        use std::time::Instant;
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(600);
+        let mut look = super::FIRST_LOOK;
+        assert_eq!(
+            super::looks_again(true, true, now, &mut look, deadline),
+            deadline,
+            "its end is yet to be said"
+        );
+        assert_eq!(
+            super::looks_again(false, false, now, &mut look, deadline),
+            deadline,
+            "its outputs are open"
+        );
+        assert_eq!(look, super::FIRST_LOOK, "neither looked soon");
+        let mut waits = Vec::new();
+        for _ in 0..8 {
+            waits.push(super::looks_again(true, false, now, &mut look, deadline) - now);
+        }
+        let ms = |n: u64| Duration::from_millis(n);
+        assert_eq!(waits, [ms(1), ms(2), ms(4), ms(8), ms(16), ms(32), ms(50), ms(50)]);
+        let near = now + ms(3);
+        assert_eq!(super::looks_again(true, false, now, &mut look, near), near, "never past its deadline");
     }
 }

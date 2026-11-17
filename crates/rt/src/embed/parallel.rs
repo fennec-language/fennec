@@ -125,6 +125,9 @@ struct Run {
     /// says. Which had begun when the failure was noted depends on timing, so a replay skips
     /// exactly those its recording did, whatever its own timing, and runs every other (#1804).
     skipped: Skipped,
+    /// Which ranges a stop of the launched task making the call kept from beginning, as `skipped`
+    /// has a failure's.
+    not_begun: Skipped,
     /// The failure from the lowest range that failed, by where it starts.
     failure: Mutex<Option<(usize, Failure)>>,
     /// The values of failures a lower range's beat, to let go of once they're the caller's.
@@ -152,9 +155,10 @@ struct Run {
     waiting: bool,
 }
 
-/// Which of a call's ranges a failure kept from starting (see `Run::skipped`).
+/// Which of a call's ranges a failure kept from starting (see `Run::skipped`), or a stop (see
+/// `Run::not_begun`).
 enum Skipped {
-    /// Neither a recording nor a replay: only the lowest failure says.
+    /// Neither a recording nor a replay: what's live says.
     Off,
     /// A recording: each kept from starting, as noted, for `log` to log under the call.
     Noted(Mutex<Vec<(usize, usize)>>),
@@ -166,15 +170,20 @@ enum Skipped {
 /// as where it starts and ends.
 const SKIPPED: &str = "skipped";
 
+/// What a recording logs under a `parallel` call: the ranges a stop of the launched task making it
+/// kept from beginning, each as where it starts and ends.
+const NOT_BEGUN: &str = "not begun";
+
 impl Skipped {
-    /// For the call named `call`, in a recording or a replay. A replay of a call its recording
-    /// logged nothing for skips nothing: one with no failure, or from a recording older than this.
-    fn for_call(call: Option<&crate::replay::Task>) -> Skipped {
+    /// For the call named `call`, in a recording or a replay, as logged under `entry`. A replay of a
+    /// call its recording logged nothing for keeps nothing from starting: one with no failure or
+    /// stop, or from a recording older than this.
+    fn for_call(call: Option<&crate::replay::Task>, entry: &str) -> Skipped {
         let Some(call) = call else { return Skipped::Off };
         if !crate::replay::replaying() {
             return Skipped::Noted(Mutex::new(Vec::new()));
         }
-        let recorded = crate::replay::logged_numbers(&call.name(), SKIPPED).unwrap_or_default();
+        let recorded = crate::replay::logged_numbers(&call.name(), entry).unwrap_or_default();
         Skipped::Replayed(
             recorded
                 .as_chunks::<2>()
@@ -185,9 +194,9 @@ impl Skipped {
         )
     }
 
-    /// In a recording, logs under the call the ranges a failure kept from starting, each once, in
+    /// In a recording, logs under the call, as `entry`, the ranges kept from starting, each once, in
     /// order, if any were.
-    fn log(&self, call: Option<&crate::replay::Task>) {
+    fn log(&self, call: Option<&crate::replay::Task>, entry: &str) {
         let (Skipped::Noted(noted), Some(call)) = (self, call) else { return };
         let mut noted = std::mem::take(&mut *noted.lock().unwrap_or_else(PoisonError::into_inner));
         if noted.is_empty() {
@@ -201,7 +210,7 @@ impl Skipped {
                 [u64::try_from(from).unwrap_or(u64::MAX), u64::try_from(to).unwrap_or(u64::MAX)]
             })
             .collect();
-        crate::replay::log_numbers(&call.name(), SKIPPED, &numbers);
+        crate::replay::log_numbers(&call.name(), entry, &numbers);
     }
 }
 
@@ -249,6 +258,9 @@ impl Leaf {
 /// finish, and where its own goes once it's combined from them.
 struct Node {
     from: usize,
+    /// Where its range ends: with where it starts, what names its combining in a recording, as
+    /// nodes down a left side start at the same place.
+    to: usize,
     halves: Mutex<[Half; 2]>,
     up: Option<(Arc<Node>, usize)>,
 }
@@ -276,9 +288,11 @@ enum Half {
 impl Run {
     fn new(chunk: usize) -> Run {
         let task = crate::replay::child();
-        let skipped = Skipped::for_call(task.as_ref());
+        let skipped = Skipped::for_call(task.as_ref(), SKIPPED);
+        let not_begun = Skipped::for_call(task.as_ref(), NOT_BEGUN);
         Run {
             skipped,
+            not_begun,
             chunk,
             caller: Some(super::threads::index()),
             calling: pool::Calling::here(),
@@ -318,6 +332,29 @@ impl Run {
     /// ranges read: a range it runs itself has nothing lent and hands nothing over.
     fn on_caller(&self) -> bool {
         self.caller == Some(super::threads::index())
+    }
+
+    /// Whether a stop of the launched task making the call keeps the range from `from` to `to` from
+    /// beginning, failing it as stopped. When it comes depends on timing, so a recording notes
+    /// each, and a replay keeps from beginning exactly those, whatever its own stop says (#1916).
+    fn stop_keeps_from_beginning(&self, range: (usize, usize)) -> bool {
+        match &self.not_begun {
+            Skipped::Off => pool::cut_short(),
+            Skipped::Noted(noted) => {
+                let cut = pool::cut_short();
+                if cut {
+                    noted.lock().unwrap_or_else(PoisonError::into_inner).push(range);
+                }
+                cut
+            }
+            Skipped::Replayed(recorded) => {
+                let cut = recorded.contains(&range);
+                if cut {
+                    crate::replay::stopped_as_recorded();
+                }
+                cut
+            }
+        }
     }
 
     /// Whether the range from `from` to `to`, as the call split it, is kept from starting: by a
@@ -426,10 +463,14 @@ impl Run {
     ///   as one stopped while it waited does, and one may hold an owner of a block the range
     ///   made. They're let go of here, while the block is still this thread's to count: once
     ///   it's handed over, letting go of it would reach nothing, and the block would never go.
-    fn ran(&self, from: usize, body: impl FnOnce() -> i64) -> i64 {
+    fn ran(&self, (from, to): (usize, usize), body: impl FnOnce() -> i64) -> i64 {
         let started = self.range_starts(from);
         let off_its_caller = started.before.is_some();
-        let code = if off_its_caller && self.waiting && pool::cut_short() { 1 } else { body() };
+        let code = if off_its_caller && self.waiting && self.stop_keeps_from_beginning((from, to)) {
+            1
+        } else {
+            body()
+        };
         if code != 0 && off_its_caller {
             with(|state| {
                 state.temps.clear();
@@ -446,7 +487,8 @@ impl Run {
         if self.pieces_stopped.load(Ordering::Acquire) {
             crate::replay::mark_stopped();
         }
-        self.skipped.log(self.task.as_ref());
+        self.skipped.log(self.task.as_ref(), SKIPPED);
+        self.not_begun.log(self.task.as_ref(), NOT_BEGUN);
         let made = self.made.into_inner().unwrap_or_else(PoisonError::into_inner);
         if self.calling.is_task_s() {
             // A task's own, as what it makes itself is: listed, for it to hand over when it ends.
@@ -486,7 +528,7 @@ impl Run {
             return;
         }
         if to - from <= self.chunk {
-            let code = self.ran(from, || leaf(from, to, i64::from(super::threads::index())));
+            let code = self.ran((from, to), || leaf(from, to, i64::from(super::threads::index())));
             if code != 0 {
                 self.failed(from, code);
             }
@@ -530,7 +572,7 @@ impl Run {
     /// Runs one range of a loop or a comprehension on this thread, as it was split.
     fn leaf_on(&self, (from, to): (usize, usize), leaf: Leaf) {
         if from < to && !self.skips((from, to)) {
-            let code = self.ran(from, || leaf.run(from, to, i64::from(super::threads::index())));
+            let code = self.ran((from, to), || leaf.run(from, to, i64::from(super::threads::index())));
             if code != 0 {
                 self.failed(from, code);
             }
@@ -550,7 +592,7 @@ impl Run {
     ) {
         while to - from > self.chunk && !self.skips((from, to)) {
             let middle = from + (to - from) / 2;
-            let node = Arc::new(Node { from, halves: Mutex::new([Half::Running; 2]), up: up.take() });
+            let node = Arc::new(Node { from, to, halves: Mutex::new([Half::Running; 2]), up: up.take() });
             let (run, right) = (Arc::clone(self), Some((Arc::clone(&node), 1)));
             pool.push(Box::new(move || run.reduce_on(pool, (middle, to), right, steps)));
             up = Some((node, 0));
@@ -590,7 +632,7 @@ impl Run {
             };
             // The other half isn't in yet, and its thread goes on up from here when it is.
             let Some((left, right)) = both else { return };
-            partial = self.combined(node.from, left, right, steps);
+            partial = self.combined((node.from, node.to), left, right, steps);
             up = node.up.as_ref().map(|(above, side)| (Arc::clone(above), *side));
         }
         *self.reduced.lock().unwrap_or_else(PoisonError::into_inner) = partial;
@@ -600,7 +642,7 @@ impl Run {
     /// Two halves' partials combined, the earlier first: None if either failed, or this does.
     fn combined(
         &self,
-        from: usize,
+        (from, to): (usize, usize),
         left: Option<i64>,
         right: Option<i64>,
         steps: (ReduceBody, Combine, i64),
@@ -610,7 +652,7 @@ impl Run {
         // started and left unended would keep what was lent for the call on its thread.
         let (left, right) = (left?, right?);
         let mut combined = 0;
-        let code = self.ran(from, || combine(env, left, right, &mut combined));
+        let code = self.ran((from, to), || combine(env, left, right, &mut combined));
         if code != 0 {
             self.failed(from, code);
             return None;
@@ -627,7 +669,7 @@ impl Run {
         let thread = i64::from(super::threads::index());
         if to - from <= self.chunk {
             let mut partial = 0;
-            let code = self.ran(from, || body(env, number(from), number(to), thread, &mut partial));
+            let code = self.ran((from, to), || body(env, number(from), number(to), thread, &mut partial));
             if code != 0 {
                 self.failed(from, code);
                 return None;
@@ -637,7 +679,7 @@ impl Run {
         let middle = from + (to - from) / 2;
         let left = self.reduce((from, middle), steps);
         let right = self.reduce((middle, to), steps);
-        self.combined(from, left, right, (body, combine, env))
+        self.combined((from, to), left, right, (body, combine, env))
     }
 }
 

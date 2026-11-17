@@ -133,8 +133,13 @@ fn counted(each: &Stmt, cx: &mut Cx<'_>) -> Option<Vec<Stmt>> {
         declare_mut: false,
         ty: None,
     };
-    let mut looped = vec![stmt(up, span), assign(at, name(&count, span), false, None)];
-    looped.extend(body.iter().cloned());
+    // Each pass's count in a name of its own, which each use of the loop's name in the body that
+    // means it reads: not one under something that names it again, nor one outside the loop.
+    let now = format!("{at}__now{}", cx.made);
+    let mut looped = vec![stmt(up, span), assign(&now, name(&count, span), false, None)];
+    let mut body = body.clone();
+    fennec_syntax::sight::rename_in_sight(&mut body, at, &now);
+    looped.extend(body);
     let kind = StmtKind::For { names: vec![item.clone()], is_mut: true, iter: items.clone(), body: looped };
     Some(vec![start, Stmt { kind, span }])
 }

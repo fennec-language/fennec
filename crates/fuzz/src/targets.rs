@@ -151,9 +151,34 @@ const PACKED: [&str; 10] = [
     "Spot",
 ];
 
+/// What a request's path gives meaning to: its segments, escapes, a query, and the routes' own
+/// segments, so inputs reach past the first.
+const PATHS: [&str; 14] =
+    ["/", "//", "?", "%", "%2F", "%2f", "%ff", "%e9", "notes", "new", "tags", "files", "a", "é"];
+
+/// What a page and a link give meaning to.
+const PAGE: [&str; 16] = [
+    "<",
+    ">",
+    "\"",
+    "'",
+    "&",
+    "&#",
+    "javascript:",
+    "JavaScript:",
+    "https:",
+    "mailto:",
+    ":",
+    "/",
+    "\t",
+    "\n",
+    "\u{1}",
+    "</script>",
+];
+
 const ANYTHING: [&str; 4] = ["\0", "\u{7f}", "é", "🦊"];
 
-pub(crate) const TARGETS: [Target; 19] = [
+pub(crate) const TARGETS: [Target; 21] = [
     Target { name: "lexer", corpus: &PROGRAMS, tokens: &SYNTAX, run: lexer, stuck: STUCK },
     Target { name: "parser", corpus: &PROGRAMS, tokens: &SYNTAX, run: parser, stuck: STUCK },
     Target { name: "formatter", corpus: &PROGRAMS, tokens: &SYNTAX, run: formatter, stuck: STUCK },
@@ -217,6 +242,20 @@ pub(crate) const TARGETS: [Target; 19] = [
         stuck: STUCK,
     },
     Target {
+        name: "router",
+        corpus: &["crates/fuzz/seeds/router"],
+        tokens: &PATHS,
+        run: crate::router_rules::router,
+        stuck: STUCK,
+    },
+    Target {
+        name: "html",
+        corpus: &["crates/fuzz/seeds/html"],
+        tokens: &PAGE,
+        run: crate::html_rules::html,
+        stuck: STUCK,
+    },
+    Target {
         name: "postgres",
         corpus: &["crates/fuzz/seeds/postgres"],
         tokens: &POSTGRES,
@@ -265,14 +304,16 @@ pub(crate) const LLVM: Target = Target {
 };
 
 /// The targets, besides `llvm`, that run their input through a program built natively.
-pub(crate) const NATIVE: [&str; 11] = [
+pub(crate) const NATIVE: [&str; 13] = [
     "csv",
+    "html",
     "http-client",
     "http-server",
     "json",
     "json-rules",
     "pack",
     "postgres",
+    "router",
     "toml",
     "toml-rules",
     "url",

@@ -171,6 +171,9 @@ impl Reader<'_> {
             b'{' => {
                 self.at += 1;
                 let mut pairs: Vec<(String, Json)> = Vec::new();
+                // The keys so far, found at once: looking through the pairs for each one made an
+                // object of many keys take as long as their count squared.
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 self.space();
                 if self.peek() == Some(b'}') {
                     self.at += 1;
@@ -188,7 +191,7 @@ impl Reader<'_> {
                     }
                     self.space();
                     let value = self.value(depth + 1)?;
-                    if pairs.iter().any(|(seen, _)| *seen == key) {
+                    if !seen.insert(key.clone()) {
                         self.unpromised = true;
                     }
                     pairs.push((key, value));
@@ -366,8 +369,11 @@ fn same(value: &Json, read: &Json, ty: &Ty) -> bool {
             a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b, item))
         }
         (Ty::Dict(item), Json::Object(a), Json::Object(b)) => {
+            // What the native reader wrote is a dict's, so each of its keys is there once.
+            let written: std::collections::HashMap<&str, &Json> =
+                b.iter().map(|(key, value)| (key.as_str(), value)).collect();
             a.len() == b.len()
-                && a.iter().all(|(key, a)| b.iter().any(|(other, b)| key == other && same(a, b, item)))
+                && a.iter().all(|(key, a)| written.get(key.as_str()).is_some_and(|b| same(a, b, item)))
         }
         (_, a, b) => a == b,
     }

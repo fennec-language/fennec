@@ -1,0 +1,9 @@
+# A receive with a time limit is never a deadlock: it gives up, and the program goes on.
+from std.concurrent import Timeout, channel
+
+def main(stdout: Stdout):
+    with channel[int](size=1) as box:
+        heard = box.receive_within(50ms) except Timeout():
+            stdout.print("gave up")
+            return
+        stdout.print(heard else -1)

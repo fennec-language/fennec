@@ -7729,6 +7729,100 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
     Ok(())
 }
 
+/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4 and 16
+/// threads, wanting what it prints, what it says and its exit code every time.
+fn deadlock_fixture_runs_as(
+    name: &str,
+    runs: usize,
+    (out, err, code): (&str, &str, i32),
+) -> std::io::Result<()> {
+    let dir = folder(&format!("deadlocks-{name}"))?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/deadlocks/{name}.fen")),
+        &program,
+    )?;
+    let executable = dir.join(name);
+    let (source, built_as) = (program.to_string_lossy(), executable.to_string_lossy());
+    let built = fennec(&["build", "--llvm", &source, "-o", &built_as], &dir)?;
+    assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        for _ in 0..runs {
+            let ran = Command::new(&executable).env("FENNEC_THREADS", threads).output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(
+                (said.0.as_ref(), said.1.as_ref(), ran.status.code()),
+                (out, err, Some(code)),
+                "{name} on {threads} threads"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// When `main` and every task wait on each other for good, in channel sends and receives and at
+/// blocks' ends with no time limit, the program stops with exit code 1, after what it printed,
+/// saying who waits for what, as Go's "all goroutines are asleep" does. Without threads, `main`
+/// alone; with them, two tasks on each other's channels, a task at a full channel, the last task
+/// that could move ending, and a task waiting at a block's end of its own.
+#[test]
+fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let error = "error: a deadlock: every task is waiting for another, and nothing can wake them\n";
+    let main_for =
+        |task: u32| format!("  main is waiting at the end of a `with launch` block, for task {task}\n");
+    let receives = |task: u32| format!("  task {task} is waiting to receive on a channel that's empty\n");
+    let cases = [
+        ("receive_alone", "before\n", "  main is waiting to receive on a channel that's empty\n".to_owned()),
+        ("each_other", "both launched\n", format!("{}{}{}", main_for(2), receives(1), receives(2))),
+        ("block_end", "launched\n", format!("{}{}", main_for(1), receives(1))),
+        (
+            "send_full",
+            "launched\n",
+            format!("{}  task 1 is waiting to send on a channel that's full\n", main_for(1)),
+        ),
+        ("last_ends", "napped\n", format!("{}{}", main_for(2), receives(2))),
+        (
+            "inside_a_task",
+            "launched\nlaunched inside\n",
+            format!(
+                "{}  task 1 is waiting at the end of a `with launch` block, for task 2\n{}",
+                main_for(1),
+                receives(2)
+            ),
+        ),
+    ];
+    for (name, printed, lines) in cases {
+        deadlock_fixture_runs_as(name, 1, (printed, &format!("{error}{lines}"), 1))?;
+    }
+    Ok(())
+}
+
+/// A wait that something can still end is never taken for a deadlock: a receive with a time limit;
+/// one whose sender naps first; one a crash of the task its code launched cuts short, which
+/// changes nothing on the channel; a task stopped while it counts that only then comes to a
+/// receive, while its launcher waits at the block's end with no time limit left (from Fable 5.2's
+/// review of the design); and a task waiting on `main` while `main` runs a process.
+#[test]
+fn a_wait_something_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let cases = [
+        ("timeout_fine", "gave up\n", ""),
+        ("sender_naps", "7\n", ""),
+        ("crash_wakes", "it crashed\n", "error: index 5 is out of range for length 2\n"),
+        ("stopped_counting", "counted True\nthe block is over\n", ""),
+        ("process_waits", "heard 1\n", ""),
+    ];
+    for (name, printed, said) in cases {
+        deadlock_fixture_runs_as(name, 5, (printed, said, 0))?;
+    }
+    Ok(())
+}
+
 /// A crash in a `with` block runs its sources' `lend x except:` cleanups on the way out, innermost
 /// first, and only those whose blocks haven't ended. A cleanup's own calls run as normal while the
 /// crash waits, and a cleanup that crashes too is said, with the first crash the one that ends

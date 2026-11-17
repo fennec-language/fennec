@@ -1,0 +1,17 @@
+# Main waits to receive on a channel nobody sends to, while the task it launched crashes: the crash
+# cuts the wait short, and the block's end says so. Never a deadlock.
+from std.concurrent import Crashed, channel
+
+def crashes(numbers: list[int], stdout: Stdout):
+    stdout.print(numbers[5])
+
+def launched(stdout: Stdout) fails Crashed:
+    with channel[int](size=1) as numbers:
+        with launch(() => crashes([1, 2], stdout=stdout))?:
+            _ = numbers.receive() else -1
+
+def main(stdout: Stdout):
+    launched(stdout) except Crashed():
+        stdout.print("it crashed")
+        return
+    stdout.print("it didn't crash")

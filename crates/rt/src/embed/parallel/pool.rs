@@ -218,6 +218,7 @@ impl Pool {
             None => run_worker_setup(),
         }
         let mut io = Io::new(poll, self, at);
+        crate::embed::deadlock::worker_started(self.key(at));
         let mut idle = 0;
         loop {
             self.read_mail(at, &mut io);
@@ -262,14 +263,20 @@ impl Pool {
         }
         mail.any.store(false, Ordering::Release);
         let jobs = std::mem::take(&mut *mail.jobs.lock().unwrap_or_else(PoisonError::into_inner));
+        let read = u64::try_from(jobs.len()).unwrap_or(u64::MAX);
         for job in jobs {
             job(io);
         }
+        // Each was a context from when it was sent, and they've all run.
+        crate::embed::deadlock::contexts_ended(read);
     }
 
-    /// Sends worker `at` work of its own, waking it if it sleeps.
+    /// Sends worker `at` work of its own, waking it if it sleeps. Mail is a context for the deadlock
+    /// check from now until it has run, so a wake or a stop on its way keeps the program counted as
+    /// moving, whichever thread sent it.
     pub(in crate::embed) fn run_on(&self, at: usize, job: IoJob) {
         let Some(mail) = self.mail.get(at) else { return };
+        crate::embed::deadlock::context_began();
         mail.jobs.lock().unwrap_or_else(PoisonError::into_inner).push(job);
         mail.any.store(true, Ordering::SeqCst);
         fence(Ordering::SeqCst);
@@ -317,10 +324,21 @@ impl Pool {
         self.sleeping.fetch_add(1, Ordering::SeqCst);
         fence(Ordering::SeqCst);
         if self.is_empty() && !mail.any.load(Ordering::SeqCst) {
+            // For the deadlock check: what it leaves waiting, if that's all stuck waits, and a look,
+            // as it may be the last to go to sleep. Whatever wakes it is mail or a job, which runs
+            // only where something's still moving.
+            crate::embed::deadlock::worker_sleeps(self.key(at), io.idle_notes());
+            crate::embed::deadlock::look();
             io.poll(io.timeout());
+            crate::embed::deadlock::worker_woke(self.key(at));
         }
         self.sleeping.fetch_sub(1, Ordering::SeqCst);
         mail.asleep.store(false, Ordering::SeqCst);
+    }
+
+    /// Worker `at`'s key for the deadlock check, across every pool.
+    fn key(&self, at: usize) -> (usize, usize) {
+        (std::ptr::from_ref(self).addr(), at)
     }
 
     /// Whether worker `at` has mail, or the pool has jobs waiting, for a task that's run its slice
@@ -636,16 +654,32 @@ pub(super) fn window(words: usize) -> usize {
 /// here and now.
 pub(super) fn as_task(range: impl FnOnce() -> i64 + 'static) {
     if WORKER.get() {
-        STARTING.with_borrow_mut(|starting| starting.push(Box::new(range)));
+        // A context from now, before the job making it returns, until the range ends.
+        let context = crate::embed::deadlock::Context::began();
+        STARTING.with_borrow_mut(|starting| {
+            starting.push(Box::new(move || {
+                let ended = range();
+                drop(context);
+                ended
+            }));
+        });
     } else {
         let _ = range();
     }
 }
 
-/// Runs a task on the pool's workers, when they get to it.
+/// Runs a task on the pool's workers, when they get to it. It's a context for the deadlock check
+/// from now until it has run: unlike a range of a `parallel` call, whose caller waits for it,
+/// counted as running, nothing that runs need wait for a stream's chunk.
 pub(super) fn spawn(task: impl FnOnce() + Send + 'static) {
     match pool() {
-        Some(pool) => pool.push(Box::new(task)),
+        Some(pool) => {
+            let context = crate::embed::deadlock::Context::began();
+            pool.push(Box::new(move || {
+                task();
+                drop(context);
+            }));
+        }
         None => task(),
     }
 }

@@ -131,8 +131,18 @@ impl Launcher {
         CALLER_S_LAUNCHER.with_borrow(|launcher| launcher.as_deref().map(&mut each));
     }
 
-    fn cut_short(&self) -> bool {
+    pub(in crate::embed) fn cut_short(&self) -> bool {
         self.crashed.load(Ordering::SeqCst) > 0
+    }
+
+    /// The launchers a crash of whose tasks would cut short a wait here: this thread's or task's
+    /// own, and its call's caller's, whichever there are. For the deadlock check: a crash wakes a
+    /// wait that blocks its thread without changing what it waits on.
+    pub(in crate::embed) fn those_here() -> Vec<Arc<Launcher>> {
+        let mut those = Vec::new();
+        LAUNCHER.with_borrow(|launcher| those.extend(launcher.clone()));
+        CALLER_S_LAUNCHER.with_borrow(|launcher| those.extend(launcher.clone()));
+        those
     }
 
     /// Says how to wake what this thread or task is about to wait in, for a crash to cut it short.

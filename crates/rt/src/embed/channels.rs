@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use fennec_syntax::{Diagnostic, Span};
 
+use super::deadlock::{self, Awaited, Kind, Note};
 use super::table::Table;
 use super::{State, attempt, guarded, heap, with};
 
@@ -157,6 +158,47 @@ fn find(channel: i64) -> Option<Arc<Channel>> {
 impl Channel {
     fn queue(&self) -> MutexGuard<'_, Queue> {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether a wait on `side` would still find nothing to do, with `queue`, its own, held: it's
+    /// open, and empty for a receiver or full for a sender.
+    fn still_waits(&self, queue: &Queue, side: Side) -> bool {
+        let open = !queue.closed && !self.freed.load(Ordering::Acquire);
+        open && match side {
+            Side::Receiving => queue.messages.is_empty(),
+            Side::Sending => queue.messages.len() >= self.size,
+        }
+    }
+
+    /// The note a wait on `side` with no time limit leaves for the deadlock check, if it's a stuck
+    /// one: any but a listener's, on a channel to every listener, where what it has yet to see is
+    /// its own and not the queue's.
+    fn stuck_note(self: &Arc<Channel>, side: Side, blocking: bool) -> Option<Note> {
+        let kind = match side {
+            Side::Receiving => Kind::Receive,
+            Side::Sending => Kind::Send,
+        };
+        let on = || Arc::clone(self) as Arc<dyn Awaited>;
+        (!self.to_every).then(|| if blocking { Note::blocking(on(), kind) } else { Note::here(on(), kind) })
+    }
+}
+
+/// A channel's send or receive waits on it, for the deadlock check.
+impl Awaited for Channel {
+    fn holds(&self, kind: Kind) -> bool {
+        let side = match kind {
+            Kind::Receive => Side::Receiving,
+            Kind::Send => Side::Sending,
+            Kind::BlockEnd => return false,
+        };
+        self.still_waits(&self.queue(), side)
+    }
+
+    fn said(&self, kind: Kind) -> String {
+        match kind {
+            Kind::Send => "to send on a channel that's full".to_owned(),
+            _ => "to receive on a channel that's empty".to_owned(),
+        }
     }
 }
 
@@ -552,9 +594,9 @@ enum Waited {
 
 /// Waits for the channel to change, with `queue` held to see that it hasn't: parked, in a task that
 /// can, and otherwise blocking.
-fn wait(
-    channel: &Arc<Channel>,
-    queue: MutexGuard<'_, Queue>,
+fn wait<'a>(
+    channel: &'a Arc<Channel>,
+    queue: MutexGuard<'a, Queue>,
     deadline: Option<Instant>,
     side: Side,
 ) -> Waited {
@@ -600,6 +642,32 @@ fn wait(
         Side::Sending => queue.asleep.for_room += 1,
         Side::Receiving => queue.asleep.for_a_message += 1,
     }
+    // With no time limit it's a stuck wait, noted and counted for the deadlock check with the queue
+    // held, as it's counted asleep.
+    let stuck =
+        deadline.is_none().then(|| channel.stuck_note(side, true)).flatten().map(deadlock::thread_waits);
+    if let Some((number, true)) = stuck {
+        // The check looks at this channel, so the queue's let go of meanwhile, and looked at again
+        // after: a change that came then told nobody, as this thread wasn't asleep yet.
+        drop(queue);
+        deadlock::look();
+        queue = channel.queue();
+        #[cfg(any(test, feature = "threads"))]
+        let cut_short = super::threads::Launcher::cut_short_here();
+        #[cfg(not(any(test, feature = "threads")))]
+        let cut_short = false;
+        if cut_short || !channel.still_waits(&queue, side) {
+            match side {
+                Side::Sending => queue.asleep.for_room -= 1,
+                Side::Receiving => queue.asleep.for_a_message -= 1,
+            }
+            drop(queue);
+            deadlock::thread_woke(number);
+            #[cfg(any(test, feature = "threads"))]
+            super::threads::Launcher::waited_here(said);
+            return Waited::Again;
+        }
+    }
     let (mut queue, timed_out) = match deadline {
         Some(deadline) => {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -619,6 +687,9 @@ fn wait(
     debug_assert!(*counted > 0, "a thread woke on a channel that didn't count it asleep");
     *counted -= 1;
     drop(queue);
+    if let Some((number, _)) = stuck {
+        deadlock::thread_woke(number);
+    }
     #[cfg(any(test, feature = "threads"))]
     super::threads::Launcher::waited_here(said);
     if timed_out { Waited::TimedOut } else { Waited::Again }
@@ -652,7 +723,11 @@ fn wait_parked(
     }
     let left_at = channel.taken(side);
     drop(queue);
-    let parked = super::serve::park_on(token, deadline);
+    // With no time limit it's a stuck wait, whose note goes with it, for the deadlock check.
+    let parked = match deadline.is_none().then(|| channel.stuck_note(side, false)).flatten() {
+        Some(note) => super::serve::park_stuck(token, note),
+        None => super::serve::park_on(token, deadline),
+    };
     channel.take_back(side, (pool, at, token), left_at);
     super::threads::Launcher::waited_here(said);
     match parked {

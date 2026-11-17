@@ -1,0 +1,14 @@
+# A task waits to hear from main, while main runs a process that takes a while: never a deadlock.
+from std.concurrent import Channel, Closed, Crashed, channel
+
+def waits(numbers: Channel[int], stdout: Stdout):
+    stdout.print("heard", numbers.receive() else -1)
+
+def main(stdout: Stdout, process: Process) fails Crashed:
+    with channel[int](size=1) as numbers:
+        with launch(() => waits(numbers, stdout=stdout))?:
+            _ = process.run("sleep", ["0.2"]) except why:
+                stdout.print(f"{why}")
+                return
+            numbers.send(1) except Closed():
+                return

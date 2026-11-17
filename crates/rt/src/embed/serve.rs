@@ -87,9 +87,10 @@ thread_local! {
     static REGISTRY: RefCell<Option<Registry>> = const { RefCell::new(None) };
     /// The token the next connection on this thread gets.
     static NEXT_TOKEN: Cell<usize> = const { Cell::new(0) };
-    /// What the wait a task is about to park on waits for, and when it gives up, for its
-    /// worker to read.
-    static PARKING: Cell<Option<(Interest, Option<Instant>)>> = const { Cell::new(None) };
+    /// What the wait a task is about to park on waits for, when it gives up, and the note it
+    /// leaves if it's a stuck one, for its worker to read. Every park says all three, so none is
+    /// ever left over from one the worker didn't take.
+    static PARKING: RefCell<Option<Parking>> = const { RefCell::new(None) };
     /// For tests: wakes every parked task each time its worker polls, as a storm of readiness
     /// it doesn't wait for would, like a socket that keeps saying it's writable.
     #[cfg(test)]
@@ -525,7 +526,7 @@ impl Conn {
         // What a task has printed comes out before it waits, however long that is.
         super::write_kept_output();
         let waited = if self.registered && !super::state_is_borrowed() && !self.parked.get() {
-            PARKING.set(Some((interest, until.deadline)));
+            parking(interest, until.deadline, None);
             self.parked.set(true);
             let woken = fennec_parked::park(u64::try_from(self.token.0).unwrap_or(0));
             self.parked.set(false);
@@ -703,6 +704,9 @@ pub(in crate::embed) struct Io {
     scheduler: Scheduler,
     /// The task parked on each connection's token, and when its wait gives up.
     waiting: HashMap<usize, (TaskId, Interest, Option<Instant>)>,
+    /// The notes of the waits in `waiting` that are stuck ones, each counted as stuck while it's
+    /// here (see `deadlock`). A wait leaves both through `unwait`.
+    stuck: HashMap<usize, super::deadlock::Note>,
     ready: VecDeque<(TaskId, Wake)>,
     /// Which server each task serves a connection of.
     owners: HashMap<TaskId, u64>,
@@ -736,6 +740,7 @@ impl Io {
             scheduler: Scheduler::new(STACK),
             accept_later: None,
             waiting: HashMap::new(),
+            stuck: HashMap::new(),
             ready: VecDeque::new(),
             owners: HashMap::new(),
             servers: HashMap::new(),
@@ -849,7 +854,7 @@ impl Io {
     pub(in crate::embed) fn cancel(&mut self, task: TaskId) {
         let token = self.waiting.iter().find(|(_, (parked, ..))| *parked == task).map(|(token, _)| *token);
         if let Some(token) = token {
-            self.waiting.remove(&token);
+            self.unwait(token);
             self.ready.push_back((task, Wake::Ready(STOPPED)));
         }
     }
@@ -917,7 +922,15 @@ impl Io {
     /// connection, and what this worker served goes into the server's total.
     fn leave(&mut self, id: u64) {
         let Some(mut here) = self.servers.remove(&id) else { return };
-        self.waiting.retain(|_, (task, ..)| !here.tasks.contains(task));
+        let left: Vec<usize> = self
+            .waiting
+            .iter()
+            .filter(|(_, (task, ..))| here.tasks.contains(task))
+            .map(|(token, _)| *token)
+            .collect();
+        for token in left {
+            self.unwait(token);
+        }
         self.ready.retain(|(task, _)| !here.tasks.contains(task));
         // In the order the tasks started, not the set's, so their cleanups run the same way each
         // time.
@@ -957,7 +970,10 @@ impl Io {
         let handler = Arc::clone(&here.server.handler);
         let tls = here.server.tls.clone();
         let draining = here.server.stop.map(|_| Arc::clone(&here.server.draining));
+        // A round is a context for the deadlock check until it ends, or is cancelled and let go.
+        let context = super::deadlock::Context::began();
         let made = self.scheduler.spawn(move || {
+            let _context = context;
             let conn = match draining {
                 Some(draining) => Conn::new(stream).ending_when(draining),
                 None => Conn::new(stream),
@@ -999,7 +1015,11 @@ impl Io {
         let replayed = Arc::clone(replayed);
         let handle = REPLAYED_HANDLES + i64::try_from(n).unwrap_or(0);
         let named = crate::replay::task_named(&format!("{call}.{n}"));
-        if let Ok(task) = self.scheduler.spawn(move || replayed(handle)) {
+        let context = super::deadlock::Context::began();
+        if let Ok(task) = self.scheduler.spawn(move || {
+            let _context = context;
+            replayed(handle)
+        }) {
             here.served.connections += 1;
             here.tasks.insert(task);
             self.owners.insert(task, id);
@@ -1024,11 +1044,7 @@ impl Io {
             }
             match self.with_own_temporaries(task, |io| io.scheduler.resume(task, wake)) {
                 Step::Parked(YIELD) => self.ready.push_back((task, Wake::Ready(READY))),
-                Step::Parked(token) => {
-                    let token = usize::try_from(token).unwrap_or(usize::MAX);
-                    let (interest, deadline) = PARKING.take().unwrap_or((Interest::READABLE, None));
-                    self.waiting.insert(token, (task, interest, deadline));
-                }
+                Step::Parked(token) => self.parked(task, token),
                 Step::Done(0) | Step::Unknown => {
                     let _ = self.ended(task, false);
                 }
@@ -1063,6 +1079,40 @@ impl Io {
         super::write_kept_output();
     }
 
+    /// `task` has parked on `token`: its wait goes in `waiting`, with what it said it waits for, and
+    /// in `stuck`, counted, if it said it's a stuck one.
+    fn parked(&mut self, task: TaskId, token: u64) {
+        let token = usize::try_from(token).unwrap_or(usize::MAX);
+        let Parking { interest, deadline, stuck } =
+            PARKING.take().unwrap_or(Parking { interest: Interest::READABLE, deadline: None, stuck: None });
+        self.waiting.insert(token, (task, interest, deadline));
+        if let Some(note) = stuck
+            && self.stuck.insert(token, note).is_none()
+        {
+            super::deadlock::stuck_began();
+        }
+    }
+
+    /// Takes the wait on `token` out of `waiting`, giving what it was, and out of `stuck`, uncounted,
+    /// if it was a stuck one. Every wait leaves `waiting` through here, so none stays counted.
+    fn unwait(&mut self, token: usize) -> Option<(TaskId, Interest, Option<Instant>)> {
+        unwait(&mut self.waiting, &mut self.stuck, token)
+    }
+
+    /// The notes of this worker's waits, for the deadlock check as it goes to sleep, when nothing
+    /// else is left here: nothing ready or put off, nothing served, and every wait a stuck one.
+    pub(in crate::embed) fn idle_notes(&self) -> Option<Vec<super::deadlock::Note>> {
+        let busy = !self.ready.is_empty()
+            || !self.servers.is_empty()
+            || !self.deferred_ranges.is_empty()
+            || !self.deferred_tasks.is_empty()
+            || self.stuck.len() < self.waiting.len();
+        if busy {
+            return None;
+        }
+        self.waiting.keys().map(|token| self.stuck.get(token).cloned()).collect()
+    }
+
     /// Resumes a range's task with its own accounts in the thread's runtime, and puts them back
     /// after. A range sees to its own failure, which its call keeps.
     fn resume_range(&mut self, task: TaskId, wake: Wake) {
@@ -1077,9 +1127,7 @@ impl Io {
             }
             Step::Parked(token) => {
                 self.accounts.insert(task, accounts);
-                let token = usize::try_from(token).unwrap_or(usize::MAX);
-                let (interest, deadline) = PARKING.take().unwrap_or((Interest::READABLE, None));
-                self.waiting.insert(token, (task, interest, deadline));
+                self.parked(task, token);
             }
             Step::Done(_) | Step::Unknown => {
                 debug_assert!(accounts.is_empty(), "a range ended with what it made not handed over");
@@ -1120,7 +1168,7 @@ impl Io {
 
     /// Makes the task parked on `token` ready, for a wait that finished on another thread.
     pub(in crate::embed) fn wake_token(&mut self, token: Token) {
-        if let Some((task, ..)) = self.waiting.remove(&token.0) {
+        if let Some((task, ..)) = self.unwait(token.0) {
             self.ready.push_back((task, Wake::Ready(READY)));
         }
     }
@@ -1165,6 +1213,7 @@ impl Io {
     /// Drains the server `id`, first waking its rounds here that wait for a next message, to end:
     /// what a stop the program was asked for does, and what closing the server does.
     fn drain_waking(&mut self, id: u64) {
+        let mut woken = Vec::new();
         if let Some(here) = self.servers.get(&id) {
             let mut idle: Vec<usize> = IDLE_READS.with_borrow(|idle| idle.iter().copied().collect());
             // In the order they parked, not the set's.
@@ -1172,10 +1221,13 @@ impl Io {
             for token in idle {
                 let parked = self.waiting.get(&token).map(|(task, ..)| *task);
                 if let Some(task) = parked.filter(|task| here.tasks.contains(task)) {
-                    self.waiting.remove(&token);
-                    self.ready.push_back((task, Wake::Ready(READY)));
+                    woken.push((token, task));
                 }
             }
+        }
+        for (token, task) in woken {
+            self.unwait(token);
+            self.ready.push_back((task, Wake::Ready(READY)));
         }
         self.drain(id);
     }
@@ -1270,29 +1322,46 @@ impl Io {
     /// task waits to read, leaves the task parked: woken, it would only find it would block
     /// and wait again.
     fn wake(&mut self) {
-        for event in &self.events {
+        let Io { events, waiting, stuck, ready, .. } = self;
+        for event in &*events {
             let token = event.token().0;
-            let wanted = self.waiting.get(&token).is_some_and(|(_, interest, _)| {
+            let wanted = waiting.get(&token).is_some_and(|(_, interest, _)| {
                 let gone = event.is_error() || event.is_read_closed() || event.is_write_closed();
                 gone || (interest.is_readable() && event.is_readable())
                     || (interest.is_writable() && event.is_writable())
             });
-            if wanted && let Some((task, ..)) = self.waiting.remove(&token) {
-                self.ready.push_back((task, Wake::Ready(READY)));
+            if wanted && let Some((task, ..)) = unwait(waiting, stuck, token) {
+                ready.push_back((task, Wake::Ready(READY)));
             }
         }
         #[cfg(test)]
         if WAKE_ALL.get() {
-            for (task, ..) in std::mem::take(&mut self.waiting).into_values() {
-                self.ready.push_back((task, Wake::Ready(READY)));
+            let tokens: Vec<usize> = self.waiting.keys().copied().collect();
+            for token in tokens {
+                if let Some((task, ..)) = self.unwait(token) {
+                    self.ready.push_back((task, Wake::Ready(READY)));
+                }
             }
         }
         for token in timed_out(&self.waiting, Instant::now()) {
-            if let Some((task, ..)) = self.waiting.remove(&token) {
+            if let Some((task, ..)) = self.unwait(token) {
                 self.ready.push_back((task, Wake::Ready(TIMED_OUT)));
             }
         }
     }
+}
+
+/// `Io::unwait`, on its maps.
+fn unwait(
+    waiting: &mut HashMap<usize, (TaskId, Interest, Option<Instant>)>,
+    stuck: &mut HashMap<usize, super::deadlock::Note>,
+    token: usize,
+) -> Option<(TaskId, Interest, Option<Instant>)> {
+    let waited = waiting.remove(&token);
+    if stuck.remove(&token).is_some() {
+        super::deadlock::stuck_ended();
+    }
+    waited
 }
 
 /// The waits whose deadlines have passed by `now`, soonest first and, at the same deadline, in the
@@ -1321,7 +1390,7 @@ fn wait_for_every_worker(left: &Latch, stop: impl Fn()) {
     }
     let mut stopped = false;
     while !left.is_done() {
-        let _ = park_on_token(next_token(), Some(Instant::now() + SERVER_END_LOOKS), false);
+        let _ = park_on_token(next_token(), Some(Instant::now() + SERVER_END_LOOKS), false, None);
         if !stopped && super::threads::stopped() {
             stopped = true;
             stop();
@@ -1395,7 +1464,7 @@ pub(crate) fn park_on_fd(
     if !registered {
         return parked_a_moment(token, deadline);
     }
-    PARKING.set(Some((interest, deadline)));
+    parking(interest, deadline, None);
     let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
     REGISTRY.with_borrow(|registry| registry.as_ref().map(|registry| registry.deregister(&mut source)));
     parked_as(woken)
@@ -1484,7 +1553,7 @@ pub(crate) fn park_on_a_copy(
     };
     #[cfg(test)]
     PARKED_ON_COPIES.fetch_add(1, Ordering::Relaxed);
-    PARKING.set(Some((interest, deadline)));
+    parking(interest, deadline, None);
     let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
     REGISTRY.with_borrow(|registry| registry.as_ref().map(|registry| registry.deregister(&mut source)));
     parked_as(woken)
@@ -1529,10 +1598,23 @@ fn parked_a_moment(token: Token, deadline: Option<Instant>) -> Parked {
         return Parked::TimedOut;
     }
     let soon = now + LOOKS_AGAIN_AFTER;
-    match park_on_token(token, Some(deadline.map_or(soon, |deadline| deadline.min(soon))), true) {
+    match park_on_token(token, Some(deadline.map_or(soon, |deadline| deadline.min(soon))), true, None) {
         Parked::Cancelled => Parked::Cancelled,
         Parked::Ready | Parked::TimedOut => Parked::Ready,
     }
+}
+
+/// What a task says of the wait it's about to park in, for its worker (see `PARKING`).
+struct Parking {
+    interest: Interest,
+    deadline: Option<Instant>,
+    stuck: Option<super::deadlock::Note>,
+}
+
+/// Says what the wait this task is about to park in waits for, when it gives up, and, for a stuck
+/// one, its note: what every park does just before it parks.
+fn parking(interest: Interest, deadline: Option<Instant>, stuck: Option<super::deadlock::Note>) {
+    PARKING.set(Some(Parking { interest, deadline, stuck }));
 }
 
 /// A token for a wait on this thread that no other has.
@@ -1546,25 +1628,38 @@ pub(crate) fn next_token() -> Token {
 /// another thread, `deadline` passes, or the task's stopped: for a sleep, or for another task's end.
 /// Only for a task that `can_park`.
 pub(crate) fn park_on(token: Token, deadline: Option<Instant>) -> Parked {
-    park_on_token(token, deadline, true)
+    park_on_token(token, deadline, true, None)
+}
+
+/// `park_on`, with no time limit, for a stuck wait that leaves `note` for the deadlock check: a
+/// channel's send or receive.
+pub(crate) fn park_stuck(token: Token, note: super::deadlock::Note) -> Parked {
+    park_on_token(token, None, true, Some(note))
 }
 
 /// Parks this task on `token` until `wake_token` is sent it, whatever it's told meanwhile: a stop
 /// wakes it, as cancelled, without failing it. For a task waiting for work it handed to other
 /// threads, which read what it lent them until they've finished.
 pub(in crate::embed) fn park_through_a_stop(token: Token) -> Parked {
-    park_on_token(token, None, false)
+    park_on_token(token, None, false, None)
 }
 
 /// `park_on`, which a stop cuts short only if `stoppable`. When it isn't, a stop wakes it, as
-/// cancelled, without failing it: for a task that must wait for another to end all the same.
-fn park_on_token(token: Token, deadline: Option<Instant>, stoppable: bool) -> Parked {
+/// cancelled, without failing it: for a task that must wait for another to end all the same. A
+/// `stuck` wait's note goes with it to its worker, which keeps it while it's parked, counted (see
+/// `deadlock`): a wait a stop cuts short before it parks is never counted.
+fn park_on_token(
+    token: Token,
+    deadline: Option<Instant>,
+    stoppable: bool,
+    stuck: Option<super::deadlock::Note>,
+) -> Parked {
     if stoppable && cut_short() {
         return Parked::Cancelled;
     }
     // What a task has printed comes out before it waits, however long that is.
     super::write_kept_output();
-    PARKING.set(Some((Interest::READABLE, deadline)));
+    parking(Interest::READABLE, deadline, stuck);
     let woken = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
     if stoppable {
         return parked_as(woken);
@@ -1618,10 +1713,16 @@ pub(crate) fn cut_short() -> bool {
 mod launch;
 #[cfg(test)]
 pub(in crate::embed) use launch::launch_on;
-pub(in crate::embed) use launch::take_failed_with;
 pub use launch::{TaskBody, launch, launch_end, task_failed};
+pub(in crate::embed) use launch::{take_failed_with, task_number};
 
 mod blocking;
+
+/// Whether both pools of blocking threads are idle, for the deadlock check: a job running there can
+/// end in a wake.
+pub(crate) fn blocking_idle() -> bool {
+    blocking::pool().idle() && blocking::heavy().idle()
+}
 
 /// Runs `work`, which blocks its thread, so that this task parks rather than holding its worker:
 /// on one of the blocking threads (`serve/blocking.rs`), which hands its result back and wakes the
@@ -1674,7 +1775,7 @@ fn off_thread_on<R: Send + 'static>(
     match threads.run(job) {
         Ok(()) => {
             super::write_kept_output();
-            PARKING.set(Some((Interest::READABLE, None)));
+            parking(Interest::READABLE, None, None);
             let _ = fennec_parked::park(u64::try_from(token.0).unwrap_or(0));
         }
         // No thread could be started to run them, so they run here: this job's wake finds nothing

@@ -6358,6 +6358,54 @@ def main(args: Args, stdout: Stdout):
     )
 }
 
+/// A list whose items hold no blocks is cleared by its length alone, and filled again from its
+/// room: one shared before it's cleared keeps what it held, one cleared and grown past its old
+/// room, and lists of plain structs, of structs holding a text, and of lists, each cleared and
+/// used again. It prints what the reference evaluator prints, with nothing left.
+#[test]
+fn a_cleared_list_is_empty_and_fills_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("cleared_lists", CLEARED_LISTS, "[] [1, 2, 3] 0\n40 39\n[7]\n1 5\n1 b\n[]\n")?;
+    let counts = counts_of("cleared_lists_counts", CLEARED_LISTS)?;
+    assert!(counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
+const CLEARED_LISTS: &str = r#"struct Spot:
+    x: int
+    y: float
+
+struct Named:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    mut ints = [1, 2, 3]
+    shared = ints
+    ints.clear()
+    stdout.print(ints, shared, len(ints))
+    for turn in range(40):
+        ints.append(turn)
+    stdout.print(len(ints), ints[39])
+    ints.clear()
+    ints.append(7)
+    stdout.print(ints)
+    mut spots = [Spot(x=1, y=2.0), Spot(x=3, y=4.0)]
+    spots.clear()
+    spots.append(Spot(x=5, y=6.0))
+    stdout.print(len(spots), spots[0].x)
+    mut named = [Named(name="a long name that is held in a block", hp=3)]
+    named.clear()
+    named.append(Named(name="b", hp=4))
+    stdout.print(len(named), named[0].name)
+    mut grid = [[1, 2], [3]]
+    grid.clear()
+    stdout.print(grid)
+    return
+"#;
+
 /// `set.remove` of a key that isn't there fails as pinned.
 #[test]
 fn removing_what_a_set_lacks_fails_as_pinned() -> std::io::Result<()> {
@@ -15555,6 +15603,47 @@ fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> 
         assert_eq!(printed, wanted, "on {threads} threads: {said}");
         assert!(said.contains(" live 0"), "on {threads} threads: {said}");
         assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
+/// A parked `process.run` whose program ends at once never waits out its timeout: 400 runs of
+/// `true` in `parallel` rounds, each giving up after 10 seconds, all end, on 1, 4 and 16 threads.
+/// On macOS kqueue says a program has exited a moment before it can be reaped, and a run whose
+/// outputs had already closed then waited out its timeout, as nothing said the end again: 600 s
+/// unless the run set one, which ran `process_runs_in_tasks_park_while_their_programs_run` past
+/// its two minutes in two gates on a loaded Mac (#1954). It shows most under load; quiet, a run
+/// rarely meets it.
+#[test]
+#[cfg(unix)]
+fn process_runs_that_end_at_once_in_tasks_never_wait_out_their_timeouts() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("process-runs-ended-at-once")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "process_runs_that_end_at_once_in_tasks";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("FENNEC_THREADS", threads)
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, "400 ended, 0 timed out\n", "on {threads} threads: {said}");
     }
     std::fs::remove_dir_all(&dir)
 }

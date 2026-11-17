@@ -1772,6 +1772,199 @@ const LOCK_BLOCK_VALUE: &str = r#"def main(stdout: Stdout):
     stdout.print(kept)
 "#;
 
+/// A name a `lock` gives, named again inside its block by a loop, a case or an arrow function's
+/// parameter, is that one there, of the same type: not what's locked. Before, a loop's and a
+/// case's read what's locked, and an arrow function's was refused as taking the lock again, or
+/// stopped the program when it ran. A nested function's parameter is renamed the same way, but a
+/// nested function called inside a lock is refused for now whatever its names (#2011).
+#[test]
+fn a_lock_s_name_named_again_inside_its_block_is_that_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let case = "enum Box:\n    Held(lines: list[int])\n    Empty\n\n";
+    let applied = "def applied(work: (list[int]) -> int) -> int:\n    return work([1, 2, 3])\n\n";
+    let shapes = [
+        ("lock_named_by_a_loop", "", "for lines in [[1, 2, 3]]:\n    stdout.print(len(lines))"),
+        (
+            "lock_named_by_a_case",
+            case,
+            "boxed = Box.Held(lines=[1, 2, 3])\nmatch boxed:\n    case .Held(lines):\n        stdout.print(len(lines))\n    case _:\n        pass",
+        ),
+        ("lock_named_by_an_arrow", applied, "stdout.print(applied((lines) => len(lines)))"),
+        (
+            "lock_named_by_a_kept_arrow",
+            "",
+            "counted: (list[int]) -> int = (lines) => len(lines)\nstdout.print(counted([1, 2, 3]))",
+        ),
+    ];
+    for (name, top, inside) in shapes {
+        let inside = inside.replace('\n', "\n        ");
+        let source = LOCK_NAMED_AGAIN.replace("TOP\n", top).replace("INSIDE", &inside);
+        prints_in_both_builds(name, &source, "3\n1\n")?;
+    }
+    // The coverage lane's shape, which checked and then stopped when the arrow ran: a bare
+    // parameter, typed by what it's kept in, reading a field of a value of the locked one's type.
+    prints_in_both_builds("lock_named_by_a_bare_arrow", LOCK_NAMED_BY_A_BARE_ARROW, "3\n[1, 2, 5]\n")?;
+    // A count from `enumerate` named like the lock's name is the loop's: before, each pass wrote
+    // it into what's locked.
+    prints_in_both_builds("lock_named_by_an_enumerate", LOCK_NAMED_BY_AN_ENUMERATE, "100\n[10, 21, 32]\n")
+}
+
+const LOCK_NAMED_BY_AN_ENUMERATE: &str = r"def main(stdout: Stdout):
+    shared count = 100
+    mut items = [10, 20, 30]
+    lock count as ref seen:
+        for seen, ref item in enumerate(items):
+            item += seen
+    lock count as now:
+        stdout.print(now)
+    stdout.print(items)
+";
+
+const LOCK_NAMED_BY_A_BARE_ARROW: &str = r"struct Bag:
+    items: list[int]
+    counts: dict[str, int]
+
+def main(stdout: Stdout):
+    shared bag = Bag(items=[1, 2], counts=dict[str, int]())
+    lock bag as ref held:
+        measure: (Bag) -> int = held => len(held.items)
+        stdout.print(measure(Bag(items=[3, 3, 3], counts=dict[str, int]())))
+        held.items.append(5)
+    lock bag as held:
+        stdout.print(held.items)
+";
+
+/// What each shape of `a_lock_s_name_named_again_inside_its_block_is_that_name` goes in, after
+/// what it declares at the top: it prints 3, from the name inside, and then 1, from what's locked.
+const LOCK_NAMED_AGAIN: &str = r"TOP
+def main(stdout: Stdout):
+    shared log = list[int]()
+    lock log as ref lines:
+        lines.append(5)
+        INSIDE
+        stdout.print(len(lines))
+";
+
+/// A name a `with` gives, named again inside its block by a nested function's parameter or by a
+/// loop inside a case, is that one there, of the same type: not what the source lends. So is a
+/// name a source's own nested function's parameter has, where the source has a local of that
+/// name. Before, each read the other.
+#[test]
+fn a_with_s_name_named_again_inside_its_block_is_that_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("with_named_again", WITH_NAMED_AGAIN, "1\n2\n30 205\n")?;
+    // A source that binds a name a function it calls has, in a comprehension, still calls it.
+    prints_in_both_builds("with_source_calls_its_own", WITH_SOURCE_CALLS_ITS_OWN, "3\n")?;
+    // A source's declaration inside an `except` block is its own, not a caller's `mut` name of
+    // that name: before, it changed the caller's.
+    prints_in_both_builds("with_source_declares_its_own", WITH_SOURCE_DECLARES_ITS_OWN, "1\n2 1\n")?;
+    // A `ref` named like the `with`'s name holds for the rest of the block, as any `ref` does.
+    prints_in_both_builds("with_named_by_a_ref", WITH_NAMED_BY_A_REF, "[[7, 8, 5]]\n[4]\n")?;
+    // A loop in the block named like the caller's name a source lends is the loop's: the
+    // `with`'s name still means the caller's. Before, it read the loop's.
+    prints_in_both_builds("with_lends_a_name_named_again", WITH_LENDS_A_NAME_NAMED_AGAIN, "2\n")?;
+    // A name a `with` splits what's lent into is the block's own: before, it changed a `mut`
+    // name of the caller's of that name.
+    prints_in_both_builds("with_split_names_its_own", WITH_SPLIT_NAMES_ITS_OWN, "15\n1\n")
+}
+
+const WITH_SPLIT_NAMES_ITS_OWN: &str = r"def pair() -> with (int, int):
+    lend (7, 8)
+
+def main(stdout: Stdout):
+    mut first = 1
+    with pair() as first, second:
+        stdout.print(first + second)
+    first += 0
+    stdout.print(first)
+";
+
+const WITH_SOURCE_CALLS_ITS_OWN: &str = r"def total(items: list[int]) -> int:
+    return sum(items)
+
+def opened() -> with int:
+    groups = [[1, 2], [3]]
+    sizes = [len(total) for total in groups]
+    lend total(sizes)
+
+def main(stdout: Stdout):
+    with opened() as got:
+        stdout.print(got)
+";
+
+const WITH_SOURCE_DECLARES_ITS_OWN: &str = r#"error Bad:
+    pass
+
+def risky(n: int) -> int fails Bad:
+    if n < 0:
+        fail Bad()
+    return n
+
+def opened(ref log: list[str]) -> with int:
+    got = risky(-1) except why:
+        count = 7
+        log.append(f"{why} {count}")
+        0
+    lend got
+
+def main(stdout: Stdout):
+    mut count = 1
+    mut log = list[str]()
+    with opened(ref log) as n:
+        stdout.print(n + count)
+    count += 1
+    stdout.print(count, len(log))
+"#;
+
+const WITH_NAMED_BY_A_REF: &str = r"def opened(ref sizes: list[int]) -> with list[int]:
+    kept = [1, 2, 3, 4]
+    lend kept
+    sizes.append(len(kept))
+
+def main(stdout: Stdout):
+    mut grid = [[7, 8]]
+    mut sizes = list[int]()
+    with opened(ref sizes) as row:
+        ref row = grid[0]
+        row.append(5)
+    stdout.print(grid)
+    stdout.print(sizes)
+";
+
+const WITH_LENDS_A_NAME_NAMED_AGAIN: &str = r"def opened(ref buf: list[int]) -> with list[int]:
+    lend buf
+
+def main(stdout: Stdout):
+    mut data = [1, 2]
+    with opened(ref data) as row:
+        for data in [[7, 8, 9]]:
+            stdout.print(len(row))
+";
+
+const WITH_NAMED_AGAIN: &str = r"def opened() -> with int:
+    value = 5
+    def doubled(value: int) -> int:
+        return value * 2
+    lend value + doubled(100)
+
+def main(stdout: Stdout):
+    mode = 0
+    with opened() as added:
+        def tripled(added: int) -> int:
+            return added * 3
+        match mode:
+            case 0:
+                for added in [1, 2]:
+                    stdout.print(added)
+            case _:
+                pass
+        stdout.print(tripled(10), added)
+";
+
 /// What a program prints, built in dev and `--release` both, is `wanted`.
 fn prints_in_both_builds(name: &str, source: &str, wanted: &str) -> std::io::Result<()> {
     let dir = folder(name)?;
@@ -5436,6 +5629,56 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A `ref` local, and a `for ref`'s name, named again inside what follows, by a loop, is the
+/// loop's there; and a loop named like what the `ref` reaches through leaves the `ref` reaching
+/// through what it did. Before, each stopped the build, as what the `ref` was written in as read
+/// the loop's name.
+#[test]
+fn a_ref_s_names_named_again_after_it_are_those_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("ref_named_again", REF_NAMED_AGAIN, "3\n[[1, 1], [2]]\n")?;
+    prints_in_both_builds("for_ref_named_again", FOR_REF_NAMED_AGAIN, "[[1, 1], [2, 1]]\n")
+}
+
+const REF_NAMED_AGAIN: &str = r"def main(stdout: Stdout):
+    mut groups = [[1], [2]]
+    ref first = groups[0]
+    for first in [[7, 7, 7]]:
+        stdout.print(len(first))
+    for groups in [[[9]]]:
+        first.append(len(groups))
+    stdout.print(groups)
+";
+
+const FOR_REF_NAMED_AGAIN: &str = r"def main(stdout: Stdout):
+    mut rows = [[1], [2]]
+    for ref row in rows:
+        for rows in [[[5, 5]]]:
+            row.append(len(rows))
+    stdout.print(rows)
+";
+
+/// The count `for at, ref item in enumerate(items)` gives is the loop's own, though a `mut` name
+/// outside it has that name, which keeps its value. Before, each pass wrote the count into it.
+#[test]
+fn an_enumerate_s_count_is_the_loop_s_own() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("enumerate_count_own", ENUMERATE_COUNT_OWN, "101 [10, 21, 32]\n")
+}
+
+const ENUMERATE_COUNT_OWN: &str = r"def main(stdout: Stdout):
+    mut at = 100
+    mut items = [10, 20, 30]
+    for at, ref item in enumerate(items):
+        item += at
+    at += 1
+    stdout.print(at, items)
+";
+
 /// `for at, ref item in enumerate(items)` changes each item where it is, natively, as the
 /// language says: numbers, structs and lists, a `continue` that still counts what it skips, and a
 /// nested one over the items' own lists.
@@ -7966,6 +8209,104 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
             Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}.fen")),
         )?;
         prints_in_both_builds(name, &source, "gave up -2\nfailed out\nclosed\nclosed\n")?;
+    }
+    Ok(())
+}
+
+/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4 and 16
+/// threads, wanting what it prints, what it says and its exit code every time.
+fn deadlock_fixture_runs_as(
+    name: &str,
+    runs: usize,
+    (out, err, code): (&str, &str, i32),
+) -> std::io::Result<()> {
+    let dir = folder(&format!("deadlocks-{name}"))?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/deadlocks/{name}.fen")),
+        &program,
+    )?;
+    let executable = dir.join(name);
+    let (source, built_as) = (program.to_string_lossy(), executable.to_string_lossy());
+    let built = fennec(&["build", "--llvm", &source, "-o", &built_as], &dir)?;
+    assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        for _ in 0..runs {
+            let ran = Command::new(&executable).env("FENNEC_THREADS", threads).output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(
+                (said.0.as_ref(), said.1.as_ref(), ran.status.code()),
+                (out, err, Some(code)),
+                "{name} on {threads} threads"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// When `main` and every task wait on each other for good, in channel sends and receives and at
+/// blocks' ends with no time limit, the program stops with exit code 1, after what it printed,
+/// saying who waits for what, as Go's "all goroutines are asleep" does. Without threads, `main`
+/// alone; with them, two tasks on each other's channels, a task at a full channel, the last task
+/// that could move ending, and a task waiting at a block's end of its own.
+#[test]
+fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let error = "error: a deadlock: every task is waiting for another, and nothing can wake them\n";
+    let main_for =
+        |task: u32| format!("  main is waiting at the end of a `with launch` block, for task {task}\n");
+    let receives = |task: u32| format!("  task {task} is waiting to receive on a channel that's empty\n");
+    let cases = [
+        ("receive_alone", "before\n", "  main is waiting to receive on a channel that's empty\n".to_owned()),
+        ("each_other", "both launched\n", format!("{}{}{}", main_for(2), receives(1), receives(2))),
+        ("block_end", "launched\n", format!("{}{}", main_for(1), receives(1))),
+        (
+            "send_full",
+            "launched\n",
+            format!("{}  task 1 is waiting to send on a channel that's full\n", main_for(1)),
+        ),
+        ("last_ends", "napped\n", format!("{}{}", main_for(2), receives(2))),
+        (
+            "inside_a_task",
+            "launched inside\n",
+            format!(
+                "{}  task 1 is waiting at the end of a `with launch` block, for task 2\n{}",
+                main_for(1),
+                receives(2)
+            ),
+        ),
+    ];
+    for (name, printed, lines) in cases {
+        deadlock_fixture_runs_as(name, 1, (printed, &format!("{error}{lines}"), 1))?;
+    }
+    Ok(())
+}
+
+/// A wait that something can still end is never taken for a deadlock: a receive with a time limit;
+/// one whose sender naps first; one a crash of the task its code launched cuts short, which
+/// changes nothing on the channel; a task stopped while it counts that only then comes to a
+/// receive, while its launcher waits at the block's end with no time limit left (from Fable 5.2's
+/// review of the design); and, where there's `sleep` to run, a task waiting on `main` while `main`
+/// runs a process.
+#[test]
+fn a_wait_something_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let mut cases = vec![
+        ("timeout_fine", "gave up\n", ""),
+        ("sender_naps", "7\n", ""),
+        ("crash_wakes", "it crashed\n", "error: index 5 is out of range for length 2\n"),
+        ("stopped_counting", "counted True\nthe block is over\n", ""),
+    ];
+    // It runs `sleep`, which Windows doesn't have.
+    if cfg!(unix) {
+        cases.push(("process_waits", "heard 1\n", ""));
+    }
+    for (name, printed, said) in cases {
+        deadlock_fixture_runs_as(name, 5, (printed, said, 0))?;
     }
     Ok(())
 }
@@ -13989,6 +14330,84 @@ fn a_kept_length_is_the_lists_own_however_the_list_is_used() -> std::io::Result<
     Ok(())
 }
 
+/// Two reads next to each other, `starts[near]` then `starts[near + 1]`, are tested together
+/// for both being inside, and only when that fails is each checked on its own, in order: so the
+/// first outside fails as it would alone, with the same message and trace, after what came before
+/// it ran. Outside past the end on the second read and on the first, from the end with a
+/// negative `near` that's inside, before the front, and after a loop has printed and appended.
+#[test]
+fn two_reads_next_to_each_other_fail_as_each_would_alone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_pinned("adjacent_second_outside", ADJACENT_SECOND_OUTSIDE)?;
+    same_as_pinned("adjacent_first_outside", ADJACENT_FIRST_OUTSIDE)?;
+    same_as_pinned("adjacent_from_the_end", ADJACENT_FROM_THE_END)?;
+    same_as_pinned("adjacent_before_the_front", ADJACENT_BEFORE_THE_FRONT)?;
+    same_as_pinned("adjacent_after_writes", ADJACENT_AFTER_WRITES)?;
+    Ok(())
+}
+
+const ADJACENT_SECOND_OUTSIDE: &str = r"def summed(starts: list[int], upto: int, stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(upto):
+        total += starts[near] * 10 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(summed([0, 2, 4, 6], upto=5, stdout=stdout))
+    return
+";
+
+const ADJACENT_FIRST_OUTSIDE: &str = r"def spans(starts: list[int], nears: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in nears:
+        total += starts[near] * 10 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(spans([0, 2, 5, 9], nears=[0, 2, 4], stdout=stdout))
+    return
+";
+
+const ADJACENT_FROM_THE_END: &str = r"def ends(starts: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(-4, 2):
+        total += starts[near] * 100 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(ends([1, 2, 3, 4], stdout=stdout))
+    return
+";
+
+const ADJACENT_BEFORE_THE_FRONT: &str = r"def ends(starts: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(-3, -7, -1):
+        total += starts[near] * 100 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(ends([1, 2, 3, 4], stdout=stdout))
+    return
+";
+
+const ADJACENT_AFTER_WRITES: &str = r"def filled(starts: list[int], stdout: Stdout) -> list[int]:
+    mut made = list[int]()
+    for near in range(len(starts)):
+        made.append(starts[near] + starts[near + 1])
+        stdout.print(made)
+    return made
+
+def main(stdout: Stdout):
+    stdout.print(filled([5, 6, 7], stdout=stdout))
+    return
+";
+
 /// An index checked once stays inside its list until something shortens or replaces the
 /// list, or writes the index: a pop, a method popping or replacing a field, a new list, and
 /// negative indexes are each checked again, and the last read fails.
@@ -18355,6 +18774,35 @@ fn the_second_launch_in_a_function_keeps_its_stop_after() -> std::io::Result<()>
     let ran = Command::new(&executable).current_dir(&dir).output_within()?;
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "done\n", "{}", String::from_utf8_lossy(&ran.stderr));
+    Ok(())
+}
+
+/// A name of the caller's a launched task's arrow reads is the caller's, though what's written
+/// in for the launch has a parameter of that name, `stop_after`. Before, the task read that one,
+/// which was `None`.
+#[test]
+fn a_launched_task_reads_its_caller_s_names() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("launch_caller_names")?;
+    let program = dir.join("names.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    stop_after = 5\n    with launch(() => stdout.print(stop_after)) as task:\n        pass\n",
+    )?;
+    let executable = dir.join("names");
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).current_dir(&dir).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "5\n");
     Ok(())
 }
 
@@ -25478,6 +25926,51 @@ fn slices_as_dict_keys_match_what_was_pinned() -> std::io::Result<()> {
     )
 }
 
+/// A slice of a short line, held inline in its header, is looked up and added as a key where its
+/// bytes are, with no block of its own: a block is made for each string value the dict keeps and
+/// nothing else. Each lookup and each add made the line a block for the runtime, and the runtime
+/// copied the slice again, so these 3,000 lines made 18,013 blocks where they now make about
+/// 3,000. `examples/dict_slice_keys.fen` holds what such keys read back as. Both builds are run:
+/// the release build is where LLVM's optimizations rework the reads from the line's bytes.
+#[test]
+fn a_slice_of_a_short_line_as_a_key_makes_no_block_of_its_own() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("inline_slice_keys")?;
+    std::fs::write(dir.join("inline_slice_keys.fen"), INLINE_SLICE_KEYS)?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "inline_slice_keys", how)?;
+        assert_eq!(printed, "3000 3000 3000 v2999\n", "{how:?}");
+        let made = counts.split(' ').skip_while(|word| *word != "allocations").nth(1);
+        let made: u64 = made.and_then(|count| count.parse().ok()).unwrap_or(u64::MAX);
+        assert!(made < 4_000 && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// 3,000 short lines, each set as a key by its slice, then each read back by a slice.
+const INLINE_SLICE_KEYS: &str = r#"def main(stdout: Stdout):
+    mut headers = dict[str, str]()
+    mut counts = dict[str, int]()
+    for count in range(3000):
+        line = f"k{count}: v{count}"
+        colon = line.find(": ") else:
+            continue
+        headers[line[:colon]] = line[colon + 2:]
+        counts[line[:colon]] = count
+    mut found = 0
+    for count in range(3000):
+        line = f"k{count}: x"
+        colon = line.find(": ") else:
+            continue
+        if line[:colon] in headers and (counts.get(line[:colon]) else -1) == count:
+            found += 1
+    stdout.print(len(headers), len(counts), found, headers["k2999"])
+    return
+"#;
+
 /// A slice as a dict's key, set, read with `get`, tested with `in`, popped and added to a set,
 /// for values of every kind a dict holds: a string, an int, a float, a bool, a list, a struct, a
 /// struct holding a list, and a dict. Each does what the same key does made another way, by an
@@ -28050,7 +28543,7 @@ fn a_program_built_for_a_heap_audit_keeps_no_native_blocks() -> std::io::Result<
         for work in std::fs::read_dir(dir.join("work"))?.flatten() {
             for kept in std::fs::read_dir(work.path())?.flatten() {
                 if kept.path().extension().is_some_and(|ext| ext == "ll")
-                    && std::fs::read_to_string(kept.path())?.contains("@fen_drop_")
+                    && std::fs::read_to_string(kept.path())?.contains("@\"fen_drop_")
                 {
                     with_a_drop += 1;
                 }

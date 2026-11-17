@@ -1,0 +1,12 @@
+12: []=[no key] [Accept-Encoding]=[gzip, deflate, br] [Café]=[au lait] [Content-Length]=[12345678] [Empty]=[] [Host]=[again.example] [X-Long-Name-Héader]=[valeur longue] [X-Name]=[Zoë] [X-Twenty-Two]=[12345678] [X-🦊]=[fox] [abcdefghijklmnopqrstu]=[v] [abcdefghijklmnopqrstuv]=[w]
+ True/again.example/again.example True/12345678/12345678 True/12345678/12345678 True/12345678/12345678 True/gzip, deflate, br/gzip, deflate, br True/au lait/au lait True/fox/fox True/Zoë/Zoë True/valeur longue/valeur longue True// True/no key/no key True/again.example/again.example True/v/v True/w/w
+10000 v0 v4999 value number 2500
+5000 0 1234 4999
+5000
+2: [Accept]=[all] [Host]=[one]
+3: [Accept]=[all] [Added]=[by a slice] [Host]=[one]
+3: [Accept]=[all] [Added]=[by a slice] [Host]=[one]
+4: [Accept]=[all] [Added]=[by a slice] [Host]=[one] [Through]=[a parameter]
+277 True True True 2401
+undone
+2: [Good]=[kept] [Host]=[locked]

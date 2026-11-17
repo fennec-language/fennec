@@ -1,0 +1,187 @@
+# Dicts keyed by slices of strings, set and read the way a request's headers are:
+# `headers[line[:colon]] = line[colon + 2:]`. A line of 23 bytes or fewer is held inline in its
+# header and a longer one in a block, and ASCII and other text slice differently, so each is set
+# and read back both ways: by a slice, and by a whole key. A dict held twice, changed through a
+# parameter, grown many times over, or changed under a lock that fails, keeps what each holder
+# should see.
+
+error Refused:
+    why: str
+
+struct Holder:
+    headers: dict[str, str]
+
+## The dict a list of `name: value` lines makes, each set by slicing its line.
+def from_lines(lines: list[str]) -> dict[str, str]:
+    mut headers = dict[str, str]()
+    for line in lines:
+        colon = line.find(": ") else:
+            continue
+        headers[line[:colon]] = line[colon + 2:]
+    return headers
+
+## Each key and value, in order, on a line of their own.
+def shown(headers: dict[str, str]) -> str:
+    mut out = f"{len(headers)}:"
+    for key in sorted(headers.keys()):
+        out += f" [{key}]=[{headers[key]}]"
+    return out
+
+## Each line's key read back by slicing the line: `in`, `get` and indexing.
+def read_back(headers: dict[str, str], lines: list[str]) -> str:
+    mut out = ""
+    for line in lines:
+        colon = line.find(": ") else:
+            continue
+        there = line[:colon] in headers
+        got = headers.get(line[:colon]) else "-"
+        out += f" {there}/{got}/{headers[line[:colon]]}"
+    return out
+
+## Adds a line through a parameter.
+def add_into(ref target: dict[str, str], line: str):
+    colon = line.find(": ") else:
+        return
+    target[line[:colon]] = line[colon + 2:]
+    return
+
+## Adds a line under a lock, failing after for a line that starts `Bad`, which undoes it.
+## A line with no `: ` adds nothing.
+def lock_add(holder: shared Holder, line: str) fails Refused:
+    lock holder as ref held:
+        # Through a parameter, so the dict the lock's log marked goes to the slice's own set.
+        add_into(ref held.headers, line)
+        if line.startswith("Bad"): fail Refused(why="undone")
+    return
+
+def show_held(holder: shared Holder, stdout: Stdout):
+    lock holder as held:
+        stdout.print(shown(held.headers))
+    return
+
+## 22, 23 and 24 bytes, so the line is inline, inline at its fullest, and in a block; keys at
+## either end; an empty key and an empty value; text that isn't ASCII in the key, in the value,
+## inline and in a block; and a key given twice, the second winning.
+def lines_of_every_kind(stdout: Stdout):
+    lines = [
+        "Host: api.den.example",
+        "Content-Length: 1234567",
+        "Content-Length: 12345678",
+        "X-Twenty-Two: 12345678",
+        "Accept-Encoding: gzip, deflate, br",
+        "Café: au lait",
+        "X-🦊: fox",
+        "X-Name: Zoë",
+        "X-Long-Name-Héader: valeur longue",
+        "Empty: ",
+        ": no key",
+        "Host: again.example",
+        "abcdefghijklmnopqrstu: v",
+        "abcdefghijklmnopqrstuv: w",
+    ]
+    headers = from_lines(lines)
+    stdout.print(shown(headers))
+    stdout.print(read_back(headers, lines))
+    return
+
+## Many new keys by slices alone, inline and in blocks, past several capacities, then read.
+def grown(stdout: Stdout):
+    mut many = dict[str, str]()
+    mut counts = dict[str, int]()
+    for count in range(5000):
+        short = f"k{count}: v{count}"
+        colon = short.find(": ") else:
+            continue
+        many[short[:colon]] = short[colon + 2:]
+        counts[short[:colon]] = count
+        long = f"a-header-name-long-enough-{count}: value number {count}"
+        far = long.find(": ") else:
+            continue
+        many[long[:far]] = long[far + 2:]
+    stdout.print(len(many), many["k0"], many["k4999"], many["a-header-name-long-enough-2500"])
+    stdout.print(len(counts), counts["k0"], counts["k1234"], counts["k4999"])
+    mut found = 0
+    for count in range(5000):
+        line = f"k{count}: x"
+        colon = line.find(": ") else:
+            continue
+        if line[:colon] in many and (counts.get(line[:colon]) else -1) == count:
+            found += 1
+    stdout.print(found)
+    return
+
+## Held twice: the other holder keeps what it had, whether the change is by a slice here,
+## while it still holds the dict, or through a parameter, while another holder still does.
+def held_twice(stdout: Stdout):
+    mut changed = from_lines(["Host: one", "Accept: all"])
+    kept = changed
+    colon_line = "Added: by a slice"
+    colon = colon_line.find(": ") else:
+        return
+    changed[colon_line[:colon]] = colon_line[colon + 2:]
+    stdout.print(shown(kept))
+    stdout.print(shown(changed))
+    also = changed
+    add_into(ref changed, "Through: a parameter")
+    stdout.print(shown(also))
+    stdout.print(shown(changed))
+    return
+
+## A key made whole from a slice's text, not by slicing.
+def whole_key(text: str) -> str:
+    return f"<{text}>".removeprefix("<").removesuffix(">")
+
+## Every slice of a 23-byte line, inline at its fullest, as a key: with a short value, a value
+## long enough for a block, and an int. Each dict has to be the one the same keys make whole,
+## set in the same order, and each key has to read back by its slice.
+def every_slice(stdout: Stdout):
+    full = "abcdefghijklmnopqrstuvw"
+    mut short_values = dict[str, str]()
+    mut long_values = dict[str, str]()
+    mut numbers = dict[str, int]()
+    mut made_short = dict[str, str]()
+    mut made_long = dict[str, str]()
+    mut made_numbers = dict[str, int]()
+    for start in range(-24, 25):
+        for stop in range(-24, 25):
+            long = f"a value long enough to be held in a block, {start} to {stop}"
+            short_values[full[start:stop]] = full[stop:start]
+            long_values[full[start:stop]] = long
+            numbers[full[start:stop]] = start * 100 + stop
+            whole = whole_key(full[start:stop])
+            made_short[whole] = full[stop:start]
+            made_long[whole] = long
+            made_numbers[whole] = start * 100 + stop
+    mut read = 0
+    for start in range(-24, 25):
+        for stop in range(-24, 25):
+            whole = whole_key(full[start:stop])
+            if (
+                full[start:stop] in numbers
+                and (numbers.get(full[start:stop]) else -1) == made_numbers[whole]
+                and short_values[full[start:stop]] == made_short[whole]
+                and long_values[full[start:stop]] == made_long[whole]
+            ):
+                read += 1
+    stdout.print(
+        len(numbers),
+        numbers == made_numbers,
+        short_values == made_short,
+        long_values == made_long,
+        read,
+    )
+    return
+
+def main(stdout: Stdout):
+    lines_of_every_kind(stdout)
+    grown(stdout)
+    held_twice(stdout)
+    every_slice(stdout)
+    # Under a lock: a change kept, and one undone by the failure that leaves the lock.
+    shared holder = Holder(headers=from_lines(["Host: locked"]))
+    lock_add(holder, "Good: kept") except Refused():
+        stdout.print("refused")
+    lock_add(holder, "Bad: undone") except why:
+        stdout.print(why.why)
+    show_held(holder, stdout)
+    return

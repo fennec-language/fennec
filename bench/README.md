@@ -90,13 +90,16 @@ than 5% slower than the best, on either side. Each kernel is also built the dev 
 `fennec build --llvm` without `--release`, cached a function at a time, and raced against the
 twin too, so a slip in dev builds shows. Both builds are timed, each from an empty Fennec home
 so no cache helps. The Suite report workflow runs it on
-x86 Linux, where Valgrind counts, and on Arm macOS, after every push to `main` and on demand.
+x86-64 Linux and Arm Linux, where Valgrind counts, and on Arm macOS, after every push to `main`
+and on demand. Arm Linux shares its OS with one and its architecture with the other, so a gap
+between machines shows whether it comes from the code made for x86-64 or from the OS.
 Where Valgrind counts, it also simulates the caches, so each kernel shows its first-level data
 cache and last-level misses, Fennec's and the Rust twin's, beside its instructions. The caches
 are fixed (32 KiB first level, 8 MiB last level, 64-byte lines), so the counts are as
 repeatable as the instruction counts, whichever machine runs them.
-It puts one table on the run's summary page and adds each push's numbers to `history.jsonl`
-on the `bench-history` branch. Being slow never fails it.
+It puts the scoreboard's eight real programs on the run's summary page first, one column a
+machine, then a table of every kernel, and adds each push's numbers to `history.jsonl` on the
+`bench-history` branch. Being slow never fails it.
 
 A kernel can have Go and Java twins too, `name.go` and `name.java` beside `name.fen`. They do
 the same work in each language's plain standard library and print the same thing. They're
@@ -195,16 +198,20 @@ Its steps, at each size:
 - `check`: `fennec check`.
 - `cold-dev`: a dev build in a new Fennec folder.
 - `cold-release`: a release build in a new Fennec folder.
-- `edit-dev`: a dev build after a one-line edit to a module in the middle.
+- `edit-dev`: a dev build after a one-line edit to a module in the middle. The edit keeps the line's length, so it moves nothing after it.
 - `edit-release`: a release build after that edit.
 - `test`: `fennec test` after the edit.
+- `edit-dev-longer`: a dev build after the first line of the first file, a comment, is made longer. That moves where everything after it is and changes nothing else.
+- `edit-dev-line`: a dev build after a comment line is added below it, which moves every line after it down one.
+
+The last two change nothing a program does, so whatever they build again is waste, only where things are. An edit near the top of a real program moves the rest the same way.
 
 Each gives its wall time and the most memory one process held. Where counted, it also gives the instructions each kind of process took and how many times it ran. Each build says how many functions it sent through LLVM, and after the edit the rest came from the cache.
 
-- Between each size and the next, each step's growth is set against the program's: 1.00 is in step, and over 1.25 fails.
+- Between each size and the next, each step's growth is set against the program's: 1.00 is in step, and over 1.25 fails. `edit-dev-longer` and `edit-dev-line` only report theirs for now: a parallel body's name still carries where it starts, so they build again every parallel body after the edit until the checker names them another way.
 - Instructions here move with the machine's load, since a dev build starts thousands of short `opt` and `llc` processes: the same 23,000-line build counted 1,352 G at load 2 and 1,822 G at load 117. Compare sizes measured at the same load, as one run measures them.
 - `bench/big-codebase.txt` holds each system's budgets: a step's wall time may go over its budget by half, its memory by a quarter, and its instructions by 5%. `--pin` writes this system's from what it measured.
-- The nightly `proofs.yml` runs it on CI's Linux runners at 20,000 and 50,000 lines, and `big-codebase-weekly.yml` at 100,000 and 200,000 once a week. Their budgets come from their first runs. At 200,000 lines, the release build holds about 6 GB, more than a benchmark run on a Mac here may take, so measure that size on CI.
+- The nightly `proofs.yml` runs it on CI's Linux runners at 20,000, 50,000 and 100,000 lines, and `big-codebase-weekly.yml` at 100,000 and 200,000 once a week. Their budgets come from their first runs. At 200,000 lines, the release build holds about 6 GB, more than a benchmark run on a Mac here may take, so measure that size on CI.
 - `fennec-bench big-codebase generate DIR --lines N` writes the program alone, to look at.
 
 ## Adding a kernel

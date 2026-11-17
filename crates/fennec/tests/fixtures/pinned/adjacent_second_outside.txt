@@ -1,0 +1,14 @@
+source 7bb090cd55eec9502dc3095e79c3e8afd9c21d7e1e60238692e3658c2ea27357
+code 1
+stdout 14
+0 2
+1 26
+2 72
+stderr 289
+error: index 4 is out of range for length 4
+ --> <dir>/adjacent_second_outside.fen:4:38
+  |
+4 |         total += starts[near] * 10 + starts[near + 1]
+  |                                      ^^^^^^^^^^^^^^^^
+  = in `summed`
+  = called from `main` at <dir>/adjacent_second_outside.fen:9:18

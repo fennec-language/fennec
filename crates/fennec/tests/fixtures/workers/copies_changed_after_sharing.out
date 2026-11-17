@@ -1,0 +1,14 @@
+list [1, 2, 3] [9, 2, 3, 4]
+nested list [[1, 2], [3, 4]] [[1, 2, 5], [30, 4]]
+tuples [(1, [2]), (3, [4])] [(5, [6]), (3, [4])]
+set {1, 2} {2, 3}
+dict {"a": [1], "b": [2]} {"a": [1, 2], "b": [2], "c": [3]}
+struct Bag(items=[1], name="x") Bag(items=[1, 2], name="y")
+nested struct Outer(inner=Bag(items=[1], name="in"), bags=[Bag(items=[2], name="b")], counts={"k": [1]}) Outer(inner=Bag(items=[1, 8], name="in"), bags=[Bag(items=[20], name="z")], counts={"k": [1, 9]})
+argument [1, 0] [1]
+ref [1, 7]
+for ref [[1], [2]] [[1, 0], [2, 0]]
+captured 2 3
+task got [[1], [2]] made [[1, 99], [2]]
+task got [[1, 5], [2], [3]] made [[1, 5, 99], [2], [3]]
+sender kept [[1, 5], [2], [3]]

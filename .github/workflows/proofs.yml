@@ -14,9 +14,9 @@ name: Proofs
 # runtime's tests run under Miri, which stops on undefined behavior in the crates under it
 # (`.github/scripts/miri.sh`). The game server and the web backend each run for an hour under
 # their own load, and what they hold has to level off (`.github/scripts/soak.sh`). A generated
-# program of 20,000 and 50,000 lines is checked, built and tested, and each step held to its time and
-# memory, and to growing no faster than the program (`fennec-bench big-codebase`; 100,000 and
-# 200,000 lines weekly, in `big-codebase-weekly.yml`). The night's
+# program of 20,000, 50,000 and 100,000 lines is checked, built and tested, and each step held to its
+# time and memory, and to growing no faster than the program (`fennec-bench big-codebase`; 200,000
+# lines weekly, in `big-codebase-weekly.yml`). The night's
 # report is kept as `nightly-report`, which
 # `.github/scripts/nightly-report.sh` copies into the lanes' notes. No pull request waits on this.
 on:
@@ -66,6 +66,13 @@ jobs:
         id: programs
         if: always()
         run: FENNEC="$PWD/target/release/fennec" ./target/release/fennec-fuzz run programs --seed "$GITHUB_RUN_ID" --seconds 3600 --stuck 180 --found found | tee programs.txt
+      # The builds are held to the oracle only on the random programs it runs, and it refuses the
+      # rest without a word: the report says how many of the night's first 200 it ran, and why it
+      # refused the others.
+      - name: Count the random programs the oracle runs
+        id: oracle_share
+        if: always()
+        run: ./target/release/fennec-fuzz oracle --seed "$GITHUB_RUN_ID" --inputs 200 | tee oracle-share.txt
       # Built for a heap audit, each program's heap is checked as it ends: a block left with no
       # holder, or counted otherwise than its holders, fails the program that made it. No daemon,
       # since one started earlier wouldn't have the switch in its environment.
@@ -140,7 +147,7 @@ jobs:
             [ -f report.md ] && cat report.md
             echo
             echo "## Fuzzing"
-            grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck" fuzz.txt programs.txt audited.txt 2>/dev/null | sed 's/^/- /'
+            grep -hE "inputs, [0-9]+ failures|broke a rule|crashed|got stuck|the oracle ran" fuzz.txt programs.txt oracle-share.txt audited.txt 2>/dev/null | sed 's/^/- /'
           } > nightly.md
           cat nightly.md >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the report
@@ -262,12 +269,12 @@ jobs:
           path: soak.md
           if-no-files-found: ignore
 
-  # A program of 20,000 and 50,000 lines, generated the same each night: checked, built
+  # A program of 20,000, 50,000 and 100,000 lines, generated the same each night: checked, built
   # cold in dev and release, built again after a one-line edit, and tested, each step held to its
   # time and memory in `bench/big-codebase.txt`, and to growing in step with the program, not
   # faster (`fennec-bench big-codebase`).
   big-codebase:
-    name: Check, build and test a big codebase at two sizes
+    name: Check, build and test a big codebase at three sizes
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -282,10 +289,12 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build fennec, its runtimes, their bitcode and the bench
         run: .github/scripts/big-codebase-build.sh
-      # 100,000 lines once the first nights say how long these two take. 200,000 is weekly, in
-      # `big-codebase-weekly.yml`.
+      # Each step runs three times and counts its median, so one slow or fast run can't fail a
+      # night or pass one by itself. One run of the three sizes took 12 minutes on this runner on
+      # 2026-11-17, so three take about 40.
+      # 200,000 is weekly, in `big-codebase-weekly.yml`.
       - name: Measure each step at each size
-        run: ./target/release/fennec-bench big-codebase --lines 20000,50000 --markdown big-codebase.md
+        run: ./target/release/fennec-bench big-codebase --lines 20000,50000,100000 --runs 3 --markdown big-codebase.md
       - name: Show the numbers on the run's summary page
         if: always()
         run: '[ -f big-codebase.md ] && cat big-codebase.md >> "$GITHUB_STEP_SUMMARY" || true'

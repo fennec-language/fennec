@@ -22,6 +22,7 @@ pub mod channels;
 pub mod checks;
 pub mod cleanup;
 pub mod codec;
+pub(crate) mod deadlock;
 pub mod dicts;
 pub mod guarded;
 pub mod heap;
@@ -59,6 +60,12 @@ pub mod serve;
 #[cfg(not(any(test, feature = "threads")))]
 pub mod serve {
     use fennec_syntax::{Diagnostic, Span};
+
+    /// Without threads there are no blocking threads, so none is ever busy (see the `threads`
+    /// version, for the deadlock check).
+    pub(crate) fn blocking_idle() -> bool {
+        true
+    }
 
     use crate::value::Value;
 

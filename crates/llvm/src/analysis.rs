@@ -3750,15 +3750,19 @@ fn find_last_copies(function: &Function, known: &mut Analysis) {
     let mut leaned_on = HashSet::new();
     for local in 0..function.locals.len() {
         let id = LocalId(local);
+        // A bool or a number holds no block, so it leans on nothing, however it was read: a
+        // match binding whose `bool` field was read first, with no owner of its own, was counted
+        // as leaned on and copied into a `mut` where it could be moved, and every change then
+        // copied its lists (#1953).
+        if matches!(
+            function.locals.get(local).map(|held| &held.ty),
+            Some(Type::Unit | Type::None | Type::Bool | Type::Int | Type::Float)
+        ) {
+            continue;
+        }
         leaned_on.extend(known.lender(id).map(|from| from.0));
         leaned_on.extend(known.alias(id).map(|from| from.0));
-        // A field read leans on what it's read from only when it borrows a block of it: a bool
-        // or a number is copied out, and a value with an owner of its own needs nothing more.
-        // Counted as leaning whatever it held, a match binding whose field was read first was
-        // copied into a `mut` where it could be moved, and every change then copied its lists.
-        if known.borrowed.contains(&local) {
-            leaned_on.extend(known.field_of(id).map(|(from, _)| from.0));
-        }
+        leaned_on.extend(known.field_of(id).map(|(from, _)| from.0));
         leaned_on.extend(known.item_home(id).map(|(from, _)| from.0));
         leaned_on.extend(known.path_home(id).map(|(from, _, _)| from.0));
     }

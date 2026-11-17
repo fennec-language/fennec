@@ -948,7 +948,9 @@ impl Emit<'_, '_, '_> {
     /// of takes one off, and this way no run lets that many go.
     fn shared_case(&mut self, id: u32, number: i64) -> Result<String, String> {
         use fennec_rt::embed::heap::{NEVER_FREED_OWNER, OWNER_SHIFT};
-        let global = format!("@\"fen_case_{id}_{number}\"");
+        // By the enum's name, which stays the same while the program's numbering moves.
+        let global =
+            format!("@\"fen_case_{}_{number}\"", crate::kinds::layout_named(self.module.layouts, id));
         self.declare(&format!("{global} = linkonce_odr hidden global ptr null, align 8"));
         let (kept, none) = (self.temp(), self.temp());
         // Acquire, pairing with the release below: a thread that sees the block sees what was

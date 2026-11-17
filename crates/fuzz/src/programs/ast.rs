@@ -764,6 +764,62 @@ pub(crate) struct Listening {
     pub(crate) inboxes: Vec<bool>,
 }
 
+/// A `match` with `ref` on a `Named` that starts as `REF_STARTS`'s `start`, adding `REF_TEXTS`'s
+/// `text` to the text the case changes, written `way`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RefCasing {
+    pub(crate) id: usize,
+    pub(crate) way: RefWay,
+    pub(crate) start: usize,
+    pub(crate) text: usize,
+}
+
+/// How many `Named`s a `RefCased` can start from: a leaf, a pair of leaves, and a pair whose left
+/// side is a pair, as `source.rs` writes them and `eval.rs` makes them.
+pub(crate) const REF_STARTS: usize = 3;
+
+/// What a `RefCased` adds to the text its case changes.
+pub(crate) const REF_TEXTS: [&str; 3] = ["!", "hé🦊", ""];
+
+/// The ways a `RefCased` writes its `match`, each one the compiled program put back wrong or
+/// couldn't build until the checker put each `ref` case back by its fields' names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RefWay {
+    /// Three `match`es deep, each over the last one's `ref` name, with fields named and some left
+    /// out: the middle one's change wasn't put back.
+    Deep,
+    /// A whole new value given a `ref` name, the pattern naming its fields out of order and
+    /// leaving some out: it wasn't put back.
+    NewValue,
+    /// A `ref` name the function's parameter has too, that parameter the index of what the
+    /// `match` is over: it didn't build.
+    Shadowed,
+    /// A guard reading the `ref` names: it didn't build.
+    Guarded,
+    /// The index of what the `match` is over changed in the case, which still goes back where
+    /// it matched.
+    IndexMoved,
+    /// A `for ref` over the case's `ref` list changing its item, then a `?` failing in a `while`
+    /// condition: the item's change wasn't put back (#2025).
+    ForRefWhile,
+    /// The same, the `?` failing in a later `elif`.
+    ForRefElif,
+    /// The same, the `?` failing after an `and`.
+    ForRefAnd,
+}
+
+/// Every `RefWay`.
+pub(crate) const REF_WAYS: [RefWay; 8] = [
+    RefWay::Deep,
+    RefWay::NewValue,
+    RefWay::Shadowed,
+    RefWay::Guarded,
+    RefWay::IndexMoved,
+    RefWay::ForRefWhile,
+    RefWay::ForRefElif,
+    RefWay::ForRefAnd,
+];
+
 /// A name that another of the same name and type could capture, written `way`, with `n` the value
 /// it adds or lends.
 #[derive(Clone, Copy, Debug)]
@@ -1126,6 +1182,9 @@ pub(crate) enum Stmt {
     Shelved(Shelving),
     /// `listened{id}(stdout)`: listeners of a channel to every listener, some falling behind.
     Listened(Listening),
+    /// `ref_cased{id}(stdout)`: a `match` with `ref` written one of the ways the compiled program
+    /// once put back wrong, or couldn't build.
+    RefCased(RefCasing),
     /// `captured{id}(stdout)`: a name written where another of the same name and type is in
     /// sight, in a way the checker once renamed into the other.
     Captured(Capturing),

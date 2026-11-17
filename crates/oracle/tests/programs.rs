@@ -232,6 +232,132 @@ fn a_ref_case_is_put_back_where_it_matched_however_it_s_written() {
     );
 }
 
+/// A `ref` case is put back with its own names, past names inside its body that a `ref` name has
+/// too, a loop's, a nested function's parameter or a `with`'s, and from an `except` block. This is
+/// the checker lane's program, and what the compiled program prints with its fix.
+#[test]
+fn a_ref_case_is_put_back_past_names_inside_it() {
+    prints(
+        "
+        enum Kind:
+            Slider(value: int)
+            Empty
+
+        error Oops:
+            code: int
+
+        def opened() -> with int:
+            value = 5
+            lend value
+
+        def risky(flag: bool) -> int fails Oops:
+            if flag: fail Oops(code=1)
+            return 0
+
+        def main(stdout: Stdout):
+            mut looped = Kind.Slider(value=1)
+            mut seen = 0
+            mode = 0
+            match looped:
+                case .Slider(ref value):
+                    match mode:
+                        case 0:
+                            for value in [10, 20]:
+                                seen += value
+                        case _:
+                            pass
+                    value += 1
+                case _:
+                    pass
+            mut nested = Kind.Slider(value=1)
+            match nested:
+                case .Slider(ref value):
+                    def bumped(value: int) -> int:
+                        return value + 100
+                    value = bumped(5)
+                case _:
+                    pass
+            mut lent = Kind.Slider(value=1)
+            match lent:
+                case .Slider(ref value):
+                    with opened() as added:
+                        value += added
+                case _:
+                    pass
+            mut handled = Kind.Slider(value=1)
+            caught = risky(True) except why:
+                match handled:
+                    case .Slider(ref value):
+                        value += 7
+                    case _:
+                        pass
+                why.code
+            stdout.print(looped, seen, nested, lent, handled, caught)
+        ",
+        "Kind.Slider(value=2) 30 Kind.Slider(value=105) Kind.Slider(value=6) Kind.Slider(value=8) 1\n",
+    );
+}
+
+/// A failure leaving a `ref` case from a `?` in a `while` condition or after `and` puts it back
+/// with its own names, not a loop's or an inner case's. This is the checker lane's program, and
+/// what the compiled program prints with its fix.
+#[test]
+fn a_ref_case_left_by_a_failure_is_put_back_with_its_own_names() {
+    prints(
+        "
+        error Oops:
+            code: int
+
+        enum Kind:
+            Slider(value: int)
+            Empty
+
+        enum Named:
+            Leaf(name: str)
+            Pair(left: Named, name: str)
+
+        def small(count: int) -> bool fails Oops:
+            if count > 1:
+                fail Oops(code=count)
+            return count < 1
+
+        def bump(ref kind: Kind) fails Oops:
+            match kind:
+                case .Slider(ref value):
+                    value = 100
+                    for value in [5]:
+                        while small(value)?:
+                            pass
+                case _:
+                    pass
+
+        def renamed(ref named: Named, deep: bool) fails Oops:
+            match named:
+                case .Pair(ref left, ref name):
+                    name = 'outer'
+                    match left:
+                        case .Leaf(ref name):
+                            name = 'inner'
+                            if deep and small(7)?:
+                                pass
+                        case _:
+                            pass
+                case _:
+                    pass
+
+        def main(stdout: Stdout):
+            mut kind = Kind.Slider(value=0)
+            bump(ref kind) except why:
+                stdout.print(why.code)
+            mut named = Named.Pair(left=.Leaf(name='a'), name='b')
+            renamed(ref named, deep=True) except why:
+                stdout.print(why.code)
+            stdout.print(kind, named)
+        ",
+        "5\n7\nKind.Slider(value=100) Named.Pair(left=Named.Leaf(name=\"inner\"), name=\"outer\")\n",
+    );
+}
+
 /// A copy changed after it was made from another, or after it was sent to a task, changes alone,
 /// at every level: a list, a list of lists, tuples in a list, a set, a dict of lists, a struct and
 /// a struct of structs, lists and dicts. So do an argument, a `for ref` loop's list and what an

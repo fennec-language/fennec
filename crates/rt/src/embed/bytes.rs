@@ -98,9 +98,8 @@ fn text_at(state: &State, at: i64) -> String {
 }
 
 /// The room a byte builder's block has for `length` bytes: the next power of two, and at least 16.
-/// Native code still works it out from the length alone, so a builder's block has at least that
-/// much, which its room word says; once native code reads the word instead, `grow` can give room
-/// as a list's grows. Only std's own builder intrinsics write into one, and it's copied to its exact
+/// Native code reads the room word, so `grow` could give room as a list's grows; this is what it
+/// gives for now. Only std's own builder intrinsics write into one, and it's copied to its exact
 /// size before anything else sees it. Equality and hashing go by the length anyway (`words_of`),
 /// so one that isn't still compares and hashes as the same bytes would.
 fn builder_room(length: usize) -> usize {
@@ -364,8 +363,8 @@ mod tests {
 
     /// A block's room word says how many bytes its words after the header hold, and its length is
     /// within it, however the block was made: exactly the size of its bytes, a builder empty or
-    /// grown, a slice and a join. A builder's room is at least what native code works out from its
-    /// length, as it writes up to that without asking (#1941).
+    /// grown, a slice and a join. Native code writes into a builder up to its room word without
+    /// asking (#1941).
     #[test]
     fn every_bytes_block_says_its_room_and_a_builders_has_what_native_code_counts_on() {
         start(Tables::default(), crate::Inputs::default());

@@ -96,9 +96,10 @@ fn a_recording_cut_short_is_said_to_be_cut_short() {
     assert!(why.contains("its recording had nothing more"), "{why}");
 }
 
-/// A replay says an older Fennec made a log when it's any older log whose run had tasks, `FENREPL6`,
-/// `FENREPL5` and `FENREPL4` as well as `FENREPL3` and `FENREPL2`, and a task that only used a channel counts: each replayed
-/// wrong with nothing said, where a task had been stopped or a `parallel` call's piece had failed.
+/// A replay says an older Fennec made a log when it's any older log whose run had tasks, `FENREPL7`,
+/// `FENREPL6`, `FENREPL5` and `FENREPL4` as well as `FENREPL3` and `FENREPL2`, and a task that only
+/// used a channel counts: each replayed wrong with nothing said, where a task had been stopped or a
+/// `parallel` call's piece had failed.
 #[test]
 fn a_replay_of_any_older_log_with_tasks_says_so() {
     let marked = |magic: &[u8; 8], entries: &[(&str, &str, &[u8])]| {
@@ -112,6 +113,7 @@ fn a_replay_of_any_older_log_with_tasks_says_so() {
     let main_alone: &[(&str, &str, &[u8])] =
         &[("0", "Clock.now", &5_i64.to_le_bytes()), ("0:c0", "0 send", &0_i64.to_le_bytes())];
     for old in [
+        MAGIC_BEFORE_WORK_STOPS,
         MAGIC_BEFORE_UNBEGUN,
         MAGIC_BEFORE_SERVING_STOPS,
         MAGIC_BEFORE_SKIPS,

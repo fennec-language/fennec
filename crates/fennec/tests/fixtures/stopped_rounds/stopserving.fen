@@ -1,0 +1,36 @@
+# A round's handler is serving a server of its own when the serving task's block ends and stops
+# it, which cancels the round.
+# The round's server is left, and the round fails as stopped there: it never ended, nor did the
+# program, as its worker couldn't take the mail that would end the server while it ran the round
+# (#1950).
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def inner_answered(request: Request) -> Response:
+    return Response(status=200, body=f"inner {request.path}".encode())
+
+def nested(net: Net) fails NetError:
+    with net.listen(0)? as inner:
+        inner.serve((asked) => inner_answered(asked))
+
+def answered(request: Request, net: Net, stdout: Stdout) -> Response:
+    if request.path == "/slow":
+        stdout.print("the slow one began")
+        nested(net) except why:
+            stdout.print("the slow one's server failed", f"{why}")
+        stdout.print("the slow one never said")
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, net: Net, stdout: Stdout):
+    server.serve((request) => answered(request, net=net, stdout=stdout))
+    stdout.print("the server never said")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as slow:
+            slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+            with launch(() => serving(server, net=net, stdout=stdout), stop_after=200ms)?:
+                got = net.get(f"http://127.0.0.1:{port}/one")?
+                stdout.print(got.text())
+    stdout.print("the server is over")

@@ -417,6 +417,111 @@ fn a_source_lends_to_the_block_and_finishes_after_it() {
     );
 }
 
+/// An error carries notes: `add_note` adds one and `notes()` reads them, and printing it shows
+/// none. A cleanup that fails for a failed block has its failure noted on the block's, as it
+/// prints, when it's a `fail` or a line whose whole value is a `?`, and the rest of the cleanup is
+/// skipped; a `?` deeper in a line takes the block's place instead, as `docs/language.md` says.
+/// The oracle kept the block's failure every time, and gave `deep 3` where the compiled program
+/// gives `deep 503`. What it prints is what the compiled program printed.
+#[test]
+fn an_error_carries_notes_and_a_failing_cleanup_notes_or_replaces_it() {
+    prints(
+        "
+        error Refused:
+            code: int
+
+        struct Tally:
+            count: int
+
+        def guarded(code: int, stdout: Stdout) -> with Tally fails Refused:
+            stdout.print('guard', code)
+            lend Tally(count=code) except:
+                stdout.print('unguard', code)
+                if code % 3 == 0:
+                    fail Refused(code=code + 1000)
+                stdout.print('unguarded', code)
+            stdout.print('released', code)
+
+        def run(code: int, refuse: bool, stdout: Stdout) -> int fails Refused:
+            with guarded(code, stdout)? as tally:
+                if refuse:
+                    fail Refused(code=tally.count)
+                return tally.count
+
+        def shown(code: int, refuse: bool, stdout: Stdout) -> str:
+            value = run(code, refuse=refuse, stdout=stdout) except why:
+                return f'refused {why.code} {why.notes()}'
+            return str(value)
+
+        def main(stdout: Stdout):
+            stdout.print(shown(3, refuse=True, stdout=stdout))
+            stdout.print(shown(4, refuse=True, stdout=stdout))
+            stdout.print(shown(3, refuse=False, stdout=stdout))
+            mut failure = Refused(code=9)
+            failure.add_note('first')
+            failure.add_note('second')
+            stdout.print(failure.notes(), failure)
+        ",
+        "guard 3\nunguard 3\nrefused 3 [\"Refused(code=1003)\"]\nguard 4\nunguard 4\nunguarded 4\nrefused 4 []\n\
+         guard 3\nreleased 3\n3\n[\"first\", \"second\"] Refused(code=9)\n",
+    );
+    prints(
+        "
+        error Refused:
+            code: int
+
+        struct Tally:
+            count: int
+
+        def capped(code: int) -> int fails Refused:
+            if code > 2:
+                fail Refused(code=code + 500)
+            return code
+
+        def plain(code: int, stdout: Stdout) -> with Tally fails Refused:
+            lend Tally(count=code) except:
+                kept = capped(code)?
+                stdout.print('kept', kept)
+
+        def deep(code: int, stdout: Stdout) -> with Tally fails Refused:
+            lend Tally(count=code) except:
+                stdout.print('deep', capped(code)?)
+
+        def run_plain(code: int, stdout: Stdout) -> int fails Refused:
+            with plain(code, stdout)? as tally:
+                if tally.count > 0:
+                    fail Refused(code=tally.count)
+                return 0
+
+        def run_deep(code: int, stdout: Stdout) -> int fails Refused:
+            with deep(code, stdout)? as tally:
+                if tally.count > 0:
+                    fail Refused(code=tally.count)
+                return 0
+
+        def main(stdout: Stdout):
+            first = run_plain(3, stdout) except why:
+                stdout.print('plain', why.code)
+                0
+            second = run_deep(3, stdout) except why:
+                stdout.print('deep', why.code)
+                0
+            stdout.print(first, second)
+        ",
+        "plain 3\ndeep 503\n0 0\n",
+    );
+}
+
+/// Notes added to an error kept in a `shared` value, under its lock, are the error's own, as the
+/// compiled program printed them (`workers/notes_kept_under_a_lock.fen`).
+#[test]
+fn notes_kept_under_a_lock_are_the_errors_own() {
+    let (printed, ended) =
+        ran(include_str!("../../fennec/tests/fixtures/workers/notes_kept_under_a_lock.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/workers/notes_kept_under_a_lock.out"));
+}
+
 #[test]
 fn a_loop_and_a_block_keep_their_names_to_themselves() {
     prints(

@@ -625,18 +625,20 @@ impl<'a> Lowering<'a> {
             }
             return Lowering::generator(instance, def, context, captures, &signature);
         }
+        let itself_named = itself.map(|_| def.name.as_str());
+        let (stmts, apart) = own_apart(def, body, (captures, itself_named), &signature.params)?;
         let mut lowering = Lowering::new(instance, context, body, signature.returns.clone());
         for (name, ty) in captures {
-            lowering.declare(name, ty.clone());
+            lowering.declare(&declared_as(name, &apart), ty.clone());
         }
         for param in &signature.params {
             if !context.holds(&param.ty) {
                 return Err(format!("`{}` is {}", param.name, param.ty));
             }
-            lowering.declare(&param.name, param.ty.clone());
+            lowering.declare(&declared_as(&param.name, &apart), param.ty.clone());
         }
         if let Some(ty) = itself {
-            lowering.bind_itself(key, &def.name, ty, captures.len(), def.span);
+            lowering.bind_itself(key, &declared_as(&def.name, &apart), ty, captures.len(), def.span);
         }
         // A failure that ends the program is shown, so a `Secret` in it has to stay hidden.
         if key == "main" {
@@ -648,7 +650,7 @@ impl<'a> Lowering<'a> {
             }
         }
         let plain = lowering.returns == Type::Unit;
-        lowering.stmts(&def.body, if plain { Tail::Drop } else { Tail::Return })?;
+        lowering.stmts(&stmts, if plain { Tail::Drop } else { Tail::Return })?;
         lowering.end_function(def.span)?;
         // A `shared` handle is never copied back: it's the same handle after the call.
         let mut_params = signature
@@ -984,7 +986,10 @@ impl<'a> Lowering<'a> {
         if let Some(dest) = self.lookup(name) {
             return Ok(dest);
         }
-        let ty = self.body.name(target.span, name).ok_or_else(|| format!("`{name}` has no type"))?;
+        // A name given another apart from a `with` source's (`own_apart`) has its type by the
+        // name it was checked with.
+        let checked = fennec_syntax::sight::checked_as(name);
+        let ty = self.body.name(target.span, checked).ok_or_else(|| format!("`{name}` has no type"))?;
         let ty = self.concrete(ty);
         let held = self.held(&ty).ok_or_else(|| format!("`{name}` is {ty}"))?;
         Ok(self.declare(name, held))
@@ -1289,6 +1294,38 @@ fn describe(kind: &ExprKind) -> &'static str {
         ExprKind::Attr { .. } => "a field or method",
         _ => "something that isn't lowered yet",
     }
+}
+
+/// A function's body as it's lowered. Where it names a `with` source's own function, constant or
+/// module that something in sight there names too, those are given other names first
+/// (`sight::outer_apart`): its captures, its own name where a nested function names itself, and its
+/// parameters among them. The names given others come back with it.
+fn own_apart<'d>(
+    def: &'d FnDef,
+    body: &Body,
+    (captures, itself): (&[(String, Type)], Option<&str>),
+    params: &[fennec_check::ParamType],
+) -> Lowered<(std::borrow::Cow<'d, [Stmt]>, Vec<String>)> {
+    if !body.names_outer() {
+        return Ok((std::borrow::Cow::Borrowed(def.body.as_slice()), Vec::new()));
+    }
+    let names: Vec<String> = captures
+        .iter()
+        .map(|(name, _)| name.clone())
+        .chain(itself.map(str::to_owned))
+        .chain(params.iter().map(|param| param.name.clone()))
+        .collect();
+    let mut stmts = def.body.clone();
+    let apart = fennec_syntax::sight::outer_apart(&mut stmts, &names).map_err(|meant| {
+        format!("it writes in a `with` source's `{meant}` where another `{meant}` is in sight")
+    })?;
+    Ok((std::borrow::Cow::Owned(stmts), apart))
+}
+
+/// What a capture, parameter or nested function's own name is declared as: the name `own_apart`
+/// gave it, if any.
+fn declared_as(name: &str, apart: &[String]) -> String {
+    if apart.iter().any(|named| named == name) { fennec_syntax::sight::own(name) } else { name.to_owned() }
 }
 
 /// The blocks control can reach, in order, with their targets renumbered. A join that every

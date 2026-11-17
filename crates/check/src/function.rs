@@ -150,6 +150,9 @@ pub(crate) struct FnCx<'c> {
     pub(crate) locked_types: Vec<String>,
     /// The error it says it fails with, from `fails E`.
     pub(crate) fails: Option<Type>,
+    /// Whether it names a `with` source's own function, constant or module, written in where
+    /// something in sight names it too (`sight::outer`), which IR lowering gives its own names apart.
+    pub(crate) names_outer: bool,
 }
 
 impl<'c> FnCx<'c> {
@@ -176,6 +179,7 @@ impl<'c> FnCx<'c> {
             pending_bounds: Vec::new(),
             pending_sums: Vec::new(),
             reported: 0,
+            names_outer: false,
             exprs: Vec::new(),
             names: Vec::new(),
             first_var,
@@ -227,6 +231,7 @@ impl<'c> FnCx<'c> {
         }
         let checker = &mut *self.checker;
         let body = checker.typed.entry(self.key.clone()).or_default();
+        body.names_outer |= self.names_outer;
         for (span, ty) in std::mem::take(&mut self.exprs) {
             body.exprs.insert((span.start, span.end), ty);
         }

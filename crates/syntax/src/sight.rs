@@ -41,11 +41,23 @@ pub fn hide_bound(
     outside: &[(String, Option<String>)],
     hide: &dyn Fn(Binder, &str) -> Option<String>,
 ) {
+    hide_bound_and_free(body, outside, hide, &|_, _| None);
+}
+
+/// `hide_bound`, and each use of a name nothing in sight binds, one from outside `body` and
+/// `outside` altogether, written as `free` gives it, if anything. `free` is told whether another
+/// name is in sight there.
+pub fn hide_bound_and_free(
+    body: &mut [Stmt],
+    outside: &[(String, Option<String>)],
+    hide: &dyn Fn(Binder, &str) -> Option<String>,
+    free: &dyn Fn(&str, &dyn Fn(&str) -> bool) -> Option<String>,
+) {
     let sight: Vec<InSight> = outside
         .iter()
         .map(|(name, written)| InSight { name: name.clone(), written: written.clone(), params: Vec::new() })
         .collect();
-    hide_stmts(body, &sight, hide);
+    hide_stmts(body, &sight, &How { hide, free });
 }
 
 /// Writes each use of `name` in `body` that means the one in sight where `body` starts as `to`.
@@ -68,8 +80,110 @@ pub fn uses_in_sight_of_expr(value: &mut Expr, names: &[String], change: &mut dy
         .into_iter()
         .map(|(name, written)| InSight { name, written, params: Vec::new() })
         .collect();
-    hide_expr(value, &outside, &|_, _| None);
+    hide_expr(value, &outside, &How { hide: &|_, _| None, free: &|_, _| None });
     crate::visit::in_expr(value, &mut |expr| unmarked(expr, names, change));
+}
+
+/// Every name `body` binds anywhere, nested functions and arrow functions included, with `params`.
+#[must_use]
+pub fn bound_in(body: &[Stmt], params: &[String]) -> std::collections::BTreeSet<String> {
+    let bound = std::cell::RefCell::new(params.iter().cloned().collect::<std::collections::BTreeSet<_>>());
+    hide_bound(&mut body.to_vec(), &[], &|_, name| {
+        bound.borrow_mut().insert(name.to_owned());
+        None
+    });
+    bound.into_inner()
+}
+
+/// `name` written as meaning what it does where a `with` source is written, a top-level function
+/// or constant, though something in sight where the source is written in names it too. Only the
+/// compiler writes it: the checker reads it as that top-level name, and IR lowering gives what's in
+/// sight there other names first (`outer_apart`).
+#[must_use]
+pub fn as_outer(name: &str) -> String {
+    format!("{name}{HIDDEN}outer")
+}
+
+/// The top-level name a name written by `as_outer` means, if it's one.
+#[must_use]
+pub fn outer(name: &str) -> Option<&str> {
+    name.strip_suffix(format!("{HIDDEN}outer").as_str())
+}
+
+/// What a function's own name is written as where `outer_apart` gives it another.
+#[must_use]
+pub fn own(name: &str) -> String {
+    format!("{name}{HIDDEN}own")
+}
+
+/// The name a name `own` gave another was checked with.
+#[must_use]
+pub fn checked_as(name: &str) -> &str {
+    name.strip_suffix(format!("{HIDDEN}own").as_str()).unwrap_or(name)
+}
+
+/// Gives every name in `body` that a use written by `as_outer` names the new name `own` gives it,
+/// with the uses in its sight, so nothing there names what the marked use means, and then writes
+/// the marked uses as the names they mean. `params` are the names in sight where `body` starts.
+/// Says which names were given new ones. A nested function's parameters keep theirs, and the marked
+/// uses inside one are left for its own lowering, which gives its parameters names apart as this
+/// does `params`.
+///
+/// # Errors
+///
+/// The name a marked use means, where something named that is still in sight of it, which nothing
+/// written reaches: everything in sight is given a name apart.
+pub fn outer_apart(body: &mut [Stmt], params: &[String]) -> Result<Vec<String>, String> {
+    let mut apart: Vec<String> = Vec::new();
+    crate::visit::in_stmts(body, &mut |expr| {
+        if let ExprKind::Name(name) = &expr.kind
+            && let Some(meant) = outer(name)
+            && !apart.iter().any(|known| known == meant)
+        {
+            apart.push(meant.to_owned());
+        }
+    });
+    if apart.is_empty() {
+        return Ok(apart);
+    }
+    let named = |name: &str| apart.iter().any(|known| known == name);
+    let outside: Vec<(String, Option<String>)> =
+        params.iter().map(|param| (param.clone(), named(param).then(|| own(param)))).collect();
+    // A nested function's parameters keep theirs, which calls name: its own lowering gives them
+    // names apart, with the marked uses inside it.
+    hide_bound(body, &outside, &|binder, name| {
+        (named(name) && binder != Binder::Parameter).then(|| own(name))
+    });
+    let captured = std::cell::RefCell::new(None);
+    hide_bound_and_free(body, &[], &|_, _| None, &|name, in_sight| {
+        let meant = outer(name)?;
+        // A nested function's own are its own to give names apart, with its parameters.
+        if in_sight(&function_edge()) {
+            return None;
+        }
+        if in_sight(meant) {
+            captured.borrow_mut().get_or_insert_with(|| meant.to_owned());
+            return None;
+        }
+        Some(meant.to_owned())
+    });
+    match captured.into_inner() {
+        Some(meant) => Err(meant),
+        None => Ok(apart),
+    }
+}
+
+/// What's put in sight where a nested function's body starts, a name no program can write, so a
+/// walk can tell it's inside one.
+fn function_edge() -> String {
+    format!("{HIDDEN}def")
+}
+
+/// How a walk changes names: the new name `hide` gives a binder, if any, and the name `free` writes
+/// a use nothing in sight binds as, if another.
+struct How<'h> {
+    hide: &'h dyn Fn(Binder, &str) -> Option<String>,
+    free: &'h dyn Fn(&str, &dyn Fn(&str) -> bool) -> Option<String>,
 }
 
 /// Each name, written as a mark no program can write, to find its uses by once the walk is done.
@@ -100,88 +214,90 @@ fn find<'s>(sight: &'s [InSight], name: &str) -> Option<&'s InSight> {
     sight.iter().rev().find(|known| known.name == name)
 }
 
-/// A use: written as what the name in sight it means is written as.
-fn use_name(name: &mut String, sight: &[InSight]) {
-    if let Some(InSight { written: Some(written), .. }) = find(sight, name) {
-        name.clone_from(written);
+/// A use: written as what the name in sight it means is written as, and one nothing in sight binds
+/// as `free` writes it.
+fn use_name(name: &mut String, sight: &[InSight], how: &How<'_>) {
+    match find(sight, name) {
+        Some(InSight { written: Some(written), .. }) => name.clone_from(written),
+        Some(_) => {}
+        None => {
+            if let Some(written) = (how.free)(name, &|other| find(sight, other).is_some()) {
+                *name = written;
+            }
+        }
     }
 }
 
 /// A binder: the name it binds is in sight from here, given the hidden name `hide` gives it. A
 /// `_` throws its value away and binds nothing to give another name.
-fn bind(
-    sight: &mut Vec<InSight>,
-    name: &mut String,
-    binder: Binder,
-    hide: &dyn Fn(Binder, &str) -> Option<String>,
-) {
-    let written = if name.contains(HIDDEN) || name == "_" { None } else { hide(binder, name) };
+fn bind(sight: &mut Vec<InSight>, name: &mut String, binder: Binder, how: &How<'_>) {
+    let written = if name.contains(HIDDEN) || name == "_" { None } else { (how.hide)(binder, name) };
     sight.push(InSight { name: name.clone(), written: written.clone(), params: Vec::new() });
     if let Some(written) = written {
         *name = written;
     }
 }
 
-fn hide_stmts(body: &mut [Stmt], outer: &[InSight], hide: &dyn Fn(Binder, &str) -> Option<String>) {
+fn hide_stmts(body: &mut [Stmt], outer: &[InSight], how: &How<'_>) {
     let mut sight = outer.to_vec();
     for each in body {
-        hide_stmt(each, &mut sight, hide);
+        hide_stmt(each, &mut sight, how);
     }
 }
 
-fn hide_stmt(each: &mut Stmt, sight: &mut Vec<InSight>, hide: &dyn Fn(Binder, &str) -> Option<String>) {
+fn hide_stmt(each: &mut Stmt, sight: &mut Vec<InSight>, how: &How<'_>) {
     match &mut each.kind {
         StmtKind::Expr(value)
         | StmtKind::Fail(value)
         | StmtKind::Yield(value)
         | StmtKind::Assert(value)
-        | StmtKind::Return(Some(value)) => hide_expr(value, sight, hide),
+        | StmtKind::Return(Some(value)) => hide_expr(value, sight, how),
         StmtKind::Assign { target, op, value, declare_mut, ty } => {
-            hide_expr(value, sight, hide);
+            hide_expr(value, sight, how);
             let declares = *declare_mut || ty.is_some();
-            hide_target(target, (declares, op.is_none()), sight, hide);
+            hide_target(target, (declares, op.is_none()), sight, how);
         }
         StmtKind::Lend { value, otherwise, .. } => {
-            hide_expr(value, sight, hide);
-            hide_stmts(otherwise, sight, hide);
+            hide_expr(value, sight, how);
+            hide_stmts(otherwise, sight, how);
         }
         StmtKind::If { branches, otherwise } => {
             for (cond, block) in branches {
-                hide_expr(cond, sight, hide);
-                hide_stmts(block, sight, hide);
+                hide_expr(cond, sight, how);
+                hide_stmts(block, sight, how);
             }
             if let Some(block) = otherwise {
-                hide_stmts(block, sight, hide);
+                hide_stmts(block, sight, how);
             }
         }
         StmtKind::While { cond, body } => {
-            hide_expr(cond, sight, hide);
-            hide_stmts(body, sight, hide);
+            hide_expr(cond, sight, how);
+            hide_stmts(body, sight, how);
         }
         // What's looped over, or held, is worked out before the names are bound.
         StmtKind::For { names, iter, body, .. } => {
-            hide_expr(iter, sight, hide);
+            hide_expr(iter, sight, how);
             let mut inside = sight.clone();
             for held in names {
-                bind(&mut inside, held, Binder::Loop, hide);
+                bind(&mut inside, held, Binder::Loop, how);
             }
-            hide_stmts(body, &inside, hide);
+            hide_stmts(body, &inside, how);
         }
         StmtKind::With { value, names, body, .. } => {
-            hide_expr(value, sight, hide);
+            hide_expr(value, sight, how);
             let mut inside = sight.clone();
             for held in names {
-                bind(&mut inside, &mut held.name, Binder::With, hide);
+                bind(&mut inside, &mut held.name, Binder::With, how);
             }
-            hide_stmts(body, &inside, hide);
+            hide_stmts(body, &inside, how);
         }
         StmtKind::OnFailure { name, cleanup, body } => {
             let mut inside = sight.clone();
-            bind(&mut inside, name, Binder::Cleanup, hide);
-            hide_stmts(cleanup, &inside, hide);
-            hide_stmts(body, sight, hide);
+            bind(&mut inside, name, Binder::Cleanup, how);
+            hide_stmts(cleanup, &inside, how);
+            hide_stmts(body, sight, how);
         }
-        StmtKind::Def(def) => hide_def(def, sight, hide),
+        StmtKind::Def(def) => hide_def(def, sight, how),
         StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue | StmtKind::Pass => {}
     }
 }
@@ -189,22 +305,19 @@ fn hide_stmt(each: &mut Stmt, sight: &mut Vec<InSight>, hide: &dyn Fn(Binder, &s
 /// A nested function: its name is in sight from here on and inside it, with the new names of its
 /// parameters, which a call naming them names, and its body sees its parameters. A parameter's
 /// default is a plain value, which names nothing in sight.
-fn hide_def(
-    def: &mut crate::ast::FnDef,
-    sight: &mut Vec<InSight>,
-    hide: &dyn Fn(Binder, &str) -> Option<String>,
-) {
+fn hide_def(def: &mut crate::ast::FnDef, sight: &mut Vec<InSight>, how: &How<'_>) {
     let params: Vec<(String, String)> = def
         .params
         .iter()
         .filter(|param| !param.name.contains(HIDDEN) && param.name != "_")
-        .filter_map(|param| Some((param.name.clone(), hide(Binder::Parameter, &param.name)?)))
+        .filter_map(|param| Some((param.name.clone(), (how.hide)(Binder::Parameter, &param.name)?)))
         .collect();
-    bind(sight, &mut def.name, Binder::Function, hide);
+    bind(sight, &mut def.name, Binder::Function, how);
     if let Some(own) = sight.last_mut() {
         own.params.clone_from(&params);
     }
     let mut inside = sight.clone();
+    inside.push(InSight { name: function_edge(), written: None, params: Vec::new() });
     for param in &mut def.params {
         let written = params.iter().find(|(from, _)| *from == param.name).map(|(_, to)| to.clone());
         inside.push(InSight { name: param.name.clone(), written: written.clone(), params: Vec::new() });
@@ -212,34 +325,29 @@ fn hide_def(
             param.name = written;
         }
     }
-    hide_stmts(&mut def.body, &inside, hide);
+    hide_stmts(&mut def.body, &inside, how);
 }
 
 /// What an assignment gives a value to. A declaration binds its names, and so does a first
 /// assignment, of a name nothing in sight has, as in the program it was checked as; another
 /// assignment is a use of the name it changes.
-fn hide_target(
-    target: &mut Expr,
-    (declares, plain): (bool, bool),
-    sight: &mut Vec<InSight>,
-    hide: &dyn Fn(Binder, &str) -> Option<String>,
-) {
+fn hide_target(target: &mut Expr, (declares, plain): (bool, bool), sight: &mut Vec<InSight>, how: &How<'_>) {
     match &mut target.kind {
         ExprKind::Name(name) if declares || (plain && find(sight, name).is_none()) => {
-            bind(sight, name, Binder::Declared, hide);
+            bind(sight, name, Binder::Declared, how);
         }
         ExprKind::Tuple(items) if plain => {
             for item in items {
-                hide_target(item, (declares, plain), sight, hide);
+                hide_target(item, (declares, plain), sight, how);
             }
         }
-        _ => hide_expr(target, sight, hide),
+        _ => hide_expr(target, sight, how),
     }
 }
 
-fn hide_expr(value: &mut Expr, sight: &[InSight], hide: &dyn Fn(Binder, &str) -> Option<String>) {
+fn hide_expr(value: &mut Expr, sight: &[InSight], how: &How<'_>) {
     match &mut value.kind {
-        ExprKind::Name(name) => use_name(name, sight),
+        ExprKind::Name(name) => use_name(name, sight, how),
         ExprKind::Int(_)
         | ExprKind::Float(_)
         | ExprKind::Duration(_)
@@ -252,74 +360,74 @@ fn hide_expr(value: &mut Expr, sight: &[InSight], hide: &dyn Fn(Binder, &str) ->
         ExprKind::FStr(parts) => {
             for part in parts {
                 if let FStrPart::Expr { expr: inner, .. } = part {
-                    hide_expr(inner, sight, hide);
+                    hide_expr(inner, sight, how);
                 }
             }
         }
         ExprKind::List(items) | ExprKind::Tuple(items) | ExprKind::Set(items) => {
             for item in items {
-                hide_expr(item, sight, hide);
+                hide_expr(item, sight, how);
             }
         }
         ExprKind::Dict(pairs) => {
             for (key, item) in pairs {
-                hide_expr(key, sight, hide);
-                hide_expr(item, sight, hide);
+                hide_expr(key, sight, how);
+                hide_expr(item, sight, how);
             }
         }
-        ExprKind::Comprehension { .. } => hide_comprehension(value, sight, hide),
+        ExprKind::Comprehension { .. } => hide_comprehension(value, sight, how),
         ExprKind::Lambda { params, body } => {
             let mut inside = sight.to_vec();
             for param in params {
-                bind(&mut inside, param, Binder::Arrow, hide);
+                bind(&mut inside, param, Binder::Arrow, how);
             }
-            hide_expr(body, &inside, hide);
+            hide_expr(body, &inside, how);
         }
         ExprKind::Unary { expr: inner, .. } | ExprKind::Attr { object: inner, .. } => {
-            hide_expr(inner, sight, hide);
+            hide_expr(inner, sight, how);
         }
         ExprKind::Binary { lhs: first, rhs: second, .. }
         | ExprKind::Else { value: first, default: second, .. }
         | ExprKind::Index { object: first, index: second } => {
-            hide_expr(first, sight, hide);
-            hide_expr(second, sight, hide);
+            hide_expr(first, sight, how);
+            hide_expr(second, sight, how);
         }
         ExprKind::Cond { then, cond, otherwise } => {
             for inner in [then, cond, otherwise] {
-                hide_expr(inner, sight, hide);
+                hide_expr(inner, sight, how);
             }
         }
         ExprKind::Try { value: inner, context } => {
-            hide_expr(inner, sight, hide);
+            hide_expr(inner, sight, how);
             if let Some(context) = context {
-                hide_expr(context, sight, hide);
+                hide_expr(context, sight, how);
             }
         }
-        ExprKind::Call { .. } => hide_call(value, sight, hide),
+        ExprKind::Call { .. } => hide_call(value, sight, how),
         ExprKind::Slice { object, start, end } => {
             for inner in std::iter::once(object).chain(start.iter_mut()).chain(end.iter_mut()) {
-                hide_expr(inner, sight, hide);
+                hide_expr(inner, sight, how);
             }
         }
         ExprKind::Match { subject, arms } => {
-            hide_expr(subject, sight, hide);
+            hide_expr(subject, sight, how);
             for arm in arms {
-                hide_case(arm, sight, hide);
+                hide_case(arm, sight, how);
             }
         }
     }
 }
 
 /// A call: one of a nested function whose parameters have new names names them by those.
-fn hide_call(value: &mut Expr, sight: &[InSight], hide: &dyn Fn(Binder, &str) -> Option<String>) {
+fn hide_call(value: &mut Expr, sight: &[InSight], how: &How<'_>) {
     let ExprKind::Call { callee, args } = &mut value.kind else { return };
     let params = match &callee.kind {
         ExprKind::Name(name) => find(sight, name).map(|known| known.params.clone()).unwrap_or_default(),
         _ => Vec::new(),
     };
-    hide_expr(callee, sight, hide);
+    hide_expr(callee, sight, how);
     for arg in args {
-        hide_expr(&mut arg.value, sight, hide);
+        hide_expr(&mut arg.value, sight, how);
         if let Some(named) = &mut arg.name
             && let Some((_, written)) = params.iter().find(|(from, _)| from == named)
         {
@@ -329,50 +437,41 @@ fn hide_call(value: &mut Expr, sight: &[InSight], hide: &dyn Fn(Binder, &str) ->
 }
 
 /// A comprehension: what it goes over is worked out before its names are bound.
-fn hide_comprehension(value: &mut Expr, sight: &[InSight], hide: &dyn Fn(Binder, &str) -> Option<String>) {
+fn hide_comprehension(value: &mut Expr, sight: &[InSight], how: &How<'_>) {
     let ExprKind::Comprehension { elem, value: item, names, iter, cond, .. } = &mut value.kind else {
         return;
     };
-    hide_expr(iter, sight, hide);
+    hide_expr(iter, sight, how);
     let mut inside = sight.to_vec();
     for name in names {
-        bind(&mut inside, name, Binder::Comprehension, hide);
+        bind(&mut inside, name, Binder::Comprehension, how);
     }
     for inner in std::iter::once(elem).chain(item).chain(cond) {
-        hide_expr(inner, &inside, hide);
+        hide_expr(inner, &inside, how);
     }
 }
 
 /// A case: what its pattern compares with means what it does outside, and its guard and body see
 /// the names it binds.
-fn hide_case(
-    arm: &mut crate::ast::MatchArm,
-    sight: &[InSight],
-    hide: &dyn Fn(Binder, &str) -> Option<String>,
-) {
+fn hide_case(arm: &mut crate::ast::MatchArm, sight: &[InSight], how: &How<'_>) {
     let mut inside = sight.to_vec();
-    case_pattern(&mut arm.pattern, sight, &mut inside, hide);
+    case_pattern(&mut arm.pattern, sight, &mut inside, how);
     if let Some(guard) = &mut arm.guard {
-        hide_expr(guard, &inside, hide);
+        hide_expr(guard, &inside, how);
     }
-    hide_stmts(&mut arm.body, &inside, hide);
+    hide_stmts(&mut arm.body, &inside, how);
 }
 
 /// A pattern's literals, seen from outside the case, and the names it binds, in sight inside it.
-fn case_pattern(
-    pattern: &mut Pattern,
-    outside: &[InSight],
-    inside: &mut Vec<InSight>,
-    hide: &dyn Fn(Binder, &str) -> Option<String>,
-) {
+fn case_pattern(pattern: &mut Pattern, outside: &[InSight], inside: &mut Vec<InSight>, how: &How<'_>) {
     match pattern {
-        Pattern::Literal(value) => hide_expr(value, outside, hide),
+        Pattern::Literal(value) => hide_expr(value, outside, how),
         Pattern::Bind(name) | Pattern::RefBind(name) | Pattern::MutBind(name) => {
-            bind(inside, name, Binder::Case, hide);
+            bind(inside, name, Binder::Case, how);
         }
         Pattern::Variant { args, .. } | Pattern::Tuple(args) | Pattern::Or(args) => {
             for arg in args {
-                case_pattern(arg, outside, inside, hide);
+                case_pattern(arg, outside, inside, how);
             }
         }
         Pattern::Wildcard => {}
@@ -413,6 +512,29 @@ mod tests {
         // the last `print` mean the one in sight.
         assert_eq!(written.matches("Name(\"changed\")").count(), 5, "{written}");
         assert_eq!(written.matches("Name(\"held\")").count(), 7, "{written}");
+    }
+
+    /// A use marked as a `with` source's own is written as the name it means, and what's in sight of
+    /// it named the same is given a name apart: a parameter, a loop's name. A nested function keeps
+    /// its parameter's name and its own marked uses, which its own lowering gives names apart.
+    #[test]
+    fn marked_uses_mean_their_own_and_what_s_in_sight_is_named_apart() {
+        let source = "def f(total: int):\n    \
+                      print(total, outer_total)\n    \
+                      for total in [1]:\n        print(total, outer_total)\n    \
+                      def inner(total: int) -> int:\n        return total + outer_total\n";
+        let mut body = body(source);
+        crate::visit::in_stmts(&mut body, &mut |expr| {
+            if matches!(&expr.kind, ExprKind::Name(name) if name == "outer_total") {
+                expr.kind = ExprKind::Name(as_outer("total"));
+            }
+        });
+        assert_eq!(outer_apart(&mut body, &["total".to_owned()]), Ok(vec!["total".to_owned()]));
+        let written = format!("{body:?}");
+        // The two marked uses outside `inner`, and `inner`'s parameter's use.
+        assert_eq!(written.matches("Name(\"total\")").count(), 3, "{written}");
+        assert_eq!(written.matches("Name(\"total'own\")").count(), 2, "{written}");
+        assert_eq!(written.matches("Name(\"total'outer\")").count(), 1, "{written}");
     }
 
     /// Hiding gives each binder it picks a new name with the uses in its sight, and leaves a use

@@ -1847,6 +1847,252 @@ def main(stdout: Stdout):
         stdout.print(len(lines))
 ";
 
+/// A function, constant or module a `with` source names is its own wherever it's written in, though
+/// the caller has a name of its own the same: a loop's, a parameter's, a case's, a local's, a nested
+/// function's parameter or the nested function itself, of the same type or not. So is one its
+/// `except` and its cleanup name, one it names with type arguments, and one imported by name.
+/// Before, the caller's took it: a wrong answer where the types fit, and otherwise an internal
+/// error.
+#[test]
+fn a_with_source_s_own_names_mean_its_own_where_it_s_written_in() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("source_names_by_binders", SOURCE_NAMES_BY_BINDERS, "13 5 5 5 5\n")?;
+    prints_in_both_builds("source_names_in_cleanups", SOURCE_NAMES_IN_CLEANUPS, "9\nBad()\n[\"cleaned\"]\n")?;
+    prints_in_both_builds("source_names_imported", SOURCE_NAMES_IMPORTED, "4 5 5 6\n")?;
+    // The coverage lane's random-program shape, which printed `7 7`.
+    prints_in_both_builds("source_names_called", SOURCE_NAMES_CALLED, "5 7\n")?;
+    // A method and a generator write it in as a function does.
+    prints_in_both_builds("source_names_by_callers", SOURCE_NAMES_BY_CALLERS, "15\n5\n7\n")?;
+    // A nested function named as the source's function, in sight of the `with`.
+    prints_in_both_builds("source_names_by_a_nested_function", SOURCE_NAMES_BY_A_NESTED_FUNCTION, "5\n")
+}
+
+/// In a `test`, where nothing holds a failure for the source's cleanup to run once after the block,
+/// the cleanup is written in before the failure, inside a loop that names the caller's `log` again:
+/// it still reads the caller's. Before, the build stopped with an internal error.
+#[test]
+fn a_with_source_s_cleanup_written_in_a_test_reads_the_caller_s_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("source_cleanup_in_a_test")?;
+    let program = dir.join("source_cleanup_in_a_test.fen");
+    std::fs::write(&program, SOURCE_CLEANUP_IN_A_TEST)?;
+    let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    let said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    // The cleanup's `assert` holds, so the test fails with what the block failed with.
+    assert!(said.contains("the test failed with Bad()"), "{said}");
+    assert!(said.contains("0 passed, 1 failed"), "{said}");
+    Ok(())
+}
+
+const SOURCE_NAMES_BY_BINDERS: &str = r"enum Kind:
+    Slider(total: int)
+    Empty
+
+def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def by_loop() -> int:
+    mut seen = 0
+    for total in [1, 2]:
+        with opened() as added:
+            seen += total + added
+    return seen
+
+def by_parameter(total: () -> int) -> int:
+    mut seen = 0
+    with opened() as added:
+        seen = added
+    return seen + total() * 0
+
+def by_case(kind: Kind) -> int:
+    match kind:
+        case .Slider(total):
+            with opened() as added:
+                return added + total * 0
+        case _:
+            return 0
+
+def by_local() -> int:
+    total = () => 7
+    with opened() as added:
+        return added + total() * 0
+
+def by_nested() -> int:
+    def inner(total: () -> int) -> int:
+        with opened() as added:
+            return added + total() * 0
+    return inner(() => 7)
+
+def main(stdout: Stdout):
+    stdout.print(by_loop(), by_parameter(() => 7), by_case(.Slider(total=3)), by_local(), by_nested())
+";
+
+const SOURCE_NAMES_IN_CLEANUPS: &str = r#"error Bad:
+    pass
+
+def risky(n: int) -> int fails Bad:
+    if n < 0:
+        fail Bad()
+    return n
+
+def fallback() -> int:
+    return 9
+
+def label() -> str:
+    return "cleaned"
+
+def opened() -> with int:
+    got = risky(-1) except why:
+        fallback() + len(f"{why}") * 0
+    lend got
+
+def guarded(ref log: list[str]) -> with int:
+    lend 1 except:
+        log.append(label())
+
+def counted(fallback: () -> int) -> int:
+    with opened() as got:
+        return got + fallback() * 0
+
+def run(ref log: list[str], label: () -> str) fails Bad:
+    with guarded(ref log) as got:
+        _ = risky(-got)?
+    log.append(label())
+
+def main(stdout: Stdout):
+    stdout.print(counted(() => 1))
+    mut log = list[str]()
+    run(ref log, () => "wrong") except why:
+        stdout.print(why)
+    stdout.print(log)
+"#;
+
+const SOURCE_NAMES_IMPORTED: &str = r"from std import math
+from std.math import sqrt
+
+LIMIT = 5
+
+def first[T](items: list[T]) -> T:
+    return items[0]
+
+def by_module() -> with int:
+    lend int(math.sqrt(16.0))
+
+def by_import() -> with int:
+    lend int(sqrt(25.0))
+
+def by_constant() -> with int:
+    lend LIMIT
+
+def by_generic() -> with int:
+    lend first[int]([6, 7])
+
+def modules(math: int) -> int:
+    with by_module() as got:
+        return got + math * 0
+
+def imports(sqrt: (float) -> float) -> int:
+    with by_import() as got:
+        return got + int(sqrt(1.0)) * 0
+
+def constants(LIMIT: int) -> int:
+    with by_constant() as got:
+        return got + LIMIT * 0
+
+def generics(first: (list[int]) -> int) -> int:
+    with by_generic() as got:
+        return got + first([1]) * 0
+
+def main(stdout: Stdout):
+    stdout.print(modules(1), imports((x) => x), constants(9), generics((xs) => xs[0] + 100))
+";
+
+const SOURCE_NAMES_CALLED: &str = r"def total6() -> int:
+    return 5
+
+def counted6() -> with int:
+    lend total6()
+
+def capturing6(total6: () -> int, stdout: Stdout):
+    with counted6() as got:
+        stdout.print(got, total6())
+
+def main(stdout: Stdout):
+    capturing6(() => 5 + 2, stdout)
+";
+
+const SOURCE_NAMES_BY_CALLERS: &str = r"struct Counter:
+    base: int
+
+    def counted(self, total: () -> int) -> int:
+        with opened() as got:
+            return got + self.base + total() * 0
+
+def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def made(total: () -> int) -> Iterator[int]:
+    with opened() as got:
+        yield got
+        yield total()
+
+def main(stdout: Stdout):
+    stdout.print(Counter(base=10).counted(() => 7))
+    for each in made(() => 7):
+        stdout.print(each)
+";
+
+const SOURCE_NAMES_BY_A_NESTED_FUNCTION: &str = r"def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def counted() -> int:
+    def total() -> int:
+        return 7
+    with opened() as got:
+        return got + total() * 0
+
+def main(stdout: Stdout):
+    stdout.print(counted())
+";
+
+const SOURCE_CLEANUP_IN_A_TEST: &str = r#"error Bad:
+    pass
+
+def risky(n: int) -> int fails Bad:
+    if n < 0:
+        fail Bad()
+    return n
+
+def opened(ref log: list[str]) -> with int:
+    lend 1 except:
+        assert log == list[str]()
+        log.append("cleaned")
+
+def main(stdout: Stdout):
+    stdout.print("main")
+
+test "a cleanup written in before a failure reads the caller's log"():
+    mut log = list[str]()
+    with opened(ref log) as got:
+        for log in [["a loop's"]]:
+            _ = risky(-got)?
+"#;
+
 /// A name a `with` gives, named again inside its block by a nested function's parameter or by a
 /// loop inside a case, is that one there, of the same type: not what the source lends. So is a
 /// name a source's own nested function's parameter has, where the source has a local of that

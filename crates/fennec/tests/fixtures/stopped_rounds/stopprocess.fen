@@ -1,0 +1,27 @@
+# A stop that races a round: one round's handler is running another program when the serving
+# task's block ends and stops it, which cancels the round.
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def answered(request: Request, process: Process, stdout: Stdout) -> Response:
+    if request.path == "/slow":
+        stdout.print("the slow one began")
+        ran = process.run("sleep", ["30"]) except why:
+            stdout.print("the slow one never said", f"{why}")
+            return Response(status=500, body="no".encode())
+        stdout.print("the slow one never said either", ran.status)
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, process: Process, stdout: Stdout):
+    server.serve((request) => answered(request, process=process, stdout=stdout))
+    stdout.print("the server never said")
+
+def main(net: Net, process: Process, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as slow:
+            slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+            with launch(() => serving(server, process=process, stdout=stdout), stop_after=200ms)?:
+                got = net.get(f"http://127.0.0.1:{port}/one")?
+                stdout.print(got.text())
+    stdout.print("the server is over")

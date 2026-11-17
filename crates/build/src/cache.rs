@@ -20,6 +20,14 @@
 //! accidents; against people, Fennec's folder is its user's alone, and a cache folder another
 //! user owns or can write to isn't used at all (see `private.rs`). Reading an entry sets its modified time,
 //! which is how cleanup knows what was used least recently; access times are unreliable.
+//!
+//! A compiled function's object is kept as a file of its own too, `<name>.o`, for the linker to
+//! read where it lies, and found by its name alone: one look at the file, never opened, since a
+//! dev build of a big program links tens of thousands, and on a Mac opening each one, and a file
+//! naming its hash, was most of an edit's build. So it's checked as it's written rather than as
+//! it's read: whole before it has its name, as every entry is; synced first, so a power cut can't
+//! leave the name on less than the whole; written once and never again; and on Unix read-only
+//! from the moment it's made, so nothing writes into it by accident.
 //! Cleanup is the one thing that takes a lock, so two cleanups never run at once. The daemon runs
 //! one every five minutes while it's idle, and any command starts one when none has run for an hour.
 
@@ -127,20 +135,6 @@ impl Cache {
     /// miss, said once a command: it was torn or changed since it was written. So is one that's
     /// there but can't be read: only one that isn't there is a miss without a word.
     pub fn read(&self, kind: &str, name: &str) -> Option<Vec<u8>> {
-        self.read_whole(kind, name).map(|(bytes, _)| bytes)
-    }
-
-    /// Where an entry kept as a file of its own is (see [`Self::keep_bytes`]), checked against
-    /// its hash and marked as just used, as [`Self::read`] checks and marks it: the file itself,
-    /// for a tool to read where it lies. `None` for an entry that isn't there, doesn't match, or
-    /// was written as bytes, which end in their hash, so no tool can read that file as it is.
-    pub fn kept_entry(&self, kind: &str, name: &str) -> Option<PathBuf> {
-        self.read_whole(kind, name).and_then(|(_, kept)| kept)
-    }
-
-    /// An entry's bytes, checked and marked as `read` says, and the file they're in when the
-    /// entry is kept as a file of its own.
-    fn read_whole(&self, kind: &str, name: &str) -> Option<(Vec<u8>, Option<PathBuf>)> {
         if !self.usable() {
             return None;
         }
@@ -176,30 +170,50 @@ impl Cache {
         if age.and_then(|time| time.elapsed().ok()).is_none_or(|age| age > MARKED_RECENTLY) {
             mark_used(&path);
         }
-        let kept = sum.is_some().then_some(path);
-        Some((bytes, kept))
+        Some(bytes)
     }
 
-    /// Keeps `bytes` as a file of its own, as a kept program is: under a name holding its hash,
-    /// never written again, and the entry a file beside it naming that hash, put in place after
-    /// it. Gives back that file, for a tool to read where it lies: the linker reads each of a
-    /// dev build's objects there, rather than a copy written out for each build and deleted
-    /// after, which on a Mac was most of a build after a one-line edit. Cleanup never takes an
-    /// entry used in the last [`KEPT_RECENT`], so one a build just found stays while it links.
-    pub fn keep_bytes(&self, kind: &str, name: &str, bytes: &[u8]) -> std::io::Result<Option<PathBuf>> {
+    /// Where the object kept under `name` is, if it's there: the file itself, for the linker to
+    /// read where it lies, found by one look at its name and never opened, and marked as just
+    /// used, as [`Self::read`] marks an entry. It was checked as it was written (see the module's
+    /// notes). Cleanup never takes an entry used in the last [`KEPT_RECENT`], so one a build just
+    /// found stays while it links.
+    pub fn kept_object(&self, kind: &str, name: &str) -> Option<PathBuf> {
+        if !self.usable() {
+            return None;
+        }
+        let path = object_at(&self.path(kind, name));
+        let found = std::fs::metadata(&path).and_then(|metadata| {
+            if metadata.is_file() { metadata.modified() } else { Err(ErrorKind::NotFound.into()) }
+        });
+        let changed = match found {
+            Ok(changed) => changed,
+            Err(err) => {
+                crate::touched("look for an object", Err(err));
+                return None;
+            }
+        };
+        // Marking costs a write, so an object marked in the last few minutes isn't marked again.
+        if changed.elapsed().ok().is_none_or(|age| age > MARKED_RECENTLY) {
+            crate::touched("mark what it used as used", set_time(&path, SystemTime::now()));
+        }
+        Some(path)
+    }
+
+    /// Keeps a compiled object as a file of its own under `name`, written once and never again,
+    /// and gives back that file, for the linker to read where it lies: rather than a copy written
+    /// out for each build and deleted after, which on a Mac was most of a build after a one-line
+    /// edit. An object kept under `name` before is the same bytes already, since `name` holds the
+    /// hash of all it's made from.
+    pub fn keep_object(&self, kind: &str, name: &str, bytes: &[u8]) -> std::io::Result<Option<PathBuf>> {
         if !self.usable() {
             return Ok(None);
         }
-        let path = self.path(kind, name);
-        let sum = sum_of(bytes);
-        let kept = kept_at(&path, &sum);
-        // The same bytes kept before are there already, and never written again. They're on the
-        // disk before the entry names them, so the entry needn't be.
-        if !kept.is_file() {
-            put(&kept, &[bytes])?;
+        let path = object_at(&self.path(kind, name));
+        if !path.is_file() {
+            put_with(&path, &[bytes], Made::ReadOnly)?;
         }
-        put_unsynced(&sum_path(&path), &[sum.as_bytes()])?;
-        Ok(Some(kept))
+        Ok(Some(path))
     }
 
     /// Writes an entry whole, ending in a hash of its bytes: to a temporary file of its own,
@@ -438,6 +452,13 @@ fn kept_at(path: &Path, sum: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Where a kept object is: the entry's name with `.o` after it, which no other entry's name ends in.
+fn object_at(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".o");
+    PathBuf::from(name)
+}
+
 /// The program an entry's `.sum` file names, for a path ending in `.sum`.
 fn program_named_by(path: &Path) -> Option<PathBuf> {
     let entry = path.as_os_str().to_str()?.strip_suffix(&format!(".{SUM}"))?;
@@ -473,26 +494,37 @@ fn temporary_beside(path: &Path) -> PathBuf {
 /// Writes `parts` to `path` whole: to a temporary file of its own, made new, which refuses a file
 /// or a link already at that name, then synced, then renamed into place.
 fn put(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
-    put_with(path, parts, true)
+    put_with(path, parts, Made::Writable)
 }
 
-/// [`put`] without syncing, for a file a power cut can lose or tear without a wrong read: a kept
-/// object's `.sum`, which names the hash the object's own bytes are checked against, so a lost,
-/// empty or torn one is a miss. On a Mac a sync flushes the disk's own cache; a second one for each
-/// object made a cold dev build take 7% more instructions and twice the waits.
-fn put_unsynced(path: &Path, parts: &[&[u8]]) -> std::io::Result<()> {
-    put_with(path, parts, false)
+/// How [`put_with`] makes a file.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Made {
+    Writable,
+    /// Read-only from the moment it's made, on Unix: a kept object, which nothing writes into once
+    /// it has its name. Windows can't remove a read-only file, which cleanup has to, so there it's
+    /// made as any other.
+    ReadOnly,
 }
 
-/// [`put`], synced or not.
-fn put_with(path: &Path, parts: &[&[u8]], sync: bool) -> std::io::Result<()> {
+/// [`put`], with the file made as `made` says.
+fn put_with(path: &Path, parts: &[&[u8]], made: Made) -> std::io::Result<()> {
     use std::io::Write as _;
     if let Some(folder) = path.parent() {
         std::fs::create_dir_all(folder)?;
     }
     for _ in 0..8 {
         let temporary = temporary_beside(path);
-        let mut file = match File::options().write(true).create_new(true).open(&temporary) {
+        let mut options = File::options();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if made == Made::ReadOnly {
+            // The mode is for later opens: this one writes the file as it makes it.
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o444);
+        }
+        #[cfg(not(unix))]
+        let _ = made;
+        let mut file = match options.open(&temporary) {
             Ok(file) => file,
             Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
@@ -500,7 +532,7 @@ fn put_with(path: &Path, parts: &[&[u8]], sync: bool) -> std::io::Result<()> {
         let written = parts
             .iter()
             .try_for_each(|part| file.write_all(part))
-            .and_then(|()| if sync { file.sync_all() } else { Ok(()) })
+            .and_then(|()| file.sync_all())
             .and_then(|()| std::fs::rename(&temporary, path));
         if written.is_err() {
             let _ = std::fs::remove_file(&temporary);
@@ -674,30 +706,29 @@ mod tests {
     use super::is_stale;
     use std::time::Duration;
 
-    /// Bytes kept as a file of their own are that file, as they were given, with nothing after
-    /// them, for a tool to read where it lies: found again by their entry's name, and read as any
-    /// entry is. One written as bytes ends in its hash, so it has no such file, and one whose
-    /// file was changed since doesn't match and isn't found.
+    /// An object kept is a file holding just its bytes, for the linker to read where it lies, found
+    /// again by its name and never written again: kept a second time under the same name, it's the
+    /// file kept first. On Unix it's read-only from the start. An entry written as bytes, which end
+    /// in their hash, isn't an object, and a name nothing was kept under finds nothing.
     #[test]
-    fn bytes_kept_as_a_file_are_read_where_they_lie() {
+    fn an_object_kept_is_found_by_its_name_where_it_lies() {
         let dir = fennec_temp::Temp::at(
-            std::env::temp_dir().join(format!("fennec-keep-bytes-{}", std::process::id())),
+            std::env::temp_dir().join(format!("fennec-keep-object-{}", std::process::id())),
         );
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let cache = super::Cache::new(&dir.join("home"));
-        let kept = cache.keep_bytes("llvm", "key", b"an object").unwrap().unwrap();
+        let kept = cache.keep_object("llvm", "key", b"an object").unwrap().unwrap();
         assert_eq!(std::fs::read(&kept).unwrap(), b"an object");
-        assert_eq!(cache.kept_entry("llvm", "key"), Some(kept.clone()));
-        assert_eq!(cache.read("llvm", "key").as_deref(), Some(&b"an object"[..]));
-        // Kept again, the same bytes are the same file, not written again.
-        assert_eq!(cache.keep_bytes("llvm", "key", b"an object").unwrap(), Some(kept.clone()));
+        assert_eq!(cache.kept_object("llvm", "key"), Some(kept.clone()));
+        assert_eq!(cache.keep_object("llvm", "key", b"other bytes").unwrap(), Some(kept.clone()));
+        assert_eq!(std::fs::read(&kept).unwrap(), b"an object", "a kept object was written again");
+        #[cfg(unix)]
+        assert!(std::fs::metadata(&kept).unwrap().permissions().readonly(), "a kept object can be written");
         cache.write("llvm", "written", b"another object").unwrap();
-        assert_eq!(cache.kept_entry("llvm", "written"), None);
+        assert_eq!(cache.kept_object("llvm", "written"), None);
         assert_eq!(cache.read("llvm", "written").as_deref(), Some(&b"another object"[..]));
-        assert_eq!(cache.kept_entry("llvm", "gone"), None);
-        std::fs::write(&kept, b"changed").unwrap();
-        assert_eq!(cache.kept_entry("llvm", "key"), None);
+        assert_eq!(cache.kept_object("llvm", "gone"), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

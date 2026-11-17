@@ -2,11 +2,12 @@
 //! calls, exported under the name it calls it by. `fennec build`
 //! links an executable's object file with this library and the system's C libraries.
 //!
-//! The functions are `fennec_rt::embed`'s; this crate only gives them names a linker
-//! can find, which is the one thing here Rust calls unsafe.
+//! The functions are `fennec_rt::embed`'s; this crate gives them names a linker can find,
+//! and asks the system for what only it can give: Windows's fine timer, and a process's end.
+//! Those are the things here Rust calls unsafe.
 #![expect(
     unsafe_code,
-    reason = "exporting the runtime's functions under fixed names, for linked executables"
+    reason = "exporting the runtime's functions under fixed names, and calling the system to end the process"
 )]
 
 use fennec_rt::embed::guarded::rollback;

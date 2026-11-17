@@ -521,35 +521,57 @@ def answer_all(
 LONG_LINE = "a line was longer than 1048576 bytes"
 BARE_LINE_FEED = "a line ended without a carriage return"
 
-## The next request, with a line the runtime won't read answered rather than dropped. A line too
-## long gets a 431. One ended by a bare line feed gets a 400: a proxy that takes one and a server
-## that doesn't would read where a request ends differently.
+## What a request line longer than a whole head may be is refused with: a 414, as HTTP/1.1 has a
+## server answer a target longer than it takes.
+LONG_REQUEST_LINE = "the request line is too long"
+
+## The next request, with a line the runtime won't read answered rather than dropped. A request
+## line too long gets a 414, and a header line too long a 431. One ended by a bare line feed gets
+## a 400: a proxy that takes one and a server that doesn't would read where a request ends
+## differently.
 def next_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
     # The whole request, its head and body, has to come within `timeout`, not each read of it, so
     # a client sending a byte at a time can't hold the connection for longer than that.
     connection._reads_within(timeout)
-    read = read_request(connection, timeout) except error:
-        match error:
-            case .Other(reason):
-                if reason == LONG_LINE:
-                    return .Bad(status=431, reason="a line of the request is too long")
-                if reason == BARE_LINE_FEED:
-                    return .Bad(status=400, reason="a line ended without a carriage return")
-            case _:
-                pass
-        fail error
+    found = request_line(connection, timeout) except error:
+        return unread_line(error, long_status=414, long_reason=LONG_REQUEST_LINE)?
+    first = found else return .Done
+    read = read_request(connection, first, timeout) except error:
+        return unread_line(error, long_status=431, long_reason="a line of the request is too long")?
     return read
 
-## The next request on a connection.
-def read_request(connection: Connection, timeout: Duration) -> RequestRead fails NetError:
-    mut first = connection.read_line(timeout=timeout, crlf=True)? else return .Done
-    # A blank line or two before a request line is passed over, as HTTP/1.1 says a server should:
-    # some clients send one after a body.
+## A line the runtime won't read, answered: one too long with `long_status`, and one ended by a
+## bare line feed with a 400. Any other failure is passed on.
+def unread_line(error: NetError, long_status: int, long_reason: str) -> RequestRead fails NetError:
+    match error:
+        case .Other(reason):
+            if reason == LONG_LINE: return .Bad(status=long_status, reason=long_reason)
+            if reason == BARE_LINE_FEED:
+                return .Bad(status=400, reason="a line ended without a carriage return")
+        case _:
+            pass
+    fail error
+
+## A request's first line, or `None` at the end of what was sent. A blank line or two before it is
+## passed over, as HTTP/1.1 says a server should: some clients send one after a body.
+def request_line(connection: Connection, timeout: Duration) -> str? fails NetError:
+    mut first = connection.read_line(timeout=timeout, crlf=True)? else return None
     mut blank = 0
     while first == "" and blank < MOST_BLANK_LINES:
         blank += 1
-        first = connection.read_line(timeout=timeout, crlf=True)? else return .Done
-    if first == "": return .Done
+        first = connection.read_line(timeout=timeout, crlf=True)? else return None
+    if first == "": return None
+    return first
+
+## The request whose first line is `first`, read from the rest of its head and its body.
+def read_request(
+    connection: Connection,
+    first: str,
+    timeout: Duration,
+) -> RequestRead fails NetError:
+    # The whole head may hold no more than `MOST_HEADER_BYTES`, so a first line longer than that
+    # is refused before it's taken apart.
+    if text_size(first) > MOST_HEADER_BYTES: return .Bad(status=414, reason=LONG_REQUEST_LINE)
     parts = first.split(" ")
     if len(parts) != 3 or (parts[2] != "HTTP/1.1" and parts[2] != "HTTP/1.0"):
         return .Bad(status=400, reason="that isn't an HTTP/1.1 request line")
@@ -785,6 +807,8 @@ def reason_phrase(status: int) -> str:
             return "Method Not Allowed"
         case 413:
             return "Content Too Large"
+        case 414:
+            return "URI Too Long"
         case 431:
             return "Request Header Fields Too Large"
         case 500:

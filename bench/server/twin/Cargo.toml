@@ -1,7 +1,8 @@
-# The twin of the kernel in `bench/server`. Not part of the workspace: it's what Fennec is measured
-# against, with the standard library and a thread for each connection. socket2 only sets how many
-# connections may wait to be taken, which std's `bind` fixes at 128 and Fennec and Go leave to the
-# system, so a burst of them finds the same queue on every side.
+# The twins of the servers in `bench/server`. Not part of the workspace: they're what Fennec is
+# measured against. `echo` and `chat_threads` use the standard library and a thread for each
+# connection; `chat` is on tokio, as a Rust server's author would write it. socket2 only sets how
+# many connections may wait to be taken, which std's `bind` fixes at 128 and tokio's at 1,024, and
+# Fennec and Go leave to the system, so a burst of them finds the same queue on every side.
 [package]
 name = "fennec-server-twins"
 version = "0.0.0"
@@ -12,7 +13,16 @@ publish = false
 
 [dependencies]
 socket2 = { version = "=0.6.5", default-features = false }
+tokio = { version = "=1.54.1", default-features = false, features = ["io-util", "net", "rt-multi-thread", "sync"] }
 
 [[bin]]
 name = "echo"
 path = "echo.rs"
+
+[[bin]]
+name = "chat"
+path = "chat.rs"
+
+[[bin]]
+name = "chat_threads"
+path = "chat_threads.rs"

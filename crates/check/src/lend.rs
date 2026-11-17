@@ -44,7 +44,9 @@ impl FnCx<'_> {
             self.error(Diagnostic::new(message, value.span));
         }
         self.lent += 1;
+        self.lent_here = true;
         if self.loops > 0 {
+            self.lent_in_loop = true;
             self.error(
                 Diagnostic::new("this `lend` is in a loop, so it could lend more than once", span).with_help(
                     "lend once, outside the loop: a `with` source lends one value for its caller's block",
@@ -154,8 +156,25 @@ impl FnCx<'_> {
         spans
     }
 
-    /// What's checked of a source once its body is: it lends once.
-    pub(crate) fn source_finished(&mut self, def: &FnDef) {
+    /// What's checked of a source once its body is, whose `flow` that is: it lends once, on
+    /// every way through it that doesn't fail. The caller's block runs at the `lend`, so a way
+    /// that ends without one would skip the block with nothing said, where the rest of the check
+    /// takes it that the block ran once the source's call worked.
+    pub(crate) fn source_finished(&mut self, def: &FnDef, flow: &Flow) {
+        if self.lent == 1 && !self.lent_in_loop && !self.lent_here && !flow.exits {
+            self.error(
+                Diagnostic::new(
+                    format!(
+                        "`{}` can finish without lending: every way through a `with` source that doesn't fail reaches its `lend`",
+                        self.name
+                    ),
+                    def.span,
+                )
+                .with_help(
+                    "on a way that shouldn't lend, `fail` with an error, so the caller's `with` fails rather than skipping its block",
+                ),
+            );
+        }
         if self.lent == 0 {
             let lends = self.lends.clone().map_or_else(|| "something".to_owned(), |ty| a(&ty));
             self.error(

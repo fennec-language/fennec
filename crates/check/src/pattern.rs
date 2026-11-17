@@ -91,6 +91,11 @@ impl FnCx<'_> {
         }
         self.tail = outer;
         self.merge(&paths);
+        // A `match` that might take no case goes on past it from where it started, so a source
+        // has lent after it only if it had before it.
+        if !self.takes_every_case(&ty, arms) {
+            self.lent_here &= before.lent;
+        }
         self.check_cases(&ty, arms, subject.span);
         let refs = arms.iter().any(|arm| arm.pattern.holds_ref());
         if refs {
@@ -804,6 +809,33 @@ impl FnCx<'_> {
             Diagnostic::new(format!("this `match` doesn't handle {}", named.join(" or ")), span)
                 .with_help("add a case for each type in the union, or `case _:` for everything else"),
         );
+    }
+
+    /// Whether a `match` takes every value of what it's over: it has a case that always matches,
+    /// or it's over what [`Self::check_cases`] holds to a case for each, refused when one's
+    /// missing, or over a `bool` with a case for each.
+    fn takes_every_case(&mut self, subject: &Type, arms: &[MatchArm]) -> bool {
+        let unguarded: Vec<&Pattern> = arms
+            .iter()
+            .filter(|arm| arm.guard.is_none())
+            .flat_map(|arm| alternatives(&arm.pattern))
+            .collect();
+        if unguarded.iter().any(|pattern| always_matches(pattern)) {
+            return true;
+        }
+        let held = |wanted: bool| {
+            unguarded.iter().any(
+                |pattern| matches!(pattern, Pattern::Literal(Expr { kind: ExprKind::Bool(value), .. }) if *value == wanted),
+            )
+        };
+        match self.checker.settled(subject) {
+            Type::Result(..) | Type::Union(_) | Type::Errors(_) => true,
+            Type::Named(owner) | Type::Generic(owner, _) => {
+                self.checker.program.type_info(&owner).is_some_and(|info| !info.def.cases.is_empty())
+            }
+            Type::Bool => held(true) && held(false),
+            _ => false,
+        }
     }
 
     /// A `match` over an enum has to handle every case, or have `case _`.

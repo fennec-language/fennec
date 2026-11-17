@@ -4765,6 +4765,26 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A byte builder's push reads its room from the block's header, the word the runtime writes
+    /// whenever it makes or grows one, rather than working it out from the length: so a varint
+    /// that grew a builder for 10 bytes and wrote fewer leaves the rest as room for the next push.
+    #[test]
+    fn a_byte_builders_push_reads_its_room_from_the_header() -> Result<(), String> {
+        let source = "from std import pack\n\ndef main(stdout: Stdout):\n    numbers = [n * 1000003 for n in range(100)]\n    stdout.print(len(pack.dumps(numbers)) > 0)\n";
+        let (units, _, _) = emit(&lowered(source)?)?;
+        let growing: Vec<&str> = units
+            .iter()
+            .map(|unit| unit.text.as_str())
+            .filter(|text| text.contains("call ptr @fennec_bytes_grow("))
+            .collect();
+        assert!(!growing.is_empty(), "nothing pushes into a builder");
+        for text in growing {
+            assert!(text.contains(", i64 24\n"), "no room read from the header: {text}");
+            assert!(!text.contains("@llvm.ctlz.i64("), "a room worked out from the length: {text}");
+        }
+        Ok(())
+    }
+
     /// A native block's drop never calls itself, whichever field a chain runs through: those of
     /// its own type it lets go of wait in a list in one loop. Recursing through `left`, a chain
     /// 200,000 deep once ran past the thread sanitizer's 64K-frame stack, which then said a list was

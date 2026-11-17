@@ -179,7 +179,7 @@ impl Channel {
             Side::Sending => Kind::Send,
         };
         let on = || Arc::clone(self) as Arc<dyn Awaited>;
-        (!self.to_every).then(|| if blocking { Note::blocking(on(), kind) } else { Note::here(on(), kind) })
+        (!self.to_every).then(|| if blocking { Note::blocking(on(), kind) } else { Note::parked(on(), kind) })
     }
 }
 
@@ -644,29 +644,18 @@ fn wait<'a>(
     }
     // With no time limit it's a stuck wait, noted and counted for the deadlock check with the queue
     // held, as it's counted asleep.
-    let stuck =
-        deadline.is_none().then(|| channel.stuck_note(side, true)).flatten().map(deadlock::thread_waits);
+    let stuck = deadline
+        .is_none()
+        .then(|| channel.stuck_note(side, true))
+        .flatten()
+        .map(|note| deadlock::thread_waits(note, true));
     if let Some((number, true)) = stuck {
-        // The check looks at this channel, so the queue's let go of meanwhile, and looked at again
-        // after: a change that came then told nobody, as this thread wasn't asleep yet.
-        drop(queue);
-        deadlock::look();
-        queue = channel.queue();
-        #[cfg(any(test, feature = "threads"))]
-        let cut_short = super::threads::Launcher::cut_short_here();
-        #[cfg(not(any(test, feature = "threads")))]
-        let cut_short = false;
-        if cut_short || !channel.still_waits(&queue, side) {
-            match side {
-                Side::Sending => queue.asleep.for_room -= 1,
-                Side::Receiving => queue.asleep.for_a_message -= 1,
-            }
-            drop(queue);
-            deadlock::thread_woke(number);
+        let Some(held) = looked(channel, queue, side, number) else {
             #[cfg(any(test, feature = "threads"))]
             super::threads::Launcher::waited_here(said);
             return Waited::Again;
-        }
+        };
+        queue = held;
     }
     let (mut queue, timed_out) = match deadline {
         Some(deadline) => {
@@ -693,6 +682,36 @@ fn wait<'a>(
     #[cfg(any(test, feature = "threads"))]
     super::threads::Launcher::waited_here(said);
     if timed_out { Waited::TimedOut } else { Waited::Again }
+}
+
+/// For a wait that blocks its thread, noted and counted as `number`, when the counts say every
+/// context is stuck: lets go of `queue`, this channel's, while it looks for a deadlock, as the check
+/// looks at this channel, then looks at it again. A change that came meanwhile told nobody, as this
+/// thread wasn't asleep yet, so the wait's over if anything changed: it's taken back, and `None`
+/// says so. Otherwise gives the queue back, held, to wait.
+fn looked<'a>(
+    channel: &'a Arc<Channel>,
+    queue: MutexGuard<'a, Queue>,
+    side: Side,
+    number: u64,
+) -> Option<MutexGuard<'a, Queue>> {
+    drop(queue);
+    deadlock::look();
+    let mut queue = channel.queue();
+    #[cfg(any(test, feature = "threads"))]
+    let cut_short = super::threads::Launcher::cut_short_here();
+    #[cfg(not(any(test, feature = "threads")))]
+    let cut_short = false;
+    if !cut_short && channel.still_waits(&queue, side) {
+        return Some(queue);
+    }
+    match side {
+        Side::Sending => queue.asleep.for_room -= 1,
+        Side::Receiving => queue.asleep.for_a_message -= 1,
+    }
+    drop(queue);
+    deadlock::thread_woke(number);
+    None
 }
 
 /// `wait`, for a task that can park, on worker `at` of `pool`: it leaves a note on the channel to

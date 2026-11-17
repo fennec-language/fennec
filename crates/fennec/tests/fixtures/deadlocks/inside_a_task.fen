@@ -1,5 +1,5 @@
 # A task launches one of its own, which waits on a channel nobody sends to, and waits for it at its
-# block's end; main waits for the first.
+# block's end; main waits for the first. Only the task prints, so what's printed has one order.
 from std.concurrent import Channel, Crashed, channel
 
 def waits(numbers: Channel[int]):
@@ -16,4 +16,4 @@ def launched(stdout: Stdout):
 
 def main(stdout: Stdout) fails Crashed:
     with launch(() => launched(stdout))?:
-        stdout.print("launched")
+        pass

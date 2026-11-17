@@ -2,7 +2,7 @@
 //! beside the channels and the block ends.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use super::{Awaited, Counts, Kind, Note, ONE_CONTEXT, ONE_GENERATION, ONE_STUCK, Who, said};
 
@@ -22,9 +22,11 @@ fn counts_pack_and_a_double_uncount_never_reads_as_all_stuck() {
     assert!(!borrowed.all_stuck(), "{borrowed:?}");
 }
 
-/// Something to wait on that says what a test tells it to.
+/// Something to wait on that says what a test tells it to, and knows one task's number by its stop,
+/// as a block's end knows the task it waits for.
 struct Told {
     holds: AtomicBool,
+    task: Option<(Arc<AtomicU8>, i64)>,
 }
 
 impl Awaited for Told {
@@ -35,23 +37,37 @@ impl Awaited for Told {
     fn said(&self, kind: Kind) -> String {
         format!("for {kind:?}")
     }
+
+    fn number_of(&self, who: &Who) -> Option<i64> {
+        let Who::Task(stop) = who else { return None };
+        self.task.as_ref().filter(|(its, _)| Arc::ptr_eq(its, stop)).map(|(_, number)| *number)
+    }
 }
 
-/// A report names each stuck wait on a line of its own, sorted, under the one line that says what
-/// happened; and a note holds only while what it waits on says so.
+/// A report names each stuck wait on a line of its own under the one line that says what happened:
+/// `main` first, then tasks by number, task 2 before task 10, then any it can't name. A note holds
+/// only while what it waits on says so.
 #[test]
 fn a_report_says_who_waits_for_what_and_a_note_asks_what_it_waits_on() {
-    let told = Arc::new(Told { holds: AtomicBool::new(true) });
+    let told = Arc::new(Told { holds: AtomicBool::new(true), task: None });
     let on: Arc<dyn Awaited> = told.clone();
+    let (second, tenth) = (Arc::new(AtomicU8::new(0)), Arc::new(AtomicU8::new(0)));
+    let knows = |stop: &Arc<AtomicU8>, number| -> Arc<dyn Awaited> {
+        Arc::new(Told { holds: AtomicBool::new(true), task: Some((Arc::clone(stop), number)) })
+    };
     let notes = [
-        Note { who: Who::Other, ..Note::here(Arc::clone(&on), Kind::Send) },
-        Note { who: Who::Main, ..Note::here(Arc::clone(&on), Kind::Receive) },
+        Note { who: Who::Other, ..Note::parked(Arc::clone(&on), Kind::Send) },
+        Note { who: Who::Task(Arc::clone(&tenth)), ..Note::parked(knows(&tenth, 10), Kind::Receive) },
+        Note { who: Who::Task(Arc::clone(&second)), ..Note::parked(knows(&second, 2), Kind::Receive) },
+        Note { who: Who::Main, ..Note::parked(Arc::clone(&on), Kind::Receive) },
     ];
     assert_eq!(
         said(&notes),
         "error: a deadlock: every task is waiting for another, and nothing can wake them\n  \
-         a task is waiting for Send\n  main is waiting for Receive\n"
+         main is waiting for Receive\n  task 2 is waiting for Receive\n  task 10 is waiting for Receive\n  \
+         a task is waiting for Send\n"
     );
+    let notes = [notes[0].clone(), notes[3].clone()];
     assert!(notes.iter().all(Note::holds));
     told.holds.store(false, Ordering::SeqCst);
     assert!(!notes.iter().any(Note::holds), "what it waits on changed");

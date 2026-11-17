@@ -111,9 +111,9 @@ pub(crate) trait Awaited: Send + Sync {
     /// What a wait of `kind` on it waits for, as the report says it, after "is waiting".
     fn said(&self, kind: Kind) -> String;
 
-    /// The number of the task whose stop is `stop`, if it's that task: a block's end knows the one
-    /// it waits for, which its launcher has already taken out of those any wait can find.
-    fn number_of(&self, _stop: &Arc<std::sync::atomic::AtomicU8>) -> Option<i64> {
+    /// The number of the task `who` is, if it's the task this is: a block's end knows the one it
+    /// waits for, which its launcher has already taken out of those any wait can find.
+    fn number_of(&self, _who: &Who) -> Option<i64> {
         None
     }
 }
@@ -122,15 +122,20 @@ pub(crate) trait Awaited: Send + Sync {
 #[derive(Clone)]
 pub(crate) enum Who {
     Main,
-    /// A launched task, by its stop, which finds its number when it's said.
+    /// A launched task in a wait that blocks its thread, by its stop, which finds its number when
+    /// it's said.
     #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are launched"))]
     Task(Arc<std::sync::atomic::AtomicU8>),
+    /// A parked task: its worker's pool, by address, the worker's place in it and the task's number
+    /// there, which the worker fills in as it parks, and a launched task's name is found from.
+    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only workers park"))]
+    Parked {
+        pool: usize,
+        at: usize,
+        task: u64,
+    },
     /// Anything else: a server's round, or a range of a `parallel` call. Neither is in a report
     /// yet: a worker serving isn't idle, and a call's caller counts as running while it waits.
-    #[cfg_attr(
-        not(any(test, feature = "threads")),
-        expect(dead_code, reason = "only a pool's workers run these")
-    )]
     Other,
 }
 
@@ -149,22 +154,20 @@ impl Who {
         Who::Main
     }
 
-    /// Its name in a report of `notes`: a task by its number, found among the tasks still to be
-    /// waited for, or else from the block's end waiting for it.
-    fn said(&self, notes: &[Note]) -> String {
-        match self {
-            Who::Main => "main".to_owned(),
-            Who::Task(stop) => {
-                #[cfg(any(test, feature = "threads"))]
-                let number = super::serve::task_number(stop);
-                #[cfg(not(any(test, feature = "threads")))]
-                let number = None;
-                match number.or_else(|| notes.iter().find_map(|note| note.on.number_of(stop))) {
-                    Some(number) => format!("task {number}"),
-                    None => "a task".to_owned(),
-                }
-            }
-            Who::Other => "a task".to_owned(),
+    /// Its name in a report of `notes`, with where it goes among the report's lines: `main` first,
+    /// then tasks by number, so task 2 comes before task 10. A task's number is found among the
+    /// tasks still to be waited for, or else from the block's end waiting for it.
+    fn said(&self, notes: &[Note]) -> ((u8, i64), String) {
+        if let Who::Main = self {
+            return ((0, 0), "main".to_owned());
+        }
+        #[cfg(any(test, feature = "threads"))]
+        let number = super::serve::task_number(self);
+        #[cfg(not(any(test, feature = "threads")))]
+        let number = None;
+        match number.or_else(|| notes.iter().find_map(|note| note.on.number_of(self))) {
+            Some(number) => ((1, number), format!("task {number}")),
+            None => ((2, 0), "a task".to_owned()),
         }
     }
 }
@@ -175,54 +178,73 @@ pub(crate) struct Note {
     who: Who,
     on: Arc<dyn Awaited>,
     kind: Kind,
-    /// For a wait that blocks its thread, the launchers a crash of whose tasks wakes it, which a
-    /// crash does without changing what it waits on: it holds only while none has. A parked wait's
-    /// crash wake is mail, which counts as running, and takes it out of its worker's waits.
+}
+
+impl Note {
+    /// The note of a parked wait of `kind` on `on`, whose worker says who it is as the task parks
+    /// (`parked_by`): nothing's looked up on the way to a park.
+    pub(crate) fn parked(on: Arc<dyn Awaited>, kind: Kind) -> Note {
+        Note { who: Who::Other, on, kind }
+    }
+
+    /// The note of a wait of `kind` on `on` that blocks this thread, by whoever's running here.
+    pub(crate) fn blocking(on: Arc<dyn Awaited>, kind: Kind) -> Note {
+        Note { who: Who::here(), on, kind }
+    }
+
+    /// The task this parked wait is, as its worker has it.
+    #[cfg(any(test, feature = "threads"))]
+    pub(crate) fn parked_by(&mut self, pool: usize, at: usize, task: u64) {
+        self.who = Who::Parked { pool, at, task };
+    }
+
+    fn holds(&self) -> bool {
+        self.on.holds(self.kind)
+    }
+
+    fn said(&self, notes: &[Note]) -> ((u8, i64), String) {
+        let (order, who) = self.who.said(notes);
+        (order, format!("  {who} is waiting {}", self.on.said(self.kind)))
+    }
+}
+
+/// The note of a stuck wait that blocks its thread, with the launchers a crash of whose tasks wakes
+/// it, when that's a channel's wait: a crash wakes it without changing what it waits on, so it holds
+/// only while none has. A parked wait's crash wake is mail, which the check sees, and which takes it
+/// out of its worker's waits.
+struct ThreadNote {
+    note: Note,
     #[cfg(any(test, feature = "threads"))]
     launchers: Vec<Arc<super::threads::Launcher>>,
 }
 
-impl Note {
-    /// The note of a parked wait of `kind` on `on`, by whoever's running here.
-    pub(crate) fn here(on: Arc<dyn Awaited>, kind: Kind) -> Note {
-        Note {
-            who: Who::here(),
-            on,
-            kind,
-            #[cfg(any(test, feature = "threads"))]
-            launchers: Vec::new(),
-        }
-    }
-
-    /// The note of a wait of `kind` on `on` that blocks this thread.
-    pub(crate) fn blocking(on: Arc<dyn Awaited>, kind: Kind) -> Note {
-        Note {
-            #[cfg(any(test, feature = "threads"))]
-            launchers: super::threads::Launcher::those_here(),
-            ..Note::here(on, kind)
-        }
-    }
-
+impl ThreadNote {
     fn holds(&self) -> bool {
         #[cfg(any(test, feature = "threads"))]
         if self.launchers.iter().any(|launcher| launcher.cut_short()) {
             return false;
         }
-        self.on.holds(self.kind)
-    }
-
-    fn said(&self, notes: &[Note]) -> String {
-        format!("  {} is waiting {}", self.who.said(notes), self.on.said(self.kind))
+        self.note.holds()
     }
 }
 
 /// The notes of stuck waits that block their threads, by a number each was given.
-static THREAD_NOTES: Mutex<Option<HashMap<u64, Note>>> = Mutex::new(None);
+static THREAD_NOTES: Mutex<Option<HashMap<u64, ThreadNote>>> = Mutex::new(None);
 static NEXT_THREAD_NOTE: AtomicU64 = AtomicU64::new(1);
 
 /// A thread is about to block in a stuck wait, leaving `note`, and counts it: gives the number to
-/// take it back by, and whether the counts now say every context is stuck, so it should look.
-pub(crate) fn thread_waits(note: Note) -> (u64, bool) {
+/// take it back by, and whether the counts now say every context is stuck, so it should look. A
+/// wait a crash of a task its code launched wakes says so, `crash_wakes`: a channel's.
+pub(crate) fn thread_waits(note: Note, crash_wakes: bool) -> (u64, bool) {
+    #[cfg(any(test, feature = "threads"))]
+    let launchers = if crash_wakes { super::threads::Launcher::those_here() } else { Vec::new() };
+    #[cfg(not(any(test, feature = "threads")))]
+    let _ = crash_wakes;
+    let note = ThreadNote {
+        note,
+        #[cfg(any(test, feature = "threads"))]
+        launchers,
+    };
     let number = NEXT_THREAD_NOTE.fetch_add(1, Ordering::Relaxed);
     THREAD_NOTES
         .lock()
@@ -243,20 +265,31 @@ pub(crate) fn thread_woke(number: u64) {
 /// What a worker published, in a slot of its own, as it last went to sleep: whether it had nothing
 /// left but stuck waits, and their notes. Each pool's workers have one each (see `Pool`), so going to
 /// sleep takes no lock but the worker's own.
+///
+/// It copies its notes only when a check could pass: when the counts it left say every context is
+/// stuck, or a check found its notes missing and asked for them, waking it to. Copying every note
+/// each time a worker went to sleep was most of what finding deadlocks cost a program that never
+/// has one.
 #[cfg(any(test, feature = "threads"))]
 #[derive(Default)]
 pub(crate) struct Published {
     idle: bool,
+    /// Whether `notes` are this sleep's: they're left out while no check could pass.
+    noted: bool,
+    /// Whether a check found it idle with its notes left out, and asked for them.
+    asked: bool,
     notes: Vec<Note>,
 }
 
 #[cfg(any(test, feature = "threads"))]
 impl Published {
-    /// Whether it's idle, with the notes of its waits when it is.
-    pub(crate) fn set(&mut self, idle: bool, notes: impl Iterator<Item = Note>) {
+    /// Whether it's idle, and when it is and a check could pass, `notes`, its waits'.
+    pub(crate) fn set(&mut self, idle: bool, may_pass: bool, notes: impl Iterator<Item = Note>) {
         self.idle = idle;
+        self.noted = idle && (may_pass || self.asked);
+        self.asked = false;
         self.notes.clear();
-        if idle {
+        if self.noted {
             self.notes.extend(notes);
         }
     }
@@ -264,6 +297,7 @@ impl Published {
     /// Its worker has woken.
     pub(crate) fn woke(&mut self) {
         self.idle = false;
+        self.noted = false;
         self.notes.clear();
     }
 }
@@ -279,31 +313,35 @@ pub(in crate::embed) fn pool_made(pool: &'static super::parallel::Pool) {
 }
 
 /// A worker going to sleep with nothing but `stuck` stuck waits counts them, so the counts can say
-/// when every context is stuck. A worker's parked waits are counted only while it sleeps: while it's
-/// awake, the program's still moving.
+/// when every context is stuck, and gives the counts it left. A worker's parked waits are counted
+/// only while it sleeps: while it's awake, the program's still moving.
 #[cfg(any(test, feature = "threads"))]
-pub(crate) fn sleeps_stuck(stuck: u64) {
-    if stuck > 0 {
-        COUNTS.fetch_add(stuck.wrapping_mul(ONE_STUCK), Ordering::SeqCst);
+pub(crate) fn sleeps_stuck(stuck: u64) -> Counts {
+    if stuck == 0 {
+        return counts();
     }
+    Counts::of(
+        COUNTS
+            .fetch_add(stuck.wrapping_mul(ONE_STUCK), Ordering::SeqCst)
+            .wrapping_add(stuck.wrapping_mul(ONE_STUCK)),
+    )
 }
 
-/// The worker that counted `stuck` as it went to sleep has woken. It's a change, so the generation
-/// moves with it.
+/// A worker that went to sleep idle, counting `stuck`, has woken. It's a change, so the generation
+/// moves with it, stuck waits or none: a check that read its slot as idle then fails on the counts,
+/// whatever its mail does.
 #[cfg(any(test, feature = "threads"))]
-pub(crate) fn woke_stuck(stuck: u64) {
-    if stuck > 0 {
-        COUNTS.fetch_add(ONE_GENERATION.wrapping_sub(stuck.wrapping_mul(ONE_STUCK)), Ordering::SeqCst);
-    }
+pub(crate) fn woke_idle(stuck: u64) {
+    COUNTS.fetch_add(ONE_GENERATION.wrapping_sub(stuck.wrapping_mul(ONE_STUCK)), Ordering::SeqCst);
 }
 
 /// What a deadlock says: one line, then one for each stuck wait, in the order of who waits.
 fn said(notes: &[Note]) -> String {
-    let mut lines: Vec<String> = notes.iter().map(|note| note.said(notes)).collect();
+    let mut lines: Vec<((u8, i64), String)> = notes.iter().map(|note| note.said(notes)).collect();
     lines.sort();
     let mut text =
         "error: a deadlock: every task is waiting for another, and nothing can wake them\n".to_owned();
-    for line in lines {
+    for (_, line) in lines {
         text.push_str(&line);
         text.push('\n');
     }
@@ -335,19 +373,45 @@ fn proven(before: Counts) -> Option<Vec<Note>> {
         return None;
     }
     #[cfg_attr(not(any(test, feature = "threads")), expect(unused_mut, reason = "only workers add notes"))]
-    let mut notes: Vec<Note> = THREAD_NOTES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        .map(|notes| notes.values().cloned().collect())
-        .unwrap_or_default();
-    #[cfg(any(test, feature = "threads"))]
-    for published in pools.iter().flat_map(|pool| pool.published()) {
-        let published = published.lock().unwrap_or_else(PoisonError::into_inner);
-        if !published.idle {
+    let mut notes: Vec<Note> = {
+        let thread_notes = THREAD_NOTES.lock().unwrap_or_else(PoisonError::into_inner);
+        let thread_notes: Vec<&ThreadNote> =
+            thread_notes.as_ref().map(|notes| notes.values().collect()).unwrap_or_default();
+        if !thread_notes.iter().all(|note| note.holds()) {
             return None;
         }
-        notes.extend(published.notes.iter().cloned());
+        thread_notes.iter().map(|note| note.note.clone()).collect()
+    };
+    #[cfg(any(test, feature = "threads"))]
+    {
+        let mut unnoted = Vec::new();
+        for pool in &pools {
+            for (at, published) in pool.published().iter().enumerate() {
+                let published = published.lock().unwrap_or_else(PoisonError::into_inner);
+                if !published.idle {
+                    return None;
+                }
+                if published.noted {
+                    notes.extend(published.notes.iter().cloned());
+                } else {
+                    unnoted.push((*pool, at));
+                }
+            }
+        }
+        if !notes.iter().all(Note::holds) {
+            return None;
+        }
+        // Workers that went to sleep before a check could pass left their notes out: each is asked
+        // for them, and woken to go to sleep again, which leaves them and looks once more.
+        if !unnoted.is_empty() {
+            for (pool, at) in unnoted {
+                if let Some(published) = pool.published().get(at) {
+                    published.lock().unwrap_or_else(PoisonError::into_inner).asked = true;
+                    pool.wake(at);
+                }
+            }
+            return None;
+        }
     }
     let all_noted = u64::try_from(notes.len()).is_ok_and(|noted| noted == before.contexts);
     if !all_noted || !notes.iter().all(Note::holds) || !super::serve::blocking_idle() {
@@ -372,6 +436,12 @@ fn report(_notes: &[Note]) {}
 #[cfg(not(test))]
 fn report(notes: &[Note]) {
     use std::io::Write as _;
+    // Two threads can each prove it, as a worker going to sleep and `main` about to wait: the first
+    // says it, and the other leaves it to that one, which ends the process.
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if REPORTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     super::write_kept_output();
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().write_all(said(notes).as_bytes());

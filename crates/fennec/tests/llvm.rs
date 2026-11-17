@@ -7786,7 +7786,7 @@ fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result
         ("last_ends", "napped\n", format!("{}{}", main_for(2), receives(2))),
         (
             "inside_a_task",
-            "launched\nlaunched inside\n",
+            "launched inside\n",
             format!(
                 "{}  task 1 is waiting at the end of a `with launch` block, for task 2\n{}",
                 main_for(1),
@@ -7804,19 +7804,23 @@ fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result
 /// one whose sender naps first; one a crash of the task its code launched cuts short, which
 /// changes nothing on the channel; a task stopped while it counts that only then comes to a
 /// receive, while its launcher waits at the block's end with no time limit left (from Fable 5.2's
-/// review of the design); and a task waiting on `main` while `main` runs a process.
+/// review of the design); and, where there's `sleep` to run, a task waiting on `main` while `main`
+/// runs a process.
 #[test]
 fn a_wait_something_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
-    let cases = [
+    let mut cases = vec![
         ("timeout_fine", "gave up\n", ""),
         ("sender_naps", "7\n", ""),
         ("crash_wakes", "it crashed\n", "error: index 5 is out of range for length 2\n"),
         ("stopped_counting", "counted True\nthe block is over\n", ""),
-        ("process_waits", "heard 1\n", ""),
     ];
+    // It runs `sleep`, which Windows doesn't have.
+    if cfg!(unix) {
+        cases.push(("process_waits", "heard 1\n", ""));
+    }
     for (name, printed, said) in cases {
         deadlock_fixture_runs_as(name, 5, (printed, said, 0))?;
     }

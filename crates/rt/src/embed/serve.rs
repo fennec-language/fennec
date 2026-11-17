@@ -1086,6 +1086,10 @@ impl Io {
         let Parking { interest, deadline, stuck } =
             PARKING.take().unwrap_or(Parking { interest: Interest::READABLE, deadline: None, stuck: None });
         self.stuck_waits += usize::from(stuck.is_some());
+        let stuck = stuck.map(|mut note| {
+            note.parked_by(std::ptr::from_ref(self.pool).addr(), self.at, task);
+            note
+        });
         if let Some(was) = self.waiting.insert(token, (task, interest, deadline, stuck)) {
             self.stuck_waits -= usize::from(was.3.is_some());
         }
@@ -1097,17 +1101,21 @@ impl Io {
         unwait(&mut self.waiting, &mut self.stuck_waits, token)
     }
 
-    /// Says, for the deadlock check as this worker goes to sleep, whether nothing's left here but
-    /// stuck waits (nothing ready or put off, nothing served, and no other wait), with their notes
-    /// if so. Gives how many stuck waits that is, for the counts, or 0 when it isn't idle.
-    pub(in crate::embed) fn publish(&self, into: &mut super::deadlock::Published) -> u64 {
+    /// For the deadlock check as this worker goes to sleep: how many stuck waits it has, when
+    /// nothing else is left here (nothing ready or put off, nothing served, and no other wait).
+    pub(in crate::embed) fn idle_stuck(&self) -> Option<u64> {
         let idle = self.ready.is_empty()
             && self.servers.is_empty()
             && self.deferred_ranges.is_empty()
             && self.deferred_tasks.is_empty()
             && self.stuck_waits == self.waiting.len();
-        into.set(idle, self.waiting.values().filter_map(|waiting| waiting.3.clone()));
-        if idle { u64::try_from(self.stuck_waits).unwrap_or(u64::MAX) } else { 0 }
+        idle.then(|| u64::try_from(self.stuck_waits).unwrap_or(u64::MAX))
+    }
+
+    /// The notes of its stuck waits, for the deadlock check, which copies them only when it needs
+    /// them.
+    pub(in crate::embed) fn stuck_notes(&self) -> impl Iterator<Item = super::deadlock::Note> + '_ {
+        self.waiting.values().filter_map(|waiting| waiting.3.clone())
     }
 
     /// Resumes a range's task with its own accounts in the thread's runtime, and puts them back

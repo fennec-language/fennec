@@ -325,15 +325,22 @@ impl Pool {
             // look, as it may be the last to go to sleep. Whatever wakes it is mail or a job, which
             // only something still moving sends.
             let slot = self.published.get(at);
-            let stuck =
-                slot.map_or(0, |slot| io.publish(&mut slot.lock().unwrap_or_else(PoisonError::into_inner)));
-            crate::embed::deadlock::sleeps_stuck(stuck);
+            let idle = io.idle_stuck();
+            let left = crate::embed::deadlock::sleeps_stuck(idle.unwrap_or(0));
+            if let Some(slot) = slot {
+                let notes = io.stuck_notes();
+                slot.lock().unwrap_or_else(PoisonError::into_inner).set(
+                    idle.is_some(),
+                    left.all_stuck(),
+                    notes,
+                );
+            }
             crate::embed::deadlock::look();
             io.poll(io.timeout());
-            if let Some(slot) = slot {
+            if let (Some(slot), Some(stuck)) = (slot, idle) {
                 slot.lock().unwrap_or_else(PoisonError::into_inner).woke();
+                crate::embed::deadlock::woke_idle(stuck);
             }
-            crate::embed::deadlock::woke_stuck(stuck);
         }
         self.sleeping.fetch_sub(1, Ordering::SeqCst);
         mail.asleep.store(false, Ordering::SeqCst);
@@ -348,6 +355,14 @@ impl Pool {
     /// What each worker published for the deadlock check as it last went to sleep.
     pub(in crate::embed) fn published(&self) -> &[Mutex<crate::embed::deadlock::Published>] {
         &self.published
+    }
+
+    /// Wakes worker `at` from its poll, with nothing sent it: for the deadlock check, which asked it
+    /// for the notes it left out, which it leaves as it goes to sleep again.
+    pub(in crate::embed) fn wake(&self, at: usize) {
+        if let Some(mail) = self.mail.get(at) {
+            let _ = mail.waker.wake();
+        }
     }
 
     /// Whether worker `at` has mail, or the pool has jobs waiting, for a task that's run its slice

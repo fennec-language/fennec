@@ -101,12 +101,10 @@ fn tasks<T>(use_them: impl FnOnce(&mut HashMap<i64, Arc<Launched>>) -> T) -> T {
     use_them(TASKS.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_with(HashMap::new))
 }
 
-/// The number of the launched task that `stop` is the stop of, if it's still to end: what a
-/// deadlock's report names it by.
-pub(in crate::embed) fn task_number(stop: &Arc<AtomicU8>) -> Option<i64> {
-    tasks(|tasks| {
-        tasks.values().find(|launched| Arc::ptr_eq(&launched.stop, stop)).map(|launched| launched.number)
-    })
+/// The number of the launched task `who` is, if it's still to be waited for: what a deadlock's
+/// report names it by.
+pub(in crate::embed) fn task_number(who: &deadlock::Who) -> Option<i64> {
+    tasks(|tasks| tasks.values().find_map(|launched| launched.number_of(who)))
 }
 
 /// A block's end waits on its task, for the deadlock check: while the task hasn't ended.
@@ -119,8 +117,17 @@ impl Awaited for Launched {
         format!("at the end of a `with launch` block, for task {}", self.number)
     }
 
-    fn number_of(&self, stop: &Arc<AtomicU8>) -> Option<i64> {
-        Arc::ptr_eq(&self.stop, stop).then_some(self.number)
+    fn number_of(&self, who: &deadlock::Who) -> Option<i64> {
+        let this = match who {
+            deadlock::Who::Task(stop) => Arc::ptr_eq(&self.stop, stop),
+            deadlock::Who::Parked { pool, at, task } => {
+                *pool == std::ptr::from_ref(self.pool).addr()
+                    && *at == self.worker
+                    && *self.task.lock().unwrap_or_else(PoisonError::into_inner) == Some(*task)
+            }
+            deadlock::Who::Main | deadlock::Who::Other => false,
+        };
+        this.then_some(self.number)
     }
 }
 
@@ -396,7 +403,7 @@ fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome 
             let token = super::next_token();
             *end = End::Running(Some((at, token)));
             drop(end);
-            let stuck = deadline.is_none().then(|| Note::here(on(), Kind::BlockEnd));
+            let stuck = deadline.is_none().then(|| Note::parked(on(), Kind::BlockEnd));
             Some(super::park_on_token(token, deadline, false, stuck))
         } else if let Some(deadline) = deadline {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -404,7 +411,7 @@ fn wait_for(launched: &Arc<Launched>, mut deadline: Option<Instant>) -> Outcome 
             waited.1.timed_out().then_some(Parked::TimedOut)
         } else {
             // Counted with the end held, so the task's end, which takes it, comes before or after.
-            let (number, look) = deadlock::thread_waits(Note::blocking(on(), Kind::BlockEnd));
+            let (number, look) = deadlock::thread_waits(Note::blocking(on(), Kind::BlockEnd), false);
             let end = if look {
                 // The check looks at this task's end, so it's let go of meanwhile, and looked at
                 // again after: an end that came then has told no one.

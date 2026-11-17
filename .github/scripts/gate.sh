@@ -273,6 +273,8 @@ oracle_agrees() {
 # - The Rust docs build as CI's lint job builds them, with any warning an error: a public item's
 #   doc that links to a private one fails there.
 # - The workflows pass actionlint and zizmor, where they're installed.
+# - The landing scripts' own tests pass on their throwaway repositories, with no git settings but
+#   git's own, as on CI's runners.
 quick() {
   local failed=0 program said="$logs/quick.txt"
   if ! ./target/debug/fennec fmt --check examples crates/syntax/src/stdlib bench; then
@@ -306,6 +308,16 @@ quick() {
   .github/scripts/tsan-suppressions-check.sh || { echo "tsan-suppressions-check" >> "$names"; failed=1; }
   .github/scripts/test-known-failures.sh > /dev/null || { echo "test-known-failures" >> "$names"; failed=1; }
   .github/scripts/linkage-check.sh target/debug/fennec || { echo "linkage-check" >> "$names"; failed=1; }
+  # With no git settings but git's own, as CI's runners have: this Mac's git names a new
+  # repository's first branch `main`, which hid two tests that needed it, and CI found them.
+  local script
+  for script in test-fetch test-open-pr test-landing test-sweep-worktrees; do
+    if ! GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null ".github/scripts/$script.sh" > "$said" 2>&1; then
+      cat "$said"
+      echo "$script" >> "$names"
+      failed=1
+    fi
+  done
   if ! RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked > "$said" 2>&1; then
     cat "$said"
     echo "cargo doc" >> "$names"

@@ -167,7 +167,8 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<()> {
         match (pattern, ty) {
-            (Pattern::Wildcard | Pattern::Or(_), _) | (Pattern::Bind(_), Type::Optional(_)) => {}
+            (Pattern::Wildcard | Pattern::Or(_), _)
+            | (Pattern::Bind(_) | Pattern::MutBind(_), Type::Optional(_)) => {}
             (_, Type::Result(ok, error)) => {
                 return self.result_pattern(pattern, value, (ok, error), fail, span);
             }
@@ -178,8 +179,12 @@ impl Lowering<'_> {
         }
         match pattern {
             Pattern::Wildcard => {}
-            // A `ref` name is written in as a plain one before lowering, with its value put back.
-            Pattern::Bind(name) | Pattern::RefBind(name) => {
+            // A `ref` name is written in before lowering, as a name the case binds whose value is
+            // put back. One that isn't would be a copy whose changes are lost, so it isn't lowered.
+            Pattern::RefBind(name) => {
+                return Err(format!("the `ref` case naming `{name}` wasn't written in to be put back"));
+            }
+            Pattern::Bind(name) | Pattern::MutBind(name) => {
                 // Each alternative of an or-pattern binds the same local.
                 let bound = self.scopes.last().and_then(|scope| scope.get(name).copied());
                 let dest = bound.unwrap_or_else(|| self.declare(name, ty.clone()));

@@ -717,6 +717,25 @@ fn a_slice_key_into_a_dict_of_tuples_is_made_a_string_first() -> std::io::Result
     )
 }
 
+/// A dict's string value read only to be looked at is let go of (#1986). A value held as a block
+/// was read into a borrowed local, which nothing lets go of, with an owner of its own: `d[k] ==
+/// "x"`, `!=`, `<`, `len`, `startswith`, a local holding it, and `d[k] += "!"` each left one block
+/// for every value. Values long enough for blocks of their own and short ones held inline, and a
+/// dict changed after a read and before what was read is used again. It prints what the
+/// reference evaluator prints, with nothing left, in entries and boxed.
+#[test]
+fn a_dicts_string_read_only_to_look_at_is_let_go_of() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_text_reads_let_go",
+        include_str!("fixtures/dict_text_reads_let_go.fen"),
+        include_str!("fixtures/dict_text_reads_let_go.out"),
+    )
+}
+
 /// A store into a struct's dict goes into the dict the struct holds now. After a lookup in
 /// `mine.visits`, `mine = other` and then `mine.visits[key] = fresh` wrote where the lookup had
 /// found the key: in the dict `mine` held before, which the caller still had, so the caller's

@@ -554,9 +554,12 @@ impl Lowering<'_> {
     }
 
     /// Runs the cleanup of the `with` block a failure leaves, with the failure in its name. It's
-    /// lowered with what's in sight where it's written, and ends by failing.
+    /// lowered with what's in sight where it's written, and ends by failing. It's ordinary code
+    /// while it runs, though it's lowered from inside a failure leaving, as when a generator let go
+    /// of fails as it closes: a lock it takes is given back with its changes kept.
     fn clean_up(&mut self, error: Operand, span: Span) -> Lowered<()> {
         let Some(around) = self.on_failure.pop() else { return self.return_error(error, span) };
+        let failing = (std::mem::take(&mut self.failing_out), self.failing_with.take());
         let rounds = std::mem::take(&mut self.plain_rounds);
         let mut scopes = around.scopes.clone();
         scopes.push(std::collections::HashMap::new());
@@ -574,6 +577,7 @@ impl Lowering<'_> {
         self.body = outer_body;
         self.subst = outer_subst;
         self.plain_rounds = rounds;
+        (self.failing_out, self.failing_with) = failing;
         self.on_failure.push(around);
         lowered
     }

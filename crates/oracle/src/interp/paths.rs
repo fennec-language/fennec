@@ -8,7 +8,7 @@ use fennec_syntax::Span;
 use super::builtins::invalid;
 use super::files::path_value;
 use super::{Run, unsupported};
-use crate::value::Value;
+use crate::value::{Text, Value};
 
 /// A method of a `Path` whose text is `text`.
 pub(crate) fn method(text: &str, name: &str, args: &[Value], span: Span) -> Run<Value> {
@@ -16,17 +16,17 @@ pub(crate) fn method(text: &str, name: &str, args: &[Value], span: Span) -> Run<
         ("join" | "/", [Value::Str(part)]) => path_value(joined(text, part)),
         ("inside", [Value::Str(part)]) => path_value(inside(text, part, span)?),
         ("is_absolute", []) => Value::Bool(text.starts_with('/')),
-        ("parts", []) => Value::List(parts(text).into_iter().map(Value::Str).collect()),
-        ("name", []) => Value::Str(name_of(text)),
-        ("extension", []) => Value::Str(extension(text)),
-        ("stem", []) => Value::Str(stem(text)),
+        ("parts", []) => Value::List(parts(text).into_iter().map(|part| Value::Str(part.into())).collect()),
+        ("name", []) => Value::Str(Text::from(name_of(text))),
+        ("extension", []) => Value::Str(Text::from(extension(text))),
+        ("stem", []) => Value::Str(Text::from(stem(text))),
         ("parent", []) => path_value(parent(text)),
         ("normalize", []) => path_value(normalized(text)),
         ("rebuild", [Value::List(parts)]) => {
             let mut texts = Vec::with_capacity(parts.len());
             for part in parts {
                 match part {
-                    Value::Str(part) => texts.push(part.clone()),
+                    Value::Str(part) => texts.push(part.as_str().to_owned()),
                     other => return unsupported(format!("`rebuild` of a list of {}", other.kind())),
                 }
             }

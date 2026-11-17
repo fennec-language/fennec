@@ -48,7 +48,7 @@ use super::calls::ArgVal;
 use super::parallel::{ChannelUse, Handed, RoundsRan, Scope, Work};
 use super::tasks::Launched;
 use super::{Flow, Interp, Run, unsupported};
-use crate::value::{Channel, Value, same};
+use crate::value::{Channel, Text, Value, same};
 
 /// What a run where every task waits on another says.
 const HANGS: &str = "every task waits on another, so the program hangs";
@@ -643,7 +643,7 @@ impl Interp {
             Ok(()) => pending.map_or(Ok(()), Err),
             Err(Flow::Fail(error, _)) => Err(Flow::Fail(error, span)),
             Err(Flow::Crash(..)) => {
-                let why = Value::Str("the task crashed".to_owned());
+                let why = Value::Str(Text::from("the task crashed".to_owned()));
                 Err(Flow::Fail(Value::instance("Crashed", None, vec![("why".to_owned(), why)]), span))
             }
             Err(Flow::Return(_) | Flow::Break | Flow::Continue) => {

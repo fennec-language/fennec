@@ -43,7 +43,7 @@ fn builtins(function: &Function) -> Vec<String> {
 }
 
 fn lifted(program: &Program) -> Vec<&Function> {
-    program.functions.iter().filter(|function| function.name.contains(".parallel@")).collect()
+    program.functions.iter().filter(|function| function.name.contains(".parallel#")).collect()
 }
 
 const SCALE: &str = "\
@@ -262,7 +262,7 @@ fn a_parallel_generator_expression_is_read_as_a_stream() {
     let resume = program
         .functions
         .iter()
-        .find(|function| function.name.starts_with("total.stream@") && function.name.ends_with("resume"))
+        .find(|function| function.name.starts_with("total.stream#") && function.name.ends_with("resume"))
         .unwrap_or_else(|| panic!("no stream's resume function in {names:?}"));
     let called = builtins(resume);
     for wanted in ["parallel.stream", "parallel.stream_next", "parallel.stream_end"] {
@@ -270,8 +270,8 @@ fn a_parallel_generator_expression_is_read_as_a_stream() {
     }
     let range = lifted(&program).into_iter().find(|range| range.name.starts_with("total.")).unwrap();
     assert_eq!(builtins(range), ["parallel.put"]);
-    assert!(!names.iter().any(|name| name.starts_with("kept.stream@")), "{names:?}");
+    assert!(!names.iter().any(|name| name.starts_with("kept.stream#")), "{names:?}");
     let unlifted = Options { outline_parallel: false, ..OUTLINED };
     let plain = lowered(STREAMS, unlifted).unwrap();
-    assert!(!plain.functions.iter().any(|function| function.name.contains(".stream@")));
+    assert!(!plain.functions.iter().any(|function| function.name.contains(".stream#")));
 }

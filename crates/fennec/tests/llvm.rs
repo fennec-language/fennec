@@ -26067,6 +26067,88 @@ def main(stdout: Stdout):
     return
 "#;
 
+/// A line added above everything in a kit's first file, or in the file after it, compiles nothing
+/// again: no function's text says where it is among all the files. Each function lifted out of
+/// another, here a `parallel` comprehension's body, a generator and the loops over `zip` and
+/// `enumerate`, is named by its number in the function it's lifted from, not by where it starts,
+/// which a line added above it moved, and every function that names it with it. A failure still
+/// says the right line of its file.
+#[test]
+fn a_line_added_above_a_kit_s_files_compiles_nothing_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("lines-above-kit")?;
+    std::fs::create_dir_all(dir.join("src"))?;
+    std::fs::write(dir.join("kit.toml"), "name = \"lines\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")?;
+    let out = dir.join("lines").to_string_lossy().into_owned();
+    let kit = dir.to_string_lossy().into_owned();
+    // Builds the kit as `main` and `work` are, runs it, and says how many functions it compiled
+    // and the line of `work.fen` it failed at.
+    let build = |main: &str, work: &str| -> std::io::Result<(usize, String)> {
+        std::fs::write(dir.join("src/main.fen"), main)?;
+        std::fs::write(dir.join("src/work.fen"), work)?;
+        let built = fennec(&["build", "--llvm", &kit, "-o", &out], &dir)?;
+        let said =
+            format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
+        assert!(built.status.success(), "{said}");
+        let ran = Command::new(&out).output_within()?;
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "[2, 4, 6, 8] 30 20 [2, 4]\n", "{said}");
+        let failed = String::from_utf8_lossy(&ran.stderr).into_owned();
+        let line =
+            failed.split("work.fen:").nth(1).and_then(|rest| rest.split(':').next()).unwrap_or_default();
+        let compiled = said.split("compiled ").nth(1).and_then(|rest| rest.split(' ').next());
+        Ok((compiled.and_then(|count| count.parse().ok()).unwrap_or(usize::MAX), line.to_owned()))
+    };
+    let line_of = |text: &str| {
+        text.lines().position(|line| line.contains("return values[at]")).map_or(0, |at| at + 1).to_string()
+    };
+    let above = "## a line above everything\n";
+    let (compiled, line) = build(LINES_ABOVE_MAIN, LINES_ABOVE_WORK)?;
+    assert!(compiled > 5, "the first build compiles everything: {compiled}");
+    assert_eq!(line, line_of(LINES_ABOVE_WORK));
+    let main = format!("{above}{LINES_ABOVE_MAIN}");
+    let (compiled, line) = build(&main, LINES_ABOVE_WORK)?;
+    assert_eq!(compiled, 0, "a line added at the top of the first file");
+    assert_eq!(line, line_of(LINES_ABOVE_WORK));
+    let work = format!("{above}{LINES_ABOVE_WORK}");
+    let (compiled, line) = build(&main, &work)?;
+    assert_eq!(compiled, 0, "a line added at the top of the second file");
+    assert_eq!(line, line_of(&work), "the failure is a line further down its file");
+    std::fs::remove_dir_all(&dir)
+}
+
+const LINES_ABOVE_MAIN: &str = "import work
+
+def main(stdout: Stdout):
+    values = [1, 2, 3, 4]
+    stdout.print(work.doubled(values), work.paired(values, second=values), work.numbered(values), work.evens(values))
+    stdout.print(work.picked(values, 9))
+";
+
+const LINES_ABOVE_WORK: &str = "export def doubled(values: list[int]) -> list[int]:
+    return [value * 2 for value in parallel(values)]
+
+export def paired(first: list[int], second: list[int]) -> int:
+    mut total = 0
+    for one, other in zip(first, second):
+        total += one * other
+    return total
+
+export def numbered(values: list[int]) -> int:
+    mut total = 0
+    for at, value in enumerate(values):
+        total += at * value
+    return total
+
+export def evens(values: list[int]) -> list[int]:
+    picked = (value for value in values if value % 2 == 0)
+    return [value for value in picked]
+
+export def picked(values: list[int], at: int) -> int:
+    return values[at]
+";
+
 /// ASCII is stripped here, sharing a string with nothing to take off; other text goes to the
 /// runtime.
 #[test]

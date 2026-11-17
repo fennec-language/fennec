@@ -86,9 +86,9 @@ impl Lowering<'_> {
     /// `def inner(...)` inside a function: its name holds a closure from here on.
     pub(super) fn nested(&mut self, def: &FnDef, span: Span) -> Lowered<()> {
         // Its signature is by the name it was checked with, which `own_apart` may have changed.
-        let named = fennec_syntax::sight::checked_as(&def.name);
-        let key = format!("{}.{named}", self.name);
-        let base = format!("{}.{named}", self.base);
+        let checked = fennec_syntax::sight::checked_as(&def.name);
+        let key = format!("{}.{checked}", self.name);
+        let base = format!("{}.{checked}", self.base);
         let context = self.context;
         let raw = context.signatures.get(&base).ok_or("a nested function has no signature")?;
         let signature = context.instantiate(raw, &self.subst);

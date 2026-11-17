@@ -286,7 +286,9 @@ impl FnCx<'_> {
             Some(meant) => (meant, true),
             None => (name, false),
         };
-        self.names_outer |= outer;
+        if outer {
+            self.note_outer();
+        }
         if !outer && let Some((ty, _)) = self.lookup(name) {
             return ty;
         }
@@ -342,7 +344,7 @@ impl FnCx<'_> {
         // too, is the module.
         let alias = match fennec_syntax::sight::outer(first) {
             Some(meant) => {
-                self.names_outer = true;
+                self.note_outer();
                 written.replacen(first, meant, 1)
             }
             None if self.lookup(first).is_some() => return None,

@@ -44,6 +44,10 @@ pub fn hide_bound(
     hide_bound_and_free(body, outside, hide, &|_, _| None);
 }
 
+/// What a walk writes a use nothing in sight binds as, if another name: it's told the name, and
+/// whether another name is in sight there.
+pub type Free<'f> = dyn Fn(&str, &dyn Fn(&str) -> bool) -> Option<String> + 'f;
+
 /// `hide_bound`, and each use of a name nothing in sight binds, one from outside `body` and
 /// `outside` altogether, written as `free` gives it, if anything. `free` is told whether another
 /// name is in sight there.
@@ -51,7 +55,7 @@ pub fn hide_bound_and_free(
     body: &mut [Stmt],
     outside: &[(String, Option<String>)],
     hide: &dyn Fn(Binder, &str) -> Option<String>,
-    free: &dyn Fn(&str, &dyn Fn(&str) -> bool) -> Option<String>,
+    free: &Free<'_>,
 ) {
     let sight: Vec<InSight> = outside
         .iter()
@@ -183,7 +187,7 @@ fn function_edge() -> String {
 /// a use nothing in sight binds as, if another.
 struct How<'h> {
     hide: &'h dyn Fn(Binder, &str) -> Option<String>,
-    free: &'h dyn Fn(&str, &dyn Fn(&str) -> bool) -> Option<String>,
+    free: &'h Free<'h>,
 }
 
 /// Each name, written as a mark no program can write, to find its uses by once the walk is done.

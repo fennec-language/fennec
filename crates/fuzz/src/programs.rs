@@ -793,8 +793,9 @@ mod tests {
     /// Every way of writing a name another of its name and type could capture (`CaptureWay`)
     /// checks, and the evaluator prints what the oracle prints: each name means what it does where
     /// it's written. `LockDef` is left out while the checker refuses a nested function's
-    /// parameter named as a lock's name, as taking the lock, which its name-capture fix ends; it
-    /// joins the rest then.
+    /// parameter named as a lock's name, as taking the lock: that's #2011, lock order treating a
+    /// nested function as its outermost one, not name capture. It joins the rest once #2011 is
+    /// fixed.
     #[test]
     fn the_name_capture_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
         use super::ast::{CAPTURE_WAYS, CaptureWay, Capturing, Program, Stmt};

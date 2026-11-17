@@ -91,8 +91,9 @@ const REF_CASES: bool = true;
 /// case's, a nested function's or an arrow's name under `lock ... as ref` that name, and a `with`
 /// source calling a function its caller has a same-typed parameter named as (#1997). The checker
 /// lane's sweep found them, each a silent wrong answer, or a refusal or crash where none is due.
-/// Off until its fixes land, and on with them.
-const NAME_CAPTURE: bool = false;
+/// On since #2024 made every rewrite change only the uses in its sight. `LockDef` isn't written
+/// yet: the checker refuses it as taking the lock until #2011, which is lock order, not capture.
+const NAME_CAPTURE: bool = true;
 
 /// Whether random programs crash inside a `ref self` method, or a change by hand, on part of a
 /// list or dict: under a `shared` value's lock, which has to undo the whole lock, or held by the
@@ -1122,7 +1123,9 @@ impl Writer<'_> {
     fn captures(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;
         let id = self.made;
-        let way = CAPTURE_WAYS.get(self.choice(CAPTURE_WAYS.len())).copied().unwrap_or(CaptureWay::WithDef);
+        // `LockDef` waits for #2011.
+        let ways: Vec<CaptureWay> = CAPTURE_WAYS.into_iter().filter(|way| *way != CaptureWay::LockDef).collect();
+        let way = ways.get(self.choice(ways.len())).copied().unwrap_or(CaptureWay::WithDef);
         let n = i64::from(self.byte() % 20);
         body.push(Stmt::Captured(Capturing { id, way, n }));
     }

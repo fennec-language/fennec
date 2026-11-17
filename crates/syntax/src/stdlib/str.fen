@@ -4,7 +4,13 @@ from std.intrinsics import stop, text_part, text_size
 extend str:
     ## `"ab" * 3` is `"ababab"`: the text repeated. Repeating it fewer than once gives "".
     def *(self, times: int) -> str:
-        return "".join([self for _ in range(times)])
+        # Added to as it goes: text that fits in a header, as most padding does, is joined
+        # where it is, and longer text grows in its block. A list of copies, joined, made a
+        # block every time.
+        mut out = ""
+        for _ in range(times):
+            out += self
+        return out
 
     ## Whether the text starts with `prefix`.
     def startswith(self, prefix: str) -> bool:

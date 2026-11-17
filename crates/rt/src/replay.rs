@@ -179,10 +179,6 @@ impl Task {
     }
 
     /// Whether, in a replay, its recording said a stop or a cancel cut it short.
-    #[cfg_attr(
-        not(any(test, feature = "threads")),
-        expect(dead_code, reason = "only a server's rounds are cancelled, which need threads")
-    )]
     pub(crate) fn was_stopped(&self) -> bool {
         self.stopped
     }
@@ -471,17 +467,24 @@ pub(crate) fn stopped_as_recorded() {
         if let Some(stop) = crate::embed::threads::task_stop() {
             stop.fetch_max(crate::embed::threads::STOPPING, Ordering::AcqRel);
         }
-        TASK.with_borrow_mut(|task| {
-            if let Some(task) = task.as_mut() {
-                task.stopped = true;
-            }
-        });
+        mark_stopped();
         crate::embed::serve::fail_as_stopped();
     }
     // Without threads there are no tasks to stop, so no recording a runtime like this one made says
     // a wait was cut short. One made with them that does still fails here, as it did.
     #[cfg(not(any(test, feature = "threads")))]
     crate::embed::fail_with(Diagnostic::new("this task was stopped", Span::default()));
+}
+
+/// In a replay, marks the running task as one its recording said a stop or a cancel cut short (see
+/// `Task::stopped`): for the code that made a `parallel` call or read a stream, once a piece of it
+/// was, as that piece ran under a name of its own and the code's end looks at the code's (#1949).
+pub(crate) fn mark_stopped() {
+    TASK.with_borrow_mut(|task| {
+        if let Some(task) = task.as_mut() {
+            task.stopped = true;
+        }
+    });
 }
 
 /// Whether this run is a replay, whose outside inputs all come from its recording.

@@ -70,6 +70,9 @@ struct Stream {
     /// `None` otherwise.
     recorded: Option<Vec<usize>>,
     chunks: Mutex<Chunks>,
+    /// In a replay, whether the recording said a stop or a cancel cut a chunk short: the reader
+    /// was then, and its end is to be as quiet as the run's (#1949).
+    chunks_stopped: std::sync::atomic::AtomicBool,
     /// Signalled whenever a chunk is done.
     done: Condvar,
 }
@@ -84,6 +87,13 @@ thread_local! {
 }
 
 impl Stream {
+    /// On the reader, in a replay: marks it as its recording said a chunk was cut short, if one was.
+    fn stopped_as_its_chunk_was(&self) {
+        if self.chunks_stopped.load(std::sync::atomic::Ordering::Acquire) {
+            crate::replay::mark_stopped();
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, Chunks> {
         self.chunks.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -151,6 +161,9 @@ impl Stream {
         super::super::write_kept_output();
         super::super::swap_capture(&mut capture);
         crate::replay::swap(&mut was);
+        if was.as_ref().is_some_and(crate::replay::Task::was_stopped) {
+            self.chunks_stopped.store(true, std::sync::atomic::Ordering::Release);
+        }
         Slot::Done { items, made, failure }
     }
 
@@ -236,6 +249,7 @@ pub extern "C" fn parallel_stream(list: i64, body: MapBody, env: i64, element: i
             .map(|ran| ran.into_iter().filter_map(|at| usize::try_from(at).ok()).collect()),
         task,
         chunks: Mutex::new(Chunks { first: 0, slots, ended: false }),
+        chunks_stopped: std::sync::atomic::AtomicBool::new(false),
         done: Condvar::new(),
     });
     if window > 0 {
@@ -259,6 +273,7 @@ pub extern "C" fn stream_next(stream: i64, out: &mut i64) -> i64 {
     let Some(stream) = STREAMS.with_borrow(|streams| streams.get(&stream).cloned()) else { return 0 };
     let Some(Slot::Done { items, made, failure }) = stream.take() else { return 0 };
     threads::adopt(made);
+    stream.stopped_as_its_chunk_was();
     let Some(failure) = failure else {
         *out = items;
         return 0;
@@ -272,6 +287,7 @@ pub extern "C" fn stream_next(stream: i64, out: &mut i64) -> i64 {
 /// made.
 pub extern "C" fn stream_end(stream: i64) {
     let Some(stream) = STREAMS.with_borrow_mut(|streams| streams.remove(&stream)) else { return };
+    stream.stopped_as_its_chunk_was();
     let mut chunks = stream.lock();
     chunks.ended = true;
     super::super::write_kept_output();

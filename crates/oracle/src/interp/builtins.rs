@@ -10,7 +10,7 @@ use super::expr::{set_insert, sized};
 use super::stream::Source;
 use super::{Flow, Interp, MOST_ITEMS, Run, as_int, crash, unsupported};
 use crate::text;
-use crate::value::{Cap, Value};
+use crate::value::{Cap, Text, Value};
 
 /// The arguments of a builtin call, by position and by name.
 struct Given {
@@ -89,7 +89,7 @@ impl Interp {
             },
             "str" => {
                 let value = self.one(&mut given, name)?;
-                self.display(&value).map(Value::Str)
+                self.display(&value).map(|shown| Value::Str(shown.into()))
             }
             "int" | "i64" => match self.one(&mut given, name)? {
                 Value::Int(n) => Ok(Value::Int(n)),
@@ -319,7 +319,7 @@ impl Interp {
     /// How many items something holds, as `len` says.
     pub(crate) fn length(&mut self, value: Value, span: Span) -> Run<i64> {
         Ok(as_int(match value {
-            Value::Str(text) => text.chars().count(),
+            Value::Str(text) => text.char_count(),
             Value::Bytes(data) => data.len(),
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => items.len(),
             Value::Dict(pairs) => pairs.len(),
@@ -638,7 +638,8 @@ pub(crate) fn not_a_number(input: &str, what: &str, span: Span) -> Flow {
 
 /// A failure with an `InvalidValue` saying `message`.
 pub(crate) fn invalid(message: String, span: Span) -> Flow {
-    let error = Value::instance("InvalidValue", None, vec![("message".to_owned(), Value::Str(message))]);
+    let error =
+        Value::instance("InvalidValue", None, vec![("message".to_owned(), Value::Str(Text::from(message)))]);
     Flow::Fail(error, span)
 }
 

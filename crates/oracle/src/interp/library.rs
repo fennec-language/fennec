@@ -8,7 +8,7 @@
 use fennec_syntax::Span;
 
 use super::{Run, crash, unsupported};
-use crate::value::Value;
+use crate::value::{Text, Value};
 
 /// A constant of the standard library, by its whole name, like `std.math.PI`, or a case of one
 /// of `std.json`'s option enums, like `std.json.JsonNames.CamelCase`.
@@ -132,7 +132,7 @@ pub(crate) fn call(path: &str, args: &[Value], span: Span) -> Run<Value> {
         ("std.math.lerp", [Value::Float(start), Value::Float(end), Value::Float(amount)]) => {
             Ok(Value::Float(start + (end - start) * amount))
         }
-        ("std.path.Path", [Value::Str(text)]) => Ok(super::files::path_value(text.clone())),
+        ("std.path.Path", [Value::Str(text)]) => Ok(super::files::path_value(text.as_str().to_owned())),
         _ => unsupported(path.to_owned()),
     }
 }
@@ -158,12 +158,12 @@ fn intrinsic(name: &str, args: &[Value], span: Span) -> Run<Value> {
                 .zip(usize::try_from(*end).ok())
                 .and_then(|(start, end)| text.get(start..end));
             match part {
-                Some(part) => Ok(Value::Str(part.to_owned())),
+                Some(part) => Ok(Value::Str(Text::from(part.to_owned()))),
                 None => unsupported("`text_part` at places that aren't where characters start"),
             }
         }
         ("text_of_code", [Value::Int(code)]) => match u32::try_from(*code).ok().and_then(char::from_u32) {
-            Some(c) => Ok(Value::Str(c.to_string())),
+            Some(c) => Ok(Value::Str(Text::from(c.to_string()))),
             None => unsupported("`text_of_code` of a code no character has"),
         },
         ("bytes_text", [Value::Bytes(data), Value::Int(start), Value::Int(end)]) => {
@@ -172,9 +172,9 @@ fn intrinsic(name: &str, args: &[Value], span: Span) -> Run<Value> {
                 .zip(usize::try_from(*end).ok())
                 .and_then(|(start, end)| data.get(start..end));
             match part {
-                Some(part) => {
-                    Ok(Value::Str(std::str::from_utf8(part).map(str::to_owned).unwrap_or_default()))
-                }
+                Some(part) => Ok(Value::Str(Text::from(
+                    std::str::from_utf8(part).map(str::to_owned).unwrap_or_default(),
+                ))),
                 None => unsupported("`bytes_text` at places outside the bytes"),
             }
         }
@@ -217,7 +217,7 @@ fn intrinsic(name: &str, args: &[Value], span: Span) -> Run<Value> {
         ("float_of_bits", [Value::Int(bits)]) => Ok(Value::Float(f64::from_bits(bits.cast_unsigned()))),
         // A program the oracle runs has no `pack.lock`: a kit with one is refused as it loads
         // (`kit.rs`), and a single file has none.
-        ("pack_lock", []) => Ok(Value::Str(String::new())),
+        ("pack_lock", []) => Ok(Value::Str(Text::from(String::new()))),
         _ => unsupported(format!("std.intrinsics.{name}")),
     }
 }

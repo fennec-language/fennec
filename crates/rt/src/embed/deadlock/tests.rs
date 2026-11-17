@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use super::{Awaited, Counts, Kind, Note, ONE_CONTEXT, ONE_GENERATION, ONE_STUCK, Who, said};
+use super::{Awaited, Counts, Kind, Note, ONE_CONTEXT, ONE_GENERATION, ONE_STUCK, ThreadNote, Who, said};
 
 /// The counts read back as they were packed, and a second uncount, borrowing from the contexts'
 /// field, never reads as every context stuck.
@@ -71,4 +71,27 @@ fn a_report_says_who_waits_for_what_and_a_note_asks_what_it_waits_on() {
     assert!(notes.iter().all(Note::holds));
     told.holds.store(false, Ordering::SeqCst);
     assert!(!notes.iter().any(Note::holds), "what it waits on changed");
+}
+
+/// A channel wait that blocks its thread holds only while no task its code launched has a crash
+/// unsaid: a crash wakes the wait without changing the channel, so its note alone would still read
+/// as stuck. Once the block's end has said the crash, a wait is a wait again.
+///
+/// Tested here rather than by a program: with the check taken out, `crash_wakes` reported falsely
+/// 25 times in 900 before blocked waits and idle workers waited 1 ms before counting, but no time in
+/// 300 since. The worker that would look waits longer than a woken `main` takes to uncount itself,
+/// so only a thread held up past that, on a busy machine, now needs the check.
+#[test]
+fn a_blocked_waits_note_stops_holding_while_a_crash_of_a_task_its_code_launched_is_unsaid() {
+    let told: Arc<dyn Awaited> = Arc::new(Told { holds: AtomicBool::new(true), task: None });
+    let launcher = Arc::new(super::super::threads::Launcher::default());
+    let note = ThreadNote {
+        note: Note::parked(told, Kind::Receive),
+        launchers: [Some(Arc::clone(&launcher)), None],
+    };
+    assert!(note.holds(), "nothing's crashed");
+    launcher.task_crashed();
+    assert!(!note.holds(), "a crash wakes it");
+    launcher.crash_said();
+    assert!(note.holds(), "once the crash is said, it waits as before");
 }

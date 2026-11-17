@@ -1,17 +1,21 @@
 # Main waits to receive on a channel nobody sends to, while the task it launched crashes: the crash
-# cuts the wait short, and the block's end says so. Never a deadlock.
+# cuts the wait short, and the block's end says so. Never a deadlock. The task naps first, longer
+# than a blocked wait's patience, so main's wait is noted and counted when the crash comes, and the
+# check has to see the crash to know main can still move.
 from std.concurrent import Crashed, channel
+from std.time import Duration
 
-def crashes(numbers: list[int], stdout: Stdout):
+def crashes(numbers: list[int], clock: Clock, stdout: Stdout):
+    clock.sleep(Duration.millis(20))
     stdout.print(numbers[5])
 
-def launched(stdout: Stdout) fails Crashed:
+def launched(clock: Clock, stdout: Stdout) fails Crashed:
     with channel[int](size=1) as numbers:
-        with launch(() => crashes([1, 2], stdout=stdout))?:
+        with launch(() => crashes([1, 2], clock=clock, stdout=stdout))?:
             _ = numbers.receive() else -1
 
-def main(stdout: Stdout):
-    launched(stdout) except Crashed():
+def main(stdout: Stdout, clock: Clock):
+    launched(clock, stdout=stdout) except Crashed():
         stdout.print("it crashed")
         return
     stdout.print("it didn't crash")

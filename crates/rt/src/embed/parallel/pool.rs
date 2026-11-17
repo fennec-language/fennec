@@ -370,6 +370,9 @@ impl Pool {
         }
         crate::embed::deadlock::look();
         io.poll(io.timeout());
+        // Awake, its slot says so and the generation moves before it reads any mail, as it returns
+        // to `work`: a check that finds no mail rests on that order (see `deadlock::proven`), as a
+        // worker reading mail while its slot still said it slept could let one pass with mail run.
         if let (Some(slot), Some(stuck)) = (slot, idle) {
             slot.lock().unwrap_or_else(PoisonError::into_inner).woke();
             crate::embed::deadlock::woke_idle(stuck);

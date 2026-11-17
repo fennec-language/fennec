@@ -5586,6 +5586,225 @@ def main(stdout: Stdout):
     )
 }
 
+/// A failure that leaves a `ref` case from deep inside a `for ref` loop in it writes the loop's item
+/// back before the case is put back, so what the loop changed is kept: at a `?` in a `while`'s
+/// condition, in a later `elif`'s, after `and` or `or`, and in a `parallel` loop's round. Loops
+/// inside loops write back the innermost first.
+#[test]
+fn a_for_ref_item_is_written_back_before_its_ref_case_on_a_failure_from_deep_inside() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "for_ref_in_ref_case_failed_deep",
+        FOR_REF_FAILED_DEEP,
+        "11\n21\n31\n41\n51\n61\n\
+         Bag.Full(counts=[11, 2]) Bag.Full(counts=[21, 2]) Bag.Full(counts=[31, 2]) \
+         Bag.Full(counts=[41, 2]) Bag.Full(counts=[51, 2])\n\
+         Grid.Rows(rows=[[61, 2], [3]])\n",
+    )
+}
+
+const FOR_REF_FAILED_DEEP: &str = r"error Oops:
+    code: int
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+enum Grid:
+    Rows(rows: list[list[int]])
+    Blank
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def by_while(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 10
+                while small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_elif(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 20
+                if count < 0:
+                    pass
+                elif small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_and(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 30
+                if count > 0 and small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_or(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 40
+                if count < 0 or small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_round(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 50
+                for each in parallel([count]):
+                    _ = small(each)?
+        case _:
+            pass
+
+def nested(ref grid: Grid) fails Oops:
+    match grid:
+        case .Rows(ref rows):
+            for ref row in rows:
+                for ref cell in row:
+                    cell += 60
+                    while small(cell)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut first = Bag.Full(counts=[1, 2])
+    by_while(ref first) except why:
+        stdout.print(why.code)
+    mut second = Bag.Full(counts=[1, 2])
+    by_elif(ref second) except why:
+        stdout.print(why.code)
+    mut third = Bag.Full(counts=[1, 2])
+    by_and(ref third) except why:
+        stdout.print(why.code)
+    mut fourth = Bag.Full(counts=[1, 2])
+    by_or(ref fourth) except why:
+        stdout.print(why.code)
+    mut fifth = Bag.Full(counts=[1, 2])
+    by_round(ref fifth) except why:
+        stdout.print(why.code)
+    mut grid = Grid.Rows(rows=[[1, 2], [3]])
+    nested(ref grid) except why:
+        stdout.print(why.code)
+    stdout.print(first, second, third, fourth, fifth)
+    stdout.print(grid)
+";
+
+/// What a failure from deep inside a `ref` case leaves inside it is left once, the last first, and
+/// before the case is put back: a lock's changes are rolled back and it's given back, a generator's
+/// source is closed, and the `for ref` loop around them writes its item back.
+#[test]
+fn a_failure_leaves_what_s_inside_a_ref_case_once_before_putting_it_back() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_in_ref_case_failed_deep",
+        LOCK_IN_REF_CASE,
+        "71\n[]\nBag.Full(counts=[71, 2])\n",
+    )?;
+    prints_in_both_builds(
+        "generator_in_ref_case_failed_deep",
+        GENERATOR_IN_REF_CASE,
+        "closed inner\nOops(code=82)\nBag.Full(counts=[82, 2])\n",
+    )
+}
+
+const LOCK_IN_REF_CASE: &str = r"error Oops:
+    code: int
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def by_lock(ref bag: Bag, seen: shared list[int]) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 70
+                lock seen as ref held:
+                    held.append(count)
+                    while small(count)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    shared seen = list[int]()
+    mut bag = Bag.Full(counts=[1, 2])
+    by_lock(ref bag, seen) except why:
+        stdout.print(why.code)
+    lock seen as now:
+        stdout.print(now)
+    stdout.print(bag)
+";
+
+const GENERATOR_IN_REF_CASE: &str = r#"error Oops:
+    code: int
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+struct Door:
+    name: str
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int]:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def let_go(ref bag: Bag, stdout: Stdout) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                for step in held("inner", stdout):
+                    count += 80 + step
+                    while small(count)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut bag = Bag.Full(counts=[1, 2])
+    let_go(ref bag, stdout) except why:
+        stdout.print(why)
+    stdout.print(bag)
+"#;
+
 /// `for key, ref value in x.items()` changes each value of a dict, or item of a `Table`, where it
 /// is, natively, with its key or its `Id`, and a `continue` leaves the rest of that one as it was.
 #[test]

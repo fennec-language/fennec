@@ -34,10 +34,14 @@ const SHARING: [&str; 2] = ["parallel.serve", "intrinsics.launch"];
 /// from a queue its thread shares, which a task that made way there would leave to another.
 /// Ticking more than runs as a task costs the count, and the call in each loop, which LLVM can't
 /// see through; the runtime's tick does nothing outside a task.
-pub(crate) fn tasks<'p>(program: &'p Program, functions: &HashMap<&'p str, &'p Function>) -> HashSet<&'p str> {
-    let shares = functions.values().flat_map(|function| &function.blocks).flat_map(|block| &block.insts).any(
-        |inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if SHARING.contains(&name.as_str())),
-    );
+pub(crate) fn tasks<'p>(
+    program: &'p Program,
+    functions: &HashMap<&'p str, &'p Function>,
+) -> HashSet<&'p str> {
+    let shares =
+        functions.values().flat_map(|function| &function.blocks).flat_map(|block| &block.insts).any(
+            |inst| matches!(&inst.kind, InstKind::Builtin { name, .. } if SHARING.contains(&name.as_str())),
+        );
     if !shares {
         return HashSet::new();
     }
@@ -171,11 +175,13 @@ def main(net: Net, stdout: Stdout) fails NetError:
 
     /// Whether the function `name`, or one whose name starts with it, counts its loops' turns.
     fn ticking(texts: &[(String, String)], name: &str) -> bool {
-        texts.iter().filter(|(function, _)| function == name || function.starts_with(name)).any(|(_, text)| {
-            text.split("\ndefine ")
-                .filter(|defined| defined.contains(&format!("@\"f_{name}")))
-                .any(|defined| defined.contains("@fennec_task_tick()"))
-        })
+        texts.iter().filter(|(function, _)| function == name || function.starts_with(name)).any(
+            |(_, text)| {
+                text.split("\ndefine ")
+                    .filter(|defined| defined.contains(&format!("@\"f_{name}")))
+                    .any(|defined| defined.contains("@fennec_task_tick()"))
+            },
+        )
     }
 
     /// A handler reaches its round as a value, so in a program with a server every closure ticks,

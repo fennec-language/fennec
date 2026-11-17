@@ -6358,6 +6358,54 @@ def main(args: Args, stdout: Stdout):
     )
 }
 
+/// A list whose items hold no blocks is cleared by its length alone, and filled again from its
+/// room: one shared before it's cleared keeps what it held, one cleared and grown past its old
+/// room, and lists of plain structs, of structs holding a text, and of lists, each cleared and
+/// used again. It prints what the reference evaluator prints, with nothing left.
+#[test]
+fn a_cleared_list_is_empty_and_fills_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("cleared_lists", CLEARED_LISTS, "[] [1, 2, 3] 0\n40 39\n[7]\n1 5\n1 b\n[]\n")?;
+    let counts = counts_of("cleared_lists_counts", CLEARED_LISTS)?;
+    assert!(counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
+const CLEARED_LISTS: &str = r#"struct Spot:
+    x: int
+    y: float
+
+struct Named:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    mut ints = [1, 2, 3]
+    shared = ints
+    ints.clear()
+    stdout.print(ints, shared, len(ints))
+    for turn in range(40):
+        ints.append(turn)
+    stdout.print(len(ints), ints[39])
+    ints.clear()
+    ints.append(7)
+    stdout.print(ints)
+    mut spots = [Spot(x=1, y=2.0), Spot(x=3, y=4.0)]
+    spots.clear()
+    spots.append(Spot(x=5, y=6.0))
+    stdout.print(len(spots), spots[0].x)
+    mut named = [Named(name="a long name that is held in a block", hp=3)]
+    named.clear()
+    named.append(Named(name="b", hp=4))
+    stdout.print(len(named), named[0].name)
+    mut grid = [[1, 2], [3]]
+    grid.clear()
+    stdout.print(grid)
+    return
+"#;
+
 /// `set.remove` of a key that isn't there fails as pinned.
 #[test]
 fn removing_what_a_set_lacks_fails_as_pinned() -> std::io::Result<()> {
@@ -15559,6 +15607,47 @@ fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> 
     std::fs::remove_dir_all(&dir)
 }
 
+/// A parked `process.run` whose program ends at once never waits out its timeout: 400 runs of
+/// `true` in `parallel` rounds, each giving up after 10 seconds, all end, on 1, 4 and 16 threads.
+/// On macOS kqueue says a program has exited a moment before it can be reaped, and a run whose
+/// outputs had already closed then waited out its timeout, as nothing said the end again: 600 s
+/// unless the run set one, which ran `process_runs_in_tasks_park_while_their_programs_run` past
+/// its two minutes in two gates on a loaded Mac (#1954). It shows most under load; quiet, a run
+/// rarely meets it.
+#[test]
+#[cfg(unix)]
+fn process_runs_that_end_at_once_in_tasks_never_wait_out_their_timeouts() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("process-runs-ended-at-once")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "process_runs_that_end_at_once_in_tasks";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("FENNEC_THREADS", threads)
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, "400 ended, 0 timed out\n", "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
 /// Hashing a password in a task parks the task while a thread of its own does the work: a
 /// launched task hashes and checks one, and a server's handler one for each of 12 clients at
 /// once. The call into `std.crypto` held the runtime's state, so no task could park there, and
@@ -16377,6 +16466,27 @@ fn a_bare_carriage_return_isnt_taken_off_a_line() -> std::io::Result<()> {
         let said =
             served_on(threads, &format!("bare_carriage_return_{threads}"), b"\r\r\nGET /a HTTP/1.1\r\n\r\n")?;
         assert!(said.starts_with("HTTP/1.1 400 Bad Request\r\n"), "threads {threads}: {said}");
+    }
+    Ok(())
+}
+
+/// A request line longer than a whole head may be is a 414, as HTTP/1.1 has a server answer a
+/// target longer than it takes, on either runtime: one of 20 KB, and one longer than the runtime
+/// reads into a line, sent with no end. One with no headers after it was taken up to a mebibyte,
+/// and past that was a 431, the status for headers too big. Found by fuzzing the server with large
+/// requests.
+#[test]
+fn a_request_line_too_long_is_a_414() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let long_target = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(20_000));
+    let unending = "G".repeat(1_100_000);
+    for threads in ["0", "1"] {
+        for (name, asked) in [("target", long_target.as_bytes()), ("unending", unending.as_bytes())] {
+            let said = served_on(threads, &format!("long_request_line_{name}_{threads}"), asked)?;
+            assert!(said.starts_with("HTTP/1.1 414 URI Too Long\r\n"), "{name}, threads {threads}: {said}");
+        }
     }
     Ok(())
 }

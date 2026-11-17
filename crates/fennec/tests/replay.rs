@@ -332,6 +332,97 @@ fn a_parallel_call_where_a_piece_fails_replays_the_pieces_it_ran() -> std::io::R
     replays_at_one_four_and_sixteen("first-piece-failing", FIRST_PIECE_FAILING, 17, 0)
 }
 
+/// A launched task stopped inside a `parallel` call whose pieces work a while and then sleep:
+/// pieces that haven't begun when the stop comes don't begin.
+const STOPPED_IN_A_CALL: &str = "from std.concurrent import Crashed
+
+def busy(turns: int) -> int:
+    return sum(step % 7 for step in range(turns)) % 2
+
+def slow(number: int, clock: Clock, stdout: Stdout) -> int:
+    worked = busy(12000000)
+    stdout.print(\"worked\", number)
+    clock.sleep(2h)
+    stdout.print(\"never said\", number)
+    return number + worked
+
+def works(clock: Clock, stdout: Stdout):
+    made = [slow(number, clock=clock, stdout=stdout) for number in parallel(range(32))]
+    stdout.print(\"never said\", len(made))
+
+def main(clock: Clock, stdout: Stdout) fails Crashed:
+    with launch(() => works(clock, stdout=stdout), stop_after=400ms)?:
+        pass
+    stdout.print(\"the task is over\")
+";
+
+/// The same with the stop sooner, before most pieces have begun.
+const STOPPED_EARLY_IN_A_CALL: &str = "from std.concurrent import Crashed
+
+def busy(turns: int) -> int:
+    return sum(step % 7 for step in range(turns)) % 2
+
+def slow(number: int, clock: Clock, stdout: Stdout) -> int:
+    worked = busy(12000000)
+    stdout.print(\"worked\", number)
+    clock.sleep(2h)
+    stdout.print(\"never said\", number)
+    return number + worked
+
+def works(clock: Clock, stdout: Stdout):
+    made = [slow(number, clock=clock, stdout=stdout) for number in parallel(range(32))]
+    stdout.print(\"never said\", len(made))
+
+def main(clock: Clock, stdout: Stdout) fails Crashed:
+    with launch(() => works(clock, stdout=stdout), stop_after=60ms)?:
+        pass
+    stdout.print(\"the task is over\")
+";
+
+/// The same with low pieces that work longest, so a lower piece is still to begin when a higher one
+/// has failed as stopped: the stop, not the failure, keeps it from beginning, and the recording
+/// says so (`not begun`).
+const STOPPED_WITH_LOW_PIECES_TO_BEGIN: &str = "from std.concurrent import Crashed
+
+def busy(turns: int) -> int:
+    return sum(step % 7 for step in range(turns)) % 2
+
+def slow(number: int, clock: Clock, stdout: Stdout) -> int:
+    worked = busy(400000 * (64 - number))
+    stdout.print(\"worked\", number)
+    clock.sleep(2h)
+    stdout.print(\"never said\", number)
+    return number + worked
+
+def works(clock: Clock, stdout: Stdout):
+    made = [slow(number, clock=clock, stdout=stdout) for number in parallel(range(64))]
+    stdout.print(\"never said\", len(made))
+
+def main(clock: Clock, stdout: Stdout) fails Crashed:
+    with launch(() => works(clock, stdout=stdout), stop_after=150ms)?:
+        pass
+    stdout.print(\"the task is over\")
+";
+
+/// A launched task's `parallel` call that its stop finds replays the pieces it began. Which had
+/// begun depends on timing, and nothing said which a stop kept from beginning, so a replay began
+/// others, asking for what its recording didn't have: 48 of 48 replays (#1916). Now the recording
+/// says, and a replay keeps exactly those from beginning.
+#[test]
+fn a_parallel_call_its_task_s_stop_finds_replays_the_pieces_it_began() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    replays_at_one_four_and_sixteen("stopped-in-a-call", STOPPED_IN_A_CALL, 3, 0)?;
+    replays_at_one_four_and_sixteen("stopped-early-in-a-call", STOPPED_EARLY_IN_A_CALL, 3, 0)?;
+    replays_at_one_four_and_sixteen(
+        "stopped-with-low-pieces-to-begin",
+        STOPPED_WITH_LOW_PIECES_TO_BEGIN,
+        3,
+        0,
+    )
+}
+
 /// The same in a `for` loop and in a sum, which split their pieces their own way, and whose pieces
 /// fail by crashing, which ends the program: what it printed before is the recording's.
 #[test]

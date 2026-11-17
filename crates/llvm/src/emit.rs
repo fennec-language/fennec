@@ -4079,6 +4079,21 @@ mod tests {
             .map_or_else(String::new, |unit| unit.text))
     }
 
+    /// A list whose items hold no blocks, ints or a struct of plain fields, is cleared by setting
+    /// its length to 0, with no call; one whose items hold blocks calls the runtime, which lets
+    /// go of them.
+    #[test]
+    fn a_list_of_plain_items_is_cleared_by_its_length() -> Result<(), String> {
+        let source = "struct Spot:\n    x: int\n    y: float\n\ndef ints(ref xs: list[int]):\n    xs.clear()\n    return\n\ndef spots(ref xs: list[Spot]):\n    xs.clear()\n    return\n\ndef names(ref xs: list[str]):\n    xs.clear()\n    return\n\ndef main(stdout: Stdout):\n    mut a = [1]\n    mut b = [Spot(x=1, y=2.0)]\n    mut c = [\"c\"]\n    ints(ref a)\n    spots(ref b)\n    names(ref c)\n    stdout.print(len(a), len(b), len(c))\n    return\n";
+        for plain in ["ints", "spots"] {
+            let text = text_of(source, plain)?;
+            assert!(!text.contains("@fennec_list_clear(") && text.contains("store i64 0, ptr"), "{text}");
+        }
+        let text = text_of(source, "names")?;
+        assert!(text.contains("call void @fennec_list_clear("), "{text}");
+        Ok(())
+    }
+
     /// A list parameter only read in a loop has its length read once, at the start, into `%sl`,
     /// and the loop's index check compares with that. One the loop appends to has its length
     /// read from the list each time, and keeps nothing.

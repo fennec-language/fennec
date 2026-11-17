@@ -160,6 +160,23 @@ fn an_index_or_a_product_is_not_negative_when_its_ints_arent() {
     assert_eq!(not_negative(&program, &ranges, "doubled_tail", &is_product).unwrap(), [false]);
 }
 
+/// A function whose walk doesn't settle in its rounds ends on facts still moving, which can't be
+/// trusted, so nothing in the program is known. Here each level takes the one after it, which a
+/// walk sees a round later, so the first level hears of the last one's -5 only on the thirtieth
+/// round, though a run gets it there by the thirtieth time round the loop.
+#[test]
+fn a_function_that_doesnt_settle_leaves_nothing_known() {
+    let mut source = String::from("def main(stdout: Stdout):\n");
+    source.extend((1..=30).map(|level| format!("    mut level_{level} = 0\n")));
+    source.push_str("    for _ in range(40):\n");
+    source.extend((1..30).map(|level| format!("        level_{level} = level_{}\n", level + 1)));
+    source.push_str("        level_30 = -5\n    stdout.print(level_1 // 2)\n");
+    let program = lowered(&source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert!(ranges.function("main").is_none(), "{:?}", unsigned(&program, &ranges, "main"));
+    checked(&program, &ranges);
+}
+
 /// By floats' total order NaN sorts last: the false side of `at > high` can't be NaN, and the
 /// false side of `at < low` can. So a float kept between two bounds by a `>` test fits an int
 /// whatever it was given, NaN included, and one kept only by a `<` test doesn't.

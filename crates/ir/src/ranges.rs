@@ -366,12 +366,19 @@ impl Ranges {
         for _ in 0..MOST_ROUNDS {
             let mut next = Next::default();
             found.clear();
+            let mut settled = true;
             for function in every(program) {
-                let ranges = world.function(function, &mut next);
-                found.insert(function.name.clone(), ranges);
+                match world.function(function, &mut next) {
+                    Some(ranges) => {
+                        found.insert(function.name.clone(), ranges);
+                    }
+                    None => settled = false,
+                }
             }
             if !world.take(next) {
-                return Ranges { functions: found };
+                // A function's walk that never settled ended on facts still moving: neither what it
+                // found nor what it handed its callees can be trusted.
+                return if settled { Ranges { functions: found } } else { Ranges::default() };
             }
         }
         // Still moving after every round: nothing worked out can be trusted.
@@ -459,18 +466,14 @@ impl World<'_> {
 
     /// Works out what's known in one function, given what's known across functions, and puts
     /// what its calls give their callees, what it gives back, and what it puts in the lists it's
-    /// lent, in `next`.
-    fn function(&self, function: &Function, next: &mut Next) -> FunctionRanges {
+    /// lent, in `next`. None when its walk is still moving after every round.
+    fn function(&self, function: &Function, next: &mut Next) -> Option<FunctionRanges> {
         let mut walk = Walk::new(self, function);
-        for _ in 0..MOST_ROUNDS {
-            if !walk.round(false) {
-                break;
-            }
-        }
+        let settled = (0..MOST_ROUNDS).any(|_| !walk.round(false));
         // The last round, with nothing moving, writes what's found.
         walk.round(true);
         walk.hand_over(next);
-        walk.found
+        settled.then_some(walk.found)
     }
 }
 

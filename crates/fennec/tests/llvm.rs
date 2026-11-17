@@ -17995,7 +17995,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
 /// counted its loops' turns, so it held the thread until it finished.
 #[test]
 fn a_handler_only_computing_lets_the_others_answer() -> std::io::Result<()> {
-    use std::io::{BufRead as _, Write as _};
+    use std::io::Write as _;
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
@@ -18037,50 +18037,16 @@ def main(net: Net, stdout: Stdout) fails NetError:
     );
     for (name, source) in [("by-name", by_name), ("routed", routed)] {
         let dir = folder(&format!("ticking-handlers-{name}"))?;
-        let program = dir.join("ticking.fen");
-        std::fs::write(&program, source)?;
-        let executable = dir.join("ticking");
-        let mut command = crate::executables::fennec_command();
-        command.args([
-            "build",
-            "--llvm",
-            "--release",
-            &program.to_string_lossy(),
-            "-o",
-            &executable.to_string_lossy(),
-        ]);
-        let built = command
-            .env("FENNEC_HOME", &dir)
-            .env_remove("FENNEC_THREADS_RUNTIME")
-            .output_before(FENNEC_DEADLINE)?;
-        assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-        let mut server = Running(
-            Command::new(&executable)
-                .env("FENNEC_THREADS", "1")
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .spawn()?,
-        );
-        let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
-        let mut port = String::new();
-        printed.read_line(&mut port)?;
-        let port: u16 = port.trim().parse().unwrap_or(0);
-        // The spinning request is read and its handler computing before the ping comes.
+        let (server, port) = served_on_one_thread(&dir, &source)?;
         let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
         spinning.write_all(b"GET /spin HTTP/1.1\r\nhost: here\r\n\r\n")?;
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        // A minute tells the two apart: on main the ping waited for a handler that never ends.
-        ping.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
-        ping.write_all(b"GET /ping HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n")?;
-        let mut answer = String::new();
-        let read = std::io::Read::read_to_string(&mut ping, &mut answer);
+        let (reply, read) = asked_meanwhile(port, "/ping");
         drop(spinning);
         drop(server);
         std::fs::remove_dir_all(&dir)?;
         assert!(
-            answer.starts_with("HTTP/1.1 200") && answer.ends_with("pong"),
-            "{name}: the ping wasn't answered while the other handler computed: {read:?} {answer:?}"
+            reply.starts_with("HTTP/1.1 200") && reply.ends_with("pong"),
+            "{name}: the ping wasn't answered while the other handler computed: {read:?} {reply:?}"
         );
     }
     Ok(())
@@ -18091,17 +18057,14 @@ def main(net: Net, stdout: Stdout) fails NetError:
 /// is answered first, and the range's answer comes after, whole.
 #[test]
 fn a_handler_making_way_mid_range_finishes_it_right() -> std::io::Result<()> {
-    use std::io::{BufRead as _, Read as _, Write as _};
+    use std::io::{Read as _, Write as _};
     if !ready() || !crate::executables::threads_runtime_built() {
         return Ok(());
     }
     let dir = folder("ticking-mid-range")?;
-    let program = dir.join("ranged.fen");
     // `xored(n)` is every number below `n` xored together: for 2,000,000,001 that's 2,000,000,000.
     // The handler calls it itself too, so it ticks inside the range's turns.
-    std::fs::write(
-        &program,
-        r#"from std.net import NetError, Request, Response
+    let source = r#"from std.net import NetError, Request, Response
 
 def xored(turns: int) -> int:
     mut x = 0
@@ -18121,9 +18084,37 @@ def main(net: Net, stdout: Stdout) fails NetError:
     with net.listen(0)? as server:
         stdout.print(server.port)
         server.serve(answered)
-"#,
-    )?;
-    let executable = dir.join("ranged");
+"#;
+    let (server, port) = served_on_one_thread(&dir, source)?;
+    let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    spinning.write_all(b"GET /spin HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n")?;
+    let (reply, read) = asked_meanwhile(port, "/ping");
+    // Nothing of the range's answer yet: the ping didn't wait for it.
+    spinning.set_nonblocking(true)?;
+    let mut first = [0_u8; 1];
+    let early = spinning.peek(&mut first);
+    spinning.set_nonblocking(false)?;
+    spinning.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+    let mut spun = String::new();
+    let finished = spinning.read_to_string(&mut spun);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(reply.ends_with("pong"), "the ping wasn't answered: {read:?} {reply:?}");
+    assert!(
+        early.as_ref().is_err_and(|err| err.kind() == std::io::ErrorKind::WouldBlock),
+        "the range had answered before the ping: {early:?}"
+    );
+    assert!(spun.ends_with("spun [2000000000, 2000000000] 0"), "{finished:?} {spun:?}");
+    Ok(())
+}
+
+/// `source` written to `dir`, built release with the threads runtime, and started on one thread:
+/// the running server, and the port it printed first.
+fn served_on_one_thread(dir: &Path, source: &str) -> std::io::Result<(Running, u16)> {
+    use std::io::BufRead as _;
+    let program = dir.join("served.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("served");
     let mut command = crate::executables::fennec_command();
     command.args([
         "build",
@@ -18134,7 +18125,7 @@ def main(net: Net, stdout: Stdout) fails NetError:
         &executable.to_string_lossy(),
     ]);
     let built = command
-        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_HOME", dir)
         .env_remove("FENNEC_THREADS_RUNTIME")
         .output_before(FENNEC_DEADLINE)?;
     assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
@@ -18145,35 +18136,28 @@ def main(net: Net, stdout: Stdout) fails NetError:
             .stderr(std::process::Stdio::null())
             .spawn()?,
     );
-    let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+    let output = server.0.stdout.take().ok_or_else(|| std::io::Error::other("the server has no output"))?;
+    let mut printed = std::io::BufReader::new(output);
     let mut port = String::new();
     printed.read_line(&mut port)?;
-    let port: u16 = port.trim().parse().unwrap_or(0);
-    let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
-    spinning.write_all(b"GET /spin HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n")?;
+    Ok((server, port.trim().parse().unwrap_or(0)))
+}
+
+/// A request to `path` on `port`, sent once the request already sent has had time to be read
+/// and its handler to start: its answer, read within a minute, or why it wasn't.
+fn asked_meanwhile(port: u16, path: &str) -> (String, std::io::Result<usize>) {
+    use std::io::{Read as _, Write as _};
     std::thread::sleep(std::time::Duration::from_millis(300));
-    let mut ping = std::net::TcpStream::connect(("127.0.0.1", port))?;
-    ping.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
-    ping.write_all(b"GET /ping HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n")?;
-    let mut pong = String::new();
-    let pinged = ping.read_to_string(&mut pong);
-    // Nothing of the range's answer yet: the ping didn't wait for it.
-    spinning.set_nonblocking(true)?;
-    let mut first = [0_u8; 1];
-    let early = spinning.peek(&mut first);
-    spinning.set_nonblocking(false)?;
-    spinning.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
-    let mut spun = String::new();
-    let read = spinning.read_to_string(&mut spun);
-    drop(server);
-    std::fs::remove_dir_all(&dir)?;
-    assert!(pong.ends_with("pong"), "the ping wasn't answered: {pinged:?} {pong:?}");
-    assert!(
-        early.as_ref().is_err_and(|err| err.kind() == std::io::ErrorKind::WouldBlock),
-        "the range had answered before the ping: {early:?}"
-    );
-    assert!(spun.ends_with("spun [2000000000, 2000000000] 0"), "{read:?} {spun:?}");
-    Ok(())
+    let mut reply = String::new();
+    let read = std::net::TcpStream::connect(("127.0.0.1", port)).and_then(|mut asked| {
+        // A minute tells a handler that makes way from one that never ends.
+        asked.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        asked.write_all(
+            format!("GET {path} HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n").as_bytes(),
+        )?;
+        asked.read_to_string(&mut reply)
+    });
+    (reply, read)
 }
 
 /// A program's resident memory in KB: `ps` gives it on Unix, and `tasklist` on Windows, as

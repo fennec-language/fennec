@@ -269,8 +269,8 @@ impl Interp {
                 }
             }
             ExprKind::Name(name)
-                if (self.program.functions.contains_key(name.as_str())
-                    || self.program.std_name(name).is_some())
+                if (self.program.function_at(name, object.span).is_some()
+                    || self.program.std_name(name, object.span).is_some())
                     && !self.is_bound(name) =>
             {
                 self.named_target(name, object.span)?
@@ -292,7 +292,7 @@ impl Interp {
                     && self
                         .program
                         .imported
-                        .get(name.as_str())
+                        .get(name, object.span)
                         .is_some_and(|from| from == "std.layout.SoaList") =>
             {
                 Target::Given(Value::List(Vec::new()))
@@ -315,10 +315,10 @@ impl Interp {
                     _ => return unsupported("`array[...]()` whose type isn't known"),
                 }
             }
-            ExprKind::Name(name) if name == "Table" && args.is_empty() && self.is_the_table() => {
+            ExprKind::Name(name) if name == "Table" && args.is_empty() && self.is_the_table(object.span) => {
                 Target::Given(Value::Table(Box::new(crate::value::Table::new(self.shared.new_tag()))))
             }
-            ExprKind::Name(name) => match self.program.imported.get(name.as_str()) {
+            ExprKind::Name(name) => match self.program.imported.get(name, object.span) {
                 Some(from) if !self.is_bound(name) && super::library::has_function(from) => {
                     Target::Builtin(from.clone())
                 }
@@ -388,7 +388,7 @@ impl Interp {
             return self.func_target(value);
         }
         let name = &*self.type_named(name);
-        if let Some(def) = self.program.functions.get(name) {
+        if let Some(def) = self.program.function_at(name, span) {
             return Ok(Target::Def { def, parent: None, receiver: None, types: Bound::new() });
         }
         if let Some(declared) = self.program.types.get(name) {
@@ -419,10 +419,10 @@ impl Interp {
             return Ok(Target::Given(Value::instance("StrWriter", None, parts)));
         }
         // A name imported from a module run from its own source, under the name it's run by.
-        if let Some(found) = self.program.std_name(name).filter(|found| *found != name) {
+        if let Some(found) = self.program.std_name(name, span).filter(|found| *found != name) {
             return self.named_target(found, span);
         }
-        if let Some(from) = self.program.imported.get(name) {
+        if let Some(from) = self.program.imported.get(name, span) {
             if super::library::has_function(from) {
                 return Ok(Target::Builtin(from.clone()));
             }
@@ -470,7 +470,7 @@ impl Interp {
     ) -> Run<Option<Target>> {
         if let ExprKind::Name(owner) = &object.kind
             && !self.is_bound(owner)
-            && !self.program.constants.contains_key(owner.as_str())
+            && !self.program.constant_at(owner, object.span)
         {
             if name == "deserialize"
                 && let Some(target) = self.deserialize_target(owner)?
@@ -499,7 +499,7 @@ impl Interp {
                 }
                 return Ok(Some(Target::Static { ty: owner.clone(), name: name.to_owned() }));
             }
-            if let Some(from) = self.program.imported.get(owner.as_str()) {
+            if let Some(from) = self.program.imported.get(owner, object.span) {
                 let path = format!("{from}.{name}");
                 // `math.dot(...)`, of a module run from its own source.
                 if let Some(found) = self.program.from_std.get(&path) {
@@ -523,7 +523,7 @@ impl Interp {
         if let Some(dotted) = dotted(object)
             && let Some((root, _)) = dotted.split_once('.')
             && !self.is_bound(root)
-            && let Some(from) = self.program.imported.get(&dotted)
+            && let Some(from) = self.program.imported.get(&dotted, object.span)
         {
             let path = format!("{from}.{name}");
             if let Some(found) = self.program.from_std.get(&path) {

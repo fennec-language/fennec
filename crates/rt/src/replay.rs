@@ -480,7 +480,7 @@ pub(crate) fn stopped_as_recorded() {
     // Without threads there are no tasks to stop, so no recording a runtime like this one made says
     // a wait was cut short. One made with them that does still fails here, as it did.
     #[cfg(not(any(test, feature = "threads")))]
-    crate::embed::fail_with(Diagnostic::new("this task was stopped", Span::default()));
+    crate::embed::fail_with(Diagnostic::new(crate::embed::STOPPED_FAILURE, Span::default()));
 }
 
 /// In a replay, marks the running task as one its recording said a stop or a cancel cut short (see

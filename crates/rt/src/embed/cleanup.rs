@@ -40,11 +40,15 @@ pub extern "C" fn crash_hold() -> i64 {
 }
 
 /// `fennec_crash_resume(held)`: the cleanup's ended, and the crash goes on. If the cleanup crashed
-/// too, that's reported here, and the first crash is the one that goes on.
+/// too, that's reported here, and the first crash is the one that goes on. A stop, or a cancel of
+/// a server's round, that cut the cleanup short isn't a crash of the cleanup: the crash goes on
+/// with nothing said. A round has no grace, so every wait in its cleanup said its cleanup crashed
+/// when its server stopped (#1948).
 pub extern "C" fn crash_resume(number: i64) {
     let crash = held(|held| held.remove(&number)).unwrap_or_default();
     threads::cleaning(false);
-    if let Some(again) = with(|state| state.failure.take()) {
+    let again = with(|state| state.failure.take());
+    if let Some(again) = again.filter(|again| again.message != super::STOPPED_FAILURE) {
         super::write_kept_output();
         let _ = writeln!(std::io::stderr(), "error: {} (while cleaning up after a crash)", again.message);
     }

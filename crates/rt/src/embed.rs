@@ -687,6 +687,9 @@ fn finish_run(leave: bool) -> (Vec<u8>, Option<Diagnostic>, Leftovers) {
     }
 }
 
+/// What a task fails with when a stop, or a cancel of its round, cuts it short.
+pub(crate) const STOPPED_FAILURE: &str = "this task was stopped";
+
 /// Records a failure from compiled code's own checks, such as an overflow.
 pub fn fail_with(diagnostic: Diagnostic) {
     with(|state| {

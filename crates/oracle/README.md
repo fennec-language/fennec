@@ -142,10 +142,14 @@ says they are, at the version the workspace pins.
   Refused: two tasks taking from one channel to one receiver at once, where neither had heard of
   the other's last take; several senders to a listener whose
   next messages differ; a channel to every listener sent more than it keeps; a send waiting for room
-  when its channel closes; a task that ends with messages left in its inbox, and a send to the inbox
-  after; a `shared` value one side changes and the other reaches; a block that fails, which cuts its
-  task short at once; waiting inside a `lock`; `stop_after=`; and every task waiting on another,
-  which hangs. A wait given a timeout times out only when nothing else can go on.
+  when its channel closes; a send to the inbox of a task that's ended, on a run that didn't try the
+  task ending first; a `shared` value one side changes and the other reaches; a block that fails,
+  which cuts its task short at once, unless it's a send failing with `Closed` to a task that's
+  failed, whose failure the block ends with; waiting inside a `lock`; `stop_after=`; and every task
+  waiting on another, which hangs. A wait given a timeout times out only when nothing else can go
+  on. A task that ends with messages left in its inbox that its block sent as it ran: whether each
+  send came before the task ended or after, and failed with `Closed`, hangs on time, so a later run
+  tries the task going on first at that send, and the runs have to end the same.
 - `std.json`'s `dumps` and `loads[T]` are written here on their own, by the type the checker gave
   the value, never by running the standard library's reader and writer. A struct is an object of the
   fields it saves, under the names `@serialize(name=...)` and `names=` give them, and `@skip` leaves

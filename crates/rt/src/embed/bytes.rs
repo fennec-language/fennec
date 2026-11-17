@@ -1,6 +1,10 @@
-//! `bytes` for native code. A block holds its owner count, its shape, its length in bytes, then
-//! the bytes, packed into words. They don't change once it's filled in. Native code reads the
-//! length and the bytes itself, and everything that makes a new block happens here.
+//! `bytes` for native code. A block holds its owner count, its shape, its length in bytes, its room
+//! in bytes, then the bytes, packed into words. They don't change once it's filled in, but for a
+//! byte builder's, which std's own intrinsics write into. Native code reads the length and the
+//! bytes itself, and everything that makes a new block happens here.
+//!
+//! The room is the words after the header, in bytes, as a list's room is (#1941): a builder can set
+//! room aside and write less, and test for room with one load and one compare.
 
 use fennec_syntax::{Diagnostic, Span};
 
@@ -9,10 +13,16 @@ use super::{State, fail_with, with};
 use crate::collections::{from_hex, hex, hex_problem};
 use crate::value::Value;
 
-/// Words before the bytes.
-const HEADER_WORDS: usize = 3;
+/// Words before the bytes: the owner count, the shape, the length in bytes and the room in bytes.
+const HEADER_WORDS: usize = 4;
 /// Where the bytes start in a block, for native code.
-pub const DATA_OFFSET: u32 = 24;
+pub const DATA_OFFSET: u32 = 32;
+
+/// A block's header for `length` bytes in `words` words of room after it.
+fn header(length: usize, words: usize) -> [u64; HEADER_WORDS] {
+    let number = |n: usize| u64::try_from(n).unwrap_or(0);
+    [1, super::heap::BYTES_SHAPE, number(length), number(words * 8)]
+}
 
 /// What the length of a block with this many words of bytes needs.
 fn words_for(length: usize) -> usize {
@@ -21,10 +31,10 @@ fn words_for(length: usize) -> usize {
 
 /// A new block with room for this many bytes, all zero.
 fn with_room(state: &mut State, length: usize) -> Box<[u64]> {
-    let mut block = state.heap.fresh(words_for(length));
-    let header = [1, super::heap::BYTES_SHAPE, u64::try_from(length).unwrap_or(0)];
+    let words = words_for(length);
+    let mut block = state.heap.fresh(words);
     if let Some(start) = block.get_mut(..HEADER_WORDS) {
-        start.copy_from_slice(&header);
+        start.copy_from_slice(&header(length, words - HEADER_WORDS));
     }
     block.iter_mut().skip(HEADER_WORDS).for_each(|word| *word = 0);
     block
@@ -88,10 +98,11 @@ fn text_at(state: &State, at: i64) -> String {
 }
 
 /// The room a byte builder's block has for `length` bytes: the next power of two, and at least 16.
-/// Native code works it out from the length alone, so a builder needs no word for it. Only std's
-/// own builder intrinsics write into one, and it's copied to its exact size before anything else
-/// sees it. Equality and hashing go by the length anyway (`words_of`), so one that isn't still
-/// compares and hashes as the same bytes would.
+/// Native code still works it out from the length alone, so a builder's block has at least that
+/// much, which its room word says; once native code reads the word instead, `grow` can give room
+/// as a list's grows. Only std's own builder intrinsics write into one, and it's copied to its exact
+/// size before anything else sees it. Equality and hashing go by the length anyway (`words_of`),
+/// so one that isn't still compares and hashes as the same bytes would.
 fn builder_room(length: usize) -> usize {
     length.max(16).next_power_of_two()
 }
@@ -178,7 +189,7 @@ pub extern "C" fn of_list(list: i64, start: i64, end: i64) -> i64 {
     match packed.unwrap_or(Ok((Vec::new(), 0))) {
         Ok((words, length)) => with(|state| {
             let mut block = state.heap.fresh(HEADER_WORDS + words.len());
-            let header = [1, super::heap::BYTES_SHAPE, u64::try_from(length).unwrap_or(0)];
+            let header = header(length, words.len());
             for (slot, word) in block.iter_mut().zip(header.iter().chain(&words)) {
                 *slot = *word;
             }
@@ -346,8 +357,67 @@ pub(super) fn write(state: &mut State, value: &Value) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{HEADER_WORDS, data_at, grow, join, make, slice, text_at, text_part};
+    use super::{
+        HEADER_WORDS, builder, builder_room, data_at, grow, join, make, new, slice, text_at, text_part,
+    };
     use crate::embed::{Tables, dicts, failed, finish, heap, start, with};
+
+    /// A block's room word says how many bytes its words after the header hold, and its length is
+    /// within it, however the block was made: exactly the size of its bytes, a builder empty or
+    /// grown, a slice and a join. A builder's room is at least what native code works out from its
+    /// length, as it writes up to that without asking (#1941).
+    #[test]
+    fn every_bytes_block_says_its_room_and_a_builders_has_what_native_code_counts_on() {
+        start(Tables::default(), crate::Inputs::default());
+        let header = |block: i64| {
+            with(|state| {
+                let Some(words) = state.heap.block(block.cast_unsigned()) else { panic!("no block") };
+                let (length, room) = (words[2], words[3]);
+                assert_eq!(
+                    room,
+                    u64::try_from((words.len() - HEADER_WORDS) * 8).unwrap(),
+                    "the room is its words'"
+                );
+                assert!(length <= room, "{length} bytes in {room}");
+                (usize::try_from(length).unwrap(), usize::try_from(room).unwrap())
+            })
+        };
+        let mut made = Vec::new();
+        for length in [0_u8, 1, 7, 8, 9, 16, 17, 100] {
+            let data: Vec<u8> = (0..length).collect();
+            let exact = with(|state| make(state, &data));
+            assert_eq!(
+                header(exact),
+                (data.len(), data.len().div_ceil(8) * 8),
+                "{length} bytes made exactly"
+            );
+            let part = slice(exact, 1, i64::MIN);
+            header(part);
+            let both = join(exact, part);
+            header(both);
+            let fresh = new(i64::from(length));
+            header(fresh);
+            for wanted in [0, 1, 10, 50] {
+                let copy = with(|state| make(state, &data));
+                let grown = grow(copy, wanted);
+                let (length, room) = header(grown);
+                assert!(
+                    room >= builder_room(length.max(usize::try_from(wanted).unwrap())),
+                    "grown for {wanted}"
+                );
+                made.push(grown);
+            }
+            made.extend([exact, part, both, fresh]);
+        }
+        let empty = builder();
+        let (length, room) = header(empty);
+        assert_eq!((length, room), (0, builder_room(0)), "an empty builder");
+        made.push(empty);
+        for block in made {
+            heap::free(block);
+        }
+        finish();
+    }
 
     /// A builder's block for these bytes, with its room past them filled with junk, as nothing
     /// promises it's zero.

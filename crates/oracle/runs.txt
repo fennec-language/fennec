@@ -23,6 +23,7 @@ constants_native.fen
 copy.fen
 default_params.fen
 dict_set_methods.fen
+dict_slice_keys.fen
 dicts_large.fen
 discard.fen
 doc_examples.fen

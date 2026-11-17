@@ -5713,6 +5713,60 @@ fn a_program_is_the_same_bytes_whatever_its_named() -> std::io::Result<()> {
     Ok(())
 }
 
+/// A dev build after an edit links the cache's own object files where they lie, writing out only
+/// what it compiled, and the program is the same bytes as one built with no cache at all, every
+/// object written out fresh. Writing out and deleting a copy of every object was once most of an
+/// edit's build on a Mac.
+#[test]
+fn a_program_linked_from_the_caches_objects_is_the_one_built_without_it() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("linked-from-cache")?;
+    let program = |factor: u32| {
+        format!(
+            "def scaled(value: int) -> int:\n    return value * {factor}\n\ndef label(value: int) -> str:\n    return f\"value {{value}}\"\n\ndef main(stdout: Stdout):\n    stdout.print(label(scaled(21)))\n    return\n"
+        )
+    };
+    let build = |out: &str, cached: bool| {
+        let mut command = crate::executables::fennec_command();
+        command.args(["build", "edited.fen", "-o", out]).current_dir(&dir);
+        if cached {
+            command.env("FENNEC_HOME", dir.join("home")).env_remove("FENNEC_NO_CACHE");
+        } else {
+            command.env("FENNEC_HOME", dir.join("no-home")).env("FENNEC_NO_CACHE", "1");
+        }
+        command.output_within()
+    };
+    std::fs::write(dir.join("edited.fen"), program(2))?;
+    let first = build("first", true)?;
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    std::fs::write(dir.join("edited.fen"), program(3))?;
+    let edited = build("edited", true)?;
+    assert!(edited.status.success(), "{}", text(&edited.stderr));
+    let said = text(&edited.stdout);
+    let counts: Vec<usize> = said
+        .split_once("compiled ")
+        .and_then(|(_, rest)| rest.split_once(" functions"))
+        .map(|(counts, _)| counts.split(" of ").filter_map(|count| count.parse().ok()).collect())
+        .unwrap_or_default();
+    assert!(
+        matches!(counts[..], [fresh, total] if fresh > 0 && fresh < total),
+        "the edit compiled only some functions: {said}"
+    );
+    let uncached = build("uncached", false)?;
+    assert!(uncached.status.success(), "{}", text(&uncached.stderr));
+    assert!(
+        std::fs::read(dir.join("edited"))? == std::fs::read(dir.join("uncached"))?,
+        "the program linked from the cache's objects isn't the one built without the cache"
+    );
+    let ran = std::process::Command::new(dir.join("edited")).output_within()?;
+    assert_eq!(text(&ran.stdout), "value 63\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A program built again under the same name, and run each time, is a new file every time: macOS
 /// remembers the code signature of a file it has launched and kills a program written into one,
 /// with no word. So two programs take turns at one path, built through the store, which links one

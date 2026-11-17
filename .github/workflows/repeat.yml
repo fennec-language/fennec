@@ -1,18 +1,29 @@
 name: Repeat a test
 
 # One test run many times on one system, by hand, to catch a failure that comes once in a while:
-# a flake, which is a bug, often on one system only. Each run that fails keeps all it printed, in
-# the run's `repeat-failures` artifact, and the summary page says how many of how many failed. For
+# a flake, which is a bug, often on one system only. The runs are shared out among jobs that run at
+# once, each building the test once, so 200 runs of a test that takes three minutes on Windows end
+# in well under the four hours a job may take. Each run that fails keeps all it printed, in its
+# job's `repeat-<share>` artifact, and the summary page says how many of how many failed. For
 # example, a replay test that exited 1 once in a while on Windows:
 #
 #   gh workflow run "Repeat a test" -f os=windows-latest \
 #     -f test=replay::a_task_stopped_in_a_sleep_is_stopped_there_in_its_replay -f times=200
 #
-# The test is built as CI's test jobs build it, with the runtime libraries beside `fennec`, and
-# built once; then the test binary runs it alone, as `--exact`, that many times.
+# A test run alone, as `--exact`, may not fail the way it does in CI, where it runs beside the rest
+# of its binary. With `exact` off, `test` is a filter, as `cargo test` takes one, and each run runs
+# every test it matches, at once, as CI does: `-f exact=false -f test=replay::` runs the whole
+# replay module each time.
+#
+# `ref` tests another branch's code with this workflow, as a fix's branch that doesn't have it:
+# `-f ref=<branch>` checks that out and builds it, and the runs go as they do here.
+run-name: Repeat ${{ inputs.test }} on ${{ inputs.os }}${{ inputs.ref && format(' at {0}', inputs.ref) || '' }}
 on:
   workflow_dispatch:
     inputs:
+      ref:
+        description: The branch, tag or commit to test; empty for the one this workflow runs from
+        default: ""
       os:
         description: The system to run it on
         type: choice
@@ -25,29 +36,67 @@ on:
         description: Its test target, the name `--test` takes; empty for the package's own unit tests
         default: fennec
       test:
-        description: The test's whole name, as `cargo test` names it
+        description: The test's whole name, as `cargo test` names it, or a filter when `exact` is off
         required: true
+      exact:
+        description: Run that one test alone; off runs every test the name matches, at once, as CI does
+        type: boolean
+        default: true
       times:
-        description: How many times to run it
+        description: How many times to run it, in all
         default: "200"
+      shares:
+        description: How many jobs share the runs, at once
+        default: "8"
+      debugger:
+        description: On Windows, run each under cdb, which stops at a crash where it happens, even as the program exits, and keeps its stacks and a dump
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
+  plan:
+    name: Share out the runs
+    runs-on: ubuntu-latest
+    outputs:
+      shares: ${{ steps.plan.outputs.shares }}
+    steps:
+      - id: plan
+        env:
+          TIMES: ${{ inputs.times }}
+          SHARES: ${{ inputs.shares }}
+        run: |
+          for number in "$TIMES" "$SHARES"; do
+            case "$number" in '' | 0 | *[!0-9]*) echo "::error::times and shares are whole numbers over 0, not $number"; exit 1 ;; esac
+          done
+          [ "$SHARES" -le 32 ] || { echo "::error::32 jobs at once at most, not $SHARES"; exit 1; }
+          echo "shares=[$(seq -s , 1 "$SHARES")]" >> "$GITHUB_OUTPUT"
+
   repeat:
-    name: Repeat ${{ inputs.test }} on ${{ inputs.os }}
+    name: Repeat ${{ inputs.test }} on ${{ inputs.os }}, share ${{ matrix.share }}
+    needs: plan
     runs-on: ${{ inputs.os }}
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        share: ${{ fromJSON(needs.plan.outputs.shares) }}
     env:
       FENNEC_EXPECT_LLVM: "1"
       PACKAGE: ${{ inputs.package }}
       TARGET: ${{ inputs.target }}
       TEST: ${{ inputs.test }}
+      EXACT: ${{ inputs.exact }}
       TIMES: ${{ inputs.times }}
+      SHARES: ${{ inputs.shares }}
+      SHARE: ${{ matrix.share }}
+      DEBUGGER: ${{ inputs.debugger }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       # As CI's test jobs set up: Fennec links programs with LLD and MinGW-w64's libraries on
       # Windows, and with LLVM's tools from the toolchain's own `llvm-tools` elsewhere.
@@ -76,40 +125,208 @@ jobs:
       - name: Build the test once
         shell: bash
         run: |
-          case "$TIMES" in '' | *[!0-9]*) echo "::error::times is a whole number, not $TIMES"; exit 1 ;; esac
           if [ -n "$TARGET" ]; then which=(--test "$TARGET"); else which=(--lib); fi
-          cargo test --locked -p "$PACKAGE" "${which[@]}" --no-run
+          cargo test --locked -p "$PACKAGE" "${which[@]}" --no-run 2>&1 | tee built.txt
+          # For the debugger, which starts the test's own binary as cargo does: from its package's
+          # folder, which cargo names it by too.
+          binary=$(tr -d '\r' < built.txt | sed -n 's/.*Executable .* (\(.*\))$/\1/p' | tail -n 1)
+          folder=$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r --arg name "$PACKAGE" '.packages[] | select(.name == $name) | .manifest_path')
+          if [ "$RUNNER_OS" = Windows ]; then
+            binary=$(cygpath -u "$binary")
+            folder=$(cygpath -u "$folder")
+          fi
+          # cargo tells the processes it starts which toolchain it is, and the test's own `cargo
+          # build` of the runtime needs it: cargo compiles a crate from the registry in that crate's
+          # folder, where there's no rust-toolchain.toml, so rustup would take its default instead,
+          # another Rust, and rebuild everything with it, and fail.
+          {
+            echo "TEST_BINARY=$PWD/$binary"
+            echo "PACKAGE_FOLDER=$(dirname "$folder")"
+            echo "RUSTUP_TOOLCHAIN=$(rustup show active-toolchain | cut -d ' ' -f 1)"
+          } >> "$GITHUB_ENV"
+      # On Windows, a program that crashes as it runs is caught where it crashed: the debugger, `cdb`,
+      # set as the one Windows starts on a crash, writes each thread's stack and a full dump into
+      # this share's folder, and Windows Error Reporting's own dumps are asked for too. Neither comes
+      # for a crash as a process exits, which Windows ends with no report at all: `debugger` runs
+      # each run under cdb to catch those.
+      - name: Catch each program that crashes
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dumps = Join-Path $env:GITHUB_WORKSPACE "repeat-$env:SHARE\dumps"
+          New-Item -ItemType Directory -Force -Path $dumps | Out-Null
+          foreach ($key in 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting') {
+            "$key :"; Get-ItemProperty -Path $key -ErrorAction SilentlyContinue | Format-List | Out-String
+          }
+          Get-Service WerSvc | Format-List Name, Status, StartType | Out-String
+          $reporting = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting'
+          New-ItemProperty -Path $reporting -Name Disabled -PropertyType DWord -Value 0 -Force | Out-Null
+          $local = "$reporting\LocalDumps"
+          New-Item -Path $local -Force | Out-Null
+          New-ItemProperty -Path $local -Name DumpFolder -PropertyType ExpandString -Value $dumps -Force | Out-Null
+          New-ItemProperty -Path $local -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
+          New-ItemProperty -Path $local -Name DumpCount -PropertyType DWord -Value 10 -Force | Out-Null
+          $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
+          if (Test-Path $cdb) {
+            $debugger = '"' + $cdb + '" -p %ld -e %ld -g -logo "' + $dumps + '\crash-%ld.txt" -c ".dump /ma /u ' + $dumps + '\crash.dmp; !analyze -v; ~*k 40; q"'
+            $aedebug = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AeDebug'
+            New-ItemProperty -Path $aedebug -Name Debugger -PropertyType String -Value $debugger -Force | Out-Null
+            New-ItemProperty -Path $aedebug -Name Auto -PropertyType String -Value '1' -Force | Out-Null
+            "cdb is the debugger Windows starts on a crash"
+          } else {
+            "::warning::there's no cdb at $cdb, so only Windows Error Reporting can keep a dump"
+          }
+      # This share's runs are those numbered SHARE, SHARE + SHARES and on, up to TIMES, so each
+      # run's number is its own across the shares. Each says how long it took, so a share stopped
+      # partway still says how far it got. Each run has a temporary folder of its own, and a test
+      # that fails keeps its folder there (`FENNEC_KEEP_FAILED`), the programs it built in it, which
+      # a failed run keeps beside what it printed. Under the debugger, the run's Fennec folder is
+      # in it too, so the programs a test built go with it. A run passed when the tests say so:
+      # cdb exits 0 whatever they did.
       - name: Run it, again and again
         shell: bash
         run: |
           if [ -n "$TARGET" ]; then which=(--test "$TARGET"); else which=(--lib); fi
-          mkdir -p failures
+          filter=("$TEST")
+          [ "$EXACT" = true ] && filter+=(--exact)
+          mkdir -p "repeat-$SHARE"
+          # What the checkout holds before any run, to tell what a run leaves in it.
+          before="$RUNNER_TEMP/untracked-before.txt"
+          git ls-files --others --exclude-standard -z | tr '\0' '\n' > "$before"
+          ran=0
           failed=0
-          for run in $(seq 1 "$TIMES"); do
-            if ! cargo test --locked -q -p "$PACKAGE" "${which[@]}" -- --exact "$TEST" > "failures/run-$run.txt" 2>&1; then
+          for run in $(seq "$SHARE" "$SHARES" "$TIMES"); do
+            started=$SECONDS
+            said="repeat-$SHARE/run-$run.txt"
+            temporary="$RUNNER_TEMP/run-$run"
+            mkdir -p "$temporary"
+            if [ "$RUNNER_OS" = Windows ]; then temporary=$(cygpath -w "$temporary"); fi
+            status=0
+            if [ "$DEBUGGER" = true ] && [ "$RUNNER_OS" = Windows ]; then
+              # cdb starts the test binary and every process under it (`-o`), passes over each one's
+              # first stop, and at an access violation, even one as a process exits, says what it
+              # was, the registers, every thread's stack, the thread, and where each module is, and
+              # keeps a full dump, then lets the program go on to crash as it would have.
+              mkdir -p "repeat-$SHARE/dumps"
+              # With forward slashes: in a quoted command, cdb reads a backslash as an escape, so
+              # `\r` and `\a` in a Windows path put the dump in the current folder, under crates/,
+              # which changes the build's hash and makes every later run's runtime another build.
+              dumps=$(cygpath -m "$PWD/repeat-$SHARE/dumps")
+              script="$RUNNER_TEMP/cdb-$run.txt"
+              # Quiet about each module loaded and each exception Rust raises to unwind (GCC's
+              # code, 0x20474343), which are many and normal.
+              printf '%s\n' 'sxi ibp' 'sxi ld' 'sxi 0x20474343' \
+                "sxe -c \".echo FENNEC-ACCESS-VIOLATION; .exr -1; r; ~*k 40; !teb; lm; .dump /ma /u $dumps/run-$run.dmp; gn\" -c2 \"gn\" av" \
+                'g' > "$script"
+              (cd "$PACKAGE_FOLDER" && FENNEC_KEEP_FAILED=1 TMPDIR="$temporary" TMP="$temporary" TEMP="$temporary" \
+                FENNEC_HOME="$temporary\\home" CARGO_MANIFEST_DIR="$(cygpath -w "$PACKAGE_FOLDER")" \
+                "/c/Program Files (x86)/Windows Kits/10/Debuggers/x64/cdb.exe" -G -o -cf "$(cygpath -w "$script")" \
+                "$(cygpath -w "$TEST_BINARY")" "${filter[@]}") > "$said" 2>&1 || status=$?
+            else
+              FENNEC_KEEP_FAILED=1 TMPDIR="$temporary" TMP="$temporary" TEMP="$temporary" \
+                cargo test --locked -q -p "$PACKAGE" "${which[@]}" -- "${filter[@]}" > "$said" 2>&1 || status=$?
+            fi
+            if [ "$status" -ne 0 ] || ! grep -q "test result: ok\." "$said"; then
               failed=$((failed + 1))
-              echo "::error::run $run of $TIMES failed"
-              tail -n 40 "failures/run-$run.txt"
-            elif ! grep -q "test result: ok. 1 passed" "failures/run-$run.txt"; then
+              echo "::error::run $run of $TIMES failed, after $((SECONDS - started)) s"
+              tail -n 40 "$said"
+              mv "$RUNNER_TEMP/run-$run" "repeat-$SHARE/run-$run-kept" || true
+            elif grep -q "test result: ok. 0 passed" "$said"; then
               # No test of that name ran: every run would say the same, so it stops here.
               echo "::error::no test named $TEST ran"
-              cat "failures/run-$run.txt"
+              cat "$said"
               exit 1
+            # The marker on a line of its own, as cdb prints it, not in its echo of the command.
+            elif tr -d '\r' < "$said" | grep -qx FENNEC-ACCESS-VIOLATION; then
+              # The tests passed, but the debugger saw an access violation: kept, to read.
+              echo "::warning::run $run passed, but cdb saw an access violation"
+              mv "$said" "repeat-$SHARE/run-$run-violation.txt"
+              mv "$RUNNER_TEMP/run-$run" "repeat-$SHARE/run-$run-kept" || true
             else
-              rm "failures/run-$run.txt"
+              echo "run $run passed in $((SECONDS - started)) s"
+              rm "$said"
+              rm -rf "$RUNNER_TEMP/run-$run"
             fi
+            # A file a run leaves in the checkout, under crates/ above all, changes the hash
+            # `fennec` and its runtime are stamped with, so the next run's runtime would be another
+            # build: named, and taken away.
+            # Read as git lists them, with a NUL after each, since a stray name may hold anything.
+            stray=()
+            while IFS= read -r -d '' file; do
+              case "$file" in "repeat-$SHARE"/*) continue ;; esac
+              grep -qxF -- "$file" "$before" || stray+=("$file")
+            done < <(git ls-files --others --exclude-standard -z)
+            if [ "${#stray[@]}" -gt 0 ]; then
+              echo "::warning::run $run left ${#stray[@]} files in the checkout, taken away: ${stray[*]}"
+              rm -f -- "${stray[@]}"
+            fi
+            ran=$((ran + 1))
+            echo "$ran $failed" > "repeat-$SHARE/counts"
           done
-          {
-            echo "## $TEST on $RUNNER_OS"
-            echo
-            echo "$failed of $TIMES runs failed."
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "$failed of $TIMES runs failed"
+          echo "$failed of this share's $ran runs failed"
           [ "$failed" -eq 0 ]
+      # Each dump read by the Windows debugger: what it stopped on, and every thread's stack.
+      - name: Read each dump's stacks
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dumps = Join-Path $env:GITHUB_WORKSPACE "repeat-$env:SHARE\dumps"
+          foreach ($said in @(Get-ChildItem -Path $dumps -Filter crash-*.txt -ErrorAction SilentlyContinue)) {
+            "== $($said.Name), as cdb caught it"
+            Get-Content $said.FullName -Tail 120
+          }
+          $found = @(Get-ChildItem -Path $dumps -Filter *.dmp -ErrorAction SilentlyContinue)
+          "$($found.Count) dumps"
+          if ($found.Count -eq 0) { exit 0 }
+          $cdb = 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
+          if (-not (Test-Path $cdb)) { "::warning::there's no cdb at $cdb, so the dumps are kept unread"; exit 0 }
+          foreach ($dump in $found) {
+            & $cdb -z $dump.FullName -c '!analyze -v; ~*k 30; q' > "$($dump.FullName).txt" 2>&1
+            "== $($dump.Name)"
+            Get-Content "$($dump.FullName).txt" -Tail 80
+          }
+      # `total` adds these up. Kept even when the job is stopped partway, so its runs still count.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: repeat-failures
-          path: failures
+          name: repeat-${{ matrix.share }}
+          path: repeat-${{ matrix.share }}
           if-no-files-found: ignore
           retention-days: 14
+
+  total:
+    name: How many failed, of how many
+    needs: repeat
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      TEST: ${{ inputs.test }}
+      OS: ${{ inputs.os }}
+      TIMES: ${{ inputs.times }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: repeat-*
+          path: shares
+      - name: Add up every share's runs
+        run: |
+          ran=0
+          failed=0
+          for counts in shares/*/counts; do
+            [ -f "$counts" ] || continue
+            read -r share_ran share_failed < "$counts"
+            ran=$((ran + share_ran))
+            failed=$((failed + share_failed))
+          done
+          {
+            echo "## $TEST on $OS"
+            echo
+            echo "$failed of $ran runs failed, of the $TIMES asked for."
+            # A run that failed, or the one going when its share was stopped.
+            for kept in shares/*/run-*.txt; do
+              if [ -f "$kept" ]; then echo "- kept: \`${kept#shares/}\`"; fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$failed of $ran runs failed, of the $TIMES asked for"
+          [ "$failed" -eq 0 ] && [ "$ran" -eq "$TIMES" ]

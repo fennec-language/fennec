@@ -263,10 +263,10 @@ fn named_place(body: &[Stmt], at: usize) -> Option<(Vec<Stmt>, Vec<Stmt>)> {
     let mut held = Vec::new();
     let named = indexes_held(place, &|count| format!("{tag}_{count}"), &mut held);
     let mut rest = body.get(at + 1..).unwrap_or_default().to_vec();
-    fennec_syntax::visit::in_stmts(&mut rest, &mut |expr| {
-        if matches!(&expr.kind, ExprKind::Name(used) if used == name) {
-            *expr = respanned(&named);
-        }
+    roots_kept(&mut rest, &roots_in(&named), &tag);
+    // Each use of the name that means the `ref`, not one under something that names it again.
+    fennec_syntax::sight::uses_in_sight(&mut rest, &[name.to_owned()], &mut |expr| {
+        *expr = respanned(&named);
     });
     Some((held, rest))
 }
@@ -286,14 +286,14 @@ fn by_place(each: &Stmt, through: Through) -> Option<Vec<Stmt>> {
         Through::Ids => method(&items, "ids"),
     };
     let mut body = body.clone();
-    fennec_syntax::visit::in_stmts(&mut body, &mut |expr| {
-        if matches!(&expr.kind, ExprKind::Name(named) if named == item) {
-            let index = Box::new(name(&count, expr.span));
-            *expr = Expr {
-                kind: ExprKind::Index { object: Box::new(respanned(&items)), index },
-                span: here(expr.span),
-            };
-        }
+    roots_kept(&mut body, &roots_in(&items), &tag);
+    // Each use of the loop's name that means it, not one under something that names it again.
+    fennec_syntax::sight::uses_in_sight(&mut body, std::slice::from_ref(item), &mut |expr| {
+        let index = Box::new(name(&count, expr.span));
+        *expr = Expr {
+            kind: ExprKind::Index { object: Box::new(respanned(&items)), index },
+            span: here(expr.span),
+        };
     });
     let kind = StmtKind::For { names: vec![count], is_mut: false, iter: looped, body };
     held.push(stmt(kind, span));
@@ -323,6 +323,31 @@ pub(crate) fn indexes_held(items: &Expr, holder: &dyn Fn(usize) -> String, held:
         other => other.clone(),
     };
     Expr { kind, span: items.span }
+}
+
+/// The names a place reads, other than the hidden ones holding its indexes, which no program can
+/// write.
+fn roots_in(place: &Expr) -> Vec<String> {
+    let mut roots = Vec::new();
+    fennec_syntax::visit::in_expr(&mut place.clone(), &mut |inner| {
+        if let ExprKind::Name(read) = &inner.kind
+            && !read.contains("__")
+            && !read.contains(fennec_syntax::visit::HIDDEN)
+            && !roots.contains(read)
+        {
+            roots.push(read.clone());
+        }
+    });
+    roots
+}
+
+/// Each name a place reads, given a hidden name in `body` where something there names it again,
+/// so the place written in at each use reads what it reads where it's written.
+fn roots_kept(body: &mut [Stmt], roots: &[String], tag: &str) {
+    let outside: Vec<(String, Option<String>)> = roots.iter().map(|root| (root.clone(), None)).collect();
+    fennec_syntax::sight::hide_bound(body, &outside, &|_, bound| {
+        roots.iter().any(|root| root == bound).then(|| format!("{bound}__{tag}"))
+    });
 }
 
 /// A copy of an expression with spans of its own, so the types it's checked again with are its.

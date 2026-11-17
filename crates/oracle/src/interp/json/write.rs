@@ -82,6 +82,7 @@ impl Interp {
     /// What a value of type `ty` saves.
     fn saved(&mut self, value: &Value, ty: &Type) -> Run<Saved> {
         self.tick()?;
+        let _deeper = crate::interp::deeper()?;
         Ok(match (ty, value) {
             (Type::Int, Value::Int(n)) => Saved::Int(*n),
             (Type::Float, Value::Float(x)) => Saved::Float(*x),

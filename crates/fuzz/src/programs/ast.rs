@@ -764,6 +764,45 @@ pub(crate) struct Listening {
     pub(crate) inboxes: Vec<bool>,
 }
 
+/// A name that another of the same name and type could capture, written `way`, with `n` the value
+/// it adds or lends.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Capturing {
+    pub(crate) id: usize,
+    pub(crate) way: CaptureWay,
+    pub(crate) n: i64,
+}
+
+/// The ways a `Captured` writes a name another of its name and type could capture, each one the
+/// checker renamed by text, not by what the name means where it's written (#1997 and the
+/// checker's name-capture sweep).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CaptureWay {
+    /// `with opened() as added:` holding a nested function whose parameter is `added` too.
+    WithDef,
+    /// `lock bag as ref held:` holding a loop whose name is `held` too.
+    LockLoop,
+    /// `lock bag as ref held:` holding a case whose name is `held` too.
+    LockCase,
+    /// `lock bag as ref held:` holding a nested function whose parameter is `held` too.
+    LockDef,
+    /// `lock bag as ref held:` holding an arrow whose parameter is `held` too.
+    LockArrow,
+    /// A `with` source calling a function whose name its caller has as a parameter, of the same
+    /// type.
+    SourceCall,
+}
+
+/// Every `CaptureWay`.
+pub(crate) const CAPTURE_WAYS: [CaptureWay; 6] = [
+    CaptureWay::WithDef,
+    CaptureWay::LockLoop,
+    CaptureWay::LockCase,
+    CaptureWay::LockDef,
+    CaptureWay::LockArrow,
+    CaptureWay::SourceCall,
+];
+
 /// How a `Shelved` step changes the pouch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Shelve {
@@ -1087,6 +1126,9 @@ pub(crate) enum Stmt {
     Shelved(Shelving),
     /// `listened{id}(stdout)`: listeners of a channel to every listener, some falling behind.
     Listened(Listening),
+    /// `captured{id}(stdout)`: a name written where another of the same name and type is in
+    /// sight, in a way the checker once renamed into the other.
+    Captured(Capturing),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

@@ -25930,7 +25930,8 @@ fn slices_as_dict_keys_match_what_was_pinned() -> std::io::Result<()> {
 /// bytes are, with no block of its own: a block is made for each string value the dict keeps and
 /// nothing else. Each lookup and each add made the line a block for the runtime, and the runtime
 /// copied the slice again, so these 3,000 lines made 18,013 blocks where they now make about
-/// 3,000. `examples/dict_slice_keys.fen` holds what such keys read back as.
+/// 3,000. `examples/dict_slice_keys.fen` holds what such keys read back as. Both builds are run:
+/// the release build is where LLVM's optimizations rework the reads from the line's bytes.
 #[test]
 fn a_slice_of_a_short_line_as_a_key_makes_no_block_of_its_own() -> std::io::Result<()> {
     if !ready() {
@@ -25938,12 +25939,14 @@ fn a_slice_of_a_short_line_as_a_key_makes_no_block_of_its_own() -> std::io::Resu
     }
     let dir = folder("inline_slice_keys")?;
     std::fs::write(dir.join("inline_slice_keys.fen"), INLINE_SLICE_KEYS)?;
-    let (printed, counts) = printed_and_counts(&dir, "inline_slice_keys", &["--llvm"])?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "inline_slice_keys", how)?;
+        assert_eq!(printed, "3000 3000 3000 v2999\n", "{how:?}");
+        let made = counts.split(' ').skip_while(|word| *word != "allocations").nth(1);
+        let made: u64 = made.and_then(|count| count.parse().ok()).unwrap_or(u64::MAX);
+        assert!(made < 4_000 && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(printed, "3000 3000 3000 v2999\n");
-    let made = counts.split(' ').skip_while(|word| *word != "allocations").nth(1);
-    let made: u64 = made.and_then(|count| count.parse().ok()).unwrap_or(u64::MAX);
-    assert!(made < 4_000 && counts.ends_with(" live 0"), "{counts}");
     Ok(())
 }
 

@@ -31,6 +31,10 @@ pub(super) fn definitions(signatures: &Signatures) -> Vec<StructDef> {
 pub(super) struct OnFailure {
     pub(super) name: String,
     pub(super) cleanup: Vec<Stmt>,
+    /// How many scopes are in sight where the cleanup is written. It runs with only those, so a
+    /// name a loop or a case inside the block gives isn't one it reads: a `ref` case is put back
+    /// with its own names wherever the failure leaves from.
+    pub(super) scopes: usize,
 }
 
 impl Lowering<'_> {
@@ -493,6 +497,7 @@ impl Lowering<'_> {
     pub(super) fn pass_up_error(&mut self, error: Operand, span: Span) -> Lowered<()> {
         let Some(around) = self.on_failure.pop() else { return self.return_error(error, span) };
         let rounds = std::mem::take(&mut self.plain_rounds);
+        let inside = self.scopes.split_off(around.scopes.min(self.scopes.len()));
         self.scopes.push(std::collections::HashMap::new());
         let ty = match &self.returns {
             Type::Result(_, failure) => (**failure).clone(),
@@ -502,6 +507,7 @@ impl Lowering<'_> {
         self.emit(InstKind::Copy { dest: held, value: error }, span);
         let lowered = self.stmts(&around.cleanup, Tail::Drop);
         self.scopes.pop();
+        self.scopes.extend(inside);
         self.plain_rounds = rounds;
         self.on_failure.push(around);
         lowered
@@ -794,7 +800,7 @@ fn one_case_binding_nothing<'b>(failure: &str, block: &'b [Stmt]) -> Option<&'b 
 fn binds_nothing(pattern: &Pattern) -> bool {
     match pattern {
         Pattern::Wildcard | Pattern::Literal(_) => true,
-        Pattern::Bind(_) | Pattern::RefBind(_) => false,
+        Pattern::Bind(_) | Pattern::RefBind(_) | Pattern::MutBind(_) => false,
         Pattern::Variant { args, fields, .. } => fields.is_empty() && args.iter().all(binds_nothing),
         Pattern::Tuple(patterns) | Pattern::Or(patterns) => patterns.iter().all(binds_nothing),
     }

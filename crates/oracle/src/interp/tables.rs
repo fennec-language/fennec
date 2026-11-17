@@ -6,7 +6,7 @@ use fennec_syntax::Span;
 
 use super::calls::{ArgVal, Receiver, Target};
 use super::{Interp, Place, Run, Step, unsupported};
-use crate::value::{Id, Table, Value};
+use crate::value::{Held, Id, Table, Value};
 
 impl Interp {
     /// Whether `Table`, written at `span`, names the standard library's, which the program doesn't
@@ -36,7 +36,8 @@ impl Interp {
                 Value::List(table.live().map(|(id, _)| Value::Id(id)).collect())
             }),
             ("items", []) => self.read_table(&receiver, span, |table| {
-                let pairs = table.live().map(|(id, item)| Value::Tuple(vec![Value::Id(id), item.clone()]));
+                let pairs =
+                    table.live().map(|(id, item)| Value::Tuple(Held::new(vec![Value::Id(id), item.clone()])));
                 Value::List(pairs.collect())
             }),
             ("modify", [Value::Id(id), change]) => {

@@ -1093,12 +1093,13 @@ jobs:
             options: ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=0
             std: std,panic_abort
           - name: ThreadSanitizer
-            flags: -Zsanitizer=thread
+            # crossbeam's deques use a fence ThreadSanitizer can't see without this (fennec#1990).
+            flags: -Zsanitizer=thread --cfg crossbeam_sanitize_thread
             features: ""
             options: TSAN_OPTIONS=halt_on_error=1
             std: std
           - name: ThreadSanitizer, panic=abort
-            flags: -Zsanitizer=thread -Cpanic=abort -Zpanic-abort-tests
+            flags: -Zsanitizer=thread --cfg crossbeam_sanitize_thread -Cpanic=abort -Zpanic-abort-tests
             features: ""
             options: TSAN_OPTIONS=halt_on_error=1
             std: std,panic_abort
@@ -1158,7 +1159,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Run the servers' and the pool's tests
         run: |
-          env TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 RUSTFLAGS=-Zsanitizer=thread \
+          env TSAN_OPTIONS=halt_on_error=1:report_signal_unsafe=0 \
+            RUSTFLAGS="-Zsanitizer=thread --cfg crossbeam_sanitize_thread" \
             cargo "+$NIGHTLY" test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
             -p fennec-rt --features threads --lib -- embed::serve embed::parallel
 

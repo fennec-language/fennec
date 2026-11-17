@@ -17,7 +17,7 @@ use super::{Names, Options, SavedField, article, parse_error, spelled_as, type_n
 use crate::interp::calls::ArgVal;
 use crate::interp::{Flow, Interp, Run, unsupported};
 use crate::load::Kind;
-use crate::value::{Cap, Id, Instance, Table, Text, Value};
+use crate::value::{Cap, Held, Id, Instance, Table, Text, Value};
 
 /// How many fields a struct may have for the oracle to read it: past this, the standard library
 /// stops telling a field given twice.
@@ -170,7 +170,7 @@ impl Interp {
             (Type::Optional(_), Node::Null) => Ok(Value::None),
             (Type::Optional(inner), _) => self.read(node, inner, reading, in_key),
             (Type::List(inner), Node::Array(items)) => {
-                self.read_items(items, inner, reading).map(Value::List)
+                self.read_items(items, inner, reading).map(|items| Value::List(Held::new(items)))
             }
             (Type::List(inner), _) => Err(reading.misfit(&format!("list[{}]", type_name(inner)), node)),
             (Type::Tuple(types), _) if types.len() > 1 => self.read_tuple(node, ty, types, reading),
@@ -224,7 +224,7 @@ impl Interp {
         if items.len() > types.len() {
             return Err(reading.misfit(&label, node));
         }
-        Ok(Value::Tuple(values))
+        Ok(Value::Tuple(Held::new(values)))
     }
 
     /// A dict: an object, or an array of `[key, value]` pairs. A key given twice fails, naming it,
@@ -244,7 +244,7 @@ impl Interp {
             }
             dict.push((key, value));
         }
-        Ok(Value::Dict(dict))
+        Ok(Value::Dict(Held::new(dict)))
     }
 
     /// A dict's pairs, in the order the text gives them: an object's, or an array's of
@@ -348,7 +348,7 @@ impl Interp {
                         reading.here()
                     )));
                 }
-                Ok(Value::Instance(Box::new(instance)))
+                Ok(Value::Instance(Held::new(instance)))
             }
             Kind::Enum => self.read_case(node, name, args, reading),
             Kind::Error => unsupported(format!("loading a {name} from JSON")),
@@ -453,7 +453,9 @@ impl Interp {
                 return unsupported("a map read with a key given twice");
             }
         }
-        Ok(Value::List(pairs.into_iter().map(|(key, value)| Value::Tuple(vec![key, value])).collect()))
+        Ok(Value::List(
+            pairs.into_iter().map(|(key, value)| Value::Tuple(Held::new(vec![key, value]))).collect(),
+        ))
     }
 
     /// An enum's case: its name in quotes when it has no fields, or an object holding its fields

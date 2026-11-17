@@ -899,6 +899,29 @@ fn a_round_cancelled_at_its_end_replays_as_it_ran() -> std::io::Result<()> {
     )
 }
 
+/// A server's round stopped in one of its pieces of blocking work, a password's check, with no
+/// capability's call between them, replays stopped at the same piece: its recording says which, by
+/// number. Matched as the next entry, the mark stopped a replay at its first, and the replay failed
+/// waiting for the writes to a tally the run had made. From Fable 5.2's review of #1993.
+#[test]
+fn a_round_stopped_in_one_of_its_pieces_of_work_replays_as_it_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "work-round",
+        "a round checking passwords",
+        include_str!("fixtures/stopped_rounds/stopverify.fen"),
+    )
+}
+
+/// The same for a launched task stopped at its block's end.
+#[test]
+fn a_task_stopped_in_one_of_its_pieces_of_work_replays_as_it_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "work-task",
+        "a task checking passwords",
+        include_str!("fixtures/stopped_rounds/taskverify.fen"),
+    )
+}
+
 /// `source`, recorded at 1 and 4 threads, replays as it ran twice at 1, 4 and 16, with nothing said
 /// on its standard error.
 fn replays_as_it_ran(folder_name: &str, name: &str, source: &str) -> std::io::Result<()> {

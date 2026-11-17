@@ -1,0 +1,13 @@
+source af39402da928bc50ddbc6c57f6de9c7194842e998072898416d1d0abfdaec71c
+code 1
+stdout 14
+-3 203
+-4 305
+stderr 269
+error: index -5 is out of range for length 4
+ --> <dir>/adjacent_before_the_front.fen:4:18
+  |
+4 |         total += starts[near] * 100 + starts[near + 1]
+  |                  ^^^^^^^^^^^^
+  = in `ends`
+  = called from `main` at <dir>/adjacent_before_the_front.fen:9:18

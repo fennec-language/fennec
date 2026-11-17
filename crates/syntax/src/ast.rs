@@ -599,6 +599,10 @@ pub enum Pattern {
     /// body changes it in what the `match` is over. Once checked, it's written in as a plain name
     /// whose value is put back where the case ends.
     RefBind(String),
+    /// A `ref` part once the checker has written its case in: a name the case binds, which its
+    /// body may change, and whose value is put back where the case ends. Only the checker makes
+    /// one; nothing parses it.
+    MutBind(String),
     Literal(Expr),
     /// `.Circle(radius)` (`dotted`), or `NotFound(path)`, `Ok(value)`, `Err(error)`. Written by
     /// name, as `IoError(reason=r)`, `fields` names each of `args`. The checker then puts them
@@ -624,7 +628,7 @@ impl Pattern {
             Pattern::Variant { args: patterns, .. } | Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
                 patterns.iter().any(Pattern::holds_ref)
             }
-            Pattern::Wildcard | Pattern::Bind(_) | Pattern::Literal(_) => false,
+            Pattern::Wildcard | Pattern::Bind(_) | Pattern::MutBind(_) | Pattern::Literal(_) => false,
         }
     }
 }

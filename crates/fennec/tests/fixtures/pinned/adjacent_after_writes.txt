@@ -1,0 +1,13 @@
+source 228a500a47ec13625893a29e59e0c30c7684eb213c09fe06b76026bb9d8d2126
+code 1
+stdout 14
+[11]
+[11, 13]
+stderr 282
+error: index 3 is out of range for length 3
+ --> <dir>/adjacent_after_writes.fen:4:36
+  |
+4 |         made.append(starts[near] + starts[near + 1])
+  |                                    ^^^^^^^^^^^^^^^^
+  = in `filled`
+  = called from `main` at <dir>/adjacent_after_writes.fen:9:18

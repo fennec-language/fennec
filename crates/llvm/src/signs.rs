@@ -1042,4 +1042,49 @@ def main(stdout: Stdout):
             assert_eq!(got, (then, otherwise), "{op:?} {constant} from {before:?}");
         }
     }
+    /// The range facts (`fennec_ir::ranges`) prove every index and product this proves, over
+    /// every kernel, example and real program, so this can go once the backend reads them. Until
+    /// then, a place this proves and they don't fails here.
+    #[test]
+    fn the_range_facts_prove_every_place_this_does() -> Result<(), String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = Vec::new();
+        for folder in ["bench/kernels", "examples", "bench/realworld"] {
+            for entry in std::fs::read_dir(root.join(folder)).map_err(|err| err.to_string())? {
+                let path = entry.map_err(|err| err.to_string())?.path();
+                if path.extension().is_some_and(|extension| extension == "fen") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        let (mut places, mut missing) = (0, Vec::new());
+        for path in files {
+            let Ok(source) = std::fs::read_to_string(&path) else { continue };
+            let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
+            let Ok(checked) = fennec_check::check_and_resolve(&mut module) else { continue };
+            let program = fennec_ir::lower(&module, &checked);
+            let ranges = fennec_ir::ranges::Ranges::of(&program);
+            for (function, proven) in non_negative(&program) {
+                let known = ranges.function(&function);
+                for place in proven {
+                    places += 1;
+                    if !known.is_some_and(|known| known.not_negative(place)) {
+                        missing.push(format!("{}: `{function}` at {place:?}", path.display()));
+                    }
+                }
+            }
+        }
+        if !missing.is_empty() {
+            return Err(format!(
+                "{} of {places} places aren't proven:\n{}",
+                missing.len(),
+                missing.join("\n")
+            ));
+        }
+        if places < 1000 {
+            return Err(format!("only {places} places were proven here"));
+        }
+        Ok(())
+    }
 }

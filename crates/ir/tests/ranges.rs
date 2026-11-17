@@ -218,6 +218,76 @@ fn a_call_that_sets_every_item_leaves_only_what_it_put_in() {
     assert_eq!(fits(&program, &ranges, "main").unwrap(), [false]);
 }
 
+/// A local written more than once holds, after each write, only what that write gave it, and a
+/// branch narrows it where it holds, even where it's written again later.
+#[test]
+fn a_local_holds_what_its_last_write_gave_it() {
+    let source = "def scaled(start: int) -> int:\n    mut value = start - 10\n    value = value * 0\n    value = value + 3\n    return value * 2\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(scaled(4))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "scaled", &is_product).unwrap(), [false, true]);
+    checked(&program, &ranges);
+}
+
+/// A test that a local isn't `-1`, the end of a list linked by index, moves the least it can be
+/// from `-1` to `0` where it holds, so an index read with it after the test isn't negative.
+#[test]
+fn a_not_equals_test_moves_an_end_of_a_range() {
+    let source = "def walk(links: list[int], first: int) -> int:\n    mut at = first\n    mut seen = 0\n    while at != -1:\n        seen += 1\n        at = links[at]\n    return seen\n\n\
+                  def main(stdout: Stdout):\n    stdout.print(walk([1, 2, -1], 0))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "walk", &is_index).unwrap(), [true]);
+    checked(&program, &ranges);
+}
+
+/// A struct's int field holds what every write of it in the program gives it, so a field read
+/// from a struct held in a list, whose own value isn't followed, is known too.
+#[test]
+fn a_field_holds_what_every_write_of_it_gives() {
+    let source = "struct Task:\n    next: int\n\n\
+                  def follow(tasks: list[Task], links: list[int], at: int) -> int:\n    return links[tasks[at].next]\n\n\
+                  def main(stdout: Stdout):\n    mut tasks = [Task(next=0)]\n    tasks.append(Task(next=1))\n    tasks[0].next = 1\n    stdout.print(follow(tasks, [5, 6], 1))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "follow", &is_index).unwrap(), [true, true]);
+    checked(&program, &ranges);
+    let negative = source.replace("tasks[0].next = 1", "tasks[0].next = -1");
+    let program = lowered(&negative).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(not_negative(&program, &ranges, "follow", &is_index).unwrap(), [true, false]);
+}
+
+/// A closure's first parameters are what it captured where it was made.
+#[test]
+fn a_closure_knows_what_it_captured() {
+    let source = "def apply(value: int, change: (int) -> int) -> int:\n    return change(value)\n\n\
+                  def main(stdout: Stdout):\n    step = 3\n    stdout.print(apply(4, (count) => step * 2 + count))\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    let closure = program
+        .functions
+        .iter()
+        .find(|function| function.name.contains("arrow"))
+        .map(|function| function.name.clone());
+    let closure = closure.unwrap_or_else(|| panic!("no closure in:\n{program}"));
+    assert_eq!(not_negative(&program, &ranges, &closure, &is_product).unwrap(), [true]);
+    checked(&program, &ranges);
+}
+
+/// Values that go round several locals in turn, as `sum`'s eight running totals do, grow each
+/// local only every few rounds. Widening is counted by where the loop starts, not by local, so
+/// they settle.
+#[test]
+fn values_going_round_several_locals_settle() {
+    let source = "def main(stdout: Stdout):\n    mut first = 0.0\n    mut second = 0.0\n    mut third = 0.0\n    mut fourth = 0.0\n    mut fifth = 0.0\n    mut sixth = 0.0\n    mut seventh = 0.0\n    mut eighth = 0.0\n    for round in range(100):\n        added = first + float(round)\n        first = second\n        second = third\n        third = fourth\n        fourth = fifth\n        fifth = sixth\n        sixth = seventh\n        seventh = eighth\n        eighth = added\n    stdout.print(first + second + third + fourth + fifth + sixth + seventh + eighth)\n";
+    let program = lowered(source).unwrap();
+    let ranges = Ranges::of(&program);
+    assert_eq!(ranges.unsettled(), None);
+    checked(&program, &ranges);
+}
+
 /// A function something other than a call by name may call, here a function passed as a value,
 /// knows nothing of its parameters.
 #[test]

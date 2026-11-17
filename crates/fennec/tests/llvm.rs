@@ -1866,7 +1866,16 @@ fn a_with_source_s_own_names_mean_its_own_where_it_s_written_in() -> std::io::Re
     // A method and a generator write it in as a function does.
     prints_in_both_builds("source_names_by_callers", SOURCE_NAMES_BY_CALLERS, "15\n5\n7\n")?;
     // A nested function named as the source's function, in sight of the `with`.
-    prints_in_both_builds("source_names_by_a_nested_function", SOURCE_NAMES_BY_A_NESTED_FUNCTION, "5\n")
+    prints_in_both_builds("source_names_by_a_nested_function", SOURCE_NAMES_BY_A_NESTED_FUNCTION, "5\n")?;
+    // A function named only where it's written in, and by a loop after it, is still built.
+    prints_in_both_builds("source_names_reached", SOURCE_NAMES_REACHED, "5\ntick\ntick\n")?;
+    // The block may still assign the caller's name a `ref` parameter's uses are written as, which
+    // the source's cleanup reads.
+    prints_in_both_builds(
+        "source_cleanup_reads_what_the_block_assigns",
+        SOURCE_CLEANUP_READS_ASSIGNED,
+        "10\n",
+    )
 }
 
 /// In a `test`, where nothing holds a failure for the source's cleanup to run once after the block,
@@ -2068,6 +2077,30 @@ def counted() -> int:
 
 def main(stdout: Stdout):
     stdout.print(counted())
+";
+
+const SOURCE_NAMES_REACHED: &str = r#"def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def main(stdout: Stdout):
+    with opened() as got:
+        stdout.print(got)
+    for total in range(2):
+        stdout.print("tick")
+"#;
+
+const SOURCE_CLEANUP_READS_ASSIGNED: &str = r"def tallied(ref total: int) -> with int:
+    lend 5 except:
+        total = -1
+
+def main(stdout: Stdout):
+    mut total = 3
+    with tallied(ref total) as got:
+        total = got * 2
+    stdout.print(total)
 ";
 
 const SOURCE_CLEANUP_IN_A_TEST: &str = r#"error Bad:

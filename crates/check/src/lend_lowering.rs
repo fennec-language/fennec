@@ -83,7 +83,9 @@ pub(crate) fn lower(
             Item::Test(test) => {
                 lowering.returns.push(None);
                 lowering.fails.push(None);
-                lowering.binds.push(fennec_syntax::sight::bound_in(&test.body, &[]));
+                let given: Vec<String> =
+                    test.capabilities.iter().chain(&test.inputs).map(|param| param.name.clone()).collect();
+                lowering.binds.push(fennec_syntax::sight::bound_in(&test.body, &given));
                 lowering.stmts(&mut test.body);
                 lowering.binds.pop();
                 lowering.fails.pop();
@@ -1860,8 +1862,11 @@ fn cleanup_reads_kept(block: &mut [Stmt], cleanup: &[Stmt], at: Span) {
             read.insert(name.clone());
         }
     });
+    // Each is in sight at the `with`, so assigning it in the block changes it there: only what binds
+    // it again is hidden.
+    let outside: Vec<(String, Option<String>)> = read.iter().map(|name| (name.clone(), None)).collect();
     let inner = format!("kept{}", at.start);
-    fennec_syntax::sight::hide_bound(block, &[], &|_, name| {
+    fennec_syntax::sight::hide_bound(block, &outside, &|_, name| {
         read.contains(name).then(|| format!("{name}__{inner}"))
     });
 }

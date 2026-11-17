@@ -12,7 +12,9 @@
 //!
 //! The compiler refuses a file that uses another's name without importing it, and the oracle
 //! doesn't look for that: it's held only to programs the compiler builds. It refuses a file whose
-//! own names hide a name an import binds, rather than work out which one each use means.
+//! own names hide a name an import binds, rather than work out which one each use means. Imports
+//! from the standard library stay in the merged module, each its own file's: `load.rs` looks a
+//! name up in the imports of the file it's written in.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

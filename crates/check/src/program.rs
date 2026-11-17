@@ -2,6 +2,7 @@
 //! standard library's. Function bodies are looked at later, one function at a time.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 
 use fennec_syntax::{
     Diagnostic, FnDef, Generic, Import, Imported, Interface, Item, Module, Span, TestDef, TypeDef, TypeExpr,
@@ -141,6 +142,14 @@ pub(crate) struct Program {
     /// exist, and methods that can't be added.
     pub(crate) problems: Vec<Diagnostic>,
     aliases: BTreeMap<String, TypeExpr>,
+    /// Each test's place among `tests`, by the key its body is checked under, so finding one by
+    /// its key doesn't look through every test.
+    test_keys: BTreeMap<String, usize>,
+}
+
+/// The key a test's body is checked under, beside the functions' keys: `test "<name>"`.
+pub(crate) fn test_key(name: &str) -> String {
+    format!("test \"{name}\"")
 }
 
 /// What one file imports from the standard library, by the names it binds.
@@ -196,7 +205,11 @@ impl Program {
                 Item::TypeAlias { name, ty, .. } => {
                     self.aliases.insert(name.clone(), ty.clone());
                 }
-                Item::Test(test) => self.tests.push(test.clone()),
+                Item::Test(test) => {
+                    // The first test of a name is the one its key finds.
+                    self.test_keys.entry(test_key(&test.name)).or_insert(self.tests.len());
+                    self.tests.push(test.clone());
+                }
                 Item::Interface(interface) => {
                     self.interfaces.insert(interface.name.clone(), interface.clone());
                 }
@@ -335,13 +348,21 @@ impl Program {
     fn add_type<'m>(&mut self, def: &'m TypeDef, kind: TypeKind, prelude: bool, hold: &impl Holds<'m>) {
         // A program's own type replaces a standard library type of the same name, methods too: only
         // that type's, never a std module's functions, as `path.is_device` beside a `struct path`.
-        let methods = format!("{}.", def.name);
-        self.functions.retain(|key, entry| {
-            !(!prelude
-                && entry.prelude
-                && key.starts_with(&methods)
-                && entry.owner.as_deref() == Some(def.name.as_str()))
-        });
+        // Its methods' keys all start `Type.`, so they sit together among the keys, found without
+        // looking through every function.
+        if !prelude {
+            let methods = format!("{}.", def.name);
+            let replaced: Vec<String> = self
+                .functions
+                .range::<str, _>((Bound::Included(methods.as_str()), Bound::Unbounded))
+                .take_while(|(key, _)| key.starts_with(&methods))
+                .filter(|(_, entry)| entry.prelude && entry.owner.as_deref() == Some(def.name.as_str()))
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in replaced {
+                self.functions.remove(&key);
+            }
+        }
         for method in &def.methods {
             self.add_method(&def.name, method, prelude, &[], hold);
         }
@@ -365,6 +386,11 @@ impl Program {
     /// The builtin an imported name at `span` stands for, as the file it's written in imports it.
     pub(crate) fn imported(&self, name: &str, span: Span) -> Option<&String> {
         self.imported_by(span, |imports| imports.builtins.get(name))
+    }
+
+    /// The test whose body is checked under `key`.
+    pub(crate) fn test(&self, key: &str) -> Option<&TestDef> {
+        self.tests.get(*self.test_keys.get(key)?)
     }
 
     pub(crate) fn type_info(&self, name: &str) -> Option<&TypeInfo> {

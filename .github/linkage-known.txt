@@ -3,11 +3,11 @@
 # program links something not listed here, or no longer links something that is: the pull request
 # that cuts one takes its line out.
 #
-# system program what | why, and who's cutting it
-macos fs ring-assembly | ring's assembly objects can't be split by function, so -dead_strip keeps about 39 KB of ChaCha20, AES-GCM and bignum code that nothing calls
-macos hello ring-assembly | the same 39 KB of ring's assembly, in every program
-linux fs tls | the two functions of rustls's that a hello world links too, the next line's
-linux hello tls | two of rustls's functions a vtable holds: a TLS payload's drop and `StreamOwned`'s `is_write_vectored`
+# system program what | why, and the issue that cuts it
+macos fs ring-assembly | ring's assembly objects can't be split by function, so -dead_strip keeps about 39 KB of ChaCha20, AES-GCM and bignum code that nothing calls (#1771)
+macos hello ring-assembly | the same 39 KB of ring's assembly, in every program (#1771)
+linux fs tls | the two functions of rustls's that a hello world links too, the next line's (#1772)
+linux hello tls | two of rustls's functions a vtable holds: a TLS payload's drop and `StreamOwned`'s `is_write_vectored` (#1772)
 #
 # A hello world built for release is held to these sizes, in bytes, as the gate builds it on a Mac
 # and CI on Linux and Windows. Each is what it was measured at, with room to spare: lower it when a
@@ -15,4 +15,4 @@ linux hello tls | two of rustls's functions a vtable holds: a TLS payload's drop
 # system size hello bytes | measured
 macos size hello 1300000 | 1,232,088 on 2026-11-14, from the gate's dev build of fennec on arm64
 linux size hello 1050000 | 942,288 on 2026-11-14 in CI on x86-64, and 1,004,464 on aarch64, each from a release build of fennec
-windows size hello 2000000 | not measured yet: CI's first run says, and this comes down to it
+windows size hello 1500000 | 1,402,368 on 2026-11-16 in CI at 8e810c58c, from the dev build of fennec; 1,377,792 that morning

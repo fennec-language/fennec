@@ -190,7 +190,8 @@ impl Interp {
     pub(crate) fn parallel_call(&self, expr: &'static Expr) -> Run<Option<Written>> {
         let ExprKind::Call { callee, args } = &expr.kind else { return Ok(None) };
         let ExprKind::Name(name) = &callee.kind else { return Ok(None) };
-        if name != "parallel" || self.is_bound(name) || self.program.functions.contains_key(name.as_str()) {
+        if name != "parallel" || self.is_bound(name) || self.program.function_at(name, callee.span).is_some()
+        {
             return Ok(None);
         }
         let mut source = None;

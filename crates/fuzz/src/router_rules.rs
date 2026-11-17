@@ -92,30 +92,27 @@ fn tree() -> Vec<Node> {
         let mut node = 0;
         let mut count = 0;
         for segment in path.split('/').filter(|segment| !segment.is_empty()) {
-            if segment.starts_with('{') && segment.ends_with('}') {
-                count += 1;
-                node = match nodes[node].parameter {
-                    Some(next) => next,
-                    None => {
-                        nodes.push(Node::default());
-                        let next = nodes.len() - 1;
-                        nodes[node].parameter = Some(next);
-                        next
-                    }
-                };
-                continue;
-            }
-            let found = nodes[node].statics.iter().find(|(written, _)| written == segment).map(|(_, at)| *at);
-            node = if let Some(next) = found {
-                next
+            let parameter = segment.starts_with('{') && segment.ends_with('}');
+            count += usize::from(parameter);
+            // The place a new node would take, if this step needs one.
+            let fresh = nodes.len();
+            let Some(here) = nodes.get_mut(node) else { break };
+            let next = if parameter {
+                *here.parameter.get_or_insert(fresh)
+            } else if let Some((_, next)) = here.statics.iter().find(|(written, _)| written == segment) {
+                *next
             } else {
-                nodes.push(Node::default());
-                let next = nodes.len() - 1;
-                nodes[node].statics.push((segment.to_owned(), next));
-                next
+                here.statics.push((segment.to_owned(), fresh));
+                fresh
             };
+            if next == fresh {
+                nodes.push(Node::default());
+            }
+            node = next;
         }
-        nodes[node].methods.push((method, name, count));
+        if let Some(here) = nodes.get_mut(node) {
+            here.methods.push((method, name, count));
+        }
     }
     nodes
 }
@@ -126,39 +123,37 @@ const MOST_PARAMETERS: usize = 8;
 /// What the router should answer `method` on `path`: the status, the body when it's a route's,
 /// and the `allow` header.
 fn answer(nodes: &[Node], method: &str, path: &str) -> (u16, Option<String>, String) {
-    let bytes = path.as_bytes();
+    let not_found = (404, None, String::new());
+    // The path's segments, each after a `/`, with one `/` at the end passed over. An empty path
+    // has none, and one that doesn't start with `/` is found nowhere.
+    let mut segments: Vec<&str> = Vec::new();
+    if !path.is_empty() {
+        let Some(after) = path.strip_prefix('/') else { return not_found };
+        segments = after.split('/').collect();
+        if segments.last() == Some(&"") {
+            segments.pop();
+        }
+    }
     let mut node = 0;
     let mut found: Vec<&str> = Vec::new();
-    let mut at = 0;
-    while at < bytes.len() {
-        if bytes[at] != b'/' {
-            return (404, None, String::new());
-        }
-        let start = at + 1;
-        let mut end = start;
-        while end < bytes.len() && bytes[end] != b'/' {
-            end += 1;
-        }
-        if end == start && end == bytes.len() {
-            break;
-        }
-        let segment = &path[start..end];
-        if let Some((_, next)) = nodes[node].statics.iter().find(|(written, _)| written == segment) {
+    for segment in segments {
+        let Some(here) = nodes.get(node) else { return not_found };
+        if let Some((_, next)) = here.statics.iter().find(|(written, _)| written == segment) {
             node = *next;
-        } else if let Some(next) = nodes[node].parameter
-            && end > start
+        } else if let Some(next) = here.parameter
+            && !segment.is_empty()
             && found.len() < MOST_PARAMETERS
         {
             found.push(segment);
             node = next;
         } else {
-            return (404, None, String::new());
+            return not_found;
         }
-        at = end;
     }
-    let methods = &nodes[node].methods;
+    let Some(here) = nodes.get(node) else { return not_found };
+    let methods = &here.methods;
     if methods.is_empty() {
-        return (404, None, String::new());
+        return not_found;
     }
     let has = |wanted: &str| methods.iter().find(|(method, _, _)| *method == wanted);
     let asked = if method == "HEAD" && has("HEAD").is_none() { "GET" } else { method };
@@ -181,15 +176,15 @@ fn unquote(text: &str) -> String {
     let raw = text.as_bytes();
     let mut out = Vec::with_capacity(raw.len());
     let mut at = 0;
-    while at < raw.len() {
+    while let Some(&byte) = raw.get(at) {
         let digits = (raw.get(at + 1).and_then(|b| hex(*b)), raw.get(at + 2).and_then(|b| hex(*b)));
-        if raw[at] == b'%'
+        if byte == b'%'
             && let (Some(high), Some(low)) = digits
         {
             out.push(high * 16 + low);
             at += 3;
         } else {
-            out.push(raw[at]);
+            out.push(byte);
             at += 1;
         }
     }

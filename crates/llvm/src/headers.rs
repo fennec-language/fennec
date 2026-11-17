@@ -283,7 +283,8 @@ impl Emit<'_, '_, '_> {
         ));
         self.line(&format!("{length} = load i64, ptr {length_at}"));
         self.line(&format!("{long} = icmp ugt i64 {length}, 23"));
-        let (whole, short, held) = (self.label("long_text"), self.label("short_text"), self.label("text_held"));
+        let (whole, short, held) =
+            (self.label("long_text"), self.label("short_text"), self.label("text_held"));
         self.line(&format!("br i1 {long}, label %{whole}, label %{short}"));
         self.start_block(&whole);
         let address = self.temp();

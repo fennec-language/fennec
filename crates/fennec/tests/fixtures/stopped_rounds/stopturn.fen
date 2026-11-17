@@ -1,0 +1,54 @@
+# A stop that races a round: one round's handler waits its turn at the database's connection, which
+# another round's slow query has, when the serving task's block ends and stops it, which cancels
+# the round. Its insert is never run, when the slow query ends or after (#1951).
+from std import sqlite
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+from std.sql import SqlError
+from std.sqlite import Database
+
+# How many rows a query counted.
+struct Counted:
+    rows: int
+
+def answered(db: Database, request: Request, clock: Clock, stdout: Stdout) -> Response:
+    if request.path == "/slow":
+        _ = db.query[Counted](
+            t"with recursive c(x) as (select 1 union all select x + 1 from c where x < 20000000) select count(*) as rows from c",
+        ) except why:
+            return Response(status=500, body=f"{why}".encode())
+        return Response(status=200, body="counted".encode())
+    if request.path == "/late":
+        stdout.print("the late one began")
+        # The slow query's round has the connection by now.
+        clock.sleep(100ms)
+        _ = db.execute(t"insert into marks values (1)") except why:
+            stdout.print("the late one never said", f"{why}")
+            return Response(status=500, body="no".encode())
+        stdout.print("the late one never said either")
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, db: Database, clock: Clock, stdout: Stdout):
+    server.serve((request) => answered(db, request=request, clock=clock, stdout=stdout))
+    stdout.print("the server never said")
+
+def main(net: Net, fs: Fs, clock: Clock, stdout: Stdout) fails NetError | Crashed | SqlError:
+    mut rows = 0
+    with sqlite.open(fs, "turn.db")? as db:
+        _ = db.execute(t"create table if not exists marks (n int)")?
+        _ = db.execute(t"delete from marks")?
+        with net.listen(0)? as server:
+            port = server.port
+            with net.connect("127.0.0.1", port)? as slow:
+                slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+                with net.connect("127.0.0.1", port)? as late:
+                    late.write("GET /late HTTP/1.1\r\nhost: here\r\n\r\n")?
+                    with launch(() => serving(server, db=db, clock=clock, stdout=stdout), stop_after=300ms)?:
+                        got = net.get(f"http://127.0.0.1:{port}/one")?
+                        stdout.print(got.text())
+        for kept in db.query[Counted](t"select count(*) as rows from marks")?:
+            rows = kept.rows
+    if rows == 0:
+        stdout.print("the server is over")
+    else:
+        stdout.print("the late one's insert was run anyway:", rows)

@@ -1,12 +1,15 @@
 name: Suite report
 
 # Every kernel built by `fennec build --llvm --release` beside its overflow-checked Rust twin:
-# counted with Valgrind on x86 and timed on x86 and Arm, best of ten runs that take turns with
-# the twin, with the median beside it, after each push to main and on demand. Its Go and Java
+# counted with Valgrind on Linux and timed on x86-64 Linux, Arm Linux and Arm macOS, best of ten
+# runs that take turns with the twin, with the median beside it, after each push to main and on
+# demand. Arm Linux keeps the OS of one and the architecture of the other, so a gap between
+# machines shows whether it comes from the code made for x86-64 or from the OS. Its Go and Java
 # twins are timed against it the same way, to show where Fennec stands against them.
-# One table goes on the run's summary page, and each push's numbers join `history.jsonl` on the
-# `bench-history` branch, so trends show. Nothing waits on this, and being slow never fails it:
-# only a kernel that prints something other than its twin does.
+# The scoreboard's eight real programs get a table of their own on the run's summary page, above
+# the one for every kernel, and each push's numbers join `history.jsonl` on the `bench-history`
+# branch, so trends show. Nothing waits on this, and being slow never fails it: only a kernel
+# that prints something other than its twin does.
 on:
   push:
     branches: [main]
@@ -31,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -110,7 +113,57 @@ jobs:
           pattern: suite-*
           path: runs
           merge-multiple: true
-      - name: One table for both machines
+      # The eight first, one column a machine, ordered so each pair of neighbours differs in one
+      # thing: x86-64 and Arm on Linux, then Linux and macOS on Arm.
+      - name: The scoreboard's eight real programs, on each machine
+        run: |
+          python3 - runs/*.json <<'EIGHT' >> "$GITHUB_STEP_SUMMARY"
+          import json, math, sys
+          # The scoreboard's real programs, as `crates/bench/src/build_times.rs` lists them.
+          eight = ["game_tick", "chat_server", "api_handler", "log_crunch", "pathfind", "physics", "grep_tool", "data_pipeline"]
+          machines = {"x86_64-linux": "x86-64 Linux", "aarch64-linux": "Arm Linux", "aarch64-macos": "Arm macOS"}
+          order = list(machines)
+          runs = sorted((json.load(open(path)) for path in sys.argv[1:]),
+                        key=lambda run: (order.index(run["platform"]) if run["platform"] in order else len(order), run["platform"]))
+          print("## The scoreboard's eight real programs against Rust\n")
+          if not runs:
+              print("No machine finished measuring.\n")
+              sys.exit()
+          named = lambda run: machines.get(run["platform"], run["platform"])
+          found = lambda run, name: next((k for k in run["kernels"] if k["name"] == name), {})
+          counted = [run for run in runs if any(found(run, name).get("instructions") is not None for name in eight)]
+          columns = [(run, "time") for run in runs] + [(run, "instructions") for run in counted]
+          header = ["program"] + [f"{'best time' if key == 'time' else 'instructions'}, {named(run)}" for run, key in columns]
+          print("| " + " | ".join(header + ["notes"]) + " |")
+          print("|---" + "|---:" * len(columns) + "|---|")
+          for name in eight:
+              cells, notes = [name], []
+              for run, key in columns:
+                  kernel = found(run, name)
+                  value = kernel.get(key)
+                  cell = "-" if value is None else f"{value:.0f}"
+                  if key == "time" and value is not None and kernel.get("spread") is not None:
+                      cell += f" ({kernel['spread']:.0f}%)"
+                  cells.append(cell)
+                  if key == "time" and kernel.get("problem"):
+                      notes.append(f"{named(run)}: {kernel['problem']}")
+              print("| " + " | ".join(cells + ["; ".join(notes).replace("|", "\\|")]) + " |")
+          means = ["geometric mean"]
+          for run, key in columns:
+              values = [found(run, name).get(key) for name in eight]
+              whole = all(value is not None for value in values)
+              means.append(f"**{math.exp(sum(math.log(value) for value in values) / len(values)):.0f}**" if whole else "-")
+          print("| " + " | ".join(means + [""]) + " |")
+          print()
+          for run in runs:
+              print(f"- {named(run)} (`{run['platform']}`): {run['cpu']} with {run['cores']:.0f} cores")
+          print("\nEach is the overflow-checked Rust twin's best time, or instruction count, over Fennec's on the same machine: "
+                "100 is level with Rust, and higher is faster. Each side runs ten times, taking turns, and the spread in brackets "
+                "is how far a median run was from the best. Instructions are counted by Valgrind on Linux, where they don't depend "
+                "on how busy the machine is. x86-64 Linux beside Arm Linux is a change of architecture alone, and Arm Linux beside "
+                "Arm macOS a change of OS alone. Every kernel is in the table below.\n")
+          EIGHT
+      - name: One table for every machine
         run: |
           python3 - runs/*.json <<'TABLE' >> "$GITHUB_STEP_SUMMARY"
           import json, sys

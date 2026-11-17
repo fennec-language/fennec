@@ -59,13 +59,7 @@ pub(crate) fn context_began() {
 #[cfg(any(test, feature = "threads"))]
 /// A context has ended. It's a change, so the generation moves.
 pub(crate) fn context_ended() {
-    contexts_ended(1);
-}
-
-#[cfg(any(test, feature = "threads"))]
-/// `ended` contexts have ended, in one change.
-pub(crate) fn contexts_ended(ended: u64) {
-    COUNTS.fetch_add(ONE_GENERATION.wrapping_sub(ended.wrapping_mul(ONE_CONTEXT)), Ordering::SeqCst);
+    COUNTS.fetch_add(ONE_GENERATION.wrapping_sub(ONE_CONTEXT), Ordering::SeqCst);
 }
 
 /// A context is now in a stuck wait: gives the counts as it left them.
@@ -246,31 +240,61 @@ pub(crate) fn thread_woke(number: u64) {
     stuck_ended();
 }
 
-/// Each worker, by its pool and place, with the notes of its stuck waits when it last went to sleep
-/// with nothing else to do, or `None` while it's awake or has something else.
-type Workers = HashMap<(usize, usize), Option<Vec<Note>>>;
-static WORKERS: Mutex<Option<Workers>> = Mutex::new(None);
-
+/// What a worker published, in a slot of its own, as it last went to sleep: whether it had nothing
+/// left but stuck waits, and their notes. Each pool's workers have one each (see `Pool`), so going to
+/// sleep takes no lock but the worker's own.
 #[cfg(any(test, feature = "threads"))]
-/// A worker has started: until it sleeps idle, no check can pass.
-pub(crate) fn worker_started(worker: (usize, usize)) {
-    worker_sleeps(worker, None);
+#[derive(Default)]
+pub(crate) struct Published {
+    idle: bool,
+    notes: Vec<Note>,
 }
 
 #[cfg(any(test, feature = "threads"))]
-/// A worker is going to sleep: `idle` holds its stuck waits' notes when that's all it has.
-pub(crate) fn worker_sleeps(worker: (usize, usize), idle: Option<Vec<Note>>) {
-    WORKERS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get_or_insert_with(HashMap::new)
-        .insert(worker, idle);
+impl Published {
+    /// Whether it's idle, with the notes of its waits when it is.
+    pub(crate) fn set(&mut self, idle: bool, notes: impl Iterator<Item = Note>) {
+        self.idle = idle;
+        self.notes.clear();
+        if idle {
+            self.notes.extend(notes);
+        }
+    }
+
+    /// Its worker has woken.
+    pub(crate) fn woke(&mut self) {
+        self.idle = false;
+        self.notes.clear();
+    }
 }
 
+/// Every pool made, whose workers' slots the check reads.
 #[cfg(any(test, feature = "threads"))]
-/// A worker has woken.
-pub(crate) fn worker_woke(worker: (usize, usize)) {
-    worker_sleeps(worker, None);
+static POOLS: Mutex<Vec<&'static super::parallel::Pool>> = Mutex::new(Vec::new());
+
+/// A pool's been made: the check reads its workers from now on.
+#[cfg(any(test, feature = "threads"))]
+pub(in crate::embed) fn pool_made(pool: &'static super::parallel::Pool) {
+    POOLS.lock().unwrap_or_else(PoisonError::into_inner).push(pool);
+}
+
+/// A worker going to sleep with nothing but `stuck` stuck waits counts them, so the counts can say
+/// when every context is stuck. A worker's parked waits are counted only while it sleeps: while it's
+/// awake, the program's still moving.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn sleeps_stuck(stuck: u64) {
+    if stuck > 0 {
+        COUNTS.fetch_add(stuck.wrapping_mul(ONE_STUCK), Ordering::SeqCst);
+    }
+}
+
+/// The worker that counted `stuck` as it went to sleep has woken. It's a change, so the generation
+/// moves with it.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn woke_stuck(stuck: u64) {
+    if stuck > 0 {
+        COUNTS.fetch_add(ONE_GENERATION.wrapping_sub(stuck.wrapping_mul(ONE_STUCK)), Ordering::SeqCst);
+    }
 }
 
 /// What a deadlock says: one line, then one for each stuck wait, in the order of who waits.
@@ -287,9 +311,8 @@ fn said(notes: &[Note]) -> String {
 }
 
 /// Looks for a deadlock, where the counts say there may be one: from a worker going to sleep, or a
-/// thread about to block in a stuck wait, holding no lock a note looks at, nor `THREAD_NOTES` or
-/// `WORKERS`. Stops the program if
-/// it's proven; otherwise does nothing.
+/// thread about to block in a stuck wait, holding no lock a note looks at, nor `THREAD_NOTES` or a
+/// worker's slot. Stops the program if it's proven; otherwise does nothing.
 pub(crate) fn look() {
     let before = counts();
     if !before.all_stuck() || crate::replay::active() {
@@ -299,22 +322,41 @@ pub(crate) fn look() {
     report(&notes);
 }
 
-/// The notes of every stuck wait, if they prove a deadlock with the counts at `before`.
+/// The notes of every stuck wait, if they prove a deadlock with the counts at `before`: every
+/// worker asleep with nothing but stuck waits and no mail, as many notes as contexts, each still
+/// holding, the blocking threads idle, and the counts as they were.
 fn proven(before: Counts) -> Option<Vec<Note>> {
+    #[cfg(any(test, feature = "threads"))]
+    let pools = POOLS.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    // Mail on its way, a wake or a stop, is the program still moving: looked at first, as it's what
+    // most often says so, and without a lock.
+    #[cfg(any(test, feature = "threads"))]
+    if pools.iter().any(|pool| pool.has_mail()) {
+        return None;
+    }
+    #[cfg_attr(not(any(test, feature = "threads")), expect(unused_mut, reason = "only workers add notes"))]
     let mut notes: Vec<Note> = THREAD_NOTES
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
         .map(|notes| notes.values().cloned().collect())
         .unwrap_or_default();
-    {
-        let workers = WORKERS.lock().unwrap_or_else(PoisonError::into_inner);
-        for idle in workers.as_ref().map(HashMap::values).into_iter().flatten() {
-            notes.extend(idle.as_ref()?.iter().cloned());
+    #[cfg(any(test, feature = "threads"))]
+    for published in pools.iter().flat_map(|pool| pool.published()) {
+        let published = published.lock().unwrap_or_else(PoisonError::into_inner);
+        if !published.idle {
+            return None;
         }
+        notes.extend(published.notes.iter().cloned());
     }
     let all_noted = u64::try_from(notes.len()).is_ok_and(|noted| noted == before.contexts);
     if !all_noted || !notes.iter().all(Note::holds) || !super::serve::blocking_idle() {
+        return None;
+    }
+    // A blocking thread's job sends its wake as mail before the thread's idle, so with the blocking
+    // threads found idle, any such wake is in a worker's mail by now.
+    #[cfg(any(test, feature = "threads"))]
+    if pools.iter().any(|pool| pool.has_mail()) {
         return None;
     }
     (counts() == before).then_some(notes)

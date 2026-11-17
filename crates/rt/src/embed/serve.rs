@@ -703,10 +703,10 @@ pub(in crate::embed) struct Io {
     at: usize,
     scheduler: Scheduler,
     /// The task parked on each connection's token, and when its wait gives up.
-    waiting: HashMap<usize, (TaskId, Interest, Option<Instant>)>,
-    /// The notes of the waits in `waiting` that are stuck ones, each counted as stuck while it's
-    /// here (see `deadlock`). A wait leaves both through `unwait`.
-    stuck: HashMap<usize, super::deadlock::Note>,
+    waiting: HashMap<usize, Waiting>,
+    /// How many of the waits in `waiting` are stuck ones, with a note for the deadlock check (see
+    /// `deadlock`). A wait leaves `waiting` only through `unwait`, which keeps this right.
+    stuck_waits: usize,
     ready: VecDeque<(TaskId, Wake)>,
     /// Which server each task serves a connection of.
     owners: HashMap<TaskId, u64>,
@@ -740,7 +740,7 @@ impl Io {
             scheduler: Scheduler::new(STACK),
             accept_later: None,
             waiting: HashMap::new(),
-            stuck: HashMap::new(),
+            stuck_waits: 0,
             ready: VecDeque::new(),
             owners: HashMap::new(),
             servers: HashMap::new(),
@@ -1079,38 +1079,35 @@ impl Io {
         super::write_kept_output();
     }
 
-    /// `task` has parked on `token`: its wait goes in `waiting`, with what it said it waits for, and
-    /// in `stuck`, counted, if it said it's a stuck one.
+    /// `task` has parked on `token`: its wait goes in `waiting`, with what it said it waits for and,
+    /// for a stuck one, its note.
     fn parked(&mut self, task: TaskId, token: u64) {
         let token = usize::try_from(token).unwrap_or(usize::MAX);
         let Parking { interest, deadline, stuck } =
             PARKING.take().unwrap_or(Parking { interest: Interest::READABLE, deadline: None, stuck: None });
-        self.waiting.insert(token, (task, interest, deadline));
-        if let Some(note) = stuck
-            && self.stuck.insert(token, note).is_none()
-        {
-            super::deadlock::stuck_began();
+        self.stuck_waits += usize::from(stuck.is_some());
+        if let Some(was) = self.waiting.insert(token, (task, interest, deadline, stuck)) {
+            self.stuck_waits -= usize::from(was.3.is_some());
         }
     }
 
-    /// Takes the wait on `token` out of `waiting`, giving what it was, and out of `stuck`, uncounted,
-    /// if it was a stuck one. Every wait leaves `waiting` through here, so none stays counted.
-    fn unwait(&mut self, token: usize) -> Option<(TaskId, Interest, Option<Instant>)> {
-        unwait(&mut self.waiting, &mut self.stuck, token)
+    /// Takes the wait on `token` out of `waiting`, giving what it was. Every wait leaves `waiting`
+    /// through here, so `stuck_waits` stays right.
+    fn unwait(&mut self, token: usize) -> Option<Waiting> {
+        unwait(&mut self.waiting, &mut self.stuck_waits, token)
     }
 
-    /// The notes of this worker's waits, for the deadlock check as it goes to sleep, when nothing
-    /// else is left here: nothing ready or put off, nothing served, and every wait a stuck one.
-    pub(in crate::embed) fn idle_notes(&self) -> Option<Vec<super::deadlock::Note>> {
-        let busy = !self.ready.is_empty()
-            || !self.servers.is_empty()
-            || !self.deferred_ranges.is_empty()
-            || !self.deferred_tasks.is_empty()
-            || self.stuck.len() < self.waiting.len();
-        if busy {
-            return None;
-        }
-        self.waiting.keys().map(|token| self.stuck.get(token).cloned()).collect()
+    /// Says, for the deadlock check as this worker goes to sleep, whether nothing's left here but
+    /// stuck waits (nothing ready or put off, nothing served, and no other wait), with their notes
+    /// if so. Gives how many stuck waits that is, for the counts, or 0 when it isn't idle.
+    pub(in crate::embed) fn publish(&self, into: &mut super::deadlock::Published) -> u64 {
+        let idle = self.ready.is_empty()
+            && self.servers.is_empty()
+            && self.deferred_ranges.is_empty()
+            && self.deferred_tasks.is_empty()
+            && self.stuck_waits == self.waiting.len();
+        into.set(idle, self.waiting.values().filter_map(|waiting| waiting.3.clone()));
+        if idle { u64::try_from(self.stuck_waits).unwrap_or(u64::MAX) } else { 0 }
     }
 
     /// Resumes a range's task with its own accounts in the thread's runtime, and puts them back
@@ -1245,8 +1242,12 @@ impl Io {
 
     /// How long until the soonest wait gives up, or it's time to try accepting again.
     pub(in crate::embed) fn timeout(&self) -> Option<Duration> {
-        let soonest =
-            self.waiting.values().filter_map(|(_, _, deadline)| *deadline).chain(self.accept_later).min()?;
+        let soonest = self
+            .waiting
+            .values()
+            .filter_map(|(_, _, deadline, _)| *deadline)
+            .chain(self.accept_later)
+            .min()?;
         Some(soonest.saturating_duration_since(Instant::now()))
     }
 
@@ -1322,15 +1323,15 @@ impl Io {
     /// task waits to read, leaves the task parked: woken, it would only find it would block
     /// and wait again.
     fn wake(&mut self) {
-        let Io { events, waiting, stuck, ready, .. } = self;
+        let Io { events, waiting, stuck_waits, ready, .. } = self;
         for event in &*events {
             let token = event.token().0;
-            let wanted = waiting.get(&token).is_some_and(|(_, interest, _)| {
+            let wanted = waiting.get(&token).is_some_and(|(_, interest, ..)| {
                 let gone = event.is_error() || event.is_read_closed() || event.is_write_closed();
                 gone || (interest.is_readable() && event.is_readable())
                     || (interest.is_writable() && event.is_writable())
             });
-            if wanted && let Some((task, ..)) = unwait(waiting, stuck, token) {
+            if wanted && let Some((task, ..)) = unwait(waiting, stuck_waits, token) {
                 ready.push_back((task, Wake::Ready(READY)));
             }
         }
@@ -1351,25 +1352,23 @@ impl Io {
     }
 }
 
-/// `Io::unwait`, on its maps.
-fn unwait(
-    waiting: &mut HashMap<usize, (TaskId, Interest, Option<Instant>)>,
-    stuck: &mut HashMap<usize, super::deadlock::Note>,
-    token: usize,
-) -> Option<(TaskId, Interest, Option<Instant>)> {
-    let waited = waiting.remove(&token);
-    if stuck.remove(&token).is_some() {
-        super::deadlock::stuck_ended();
-    }
-    waited
+/// A parked task's wait: the task, what it waits for, when it gives up, and, for a stuck wait, its
+/// note for the deadlock check.
+type Waiting = (TaskId, Interest, Option<Instant>, Option<super::deadlock::Note>);
+
+/// `Io::unwait`, on its fields.
+fn unwait(waiting: &mut HashMap<usize, Waiting>, stuck_waits: &mut usize, token: usize) -> Option<Waiting> {
+    let waited = waiting.remove(&token)?;
+    *stuck_waits -= usize::from(waited.3.is_some());
+    Some(waited)
 }
 
 /// The waits whose deadlines have passed by `now`, soonest first and, at the same deadline, in the
 /// order they parked, rather than the map's: tasks sleeping as long wake in the order they slept.
-fn timed_out(waiting: &HashMap<usize, (TaskId, Interest, Option<Instant>)>, now: Instant) -> Vec<usize> {
+fn timed_out(waiting: &HashMap<usize, Waiting>, now: Instant) -> Vec<usize> {
     let mut due: Vec<(Instant, usize)> = waiting
         .iter()
-        .filter_map(|(token, (_, _, deadline))| {
+        .filter_map(|(token, (_, _, deadline, _))| {
             deadline.filter(|deadline| *deadline <= now).map(|at| (at, *token))
         })
         .collect();

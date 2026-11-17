@@ -67,6 +67,8 @@ pub(in crate::embed) struct Pool {
     mail: Vec<Mail>,
     /// How many workers are asleep, read without a lock so a push to a busy pool takes none.
     sleeping: AtomicUsize,
+    /// What each worker published for the deadlock check as it last went to sleep.
+    published: Vec<Mutex<crate::embed::deadlock::Published>>,
 }
 
 /// Work sent to one worker, and how to wake it from its poll.
@@ -170,7 +172,9 @@ impl Pool {
             stealers,
             mail,
             sleeping: AtomicUsize::new(0),
+            published: (0..threads).map(|_| Mutex::default()).collect(),
         }));
+        crate::embed::deadlock::pool_made(pool);
         for (at, (deque, poll)) in deques.into_iter().zip(polls).enumerate() {
             let setup = setup.cloned();
             let started = std::thread::Builder::new()
@@ -218,7 +222,6 @@ impl Pool {
             None => run_worker_setup(),
         }
         let mut io = Io::new(poll, self, at);
-        crate::embed::deadlock::worker_started(self.key(at));
         let mut idle = 0;
         loop {
             self.read_mail(at, &mut io);
@@ -263,20 +266,14 @@ impl Pool {
         }
         mail.any.store(false, Ordering::Release);
         let jobs = std::mem::take(&mut *mail.jobs.lock().unwrap_or_else(PoisonError::into_inner));
-        let read = u64::try_from(jobs.len()).unwrap_or(u64::MAX);
         for job in jobs {
             job(io);
         }
-        // Each was a context from when it was sent, and they've all run.
-        crate::embed::deadlock::contexts_ended(read);
     }
 
-    /// Sends worker `at` work of its own, waking it if it sleeps. Mail is a context for the deadlock
-    /// check from now until it has run, so a wake or a stop on its way keeps the program counted as
-    /// moving, whichever thread sent it.
+    /// Sends worker `at` work of its own, waking it if it sleeps.
     pub(in crate::embed) fn run_on(&self, at: usize, job: IoJob) {
         let Some(mail) = self.mail.get(at) else { return };
-        crate::embed::deadlock::context_began();
         mail.jobs.lock().unwrap_or_else(PoisonError::into_inner).push(job);
         mail.any.store(true, Ordering::SeqCst);
         fence(Ordering::SeqCst);
@@ -324,21 +321,33 @@ impl Pool {
         self.sleeping.fetch_add(1, Ordering::SeqCst);
         fence(Ordering::SeqCst);
         if self.is_empty() && !mail.any.load(Ordering::SeqCst) {
-            // For the deadlock check: what it leaves waiting, if that's all stuck waits, and a look,
-            // as it may be the last to go to sleep. Whatever wakes it is mail or a job, which runs
-            // only where something's still moving.
-            crate::embed::deadlock::worker_sleeps(self.key(at), io.idle_notes());
+            // For the deadlock check: whether it leaves nothing but stuck waits, their notes, and a
+            // look, as it may be the last to go to sleep. Whatever wakes it is mail or a job, which
+            // only something still moving sends.
+            let slot = self.published.get(at);
+            let stuck =
+                slot.map_or(0, |slot| io.publish(&mut slot.lock().unwrap_or_else(PoisonError::into_inner)));
+            crate::embed::deadlock::sleeps_stuck(stuck);
             crate::embed::deadlock::look();
             io.poll(io.timeout());
-            crate::embed::deadlock::worker_woke(self.key(at));
+            if let Some(slot) = slot {
+                slot.lock().unwrap_or_else(PoisonError::into_inner).woke();
+            }
+            crate::embed::deadlock::woke_stuck(stuck);
         }
         self.sleeping.fetch_sub(1, Ordering::SeqCst);
         mail.asleep.store(false, Ordering::SeqCst);
     }
 
-    /// Worker `at`'s key for the deadlock check, across every pool.
-    fn key(&self, at: usize) -> (usize, usize) {
-        (std::ptr::from_ref(self).addr(), at)
+    /// Whether any worker has mail it hasn't taken, for the deadlock check: a wake or a stop on its
+    /// way. A worker that's taken its mail is awake until the mail has run.
+    pub(in crate::embed) fn has_mail(&self) -> bool {
+        self.mail.iter().any(|mail| mail.any.load(Ordering::SeqCst))
+    }
+
+    /// What each worker published for the deadlock check as it last went to sleep.
+    pub(in crate::embed) fn published(&self) -> &[Mutex<crate::embed::deadlock::Published>] {
+        &self.published
     }
 
     /// Whether worker `at` has mail, or the pool has jobs waiting, for a task that's run its slice

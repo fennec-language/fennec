@@ -4,6 +4,9 @@
 5000 0 1234 4999
 5000
 2: [Accept]=[all] [Host]=[one]
-5: [Accept]=[all] [Added]=[by a slice] [Host]=[one] [New]=[first] [Through]=[a parameter]
+3: [Accept]=[all] [Added]=[by a slice] [Host]=[one]
+3: [Accept]=[all] [Added]=[by a slice] [Host]=[one]
+4: [Accept]=[all] [Added]=[by a slice] [Host]=[one] [Through]=[a parameter]
+277 True True True 2401
 undone
 2: [Good]=[kept] [Host]=[locked]

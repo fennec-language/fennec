@@ -25179,9 +25179,19 @@ fn a_slice_of_a_short_line_as_a_key_makes_no_block_of_its_own() -> std::io::Resu
     if !ready() {
         return Ok(());
     }
-    let counts = counts_of(
-        "inline_slice_keys",
-        r#"def main(stdout: Stdout):
+    let dir = folder("inline_slice_keys")?;
+    std::fs::write(dir.join("inline_slice_keys.fen"), INLINE_SLICE_KEYS)?;
+    let (printed, counts) = printed_and_counts(&dir, "inline_slice_keys", &["--llvm"])?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(printed, "3000 3000 3000 v2999\n");
+    let made = counts.split(' ').skip_while(|word| *word != "allocations").nth(1);
+    let made: u64 = made.and_then(|count| count.parse().ok()).unwrap_or(u64::MAX);
+    assert!(made < 4_000 && counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
+/// 3,000 short lines, each set as a key by its slice, then each read back by a slice.
+const INLINE_SLICE_KEYS: &str = r#"def main(stdout: Stdout):
     mut headers = dict[str, str]()
     mut counts = dict[str, int]()
     for count in range(3000):
@@ -25199,13 +25209,7 @@ fn a_slice_of_a_short_line_as_a_key_makes_no_block_of_its_own() -> std::io::Resu
             found += 1
     stdout.print(len(headers), len(counts), found, headers["k2999"])
     return
-"#,
-    )?;
-    let made = counts.split(' ').skip_while(|word| *word != "allocations").nth(1);
-    let made: u64 = made.and_then(|count| count.parse().ok()).unwrap_or(u64::MAX);
-    assert!(made < 4_000 && counts.ends_with(" live 0"), "{counts}");
-    Ok(())
-}
+"#;
 
 /// A slice as a dict's key, set, read with `get`, tested with `in`, popped and added to a set,
 /// for values of every kind a dict holds: a string, an int, a float, a bool, a list, a struct, a

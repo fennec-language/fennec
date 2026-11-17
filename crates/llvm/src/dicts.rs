@@ -1401,14 +1401,13 @@ impl Emit<'_, '_, '_> {
         Ok([text, at(start)?, at(end)?])
     }
 
-    /// Where the value of the key that's the slice `text[from:to]` is, or null. In ASCII text a
-    /// character is a byte, so the slice's bytes are hashed as a stored key's are and looked up
-    /// right here; other text asks the runtime, as does an inline header.
     /// Defines `@fen_add_short_<from>(dict, bytes, length, value)`, which adds a key of 23 bytes
     /// or fewer to a dict that nothing else holds and that hasn't got it, when the dict has room:
-    /// as an inline header, with a value that holds no block. Gives back whether it did, the
-    /// runtime doing anything else, as its `set_inline` does the same. Its words and hash come
-    /// from [`short_key`], as a lookup's do. `from` says where the bytes are.
+    /// as an inline header, with its value word, which holds no block or is a block the dict now
+    /// owns. It writes the slot and the entry's five words as the runtime's `set_words` does in an
+    /// empty slot. Gives back whether it did, the runtime doing anything else: a dict to grow, one
+    /// hashed the strong way, or a key too far from its slot. Its words and hash come from
+    /// [`short_key`], as a lookup's do. `from` says where the bytes are.
     fn add_short_key_helper(&mut self, from: KeyBytes) -> String {
         self.string_slice_helpers();
         let header = header_bytes();
@@ -1624,7 +1623,8 @@ found:
     }
 
     /// Where an ASCII string's slice is and how many bytes it has, as slicing clamps it, and
-    /// whether it is one: `false` for text that isn't ASCII or a header holding its text.
+    /// whether it is one: `false` for text that isn't ASCII. The text may be in a block or held
+    /// inline in its header, whose bytes are put on the stack for it (see `inline_slice_bytes`).
     fn ascii_slice_bytes(&mut self, [text, from, to]: &[String; 3]) -> (String, String, String) {
         self.string_slice_helpers();
         let (block_path, joined) = (self.label("slice_bytes"), self.label("slice_bytes_done"));
@@ -1685,9 +1685,9 @@ found:
             from: from.clone(),
             to: to.clone(),
             joined: joined.to_owned(),
-            ascii: self.temp(),
-            first: self.temp(),
-            size: self.temp(),
+            ascii: String::new(),
+            first: String::new(),
+            size: String::new(),
             end: String::new(),
         }
     }
@@ -1709,23 +1709,16 @@ found:
         for (place, value) in [(&a_at, &a), (&b_at, &b), (&c_at, &c)] {
             self.line(&format!("store i64 {value}, ptr {place}"));
         }
-        let (tag, length, text_c, high, any_high, ascii) =
-            (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
-        self.line(&format!("{tag} = lshr i64 {c}, 56"));
-        self.line(&format!("{length} = and i64 {tag}, 127"));
-        self.line(&format!("{text_c} = and i64 {c}, 72057594037927935"));
-        self.line(&format!("{high} = or i64 {a}, {b}"));
-        self.line(&format!("{any_high} = or i64 {high}, {text_c}"));
-        let masked = self.temp();
-        self.line(&format!("{masked} = and i64 {any_high}, -9187201950435737472"));
-        self.line(&format!("{ascii} = icmp eq i64 {masked}, 0"));
+        let text = inline.text.clone();
+        let length = self.inline_length(&text);
+        inline.ascii = self.inline_ascii(&text);
         let start = self.clamp_place(&inline.from, &length, "0");
         let end = self.clamp_place(&inline.to, &length, &length);
-        let later = self.temp();
+        let (later, size, first) = (self.temp(), self.temp(), self.temp());
         self.line(&format!("{later} = call i64 @llvm.smax.i64(i64 {end}, i64 {start})"));
-        self.line(&format!("{} = sub i64 {later}, {start}", inline.size));
-        self.line(&format!("{} = and i1 {ascii}, true", inline.ascii));
-        self.line(&format!("{} = getelementptr inbounds i8, ptr {a_at}, i64 {start}", inline.first));
+        self.line(&format!("{size} = sub i64 {later}, {start}"));
+        self.line(&format!("{first} = getelementptr inbounds i8, ptr {a_at}, i64 {start}"));
+        (inline.size, inline.first) = (size, first);
         inline.end = self.current.clone();
         self.line(&format!("br label %{}", inline.joined));
     }
@@ -1742,13 +1735,23 @@ found:
     /// of a string in a block or held inline, is hashed and looked up where its bytes are; any
     /// other goes to the runtime.
     fn slice_value_at(&mut self, dict: &str, key_word: Word, sliced: &[String; 3]) -> String {
-        let [text, from, to] = sliced;
-        let (ascii_ok, first, size) = self.ascii_slice_bytes(sliced);
+        let bytes = self.ascii_slice_bytes(sliced);
+        self.slice_value_from(dict, key_word, sliced, &bytes)
+    }
+
+    /// `slice_value_at` with the slice's bytes found already, by `ascii_slice_bytes`.
+    fn slice_value_from(
+        &mut self,
+        dict: &str,
+        key_word: Word,
+        [text, from, to]: &[String; 3],
+        (ascii_ok, first, size): &(String, String, String),
+    ) -> String {
         let (here, there, joined) = (self.label("ascii"), self.label("other"), self.label("looked"));
         self.line(&format!("br i1 {ascii_ok}, label %{here}, label %{there}, !prof !8"));
         self.start_block(&here);
         let entry = if key_word == Word::Text {
-            self.find_text_key(dict, (&first, KeyBytes::InBlock), &size, entry_words(Word::Text))
+            self.find_text_key(dict, (first, KeyBytes::InBlock), size, entry_words(Word::Text))
         } else {
             let (mixed, high, folded, hash, entry) =
                 (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
@@ -1894,8 +1897,11 @@ found:
         let [text, from, to] = sliced.clone();
         let dict = self.temp();
         self.line(&format!("{dict} = load ptr, ptr {place}"));
+        // Where the slice's bytes are, found once for the lookup and the add both.
+        let bytes = self.ascii_slice_bytes(&sliced);
         // A key that's there, in a dict nothing else holds, just gets its new value.
-        let value_at = self.found_in(&dict, found, |emit| emit.slice_value_at(&dict, key_word, &sliced));
+        let value_at =
+            self.found_in(&dict, found, |emit| emit.slice_value_from(&dict, key_word, &sliced, &bytes));
         let alone = self.alone(&dict);
         let (there, quick) = (self.temp(), self.temp());
         self.line(&format!("{there} = icmp ne ptr {value_at}, null"));
@@ -1942,7 +1948,7 @@ found:
         // would. Anything else is the runtime's: a dict held elsewhere too or marked by a lock's
         // log (`alone` is false for both), one to grow, or a key too far from its slot.
         if key_word == Word::Text && (plain_value(value_word) || value_word == Word::Str) {
-            let (ok, bytes, size) = self.ascii_slice_bytes(&sliced);
+            let (ok, bytes, size) = bytes;
             let (missing, try_it) = (self.temp(), self.temp());
             self.line(&format!("{missing} = xor i1 {there}, true"));
             let both = self.temp();
@@ -2498,8 +2504,10 @@ enum KeyBytes {
     /// A header copied whole into memory of its own: 24 bytes, zero after the text, with its tag
     /// in the last.
     Header,
-    /// Inside a string's block, anywhere in its text: past the slice may be past the block, but
-    /// the 8 bytes ending where the slice ends never are, as the block's header comes first.
+    /// Inside a string's block, anywhere in its text, or in the stack slot an inline header's
+    /// bytes are put in after a zero word (`Emit::place_for_slice_key`): past the slice may be
+    /// past the block or the slot, but the 8 bytes ending where the slice ends never are, as the
+    /// block's header, or the slot's zero word, comes first.
     InBlock,
 }
 

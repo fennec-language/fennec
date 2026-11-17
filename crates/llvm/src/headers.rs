@@ -772,7 +772,7 @@ impl Emit<'_, '_, '_> {
     }
 
     /// Whether an inline header's text is all ASCII, so its length counts its characters.
-    fn inline_ascii(&mut self, header: &str) -> String {
+    pub(crate) fn inline_ascii(&mut self, header: &str) -> String {
         let [a, b, c] = [0, 1, 2].map(|at| self.header_word(header, at));
         let (low, both, all, high, plain) = (self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
         self.line(&format!("{low} = and i64 {c}, 72057594037927935"));

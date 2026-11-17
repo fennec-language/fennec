@@ -459,3 +459,23 @@ fn a_last_match_whose_cases_end_in_a_with_that_returns_gives_back_what_they_do()
     let falls = source.replace("                    return 3\n", "                    pass\n");
     assert_eq!(problems_as_written(&falls).len(), 1, "{:?}", problems_as_written(&falls));
 }
+
+/// A source's own names are hidden in its caller with only the uses they mean: a call naming a
+/// parameter of the source's own nested function still names it, and a function the source calls
+/// that has a name it also binds, in a comprehension, is still called. Before, each was refused
+/// once written in, as the call's parameter or the function wasn't found.
+#[test]
+fn a_source_written_in_keeps_the_calls_it_makes_as_they_were() {
+    let written_in = |source: &str| -> Vec<String> {
+        let mut module = fennec_syntax::parse(source).unwrap();
+        let checked = fennec_check::check_and_resolve(&mut module);
+        checked.err().unwrap_or_default().iter().map(|problem| problem.message.clone()).collect()
+    };
+    let named = "def opened() -> with int:\n    def scaled(value: int, by=2) -> int:\n        return value * by\n    lend scaled(5, by=3)\n\n\
+        def main(stdout: Stdout):\n    with opened() as got:\n        stdout.print(got)\n";
+    assert_eq!(written_in(named), Vec::<String>::new());
+    let free = "def total(items: list[int]) -> int:\n    return sum(items)\n\n\
+        def opened() -> with int:\n    groups = [[1, 2], [3]]\n    sizes = [len(total) for total in groups]\n    lend total(sizes)\n\n\
+        def main(stdout: Stdout):\n    with opened() as got:\n        stdout.print(got)\n";
+    assert_eq!(written_in(free), Vec::<String>::new());
+}

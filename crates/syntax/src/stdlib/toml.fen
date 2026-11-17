@@ -22,6 +22,9 @@ enum TomlValue:
 struct TomlTable:
     keys = list[str]()
     values = list[TomlValue]()
+    ## Where each key is in `keys`, so finding one is one lookup: looking through the keys made a
+    ## table of n keys take time in proportion to n squared to read.
+    places = dict[str, int]()
     ## Defined by its own `[name]` header.
     header = False
     ## Made by a dotted key like `a.b = 1`.
@@ -30,15 +33,24 @@ struct TomlTable:
     inline = False
 
     def place_of(self, key: str) -> int:
-        mut at = 0
-        for name in self.keys:
-            if name == key: return at
-            at += 1
-        return -1
+        return self.places.get(key) else -1
 
     def add(ref self, key: str, value: TomlValue):
+        self.places[key] = len(self.keys)
         self.keys.append(key)
         self.values.append(value)
+
+## What's left in a table's place for a value taken out of it while it's changed.
+TAKEN = TomlValue.Bool(b=False)
+
+## The value at `place` in `table`, taken out so nothing else holds it while it's changed, to be
+## put back after. A table or a list of tables changed while the table held it too was copied
+## whole for each key or `[[name]]` added to it, which made a document take time in proportion to
+## its size squared to read. A failure leaves `TAKEN` there, but a document that fails is dropped.
+def taken(ref table: TomlTable, place: int) -> TomlValue:
+    held = table.values[place]
+    table.values[place] = TAKEN
+    return held
 
 def joined_keys(keys: list[str]) -> str:
     return ".".join(keys)
@@ -673,16 +685,17 @@ def insert(
     if step < len(path):
         key = path[step]
         place = table.place_of(key)
-        match table.values[place]:
+        match taken(ref table, place):
             case .Table(inner):
                 mut child = inner
                 insert(ref child, path, step + 1, keys, value, where)?
                 table.values[place] = .Table(table=child)
             case .Tables(tables):
                 mut children = tables
-                mut last = children[len(children) - 1]
+                # Taken off the end too, so it's changed where it is.
+                mut last = children.pop(-1)
                 insert(ref last, path, step + 1, keys, value, where)?
-                children[len(children) - 1] = last
+                children.append(last)
                 table.values[place] = .Tables(tables=children)
             case _:
                 fail parser.bad_at("this table can't be found again", at)
@@ -707,11 +720,13 @@ def insert_dotted(
     if place < 0:
         table.add(key, .Table(table=TomlTable(dotted=True)))
         place = len(table.values) - 1
-    match table.values[place]:
+    match taken(ref table, place):
         case .Table(inner):
-            if inner.inline: fail no_table(parser, key, at, False, False)
-            if not inner.dotted: fail no_table(parser, key, at, True, False)
+            # Made `mut` before it's looked at, so it's this function's alone and changed where
+            # it is, not copied.
             mut child = inner
+            if child.inline: fail no_table(parser, key, at, False, False)
+            if not child.dotted: fail no_table(parser, key, at, True, False)
             insert_dotted(ref child, keys, step + 1, value, where)?
             table.values[place] = .Table(table=child)
         case .Tables(_):
@@ -735,17 +750,17 @@ def define(
         if held < 0:
             table.add(key, .Table(table=TomlTable()))
             held = len(table.values) - 1
-        match table.values[held]:
+        match taken(ref table, held):
             case .Table(inner):
-                if inner.inline: fail no_table(parser, key, at, False, False)
                 mut child = inner
+                if child.inline: fail no_table(parser, key, at, False, False)
                 define(ref child, keys, step + 1, array, where)?
                 table.values[held] = .Table(table=child)
             case .Tables(tables):
                 mut children = tables
-                mut last = children[len(children) - 1]
+                mut last = children.pop(-1)
                 define(ref last, keys, step + 1, array, where)?
-                children[len(children) - 1] = last
+                children.append(last)
                 table.values[held] = .Tables(tables=children)
             case _:
                 fail no_table(parser, key, at, False, False)
@@ -758,7 +773,7 @@ def define(
             table.add(key, .Table(table=TomlTable(header=True)))
         return
     shown = f"[[{name}]]" if array else f"[{name}]"
-    match table.values[place]:
+    match taken(ref table, place):
         case .Tables(tables):
             if not array:
                 fail parser.bad_at(
@@ -769,14 +784,14 @@ def define(
             children.append(TomlTable(header=True))
             table.values[place] = .Tables(tables=children)
         case .Table(inner):
-            if array or inner.inline:
+            mut child = inner
+            if array or child.inline:
                 fail parser.bad_at(
                     f"`{cut_input(name)}` is already defined as something else, so it can't be `{cut_input(shown)}`",
                     at,
                 )
-            if inner.header or inner.dotted:
+            if child.header or child.dotted:
                 fail parser.bad_at(f"the table `[{cut_input(name)}]` is defined twice", at)
-            mut child = inner
             child.header = True
             table.values[place] = .Table(table=child)
         case _:

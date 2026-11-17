@@ -101,9 +101,6 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     if let Some(rounds) = call.as_ref().and_then(|call| crate::replay::taken_at(&call.name(), "accept")) {
         return replayed(rounds, body, env, call.as_ref());
     }
-    if crate::replay::stopped_in_as_recorded(crate::replay::StoppedIn::Serving) {
-        return 1;
-    }
     let Some((listener, came_with)) = crate::stdlib::net::take_listener(server) else {
         return fail("this server isn't open to serve".to_owned());
     };

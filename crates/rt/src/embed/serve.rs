@@ -104,6 +104,9 @@ thread_local! {
     /// The servers each task on this worker serves, while it does: so a server it's a round of,
     /// left, stops them, and cancels the round once they've ended (see `Io::leave`).
     static SERVING: RefCell<HashMap<TaskId, Vec<Arc<Server>>>> = RefCell::new(HashMap::new());
+    /// The rounds on this worker kept, to cancel once their own servers have ended: each stays in
+    /// its wait until it's cancelled, whoever sees its server's end first.
+    static KEPT: RefCell<HashSet<TaskId>> = RefCell::new(HashSet::new());
     /// Whether, when it was, anything else on the worker wanted the thread: another task ready or
     /// waiting, or a server served.
     static OTHERS: Cell<bool> = const { Cell::new(false) };
@@ -737,6 +740,9 @@ pub(in crate::embed) struct Io {
     /// tasks take turns on the thread, so one's can't be left where another's truncating would
     /// cut them off, and an ended task's go with it.
     temporaries: HashMap<TaskId, super::Temporaries>,
+    /// How many servers here are being left, with rounds kept: while none are, which is nearly
+    /// always, resuming a task looks for no round to cancel.
+    leaving: usize,
 }
 
 impl Io {
@@ -760,6 +766,7 @@ impl Io {
             deferred_tasks: VecDeque::new(),
             accounts: HashMap::new(),
             temporaries: HashMap::new(),
+            leaving: 0,
         }
     }
 
@@ -945,7 +952,11 @@ impl Io {
         let mut serving: Vec<TaskId> = here.tasks.iter().copied().filter(|task| serves(*task)).collect();
         if !serving.is_empty() {
             serving.sort_unstable();
-            here.leaving = true;
+            if !here.leaving {
+                here.leaving = true;
+                self.leaving += 1;
+            }
+            KEPT.with_borrow_mut(|kept| kept.extend(serving.iter().copied()));
             if let Some(listener) = &mut here.listener {
                 let _ = self.poll.registry().deregister(listener);
             }
@@ -961,6 +972,9 @@ impl Io {
             return;
         }
         let Some(mut here) = self.servers.remove(&id) else { return };
+        if here.leaving {
+            self.leaving -= 1;
+        }
         self.waiting.retain(|_, (task, ..)| !here.tasks.contains(task));
         self.ready.retain(|(task, _)| !here.tasks.contains(task));
         // In the order the tasks started, not the set's, so their cleanups run the same way each
@@ -1002,6 +1016,7 @@ impl Io {
             }
             self.owners.remove(&task);
             let _ = self.with_own_temporaries(task, |io| io.scheduler.cancel(task));
+            KEPT.with_borrow_mut(|kept| kept.remove(&task));
             self.temporaries.remove(&task);
             super::clear_failure();
         }
@@ -1021,6 +1036,19 @@ impl Io {
             self.leave(id);
         }
         true
+    }
+
+    /// For a test: a pause before resuming a round of a server being left, on the pool that
+    /// `PAUSE_BEFORE_KEPT` names, as if the thread were taken away between this worker's look at
+    /// whether the round's own server has ended and the round's.
+    #[cfg(test)]
+    fn pause_for_a_test(&self, task: TaskId) {
+        let this_pool = std::ptr::from_ref(self.pool).addr();
+        if PAUSE_BEFORE_KEPT.load(Ordering::Acquire) == this_pool
+            && self.owners.get(&task).is_some_and(|id| self.servers.get(id).is_some_and(|here| here.leaving))
+        {
+            std::thread::sleep(Duration::from_micros(300));
+        }
     }
 
     /// Makes a task for a connection of the server `id`, ready to start, printing as `label`.
@@ -1098,9 +1126,11 @@ impl Io {
         }
         for _ in 0..self.ready.len() {
             let Some((task, wake)) = self.ready.pop_front() else { break };
-            if self.cut_round_once_its_server_has(task) {
+            if self.leaving > 0 && self.cut_round_once_its_server_has(task) {
                 continue;
             }
+            #[cfg(test)]
+            self.pause_for_a_test(task);
             self.slice_starts();
             if self.accounts.contains_key(&task) {
                 self.resume_range(task, wake);
@@ -1214,6 +1244,7 @@ impl Io {
     /// Notes that a task ended, failed or not, giving back the server it served a round of. A
     /// server that's draining is left once its last round here has ended.
     fn ended(&mut self, task: TaskId, failed: bool) -> Option<u64> {
+        KEPT.with_borrow_mut(|kept| kept.remove(&task));
         let id = self.owners.remove(&task)?;
         let here = self.servers.get_mut(&id)?;
         here.tasks.remove(&task);
@@ -1988,6 +2019,10 @@ pub(super) fn serve(
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
+/// For a test: the pool whose workers pause before resuming a kept round (`Io::pause_for_a_test`).
+#[cfg(test)]
+static PAUSE_BEFORE_KEPT: AtomicUsize = AtomicUsize::new(0);
+
 /// Waits for the server to end, as `wait_for_every_worker` does, with it noted meanwhile as one the
 /// task running here serves, when a task on a worker is: so leaving a server that task is a round
 /// of stops this one first, and cancels the round only once it's ended.
@@ -1997,6 +2032,14 @@ fn served_here(server: &Arc<Server>, stop: impl Fn()) {
         SERVING.with_borrow_mut(|serving| serving.entry(task).or_default().push(Arc::clone(server)));
     }
     wait_for_every_worker(&server.left, stop);
+    // A round its worker kept is cancelled by that worker, once it sees this server has ended. The
+    // round can see that first, when another worker was the last to leave between its worker's
+    // look and its own: it waits for the cancel, rather than go on uncancelled (#2004).
+    if let Some(task) = task {
+        while KEPT.with_borrow(|kept| kept.contains(&task)) && !fennec_parked::is_cancelled() {
+            let _ = park_on_token(next_token(), Some(Instant::now() + SERVER_END_LOOKS), false);
+        }
+    }
     if let Some(task) = task {
         SERVING.with_borrow_mut(|serving| {
             if let Some(servers) = serving.get_mut(&task) {

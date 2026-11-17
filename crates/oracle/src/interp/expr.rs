@@ -9,7 +9,7 @@ use fennec_syntax::{
     BinOp, CompKind, Expr, ExprKind, FStrPart, MatchArm, Pattern, Span, Stmt, StmtKind, UnaryOp,
 };
 
-use super::{Flow, Interp, MOST_ITEMS, Run, crash, position, unsupported};
+use super::{Flow, Interp, MOST_ITEMS, Place, Run, Step, crash, position, unsupported};
 use crate::load::Kind;
 use crate::text::{self, Number};
 use crate::value::{Func, Held, Text, Value};
@@ -37,6 +37,7 @@ impl Interp {
                     ty: "Duration".to_owned(),
                     case: None,
                     fields: vec![("nanos".to_owned(), Value::Int(*nanos))],
+                    notes: Vec::new(),
                 };
                 Ok(Value::Instance(Held::new(duration)))
             }
@@ -159,7 +160,7 @@ impl Interp {
                     let own =
                         self.peek_place(&place, expr.span, |held| matches!(held, Value::Instance(_)))?;
                     if !own {
-                        return self.read_place(&place.then(super::Step::At(at)), expr.span);
+                        return self.read_place(&place.then(Step::At(at)), expr.span);
                     }
                     let object_value = self.read_place(&place, expr.span)?;
                     return self.index_value(object_value, at, expr.span);
@@ -189,8 +190,17 @@ impl Interp {
                 })))
             }
             ExprKind::Match { subject, arms } => {
+                // A case with `ref` changes a part of what the match is over, which has to be a
+                // place, read from where it is.
+                if arms.iter().any(|arm| arm.pattern.holds_ref()) {
+                    let Some(place) = self.place_of(subject)? else {
+                        return unsupported("`case` with `ref` in a `match` over a value that isn't a place");
+                    };
+                    let value = self.read_place(&place, subject.span)?;
+                    return self.match_value(&value, arms, Some(&place));
+                }
                 let subject = self.eval(subject)?;
-                self.match_value(&subject, arms)
+                self.match_value(&subject, arms, None)
             }
         }
     }
@@ -730,10 +740,16 @@ impl Interp {
     // Matching.
 
     /// Runs the first arm whose pattern fits and whose guard holds, giving its block's value.
-    pub(crate) fn match_value(&mut self, subject: &Value, arms: &'static [MatchArm]) -> Run<Value> {
+    /// `place` is where the subject is, for a case with `ref`.
+    pub(crate) fn match_value(
+        &mut self,
+        subject: &Value,
+        arms: &'static [MatchArm],
+        place: Option<&Place>,
+    ) -> Run<Value> {
         for arm in arms {
             let mut bound = Vec::new();
-            if !self.fits(&arm.pattern, subject, &mut bound)? {
+            if !self.fits(&arm.pattern, (subject, place), &mut bound)? {
                 continue;
             }
             let mark = self.mark();
@@ -746,17 +762,31 @@ impl Interp {
         unsupported("a `match` no case fits")
     }
 
-    /// An arm whose pattern fits: its value, or `None` when its guard doesn't hold.
-    fn arm(&mut self, bound: Vec<(String, Value)>, arm: &'static MatchArm) -> Run<Option<Value>> {
-        for (name, value) in bound {
+    /// An arm whose pattern fits: its value, or `None` when its guard doesn't hold. A name a
+    /// `ref` binds holds a copy of its part, which is put back where it was however the case
+    /// ends, a failure or a crash included, as the checker writes it in for the compiled program.
+    fn arm(&mut self, bound: Vec<Caught>, arm: &'static MatchArm) -> Run<Option<Value>> {
+        let mut put_back = Vec::new();
+        for (name, value, place) in bound {
             self.bind(&name, value)?;
+            if let Some(place) = place {
+                put_back.push((name, place));
+            }
         }
-        if let Some(guard) = &arm.guard
-            && !self.truth(guard)?
-        {
-            return Ok(None);
+        let ran = match &arm.guard {
+            Some(guard) if !self.truth(guard)? => Ok(None),
+            _ => self.block_value(&arm.body).map(Some),
+        };
+        if matches!(ran, Err(Flow::Unsupported(_) | Flow::Abandoned)) {
+            return ran;
         }
-        self.block_value(&arm.body).map(Some)
+        for (name, place) in put_back {
+            let Some(value) = self.lookup(&name, arm.span)? else {
+                return unsupported("a `case` with `ref` whose name is gone");
+            };
+            self.write_place(&place, value, arm.span)?;
+        }
+        ran
     }
 
     /// The type or case a pattern names, for a value: `PoolError.Open(...)` names a case of the
@@ -772,20 +802,27 @@ impl Interp {
         }
     }
 
-    /// Whether a value fits a pattern, with the names it binds.
+    /// Whether a value fits a pattern, with the names it binds. `at` is where the value is, when
+    /// it's in a place, for a `ref` in the pattern.
     fn fits(
         &mut self,
         pattern: &'static Pattern,
-        value: &Value,
-        bound: &mut Vec<(String, Value)>,
+        (value, at): (&Value, Option<&Place>),
+        bound: &mut Vec<Caught>,
     ) -> Run<bool> {
         match pattern {
             Pattern::Wildcard => Ok(true),
             Pattern::Bind(name) | Pattern::MutBind(name) => {
-                bound.push((name.clone(), value.clone()));
+                bound.push((name.clone(), value.clone(), None));
                 Ok(true)
             }
-            Pattern::RefBind(_) => unsupported("`case` with `ref`"),
+            Pattern::RefBind(name) => {
+                let Some(place) = at else {
+                    return unsupported("`case` with `ref` on a part that isn't a place");
+                };
+                bound.push((name.clone(), value.clone(), Some(place.clone())));
+                Ok(true)
+            }
             Pattern::Literal(expr) => {
                 let literal = self.eval(expr)?;
                 if matches!(literal, Value::None) {
@@ -798,8 +835,10 @@ impl Interp {
             }
             Pattern::Tuple(parts) => match value {
                 Value::Tuple(items) if items.len() == parts.len() => {
-                    for (part, item) in parts.iter().zip(items) {
-                        if !self.fits(part, item, bound)? {
+                    for (position, (part, item)) in parts.iter().zip(items).enumerate() {
+                        let inside =
+                            at.map(|place| place.then(Step::At(Value::Int(super::as_int(position)))));
+                        if !self.fits(part, (item, inside.as_ref()), bound)? {
                             return Ok(false);
                         }
                     }
@@ -810,7 +849,7 @@ impl Interp {
             Pattern::Or(choices) => {
                 for choice in choices {
                     let mut tried = Vec::new();
-                    if self.fits(choice, value, &mut tried)? {
+                    if self.fits(choice, (value, at), &mut tried)? {
                         bound.extend(tried);
                         return Ok(true);
                     }
@@ -818,44 +857,55 @@ impl Interp {
                 Ok(false)
             }
             Pattern::Variant { name, args, fields, .. } => {
-                let Some(name) = self.variant_named(name, value) else { return Ok(false) };
-                let Value::Instance(instance) = value else {
-                    return match value {
-                        Value::None => Ok(false),
-                        _ if self.has_type(value, name)? => Ok(args.is_empty()),
-                        _ => Ok(false),
-                    };
-                };
-                let fits_case = instance.case.as_deref() == Some(name);
-                let fits_type = instance.ty == name;
-                if !fits_case && !fits_type {
-                    return Ok(false);
-                }
-                if fits_type && instance.case.is_some() && !fits_case {
-                    // A type-wide pattern, as `IoError()`, fits every case.
-                    return if args.is_empty() {
-                        Ok(true)
-                    } else {
-                        unsupported("a type-wide pattern with fields")
-                    };
-                }
-                for (at, part) in args.iter().enumerate() {
-                    let field = match fields.get(at) {
-                        Some(field_name) => instance.field(field_name),
-                        None => instance.fields.get(at).map(|(_, value)| value),
-                    };
-                    let Some(field) = field else {
-                        return unsupported("a pattern with more fields than its case");
-                    };
-                    if !self.fits(part, field, bound)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
+                self.fits_variant((name, args, fields), (value, at), bound)
             }
         }
     }
+
+    /// Whether a value fits a case's or a type's pattern, `name(args)` with `fields` naming them,
+    /// with the names it binds.
+    fn fits_variant(
+        &mut self,
+        (name, args, fields): (&'static str, &'static [Pattern], &'static [String]),
+        (value, at): (&Value, Option<&Place>),
+        bound: &mut Vec<Caught>,
+    ) -> Run<bool> {
+        let Some(name) = self.variant_named(name, value) else { return Ok(false) };
+        let Value::Instance(instance) = value else {
+            return match value {
+                Value::None => Ok(false),
+                _ if self.has_type(value, name)? => Ok(args.is_empty()),
+                _ => Ok(false),
+            };
+        };
+        let fits_case = instance.case.as_deref() == Some(name);
+        let fits_type = instance.ty == name;
+        if !fits_case && !fits_type {
+            return Ok(false);
+        }
+        if fits_type && instance.case.is_some() && !fits_case {
+            // A type-wide pattern, as `IoError()`, fits every case.
+            return if args.is_empty() { Ok(true) } else { unsupported("a type-wide pattern with fields") };
+        }
+        for (position, part) in args.iter().enumerate() {
+            let field = match fields.get(position) {
+                Some(field_name) => instance.fields.iter().find(|(field, _)| field == field_name),
+                None => instance.fields.get(position),
+            };
+            let Some((field_name, field)) = field else {
+                return unsupported("a pattern with more fields than its case");
+            };
+            let inside = at.map(|place| place.then(Step::Field(field_name.clone())));
+            if !self.fits(part, (field, inside.as_ref()), bound)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
+
+/// A name a pattern binds, with what it holds, and for a `ref`, the place its value is put back to.
+type Caught = (String, Value, Option<Place>);
 
 /// Whether an expression is a name, or fields and positions of one, with no call along it.
 fn rooted_in_a_name(expr: &Expr) -> bool {

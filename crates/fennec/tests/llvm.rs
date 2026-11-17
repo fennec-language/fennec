@@ -5865,6 +5865,225 @@ def main(stdout: Stdout):
     )
 }
 
+/// A failure that leaves a `ref` case from deep inside a `for ref` loop in it writes the loop's item
+/// back before the case is put back, so what the loop changed is kept: at a `?` in a `while`'s
+/// condition, in a later `elif`'s, after `and` or `or`, and in a `parallel` loop's round. Loops
+/// inside loops write back the innermost first.
+#[test]
+fn a_for_ref_item_is_written_back_before_its_ref_case_on_a_failure_from_deep_inside() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "for_ref_in_ref_case_failed_deep",
+        FOR_REF_FAILED_DEEP,
+        "11\n21\n31\n41\n51\n61\n\
+         Bag.Full(counts=[11, 2]) Bag.Full(counts=[21, 2]) Bag.Full(counts=[31, 2]) \
+         Bag.Full(counts=[41, 2]) Bag.Full(counts=[51, 2])\n\
+         Grid.Rows(rows=[[61, 2], [3]])\n",
+    )
+}
+
+const FOR_REF_FAILED_DEEP: &str = r"error Oops:
+    code: int
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+enum Grid:
+    Rows(rows: list[list[int]])
+    Blank
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def by_while(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 10
+                while small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_elif(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 20
+                if count < 0:
+                    pass
+                elif small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_and(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 30
+                if count > 0 and small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_or(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 40
+                if count < 0 or small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_round(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 50
+                for each in parallel([count]):
+                    _ = small(each)?
+        case _:
+            pass
+
+def nested(ref grid: Grid) fails Oops:
+    match grid:
+        case .Rows(ref rows):
+            for ref row in rows:
+                for ref cell in row:
+                    cell += 60
+                    while small(cell)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut first = Bag.Full(counts=[1, 2])
+    by_while(ref first) except why:
+        stdout.print(why.code)
+    mut second = Bag.Full(counts=[1, 2])
+    by_elif(ref second) except why:
+        stdout.print(why.code)
+    mut third = Bag.Full(counts=[1, 2])
+    by_and(ref third) except why:
+        stdout.print(why.code)
+    mut fourth = Bag.Full(counts=[1, 2])
+    by_or(ref fourth) except why:
+        stdout.print(why.code)
+    mut fifth = Bag.Full(counts=[1, 2])
+    by_round(ref fifth) except why:
+        stdout.print(why.code)
+    mut grid = Grid.Rows(rows=[[1, 2], [3]])
+    nested(ref grid) except why:
+        stdout.print(why.code)
+    stdout.print(first, second, third, fourth, fifth)
+    stdout.print(grid)
+";
+
+/// What a failure from deep inside a `ref` case leaves inside it is left once, the last first, and
+/// before the case is put back: a lock's changes are rolled back and it's given back, a generator's
+/// source is closed, and the `for ref` loop around them writes its item back.
+#[test]
+fn a_failure_leaves_what_s_inside_a_ref_case_once_before_putting_it_back() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_in_ref_case_failed_deep",
+        LOCK_IN_REF_CASE,
+        "71\n[]\nBag.Full(counts=[71, 2])\n",
+    )?;
+    prints_in_both_builds(
+        "generator_in_ref_case_failed_deep",
+        GENERATOR_IN_REF_CASE,
+        "closed inner\nOops(code=82)\nBag.Full(counts=[82, 2])\n",
+    )
+}
+
+const LOCK_IN_REF_CASE: &str = r"error Oops:
+    code: int
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def by_lock(ref bag: Bag, seen: shared list[int]) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 70
+                lock seen as ref held:
+                    held.append(count)
+                    while small(count)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    shared seen = list[int]()
+    mut bag = Bag.Full(counts=[1, 2])
+    by_lock(ref bag, seen) except why:
+        stdout.print(why.code)
+    lock seen as now:
+        stdout.print(now)
+    stdout.print(bag)
+";
+
+const GENERATOR_IN_REF_CASE: &str = r#"error Oops:
+    code: int
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+struct Door:
+    name: str
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int]:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def let_go(ref bag: Bag, stdout: Stdout) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                for step in held("inner", stdout):
+                    count += 80 + step
+                    while small(count)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut bag = Bag.Full(counts=[1, 2])
+    let_go(ref bag, stdout) except why:
+        stdout.print(why)
+    stdout.print(bag)
+"#;
+
 /// `for key, ref value in x.items()` changes each value of a dict, or item of a `Table`, where it
 /// is, natively, with its key or its `Id`, and a `continue` leaves the rest of that one as it was.
 #[test]
@@ -8488,6 +8707,104 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
             Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/{name}.fen")),
         )?;
         prints_in_both_builds(name, &source, "gave up -2\nfailed out\nclosed\nclosed\n")?;
+    }
+    Ok(())
+}
+
+/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4 and 16
+/// threads, wanting what it prints, what it says and its exit code every time.
+fn deadlock_fixture_runs_as(
+    name: &str,
+    runs: usize,
+    (out, err, code): (&str, &str, i32),
+) -> std::io::Result<()> {
+    let dir = folder(&format!("deadlocks-{name}"))?;
+    let program = dir.join(format!("{name}.fen"));
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/deadlocks/{name}.fen")),
+        &program,
+    )?;
+    let executable = dir.join(name);
+    let (source, built_as) = (program.to_string_lossy(), executable.to_string_lossy());
+    let built = fennec(&["build", "--llvm", &source, "-o", &built_as], &dir)?;
+    assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        for _ in 0..runs {
+            let ran = Command::new(&executable).env("FENNEC_THREADS", threads).output_within()?;
+            let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(
+                (said.0.as_ref(), said.1.as_ref(), ran.status.code()),
+                (out, err, Some(code)),
+                "{name} on {threads} threads"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// When `main` and every task wait on each other for good, in channel sends and receives and at
+/// blocks' ends with no time limit, the program stops with exit code 1, after what it printed,
+/// saying who waits for what, as Go's "all goroutines are asleep" does. Without threads, `main`
+/// alone; with them, two tasks on each other's channels, a task at a full channel, the last task
+/// that could move ending, and a task waiting at a block's end of its own.
+#[test]
+fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let error = "error: a deadlock: every task is waiting for another, and nothing can wake them\n";
+    let main_for =
+        |task: u32| format!("  main is waiting at the end of a `with launch` block, for task {task}\n");
+    let receives = |task: u32| format!("  task {task} is waiting to receive on a channel that's empty\n");
+    let cases = [
+        ("receive_alone", "before\n", "  main is waiting to receive on a channel that's empty\n".to_owned()),
+        ("each_other", "both launched\n", format!("{}{}{}", main_for(2), receives(1), receives(2))),
+        ("block_end", "launched\n", format!("{}{}", main_for(1), receives(1))),
+        (
+            "send_full",
+            "launched\n",
+            format!("{}  task 1 is waiting to send on a channel that's full\n", main_for(1)),
+        ),
+        ("last_ends", "napped\n", format!("{}{}", main_for(2), receives(2))),
+        (
+            "inside_a_task",
+            "launched inside\n",
+            format!(
+                "{}  task 1 is waiting at the end of a `with launch` block, for task 2\n{}",
+                main_for(1),
+                receives(2)
+            ),
+        ),
+    ];
+    for (name, printed, lines) in cases {
+        deadlock_fixture_runs_as(name, 1, (printed, &format!("{error}{lines}"), 1))?;
+    }
+    Ok(())
+}
+
+/// A wait that something can still end is never taken for a deadlock: a receive with a time limit;
+/// one whose sender naps first; one a crash of the task its code launched cuts short, which
+/// changes nothing on the channel; a task stopped while it counts that only then comes to a
+/// receive, while its launcher waits at the block's end with no time limit left (from Fable 5.2's
+/// review of the design); and, where there's `sleep` to run, a task waiting on `main` while `main`
+/// runs a process.
+#[test]
+fn a_wait_something_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let mut cases = vec![
+        ("timeout_fine", "gave up\n", ""),
+        ("sender_naps", "7\n", ""),
+        ("crash_wakes", "it crashed\n", "error: index 5 is out of range for length 2\n"),
+        ("stopped_counting", "counted True\nthe block is over\n", ""),
+    ];
+    // It runs `sleep`, which Windows doesn't have.
+    if cfg!(unix) {
+        cases.push(("process_waits", "heard 1\n", ""));
+    }
+    for (name, printed, said) in cases {
+        deadlock_fixture_runs_as(name, 5, (printed, said, 0))?;
     }
     Ok(())
 }
@@ -18512,6 +18829,176 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// On one thread, a handler only computing, given to `serve` by name or kept in a `Router`, still
+/// lets another request be answered: it reaches its round as a value, not by a call, and once never
+/// counted its loops' turns, so it held the thread until it finished.
+#[test]
+fn a_handler_only_computing_lets_the_others_answer() -> std::io::Result<()> {
+    use std::io::Write as _;
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let churn = "def churn(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while n < turns:
+        x = (x * 31 + 7) % 1000003
+        n += 1
+    return x
+";
+    let by_name = format!(
+        r#"from std.net import NetError, Request, Response
+
+{churn}
+def answered(request: Request) -> Response:
+    if request.path == "/spin":
+        return Response(status=200, body=f"spun {{churn(1_000_000_000_000)}}".encode())
+    return Response(status=200, body="pong".encode())
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(answered)
+"#
+    );
+    let routed = format!(
+        r#"from std.net import NetError, Response, Router
+
+{churn}
+def main(net: Net, stdout: Stdout) fails NetError:
+    mut router = Router()
+    router.handle("GET /spin", (request, found) => Response(status=200, body=f"spun {{churn(1_000_000_000_000)}}".encode()))
+    router.handle("GET /ping", (request, found) => Response(status=200, body="pong".encode()))
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(router)
+"#
+    );
+    for (name, source) in [("by-name", by_name), ("routed", routed)] {
+        let dir = folder(&format!("ticking-handlers-{name}"))?;
+        let (server, port) = served_on_one_thread(&dir, &source)?;
+        let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        spinning.write_all(b"GET /spin HTTP/1.1\r\nhost: here\r\n\r\n")?;
+        let (reply, read) = asked_meanwhile(port, "/ping");
+        drop(spinning);
+        drop(server);
+        std::fs::remove_dir_all(&dir)?;
+        assert!(
+            reply.starts_with("HTTP/1.1 200") && reply.ends_with("pong"),
+            "{name}: the ping wasn't answered while the other handler computed: {read:?} {reply:?}"
+        );
+    }
+    Ok(())
+}
+
+/// On one thread, a handler that makes way in the middle of a `parallel` range it runs itself, while
+/// another request comes and is answered, still finishes the range with the right values: the ping
+/// is answered first, and the range's answer comes after, whole.
+#[test]
+fn a_handler_making_way_mid_range_finishes_it_right() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("ticking-mid-range")?;
+    // `xored(n)` is every number below `n` xored together: for 2,000,000,001 that's 2,000,000,000.
+    // The handler calls it itself too, so it ticks inside the range's turns.
+    let source = r#"from std.net import NetError, Request, Response
+
+def xored(turns: int) -> int:
+    mut x = 0
+    mut n = 0
+    while n < turns:
+        x = x ^ n
+        n += 1
+    return x
+
+def answered(request: Request) -> Response:
+    if request.path == "/spin":
+        values = [xored(turns) for turns in parallel([2_000_000_001, 2_000_000_001])]
+        return Response(status=200, body=f"spun {values} {xored(1)}".encode())
+    return Response(status=200, body="pong".encode())
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(answered)
+"#;
+    let (server, port) = served_on_one_thread(&dir, source)?;
+    let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    spinning.write_all(b"GET /spin HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n")?;
+    let (reply, read) = asked_meanwhile(port, "/ping");
+    // Nothing of the range's answer yet: the ping didn't wait for it.
+    spinning.set_nonblocking(true)?;
+    let mut first = [0_u8; 1];
+    let early = spinning.peek(&mut first);
+    spinning.set_nonblocking(false)?;
+    spinning.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+    let mut spun = String::new();
+    let finished = spinning.read_to_string(&mut spun);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(reply.ends_with("pong"), "the ping wasn't answered: {read:?} {reply:?}");
+    assert!(
+        early.as_ref().is_err_and(|err| err.kind() == std::io::ErrorKind::WouldBlock),
+        "the range had answered before the ping: {early:?}"
+    );
+    assert!(spun.ends_with("spun [2000000000, 2000000000] 0"), "{finished:?} {spun:?}");
+    Ok(())
+}
+
+/// `source` written to `dir`, built release with the threads runtime, and started on one thread:
+/// the running server, and the port it printed first.
+fn served_on_one_thread(dir: &Path, source: &str) -> std::io::Result<(Running, u16)> {
+    use std::io::BufRead as _;
+    let program = dir.join("served.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("served");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let output = server.0.stdout.take().ok_or_else(|| std::io::Error::other("the server has no output"))?;
+    let mut printed = std::io::BufReader::new(output);
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    Ok((server, port.trim().parse().unwrap_or(0)))
+}
+
+/// A request to `path` on `port`, sent once the request already sent has had time to be read
+/// and its handler to start: its answer, read within a minute, or why it wasn't.
+fn asked_meanwhile(port: u16, path: &str) -> (String, std::io::Result<usize>) {
+    use std::io::{Read as _, Write as _};
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let mut reply = String::new();
+    let read = std::net::TcpStream::connect(("127.0.0.1", port)).and_then(|mut asked| {
+        // A minute tells a handler that makes way from one that never ends.
+        asked.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        asked.write_all(
+            format!("GET {path} HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n").as_bytes(),
+        )?;
+        asked.read_to_string(&mut reply)
+    });
+    (reply, read)
+}
+
 /// A program's resident memory in KB: `ps` gives it on Unix, and `tasklist` on Windows, as
 /// `"leaks.exe","1234","Console","1","12,345 K"`. No reading fails the test, so a check of it can't
 /// pass by reading nothing.
@@ -26111,7 +26598,8 @@ fn slices_as_dict_keys_match_what_was_pinned() -> std::io::Result<()> {
 /// bytes are, with no block of its own: a block is made for each string value the dict keeps and
 /// nothing else. Each lookup and each add made the line a block for the runtime, and the runtime
 /// copied the slice again, so these 3,000 lines made 18,013 blocks where they now make about
-/// 3,000. `examples/dict_slice_keys.fen` holds what such keys read back as.
+/// 3,000. `examples/dict_slice_keys.fen` holds what such keys read back as. Both builds are run:
+/// the release build is where LLVM's optimizations rework the reads from the line's bytes.
 #[test]
 fn a_slice_of_a_short_line_as_a_key_makes_no_block_of_its_own() -> std::io::Result<()> {
     if !ready() {
@@ -26119,12 +26607,14 @@ fn a_slice_of_a_short_line_as_a_key_makes_no_block_of_its_own() -> std::io::Resu
     }
     let dir = folder("inline_slice_keys")?;
     std::fs::write(dir.join("inline_slice_keys.fen"), INLINE_SLICE_KEYS)?;
-    let (printed, counts) = printed_and_counts(&dir, "inline_slice_keys", &["--llvm"])?;
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let (printed, counts) = printed_and_counts(&dir, "inline_slice_keys", how)?;
+        assert_eq!(printed, "3000 3000 3000 v2999\n", "{how:?}");
+        let made = counts.split(' ').skip_while(|word| *word != "allocations").nth(1);
+        let made: u64 = made.and_then(|count| count.parse().ok()).unwrap_or(u64::MAX);
+        assert!(made < 4_000 && counts.ends_with(" live 0"), "{how:?}: {counts}");
+    }
     std::fs::remove_dir_all(&dir)?;
-    assert_eq!(printed, "3000 3000 3000 v2999\n");
-    let made = counts.split(' ').skip_while(|word| *word != "allocations").nth(1);
-    let made: u64 = made.and_then(|count| count.parse().ok()).unwrap_or(u64::MAX);
-    assert!(made < 4_000 && counts.ends_with(" live 0"), "{counts}");
     Ok(())
 }
 

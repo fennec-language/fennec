@@ -14,13 +14,26 @@
 #
 # The pull request's text starts by saying how it was gated, so a merge is decided knowing it:
 # "Gated in full", with every step `gate.sh` ran, or, when GATE names another command, "SHORT
-# gate", with that command, which is no reason to merge.
+# gate", with that command, which is no reason to merge. Either way it names the commit gated and
+# when.
+#
+# Run again for a pull request already open, with REGATE=1 (or GH=true, as lanes have run it), it
+# opens no other: it pushes, then puts the new line first in that pull request's text, in place of
+# the one there, and keeps the rest as it is on GitHub, edits and all. It reads the text back and
+# fails if the line isn't first. With no pull request open for the branch it stops before the gate.
 # GATE and GH name other commands, for its test, `test-open-pr.sh`.
 set -euo pipefail
 title=${1:?give a title}
 body=${2:?and a file holding the text of the pull request}
 gate=${GATE:-.github/scripts/gate.sh}
 gh=${GH:-gh}
+regate=${REGATE:-}
+# `GH=true` once kept a rerun from opening a second pull request by having it do nothing at all,
+# saying nothing of the gate either. It's a rerun now, with the real `gh`.
+if [ "$gh" = true ]; then
+  regate=1
+  gh=gh
+fi
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 stop() {
@@ -31,6 +44,11 @@ stop() {
 branch=$(git symbolic-ref --short HEAD) || stop "nothing's checked out as a branch"
 [ "$branch" != main ] || stop "this is main: open a pull request from a branch of your own"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || stop "commit everything first"
+if [ -n "$regate" ]; then
+  number=$("$gh" pr list --head "$branch" --state open --json number --jq '.[0].number // empty') \
+    || stop "couldn't ask GitHub for $branch's pull request"
+  [ -n "$number" ] || stop "there's no open pull request for $branch to gate again: run it without REGATE or GH=true to open one"
+fi
 # Under the lock every worktree shares, as two gates fetching at once raced on one ref.
 .github/scripts/fetch.sh
 if ! git merge --quiet --no-edit origin/main; then
@@ -45,23 +63,43 @@ if git grep --quiet -E '^(<<<<<<<|>>>>>>>)( |$)' -- . ':!*.md'; then
   stop "conflict markers are left in these files"
 fi
 said=$(mktemp)
-trap 'rm -f "$said" "$said.md"' EXIT
+trap 'rm -f "$said" "$said.md" "$said.was"' EXIT
 "$gate" | tee "$said" || stop "the gate failed, so nothing's pushed"
+gated="at \`$(git rev-parse --short=12 HEAD)\`, $(date -u '+%Y-%m-%d %H:%M UTC')"
 if [ "$gate" = .github/scripts/gate.sh ]; then
   # Every step it ran, as its summary lists them: it passes only when each one did, or failed only
   # on what main is known to fail, which is said.
   steps=$(sed -n '/^the gate.s steps:$/,/altogether$/p' "$said" \
     | awk '/^  [a-z]/ { status = $1; sub(/^  [a-z]+ +/, ""); print (status == "known" ? $0 " (past main'"'"'s known failures)" : $0) }' \
     | paste -sd ',' - | sed 's/,/, /g')
-  how="**Gated in full**: every step of \`gate.sh\` passed: ${steps:-its summary was not found}."
+  how="**Gated in full** $gated: every step of \`gate.sh\` passed: ${steps:-its summary was not found}."
 else
-  how="**SHORT gate**: only \`$gate\` ran, not \`.github/scripts/gate.sh\` and its steps. Don't merge on it."
+  how="**SHORT gate** $gated: only \`$gate\` ran, not \`.github/scripts/gate.sh\` and its steps. Don't merge on it."
   echo "open-pr: SHORT gate: only $gate ran" >&2
 fi
-{ echo "$how"; echo; cat "$body"; } > "$said.md"
 echo "What $branch changes against main:"
 git diff --stat origin/main...HEAD
 git push --quiet --set-upstream origin "$branch"
 pushed=$(git ls-remote origin "refs/heads/$branch" | cut -f1)
 [ "$pushed" = "$(git rev-parse HEAD)" ] || stop "origin's $branch is at '$pushed', not this commit"
-"$gh" pr create --base main --head "$branch" --title "$title" --body-file "$said.md"
+if [ -z "$regate" ]; then
+  { echo "$how"; echo; cat "$body"; } > "$said.md"
+  "$gh" pr create --base main --head "$branch" --title "$title" --body-file "$said.md"
+  exit 0
+fi
+# Gated again: the text on GitHub keeps all but its first line, when that says how it was gated.
+unsaid="it's pushed, but pull request #$number doesn't say it was gated again: put this first in its text by hand: $how"
+"$gh" pr view "$number" --json body --jq .body > "$said.was" || stop "couldn't read pull request #$number's text: $unsaid"
+# Read without a pipe, whose early end under pipefail would read as a line that doesn't match.
+was_first=''
+IFS= read -r was_first < "$said.was" || true
+case "$was_first" in
+  '**Gated in full**'* | '**SHORT gate**'*) { echo "$how"; tail -n +2 "$said.was"; } > "$said.md" ;;
+  *) { echo "$how"; echo; cat "$said.was"; } > "$said.md" ;;
+esac
+"$gh" pr edit "$number" --body-file "$said.md" > /dev/null || stop "couldn't change pull request #$number's text: $unsaid"
+"$gh" pr view "$number" --json body --jq .body > "$said.was" || stop "couldn't read pull request #$number's text back: $unsaid"
+first=''
+IFS= read -r first < "$said.was" || true
+[ "$first" = "$how" ] || stop "pull request #$number's text starts '$first': $unsaid"
+echo "open-pr: pull request #$number now starts: $how"

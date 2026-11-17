@@ -65,6 +65,173 @@ fn a_name_holds_its_own_value_and_ref_changes_yours() {
     );
 }
 
+/// `case .Button(ref clicks):` changes a field of what the `match` is over, a place reached
+/// through a `ref` parameter and an index here: the name holds a copy, put back where the case
+/// ends, however it ends, a failure included. A `ref` name matched again with `ref` puts its own
+/// change back first. What it prints is what the compiled program printed.
+#[test]
+fn a_case_with_ref_changes_the_field_it_names() {
+    prints(
+        "
+        enum Kind:
+            Button(clicks: int)
+            Label(text: str)
+            Slider(at: int, most: int)
+
+        struct Widget:
+            name: str
+            kind: Kind
+
+        enum Named:
+            Leaf(name: str)
+            Pair(left: Named, right: Named, tags: list[str])
+
+        error Refused:
+            code: int
+
+        def click(ref widgets: list[Widget], at: int):
+            match widgets[at].kind:
+                case .Button(ref clicks):
+                    clicks += 1
+                case .Slider(ref pos, most):
+                    if pos < most:
+                        pos += 10
+                case .Label(ref text):
+                    text += '?'
+
+        def slide(ref kind: Kind) fails Refused:
+            match kind:
+                case .Slider(ref pos, ref most):
+                    most += 1
+                    pos += 5
+                    if pos > 6:
+                        fail Refused(code=pos)
+                case _:
+                    pass
+
+        def main(stdout: Stdout):
+            mut widgets = [
+                Widget(name='go', kind=.Button(0)),
+                Widget(name='vol', kind=.Slider(at=1, most=50)),
+                Widget(name='hi', kind=.Label('hello')),
+            ]
+            for at in range(3):
+                click(ref widgets, at)
+            click(ref widgets, 0)
+            stdout.print(widgets)
+            mut tree = Named.Pair(left=.Leaf('a'), right=.Leaf('c'), tags=['t'])
+            match tree:
+                case .Pair(left=ref left, right=_, tags=ref tags):
+                    tags.append('u')
+                    match left:
+                        case .Leaf(ref name):
+                            name += '!'
+                        case _:
+                            pass
+                case _:
+                    pass
+            stdout.print(tree)
+            mut kind = Kind.Slider(at=1, most=9)
+            slide(ref kind) except why:
+                stdout.print(f'{why}')
+            stdout.print(kind)
+            slide(ref kind) except why:
+                stdout.print(f'{why}')
+            stdout.print(kind)
+        ",
+        "[Widget(name=\"go\", kind=Kind.Button(clicks=2)), Widget(name=\"vol\", kind=Kind.Slider(at=11, most=50)), \
+         Widget(name=\"hi\", kind=Kind.Label(text=\"hello?\"))]\n\
+         Named.Pair(left=Named.Leaf(name=\"a!\"), right=Named.Leaf(name=\"c\"), tags=[\"t\", \"u\"])\n\
+         Kind.Slider(at=6, most=10)\nRefused(code=11)\nKind.Slider(at=11, most=11)\n",
+    );
+}
+
+/// A `ref` case is put back into the place it matched however it's written: three `match`es deep,
+/// a part given a whole new value, parts named out of their fields' order or left out, a `ref`
+/// name a parameter the place reads has too, a guard reading a `ref` name, and a body that changes
+/// an index of the place. The compiled program put several of these back wrong, or stopped
+/// building, until the checker lane's fix; these are its programs, and what it prints now
+/// (`llvm::a_ref_case_is_put_back_where_it_matched_however_it_s_written`).
+#[test]
+fn a_ref_case_is_put_back_where_it_matched_however_it_s_written() {
+    prints(
+        "
+        enum Named:
+            Leaf(name: str)
+            Pair(left: Named, tags: list[str])
+
+        def main(stdout: Stdout):
+            mut tree = Named.Pair(left=.Pair(left=.Leaf(name='a'), tags=[]), tags=[])
+            match tree:
+                case .Pair(left=ref left, tags=_):
+                    match left:
+                        case .Pair(left=ref inner, tags=_):
+                            match inner:
+                                case .Leaf(ref name):
+                                    name += '!'
+                                case _:
+                                    pass
+                        case _:
+                            pass
+                case _:
+                    pass
+            stdout.print(tree)
+            mut other = Named.Pair(left=.Leaf(name='b'), tags=['t'])
+            match other:
+                case .Pair(tags=ref tags, left=ref left):
+                    tags.append('u')
+                    left = .Leaf(name='replaced')
+                case _:
+                    pass
+            stdout.print(other)
+        ",
+        "Named.Pair(left=Named.Pair(left=Named.Leaf(name=\"a!\"), tags=[]), tags=[])\n\
+         Named.Pair(left=Named.Leaf(name=\"replaced\"), tags=[\"t\", \"u\"])\n",
+    );
+    prints(
+        "
+        enum Kind:
+            Button(clicks: int)
+            Slider(at: int, most: int)
+
+        def click(ref kinds: list[Kind], at: int):
+            match kinds[at]:
+                case .Slider(ref at, most) if at < most:
+                    at += 10
+                case .Button(ref clicks):
+                    clicks += 1
+                case _:
+                    pass
+
+        def main(stdout: Stdout):
+            mut kinds = [Kind.Button(clicks=0), Kind.Slider(at=1, most=50), Kind.Slider(at=60, most=50)]
+            for at in range(3):
+                click(ref kinds, at)
+            stdout.print(kinds)
+        ",
+        "[Kind.Button(clicks=1), Kind.Slider(at=11, most=50), Kind.Slider(at=60, most=50)]\n",
+    );
+    prints(
+        "
+        enum Slot:
+            Empty
+            Held(count: int)
+
+        def main(stdout: Stdout):
+            mut slots = [Slot.Held(count=1), Slot.Held(count=10)]
+            mut at = 0
+            match slots[at]:
+                case .Held(ref count):
+                    at += 1
+                    count += 5
+                case _:
+                    pass
+            stdout.print(slots, at)
+        ",
+        "[Slot.Held(count=6), Slot.Held(count=10)] 1\n",
+    );
+}
+
 /// A copy changed after it was made from another, or after it was sent to a task, changes alone,
 /// at every level: a list, a list of lists, tuples in a list, a set, a dict of lists, a struct and
 /// a struct of structs, lists and dicts. So do an argument, a `for ref` loop's list and what an
@@ -248,6 +415,111 @@ fn a_source_lends_to_the_block_and_finishes_after_it() {
         ",
         "2 [\"open ana\", \"ANA\", \"close ana\", \"open bo\", \"close bo\"]\n",
     );
+}
+
+/// An error carries notes: `add_note` adds one and `notes()` reads them, and printing it shows
+/// none. A cleanup that fails for a failed block has its failure noted on the block's, as it
+/// prints, when it's a `fail` or a line whose whole value is a `?`, and the rest of the cleanup is
+/// skipped; a `?` deeper in a line takes the block's place instead, as `docs/language.md` says.
+/// The oracle kept the block's failure every time, and gave `deep 3` where the compiled program
+/// gives `deep 503`. What it prints is what the compiled program printed.
+#[test]
+fn an_error_carries_notes_and_a_failing_cleanup_notes_or_replaces_it() {
+    prints(
+        "
+        error Refused:
+            code: int
+
+        struct Tally:
+            count: int
+
+        def guarded(code: int, stdout: Stdout) -> with Tally fails Refused:
+            stdout.print('guard', code)
+            lend Tally(count=code) except:
+                stdout.print('unguard', code)
+                if code % 3 == 0:
+                    fail Refused(code=code + 1000)
+                stdout.print('unguarded', code)
+            stdout.print('released', code)
+
+        def run(code: int, refuse: bool, stdout: Stdout) -> int fails Refused:
+            with guarded(code, stdout)? as tally:
+                if refuse:
+                    fail Refused(code=tally.count)
+                return tally.count
+
+        def shown(code: int, refuse: bool, stdout: Stdout) -> str:
+            value = run(code, refuse=refuse, stdout=stdout) except why:
+                return f'refused {why.code} {why.notes()}'
+            return str(value)
+
+        def main(stdout: Stdout):
+            stdout.print(shown(3, refuse=True, stdout=stdout))
+            stdout.print(shown(4, refuse=True, stdout=stdout))
+            stdout.print(shown(3, refuse=False, stdout=stdout))
+            mut failure = Refused(code=9)
+            failure.add_note('first')
+            failure.add_note('second')
+            stdout.print(failure.notes(), failure)
+        ",
+        "guard 3\nunguard 3\nrefused 3 [\"Refused(code=1003)\"]\nguard 4\nunguard 4\nunguarded 4\nrefused 4 []\n\
+         guard 3\nreleased 3\n3\n[\"first\", \"second\"] Refused(code=9)\n",
+    );
+    prints(
+        "
+        error Refused:
+            code: int
+
+        struct Tally:
+            count: int
+
+        def capped(code: int) -> int fails Refused:
+            if code > 2:
+                fail Refused(code=code + 500)
+            return code
+
+        def plain(code: int, stdout: Stdout) -> with Tally fails Refused:
+            lend Tally(count=code) except:
+                kept = capped(code)?
+                stdout.print('kept', kept)
+
+        def deep(code: int, stdout: Stdout) -> with Tally fails Refused:
+            lend Tally(count=code) except:
+                stdout.print('deep', capped(code)?)
+
+        def run_plain(code: int, stdout: Stdout) -> int fails Refused:
+            with plain(code, stdout)? as tally:
+                if tally.count > 0:
+                    fail Refused(code=tally.count)
+                return 0
+
+        def run_deep(code: int, stdout: Stdout) -> int fails Refused:
+            with deep(code, stdout)? as tally:
+                if tally.count > 0:
+                    fail Refused(code=tally.count)
+                return 0
+
+        def main(stdout: Stdout):
+            first = run_plain(3, stdout) except why:
+                stdout.print('plain', why.code)
+                0
+            second = run_deep(3, stdout) except why:
+                stdout.print('deep', why.code)
+                0
+            stdout.print(first, second)
+        ",
+        "plain 3\ndeep 503\n0 0\n",
+    );
+}
+
+/// Notes added to an error kept in a `shared` value, under its lock, are the error's own, as the
+/// compiled program printed them (`workers/notes_kept_under_a_lock.fen`).
+#[test]
+fn notes_kept_under_a_lock_are_the_errors_own() {
+    let (printed, ended) =
+        ran(include_str!("../../fennec/tests/fixtures/workers/notes_kept_under_a_lock.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/workers/notes_kept_under_a_lock.out"));
 }
 
 #[test]

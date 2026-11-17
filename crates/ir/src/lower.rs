@@ -846,6 +846,7 @@ impl<'a> Lowering<'a> {
                     scopes: self.scopes.clone(),
                     body: self.body,
                     subst: self.subst.clone(),
+                    leaving: self.leaving.len(),
                 });
                 let lowered = self.block(body, tail);
                 self.on_failure.pop();

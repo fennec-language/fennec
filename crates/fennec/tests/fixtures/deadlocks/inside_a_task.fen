@@ -1,0 +1,19 @@
+# A task launches one of its own, which waits on a channel nobody sends to, and waits for it at its
+# block's end; main waits for the first. Only the task prints, so what's printed has one order.
+from std.concurrent import Channel, Crashed, channel
+
+def waits(numbers: Channel[int]):
+    _ = numbers.receive() else -1
+
+def launches(stdout: Stdout) fails Crashed:
+    with channel[int](size=1) as numbers:
+        with launch(() => waits(numbers))?:
+            stdout.print("launched inside")
+
+def launched(stdout: Stdout):
+    launches(stdout) except Crashed():
+        return
+
+def main(stdout: Stdout) fails Crashed:
+    with launch(() => launched(stdout))?:
+        pass

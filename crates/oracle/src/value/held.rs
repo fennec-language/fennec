@@ -274,7 +274,8 @@ mod tests {
         assert_eq!((first.len(), second.len()), (2, 4));
         let taken = second.into_inner();
         assert_eq!((taken.len(), spent()), (4, 0));
-        let shared = Held::new(Instance { ty: "Bag".to_owned(), case: None, fields: Vec::new() });
+        let shared =
+            Held::new(Instance { ty: "Bag".to_owned(), case: None, fields: Vec::new(), notes: Vec::new() });
         let held = shared.clone();
         let mut changed = held.clone();
         changed.ty = "Box".to_owned();

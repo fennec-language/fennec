@@ -184,6 +184,9 @@ impl Interp {
                 if a.ty != b.ty || a.case != b.case || a.fields.len() != b.fields.len() {
                     return Ok(false);
                 }
+                if !a.notes.is_empty() || !b.notes.is_empty() {
+                    return unsupported("`==` on errors that carry notes");
+                }
                 for ((_, x), (_, y)) in a.fields.iter().zip(&b.fields) {
                     if !self.equal(x, y)? {
                         return Ok(false);
@@ -369,6 +372,11 @@ pub(crate) fn plain_equal(left: &Value, right: &Value) -> Run<bool> {
         (Value::Instance(a), Value::Instance(b)) => {
             if a.ty != b.ty || a.case != b.case || a.fields.len() != b.fields.len() {
                 return Ok(false);
+            }
+            // Whether `==` reads an error's notes isn't measured: errors that carry any are
+            // refused rather than guessed at.
+            if !a.notes.is_empty() || !b.notes.is_empty() {
+                return unsupported("`==` on errors that carry notes");
             }
             for ((_, x), (_, y)) in a.fields.iter().zip(&b.fields) {
                 if !plain_equal(x, y)? {

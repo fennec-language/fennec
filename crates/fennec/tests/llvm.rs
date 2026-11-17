@@ -6358,6 +6358,54 @@ def main(args: Args, stdout: Stdout):
     )
 }
 
+/// A list whose items hold no blocks is cleared by its length alone, and filled again from its
+/// room: one shared before it's cleared keeps what it held, one cleared and grown past its old
+/// room, and lists of plain structs, of structs holding a text, and of lists, each cleared and
+/// used again. It prints what the reference evaluator prints, with nothing left.
+#[test]
+fn a_cleared_list_is_empty_and_fills_again() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("cleared_lists", CLEARED_LISTS, "[] [1, 2, 3] 0\n40 39\n[7]\n1 5\n1 b\n[]\n")?;
+    let counts = counts_of("cleared_lists_counts", CLEARED_LISTS)?;
+    assert!(counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
+const CLEARED_LISTS: &str = r#"struct Spot:
+    x: int
+    y: float
+
+struct Named:
+    name: str
+    hp: int
+
+def main(stdout: Stdout):
+    mut ints = [1, 2, 3]
+    shared = ints
+    ints.clear()
+    stdout.print(ints, shared, len(ints))
+    for turn in range(40):
+        ints.append(turn)
+    stdout.print(len(ints), ints[39])
+    ints.clear()
+    ints.append(7)
+    stdout.print(ints)
+    mut spots = [Spot(x=1, y=2.0), Spot(x=3, y=4.0)]
+    spots.clear()
+    spots.append(Spot(x=5, y=6.0))
+    stdout.print(len(spots), spots[0].x)
+    mut named = [Named(name="a long name that is held in a block", hp=3)]
+    named.clear()
+    named.append(Named(name="b", hp=4))
+    stdout.print(len(named), named[0].name)
+    mut grid = [[1, 2], [3]]
+    grid.clear()
+    stdout.print(grid)
+    return
+"#;
+
 /// `set.remove` of a key that isn't there fails as pinned.
 #[test]
 fn removing_what_a_set_lacks_fails_as_pinned() -> std::io::Result<()> {
@@ -13585,6 +13633,60 @@ fn strings_compare_with_short_literals_as_pinned() -> std::io::Result<()> {
     )
 }
 
+/// A list parameter whose length nothing in its function changes has its length read at the
+/// start, and every check against it uses that, so LLVM can check an index that doesn't change in
+/// a loop once: read after a `continue`, stored into through `ref`, counted from the end, and
+/// measured with `len` (`kept_lengths`). Lists given by `ref` and changed in the loop that reads
+/// them, every way a function can change a list's length, keep nothing (`kept_lengths_changed`).
+/// Dev and release, plain and checking proofs, which check each kept length against the list's
+/// own, each prints what the reference evaluator prints.
+#[test]
+fn a_kept_length_is_the_lists_own_however_the_list_is_used() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let programs = [
+        (
+            "kept_lengths",
+            include_str!("fixtures/kept_lengths.fen"),
+            include_str!("fixtures/kept_lengths.out"),
+        ),
+        (
+            "kept_lengths_changed",
+            include_str!("fixtures/kept_lengths_changed.fen"),
+            include_str!("fixtures/kept_lengths_changed.out"),
+        ),
+    ];
+    for ((name, source, wanted), proofs) in
+        programs.iter().flat_map(|program| [(program, "0"), (program, "1")])
+    {
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder(name)?;
+            let (program, executable) = (dir.join(format!("{name}.fen")), dir.join(name));
+            std::fs::write(&program, source)?;
+            let built = crate::executables::fennec_command()
+                .arg("build")
+                .args(how)
+                .arg(&program)
+                .arg("-o")
+                .arg(&executable)
+                .env("FENNEC_HOME", &dir)
+                .env("FENNEC_CHECK_PROOFS", proofs)
+                .output_before(FENNEC_DEADLINE)?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            std::fs::remove_dir_all(&dir)?;
+            assert_eq!(
+                String::from_utf8_lossy(&ran.stdout),
+                *wanted,
+                "{name} {how:?}, proofs {proofs}: {}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
 /// An index checked once stays inside its list until something shortens or replaces the
 /// list, or writes the index: a pop, a method popping or replacing a field, a new list, and
 /// negative indexes are each checked again, and the last read fails.
@@ -15501,6 +15603,47 @@ fn process_runs_in_tasks_park_while_their_programs_run() -> std::io::Result<()> 
         assert_eq!(printed, wanted, "on {threads} threads: {said}");
         assert!(said.contains(" live 0"), "on {threads} threads: {said}");
         assert!(!said.contains("heap audit"), "on {threads} threads: {said}");
+    }
+    std::fs::remove_dir_all(&dir)
+}
+
+/// A parked `process.run` whose program ends at once never waits out its timeout: 400 runs of
+/// `true` in `parallel` rounds, each giving up after 10 seconds, all end, on 1, 4 and 16 threads.
+/// On macOS kqueue says a program has exited a moment before it can be reaped, and a run whose
+/// outputs had already closed then waited out its timeout, as nothing said the end again: 600 s
+/// unless the run set one, which ran `process_runs_in_tasks_park_while_their_programs_run` past
+/// its two minutes in two gates on a loaded Mac (#1954). It shows most under load; quiet, a run
+/// rarely meets it.
+#[test]
+#[cfg(unix)]
+fn process_runs_that_end_at_once_in_tasks_never_wait_out_their_timeouts() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("process-runs-ended-at-once")?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let shape = "process_runs_that_end_at_once_in_tasks";
+    let program = dir.join(format!("{shape}.fen"));
+    std::fs::copy(fixtures.join(format!("{shape}.fen")), &program)?;
+    let executable = dir.join(shape);
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_NO_DAEMON", "1")
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{shape}: {}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["1", "4", "16"] {
+        let ended = Command::new(&executable)
+            .env("FENNEC_THREADS", threads)
+            .output_limited(crate::executables::PROGRAM_DEADLINE, std::time::Duration::from_secs(120))?;
+        let (printed, said) =
+            (String::from_utf8_lossy(&ended.stdout), String::from_utf8_lossy(&ended.stderr));
+        assert_eq!(ended.status.code(), Some(0), "on {threads} threads: {printed}{said}");
+        assert_eq!(printed, "400 ended, 0 timed out\n", "on {threads} threads: {said}");
     }
     std::fs::remove_dir_all(&dir)
 }
@@ -19447,6 +19590,85 @@ fn printed_by(name: &str, source: &str) -> std::io::Result<String> {
     assert!(ran.status.success(), "{}: {}", ran.status, String::from_utf8_lossy(&ran.stderr));
     Ok(String::from_utf8_lossy(&ran.stdout).into_owned())
 }
+
+/// TOML takes time in proportion to its size to read, however its tables are laid out. Each
+/// `[[name]]`, each key under a header and each dotted key copied the table it went into, so these
+/// 3,000 of each copied 1 GB, and finding a key looked through every key before it, so 500,000
+/// keys in one table took minutes. Now a table is changed where it is and finds a key in one
+/// lookup: what's copied is a few bytes, and the keys take a fraction of their 20 seconds of CPU
+/// time. Found by fuzzing `std.toml` with large documents.
+#[test]
+fn toml_reads_many_tables_and_keys_in_time_in_proportion_to_its_size() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("toml_many")?;
+    std::fs::write(dir.join("toml_many_tables.fen"), TOML_MANY_TABLES)?;
+    let (printed, counts) = printed_and_counts(&dir, "toml_many_tables", &["--llvm"])?;
+    assert_eq!(printed, "3000 2999 3000 2999 3000 2999\n");
+    let copied = counts.split(' ').skip_while(|word| *word != "copied_bytes").nth(1);
+    let copied: u64 = copied.and_then(|bytes| bytes.parse().ok()).unwrap_or(u64::MAX);
+    assert!(copied < 1_000_000, "{counts}");
+    let program = dir.join("toml_many_keys.fen");
+    std::fs::write(&program, TOML_MANY_KEYS)?;
+    let executable = dir.join("toml_many_keys");
+    let built =
+        fennec(&["build", "--llvm", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_before(std::time::Duration::from_secs(20))?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "500000 499999\n");
+    Ok(())
+}
+
+/// 3,000 dotted keys, `[[entries]]` and keys under `[table]`, read and checked.
+const TOML_MANY_TABLES: &str = r#"from std import toml
+
+struct Entry:
+    number: int
+
+struct Deeper:
+    under: dict[str, int]
+
+struct Many:
+    entries: list[Entry]
+    table: dict[str, int]
+    dotted: Deeper
+
+def main(stdout: Stdout):
+    mut text = ""
+    for count in range(3000):
+        text += f"dotted.under.k{count} = {count}\n"
+    for count in range(3000):
+        text += f"[[entries]]\nnumber = {count}\n"
+    text += "[table]\n"
+    for count in range(3000):
+        text += f"k{count} = {count}\n"
+    many = toml.loads[Many](text) except why:
+        stdout.print(f"{why}")
+        return
+    stdout.print(
+        len(many.entries),
+        many.entries[2999].number,
+        len(many.table),
+        many.table["k2999"],
+        len(many.dotted.under),
+        many.dotted.under["k2999"],
+    )
+"#;
+
+/// 500,000 keys in one table.
+const TOML_MANY_KEYS: &str = r#"from std import toml
+
+def main(stdout: Stdout):
+    mut text = ""
+    for count in range(500000):
+        text += f"k{count} = {count}\n"
+    found = toml.loads[dict[str, int]](text) except why:
+        stdout.print(f"{why}")
+        return
+    stdout.print(len(found), found["k499999"])
+"#;
 
 /// JSON and TOML refuse what they'd have to guess at, rather than loading something the text
 /// didn't say: a number too big for a float, a struct's field given twice, a dict's int key

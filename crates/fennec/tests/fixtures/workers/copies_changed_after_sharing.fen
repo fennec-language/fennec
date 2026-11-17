@@ -1,0 +1,99 @@
+# Every copy of a value is its own: one changed after another was made from it, or after it was sent
+# to a task, changes alone, at every level, as the compiled program has it. The oracle shares a
+# value's parts between its copies until one is changed, and this holds it to that.
+from std.concurrent import Closed, Crashed, Inbox
+
+struct Bag:
+    items: list[int]
+    name: str
+
+struct Outer:
+    inner: Bag
+    bags: list[Bag]
+    counts: dict[str, list[int]]
+
+def grown(items: list[int]) -> list[int]:
+    mut mine = items
+    mine.append(0)
+    return mine
+
+def grow(ref items: list[int]):
+    items.append(7)
+
+def told(inbox: Inbox[list[list[int]]], stdout: Stdout):
+    for got in inbox:
+        mut changed = got
+        changed[0].append(99)
+        stdout.print("task got", got, "made", changed)
+
+def sent(stdout: Stdout) fails Closed | Crashed:
+    mut grid = [[1], [2]]
+    with launch((inbox) => told(inbox, stdout))? as sends:
+        sends.send(grid)?
+        grid[0].append(5)
+        grid.append([3])
+        sends.send(grid)?
+    stdout.print("sender kept", grid)
+
+def main(stdout: Stdout):
+    mut first = [1, 2, 3]
+    mut second = first
+    second.append(4)
+    second[0] = 9
+    stdout.print("list", first, second)
+
+    mut grid = [[1, 2], [3, 4]]
+    mut copied = grid
+    copied[1][0] = 30
+    copied[0].append(5)
+    stdout.print("nested list", grid, copied)
+
+    mut pairs = [(1, [2]), (3, [4])]
+    mut others = pairs
+    others[0] = (5, [6])
+    stdout.print("tuples", pairs, others)
+
+    mut seen = {1, 2}
+    mut more = seen
+    more.add(3)
+    more.remove(1)
+    stdout.print("set", seen, more)
+
+    mut table = {"a": [1], "b": [2]}
+    mut changed = table
+    changed["a"].append(2)
+    changed["c"] = [3]
+    stdout.print("dict", table, changed)
+
+    mut bag = Bag(items=[1], name="x")
+    mut other = bag
+    other.items.append(2)
+    other.name = "y"
+    stdout.print("struct", bag, other)
+
+    mut outer = Outer(inner=Bag(items=[1], name="in"), bags=[Bag(items=[2], name="b")], counts={"k": [1]})
+    mut twin = outer
+    twin.inner.items.append(8)
+    twin.bags[0].name = "z"
+    twin.bags[0].items[0] = 20
+    twin.counts["k"].append(9)
+    stdout.print("nested struct", outer, twin)
+
+    mut kept = [1]
+    stdout.print("argument", grown(kept), kept)
+    grow(ref kept)
+    stdout.print("ref", kept)
+
+    mut held = [[1], [2]]
+    before = held
+    for ref row in held:
+        row.append(0)
+    stdout.print("for ref", before, held)
+
+    mut captured = [1, 2]
+    read = () => len(captured)
+    captured.append(3)
+    stdout.print("captured", read(), len(captured))
+
+    sent(stdout) except why:
+        stdout.print(f"{why}")

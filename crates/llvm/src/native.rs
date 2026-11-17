@@ -278,10 +278,10 @@ impl crate::emit::Emit<'_, '_, '_> {
             let symbol = format!("h_{name}");
             self.module.shared.shapes.insert(symbol.clone(), *id);
             self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
-            self.define_drop(*id)?;
+            self.define_drop(*id, &name)?;
             let next = at + 1;
             body.push_str(&format!(
-                "native{at}:\n  %wanted{at} = load i64, ptr @\"{symbol}\", !invariant.load !1\n  %is{at} = icmp eq i64 %shape, %wanted{at}\n  br i1 %is{at}, label %drop{at}, label %native{next}\ndrop{at}:\n  tail call void @fen_drop_{id}(ptr %block)\n  ret void\n"
+                "native{at}:\n  %wanted{at} = load i64, ptr @\"{symbol}\", !invariant.load !1\n  %is{at} = icmp eq i64 %shape, %wanted{at}\n  br i1 %is{at}, label %drop{at}, label %native{next}\ndrop{at}:\n  tail call void @\"fen_drop_{name}\"(ptr %block)\n  ret void\n"
             ));
         }
         body.push_str(&format!(
@@ -292,12 +292,14 @@ impl crate::emit::Emit<'_, '_, '_> {
         Ok("@fen_free_any")
     }
 
-    /// Defines `@fen_drop_{id}(block)`, which frees a native block of layout `id` whose last
+    /// Defines `@"fen_drop_{name}"(block)`, which frees a native block of layout `id` whose last
     /// owner let it go: it lets go of the blocks its case holds, freeing each that loses its
-    /// last owner, then frees the block. Those of its own type wait their turn in one loop
-    /// rather than each being freed by a call, so no chain of them needs any stack: not through
-    /// its last field, nor any other, as a recursion through `left` once did 200,000 calls deep.
-    fn define_drop(&mut self, id: u32) -> Result<(), String> {
+    /// last owner, then frees the block. Those of its own type wait their turn in one loop rather
+    /// than each being freed by a call, so no chain of them needs any stack: not through its last
+    /// field, nor any other, as a recursion through `left` once did 200,000 calls deep. It's named
+    /// by the layout's `name`, which stays the same while the program's numbering moves, so a
+    /// module's text does too.
+    fn define_drop(&mut self, id: u32, name: &str) -> Result<(), String> {
         use fennec_rt::embed::layout::FIELDS;
         let (_, free) = allocator();
         self.declare(free);
@@ -338,7 +340,7 @@ impl crate::emit::Emit<'_, '_, '_> {
         // holds is this drop's, so its count's word holds the next one waiting. Nothing recurses,
         // so a chain however deep, and however it's built, needs no stack.
         let mut text = format!(
-            "define internal void @fen_drop_{id}(ptr %start) nounwind {{\nentry:\n  %waiting = alloca ptr\n  store ptr null, ptr %waiting\n  br label %top\ntop:\n  %block = phi ptr [ %start, %entry ], [ %next, %pop ]\n  %tag_at = getelementptr inbounds i8, ptr %block, i64 {fields_at}\n  %tag = load i64, ptr %tag_at\n  switch i64 %tag, label %free ["
+            "define internal void @\"fen_drop_{name}\"(ptr %start) nounwind {{\nentry:\n  %waiting = alloca ptr\n  store ptr null, ptr %waiting\n  br label %top\ntop:\n  %block = phi ptr [ %start, %entry ], [ %next, %pop ]\n  %tag_at = getelementptr inbounds i8, ptr %block, i64 {fields_at}\n  %tag = load i64, ptr %tag_at\n  switch i64 %tag, label %free ["
         );
         for (number, _, _, _) in &cases {
             text.push_str(&format!(" i64 {number}, label %case{number}"));
@@ -406,7 +408,7 @@ impl crate::emit::Emit<'_, '_, '_> {
         text.push_str(&format!(
             "free:\n  {freed}call void {free_call}(ptr %block)\n  %counting = load i64, ptr @fennec_counting_native\n  %counts = icmp ne i64 %counting, 0\n  br i1 %counts, label %count_freed, label %freed, !prof !0\ncount_freed:\n  call void @fennec_native_live(i64 -1)\n  br label %freed\nfreed:\n  %next = load ptr, ptr %waiting\n  %empty = icmp eq ptr %next, null\n  br i1 %empty, label %done, label %pop\npop:\n  %rest = load ptr, ptr %next\n  store ptr %rest, ptr %waiting\n  br label %top\ndone:\n  ret void\n}}\n\n"
         ));
-        self.module.add_helper(&format!("fen_drop_{id}"), text);
+        self.module.add_helper(&format!("fen_drop_{name}"), text);
         Ok(())
     }
 }

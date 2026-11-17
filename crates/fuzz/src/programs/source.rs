@@ -10,8 +10,8 @@ use super::ast::{
     StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
 use super::ast::{
-    Calling, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField,
-    Swapping, Waking, Yielding,
+    Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelve,
+    Shelving, SwapField, Swapping, Waking, Yielding,
 };
 
 /// What every program starts with, for its body to use.
@@ -776,6 +776,59 @@ fn shelved_written(shelving: &Shelving) -> String {
 }
 
 /// `listened{id}`, the function a `Listened` calls, after the functions it uses.
+/// `captured{id}`, the function a `Captured` calls, with what it calls. Each prints what the name
+/// written there means, and for a `lock`, what the lock's value holds after.
+fn captured_written(capturing: &Capturing) -> String {
+    let Capturing { id, way, n } = *capturing;
+    let bag = |items: &str| format!("Bag(items=[{items}], counts=dict[str, int]())");
+    let locked = |inside: &[String]| {
+        let mut out = format!(
+            "def captured{id}(stdout: Stdout):\n    shared bag = {}\n    lock bag as ref held:\n",
+            bag("1, 2")
+        );
+        for line in inside {
+            let _ = writeln!(out, "        {line}");
+        }
+        let _ = write!(
+            out,
+            "        held.items.append({n})\n    lock bag as held:\n        stdout.print(held.items)\n\n"
+        );
+        out
+    };
+    match way {
+        CaptureWay::WithDef => format!(
+            "def opened{id}() -> with int:\n    lend {n}\n\ndef captured{id}(stdout: Stdout):\n    \
+             with opened{id}() as added:\n        def doubled(added: int) -> int:\n            \
+             return added * 2\n        stdout.print(doubled(100), added)\n\n"
+        ),
+        CaptureWay::LockLoop => locked(&[
+            format!("for held in [{}]:", bag("7, 8, 9")),
+            "    stdout.print(len(held.items))".to_owned(),
+        ]),
+        CaptureWay::LockCase => locked(&[
+            format!("pair = ({}, 0)", bag("5, 6, 7, 8")),
+            "match pair:".to_owned(),
+            "    case (held, _):".to_owned(),
+            "        stdout.print(len(held.items))".to_owned(),
+        ]),
+        CaptureWay::LockDef => locked(&[
+            "def counted(held: Bag) -> int:".to_owned(),
+            "    return len(held.items)".to_owned(),
+            format!("stdout.print(counted({}))", bag("4, 4, 4, 4, 4")),
+        ]),
+        CaptureWay::LockArrow => locked(&[
+            "measure: (Bag) -> int = held => len(held.items)".to_owned(),
+            format!("stdout.print(measure({}))", bag("3, 3, 3")),
+        ]),
+        CaptureWay::SourceCall => format!(
+            "def total{id}() -> int:\n    return {n}\n\ndef counted{id}() -> with int:\n    \
+             lend total{id}()\n\ndef capturing{id}(total{id}: () -> int, stdout: Stdout):\n    \
+             with counted{id}() as got:\n        stdout.print(got, total{id}())\n\n\
+             def captured{id}(stdout: Stdout):\n    capturing{id}(() => {n} + 2, stdout)\n\n"
+        ),
+    }
+}
+
 fn listened_written(listening: &Listening) -> String {
     let Listening { id, size, early, sent, dropping, ref inboxes } = *listening;
     let mut out = format!(
@@ -2129,6 +2182,10 @@ impl Writer {
             Stmt::Shelved(shelving) => {
                 let _ = write!(self.helpers, "{}", shelved_written(shelving));
                 self.line(indent, &format!("shelved{}(stdout)", shelving.id));
+            }
+            Stmt::Captured(capturing) => {
+                let _ = write!(self.helpers, "{}", captured_written(capturing));
+                self.line(indent, &format!("captured{}(stdout)", capturing.id));
             }
             Stmt::Listened(listening) => {
                 let _ = write!(self.helpers, "{}", listened_written(listening));

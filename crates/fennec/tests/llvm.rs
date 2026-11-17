@@ -13989,6 +13989,84 @@ fn a_kept_length_is_the_lists_own_however_the_list_is_used() -> std::io::Result<
     Ok(())
 }
 
+/// Two reads next to each other, `starts[near]` then `starts[near + 1]`, are tested together
+/// for both being inside, and only when that fails is each checked on its own, in order: so the
+/// first outside fails as it would alone, with the same message and trace, after what came before
+/// it ran. Outside past the end on the second read and on the first, from the end with a
+/// negative `near` that's inside, before the front, and after a loop has printed and appended.
+#[test]
+fn two_reads_next_to_each_other_fail_as_each_would_alone() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_as_pinned("adjacent_second_outside", ADJACENT_SECOND_OUTSIDE)?;
+    same_as_pinned("adjacent_first_outside", ADJACENT_FIRST_OUTSIDE)?;
+    same_as_pinned("adjacent_from_the_end", ADJACENT_FROM_THE_END)?;
+    same_as_pinned("adjacent_before_the_front", ADJACENT_BEFORE_THE_FRONT)?;
+    same_as_pinned("adjacent_after_writes", ADJACENT_AFTER_WRITES)?;
+    Ok(())
+}
+
+const ADJACENT_SECOND_OUTSIDE: &str = r"def summed(starts: list[int], upto: int, stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(upto):
+        total += starts[near] * 10 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(summed([0, 2, 4, 6], upto=5, stdout=stdout))
+    return
+";
+
+const ADJACENT_FIRST_OUTSIDE: &str = r"def spans(starts: list[int], nears: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in nears:
+        total += starts[near] * 10 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(spans([0, 2, 5, 9], nears=[0, 2, 4], stdout=stdout))
+    return
+";
+
+const ADJACENT_FROM_THE_END: &str = r"def ends(starts: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(-4, 2):
+        total += starts[near] * 100 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(ends([1, 2, 3, 4], stdout=stdout))
+    return
+";
+
+const ADJACENT_BEFORE_THE_FRONT: &str = r"def ends(starts: list[int], stdout: Stdout) -> int:
+    mut total = 0
+    for near in range(-3, -7, -1):
+        total += starts[near] * 100 + starts[near + 1]
+        stdout.print(near, total)
+    return total
+
+def main(stdout: Stdout):
+    stdout.print(ends([1, 2, 3, 4], stdout=stdout))
+    return
+";
+
+const ADJACENT_AFTER_WRITES: &str = r"def filled(starts: list[int], stdout: Stdout) -> list[int]:
+    mut made = list[int]()
+    for near in range(len(starts)):
+        made.append(starts[near] + starts[near + 1])
+        stdout.print(made)
+    return made
+
+def main(stdout: Stdout):
+    stdout.print(filled([5, 6, 7], stdout=stdout))
+    return
+";
+
 /// An index checked once stays inside its list until something shortens or replaces the
 /// list, or writes the index: a pop, a method popping or replacing a field, a new list, and
 /// negative indexes are each checked again, and the last read fails.
@@ -25478,6 +25556,48 @@ fn slices_as_dict_keys_match_what_was_pinned() -> std::io::Result<()> {
     )
 }
 
+/// A slice of a short line, held inline in its header, is looked up and added as a key where its
+/// bytes are, with no block of its own: a block is made for each string value the dict keeps and
+/// nothing else. Each lookup and each add made the line a block for the runtime, and the runtime
+/// copied the slice again, so these 3,000 lines made 18,013 blocks where they now make about
+/// 3,000. `examples/dict_slice_keys.fen` holds what such keys read back as.
+#[test]
+fn a_slice_of_a_short_line_as_a_key_makes_no_block_of_its_own() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("inline_slice_keys")?;
+    std::fs::write(dir.join("inline_slice_keys.fen"), INLINE_SLICE_KEYS)?;
+    let (printed, counts) = printed_and_counts(&dir, "inline_slice_keys", &["--llvm"])?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(printed, "3000 3000 3000 v2999\n");
+    let made = counts.split(' ').skip_while(|word| *word != "allocations").nth(1);
+    let made: u64 = made.and_then(|count| count.parse().ok()).unwrap_or(u64::MAX);
+    assert!(made < 4_000 && counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
+/// 3,000 short lines, each set as a key by its slice, then each read back by a slice.
+const INLINE_SLICE_KEYS: &str = r#"def main(stdout: Stdout):
+    mut headers = dict[str, str]()
+    mut counts = dict[str, int]()
+    for count in range(3000):
+        line = f"k{count}: v{count}"
+        colon = line.find(": ") else:
+            continue
+        headers[line[:colon]] = line[colon + 2:]
+        counts[line[:colon]] = count
+    mut found = 0
+    for count in range(3000):
+        line = f"k{count}: x"
+        colon = line.find(": ") else:
+            continue
+        if line[:colon] in headers and (counts.get(line[:colon]) else -1) == count:
+            found += 1
+    stdout.print(len(headers), len(counts), found, headers["k2999"])
+    return
+"#;
+
 /// A slice as a dict's key, set, read with `get`, tested with `in`, popped and added to a set,
 /// for values of every kind a dict holds: a string, an int, a float, a bool, a list, a struct, a
 /// struct holding a list, and a dict. Each does what the same key does made another way, by an
@@ -28050,7 +28170,7 @@ fn a_program_built_for_a_heap_audit_keeps_no_native_blocks() -> std::io::Result<
         for work in std::fs::read_dir(dir.join("work"))?.flatten() {
             for kept in std::fs::read_dir(work.path())?.flatten() {
                 if kept.path().extension().is_some_and(|ext| ext == "ll")
-                    && std::fs::read_to_string(kept.path())?.contains("@fen_drop_")
+                    && std::fs::read_to_string(kept.path())?.contains("@\"fen_drop_")
                 {
                     with_a_drop += 1;
                 }

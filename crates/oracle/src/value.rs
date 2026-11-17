@@ -9,7 +9,9 @@ use fennec_syntax::{Expr, FnDef};
 
 use crate::interp::stream::Source;
 
+mod held;
 mod text;
+pub(crate) use held::{Held, spend, spent};
 pub(crate) use text::Text;
 
 /// A value while the program runs.
@@ -30,14 +32,14 @@ pub(crate) enum Value {
     Str(Text),
     /// `bytes`: a byte string, printed as `bytes([104, 105])`.
     Bytes(Vec<u8>),
-    List(Vec<Value>),
-    Tuple(Vec<Value>),
+    List(Held<Vec<Value>>),
+    Tuple(Held<Vec<Value>>),
     /// A set's items, in the order they went in.
-    Set(Vec<Value>),
+    Set(Held<Vec<Value>>),
     /// A dict's pairs, in the order their keys went in.
-    Dict(Vec<(Value, Value)>),
+    Dict(Held<Vec<(Value, Value)>>),
     /// A struct, an error, or an enum's case.
-    Instance(Box<Instance>),
+    Instance(Held<Instance>),
     /// A function, as a value.
     Func(Box<Func>),
     /// Items one at a time: a generator, or `enumerate` or `zip` over one.
@@ -64,7 +66,7 @@ pub(crate) enum Value {
 
 /// A struct, an error, or a case of an enum or an error, with its fields in the order the type
 /// writes them.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Instance {
     /// The type's name, as the program writes it.
     pub(crate) ty: String,
@@ -97,7 +99,7 @@ pub(crate) enum Func {
     /// while that call is still running.
     Nested { def: &'static FnDef, frame: u64 },
     /// An arrow function, with the names it reads copied when it was made.
-    Lambda { params: Vec<String>, body: &'static Expr, captured: Vec<(String, Value)> },
+    Lambda { params: Vec<String>, body: &'static Expr, captured: Held<Vec<(String, Value)>> },
 }
 
 /// A capability `main` was given. Standard output is real; the arguments and standard input
@@ -175,7 +177,7 @@ impl Value {
     }
 
     pub(crate) fn instance(ty: &str, case: Option<&str>, fields: Vec<(String, Value)>) -> Value {
-        Value::Instance(Box::new(Instance {
+        Value::Instance(Held::new(Instance {
             ty: ty.to_owned(),
             case: case.map(str::to_owned),
             fields,
@@ -295,8 +297,10 @@ impl Table {
 
 /// Whether two values are the same, part for part: floats by their bits, a `shared` value by its
 /// cell, and a generator by its source. A function or a capability is the same as nothing, so a
-/// value holding one is never taken as unchanged.
+/// value holding one is never taken as unchanged, and neither is one nested past
+/// `MOST_NESTING`, which isn't gone through.
 pub(crate) fn same(left: &Value, right: &Value) -> bool {
+    let Ok(_deeper) = crate::interp::deeper() else { return false };
     let all_same = |a: &[Value], b: &[Value]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same(x, y));
     match (left, right) {
         (Value::Unit, Value::Unit) | (Value::None, Value::None) => true,

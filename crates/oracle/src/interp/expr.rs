@@ -12,7 +12,7 @@ use fennec_syntax::{
 use super::{Flow, Interp, MOST_ITEMS, Run, crash, position, unsupported};
 use crate::load::Kind;
 use crate::text::{self, Number};
-use crate::value::{Func, Text, Value};
+use crate::value::{Func, Held, Text, Value};
 
 impl Interp {
     #[expect(clippy::too_many_lines, reason = "one arm for each kind of expression")]
@@ -39,7 +39,7 @@ impl Interp {
                     fields: vec![("nanos".to_owned(), Value::Int(*nanos))],
                     notes: Vec::new(),
                 };
-                Ok(Value::Instance(Box::new(duration)))
+                Ok(Value::Instance(Held::new(duration)))
             }
             ExprKind::Duration(_) => unsupported("durations"),
             ExprKind::Bytes(_) | ExprKind::Folder(_) => unsupported("embedded files"),
@@ -54,14 +54,14 @@ impl Interp {
                 for item in items {
                     values.push(self.eval(item)?);
                 }
-                Ok(Value::List(values))
+                Ok(Value::List(Held::new(values)))
             }
             ExprKind::Tuple(items) => {
                 let mut values = Vec::with_capacity(items.len());
                 for item in items {
                     values.push(self.eval(item)?);
                 }
-                Ok(Value::Tuple(values))
+                Ok(Value::Tuple(Held::new(values)))
             }
             ExprKind::Dict(pairs) => {
                 let mut dict = Vec::with_capacity(pairs.len());
@@ -70,7 +70,7 @@ impl Interp {
                     let value = self.eval(value)?;
                     dict_insert(&mut dict, key, value)?;
                 }
-                Ok(Value::Dict(dict))
+                Ok(Value::Dict(Held::new(dict)))
             }
             ExprKind::Set(items) => {
                 let mut set = Vec::with_capacity(items.len());
@@ -78,7 +78,7 @@ impl Interp {
                     let item = self.eval(item)?;
                     set_insert(&mut set, item)?;
                 }
-                Ok(Value::Set(set))
+                Ok(Value::Set(Held::new(set)))
             }
             ExprKind::Comprehension { kind: CompKind::Generator, .. } => self.generator_of(expr),
             ExprKind::Comprehension { kind, elem, value, names, iter, cond } => {
@@ -183,7 +183,11 @@ impl Interp {
             }
             ExprKind::Lambda { params, body } => {
                 let captured = self.captured(&[body], params)?;
-                Ok(Value::Func(Box::new(Func::Lambda { params: params.clone(), body, captured })))
+                Ok(Value::Func(Box::new(Func::Lambda {
+                    params: params.clone(),
+                    body,
+                    captured: Held::new(captured),
+                })))
             }
             ExprKind::Match { subject, arms } => {
                 let subject = self.eval(subject)?;
@@ -668,7 +672,7 @@ impl Interp {
             if kind != CompKind::List {
                 return unsupported("a set or dict comprehension over `parallel`");
             }
-            return self.parallel_list(elem, names, call, cond).map(Value::List);
+            return self.parallel_list(elem, names, call, cond).map(|items| Value::List(Held::new(items)));
         }
         let over = self.eval(iter)?;
         let mut items = self.items_of(over, iter.span)?;
@@ -703,9 +707,9 @@ impl Interp {
         }
         ran?;
         Ok(match kind {
-            CompKind::Dict => Value::Dict(pairs),
-            CompKind::Set => Value::Set(made),
-            CompKind::List | CompKind::Generator => Value::List(made),
+            CompKind::Dict => Value::Dict(Held::new(pairs)),
+            CompKind::Set => Value::Set(Held::new(made)),
+            CompKind::List | CompKind::Generator => Value::List(Held::new(made)),
         })
     }
 

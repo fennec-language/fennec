@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use fennec_syntax::{Expr, ExprKind, FnDef, Span};
 
 use super::{Binding, Flow, Interp, Run, Shared, unsupported};
-use crate::value::{Cap, Stream, Text, Value};
+use crate::value::{Cap, Held, Stream, Text, Value};
 
 /// The most generators that may be running at once.
 const MOST_GENERATORS: usize = 1_000;
@@ -126,7 +126,7 @@ impl Source {
             Source::Gen(link) => link.next(shared),
             Source::Numbered(inner, at) => match inner.next(shared)? {
                 Some(item) => {
-                    let numbered = Value::Tuple(vec![Value::Int(*at), item]);
+                    let numbered = Value::Tuple(Held::new(vec![Value::Int(*at), item]));
                     *at += 1;
                     Ok(Some(numbered))
                 }
@@ -135,7 +135,7 @@ impl Source {
             Source::Paired(left, right) => {
                 let Some(first) = left.next(shared)? else { return Ok(None) };
                 let Some(second) = right.next(shared)? else { return Ok(None) };
-                Ok(Some(Value::Tuple(vec![first, second])))
+                Ok(Some(Value::Tuple(Held::new(vec![first, second]))))
             }
             Source::Of(stream) => {
                 let Ok(mut source) = stream.source.lock() else { return unsupported("a generator was lost") };
@@ -348,9 +348,10 @@ impl Interp {
         let actor = (self.actor, self.rounds_as.clone());
         let (items, read) = channel();
         let (resume, asked) = channel();
-        let thread = std::thread::Builder::new()
-            .stack_size(GENERATOR_STACK)
-            .spawn(move || generator_thread(&shared, actor, YieldSide { items, resume: asked }, body));
+        let thread = std::thread::Builder::new().stack_size(GENERATOR_STACK).spawn(move || {
+            super::walks_within(GENERATOR_STACK);
+            generator_thread(&shared, actor, YieldSide { items, resume: asked }, body);
+        });
         let Ok(thread) = thread else {
             self.shared.threads.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             return unsupported("a generator's thread couldn't start");

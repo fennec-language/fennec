@@ -1738,7 +1738,7 @@ fn off_thread_on<R: Send + 'static>(
         return done;
     }
     if crate::replay::replaying() {
-        let _ = crate::replay::stopped_in_as_recorded(crate::replay::StoppedIn::Work);
+        let _ = crate::replay::work_ended(false);
         return done;
     }
     let cut = if fennec_parked::is_cancelled() {
@@ -1749,9 +1749,7 @@ fn off_thread_on<R: Send + 'static>(
     } else {
         cut_short() && !failing
     };
-    if cut {
-        crate::replay::stopped_in(crate::replay::StoppedIn::Work);
-    }
+    let _ = crate::replay::work_ended(cut);
     done
 }
 

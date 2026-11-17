@@ -37,11 +37,13 @@
 //!   "stopped" there. A task its stop finds waiting at its own `with launch` block's end, for a
 //!   task it launched, has a `stopped at its block's end` entry, a server's round cancelled there a
 //!   `cancelled at its block's end` entry, and one its stop found serving a `stopped serving`
-//!   entry. A server's round is cancelled, not stopped, when its server stops, and its waits'
-//!   entries say they were cut short as a stopped task's do. A replay stops the task at that
-//!   wait, as the recorded run did. So a replay stops nothing by the clock: its block's ends wait
-//!   for their tasks without a deadline, and stop none when they fail, as the recording says
-//!   where each task was stopped.
+//!   entry. A piece of work on a blocking thread outside a capability's call, as a hash, waits to
+//!   its end and then fails its task: a `stopped in its work` entry says which of the task's
+//!   pieces of such work it was, as each is counted. A server's round is cancelled, not stopped,
+//!   when its server stops, and its waits' entries say they were cut short as a stopped task's do.
+//!   A replay stops the task at that wait, as the recorded run did. So a replay stops nothing by
+//!   the clock: its block's ends wait for their tasks without a deadline, and stop none when they
+//!   fail, as the recording says where each task was stopped.
 //!
 //! - **Locks:** a `shared` value is a place too, named as a channel is, as `0:s2`. Each time a task
 //!   takes its lock, to read or to write, it's logged once the lock is held, and a replay makes
@@ -54,12 +56,12 @@
 //!   connection's reads and writes among them, and when they've all ended the server stops, as if
 //!   it had been stopped there, and says so.
 //!
-//! The log is `FENREPL7`, the header's length as four bytes and the header, then the entries. Each
+//! The log is `FENREPL8`, the header's length as four bytes and the header, then the entries. Each
 //! entry is its task's name and its call's name, each with its length as two bytes, then what it
 //! gave, with its length as four. All numbers are little-endian. A `FENREPL1` log, from before
 //! tasks were named, has no task names, and replays as `main`'s. A log from an older Fennec, which
 //! recorded less of what tasks do, replays as it did then, saying so when it has tasks: a
-//! `FENREPL6` log has no `parallel` ranges a stop kept from beginning, a `FENREPL5` log no task
+//! `FENREPL7` log has no piece of blocking work a stop cut short, a `FENREPL6` log no `parallel` ranges a stop kept from beginning, a `FENREPL5` log no task
 //! stopped while it served, a `FENREPL4` log no `parallel` ranges a
 //! failure kept from starting, and a `FENREPL3` or `FENREPL2` log no stops.
 
@@ -118,7 +120,7 @@ const CUT_SHORT: &str = "cut short";
     not(any(test, feature = "threads")),
     expect(dead_code, reason = "only launched tasks are stopped")
 )]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub(crate) enum StoppedIn {
     /// Its own `with launch` block's end, waiting for a task it launched to end.
     BlockEnd,
@@ -127,9 +129,6 @@ pub(crate) enum StoppedIn {
     CancelledAtBlockEnd,
     /// A call serving, which a stop ends with its server.
     Serving,
-    /// A piece of work on a blocking thread, as hashing a password is, which a stop ends once it's
-    /// done. Logged only where the work is no capability's call, which a replay doesn't run.
-    Work,
 }
 
 impl StoppedIn {
@@ -143,7 +142,6 @@ impl StoppedIn {
             StoppedIn::BlockEnd => "stopped at its block's end",
             StoppedIn::CancelledAtBlockEnd => "cancelled at its block's end",
             StoppedIn::Serving => "stopped serving",
-            StoppedIn::Work => "stopped in its work",
         }
     }
 }
@@ -179,14 +177,17 @@ pub(crate) struct Task {
     /// stopped: so a server's round, which has no stop of its own to keep its end quiet, ends as
     /// quietly as the run's did (#1918).
     stopped: bool,
-    /// In a recording, whether it's in a capability's call, which a replay gives back without
-    /// running: a stop in work it does there is the call's to note, as cut short.
+    /// Whether it's in a capability's call, which a replay gives back without running: a stop in
+    /// work it does there is the call's to note, as cut short.
     in_call: bool,
+    /// How many pieces of blocking work it's done outside a capability's call, as hashes: which one a
+    /// stop cut short is logged by its number.
+    works: u64,
 }
 
 impl Task {
     fn named(name: Arc<str>) -> Task {
-        Task { name, started: 0, made: 0, stopped: false, in_call: false }
+        Task { name, started: 0, made: 0, stopped: false, in_call: false, works: 0 }
     }
 
     /// Whether, in a replay, its recording said a stop or a cancel cut it short.
@@ -795,7 +796,8 @@ pub(crate) fn written(
     live: impl FnOnce() -> Result<Value, Diagnostic>,
 ) -> Result<Value, Diagnostic> {
     let Mode::Replay(_) = mode() else { return value(call, span, live) };
-    let _ = live();
+    // In the call, as it was in the recording, where `value` ran it: its work isn't counted.
+    let _ = in_call(live);
     value(call, span, || unreachable!("a replay gives back what was recorded"))
 }
 
@@ -890,11 +892,64 @@ fn stopped_if_cut_short(player: &Mutex<Player>) {
 )]
 pub(crate) fn stopped_in(waiting: StoppedIn) {
     if let Mode::Record(file) = mode() {
-        let in_call = TASK.with_borrow(|task| task.as_ref().is_some_and(|task| task.in_call));
-        if waiting == StoppedIn::Work && in_call {
-            return;
-        }
         log(file, &running(), waiting.entry(), &[]);
+    }
+}
+
+/// The entry that says a stop cut short a task's piece of blocking work, outside a capability's
+/// call: its number among the task's pieces of such work, as eight bytes.
+const WORK_STOPPED: &str = "stopped in its work";
+
+/// The running task's piece of blocking work outside a capability's call, as a hash, has ended.
+/// In a recording, a stop that cut it short (`cut`) is logged with the piece's number, and this
+/// gives back `cut`. In a replay, the task is stopped at the piece the recording names, and this
+/// gives back whether it was. Each piece is counted, in both, so a task that does two with no
+/// call between is stopped at the right one: matched as the next entry, the mark stopped a replay
+/// at the first. Work in a capability's call is the call's to note, as cut short.
+#[cfg_attr(
+    not(any(test, feature = "threads")),
+    expect(dead_code, reason = "only launched tasks are stopped")
+)]
+pub(crate) fn work_ended(cut: bool) -> bool {
+    if matches!(mode(), Mode::Off) {
+        return cut;
+    }
+    let number = TASK.with_borrow_mut(|task| {
+        let task = task.get_or_insert_with(Task::main);
+        if task.in_call {
+            return None;
+        }
+        task.works += 1;
+        Some(task.works - 1)
+    });
+    let Some(number) = number else { return cut };
+    match mode() {
+        Mode::Off => cut,
+        Mode::Record(file) => {
+            if cut {
+                log(file, &running(), WORK_STOPPED, &number.to_le_bytes());
+            }
+            cut
+        }
+        Mode::Replay(player) => {
+            let task = running();
+            let stopped = {
+                let mut player = player.lock().unwrap_or_else(PoisonError::into_inner);
+                let stream = player.streams.get_mut(&*task);
+                let here =
+                    stream.as_ref().and_then(|stream| stream.front()).is_some_and(|(next, payload)| {
+                        next == WORK_STOPPED && payload.as_slice() == number.to_le_bytes()
+                    });
+                if here {
+                    stream.and_then(VecDeque::pop_front);
+                }
+                here
+            };
+            if stopped {
+                stopped_as_recorded();
+            }
+            stopped
+        }
     }
 }
 

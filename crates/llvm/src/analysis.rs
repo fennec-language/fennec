@@ -107,8 +107,8 @@ pub(crate) struct Analysis {
     /// `steady_lengths`).
     pub(crate) steady_lengths: HashSet<usize>,
     /// Reads of a list's item at `i` followed in the same block by one at `i + 1`, by the read's
-    /// place: `i`, and whether it's the first of the two (see `find_adjacent_reads`).
-    pub(crate) adjacent_reads: HashMap<(usize, usize), (LocalId, bool)>,
+    /// place: `i`, and the read's own index, `i` or `i + 1` (see `find_adjacent_reads`).
+    pub(crate) adjacent_reads: HashMap<(usize, usize), (LocalId, LocalId)>,
     /// A block ending in a jump to a loop that fills a list made in that block: the list, and
     /// how many items the loop adds at most.
     pub(crate) reservations: HashMap<usize, (usize, Operand)>,
@@ -731,6 +731,10 @@ fn blocks_in_loops(function: &Function) -> HashSet<usize> {
     found
 }
 
+/// How many instructions after a read of `xs[i]` the read of `xs[i + 1]` is looked for, so a long
+/// block of reads costs a few looks each rather than one for every instruction after it.
+const ADJACENT_READS_APART: usize = 32;
+
 /// Reads of a list's item at `i` followed in the same block by one at `i + 1`, with nothing
 /// between them that could change the list or `i`: `starts[near]`, then `starts[near + 1]`. Both
 /// are tested against one test that `i` is from 0 to below the length less one, which puts both
@@ -746,7 +750,7 @@ fn find_adjacent_reads(function: &Function, known: &mut Analysis) {
                 continue;
             };
             let mut high = None;
-            for (later, next) in block.insts.iter().enumerate().skip(first + 1) {
+            for (later, next) in block.insts.iter().enumerate().skip(first + 1).take(ADJACENT_READS_APART) {
                 match &next.kind {
                     InstKind::Binary { dest, op: BinOp::Add, lhs, rhs }
                         if high.is_none()
@@ -764,8 +768,8 @@ fn find_adjacent_reads(function: &Function, known: &mut Analysis) {
                         index: Operand::Local(at_high),
                         ..
                     } if again == list && Some(*at_high) == high => {
-                        known.adjacent_reads.insert((at, first), (*low, true));
-                        known.adjacent_reads.insert((at, later), (*low, false));
+                        known.adjacent_reads.insert((at, first), (*low, *low));
+                        known.adjacent_reads.insert((at, later), (*low, *at_high));
                         break;
                     }
                     other => {
@@ -4532,7 +4536,8 @@ mod tests {
     }
 
     /// `xs[i]` then `xs[i + 1]` are paired, so one test can put both inside; not when something
-    /// that could change the list comes between, or when the second index isn't `i + 1`.
+    /// that could change the list or `i` comes between, when the second index isn't `i + 1`, or
+    /// when `xs[i + 1]` is read first.
     #[test]
     fn a_read_and_the_read_of_the_next_index_are_paired() -> Result<(), String> {
         let paired = "def go(xs: list[int], i: int) -> int:\n    return xs[i] * 10 + xs[i + 1]\n";
@@ -4541,6 +4546,12 @@ mod tests {
             "def go(ref xs: list[int], i: int) -> int:\n    a = xs[i]\n    xs.append(a)\n    return a + xs[i + 1]\n",
             "def go(xs: list[int], i: int) -> int:\n    return xs[i] * 10 + xs[i + 2]\n",
             "def go(xs: list[int], ys: list[int], i: int) -> int:\n    return xs[i] * 10 + ys[i + 1]\n",
+            // `i` given a new value between the two reads, by a read.
+            "def go(xs: list[int], start: int) -> int:\n    mut i = start\n    a = xs[i]\n    i = xs[0]\n    return a + xs[i + 1]\n",
+            // The list given a new value between the two reads.
+            "def go(xs: list[int], ys: list[int], i: int) -> int:\n    mut zs = xs\n    a = zs[i]\n    zs = ys\n    return a + zs[i + 1]\n",
+            // The next index read first isn't paired (yet).
+            "def go(xs: list[int], i: int) -> int:\n    return xs[i + 1] - xs[i]\n",
         ] {
             assert_eq!(adjacent(body)?, 0, "{body}");
         }

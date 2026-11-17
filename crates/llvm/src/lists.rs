@@ -1613,9 +1613,13 @@ impl Emit<'_, '_, '_> {
             return position;
         }
         let length = self.length_of_list(from, list);
+        // A pair is found by the read's place, so it's taken only where this is that read's own
+        // index: a path's earlier steps, read at the same place, aren't the pair's.
         let position = match self.known.adjacent_reads.get(&self.at).copied() {
-            Some((low, _)) => self.adjacent_position((list, &length), low, index, span),
-            None => self.position_checked(&length, index, span),
+            Some((low, own)) if matches!(index_operand, Operand::Local(read_at) if *read_at == own) => {
+                self.adjacent_position((list, &length), low, index, span)
+            }
+            _ => self.position_checked(&length, index, span),
         };
         if let Some(fact) = fact {
             let slot = if let Some(slot) = self.inside_slots.get(&fact) {

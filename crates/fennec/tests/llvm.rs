@@ -13717,15 +13717,15 @@ def main(stdout: Stdout):
     return
 "#;
 
-const ADJACENT_FIRST_OUTSIDE: &str = r#"def spans(starts: list[int], start: int, stdout: Stdout) -> int:
+const ADJACENT_FIRST_OUTSIDE: &str = r#"def spans(starts: list[int], nears: list[int], stdout: Stdout) -> int:
     mut total = 0
-    for near in range(start, start + 3):
-        total += starts[near + 1] - starts[near]
+    for near in nears:
+        total += starts[near] * 10 + starts[near + 1]
         stdout.print(near, total)
     return total
 
 def main(stdout: Stdout):
-    stdout.print(spans([0, 2, 5, 9], start=1, stdout=stdout))
+    stdout.print(spans([0, 2, 5, 9], nears=[0, 2, 4], stdout=stdout))
     return
 "#;
 

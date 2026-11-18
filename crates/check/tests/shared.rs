@@ -210,6 +210,37 @@ fn locks_never_nest() {
     );
 }
 
+/// A nested function called inside a `lock` takes a lock only if it does, or something it calls
+/// does: one that takes none is fine, and one that takes another lock, itself or through a function
+/// it calls, is refused. The function it's written in takes what it takes where it calls it.
+/// Before, a nested function counted as the function around it, which took the lock, so every one
+/// called inside it was refused.
+#[test]
+fn a_nested_function_inside_a_lock_takes_only_what_it_takes() {
+    let empty: [&str; 0] = [];
+    let takes_none = "def main(stdout: Stdout):\n    shared log = list[int]()\n    lock log as ref lines:\n        \
+        lines.append(5)\n        def counted(other: list[int]) -> int:\n            return len(other)\n        \
+        stdout.print(counted([1, 2, 3]))\n        stdout.print(len(lines))\n";
+    assert_eq!(locking(takes_none), empty);
+    let takes_another = "def give(account: shared Account):\n    lock account as ref held:\n        held.add(1)\n\n\
+        def main(stdout: Stdout):\n    shared log = list[int]()\n    shared other = Account()\n    \
+        def poke():\n        lock other as ref held:\n            held.add(1)\n    \
+        def relayed():\n        give(other)\n    \
+        lock log as ref lines:\n        lines.append(5)\n        poke()\n        relayed()\n";
+    assert_eq!(
+        locking(takes_another),
+        [
+            "`poke` takes `other`'s lock while `lines` is locked @ poke()",
+            "`relayed` takes `account`'s lock while `lines` is locked @ relayed()",
+        ]
+    );
+    let around_it = "def outer(account: shared Account):\n    def poke():\n        lock account as ref held:\n            \
+        held.add(1)\n    poke()\n\n\
+        def main(stdout: Stdout):\n    shared log = list[int]()\n    shared a = Account()\n    \
+        lock log as ref lines:\n        lines.append(1)\n        outer(a)\n";
+    assert_eq!(locking(around_it), ["`outer` takes `account`'s lock while `lines` is locked @ outer(a)"]);
+}
+
 const HOLDERS: &str = "struct Cell:
     count = 0
 

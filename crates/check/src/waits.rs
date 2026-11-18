@@ -258,19 +258,20 @@ impl FnCx<'_> {
 }
 
 impl Checker {
+    /// Notes that the function `key` takes a lock itself: a nested function by its own key, so it's
+    /// counted where it's called, not wherever the function around it is.
     pub(crate) fn note_takes_lock(&mut self, key: &str, what: &str) {
-        let outer = self.outermost(key);
-        self.takes_locks.entry(outer).or_insert_with(|| what.to_owned());
+        self.takes_locks.entry(key.to_owned()).or_insert_with(|| what.to_owned());
     }
 
     /// Each function that does what `own` says some do, itself or through what it calls, with
-    /// what the first one found does.
+    /// what the first one found does, by their own keys.
     fn up_the_calls(&self, own: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut found = own.clone();
         let mut pending: Vec<String> = found.keys().cloned().collect();
         while let Some(key) = pending.pop() {
             let what = found.get(&key).cloned().unwrap_or_default();
-            for caller in self.callers.get(&key).into_iter().flatten() {
+            for caller in self.own_callers.get(&key).into_iter().flatten() {
                 if !found.contains_key(caller) {
                     found.insert(caller.clone(), what.clone());
                     pending.push(caller.clone());
@@ -287,7 +288,7 @@ impl Checker {
                 let suffix = format!(".{method}");
                 found.iter().find(|(key, _)| key.ends_with(&suffix)).map(|(_, what)| what.clone())
             }
-            None => found.get(&self.outermost(callee)).cloned(),
+            None => found.get(callee).cloned(),
         }
     }
 
@@ -386,8 +387,7 @@ impl Checker {
     }
 
     fn note_waits(&mut self, key: &str, what: &str) {
-        let outer = self.outermost(key);
-        self.waits.entry(outer).or_insert_with(|| what.to_owned());
+        self.waits.entry(key.to_owned()).or_insert_with(|| what.to_owned());
     }
 
     /// Reports each call inside a lock to something that waits, following what waits up the

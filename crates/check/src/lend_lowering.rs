@@ -36,12 +36,15 @@ pub(crate) struct Source {
     pub(crate) task: Option<crate::launch::Task>,
 }
 
+/// The fields each `match` with `ref` cases binds by name, by its case, found by the `match`'s span.
+type RefMatches = BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>;
+
 /// Writes in every `with` over a source in `module`, saying whether there were any.
 pub(crate) fn lower(
     module: &mut Module,
     sources: &BTreeMap<(u32, u32), Source>,
     launches: &BTreeMap<(u32, u32), crate::launch::Launch>,
-    ref_matches: &BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
+    (ref_matches, test_fails): (&RefMatches, &BTreeMap<(u32, u32), TypeExpr>),
 ) -> bool {
     if sources.is_empty() && launches.is_empty() && ref_matches.is_empty() {
         return false;
@@ -82,14 +85,25 @@ pub(crate) fn lower(
             }
             Item::Extend(extension) => extension.methods.iter_mut().for_each(|def| lowering.function(def)),
             Item::Test(test) => {
+                // A test that holds a source's failure says what it fails with, worked out from its
+                // body, so it holds the failure as a function does: the source's cleanup runs once,
+                // after what's inside the block is left (#2040).
+                if test.fails.is_none()
+                    && holds_with(&test.body)
+                    && let Some(fails) = test_fails.get(&(test.span.start, test.span.end))
+                {
+                    test.fails = Some(fails.clone());
+                }
                 lowering.returns.push(None);
-                lowering.fails.push(None);
+                lowering.failing.push(test.fails.is_some());
+                lowering.fails.push(test.fails.clone());
                 let given: Vec<String> =
                     test.capabilities.iter().chain(&test.inputs).map(|param| param.name.clone()).collect();
                 lowering.binds.push(fennec_syntax::sight::bound_in(&test.body, &given));
                 lowering.stmts(&mut test.body);
                 lowering.binds.pop();
                 lowering.fails.pop();
+                lowering.failing.pop();
                 lowering.returns.pop();
             }
             _ => {}
@@ -2737,8 +2751,18 @@ mod tests {
         let mut module = fennec_syntax::parse(source).unwrap();
         let checked = crate::checker::Checker::new(&module).run(crate::checker::Scope::Everything).unwrap();
         let (launches, matches) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
-        assert!(super::lower(&mut module, &checked.sources, &launches, &matches));
-        assert!(!super::lower(&mut module, &checked.sources, &launches, &matches));
+        assert!(super::lower(
+            &mut module,
+            &checked.sources,
+            &launches,
+            (&matches, &std::collections::BTreeMap::new())
+        ));
+        assert!(!super::lower(
+            &mut module,
+            &checked.sources,
+            &launches,
+            (&matches, &std::collections::BTreeMap::new())
+        ));
     }
 
     /// A generic source's type parameter, written in as a type naming the caller's own, like a

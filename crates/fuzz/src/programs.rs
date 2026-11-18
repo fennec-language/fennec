@@ -839,6 +839,35 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
     }
 
+    /// Every loop over `enumerate` or `zip` of a generator made right there (`ZipSumming`), the one
+    /// lending from a source and the one failing partway, let go partway, run out, or failing,
+    /// checks, and the evaluator prints what the oracle prints.
+    #[test]
+    fn the_zip_generator_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, Stmt, ZIP_WAYS, ZipSumming};
+        let mut body = Vec::new();
+        for way in ZIP_WAYS {
+            for failing in [false, true] {
+                for (limit, stop, words) in [(0, 0, 0), (3, 4, 2), (3, 9, 5), (4, 1, 0), (2, 0, 3), (5, 5, 1)]
+                {
+                    body.push(Stmt::ZipSummed(ZipSumming { way, failing, limit, stop, words }));
+                }
+            }
+        }
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
     /// Every way of writing a `match` with `ref` the compiled program once got wrong (`RefWay`),
     /// from every start and with every text, checks, and the evaluator prints what the oracle
     /// prints: each `ref` name's change put back into the field it names.

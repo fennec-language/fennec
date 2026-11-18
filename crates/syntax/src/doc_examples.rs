@@ -118,6 +118,7 @@ pub fn doc_examples(source: &str, base: u32, shown: &str) -> Result<Vec<Item>, D
             body: stmts,
             bench: false,
             span: Span::new(open.at, last_end).shifted(base),
+            fails: None,
         }));
     }
     Ok(tests)

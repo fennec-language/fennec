@@ -1234,6 +1234,76 @@ def main(stdout: Stdout):
     stdout.print("zipped gave", got)
 "#;
 
+/// A source's cleanup runs once, after what's inside its block is left: a `for ref` item written
+/// back, a generator the block loops over let go, and one failing partway through still running it.
+/// A test holds its failure the same way since #2040; the oracle runs these as functions, and
+/// prints what the compiled program prints.
+#[test]
+fn a_source_s_cleanup_runs_once_what_s_inside_its_block_is_left() {
+    prints(
+        CLEANUP_AFTER_INSIDE,
+        "cleanup sees [11, 2]\nOops(code=11)\ncleanup of outer sees 1\nOops(code=1)\nstep 1\ncleanup of outer sees 0\nShut(name=\"mid\")\n",
+    );
+}
+
+const CLEANUP_AFTER_INSIDE: &str = r#"error Oops:
+    code: int
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def tallied(ref xs: list[int], stdout: Stdout) -> with int:
+    lend 1 except:
+        stdout.print("cleanup sees", xs)
+
+def ref_item(stdout: Stdout) fails Oops:
+    mut xs = [1, 2]
+    with tallied(ref xs, stdout) as got:
+        for ref x in xs:
+            x += 10
+            fail Oops(code=x + got * 0)
+
+def opened(name: str, seen: shared list[str], stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        lock seen as now:
+            stdout.print("cleanup of", name, "sees", len(now))
+    lock seen as ref now:
+        now.append(name)
+
+def held(name: str, seen: shared list[str], stdout: Stdout) -> Iterator[int] fails Shut:
+    with opened(name, seen, stdout) as door:
+        yield 1
+        yield 2
+
+def breaking(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def inner_closes(stdout: Stdout) fails Oops | Shut:
+    shared seen = list[str]()
+    with opened("outer", seen, stdout) as door:
+        for step in held("inner", seen, stdout)?:
+            fail Oops(code=step)
+
+def failing_mid(stdout: Stdout) fails Shut:
+    shared seen = list[str]()
+    with opened("outer", seen, stdout) as door:
+        for step in breaking("mid")?:
+            stdout.print("step", step)
+
+def main(stdout: Stdout):
+    ref_item(stdout) except why:
+        stdout.print(why)
+    inner_closes(stdout) except why:
+        stdout.print(why)
+    failing_mid(stdout) except why:
+        stdout.print(why)
+"#;
+
 /// A loop over a generator made for it lets it go when it's left early, as compiled code does: the
 /// generator leaves as if by `return`, so the `with` it's stopped in runs its cleanup there and
 /// then. A cleanup's failure takes the place of a `break` or `return`, and is noted on a failure

@@ -633,7 +633,24 @@ impl<'c> FnCx<'c> {
             let ty = input.ty.as_ref().map_or(Type::Unknown, |ty| cx.resolve(ty));
             cx.declare(&input.name, ty, input.is_mut, input.span);
         }
+        // What it fails with is the compiler's to write, once it's worked it out (#2040).
+        if let Some(fails) = &test.fails {
+            if cx.checker.again {
+                cx.fails = Some(cx.resolve(fails));
+            } else {
+                let message = "a test can't say what it fails with";
+                cx.error(Diagnostic::new(message, fails.span).with_help("take the `fails` away"));
+            }
+        }
         cx.stmts(&test.body, false);
+        // What it fails with, worked out from its body as a function's is, for lowering to write:
+        // by its span, since a test and a bench may share a name.
+        let errors = cx.errors.clone();
+        if !errors.is_empty() {
+            let error = cx.joined(&errors, test.span, "fails with");
+            let error = cx.checker.settled(&error);
+            cx.checker.test_errors.insert((test.span.start, test.span.end), error);
+        }
         cx.finish(&[]);
         if test.inputs.is_empty() && test.capabilities.is_empty() {
             checker.record_test(key, &test.body);

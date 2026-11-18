@@ -46,6 +46,13 @@ impl Crossing {
         !self.worked_out || self.types.contains(ty)
     }
 
+    /// Whether every type this says crosses, `wider` says crosses too: as worked out over all of a
+    /// program, which `wider` is, against over what `main` reaches.
+    #[must_use]
+    pub fn within(&self, wider: &Crossing) -> bool {
+        !wider.worked_out || (self.worked_out && self.types.is_subset(&wider.types))
+    }
+
     /// Whether it was worked out. When it wasn't, every type crosses.
     #[must_use]
     pub fn worked_out(&self) -> bool {

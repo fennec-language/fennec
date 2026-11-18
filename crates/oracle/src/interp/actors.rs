@@ -491,6 +491,17 @@ impl State {
     }
 }
 
+/// After a send, stamped `sent`, on the channel to every listener numbered `number`: which of its
+/// listeners started beside it heard it, each way tried, and what it lets go.
+fn sent_to_every(state: &mut State, orders: &Mutex<Orders>, number: i64, sent: &Clock) -> Run<Value> {
+    let Ok(mut orders) = orders.lock() else {
+        return unsupported("the orders of messages were lost");
+    };
+    state.heard_or_not(number, &mut orders);
+    drop(orders);
+    state.kept_for_every(number, sent)
+}
+
 /// Who runs, and the channels they share, held.
 fn lock_state(shared: &super::Shared) -> Run<MutexGuard<'_, State>> {
     shared.sched.state.lock().map_or_else(|_| unsupported("the tasks were lost"), Ok)
@@ -1010,56 +1021,7 @@ impl Interp {
                 let Ok(size) = usize::try_from(*size) else { return unsupported("a channel of no size") };
                 self.new_channel(size, name == "new_every").map(Value::Int)
             }
-            ("listen", [Value::Int(number), Value::Bool(drop_oldest)]) => {
-                let mut state = lock_state(&self.shared)?;
-                let maker = who(&mut self.rounds_as, self.actor, &mut state)?;
-                let started = match state.actors.get_mut(maker) {
-                    Some(actor) => {
-                        tick(&mut actor.clock, maker);
-                        actor.clock.clone()
-                    }
-                    None => return unsupported("a task was lost"),
-                };
-                let Some(chan) = state.channels.get(number) else {
-                    return unsupported("a channel let go of");
-                };
-                if !chan.every {
-                    return Ok(Value::Int(*number));
-                }
-                // It starts after every message sent before it, and hears every one sent after it.
-                // One sent beside it, neither, it heard on some run and not on another: each place
-                // it could start among those is a run of its own, the first where it is here.
-                let sent = chan.sent.len();
-                let surely_before = chan
-                    .sent
-                    .iter()
-                    .rposition(|sent| happened_before(&sent.clock, &started))
-                    .map_or(0, |at| at + 1);
-                let at = if surely_before < sent {
-                    let Ok(mut orders) = self.shared.sched.orders.lock() else {
-                        return unsupported("the orders of messages were lost");
-                    };
-                    sent - orders.choose(sent - surely_before + 1)
-                } else {
-                    sent
-                };
-                let listener = state.next_number;
-                state.next_number += 1;
-                let (reads, receivers) = (BTreeMap::new(), BTreeMap::new());
-                let drop_oldest = *drop_oldest;
-                let made = Listener {
-                    channel: *number,
-                    at,
-                    start: at,
-                    drop_oldest,
-                    reads,
-                    receivers,
-                    started,
-                    settled: false,
-                };
-                state.listeners.insert(listener, made);
-                Ok(Value::Int(listener))
-            }
+            ("listen", [Value::Int(number), Value::Bool(drop_oldest)]) => self.listen(*number, *drop_oldest),
             ("send", [Value::Int(number), message, Value::Int(timeout)]) => {
                 self.charge(message)?;
                 self.note_sent_cells(message)?;
@@ -1099,6 +1061,57 @@ impl Interp {
             }
             _ => unsupported(format!("std.intrinsics.channel_{name}")),
         }
+    }
+
+    /// `channel_listen`: a listener of the channel to every listener numbered `number`, or the
+    /// channel's own number for one to one receiver. It starts after every message sent before
+    /// it, and hears every one sent after it; one sent beside it, neither, it heard on some run and
+    /// not on another, so each place it could start among those is a run of its own.
+    fn listen(&mut self, number: i64, drop_oldest: bool) -> Run<Value> {
+        let mut state = lock_state(&self.shared)?;
+        let maker = who(&mut self.rounds_as, self.actor, &mut state)?;
+        let started = match state.actors.get_mut(maker) {
+            Some(actor) => {
+                tick(&mut actor.clock, maker);
+                actor.clock.clone()
+            }
+            None => return unsupported("a task was lost"),
+        };
+        let Some(chan) = state.channels.get(&number) else {
+            return unsupported("a channel let go of");
+        };
+        if !chan.every {
+            return Ok(Value::Int(number));
+        }
+        // It starts after every message sent before it, and hears every one sent after it.
+        // One sent beside it, neither, it heard on some run and not on another: each place
+        // it could start among those is a run of its own, the first where it is here.
+        let sent = chan.sent.len();
+        let surely_before =
+            chan.sent.iter().rposition(|sent| happened_before(&sent.clock, &started)).map_or(0, |at| at + 1);
+        let at = if surely_before < sent {
+            let Ok(mut orders) = self.shared.sched.orders.lock() else {
+                return unsupported("the orders of messages were lost");
+            };
+            sent - orders.choose(sent - surely_before + 1)
+        } else {
+            sent
+        };
+        let listener = state.next_number;
+        state.next_number += 1;
+        let (reads, receivers) = (BTreeMap::new(), BTreeMap::new());
+        let made = Listener {
+            channel: number,
+            at,
+            start: at,
+            drop_oldest,
+            reads,
+            receivers,
+            started,
+            settled: false,
+        };
+        state.listeners.insert(listener, made);
+        Ok(Value::Int(listener))
     }
 
     /// `channel_send`: 0 sent, 1 closed, 2 timed out.
@@ -1157,12 +1170,7 @@ impl Interp {
                 let sent = Sent { sender, value: message.clone(), clock: clock.clone(), race };
                 if chan.every {
                     chan.sent.push(sent);
-                    let Ok(mut orders) = self.shared.sched.orders.lock() else {
-                        return unsupported("the orders of messages were lost");
-                    };
-                    state.heard_or_not(number, &mut orders);
-                    drop(orders);
-                    return state.kept_for_every(number, &clock);
+                    return sent_to_every(&mut state, &self.shared.sched.orders, number, &clock);
                 }
                 // A send of no time in a `parallel` round beside others finds room or not by time.
                 if timeout == 0 && (beside_rounds || !state.room_now_is_fixed(number, &clock, &[me, sender]))

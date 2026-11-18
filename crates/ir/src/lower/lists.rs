@@ -1060,10 +1060,12 @@ impl Lowering<'_> {
                 self.emit(InstKind::Copy { dest: held, value }, span);
                 self.count_through(names, (held, item), (Operand::Int(first), None), span, body)
             }
+            // The text as it was read, even if working out the separator changes its name, as
+            // `split`'s own arguments are read.
             Unlisted::Split { text, separator, call } => {
                 let text = self.expr(text)?;
-                let separator = self.expr(separator)?;
-                self.through_split(names, (text, separator), (span, call), body)
+                let read = self.both(text, |lowering| lowering.expr(separator), call)?;
+                self.through_split(names, read, (span, call), body)
             }
         }
     }

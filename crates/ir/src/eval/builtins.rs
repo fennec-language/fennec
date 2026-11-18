@@ -46,6 +46,10 @@ pub(super) fn call(machine: &mut Machine<'_>, name: &str, args: &mut [Value], sp
             n.checked_abs().map(Value::Int).ok_or_else(|| super::overflow(span))?
         }
         ("abs" | "float.abs", [Value::Float(x)]) => Value::Float(x.abs()),
+        // A loop through a text moving past what it just took.
+        ("str.next_place", [Value::Int(at), Value::Int(step)]) => {
+            at.checked_add(*step).map(Value::Int).ok_or_else(|| super::overflow(span))?
+        }
         (
             "len" | "list.len" | "str.len" | "dict.len" | "set.len" | "bytes.len" | "tuple.len" | "array.len",
             [value],
@@ -232,6 +236,24 @@ fn strs(machine: &mut Machine<'_>, name: &str, args: &[Value]) -> Ran<Called> {
         ("str.split", []) => Value::list(text.split_whitespace().map(Value::str).collect()),
         ("str.split", [Value::Str(by)]) if !by.is_empty() => {
             Value::list(text.split(by.as_ref()).map(Value::str).collect())
+        }
+        // A loop over a split, a part at a time: its size in bytes, where the next separator
+        // starts from a byte, or the text's length, and the part between two bytes.
+        ("intrinsics.text_size", []) => Value::Int(i64::try_from(text.len()).unwrap_or(i64::MAX)),
+        ("str.split_at", [Value::Str(by), Value::Int(at)]) if !by.is_empty() => {
+            let Some(rest) = usize::try_from(*at).ok().and_then(|at| text.get(at..)) else {
+                return not_here("a split's place inside a character");
+            };
+            let found = rest.find(by.as_ref()).unwrap_or(rest.len());
+            machine.charge(found / 16)?;
+            Value::Int(at.saturating_add(i64::try_from(found).unwrap_or(i64::MAX)))
+        }
+        ("intrinsics.text_part", [Value::Int(at), Value::Int(end)]) => {
+            let bounds = usize::try_from(*at).ok().zip(usize::try_from(*end).ok());
+            let Some(part) = bounds.and_then(|(at, end)| text.get(at..end)) else {
+                return not_here("a part of a text inside a character");
+            };
+            Value::str(part)
         }
         ("str.join", [items]) => {
             let mut parts = Vec::new();

@@ -1,7 +1,7 @@
 //! Checking statements: blocks and their values, `if` and loops (and how they narrow
 //! optionals), `return`, `fail`, `yield`, `with`, and nested functions.
 
-use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind, UnaryOp};
+use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind, TypeExpr, UnaryOp};
 
 use crate::effects;
 use crate::function::{Binding, FnCx, Origin};
@@ -92,8 +92,7 @@ impl FnCx<'_> {
                 Flow::unit()
             }
             StmtKind::Assign { target, op, value, declare_mut, ty } => {
-                self.note_arrow(target, value);
-                self.assign(target, *op, value, *declare_mut, ty.as_ref());
+                self.assign_noting_arrows(target, *op, value, *declare_mut, ty.as_ref());
                 Flow::unit()
             }
             StmtKind::If { branches, otherwise } => {
@@ -389,8 +388,7 @@ impl FnCx<'_> {
         let looped_before = self.looped_here.len();
         self.looped_here.extend(looped_here(iter));
         let outer = crate::parallel::called_as_outer(iter);
-        let parallel =
-            crate::parallel::parallel_items(iter).filter(|_| outer || self.lookup("parallel").is_none());
+        let parallel = self.parallel_over(iter);
         if outer && parallel.is_some() {
             self.note_outer();
         }
@@ -429,6 +427,10 @@ impl FnCx<'_> {
         self.forget_changed_in(body);
         let before = self.snapshot();
         self.push(false);
+        if let Some(items) = parallel {
+            self.no_failing_generator_apart(&item, items.span);
+            self.set_apart();
+        }
         self.bind_names(names, &item, is_mut, (iter.span, span));
         self.stmts(body, false);
         self.pop();
@@ -575,6 +577,21 @@ impl FnCx<'_> {
         vec![Type::Unknown; count]
     }
 
+    /// An assignment, with the arrow function it gives a name noted: what it may capture, and, for
+    /// a name declared with it, the arrow itself (see `keep_arrow`).
+    fn assign_noting_arrows(
+        &mut self,
+        target: &Expr,
+        op: Option<BinOp>,
+        value: &Expr,
+        declare_mut: bool,
+        ty: Option<&TypeExpr>,
+    ) {
+        self.note_arrow(target, value);
+        self.assign(target, op, value, declare_mut, ty);
+        self.keep_arrow(target, value);
+    }
+
     /// A function defined inside this one. It can read the names around it, but not change them.
     /// `work = () => ...`: an arrow function given to a name, which may capture a handle.
     fn note_arrow(&mut self, target: &Expr, value: &Expr) {
@@ -597,6 +614,44 @@ impl FnCx<'_> {
         self.note_closure(name, &reads, params);
     }
 
+    /// What a nested function, `key`, does through each function value it reads from around it,
+    /// of the names it `reads` that aren't its `own`.
+    /// - A parameter of a function around it, of a function's type, read in any way, counts as
+    ///   called by the nested function, as a direct call does (see `note_value_call`): handed on,
+    ///   given to a local, or called in an arrow function, it's still called wherever the nested
+    ///   function is.
+    /// - An arrow function a local name was declared with counts for what its own body does, when
+    ///   the name isn't `mut` (see `local_arrow`).
+    /// - Anything else, as a `mut` name, or a list, an optional or a field holding function values,
+    ///   a parameter's too, is checked as part of the function around it, so the nested function
+    ///   counts for all that function does.
+    ///
+    /// A named function, which a local can hold too, isn't a function value here: calling it is a
+    /// call of it, followed as any call is.
+    fn captured_values(&mut self, reads: &[String], own: &[String], key: &str) {
+        let mut around = false;
+        for name in reads.iter().filter(|name| !own.contains(name)) {
+            let Some((ty, _)) = self.lookup(name) else { continue };
+            if !self.checker.holds_function_value(&ty, &mut Vec::new()) {
+                continue;
+            }
+            // By the type it's declared with: an optional one narrowed here, as inside `if work is
+            // not None:`, is still one no caller's value is followed for.
+            let declared = self.declared_type(name).map(|declared| self.checker.settled(&declared));
+            let param = self.param_owner(name).filter(|_| matches!(declared, Some(Type::Arrow(..))));
+            if let Some(owner) = param {
+                self.checker.values.note_captured_param(key, owner, name);
+            } else if let Some(arrow) = self.local_arrow(name) {
+                self.checker.values.captured_arrows.push((key.to_owned(), arrow));
+            } else {
+                around = true;
+            }
+        }
+        if around {
+            self.checker.own_callers.entry(self.key.clone()).or_default().insert(key.to_owned());
+        }
+    }
+
     fn nested(&mut self, def: &FnDef) {
         let mut reads = Vec::new();
         fennec_syntax::visit::in_function(&mut def.clone(), &mut |seen| names_read(seen, &mut reads));
@@ -612,20 +667,7 @@ impl FnCx<'_> {
             );
             self.error(Diagnostic::new(message, def.span).with_help("call it something else"));
         }
-        // A function value it reads from around it, an arrow function or a parameter, or one held
-        // in a list, an optional or a field, is checked as part of the function around it, which
-        // notes what the value waits on and locks: so the nested function counts for what the
-        // function around it does, as if it called it.
-        let captured_types: Vec<Type> = reads
-            .iter()
-            .filter(|name| !own.contains(name))
-            .filter_map(|name| Some(self.lookup(name)?.0))
-            .collect();
-        let reads_a_value =
-            captured_types.iter().any(|ty| self.checker.holds_function_value(ty, &mut Vec::new()));
-        if reads_a_value {
-            self.checker.own_callers.entry(self.key.clone()).or_default().insert(key.clone());
-        }
+        self.captured_values(&reads, &own, &key);
         let mut captured = self.visible();
         let function = Type::Function(key.clone());
         captured.push(Binding {
@@ -637,10 +679,15 @@ impl FnCx<'_> {
             mut_at: None,
             to_every: false,
             param_of: None,
+            arrow: None,
         });
         let report = self.report;
         let inherited = self.generics.clone();
+        let handed = self.checker.generators_handed_up.len();
         self.checker.check_nested(&key, def, captured, !report, inherited);
+        // What it couldn't tell about a name of this function's, this function looks at again.
+        let handed_up: Vec<_> = self.checker.generators_handed_up.drain(handed..).collect();
+        self.pending_generators.extend(handed_up);
         self.declare(&def.name, function, false, def.span);
     }
 

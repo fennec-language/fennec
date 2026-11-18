@@ -367,7 +367,7 @@ type Compiled = Result<(Object, bool), String>;
 /// One object to link: its bytes, or the cache's file holding them, which the linker reads where
 /// it lies. A dev build's functions are kept files, so a build after an edit writes out only the
 /// objects it compiled, where it wrote every one before and deleted them after: on a Mac that was
-/// most of the build (`Cache::keep_bytes`).
+/// most of the build (`Cache::keep_object`).
 #[derive(Debug)]
 pub enum Object {
     Bytes(Vec<u8>),
@@ -617,14 +617,10 @@ pub fn compile(
                     let keyed = cache.and_then(|(cache, hashes)| {
                         Some((cache, object_key(&version, &pipeline, hashes.get(at)?)))
                     });
-                    // The cache's own file, which the linker reads where it lies; or, kept the
-                    // way every entry was once, its bytes.
-                    let cached = keyed.as_ref().and_then(|(cache, key)| {
-                        cache
-                            .kept_entry(KIND, key)
-                            .map(Object::Kept)
-                            .or_else(|| cache.read(KIND, key).map(Object::Bytes))
-                    });
+                    // The cache's own file, which the linker reads where it lies.
+                    let cached = keyed
+                        .as_ref()
+                        .and_then(|(cache, key)| cache.kept_object(KIND, key).map(Object::Kept));
                     let result = match cached {
                         Some(object) => Ok((object, false)),
                         None => {
@@ -636,7 +632,7 @@ pub fn compile(
                             // A failed write only means compiling it again next time, and linking
                             // these bytes this time.
                             Some((cache, key)) => {
-                                let kept = cache.keep_bytes(KIND, key, &bytes);
+                                let kept = cache.keep_object(KIND, key, &bytes);
                                 match fennec_build::kept("keep a compiled function", kept).flatten() {
                                     Some(kept) => (Object::Kept(kept), true),
                                     None => (Object::Bytes(bytes), true),

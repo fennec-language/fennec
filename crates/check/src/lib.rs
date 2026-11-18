@@ -1211,6 +1211,9 @@ impl Checked {
 pub struct Checked {
     pub signatures: Signatures,
     pub types: Types,
+    /// What each function's check wrote in the tables below, by its key, settled: what a later
+    /// round carries over for a function it left as it was.
+    tables_of: BTreeMap<String, checker::Tables>,
     /// The enum the expected type chose for each leading-dot case more than one enum has.
     cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.

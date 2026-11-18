@@ -35,6 +35,70 @@ pub(crate) enum Scope {
     Building,
 }
 
+/// What one function's check writes in the tables of what to write into the module, kept by
+/// function: a round of rewriting that leaves a function as it was can carry over what its check
+/// found, rather than check it again. Tests, field defaults and constants write into the
+/// checker's own tables, which are worked out again each round.
+macro_rules! tables {
+    ($($field:ident: $ty:ty),* $(,)?) => {
+        #[derive(Clone, Debug, Default, PartialEq)]
+        pub(crate) struct Tables {
+            $(pub(crate) $field: $ty,)*
+        }
+
+        impl Checker {
+            /// The tables as they are, leaving them empty for a function's check to write into.
+            fn take_tables(&mut self) -> Tables {
+                Tables { $($field: std::mem::take(&mut self.$field),)* }
+            }
+
+            /// Puts back what `take_tables` took.
+            fn put_tables(&mut self, tables: Tables) {
+                $(self.$field = tables.$field;)*
+            }
+
+            /// Adds what one function's check wrote.
+            fn add_tables(&mut self, tables: &Tables) {
+                $(self.$field.extend(tables.$field.clone());)*
+            }
+        }
+    };
+}
+
+tables! {
+    cases: BTreeMap<(u32, u32), String>,
+    float_sums: BTreeSet<(u32, u32)>,
+    sized_sums: BTreeMap<(u32, u32), bool>,
+    defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
+    generator_types: BTreeMap<(u32, u32), String>,
+    not_equals: BTreeSet<(u32, u32)>,
+    method_calls: BTreeSet<(u32, u32)>,
+    array_zeros: BTreeMap<(u32, u32), Expr>,
+    optional_steps: BTreeSet<(u32, u32)>,
+    failing_steps: BTreeSet<(u32, u32)>,
+    std_names: BTreeMap<(u32, u32), String>,
+    names_outer: BTreeSet<String>,
+    std_calls: BTreeMap<(u32, u32), String>,
+    field_args: BTreeMap<(u32, u32), String>,
+    named_patterns: BTreeMap<(u32, u32, String), Vec<String>>,
+    shared_values: BTreeMap<(u32, u32), Type>,
+    sources: BTreeMap<(u32, u32), crate::lend_lowering::Source>,
+    widened_values: BTreeMap<(u32, u32), usize>,
+    generic_sources: BTreeSet<String>,
+    generic_calls: BTreeMap<(u32, u32), crate::generic_copies::Call>,
+    generic_method_calls: BTreeMap<(u32, u32), crate::generic_copies::Call>,
+    format_params: BTreeSet<(String, Type, String, String)>,
+    union_sources: BTreeMap<(u32, u32), crate::union_sources::Dispatch>,
+    opened_apart: BTreeSet<(u32, u32)>,
+    launches: BTreeMap<(u32, u32), crate::launch::Launch>,
+    routes: BTreeMap<(u32, u32), crate::routes::Route>,
+    ref_matches: BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
+    ref_items: BTreeMap<(u32, u32), bool>,
+    native_formats: BTreeMap<(u32, u32), String>,
+    native_json_bodies: BTreeSet<(u32, u32)>,
+    saved_types: BTreeSet<Type>,
+}
+
 pub(crate) struct Checker {
     pub(crate) program: Program,
     states: BTreeMap<String, State>,
@@ -165,6 +229,12 @@ pub(crate) struct Checker {
     /// What each function waits on or locks, itself or however many calls down, once every
     /// function is checked: what a `lock` that calls it is judged by.
     pub(crate) lock_verdicts: BTreeMap<String, String>,
+    /// What each function's check wrote in the tables, by its key, which a later round can carry
+    /// over for a function it left as it was.
+    tables_of: BTreeMap<String, Tables>,
+    /// Whether every function checked so far has had what it wrote added to the tables: once
+    /// they're read, what a function checked after that writes goes in as it's checked.
+    tables_merged: bool,
     /// What's followed through function values: which function parameters are called, what's
     /// passed for them, and what each arrow function waits on.
     pub(crate) values: crate::waits::Values,
@@ -283,6 +353,8 @@ impl Checker {
             takes_locks: BTreeMap::new(),
             lock_calls: Vec::new(),
             lock_verdicts: BTreeMap::new(),
+            tables_of: BTreeMap::new(),
+            tables_merged: false,
             values: crate::waits::Values::default(),
             handovers: crate::holds::Handovers::default(),
             holds: module.holds.clone(),
@@ -313,6 +385,14 @@ impl Checker {
             self.check_implicit_methods();
         }
         self.revisit_cycles();
+        // Every function's check is done but those reached later, from a test or a constant, so
+        // what each wrote goes into the tables the rest reads.
+        let kept = std::mem::take(&mut self.tables_of);
+        for own in kept.values() {
+            self.add_tables(own);
+        }
+        self.tables_of = kept;
+        self.tables_merged = true;
         self.waits_under_locks();
         self.fails_unsaid();
         for name in self.program.constants.keys().cloned().collect::<Vec<_>>() {
@@ -405,12 +485,45 @@ impl Checker {
             .collect()
     }
 
+    /// A function's tables with every type in them settled, so a later round's check, which has
+    /// type variables of its own, can carry them over.
+    fn settled_tables(&self, mut tables: Tables) -> Tables {
+        for source in tables.sources.values_mut() {
+            source.gives = self.settled(&source.gives);
+        }
+        for call in tables.generic_calls.values_mut().chain(tables.generic_method_calls.values_mut()) {
+            call.types = call.types.iter().map(|ty| self.settled(ty)).collect();
+        }
+        tables.launches = std::mem::take(&mut tables.launches)
+            .into_iter()
+            .map(|(at, launch)| (at, launch.settled(&|ty| self.settled(ty))))
+            .collect();
+        for route in tables.routes.values_mut() {
+            for (_, ty) in &mut route.takes {
+                *ty = self.settled(ty);
+            }
+        }
+        for ty in tables.shared_values.values_mut() {
+            *ty = self.settled(ty);
+        }
+        tables.format_params = std::mem::take(&mut tables.format_params)
+            .into_iter()
+            .map(|(function, ty, format, through)| (function, self.settled(&ty), format, through))
+            .collect();
+        tables.saved_types = tables.saved_types.iter().map(|ty| self.settled(ty)).collect();
+        tables
+    }
+
     /// What a check that found nothing wrong gives back.
     fn checked(
         mut self,
         structs: BTreeMap<String, crate::Struct>,
         errors: BTreeMap<String, crate::Struct>,
     ) -> Checked {
+        let tables_of = std::mem::take(&mut self.tables_of)
+            .into_iter()
+            .map(|(key, tables)| (key, self.settled_tables(tables)))
+            .collect();
         // What each source lends, now that what it's given is known, for lowering to write in.
         let mut sources = std::mem::take(&mut self.sources);
         for source in sources.values_mut() {
@@ -484,6 +597,7 @@ impl Checker {
             native_json_bodies: self.native_json_bodies,
             saved_types,
             holds: self.worked_out,
+            tables_of,
         }
     }
 
@@ -765,9 +879,18 @@ impl Checker {
         let Some(mut signature) = self.declared(key) else { return };
         self.states.insert(key.to_owned(), State::Checking);
         let effects = effects::of_body(&def.body);
+        // What this function's check writes is its own, kept by its key: what's in the tables
+        // already is put back after.
+        let around = self.take_tables();
         self.checking.push(key.to_owned());
         let body = FnCx::check_function(self, key, &def, &signature.params, captured, !prelude);
         self.checking.pop();
+        let own = self.take_tables();
+        self.put_tables(around);
+        if self.tables_merged {
+            self.add_tables(&own);
+        }
+        self.tables_of.insert(key.to_owned(), own);
         // No arrow means it gives back nothing. One that gives back a value anyway has to
         // write its type, and until it does, callers see the value so they aren't reported
         // as well.

@@ -43,12 +43,24 @@ pub(crate) struct FileLines {
     pub(crate) made: u64,
 }
 
+/// What a reader asks of a generator stopped at a `yield`.
+#[derive(Debug)]
+pub(crate) enum Ask {
+    /// Its next item.
+    Next,
+    /// That it leave: it goes on as if the `yield` were a `return`, so each `with` it's in runs
+    /// its cleanup.
+    Leave,
+}
+
 /// The reader's end of a generator.
 #[derive(Debug)]
 pub(crate) struct GenLink {
-    resume: Option<Sender<()>>,
+    resume: Option<Sender<Ask>>,
     items: Receiver<Msg>,
     done: bool,
+    /// Whether it's been asked for an item, which starts it.
+    started: bool,
     thread: Option<std::thread::JoinHandle<()>>,
     /// How many `parallel` rounds and launched tasks had started when it was made.
     made: u64,
@@ -65,7 +77,7 @@ pub(crate) enum Msg {
 /// The generator's end: where it sends items, and where it's asked for the next.
 pub(crate) struct YieldSide {
     items: Sender<Msg>,
-    resume: Receiver<()>,
+    resume: Receiver<Ask>,
 }
 
 impl Drop for GenLink {
@@ -96,11 +108,12 @@ impl GenLink {
         if self.done {
             return Ok(None);
         }
-        let asked = self.resume.as_ref().is_some_and(|resume| resume.send(()).is_ok());
+        let asked = self.resume.as_ref().is_some_and(|resume| resume.send(Ask::Next).is_ok());
         if !asked {
             self.done = true;
             return unsupported("a generator stopped");
         }
+        self.started = true;
         match self.items.recv() {
             Ok(Msg::Item(value)) => Ok(Some(value)),
             Ok(Msg::End) => {
@@ -115,6 +128,31 @@ impl GenLink {
                 self.done = true;
                 unsupported("a generator's thread stopped")
             }
+        }
+    }
+}
+
+impl GenLink {
+    /// Lets go of a generator stopped at a `yield`, as a loop it was made for does when it's left
+    /// early: it leaves as if by `return`, running the cleanup of each `with` it's in. What it
+    /// failed with or how it stopped as it left, if it didn't leave cleanly. One never started, or
+    /// finished, has nothing to run.
+    pub(crate) fn let_go(&mut self) -> Option<Flow> {
+        if self.done || !self.started {
+            return None;
+        }
+        self.done = true;
+        let asked = self.resume.as_ref().is_some_and(|resume| resume.send(Ask::Leave).is_ok());
+        if !asked {
+            return Some(Flow::Unsupported("a generator stopped".to_owned()));
+        }
+        match self.items.recv() {
+            Ok(Msg::End | Msg::Stopped(Flow::Return(_))) => None,
+            Ok(Msg::Stopped(flow)) => Some(flow),
+            Ok(Msg::Item(_)) => {
+                Some(Flow::Unsupported("a generator gave an item as it was let go".to_owned()))
+            }
+            Err(_) => Some(Flow::Unsupported("a generator's thread stopped".to_owned())),
         }
     }
 }
@@ -357,7 +395,14 @@ impl Interp {
             return unsupported("a generator's thread couldn't start");
         };
         let made = self.shared.rounds_started.load(std::sync::atomic::Ordering::SeqCst);
-        Ok(GenLink { resume: Some(resume), items: read, done: false, thread: Some(thread), made })
+        Ok(GenLink {
+            resume: Some(resume),
+            items: read,
+            done: false,
+            started: false,
+            thread: Some(thread),
+            made,
+        })
     }
 
     /// In a generator: hands its reader an item, then waits to be asked for the next.
@@ -366,10 +411,15 @@ impl Interp {
             return unsupported("a `yield` inside a `lock`");
         }
         let Some(side) = &self.yields else { return unsupported("`yield` outside a generator") };
-        if side.items.send(Msg::Item(value)).is_err() || side.resume.recv().is_err() {
+        if side.items.send(Msg::Item(value)).is_err() {
             return Err(Flow::Abandoned);
         }
-        Ok(())
+        match side.resume.recv() {
+            Ok(Ask::Next) => Ok(()),
+            // Let go of by the loop it was made for: it leaves as a `return` here would.
+            Ok(Ask::Leave) => Err(Flow::Return(Value::Unit)),
+            Err(_) => Err(Flow::Abandoned),
+        }
     }
 }
 
@@ -379,7 +429,7 @@ fn generator_thread(
     side: YieldSide,
     body: impl FnOnce(&mut Interp) -> Run<()>,
 ) {
-    if side.resume.recv().is_ok() {
+    if matches!(side.resume.recv(), Ok(Ask::Next)) {
         let items = side.items.clone();
         let mut interp = Interp::new(Arc::clone(shared), Some(side));
         // It runs for whoever reads it, `main` or a task, and waits as they do, and for the

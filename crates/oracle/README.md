@@ -157,8 +157,12 @@ says they are, at the version the workspace pins.
   which cuts its task short at once, unless it's a send failing with `Closed` to a task that's
   failed, whose failure the block ends with; waiting inside a `lock`; `stop_after=`; and every task
   waiting on another, which hangs. A wait given a timeout times out only when nothing else can go
-  on. A wait of no time, `0ms`, looks once, as the runtime's does: refused unless nothing else could
-  still send, take or close, and what it finds, a message, room or the close, was there before it. A task that ends with messages left in its inbox that its block sent as it ran: whether each
+  on, however short its time, even `1ns`: only a wait of no time, `0ms`, looks once, as the
+  runtime's does. That one is refused unless nothing else could still send, take or close, a task
+  waiting for room behind a send beside its own counting as one that could; what it finds, a
+  message, room, the messages filling it or the close, was there before it; and it's not in a
+  `parallel` round. A task that ends with messages left in its inbox that its block sent as it
+  ran: whether each
   send came before the task ended or after, and failed with `Closed`, hangs on time, so a later run
   tries the task going on first at that send, and the runs have to end the same.
 - `std.json`'s `dumps` and `loads[T]` are written here on their own, by the type the checker gave

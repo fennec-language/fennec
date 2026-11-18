@@ -505,6 +505,86 @@ pub fn compile_whole(
     })
 }
 
+/// Runs one of LLVM's tools on the whole program, with what it says when it fails.
+fn run(command: &mut Command, what: &str) -> Result<(), String> {
+    let done = command.output().map_err(|err| format!("couldn't run {what}: {err}"))?;
+    if done.status.success() {
+        Ok(())
+    } else {
+        Err(format!("{what} failed on the whole program:\n{}", String::from_utf8_lossy(&done.stderr)))
+    }
+}
+
+/// How many functions' modules `llvm-link` merges into one before those are linked together
+/// (see [`linked`]).
+const LINK_GROUP: usize = 512;
+
+/// How many groups are linked at once. Each holds its group's modules, about 200 MB for 512 of
+/// a big program's; the last link, of the groups together, holds the whole program, as linking
+/// it in one did.
+const LINKING_AT_ONCE: usize = 4;
+
+/// `inputs` linked into `whole`, in order. A big program's thousands of modules are linked in
+/// groups of `group`, [`LINK_GROUP`] in a build, several at once, and then the groups together,
+/// in order. Merging a
+/// module into a large one costs more the larger that is, and stalls on memory, so linking them
+/// all into one grew faster than the program: its 35,000 modules at 200k lines took 439 G cycles
+/// that way, and 162 G in two levels, for the same instructions. The modules and their order are
+/// the same either way, and so is the program. A group that fails says so, the first by place.
+fn linked(
+    tools: &Tools,
+    (inputs, group): (&[PathBuf], usize),
+    work: &Path,
+    whole: &Path,
+) -> Result<(), String> {
+    if inputs.len() <= group {
+        return link_listed(tools, inputs, &work.join("inputs.rsp"), whole);
+    }
+    let groups: Vec<(&[PathBuf], PathBuf)> = inputs
+        .chunks(group.max(1))
+        .enumerate()
+        .map(|(at, group)| (group, work.join(format!("group{at}.bc"))))
+        .collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failed: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..workers().min(LINKING_AT_ONCE).min(groups.len()) {
+            scope.spawn(|| {
+                loop {
+                    let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((group, output)) = groups.get(at) else { return };
+                    let listed = work.join(format!("group{at}.rsp"));
+                    if let Err(why) = link_listed(tools, group, &listed, output)
+                        && let Ok(mut failed) = failed.lock()
+                    {
+                        failed.push((at, why));
+                    }
+                }
+            });
+        }
+    });
+    let mut failed = failed.into_inner().map_err(|_| "a linking thread stopped unexpectedly".to_owned())?;
+    failed.sort_by_key(|(at, _)| *at);
+    if let Some((_, why)) = failed.into_iter().next() {
+        return Err(why);
+    }
+    let outputs: Vec<PathBuf> = groups.into_iter().map(|(_, output)| output).collect();
+    link_listed(tools, &outputs, &work.join("groups.rsp"), whole)
+}
+
+/// `inputs` linked into `output` by one `llvm-link`. They go to it in a file, one to a line,
+/// `listed`: on the command line, a big program's thousands go past what Windows lets a command
+/// be. Each is quoted, and on Windows written with `/`, so no `\` in one is read as an escape.
+fn link_listed(tools: &Tools, inputs: &[PathBuf], listed: &Path, output: &Path) -> Result<(), String> {
+    let line = |input: &PathBuf| {
+        let path = input.display().to_string();
+        format!("\"{}\"\n", if cfg!(windows) { path.replace('\\', "/") } else { path })
+    };
+    let lines: String = inputs.iter().map(line).collect();
+    std::fs::write(listed, lines).map_err(|err| format!("couldn't write {}: {err}", listed.display()))?;
+    run(Command::new(&tools.link).arg(format!("@{}", listed.display())).arg("-o").arg(output), "llvm-link")
+}
+
 /// The whole program's object: `inputs` linked, with the runtime's bitcode if it's given,
 /// optimized with nothing seen from outside but the names in `kept`, and compiled.
 fn whole_object(
@@ -515,28 +595,10 @@ fn whole_object(
     runtime: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
     let (whole, optimized, output) = (work.join("whole.bc"), work.join("optimized.bc"), work.join("whole.o"));
-    let run = |command: &mut Command, what: &str| {
-        let done = command.output().map_err(|err| format!("couldn't run {what}: {err}"))?;
-        if done.status.success() {
-            Ok(())
-        } else {
-            Err(format!("{what} failed on the whole program:\n{}", String::from_utf8_lossy(&done.stderr)))
-        }
-    };
     if !tools.link.is_file() {
         return Err(format!("LLVM's `llvm-link` isn't beside `opt` in {}", tools.link.display()));
     }
-    // The functions' files go to `llvm-link` in a file, one to a line: on the command line, a big
-    // program's thousands go past what Windows lets a command be. Each is quoted, and on Windows
-    // written with `/`, so no `\` in one is read as an escape.
-    let listed = work.join("inputs.rsp");
-    let line = |input: &PathBuf| {
-        let path = input.display().to_string();
-        format!("\"{}\"\n", if cfg!(windows) { path.replace('\\', "/") } else { path })
-    };
-    let lines: String = inputs.iter().map(line).collect();
-    std::fs::write(&listed, lines).map_err(|err| format!("couldn't write {}: {err}", listed.display()))?;
-    run(Command::new(&tools.link).arg(format!("@{}", listed.display())).arg("-o").arg(&whole), "llvm-link")?;
+    linked(tools, (inputs, LINK_GROUP), work, &whole)?;
     if let Some(runtime) = runtime {
         let program = work.join("program.bc");
         std::fs::rename(&whole, &program)
@@ -788,6 +850,48 @@ mod tests {
         assert!(module.contains("@llvm.used = appending global ["), "{module}");
         assert!(!module.contains("f_at_or_zero"), "a copy is only named: {module}");
         assert!(!module.lines().any(|line| line.starts_with("declare") && line.contains(" #")), "{module}");
+        Ok(())
+    }
+
+    /// Linked in groups, the last one shorter, then the groups together, a program's modules make
+    /// the same module as linked all at once: the same functions, globals and types, in the same
+    /// order.
+    #[test]
+    fn modules_linked_in_groups_make_the_module_linked_at_once() -> Result<(), String> {
+        let Ok(tools) = Tools::find() else {
+            return Ok(());
+        };
+        let source = "struct Spot:\n    across: int\n    down: int\n\ndef moved(spot: Spot, by: int) -> Spot:\n    return Spot(across=spot.across + by, down=spot.down)\n\ndef named(spot: Spot) -> str:\n    return f\"{spot.across},{spot.down}\"\n\ndef walked(steps: list[int]) -> list[Spot]:\n    mut spots: list[Spot] = []\n    mut at = Spot(across=0, down=0)\n    for step in steps:\n        at = moved(at, by=step)\n        spots.append(at)\n    return spots\n\ndef main(stdout: Stdout):\n    for spot in walked([1, 2, 3]):\n        stdout.print(named(spot))\n";
+        let units = units(source)?;
+        let work = std::env::temp_dir().join(format!("fennec-link-groups-{}", std::process::id()));
+        let linked_both = || -> Result<(String, String, usize), String> {
+            std::fs::create_dir_all(&work).map_err(|err| err.to_string())?;
+            let mut inputs = Vec::new();
+            for (at, unit) in units.iter().enumerate() {
+                let input = work.join(format!("f{at}.ll"));
+                std::fs::write(&input, marked(&unit.text).as_bytes()).map_err(|err| err.to_string())?;
+                inputs.push(input);
+            }
+            let text_of = |name: &str, group: usize| -> Result<String, String> {
+                let (whole, shown) = (work.join(format!("{name}.bc")), work.join(format!("{name}.ll")));
+                linked(&tools, (&inputs, group), &work, &whole)?;
+                run(
+                    Command::new(&tools.opt).args(["-S", "-passes=verify"]).arg(&whole).arg("-o").arg(&shown),
+                    "opt",
+                )?;
+                let text = std::fs::read_to_string(&shown).map_err(|err| err.to_string())?;
+                // Each is named by the file it was read from.
+                Ok(text.lines().filter(|line| !line.starts_with("; ModuleID")).collect::<Vec<_>>().join("\n"))
+            };
+            // Groups of three, the last of them shorter.
+            Ok((text_of("at-once", usize::MAX)?, text_of("in-groups", 3)?, inputs.len()))
+        };
+        let made = linked_both();
+        let _ = std::fs::remove_dir_all(&work);
+        let (at_once, in_groups, count) = made?;
+        assert!(count >= 4 && count % 3 != 0, "{count} modules, too few for groups of 3 and one shorter");
+        assert!(at_once.contains("define"), "{at_once}");
+        assert_eq!(at_once, in_groups);
         Ok(())
     }
 

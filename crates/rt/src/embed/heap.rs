@@ -78,8 +78,6 @@ pub(crate) struct Heap {
     spare: Vec<SizeList>,
     /// How many words `spare`'s blocks hold.
     spare_words: usize,
-    /// Whether blocks freed now go back to the allocator, not into `spare`: `freed` is `GivenBack`.
-    gives_back: bool,
     /// How many of the blocks live for the whole run.
     statics: usize,
     /// How many blocks left outside tasks this thread has counted already, as a worker that
@@ -845,7 +843,6 @@ impl Heap {
         expect(dead_code, reason = "only a launched task frees what another thread made")
     )]
     pub(super) fn freeing(&mut self, freed: Freed) -> Freed {
-        self.gives_back = freed == Freed::GivenBack;
         std::mem::replace(&mut self.freed, freed)
     }
 
@@ -854,7 +851,7 @@ impl Heap {
     #[inline]
     pub(super) fn recycle(&mut self, block: Box<[u64]>) {
         // Under AddressSanitizer every freed block is given back, for it to watch.
-        if cfg!(feature = "sanitize") || self.gives_back {
+        if cfg!(feature = "sanitize") || self.freed == Freed::GivenBack {
             return;
         }
         let words = block.len();

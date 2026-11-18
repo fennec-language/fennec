@@ -1775,8 +1775,8 @@ const LOCK_BLOCK_VALUE: &str = r#"def main(stdout: Stdout):
 /// A name a `lock` gives, named again inside its block by a loop, a case or an arrow function's
 /// parameter, is that one there, of the same type: not what's locked. Before, a loop's and a
 /// case's read what's locked, and an arrow function's was refused as taking the lock again, or
-/// stopped the program when it ran. A nested function's parameter is renamed the same way, but a
-/// nested function called inside a lock is refused for now whatever its names (#2011).
+/// stopped the program when it ran. So is a nested function's parameter, the function called inside
+/// the lock: before #2011, any nested function called inside a lock was refused as taking it.
 #[test]
 fn a_lock_s_name_named_again_inside_its_block_is_that_name() -> std::io::Result<()> {
     if !ready() {
@@ -1796,6 +1796,11 @@ fn a_lock_s_name_named_again_inside_its_block_is_that_name() -> std::io::Result<
             "lock_named_by_a_kept_arrow",
             "",
             "counted: (list[int]) -> int = (lines) => len(lines)\nstdout.print(counted([1, 2, 3]))",
+        ),
+        (
+            "lock_named_by_a_nested_function",
+            "",
+            "def counted(lines: list[int]) -> int:\n    return len(lines)\nstdout.print(counted([1, 2, 3]))",
         ),
     ];
     for (name, top, inside) in shapes {

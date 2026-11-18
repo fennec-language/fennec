@@ -1828,9 +1828,10 @@ pub(crate) fn park_stuck(token: Token, note: super::deadlock::Note) -> Parked {
 
 /// Parks this task on `token` until `wake_token` is sent it, whatever it's told meanwhile: a stop
 /// wakes it, as cancelled, without failing it. For a task waiting for work it handed to other
-/// threads, which read what it lent them until they've finished.
-pub(in crate::embed) fn park_through_a_stop(token: Token) -> Parked {
-    park_on_token(token, None, false, None)
+/// threads, which read what it lent them until they've finished. A `stuck` wait, a waiting
+/// `parallel` call's join, leaves its note for the deadlock check.
+pub(in crate::embed) fn park_through_a_stop(token: Token, stuck: Option<super::deadlock::Note>) -> Parked {
+    park_on_token(token, None, false, stuck)
 }
 
 /// `park_on`, which a stop cuts short only if `stoppable`. When it isn't, a stop wakes it, as

@@ -370,6 +370,11 @@ impl Pool {
         }
         crate::embed::deadlock::look();
         io.poll(io.timeout());
+        // For tests: a woken worker held here, its slot still saying it sleeps, as a loaded
+        // machine can hold one: the moment the deadlock check's look at the queues is for.
+        if let Some(held) = slow_wake() {
+            std::thread::sleep(held);
+        }
         // Awake, its slot says so and the generation moves before it reads any mail, as it returns
         // to `work`: a check that finds no mail rests on that order (see `deadlock::proven`), as a
         // worker reading mail while its slot still said it slept could let one pass with mail run.
@@ -387,6 +392,12 @@ impl Pool {
 
     fn is_empty(&self) -> bool {
         self.injector.is_empty() && self.stealers.iter().all(Stealer::is_empty)
+    }
+
+    /// Whether any job is queued, for the deadlock check: a job of a waiting `parallel` call that no
+    /// worker has taken yet is the program still moving, though nothing counts it.
+    pub(in crate::embed) fn has_jobs(&self) -> bool {
+        !self.injector.is_empty() || self.stealers.iter().any(|stealer| !stealer.is_empty())
     }
 
     /// Adds a job: to this worker's own deque on one of its workers, else to the shared queue.
@@ -565,7 +576,7 @@ pub(super) fn install(call: &super::Run, start: impl FnOnce(), done: &Latch) {
     super::super::write_kept_output();
     *call.lent.write().unwrap_or_else(PoisonError::into_inner) = Some(super::super::threads::lend());
     start();
-    done.wait();
+    done.wait_joined();
     if let Some(lent) = call.lent.write().unwrap_or_else(PoisonError::into_inner).take() {
         super::super::threads::take_back(lent);
     }
@@ -578,6 +589,53 @@ pub(in crate::embed) struct Latch {
     left: AtomicUsize,
     finished: Mutex<Finished>,
     woken: Condvar,
+    /// Whether waiting for it is a stuck wait for the deadlock check: a waiting `parallel` call's
+    /// join, whose ranges may wait. A call whose body can't wait, and a server, wait uncounted.
+    counted: AtomicBool,
+    /// What a join on it waits on, for its note.
+    joined: Arc<Joined>,
+}
+
+/// What a waiting call's join waits on, for the deadlock check: whether every job has finished,
+/// set with `all` under the latch's lock, and the failure a range failed with first, if one has.
+#[derive(Default)]
+pub(in crate::embed) struct Joined {
+    done: AtomicBool,
+    failed: Mutex<Option<(usize, String)>>,
+}
+
+impl crate::embed::deadlock::Awaited for Joined {
+    fn holds(&self, _kind: crate::embed::deadlock::Kind) -> bool {
+        !self.done.load(Ordering::SeqCst)
+    }
+
+    /// A range that failed keeps later ones from starting and wakes nothing, so a sibling waiting
+    /// on it waits on, and the call can't end: the report says the failure the call holds, which it
+    /// would have said at its end (Fable 5.2's review of the design, finding 1).
+    fn said(&self, _kind: crate::embed::deadlock::Kind) -> String {
+        let failed = self.failed.lock().unwrap_or_else(PoisonError::into_inner);
+        match &*failed {
+            Some((from, failure)) => {
+                format!("for the ranges of its `parallel` call, whose range {from} failed first: {failure}")
+            }
+            None => "for the ranges of its `parallel` call".to_owned(),
+        }
+    }
+}
+
+/// For tests, in a debug build: how long a woken idle worker is held before its slot says it's
+/// awake, as `FENNEC_TEST_SLOW_WAKE_MS` says. A release build never reads it.
+fn slow_wake() -> Option<std::time::Duration> {
+    #[cfg(debug_assertions)]
+    {
+        static HELD: OnceLock<Option<std::time::Duration>> = OnceLock::new();
+        *HELD.get_or_init(|| {
+            let asked = std::env::var("FENNEC_TEST_SLOW_WAKE_MS").ok()?.trim().parse().ok()?;
+            Some(std::time::Duration::from_millis(asked))
+        })
+    }
+    #[cfg(not(debug_assertions))]
+    None
 }
 
 /// Whether a latch's jobs have all finished, and the task parked waiting for that, if one is.
@@ -586,6 +644,9 @@ struct Finished {
     all: bool,
     /// The pool and worker a task waits on, and the token it's parked on there.
     parked: Option<(&'static Pool, usize, mio::Token)>,
+    /// Whether the thread waiting at a waiting call's join is counted as in a stuck wait, which the
+    /// last job uncounts as it wakes it.
+    waiter_counted: bool,
 }
 
 impl Latch {
@@ -610,6 +671,12 @@ impl Latch {
             let parked = {
                 let mut finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
                 finished.all = true;
+                // A join's note stops holding, and a counted waiter is uncounted, under the lock,
+                // before it's woken.
+                self.joined.done.store(true, Ordering::SeqCst);
+                if std::mem::take(&mut finished.waiter_counted) {
+                    crate::embed::deadlock::stuck_ended();
+                }
                 finished.parked.take()
             };
             self.woken.notify_all();
@@ -629,6 +696,62 @@ impl Latch {
         let mut finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
         while !finished.all {
             finished = self.woken.wait(finished).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Says whether waiting for it is a stuck wait: a waiting call's join.
+    pub(super) fn counts_joins(&self, counted: bool) {
+        self.counted.store(counted, Ordering::Relaxed);
+    }
+
+    /// Notes that the range starting at `from` failed, said as `failure`, for a deadlock's report:
+    /// the first one only.
+    pub(super) fn range_failed(&self, from: usize, failure: String) {
+        self.joined.failed.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert((from, failure));
+    }
+
+    /// The note of a join on it.
+    fn join_note(&self) -> crate::embed::deadlock::Note {
+        let joined: Arc<dyn crate::embed::deadlock::Awaited> = self.joined.clone();
+        crate::embed::deadlock::Note::parked(joined, crate::embed::deadlock::Kind::Join)
+    }
+
+    /// `wait`, as a stuck wait when it's a waiting call's join: uncounted for the deadlock check's
+    /// patience first, as every wait that blocks its thread is, then noted and counted under the
+    /// latch's own lock, with a look when the counts say to, made with the lock let go. The last job
+    /// uncounts it as it wakes it, under the same lock.
+    pub(in crate::embed) fn wait_joined(&self) {
+        if !self.counted.load(Ordering::Relaxed) {
+            return self.wait();
+        }
+        let until = std::time::Instant::now() + crate::embed::deadlock::PATIENCE;
+        let mut finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
+        while !finished.all {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            finished = self.woken.wait_timeout(finished, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+        if finished.all {
+            return;
+        }
+        let look = crate::embed::deadlock::thread_waits(self.join_note().blocking(), false);
+        finished.waiter_counted = true;
+        if look {
+            drop(finished);
+            crate::embed::deadlock::look();
+            finished = self.finished.lock().unwrap_or_else(PoisonError::into_inner);
+        }
+        while !finished.all {
+            finished = self.woken.wait(finished).unwrap_or_else(PoisonError::into_inner);
+        }
+        let still_counted = std::mem::take(&mut finished.waiter_counted);
+        drop(finished);
+        if still_counted {
+            crate::embed::deadlock::thread_woke();
+        } else {
+            crate::embed::deadlock::thread_unnoted();
         }
     }
 
@@ -652,7 +775,9 @@ impl Latch {
                 self.wait();
                 return;
             }
-            let _ = super::super::serve::park_through_a_stop(token);
+            // A waiting call's join parks with its note, for its worker to count as it sleeps.
+            let stuck = self.counted.load(Ordering::Relaxed).then(|| self.join_note());
+            let _ = super::super::serve::park_through_a_stop(token, stuck);
             if !self.is_done() {
                 woken_early();
             }
@@ -691,6 +816,14 @@ pub(super) fn settle(changes: std::collections::HashMap<u64, i64>) {
 pub(super) fn window(words: usize) -> usize {
     let pool = (words >= SEQUENTIAL_WORDS && SETUP.get().is_some()).then(pool).flatten();
     pool.map_or(0, |pool| 2 * pool.threads())
+}
+
+/// Names the range of a waiting call running here `name`, for a deadlock's report, giving back the
+/// name before, to put back as it ends.
+pub(super) fn name_range(
+    name: Option<Arc<crate::embed::deadlock::RangeName>>,
+) -> Option<Arc<crate::embed::deadlock::RangeName>> {
+    super::super::threads::name_range(name)
 }
 
 /// Runs a range of a call whose body may wait as a parked task on this worker, so it can park

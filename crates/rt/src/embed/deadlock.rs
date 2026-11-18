@@ -107,6 +107,9 @@ pub(crate) enum Kind {
     /// The end of a `with launch` block, for its task.
     #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are launched"))]
     BlockEnd,
+    /// The join of a `parallel` call whose body may wait, for its ranges.
+    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only the pool runs ranges"))]
+    Join,
 }
 
 /// What a stuck wait waits on: a channel, or a launched task.
@@ -189,25 +192,54 @@ enum On {
     Awaited(Arc<dyn Awaited>),
 }
 
-/// What a stuck wait leaves for the check: who waits, on what, for which.
+/// What a stuck wait leaves for the check: who waits, on what, for which, and, for a range of a
+/// waiting `parallel` call, how the report names it.
 #[derive(Clone)]
 pub(crate) struct Note {
     who: Who,
     on: On,
     kind: Kind,
+    range: Option<Arc<RangeName>>,
+}
+
+/// A range of a waiting `parallel` call, as a report names it: "range 3 of main's `parallel` call",
+/// by the call and the item it starts at.
+pub(crate) struct RangeName {
+    pub(crate) call: Arc<str>,
+    pub(crate) from: usize,
+}
+
+impl std::fmt::Display for RangeName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "range {} of {}", self.from, self.call)
+    }
+}
+
+/// The name of the range running here, if it's a range of a waiting `parallel` call.
+fn range_here() -> Option<Arc<RangeName>> {
+    #[cfg(any(test, feature = "threads"))]
+    return super::threads::range_named();
+    #[cfg(not(any(test, feature = "threads")))]
+    None
+}
+
+/// How the code running here is named in a report, for naming a `parallel` call it makes: a range
+/// by its own name, and otherwise as `Who::here`, with no notes to find a number from.
+pub(crate) fn here_named() -> String {
+    range_here().map_or_else(|| Who::here().said(&[]).1, |range| range.to_string())
 }
 
 impl Note {
     /// The note of a parked wait of `kind` on the channel numbered `channel`, whose worker says who
     /// it is as the task parks (`parked_by`): nothing's looked up or shared on the way to a park.
     pub(crate) fn on_channel(channel: i64, kind: Kind) -> Note {
-        Note { who: Who::Other, on: On::Channel(channel), kind }
+        Note { who: Who::Other, on: On::Channel(channel), kind, range: range_here() }
     }
 
     /// The note of a parked wait of `kind` on `on`, as `on_channel`'s.
     #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are launched"))]
     pub(crate) fn parked(on: Arc<dyn Awaited>, kind: Kind) -> Note {
-        Note { who: Who::Other, on: On::Awaited(on), kind }
+        Note { who: Who::Other, on: On::Awaited(on), kind, range: range_here() }
     }
 
     /// The same note, of a wait that blocks this thread, by whoever's running here.
@@ -236,11 +268,18 @@ impl Note {
     }
 
     fn said(&self, notes: &[Note]) -> ((u8, i64), String) {
-        let (order, who) = self.who.said(notes);
+        // A range is named by its call and where it starts, after `main` and the tasks, in the order
+        // of where they start.
+        let (order, who) = match &self.range {
+            Some(range) => ((3, i64::try_from(range.from).unwrap_or(i64::MAX)), range.to_string()),
+            None => self.who.said(notes),
+        };
         let what = match &self.on {
             On::Channel(_) => match self.kind {
                 Kind::Send => "to send on a channel that's full".to_owned(),
-                Kind::Receive | Kind::BlockEnd => "to receive on a channel that's empty".to_owned(),
+                Kind::Receive | Kind::BlockEnd | Kind::Join => {
+                    "to receive on a channel that's empty".to_owned()
+                }
             },
             On::Awaited(on) => on.said(self.kind),
         };
@@ -302,6 +341,14 @@ pub(crate) fn thread_waits(note: Note, crash_wakes: bool) -> bool {
     };
     THREAD_SLOT.with(|slot| *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(note));
     stuck_began().all_stuck()
+}
+
+/// This thread's note goes, for a stuck wait whose waker already uncounted it: a join the last job
+/// of its call woke.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn thread_unnoted() {
+    let taken = THREAD_SLOT.with(|slot| slot.lock().unwrap_or_else(PoisonError::into_inner).take());
+    drop(taken);
 }
 
 /// This thread's stuck wait has ended, or is about to: its note goes, and it's uncounted.
@@ -421,6 +468,14 @@ fn proven(before: Counts) -> Option<Vec<Note>> {
     if pools.iter().any(|pool| pool.has_mail()) {
         return None;
     }
+    // A job queued is the program still moving: a waiting `parallel` call's, which nothing counts
+    // until a worker takes it, while its caller's join is counted as stuck. A worker takes one only
+    // once its slot says it's awake, so the slots and this look, first and last, see every job of
+    // a call that hasn't become a range yet (phase 2 design, §3).
+    #[cfg(any(test, feature = "threads"))]
+    if pools.iter().any(|pool| pool.has_jobs()) {
+        return None;
+    }
     #[cfg_attr(not(any(test, feature = "threads")), expect(unused_mut, reason = "only workers add notes"))]
     let mut notes: Vec<Note> = {
         // Copied out, and asked whether they hold only once no slot is held: a thread takes its
@@ -479,6 +534,11 @@ fn proven(before: Counts) -> Option<Vec<Note>> {
     // threads found idle, any such wake is in a worker's mail by now.
     #[cfg(any(test, feature = "threads"))]
     if pools.iter().any(|pool| pool.has_mail()) {
+        return None;
+    }
+    // The queues again, last.
+    #[cfg(any(test, feature = "threads"))]
+    if pools.iter().any(|pool| pool.has_jobs()) {
         return None;
     }
     (counts() == before).then_some(notes)

@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use fennec_syntax::sight::Binder;
 use fennec_syntax::{
-    Expr, ExprKind, FnDef, Item, MatchArm, Module, Pattern, Span, Stmt, StmtKind, TypeExpr, WithName,
+    Copied, Expr, ExprKind, FnDef, Item, MatchArm, Module, Pattern, Span, Stmt, StmtKind, TypeExpr, WithName,
 };
 
 /// A source a `with` uses: its definition, and whether it's a method, called on a value.
@@ -60,7 +60,7 @@ pub(crate) fn lower(
             made = made.max(made_in(name));
         }
     });
-    NEXT.with(|next| next.set(written_low - 1));
+    NEXT.with(|next| next.set(below_copies(written_low) - 1));
     COPIES.with(|copies| copies.set(lowest));
     let mut lowering = Lowering {
         sources,
@@ -213,6 +213,247 @@ thread_local! {
     /// Where the next copy of a generic source's text goes, counting down from the top: still
     /// the standard library's, so it keeps its own privacy, but past where its text reaches.
     static COPIES: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+    /// Where each copy of the program's text written in so far went, as `Module::copied` holds it,
+    /// so a copy of text inside an earlier copy is noted with the text too.
+    static COPIED: std::cell::RefCell<Vec<Copied>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The next span for a copy of the program's text that stays the program's, counting down
+    /// from just below the spans lowering writes, and the lowest it can be, past the program's text.
+    static PROGRAM_COPIES: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((WRITTEN_FROM - 1, 0)) };
+}
+
+/// Starts a round's writing in with the copies `module` holds, the next copy that stays the
+/// program's text below every one of them, and above all of the program's own text.
+pub(crate) fn copies_from(module: &mut Module) {
+    let copied = module.copied.clone();
+    let top = copied.iter().map(|copy| copy.at).filter(|at| *at < WRITTEN_FROM).min().unwrap_or(WRITTEN_FROM);
+    let mut text_end = module.files.iter().map(|file| file.end).max().unwrap_or(0);
+    fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+        if expr.span.end < top {
+            text_end = text_end.max(expr.span.end);
+        }
+    });
+    // Statements end past their last expression, as a `pass` does, but never this far.
+    let floor = text_end.saturating_add(1 << 20);
+    PROGRAM_COPIES.with(|next| next.set((top.saturating_sub(1), floor)));
+    COPIED.with(|held| *held.borrow_mut() = copied);
+}
+
+/// Where a copy goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Region {
+    /// Among the program's text, which every check of whether something is the program's own reads
+    /// as its own: a source's body written in where it's used.
+    Program,
+    /// Among what lowering writes in.
+    Written,
+}
+
+/// Reserves `length` spans in a row in `region` past the last, giving the lowest. Nothing, when
+/// the program's have run out.
+fn reserved_in(region: Region, length: u32) -> Option<u32> {
+    match region {
+        Region::Written => Some(reserved(length)),
+        Region::Program => PROGRAM_COPIES.with(|next| {
+            let (top, floor) = next.get();
+            let low = top.checked_sub(length).filter(|low| *low > floor)?;
+            next.set((low - 1, floor));
+            Some(low)
+        }),
+    }
+}
+
+/// Gives `module` the copies written in so far, in order of where each went.
+pub(crate) fn copies_into(module: &mut Module) {
+    let mut copied = COPIED.with(|copied| std::mem::take(&mut *copied.borrow_mut()));
+    copied.sort_by_key(|copy| copy.at);
+    module.copied = copied;
+}
+
+/// The program's own text a copy keeps together: spans no further apart than this are one
+/// stretch, moved as one, so a statement's spans keep where each is against the next.
+const STRETCH_GAP: u32 = 256;
+
+/// What a span in a copy is, for how it moves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// The standard library's, which `moved_apart` moves.
+    Std,
+    /// The program's own text.
+    Own,
+    /// In the earlier copy at this place in `COPIED`.
+    Copy(usize),
+    /// Something lowering wrote in, which points at no text.
+    Written,
+}
+
+/// Gives a copy of some statements written in spans of its own, so what's found by span in it, as
+/// a type the checker found there, is never another copy's. The program's own text moves in
+/// stretches, each keeping where its parts are against each other, as does each earlier copy
+/// inside it, and each is noted with the text it copies (`Module::copied`), so what says where
+/// something is still points at the program's text. Each span lowering wrote in gets a new one. The
+/// standard library's are `moved_apart`'s. Nothing, when the spans lowering writes in have run out.
+pub(crate) fn copied_apart(region: Region, parts: &mut [&mut [Stmt]]) -> Option<()> {
+    copied_apart_by(region, &mut |moved| {
+        for part in parts.iter_mut() {
+            every_span(part, moved);
+        }
+    })
+}
+
+/// A copy of a function's parameters and body on spans of its own, as `copied_apart` gives them.
+/// The function's own span stays, which says whose it is.
+pub(crate) fn copied_def_apart(region: Region, def: &mut FnDef) -> Option<()> {
+    copied_apart_by(region, &mut |moved| {
+        for param in &mut def.params {
+            param.span = moved(param.span);
+            if let Some(ty) = &mut param.ty {
+                type_spans(ty, moved);
+            }
+        }
+        for ty in def.ret.iter_mut().chain(def.fails.as_mut()) {
+            type_spans(ty, moved);
+        }
+        every_span(&mut def.body, moved);
+    })
+}
+
+/// What changes every span of something through what it's handed.
+type Spans<'s> = dyn FnMut(&mut dyn FnMut(Span) -> Span) + 's;
+
+/// `copied_apart` for whatever `spans` changes every span of, through what it's handed: it's
+/// handed something that leaves each as it is first, then what moves each.
+fn copied_apart_by(region: Region, spans: &mut Spans<'_>) -> Option<()> {
+    let mut copied = COPIED.with(|copied| copied.borrow().clone());
+    copied.sort_by_key(|copy| copy.at);
+    let kind = |span: Span| {
+        if span.in_prelude() {
+            return Kind::Std;
+        }
+        let after = copied.partition_point(|copy| copy.at <= span.start);
+        match after.checked_sub(1).and_then(|at| copied.get(at).map(|copy| (at, copy))) {
+            Some((at, copy)) if span.start - copy.at < copy.len => Kind::Copy(at),
+            _ if written_in(span) => Kind::Written,
+            _ => Kind::Own,
+        }
+    };
+    let mut own: Vec<(u32, u32)> = Vec::new();
+    let mut earlier: BTreeSet<usize> = BTreeSet::new();
+    spans(&mut |span| {
+        match kind(span) {
+            Kind::Own => own.push((span.start, span.end.max(span.start))),
+            Kind::Copy(at) => {
+                earlier.insert(at);
+            }
+            Kind::Std | Kind::Written => {}
+        }
+        span
+    });
+    let Moved { made, own: moved_own, earlier: moved_earlier } =
+        moved(region, &stretched(own), &earlier, &copied)?;
+    let shifted = |span: Span, from: u32, to: u32| Span {
+        start: span.start - from + to,
+        end: span.end.max(span.start) - from + to,
+    };
+    let mut written: BTreeMap<(u32, u32), Span> = BTreeMap::new();
+    spans(&mut |span| match kind(span) {
+        Kind::Own => {
+            let after = moved_own.partition_point(|(start, ..)| *start <= span.start);
+            after
+                .checked_sub(1)
+                .and_then(|at| moved_own.get(at))
+                .map_or(span, |&(start, _, at)| shifted(span, start, at))
+        }
+        Kind::Copy(index) => match (copied.get(index), moved_earlier.get(&index)) {
+            (Some(copy), Some(&at)) => shifted(span, copy.at, at),
+            _ => span,
+        },
+        Kind::Written => *written.entry((span.start, span.end)).or_insert_with(|| {
+            let at = reserved(0);
+            Span { start: at, end: at }
+        }),
+        Kind::Std => span,
+    });
+    COPIED.with(|copied| copied.borrow_mut().extend(made));
+    Some(())
+}
+
+/// The program's text a copy holds, as each of its spans' first and last, in stretches, each from
+/// its first span to its last.
+fn stretched(mut own: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    own.sort_unstable();
+    let mut stretches: Vec<(u32, u32)> = Vec::new();
+    for (start, end) in own {
+        match stretches.last_mut() {
+            Some((_, last)) if start <= last.saturating_add(STRETCH_GAP) => *last = (*last).max(end),
+            _ => stretches.push((start, end)),
+        }
+    }
+    stretches
+}
+
+/// Where what a copy holds goes: each copy made, noted with the text it copies; each stretch of
+/// the program's text, as its first span, its last, and where it goes; and where each earlier copy
+/// inside it goes, by its place in the copies so far.
+struct Moved {
+    made: Vec<Copied>,
+    own: Vec<(u32, u32, u32)>,
+    earlier: BTreeMap<usize, u32>,
+}
+
+/// Where `stretches` of the program's text and the `earlier` copies inside a copy go, in `region`.
+/// They're moved in one run, in the order they're in now, so what's before something else still
+/// is. Nothing, when spans have run out.
+fn moved(
+    region: Region,
+    stretches: &[(u32, u32)],
+    earlier: &BTreeSet<usize>,
+    copied: &[Copied],
+) -> Option<Moved> {
+    // Each as its first span, its last, and the text its first span copies.
+    let mut moving: Vec<(u32, u32, u32, Option<usize>)> =
+        stretches.iter().map(|&(start, end)| (start, end, start, None)).collect();
+    for &index in earlier {
+        let Some(copy) = copied.get(index) else { continue };
+        moving.push((copy.at, copy.at + copy.len.saturating_sub(1), copy.from, Some(index)));
+    }
+    moving.sort_unstable();
+    let needed: u64 = moving.iter().map(|(start, end, ..)| u64::from(end - start) + 1).sum();
+    if region == Region::Written {
+        let left = NEXT.with(std::cell::Cell::get).saturating_sub(WRITTEN_FROM);
+        if needed >= u64::from(left) {
+            return None;
+        }
+    }
+    let mut next = match needed.checked_sub(1) {
+        Some(last) => reserved_in(region, u32::try_from(last).ok()?)?,
+        None => 0,
+    };
+    let mut laid = Moved { made: Vec::new(), own: Vec::new(), earlier: BTreeMap::new() };
+    for (start, end, from, earlier) in moving {
+        laid.made.push(Copied { at: next, len: end - start + 1, from });
+        match earlier {
+            Some(index) => {
+                laid.earlier.insert(index, next);
+            }
+            None => laid.own.push((start, end, next)),
+        }
+        next += end - start + 1;
+    }
+    Some(laid)
+}
+
+/// Changes every span in some statements through `moved`, the types they write among them.
+fn every_span(body: &mut [Stmt], moved: &mut dyn FnMut(Span) -> Span) {
+    fennec_syntax::visit::written_types_in(body, &mut |ty| type_spans(ty, moved));
+    fennec_syntax::visit::respan_stmts(body, moved);
+}
+
+/// Changes the span of a written type, and of each type in it, through `moved`.
+fn type_spans(ty: &mut TypeExpr, moved: &mut dyn FnMut(Span) -> Span) {
+    ty.span = moved(ty.span);
+    for arg in &mut ty.args {
+        type_spans(arg, moved);
+    }
 }
 
 /// Where copies of std text go: far past the end of the standard library's own text.
@@ -256,7 +497,15 @@ pub(crate) fn below_written(module: &mut Module) {
             written_low = written_low.min(expr.span.start);
         }
     });
-    NEXT.with(|next| next.set(next.get().min(written_low - 1)));
+    NEXT.with(|next| next.set(next.get().min(below_copies(written_low) - 1)));
+}
+
+/// `low`, or the first span of a copy among what lowering writes that's lower, which takes spans
+/// no expression in it may: a statement's, or those between the stretches it keeps together.
+fn below_copies(low: u32) -> u32 {
+    COPIED.with(|copied| {
+        copied.borrow().iter().map(|copy| copy.at).filter(|at| *at >= WRITTEN_FROM).fold(low, u32::min)
+    })
 }
 
 /// Reserves `length` spans in a row for text written in, giving the lowest.
@@ -687,9 +936,11 @@ impl Lowering<'_> {
         }
         typed_for_call(source, &mut written, &mut body)?;
         // Types are found by span, and each call gives the body types of its own, as `None` for a
-        // parameter one call leaves out and another gives, so each written-in copy of a source's
-        // text gets spans of its own.
+        // parameter one call leaves out and another gives, or a member of a union a parameter is
+        // narrowed to, so each written-in copy of a source's text gets spans of its own: the
+        // standard library's and the program's (#2056).
         moved_apart(&mut written, &mut body);
+        copied_apart(Region::Program, &mut [&mut written, &mut body])?;
         // The caller's name for what's lent: the source's own name for it, when it lends one,
         // so the block's changes are what the source's cleanup sees, or else a name of its own,
         // apart from the source's hidden ones.

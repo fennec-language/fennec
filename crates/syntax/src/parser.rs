@@ -367,7 +367,13 @@ impl Parser {
             };
             items.push(item);
         }
-        Ok(Module { items, std_rewritten: Vec::new(), holds: crate::Holds::default(), files: Vec::new() })
+        Ok(Module {
+            items,
+            std_rewritten: Vec::new(),
+            holds: crate::Holds::default(),
+            files: Vec::new(),
+            copied: Vec::new(),
+        })
     }
 
     fn item(&mut self) -> Result<Item, Diagnostic> {

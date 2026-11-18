@@ -2,9 +2,9 @@
 //! the variant, then its fields.
 
 use fennec_syntax::{
-    Annotation, Arg, BinOp, Case, CompKind, Expr, ExprKind, Extension, FStrPart, Field, FnDef, Generic,
-    Holds, Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef, TypeDef,
-    TypeExpr, UnaryOp, WithName,
+    Annotation, Arg, BinOp, Case, CompKind, Copied, Expr, ExprKind, Extension, FStrPart, Field, FnDef,
+    Generic, Holds, Import, Interface, Item, MatchArm, Module, Param, Pattern, Stmt, StmtKind, TestDef,
+    TypeDef, TypeExpr, UnaryOp, WithName,
 };
 
 use super::{Decode, Encode, Reader, Writer};
@@ -26,7 +26,8 @@ macro_rules! fields {
     };
 }
 
-fields!(Module { items, std_rewritten, holds, files });
+fields!(Module { items, std_rewritten, holds, files, copied });
+fields!(Copied { at, len, from });
 fields!(Holds { accepted, only_worked_out, moved });
 fields!(FnDef { name, generics, params, ret, arrow, fails, body, annotations, span });
 fields!(Generic { name, bounds, span });

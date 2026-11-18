@@ -10209,6 +10209,186 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A `with` source written in twice in one function, its union parameter given a different member
+/// each time, takes each copy's own: each copy is lowered with the types found for its own spans.
+/// Before, both took the last copy's member, which printed `gate gate` one way round, and the
+/// other way round read a `Gate` as a `Door` and crashed (#2056). A source written into another
+/// written in twice does the same.
+#[test]
+fn a_source_written_in_twice_gives_each_copy_its_own_union_member() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "source_twice_union",
+        SOURCE_TWICE_UNION,
+        "front gate\ngate front\ngate front | back gate\n",
+    )
+}
+
+/// What goes wrong in a copy of the program's text written in more than once says where its text
+/// is, in a dev and a release build: an `assert` in a source's second copy, one in a `with` block
+/// written in for each member of a union, and one in a generic function's copy for its second type.
+/// Before, the last two pointed past the end of the file.
+#[test]
+fn a_failure_in_a_copy_written_in_says_where_its_text_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, source, printed, line) in [
+        ("copy_assert_source", COPY_ASSERT_SOURCE, "", ":11:12"),
+        ("copy_assert_union", COPY_ASSERT_UNION, "lite\n", ":15:16"),
+        ("copy_assert_generic", COPY_ASSERT_GENERIC, "front\n", ":18:16"),
+    ] {
+        let dir = folder(name)?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let args: Vec<String> = ["build"]
+                .into_iter()
+                .chain(how.iter().copied())
+                .map(str::to_owned)
+                .chain([program.to_string_lossy().into_owned(), "-o".to_owned()])
+                .chain([executable.to_string_lossy().into_owned()])
+                .collect();
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let built = fennec(&args, &dir)?;
+            assert!(built.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            let (out, err) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(out, printed, "{name} {how:?}: {err}");
+            let at = format!("{name}.fen{line}");
+            assert!(err.contains("this assertion failed") && err.contains(&at), "{name} {how:?}: {err}");
+            assert_eq!(ran.status.code(), Some(1), "{name} {how:?}");
+        }
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
+const SOURCE_TWICE_UNION: &str = r#"struct Door:
+    name: str
+
+struct Gate:
+    width: int
+
+def narrowed(thing: Door | Gate) -> with str:
+    mut said = "gate"
+    if thing is Door:
+        said = thing.name
+    lend said
+
+def door_first() -> str:
+    mut seen = ""
+    with narrowed(Door(name="front")) as got:
+        seen = got
+    with narrowed(Gate(width=2)) as got:
+        seen = seen + " " + got
+    return seen
+
+def gate_first() -> str:
+    mut seen = ""
+    with narrowed(Gate(width=2)) as got:
+        seen = got
+    with narrowed(Door(name="front")) as got:
+        seen = seen + " " + got
+    return seen
+
+def twice(first: Door | Gate, second: Door | Gate) -> with str:
+    mut seen = ""
+    with narrowed(first) as got:
+        seen = got
+    with narrowed(second) as got:
+        seen = seen + " " + got
+    lend seen
+
+def nested() -> str:
+    mut seen = ""
+    with twice(Gate(width=1), Door(name="front")) as got:
+        seen = got
+    with twice(Door(name="back"), Gate(width=2)) as got:
+        seen = seen + " | " + got
+    return seen
+
+def main(stdout: Stdout):
+    stdout.print(door_first())
+    stdout.print(gate_first())
+    stdout.print(nested())
+"#;
+
+const COPY_ASSERT_SOURCE: &str = r#"struct Door:
+    name: str
+
+struct Gate:
+    width: int
+
+def narrowed(thing: Door | Gate) -> with str:
+    mut said = "gate"
+    if thing is Door:
+        said = thing.name
+    assert said != "gate"
+    lend said
+
+def counted() -> str:
+    mut seen = ""
+    with narrowed(Door(name="front")) as got:
+        seen = got
+    with narrowed(Gate(width=2)) as got:
+        seen = seen + " " + got
+    return seen
+
+def main(stdout: Stdout):
+    stdout.print(counted())
+"#;
+
+const COPY_ASSERT_UNION: &str = r#"struct Lite:
+    name: str
+
+    def opened(self) -> with str:
+        lend "lite"
+
+struct Pg:
+    port: int
+
+    def opened(self) -> with str:
+        lend "pg"
+
+def run(store: Lite | Pg) -> str:
+    with store.opened() as got:
+        assert got != "pg"
+        return got
+
+def main(stdout: Stdout):
+    stdout.print(run(Lite(name="a")))
+    stdout.print(run(Pg(port=1)))
+"#;
+
+const COPY_ASSERT_GENERIC: &str = r#"interface Opener:
+    def opened(self) -> with str
+
+struct Front:
+    name: str
+
+    def opened(self) -> with str:
+        lend "front"
+
+struct Back:
+    width: int
+
+    def opened(self) -> with str:
+        lend "back"
+
+def run[T: Opener](held: T) -> str:
+    with held.opened() as got:
+        assert got == "front"
+        return got
+
+def main(stdout: Stdout):
+    stdout.print(run(Front(name="a")))
+    stdout.print(run(Back(width=1)))
+"#;
+
 /// A type parameter named only in a parameter's type, as `E` is in `make: () -> T fails E`: a
 /// generic source written in where it's used doesn't know it, and a call to a generic function
 /// learns it from the function it's given.

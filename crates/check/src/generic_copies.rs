@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use fennec_syntax::{Expr, ExprKind, FnDef, Item, Module, Span, TypeExpr};
+use fennec_syntax::{Expr, ExprKind, FnDef, Item, Module};
 
-use crate::lend_lowering::{below_written, reserved, retype, retype_one, written_in, written_type};
+use crate::lend_lowering::{below_written, retype, retype_one, written_type};
 use crate::types::Type;
 
 /// A call to a generic function: the function it's made in, the one called, and the types the
@@ -134,53 +134,8 @@ fn copy_for(def: &FnDef, types: &[Type], name: &str) -> Option<FnDef> {
         retype_one(ty, &given);
     }
     retype(&mut copy.body, &given);
-    apart(&mut copy);
+    // Each copy on spans of its own, so what's found by a span in one, like the source a call is
+    // to, is never another's, noted with the text it copies for what says where something is.
+    crate::lend_lowering::copied_def_apart(crate::lend_lowering::Region::Written, &mut copy)?;
     Some(copy)
-}
-
-/// Moves a copy's text to spans of its own, so what's found by a span in one copy, like the
-/// source a call is to, is never another's: the program's text keeps where each part is against
-/// the rest, and each span written in before gets a new one.
-fn apart(copy: &mut FnDef) {
-    let (mut low, mut high) = (u32::MAX, 0);
-    fennec_syntax::visit::in_function(copy, &mut |expr| {
-        if own(expr.span) {
-            low = low.min(expr.span.start);
-            high = high.max(expr.span.end);
-        }
-    });
-    let base = if low > high { 0 } else { reserved(high - low + 1) };
-    let mut written: BTreeMap<(u32, u32), Span> = BTreeMap::new();
-    fennec_syntax::visit::in_function(copy, &mut |expr| {
-        let span = expr.span;
-        if own(span) {
-            expr.span = Span { start: span.start - low + base, end: span.end - low + base };
-        } else if written_in(span) {
-            let start = *written.entry((span.start, span.end)).or_insert_with(|| {
-                let at = reserved(0);
-                Span { start: at, end: at }
-            });
-            expr.span = start;
-        }
-    });
-    let moved = |span: Span| {
-        if own(span) { Span { start: span.start - low + base, end: span.end - low + base } } else { span }
-    };
-    for param in &mut copy.params {
-        if let Some(ty) = param.ty.as_mut() {
-            respan(ty, &moved);
-        }
-    }
-}
-
-/// Whether a span is the program's own text, rather than the standard library's or written in.
-fn own(span: Span) -> bool {
-    !span.in_prelude() && !written_in(span)
-}
-
-fn respan(written: &mut TypeExpr, moved: &dyn Fn(Span) -> Span) {
-    written.span = moved(written.span);
-    for arg in &mut written.args {
-        respan(arg, moved);
-    }
 }

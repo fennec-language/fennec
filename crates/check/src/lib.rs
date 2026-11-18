@@ -785,8 +785,9 @@ fn resolved_within(
         first = false;
         let mut next = checker::Checker::new(module);
         next.again = true;
-        checked =
-            next.run(scope).map_err(|problems| problems.iter().map(not_checked_again).collect::<Vec<_>>())?;
+        checked = next.run(scope).map_err(|problems| {
+            problems.iter().map(|problem| not_checked_again(problem, &module.copied)).collect::<Vec<_>>()
+        })?;
     }
     unreachable!("the rounds go on until one returns")
 }
@@ -907,6 +908,15 @@ fn library_functions() -> Vec<(String, fennec_syntax::FnDef)> {
 /// One round of writing in what the check found, saying whether anything was written that needs
 /// checking again.
 fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
+    // What a round writes in more than once is noted where it went, with what's there already.
+    lend_lowering::copies_from(module);
+    let round = written_in_round(module, checked);
+    lend_lowering::copies_into(module);
+    round
+}
+
+/// What `resolved_round` writes in.
+fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
     unqualified_cases(module, &checked.signatures);
@@ -1102,11 +1112,11 @@ fn unqualified_cases(module: &mut Module, signatures: &Signatures) {
 }
 
 /// What a program rewritten by lowering doesn't check for: the compiler's mistake, not the
-/// program's, said as one.
-fn not_checked_again(problem: &Diagnostic) -> Diagnostic {
+/// program's, said as one, where the text is when it's in a copy written in (`copied`).
+fn not_checked_again(problem: &Diagnostic, copied: &[fennec_syntax::Copied]) -> Diagnostic {
     let message =
         format!("internal error: once rewritten for running, this doesn't check: {}", problem.message);
-    Diagnostic::new(message, problem.span)
+    Diagnostic::new(message, problem.span.copied_from(copied))
         .with_help("this is a mistake in the compiler, not in the program: please report it with the program")
 }
 

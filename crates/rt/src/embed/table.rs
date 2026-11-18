@@ -595,6 +595,8 @@ mod tests {
     fn hashed_blocks_outlive_pages_given_back_under_them() {
         let mut table = Table::default();
         let mut hashed = Vec::new();
+        // The blocks made here and taken out, kept to the end, so each round's land elsewhere.
+        let mut kept: Vec<Box<[u64]>> = Vec::new();
         for round in 0..6_u64 {
             // Small blocks, so several share each page: every other one is adopted, all of those
             // first, with no page made. The rest are made here after, which makes pages over the
@@ -620,8 +622,7 @@ mod tests {
             for (address, round, n) in &hashed {
                 assert_eq!(table.get(*address).map(|block| (block[1], block[2])), Some((*round, *n)));
             }
-            // Kept, so the next round's blocks land elsewhere.
-            std::mem::forget(gone);
+            kept.extend(gone);
         }
         assert_eq!(table.len(), hashed.len());
         assert_eq!(table.all().count(), hashed.len());

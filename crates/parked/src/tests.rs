@@ -407,7 +407,7 @@ fn a_task_asked_for_a_smaller_stack_gets_one_and_leaves_it_for_a_task_its_size()
 fn deep_work_in_a_task_runs_on_the_thread_s_deep_stack_and_comes_back() {
     const DEEP: usize = STACK * 4;
     // With no task running, it runs here.
-    assert_eq!(super::on_deep_stack(DEEP, || super::stack_size()), None);
+    assert_eq!(super::on_deep_stack(DEEP, super::stack_size), None);
     let mut scheduler = Scheduler::new(STACK);
     let task = scheduler
         .spawn(|| {

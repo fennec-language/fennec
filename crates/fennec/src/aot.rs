@@ -1346,27 +1346,36 @@ fn stamp_in(bytes: &[u8]) -> Option<String> {
 
 /// The build of Fennec a runtime library is from, as its stamp says, or `None` when it has none,
 /// like one from before stamps. Reading a library whole takes a while, so what it says is kept in the
-/// store by the file's path, size and when it changed.
+/// store by the file's path, size and when it changed, and in the toolchain's store too, which every
+/// home reads (see `toolchain`).
 fn stamp_of(path: &Path) -> Option<String> {
     let metadata = std::fs::metadata(path).ok()?;
     let changed = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
     let name =
         fennec_blake3::hash(format!("{}\n{}\n{changed}", path.display(), metadata.len()).as_bytes()).to_hex();
     let cache = crate::run::cache();
-    if let Some(kept) = cache.as_ref().and_then(|cache| cache.read("runtime-stamps", &name)) {
+    let kept = cache
+        .as_ref()
+        .and_then(|cache| cache.read(RUNTIME_STAMPS, &name))
+        .or_else(|| crate::toolchain::read(RUNTIME_STAMPS, &name));
+    if let Some(kept) = kept {
         return String::from_utf8(kept).ok().filter(|build| !build.is_empty());
     }
     let build = stamp_in(&std::fs::read(path).ok()?);
+    let stamp = build.as_deref().unwrap_or("").as_bytes();
     if let Some(cache) = &cache {
         // A store that can't be written only means reading the library again next time.
-        let stamp = build.as_deref().unwrap_or("").as_bytes();
         fennec_build::kept(
             "keep which build a runtime library is",
-            cache.write("runtime-stamps", &name, stamp),
+            cache.write(RUNTIME_STAMPS, &name, stamp),
         );
     }
+    crate::toolchain::keep(RUNTIME_STAMPS, &name, stamp);
     build
 }
+
+/// Where which build each runtime library is from is kept, by its path, size and changed time.
+const RUNTIME_STAMPS: &str = "runtime-stamps";
 
 #[cfg(test)]
 mod tests {

@@ -93,6 +93,11 @@ export struct Certificate:
 ## or empty bytes once the other side is done; `read_line()` gives the next line without its
 ## ending, or `None` at the end; `write(data)` sends `bytes` or a `str`; and `close()`. Reads
 ## wait as long as it takes, unless given `timeout=`.
+##
+## Tasks writing to one connection at once each have their `write` arrive whole only when it
+## goes out in one piece, as a line does, with room in the socket's buffer: bigger writes can
+## cut into each other. To send many tasks' messages down one connection, as a chat hub fans out
+## to its members, give the connection one writer task and have the others send it what to write.
 export shared Connection:
     _handle: int
     ## Which of the program's connections it is, counted from 1 as they're made: what it prints as.

@@ -66,17 +66,21 @@ impl Kept {
 }
 
 impl fennec_syntax::KeptPrelude for Kept {
+    /// The home's, or the toolchain's, which every home of this build reads (see `toolchain`).
     fn prelude(&self) -> Option<Vec<Module>> {
-        let bytes = self.cache.read(PRELUDE, &self.prelude_name())?;
+        let name = self.prelude_name();
+        let bytes = self.cache.read(PRELUDE, &name).or_else(|| crate::toolchain::read(PRELUDE, &name))?;
         Vec::<Module>::decode(&mut Reader::new(&bytes))
     }
 
     fn keep_prelude(&self, modules: &[Module]) {
         let mut writer = Writer::default();
         modules.encode(&mut writer);
+        let (name, bytes) = (self.prelude_name(), writer.into_bytes());
         // A cache that can't be written only means parsing the standard library again next time.
-        let prelude = self.cache.write(PRELUDE, &self.prelude_name(), &writer.into_bytes());
+        let prelude = self.cache.write(PRELUDE, &name, &bytes);
         fennec_build::kept("keep the prelude's parse", prelude);
+        crate::toolchain::keep(PRELUDE, &name, &bytes);
     }
 }
 

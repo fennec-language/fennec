@@ -1,7 +1,7 @@
 //! Checking statements: blocks and their values, `if` and loops (and how they narrow
 //! optionals), `return`, `fail`, `yield`, `with`, and nested functions.
 
-use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind, UnaryOp};
+use fennec_syntax::{BinOp, Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind, TypeExpr, UnaryOp};
 
 use crate::effects;
 use crate::function::{Binding, FnCx, Origin};
@@ -92,8 +92,7 @@ impl FnCx<'_> {
                 Flow::unit()
             }
             StmtKind::Assign { target, op, value, declare_mut, ty } => {
-                self.note_arrow(target, value);
-                self.assign(target, *op, value, *declare_mut, ty.as_ref());
+                self.assign_noting_arrows(target, *op, value, *declare_mut, ty.as_ref());
                 Flow::unit()
             }
             StmtKind::If { branches, otherwise } => {
@@ -578,6 +577,21 @@ impl FnCx<'_> {
         vec![Type::Unknown; count]
     }
 
+    /// An assignment, with the arrow function it gives a name noted: what it may capture, and, for
+    /// a name declared with it, the arrow itself (see `keep_arrow`).
+    fn assign_noting_arrows(
+        &mut self,
+        target: &Expr,
+        op: Option<BinOp>,
+        value: &Expr,
+        declare_mut: bool,
+        ty: Option<&TypeExpr>,
+    ) {
+        self.note_arrow(target, value);
+        self.assign(target, op, value, declare_mut, ty);
+        self.keep_arrow(target, value);
+    }
+
     /// A function defined inside this one. It can read the names around it, but not change them.
     /// `work = () => ...`: an arrow function given to a name, which may capture a handle.
     fn note_arrow(&mut self, target: &Expr, value: &Expr) {
@@ -602,14 +616,15 @@ impl FnCx<'_> {
 
     /// What a nested function, `key`, does through each function value it reads from around it,
     /// of the names it `reads` that aren't its `own`.
-    /// - A parameter of a function around it, read in any way, counts as called by the nested
-    ///   function, as a direct call does (see `note_value_call`): handed on, given to a local, or
-    ///   called in an arrow function, it's still called wherever the nested function is.
-    /// - An arrow function a local name holds counts for what its own body does, when the name
-    ///   isn't `mut`: one that is can hold another value by the time the nested function runs.
-    /// - Anything else, as a `mut` name or a value held in a list, an optional or a field, is
-    ///   checked as part of the function around it, so the nested function counts for all that
-    ///   function does.
+    /// - A parameter of a function around it, of a function's type, read in any way, counts as
+    ///   called by the nested function, as a direct call does (see `note_value_call`): handed on,
+    ///   given to a local, or called in an arrow function, it's still called wherever the nested
+    ///   function is.
+    /// - An arrow function a local name was declared with counts for what its own body does, when
+    ///   the name isn't `mut` (see `local_arrow`).
+    /// - Anything else, as a `mut` name, or a list, an optional or a field holding function values,
+    ///   a parameter's too, is checked as part of the function around it, so the nested function
+    ///   counts for all that function does.
     ///
     /// A named function, which a local can hold too, isn't a function value here: calling it is a
     /// call of it, followed as any call is.
@@ -620,12 +635,11 @@ impl FnCx<'_> {
             if !self.checker.holds_function_value(&ty, &mut Vec::new()) {
                 continue;
             }
-            if let Some(owner) = self.param_owner(name) {
+            let param =
+                self.param_owner(name).filter(|_| matches!(self.checker.settled(&ty), Type::Arrow(..)));
+            if let Some(owner) = param {
                 self.checker.values.note_captured_param(key, owner, name);
-            } else if self.origin(name) == Some(Origin::Local)
-                && !self.declared_mut(name)
-                && let Some(Some(arrow)) = self.arrow_locals.get(name).copied()
-            {
+            } else if let Some(arrow) = self.local_arrow(name) {
                 self.checker.values.captured_arrows.push((key.to_owned(), arrow));
             } else {
                 around = true;
@@ -663,6 +677,7 @@ impl FnCx<'_> {
             mut_at: None,
             to_every: false,
             param_of: None,
+            arrow: None,
         });
         let report = self.report;
         let inherited = self.generics.clone();

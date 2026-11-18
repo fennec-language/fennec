@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fennec_syntax::{Diagnostic, Expr, ExprKind, Span};
 
 use crate::checker::Checker;
-use crate::function::{FnCx, Origin};
+use crate::function::FnCx;
 use crate::types::Type;
 
 /// What to do instead, on every message about waiting inside a lock.
@@ -175,12 +175,10 @@ impl FnCx<'_> {
             _ => None,
         };
         let held = self.lock.clone();
-        // An arrow function a local name holds, when the name isn't `mut`: one that is can hold
-        // another value by now than the arrow it was given.
+        // An arrow function a local name was declared with, when the name isn't `mut`: one that is
+        // can hold another value by now than the arrow it was given.
         if let ExprKind::Name(name) = &callee.kind
-            && self.origin(name) == Some(Origin::Local)
-            && !self.declared_mut(name)
-            && let Some(Some(arrow)) = self.arrow_locals.get(name).copied()
+            && let Some(arrow) = self.local_arrow(name)
         {
             for open in &self.arrows_open {
                 self.checker.values.calls.entry(*open).or_default().insert(None);
@@ -234,13 +232,7 @@ impl FnCx<'_> {
             ExprKind::Name(name) if let Some(owner) = self.param_owner(name) => {
                 Given::Param(owner, name.clone())
             }
-            ExprKind::Name(name)
-                if self.origin(name) == Some(Origin::Local)
-                    && !self.declared_mut(name)
-                    && let Some(Some(arrow)) = self.arrow_locals.get(name).copied() =>
-            {
-                Given::Arrow(arrow, false)
-            }
+            ExprKind::Name(name) if let Some(arrow) = self.local_arrow(name) => Given::Arrow(arrow, false),
             ExprKind::Name(name) => match self.lookup(name) {
                 Some((Type::Function(key), _)) => Given::Function(key),
                 None if self.names_function(name) => Given::Function(name.clone()),
@@ -532,22 +524,42 @@ fn params_called(
     }
     loop {
         let mut grew = false;
-        // A nested function passed by name, as `run(step)`, for a parameter called inside a lock,
-        // or passed inside one for a parameter called at all: it's called inside that lock, and
-        // so is each parameter it, or a nested function it calls, calls from around it.
-        for passed in &values.passed {
-            let Given::Function(function) = &passed.given else { continue };
+        // The lock a function value passed is called inside: the one its parameter is called
+        // inside, or the one held where it's passed, for a parameter that's called at all.
+        let held_for = |passed: &Passed, locked: &BTreeMap<ParamKey, String>| {
             let target = (passed.callee.clone(), passed.param.clone());
-            let held = locked
-                .get(&target)
-                .cloned()
-                .or_else(|| passed.held.clone().filter(|_| called.contains(&target)));
-            let Some(held) = held else { continue };
-            for (nested, param) in &values.through {
-                if !locked.contains_key(param)
-                    && callers_inside(nested, &format!("{}.", param.0), own_callers).contains(function)
+            locked.get(&target).cloned().or_else(|| passed.held.clone().filter(|_| called.contains(&target)))
+        };
+        let mut arrows: Vec<((u32, u32), String)> = Vec::new();
+        for passed in &values.passed {
+            let Some(held) = held_for(passed, &locked) else { continue };
+            match &passed.given {
+                // A nested function passed by name, as `run(step)`: so is each parameter it, or a
+                // nested function it calls, calls from around it.
+                Given::Function(function) => {
+                    grew |= lock_captured_params(function, &held, values, own_callers, &mut locked);
+                }
+                Given::Arrow(at, _) => arrows.push((*at, held)),
+                Given::Param(..) | Given::Unknown => {}
+            }
+        }
+        // An arrow function called inside a lock, passed for a parameter that's called inside one
+        // or held by a local name called inside one: so is each function it calls, with what that
+        // calls from around it, and each parameter it hands on to one that calls it.
+        arrows.extend(values.local_calls.iter().map(|(arrow, _, _, held)| (*arrow, held.clone())));
+        for (at, held) in &arrows {
+            for callee in values.calls.get(at).into_iter().flatten().flatten() {
+                grew |= lock_captured_params(callee, held, values, own_callers, &mut locked);
+            }
+            for passed in &values.passed {
+                let Given::Param(key, param) = &passed.given else { continue };
+                let inside = at.0 <= passed.span.start && passed.span.end <= at.1;
+                let mine = (key.clone(), param.clone());
+                if inside
+                    && called.contains(&(passed.callee.clone(), passed.param.clone()))
+                    && !locked.contains_key(&mine)
                 {
-                    locked.insert(param.clone(), held.clone());
+                    locked.insert(mine, held.clone());
                     grew = true;
                 }
             }
@@ -574,6 +586,28 @@ fn params_called(
             return (called, locked);
         }
     }
+}
+
+/// Locks each parameter that `function`, called inside the lock `held`, calls from around it:
+/// itself a nested function that calls the parameter, or one that calls one, written inside the
+/// parameter's own function. Whether any wasn't locked before.
+fn lock_captured_params(
+    function: &str,
+    held: &str,
+    values: &Values,
+    own_callers: &BTreeMap<String, BTreeSet<String>>,
+    locked: &mut BTreeMap<ParamKey, String>,
+) -> bool {
+    let mut grew = false;
+    for (nested, param) in &values.through {
+        if !locked.contains_key(param)
+            && callers_inside(nested, &format!("{}.", param.0), own_callers).contains(function)
+        {
+            locked.insert(param.clone(), held.to_owned());
+            grew = true;
+        }
+    }
+    grew
 }
 
 /// `nested`, and every function that calls it, however many calls up, of those written inside the

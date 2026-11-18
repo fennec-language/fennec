@@ -30244,70 +30244,7 @@ fn a_deep_key_missing_in_a_task_crashes_only_the_task_saying_what_is_missing() -
     }
     let dir = folder("deep_missing")?;
     let program = dir.join("deep_missing.fen");
-    std::fs::write(
-        &program,
-        r#"from std.concurrent import Crashed
-
-DEPTH = 20_000
-
-struct Node:
-    n: int
-    kids: list[Node]
-
-struct Link:
-    n: int
-    next: Link? = None
-
-def chain(depth: int, first: int) -> Node:
-    mut made = Node(n=first, kids=list[Node]())
-    for at in range(depth):
-        made = Node(n=at + 1, kids=[made])
-    return made
-
-def linked(depth: int, first: int) -> Link:
-    mut made = Link(n=first)
-    for at in range(depth):
-        made = Link(n=at + 1, next=made)
-    return made
-
-def looked_up() -> int:
-    mut seen = dict[Node, int]()
-    seen[chain(DEPTH, first=0)] = 7
-    return seen[chain(DEPTH, first=-1)]
-
-def removed_from_a_set() -> int:
-    mut held = set[Node]()
-    held.add(chain(DEPTH, first=0))
-    held.remove(chain(DEPTH, first=-1))
-    return len(held)
-
-def removed_from_a_list() -> int:
-    mut items = [linked(DEPTH, first=0)]
-    items.remove(linked(DEPTH, first=-1))
-    return len(items)
-
-def attempted(which: str, stdout: Stdout):
-    if which == "dict":
-        stdout.print(looked_up())
-    elif which == "set":
-        stdout.print(removed_from_a_set())
-    else:
-        stdout.print(removed_from_a_list())
-    return
-
-def in_a_task(which: str, stdout: Stdout) fails Crashed:
-    with launch(() => attempted(which, stdout)):
-        pass
-    return
-
-def main(stdout: Stdout):
-    for which in ["dict", "set", "list"]:
-        in_a_task(which, stdout) except Crashed():
-            stdout.print(f"{which}: its task crashed")
-    stdout.print("after")
-    return
-"#,
-    )?;
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/deep_missing.fen"), &program)?;
     let executable = dir.join("deep_missing");
     let built = fennec(
         &["build", "--release", &program.to_string_lossy(), "-o", &executable.to_string_lossy()],

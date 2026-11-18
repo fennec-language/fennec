@@ -9,18 +9,21 @@
 //! the same every time, and where nothing waits on a channel it's the block first and then its
 //! task, as a launch with `as sends` runs.
 //!
-//! One thing about a run hangs on time and is tried every way: where several tasks send on one
-//! channel, which of their messages comes next. Before a receive, whatever else can go on goes
-//! first, so every message that could be next is there, and where the first from each sender
-//! differ, each is taken in turn, on a run of its own (`lib.rs`), and every run has to print the
-//! same and end the same. Anything else whose outcome hangs on time is refused:
+//! Two things about a run hang on time and are tried every way, each way on a run of its own
+//! (`lib.rs`), and every run has to print the same and end the same:
+//! - where several tasks send on one channel, which of their messages comes next. Before a
+//!   receive, whatever else can go on goes first, so every message that could be next is there,
+//!   and where the first from each sender differ, each is taken in turn;
+//! - where a listener of a channel to every listener starts among messages sent beside it,
+//!   neither before nor after: each place it could start. One whose task has waited since it
+//!   started is taken to have started before what's sent after, as a timed wait is taken to be
+//!   answered in time, so a send repeated until it's heard has an end.
+//!
+//! Anything else whose outcome hangs on time is refused:
 //! - two tasks taking messages from one channel to one receiver at once, which gets which hanging
 //!   on time: one after another, where each had heard of the other's last take, is in order;
 //! - several senders' messages to a listener of a channel to every listener, or waiting for room,
 //!   when the next ones differ;
-//! - a listener of a channel to every listener starting beside a send, neither before nor after
-//!   it: each place it could start is tried, each a run of its own, and the runs have to print
-//!   the same. One whose task has waited since is taken to have started before what's sent after;
 //! - a channel to every listener letting go of its oldest message, to keep only as many as it
 //!   keeps, where a listener read it or fell behind it in an order that hangs on time: a read of it
 //!   that didn't happen before the send letting it go, or a receive that finds it gone and didn't
@@ -32,12 +35,13 @@
 //! - every task waiting on another, which hangs.
 //!
 //! A wait given a timeout times out only when nothing else can go on: whatever could still answer
-//! it is taken to answer in time, however short its time: only a wait of no time, `0ms`, is read as
-//! looking once, as the runtime's does. It's refused unless what it finds is the same on every
+//! it is taken to answer in time, however short its time. Only a wait of no time, `0ms`, is read
+//! as looking once, as the runtime's does. It's refused unless what it finds is the same on every
 //! run: nothing else could still send, take or close, a task waiting for room behind a send beside
-//! its own counting as one that could, what it finds was there before it, and it isn't in a
-//! `parallel` round beside others, which could use any channel, one the round made included. A listener of a channel to every
-//! listener read by two tasks at once is refused as one channel's receivers are.
+//! its own counting as one that could; what it finds was there before it; and it isn't in a
+//! `parallel` round beside others, which could use any channel, one the round made included. A
+//! listener of a channel to every listener read by two tasks at once is refused as one channel's
+//! receivers are.
 //!
 //! The rounds of a `parallel` call run one after another here, on the thread that made the call,
 //! but each is one of its own to the channels it uses, as it runs beside the others in the

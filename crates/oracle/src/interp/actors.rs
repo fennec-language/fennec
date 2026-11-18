@@ -130,6 +130,8 @@ struct State {
     channels: BTreeMap<i64, Chan>,
     /// Each listener to a channel to every listener, by the number it's received from by.
     listeners: BTreeMap<i64, Listener>,
+    /// The thread each `parallel` round's number belongs to: what a round learns is its thread's.
+    thread_of: BTreeMap<usize, usize>,
     next_number: i64,
     /// Whether the run was given up, so every thread that waits is to end.
     given_up: bool,
@@ -144,6 +146,7 @@ impl Default for State {
             actors: vec![Actor::ready(Vec::new(), Vec::new())],
             channels: BTreeMap::new(),
             listeners: BTreeMap::new(),
+            thread_of: BTreeMap::new(),
             next_number: 1,
             given_up: false,
             last_outside: [None, None],
@@ -353,11 +356,11 @@ impl State {
     /// Whether any but those in `apart` can go on now, or is waiting with a timeout, which could end
     /// whenever it does.
     ///
-    /// For the channel numbered `of`, one that doesn't know it was made holds no end of it: it
-    /// counts only while it could take a message, on another channel it knows of, that does know,
-    /// and could hand it one. An end reaches a task only by its launch or a message, which both
-    /// carry what their sender knew, or a `shared` value, which two tasks can't both reach while
-    /// one changes it. Taking from a channel takes an end of it too.
+    /// For the channel numbered `of`, one that doesn't know it was made holds no end of it, nor
+    /// can come to: it counts only while it could come to know, through messages waiting on
+    /// channels it knows of, and those they hand it. An end reaches a task only by its launch or a
+    /// message, which both carry what their sender knew, or a `shared` value, which two tasks
+    /// can't both reach while one changes it. Taking from a channel takes an end of it too.
     fn others_could_go(&self, apart: &[usize], of: Option<i64>) -> bool {
         let made = of.and_then(|number| self.channels.get(&number)).map(|chan| &chan.made);
         (0..self.actors.len()).filter(|other| !apart.contains(other)).any(|other| {
@@ -365,21 +368,35 @@ impl State {
             let could_go = self.can_go(other)
                 || matches!(found.state, Doing::Waiting(_, true))
                 || self.behind_a_racing_send(other);
-            let knows = made.is_none_or(|made| happened_before(made, &found.clock));
-            could_go && (knows || made.is_some_and(|made| self.could_be_handed(&found.clock, made, of)))
+            could_go && made.is_none_or(|made| happened_before(made, &self.could_come_to_know(other)))
         })
     }
 
-    /// Whether one whose clock is `clock` could take a message, on a channel it knows was made and
-    /// other than `apart_from`, that knows of what's stamped `made`.
-    fn could_be_handed(&self, clock: &Clock, made: &Clock, apart_from: Option<i64>) -> bool {
-        self.channels.iter().any(|(number, chan)| {
-            let every = chan.sent.get(chan.first..).unwrap_or_default();
-            let mut waiting = chan.queue.iter().chain(&chan.waiting_sends).chain(every);
-            Some(*number) != apart_from
-                && happened_before(&chan.made, clock)
-                && waiting.any(|sent| happened_before(made, &sent.clock))
-        })
+    /// What the thread numbered `actor` could come to know: what it knows, and the `parallel`
+    /// rounds it runs do, and then what each message waiting on a channel it knows of tells,
+    /// until that gives nothing more, as an end handed on through one channel can reach another.
+    fn could_come_to_know(&self, actor: usize) -> Clock {
+        let mut known = self.actors.get(actor).map(|found| found.clock.clone()).unwrap_or_default();
+        for (round, thread) in &self.thread_of {
+            if *thread == actor
+                && let Some(found) = self.actors.get(*round)
+            {
+                merge(&mut known, &found.clock);
+            }
+        }
+        loop {
+            let mut told = known.clone();
+            for chan in self.channels.values().filter(|chan| happened_before(&chan.made, &known)) {
+                let every = chan.sent.get(chan.first..).unwrap_or_default();
+                for sent in chan.queue.iter().chain(&chan.waiting_sends).chain(every) {
+                    merge(&mut told, &sent.clock);
+                }
+            }
+            if happened_before(&told, &known) {
+                return known;
+            }
+            known = told;
+        }
     }
 
     /// Whether `actor` waits for room on a channel where a send waits behind a message another
@@ -530,6 +547,7 @@ fn who(rounds_as: &mut [Option<usize>], actor: usize, state: &mut State) -> Run<
             ended: Some(Ok(())),
             ..Actor::ready(Vec::new(), clock)
         });
+        state.thread_of.insert(number, actor);
         *round = Some(number);
         parent = number;
     }

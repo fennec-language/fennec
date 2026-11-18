@@ -3138,6 +3138,8 @@ const LISTENER_STARTED_BESIDE_SENDS: &str = "
 /// for room behind a send beside its own, which on another run got in first and went on, the send
 /// a task's or a `parallel` round's. A round's wait of no time beside other rounds is refused on a
 /// channel it made itself too, since its ends are plain values another round can be sent.
+/// A task that doesn't know a channel was made holds no end of it, so std's `pool` runs; but one
+/// whose `parallel` round took an end, or that could take one handed on through two channels, does.
 #[test]
 fn a_wait_of_no_time_or_a_listener_read_by_two_tasks_is_refused_where_it_hangs_on_time() {
     prints(WAITS_OF_NO_TIME, "got 5\nagain -1\nfull\n");
@@ -3156,6 +3158,14 @@ fn a_wait_of_no_time_or_a_listener_read_by_two_tasks_is_refused_where_it_hangs_o
         ),
         (
             WAITS_OF_NO_TIME_ON_A_ROUND_S_OWN_CHANNEL,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            RECEIVE_OF_NO_TIME_ON_AN_END_A_ROUND_TOOK,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            RECEIVE_OF_NO_TIME_ON_AN_END_HANDED_TWICE,
             "a receive of no time, which finds a message or not by time",
         ),
         (
@@ -3237,6 +3247,54 @@ const ONE_LISTENER_TWO_READERS: &str = "
                         hits.send(1)?
                         hits.send(2)?
                 stdout.print('a', first.receive() else -1, 'b', second.receive() else -1)
+        ";
+
+const RECEIVE_OF_NO_TIME_ON_AN_END_A_ROUND_TOOK: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def relay(pipe: Inbox[Sender[int]], ack: Sender[int], gate: Inbox[int], done: Sender[int], at: int) -> int fails Closed:
+            out = pipe.receive() else return -1
+            ack.send(0)?
+            _ = gate.receive() else -1
+            out.send(7)?
+            done.send(0)?
+            return at
+
+        def worker(pipe: Inbox[Sender[int]], ack: Sender[int], gate: Inbox[int], done: Sender[int]) fails Closed:
+            _ = [relay(pipe, ack=ack, gate=gate, done=done, at=at)? for at in parallel(range(1))]
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[Sender[int]](size=1) as pipe, channel[int](size=1) as ack:
+                with channel[int](size=1) as gate, channel[int](size=1) as done:
+                    gate.send(0)?
+                    with launch(() => worker(pipe.inbox(), ack=ack.sender(), gate=gate.inbox(), done=done.sender())?)?:
+                        with channel[int](size=1) as box:
+                            pipe.send(box.sender())?
+                            _ = ack.receive() else -1
+                            got = box.receive_within(0ms) except Timeout(): -1
+                            stdout.print('got', got)
+                            _ = done.receive() else -1
+        ";
+
+const RECEIVE_OF_NO_TIME_ON_AN_END_HANDED_TWICE: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def relay(first: Inbox[Inbox[Sender[int]]], done: Sender[int]) fails Closed:
+            second = first.receive() else return
+            out = second.receive() else return
+            out.send(7)?
+            done.send(0)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[Inbox[Sender[int]]](size=1) as first, channel[int](size=1) as done:
+                with launch(() => relay(first.inbox(), done=done.sender())?)?:
+                    with channel[Sender[int]](size=1) as second:
+                        first.send(second.inbox())?
+                        with channel[int](size=1) as box:
+                            second.send(box.sender())?
+                            got = box.receive_within(0ms) except Timeout(): -1
+                            stdout.print('got', got)
+                            _ = done.receive() else -1
         ";
 
 const SEND_OF_NO_TIME_TO_ONE_FILLED_BESIDE: &str = "

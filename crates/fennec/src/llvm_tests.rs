@@ -136,7 +136,9 @@ fn as_function(name: String, test: &TestDef) -> FnDef {
         params: test.capabilities.iter().chain(&test.inputs).cloned().collect(),
         ret: None,
         arrow: None,
-        fails: None,
+        // What lowering wrote it fails with, so its function holds a source's failure as the test
+        // did (#2040).
+        fails: test.fails.clone(),
         body,
         annotations: Vec::new(),
         span: test.span,

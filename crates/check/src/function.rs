@@ -628,11 +628,21 @@ impl<'c> FnCx<'c> {
             let ty = input.ty.as_ref().map_or(Type::Unknown, |ty| cx.resolve(ty));
             cx.declare(&input.name, ty, input.is_mut, input.span);
         }
-        cx.stmts(&test.body, false);
-        cx.finish(&[]);
-        if test.inputs.is_empty() && test.capabilities.is_empty() {
-            checker.record_test(key, &test.body);
+        // What it fails with is the compiler's to write, once it's worked it out (#2040).
+        if let Some(fails) = &test.fails {
+            if cx.checker.again {
+                cx.fails = Some(cx.resolve(fails));
+            } else {
+                let message = "a test can't say what it fails with";
+                cx.error(Diagnostic::new(message, fails.span).with_help("take the `fails` away"));
+            }
         }
+        cx.stmts(&test.body, false);
+        // What it fails with, worked out from its body as a function's is, for lowering to write.
+        let errors = cx.errors.clone();
+        let error = (!errors.is_empty()).then(|| cx.joined(&errors, test.span, "fails with"));
+        cx.finish(&[]);
+        checker.record_test(key, &test.body, error);
     }
 
     /// Checks a type's field defaults against their types, and its `where` rules.

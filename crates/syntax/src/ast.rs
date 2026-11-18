@@ -273,6 +273,10 @@ pub struct TestDef {
     /// `fennec bench`.
     pub bench: bool,
     pub span: Span,
+    /// What it fails with, worked out from its body. Only the compiler writes it: lowering does for
+    /// a test that holds a source's failure, so the source's cleanup runs once, after what's inside
+    /// the block is left, as in a function (#2040). A parse never gives one.
+    pub fails: Option<TypeExpr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

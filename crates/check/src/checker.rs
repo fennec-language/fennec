@@ -519,11 +519,11 @@ impl Checker {
 
     /// A test with no inputs has a signature like a function's, under its key in the typed
     /// tree, so a compiler can treat it as one. It gives back nothing, or an error.
-    pub(crate) fn record_test(&mut self, key: String, body: &[Stmt]) {
+    pub(crate) fn record_test(&mut self, key: String, body: &[Stmt], error: Option<Type>) {
         let effects = effects::of_body(body);
         let signature = Signature {
             params: Vec::new(),
-            returns: Type::Unit,
+            returns: error.map_or(Type::Unit, |error| Type::result(Type::Unit, error)),
             can_fail: effects.fails,
             generator: effects.yields,
             generics: Vec::new(),

@@ -1912,6 +1912,107 @@ fn a_with_source_s_cleanup_written_in_a_test_reads_the_caller_s_names() -> std::
     Ok(())
 }
 
+/// A test holds a failure leaving a `with` block as a function does, so the source's cleanup runs
+/// once, after what's inside the block is left: a `for ref` loop's item is written back first, a
+/// generator the block loops over is let go first, and one failing partway through still runs it.
+/// Before, the cleanup was written in before each failure, inside the loop, or not at all (#2040).
+#[test]
+fn a_test_holds_a_source_s_failure_as_a_function_does() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, source, wanted) in [
+        (
+            "test_holds_a_ref_item",
+            TEST_HOLDS_A_REF_ITEM,
+            &["the test failed with Oops(code=11)", "0 passed, 1 failed"][..],
+        ),
+        (
+            "test_holds_generators",
+            TEST_HOLDS_GENERATORS,
+            &[
+                "the test failed with Oops(code=1)",
+                "the left side is 0 and the right side is 1",
+                "0 passed, 2 failed",
+            ][..],
+        ),
+    ] {
+        let dir = folder(name)?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
+        std::fs::remove_dir_all(&dir)?;
+        let said =
+            format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+        for each in wanted {
+            assert!(said.contains(each), "{name}: {said}");
+        }
+    }
+    Ok(())
+}
+
+const TEST_HOLDS_A_REF_ITEM: &str = r#"error Oops:
+    code: int
+
+def tallied(ref xs: list[int]) -> with int:
+    lend 1 except:
+        assert xs == [11, 2]
+
+def main(stdout: Stdout):
+    stdout.print("main")
+
+test "the cleanup sees a for ref item written back"():
+    mut xs = [1, 2]
+    with tallied(ref xs) as got:
+        for ref x in xs:
+            x += 10
+            fail Oops(code=x + got * 0)
+"#;
+
+const TEST_HOLDS_GENERATORS: &str = r#"error Oops:
+    code: int
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, seen: shared list[str]) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        lock seen as now:
+            assert len(now) == 1
+    lock seen as ref now:
+        now.append(name)
+
+def held(name: str, seen: shared list[str]) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, seen) as door:
+        yield 1
+        yield 2
+
+def breaking(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def main(stdout: Stdout):
+    stdout.print("main")
+
+test "the inner generator closes before the outer cleanup"():
+    shared seen = list[str]()
+    with opened("outer", seen) as door:
+        for step in held("inner", seen)?:
+            fail Oops(code=step)
+
+test "a generator failing mid-loop runs the outer cleanup"():
+    shared seen = list[str]()
+    with opened("outer", seen) as door:
+        for step in breaking("mid")?:
+            assert step == 1
+"#;
+
 const SOURCE_NAMES_BY_BINDERS: &str = r"enum Kind:
     Slider(total: int)
     Empty

@@ -627,7 +627,7 @@ impl Parser {
         let span = start.to(self.prev_span());
         self.expect_p(Punct::Colon)?;
         let body = self.block()?;
-        Ok(Item::Test(TestDef { name, capabilities, inputs, body, bench, span }))
+        Ok(Item::Test(TestDef { name, capabilities, inputs, body, bench, span, fails: None }))
     }
 
     fn import(&mut self) -> Result<Import, Diagnostic> {

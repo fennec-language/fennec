@@ -76,31 +76,31 @@ pub(crate) fn lower(
     };
     for item in &mut module.items {
         match item {
-            Item::Function(def) => {
-                // The function `fennec test` makes of a test says what it fails with, worked out
-                // from its body, so it holds a failure leaving a `with` block as a function does:
-                // the source's cleanup runs once, after what's inside the block is left (#2040).
-                if def.fails.is_none()
-                    && holds_with(&def.body)
-                    && let Some(fails) = test_fails.get(&def.name)
-                {
-                    def.fails = Some(fails.clone());
-                }
-                lowering.function(def);
-            }
+            Item::Function(def) => lowering.function(def),
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
                 def.methods.iter_mut().for_each(|def| lowering.function(def));
             }
             Item::Extend(extension) => extension.methods.iter_mut().for_each(|def| lowering.function(def)),
             Item::Test(test) => {
+                // A test that holds a source's failure says what it fails with, worked out from its
+                // body, so it holds the failure as a function does: the source's cleanup runs once,
+                // after what's inside the block is left (#2040).
+                if test.fails.is_none()
+                    && holds_with(&test.body)
+                    && let Some(fails) = test_fails.get(&test.name)
+                {
+                    test.fails = Some(fails.clone());
+                }
                 lowering.returns.push(None);
-                lowering.fails.push(None);
+                lowering.failing.push(test.fails.is_some());
+                lowering.fails.push(test.fails.clone());
                 let given: Vec<String> =
                     test.capabilities.iter().chain(&test.inputs).map(|param| param.name.clone()).collect();
                 lowering.binds.push(fennec_syntax::sight::bound_in(&test.body, &given));
                 lowering.stmts(&mut test.body);
                 lowering.binds.pop();
                 lowering.fails.pop();
+                lowering.failing.pop();
                 lowering.returns.pop();
             }
             _ => {}

@@ -999,27 +999,16 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
     Round::Done
 }
 
-/// What each function `fennec test` makes of a test fails with, worked out from its body, by its
-/// name: `test:` and its number, and a property test's `_body` after it. One that can't fail isn't
-/// here.
+/// What each test fails with, worked out from its body, by its name. One that can't fail isn't here.
 fn tests_failing(module: &Module, signatures: &Signatures) -> BTreeMap<String, fennec_syntax::TypeExpr> {
-    let is_test = |name: &str| {
-        name.strip_prefix("test:").is_some_and(|rest| {
-            let number = rest.strip_suffix("_body").unwrap_or(rest);
-            !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
-        })
-    };
     let mut found = BTreeMap::new();
     for item in &module.items {
-        let Item::Function(def) = item else { continue };
-        if !is_test(&def.name) || def.fails.is_some() {
-            continue;
-        }
-        if let Some(signature) = signatures.get(&def.name)
+        let Item::Test(test) = item else { continue };
+        if let Some(signature) = signatures.get(&program::test_key(&test.name))
             && let Type::Result(_, error) = &signature.returns
-            && let Some(written) = error.written(def.span)
+            && let Some(written) = error.written(test.span)
         {
-            found.insert(def.name.clone(), written);
+            found.insert(test.name.clone(), written);
         }
     }
     found

@@ -99,6 +99,62 @@ tables! {
     saved_types: BTreeSet<Type>,
 }
 
+/// What one function's check adds to what's followed across functions: whom it calls, what it
+/// waits on and locks, what it calls inside a lock, the function values it passes, and what it
+/// hands from kit to kit. It's added as soon as the check is done, since revisiting a cycle reads
+/// whom each function calls, and kept by function for a later round to carry over.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Graph {
+    callers: BTreeMap<String, BTreeSet<String>>,
+    own_callers: BTreeMap<String, BTreeSet<String>>,
+    waits: BTreeMap<String, String>,
+    takes_locks: BTreeMap<String, String>,
+    lock_calls: Vec<crate::waits::LockCall>,
+    values: crate::waits::Values,
+    handovers: crate::holds::Handovers,
+}
+
+impl Checker {
+    /// What's followed as it is, leaving it empty for a function's check to add to.
+    fn take_graph(&mut self) -> Graph {
+        Graph {
+            callers: std::mem::take(&mut self.callers),
+            own_callers: std::mem::take(&mut self.own_callers),
+            waits: std::mem::take(&mut self.waits),
+            takes_locks: std::mem::take(&mut self.takes_locks),
+            lock_calls: std::mem::take(&mut self.lock_calls),
+            values: std::mem::take(&mut self.values),
+            handovers: std::mem::take(&mut self.handovers),
+        }
+    }
+
+    /// Puts back what `take_graph` took.
+    fn put_graph(&mut self, graph: Graph) {
+        self.callers = graph.callers;
+        self.own_callers = graph.own_callers;
+        self.waits = graph.waits;
+        self.takes_locks = graph.takes_locks;
+        self.lock_calls = graph.lock_calls;
+        self.values = graph.values;
+        self.handovers = graph.handovers;
+    }
+
+    /// Adds what one function's check found.
+    fn add_graph(&mut self, graph: &Graph) {
+        for (callee, callers) in &graph.callers {
+            self.callers.entry(callee.clone()).or_default().extend(callers.iter().cloned());
+        }
+        for (callee, callers) in &graph.own_callers {
+            self.own_callers.entry(callee.clone()).or_default().extend(callers.iter().cloned());
+        }
+        self.waits.extend(graph.waits.clone());
+        self.takes_locks.extend(graph.takes_locks.clone());
+        self.lock_calls.extend(graph.lock_calls.iter().cloned());
+        self.values.add(&graph.values);
+        self.handovers.add(&graph.handovers);
+    }
+}
+
 pub(crate) struct Checker {
     pub(crate) program: Program,
     states: BTreeMap<String, State>,
@@ -235,6 +291,8 @@ pub(crate) struct Checker {
     /// Whether every function checked so far has had what it wrote added to the tables: once
     /// they're read, what a function checked after that writes goes in as it's checked.
     tables_merged: bool,
+    /// What each function's check added to what's followed across functions, by its key.
+    graph_of: BTreeMap<String, Graph>,
     /// What's followed through function values: which function parameters are called, what's
     /// passed for them, and what each arrow function waits on.
     pub(crate) values: crate::waits::Values,
@@ -355,6 +413,7 @@ impl Checker {
             lock_verdicts: BTreeMap::new(),
             tables_of: BTreeMap::new(),
             tables_merged: false,
+            graph_of: BTreeMap::new(),
             values: crate::waits::Values::default(),
             handovers: crate::holds::Handovers::default(),
             holds: module.holds.clone(),
@@ -524,6 +583,13 @@ impl Checker {
             .into_iter()
             .map(|(key, tables)| (key, self.settled_tables(tables)))
             .collect();
+        let graph_of = std::mem::take(&mut self.graph_of)
+            .into_iter()
+            .map(|(key, mut graph)| {
+                graph.handovers = std::mem::take(&mut graph.handovers).settled(&|ty| self.settled(ty));
+                (key, graph)
+            })
+            .collect();
         // What each source lends, now that what it's given is known, for lowering to write in.
         let mut sources = std::mem::take(&mut self.sources);
         for source in sources.values_mut() {
@@ -598,6 +664,7 @@ impl Checker {
             saved_types,
             holds: self.worked_out,
             tables_of,
+            graph_of,
         }
     }
 
@@ -882,6 +949,7 @@ impl Checker {
         // What this function's check writes is its own, kept by its key: what's in the tables
         // already is put back after.
         let around = self.take_tables();
+        let followed = self.take_graph();
         self.checking.push(key.to_owned());
         let body = FnCx::check_function(self, key, &def, &signature.params, captured, !prelude);
         self.checking.pop();
@@ -891,6 +959,10 @@ impl Checker {
             self.add_tables(&own);
         }
         self.tables_of.insert(key.to_owned(), own);
+        let found = self.take_graph();
+        self.put_graph(followed);
+        self.add_graph(&found);
+        self.graph_of.insert(key.to_owned(), found);
         // No arrow means it gives back nothing. One that gives back a value anyway has to
         // write its type, and until it does, callers see the value so they aren't reported
         // as well.

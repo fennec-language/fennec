@@ -25,6 +25,7 @@ const TOGETHER: &str =
 const WAIT_FIRST: &str = "do the waiting first, then take the lock: a task that waits while it holds one stops every task that wants it";
 
 /// A call made inside a lock body, to be judged once every function is checked.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LockCall {
     /// The function called, or `*.method` for an interface's method, any type's.
     callee: String,
@@ -39,7 +40,7 @@ pub(crate) struct LockCall {
 /// waits on whatever it's given, so what each call passes for that parameter is judged where it's
 /// passed: an arrow function by what its body waits on, a named function by what it calls, and a
 /// parameter of the caller's as that function's parameter, called the same way.
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Values {
     /// Each function parameter a function calls, by the function's key and the parameter's name,
     /// with the lock held where it's called inside one.
@@ -62,10 +63,26 @@ pub(crate) struct Values {
     through: Vec<(String, ParamKey)>,
 }
 
+impl Values {
+    /// Adds what one function's check followed.
+    pub(crate) fn add(&mut self, other: &Values) {
+        self.called.extend(other.called.iter().cloned());
+        self.passed.extend(other.passed.iter().cloned());
+        self.waits.extend(other.waits.clone());
+        for (at, calls) in &other.calls {
+            self.calls.entry(*at).or_default().extend(calls.iter().cloned());
+        }
+        self.locks.extend(other.locks.clone());
+        self.local_calls.extend(other.local_calls.iter().cloned());
+        self.through.extend(other.through.iter().cloned());
+    }
+}
+
 /// A function's parameter, by the function's key and the parameter's name.
 type ParamKey = (String, String);
 
 /// A function value passed for a function parameter.
+#[derive(Clone, Debug, PartialEq)]
 struct Passed {
     /// The function called, by key, and its name and the parameter's, for messages.
     callee: String,
@@ -78,6 +95,7 @@ struct Passed {
 }
 
 /// What a function value passed is.
+#[derive(Clone, Debug, PartialEq)]
 enum Given {
     /// An arrow function, by span, and whether it's written right there, where it was checked as
     /// running under the lock held there.

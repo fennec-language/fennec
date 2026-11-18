@@ -158,8 +158,10 @@ says they are, at the version the workspace pins.
   failed, whose failure the block ends with; waiting inside a `lock`; `stop_after=`; and every task
   waiting on another, which hangs. A wait given a timeout times out only when nothing else can go
   on, however short its time, even `1ns`: only a wait of no time, `0ms`, looks once, as the
-  runtime's does. That one is refused unless nothing else could still send, take or close, a task
-  waiting for room behind a send beside its own counting as one that could; what it finds, a
+  runtime's does. That one is refused unless nothing else holding an end of its channel could still
+  send, take or close, a task waiting for room behind a send beside its own counting as one that
+  could, and a task that doesn't know the channel was made, by a launch or a message, holding none;
+  what it finds, a
   message, room, the messages filling it or the close, was there before it; and it isn't in a
   `parallel` round beside others, which could use any channel, one the round made included. A task that ends with messages left in its inbox that its block sent as it
   ran: whether each

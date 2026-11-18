@@ -36,12 +36,15 @@ pub(crate) struct Source {
     pub(crate) task: Option<crate::launch::Task>,
 }
 
+/// The fields each `match` with `ref` cases binds by name, by its case, found by the `match`'s span.
+type RefMatches = BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>;
+
 /// Writes in every `with` over a source in `module`, saying whether there were any.
 pub(crate) fn lower(
     module: &mut Module,
     sources: &BTreeMap<(u32, u32), Source>,
     launches: &BTreeMap<(u32, u32), crate::launch::Launch>,
-    (ref_matches, test_fails): (&BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>, &BTreeMap<String, TypeExpr>),
+    (ref_matches, test_fails): (&RefMatches, &BTreeMap<String, TypeExpr>),
 ) -> bool {
     if sources.is_empty() && launches.is_empty() && ref_matches.is_empty() {
         return false;
@@ -2681,8 +2684,8 @@ mod tests {
         let mut module = fennec_syntax::parse(source).unwrap();
         let checked = crate::checker::Checker::new(&module).run(crate::checker::Scope::Everything).unwrap();
         let (launches, matches) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
-        assert!(super::lower(&mut module, &checked.sources, &launches, &matches));
-        assert!(!super::lower(&mut module, &checked.sources, &launches, &matches));
+        assert!(super::lower(&mut module, &checked.sources, &launches, (&matches, &BTreeMap::new())));
+        assert!(!super::lower(&mut module, &checked.sources, &launches, (&matches, &BTreeMap::new())));
     }
 
     /// A generic source's type parameter, written in as a type naming the caller's own, like a

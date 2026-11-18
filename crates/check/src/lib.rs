@@ -1001,17 +1001,41 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
 
 /// What each test fails with, worked out from its body, by its name. One that can't fail isn't here.
 fn tests_failing(module: &Module, signatures: &Signatures) -> BTreeMap<String, fennec_syntax::TypeExpr> {
+    // The program's own types, which its files name. Any other is the standard library's, written
+    // where that library's code would name it, which needs no import.
+    let own: BTreeSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) if !def.span.in_prelude() => {
+                Some(def.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
     let mut found = BTreeMap::new();
     for item in &module.items {
         let Item::Test(test) = item else { continue };
         if let Some(signature) = signatures.get(&program::test_key(&test.name))
             && let Type::Result(_, error) = &signature.returns
-            && let Some(written) = error.written(test.span)
+            && let Some(mut written) = error.written(test.span)
         {
+            library_named(&mut written, &own);
             found.insert(test.name.clone(), written);
         }
     }
     found
+}
+
+/// A written type with each type in it that isn't one of `own` given a span in the standard
+/// library's text, where its name needs no import.
+fn library_named(written: &mut fennec_syntax::TypeExpr, own: &BTreeSet<&str>) {
+    if written.name != "|" && !own.contains(written.name.as_str()) {
+        written.span = Span { start: Span::PRELUDE, end: Span::PRELUDE };
+    }
+    for arg in &mut written.args {
+        library_named(arg, own);
+    }
 }
 
 /// What the checker found an operator or builtin calls written in: `a != b` as `not (a == b)`

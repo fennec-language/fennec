@@ -219,3 +219,47 @@ fn whats_left_outside_tasks_is_counted_once() {
     assert_eq!(with(|state| state.heap.newly_left_outside_tasks()), 1);
     finish();
 }
+
+/// blocks another thread made, taken over into the hash map with no page made, are
+/// audited as any others are. Counted right, nothing's wrong. Left with nothing holding them,
+/// the one nothing holds is said as leaked with what it holds. Counted wrong, each is said.
+#[test]
+fn blocks_taken_over_into_the_hash_map_are_audited() {
+    started();
+    let off_table = |words: Vec<u64>| -> (u64, Box<[u64]>) {
+        let block: Box<[u64]> = words.into_boxed_slice();
+        (u64::try_from(block.as_ptr().addr()).unwrap_or(0), block)
+    };
+    let (name, name_block) = off_table(vec![2, 1, 8, 8, 8, 0, u64::from_le_bytes(*b"a string")]);
+    let (first, first_block) = off_table(vec![1, 0, 0, name]);
+    let (second, second_block) = off_table(vec![1, 0, first, name]);
+    with(|state| {
+        state.heap.adopt_made(vec![name_block, first_block, second_block]);
+        assert_eq!(state.heap.table_pages(), 0, "none is on a page");
+        Some(())
+    });
+    assert_eq!(audited(&[second]), Audit { live: 3, wrong: Vec::new() });
+    // Nothing holds the second: it's leaked, with the two it holds.
+    let found = audited(&[]);
+    let [leaked] = &found.wrong[..] else { panic!("{found:?}") };
+    assert_eq!(
+        (leaked.wrong, leaked.address, leaked.kind.as_str(), leaked.under),
+        (Wrong::Leaked, second, "Node", 2)
+    );
+    // An owner too many of the name, and one too few of the first.
+    let found = audited(&[second, name, first]);
+    let said: Vec<(Wrong, u64)> =
+        found.wrong.iter().map(|finding| (finding.wrong, finding.address)).collect();
+    assert!(
+        said.contains(&(Wrong::CountedLow, name)) && said.contains(&(Wrong::CountedLow, first)),
+        "{found:?}"
+    );
+    with(|state| {
+        assert_eq!(state.heap.table_pages(), 0);
+        for address in [name, first, second] {
+            assert!(state.heap.take_out(address).is_some());
+        }
+        Some(())
+    });
+    finish();
+}

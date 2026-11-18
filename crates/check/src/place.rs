@@ -232,6 +232,7 @@ impl FnCx<'_> {
             mut_at: Some(at.start),
             to_every: false,
             param_of: None,
+            arrow: None,
         };
         self.declare_with(binding, at);
         self.record(at, &self.checker.settled(&ty));

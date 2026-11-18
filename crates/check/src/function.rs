@@ -32,6 +32,10 @@ pub(crate) struct Binding {
     /// The function whose parameter it is, by key, when it's one: kept when a nested function
     /// captures it, so the nested function calling it is a call of that function's parameter.
     pub(crate) param_of: Option<String>,
+    /// The arrow function, by span, a name that isn't `mut` was given where it's declared: all it
+    /// can hold, so calling it does what the arrow's own body does. It ends with the name's scope,
+    /// as a name declared again after it holds something else.
+    pub(crate) arrow: Option<(u32, u32)>,
 }
 
 /// Where a name came from, for explaining how to make it changeable.
@@ -826,6 +830,7 @@ impl<'c> FnCx<'c> {
                 mut_at: None,
                 to_every: false,
                 param_of,
+                arrow: None,
             },
             at,
         );
@@ -847,6 +852,7 @@ impl<'c> FnCx<'c> {
             mut_at: Some(at.start),
             to_every: false,
             param_of: None,
+            arrow: None,
         };
         self.declare_with(binding, at);
     }
@@ -996,6 +1002,35 @@ impl<'c> FnCx<'c> {
             .flat_map(|scope| scope.bindings.iter().rev())
             .find(|binding| binding.name == name)
             .map(|binding| binding.origin)
+    }
+
+    /// The arrow function the local name in sight was declared with, by span, when it isn't
+    /// `mut`: then it's all the name can hold. A `mut` name can hold another value by the time it's
+    /// read, and a name declared again, even by unpacking, is another binding with none.
+    pub(crate) fn local_arrow(&self, name: &str) -> Option<(u32, u32)> {
+        let binding = self
+            .scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.bindings.iter().rev())
+            .find(|binding| binding.name == name)?;
+        (binding.origin == Origin::Local && !binding.is_mut).then_some(binding.arrow).flatten()
+    }
+
+    /// Keeps the arrow function a name that isn't `mut` is declared with, `name = () => ...`, on
+    /// the name's binding: see `local_arrow`.
+    pub(crate) fn keep_arrow(&mut self, target: &Expr, value: &Expr) {
+        let (ExprKind::Name(name), ExprKind::Lambda { .. }) = (&target.kind, &value.kind) else { return };
+        let Some(binding) = self
+            .scopes
+            .last_mut()
+            .and_then(|scope| scope.bindings.iter_mut().rev().find(|b| b.name == *name))
+        else {
+            return;
+        };
+        if binding.origin == Origin::Local && !binding.is_mut && binding.arrow.is_none() {
+            binding.arrow = Some((value.span.start, value.span.end));
+        }
     }
 
     /// The function `name` is a parameter of, by key: this one's, or one around it that a nested

@@ -1044,8 +1044,9 @@ fn a_consumer_of_a_failing_generator_fails_before_its_statement_goes_on() {
     prints(
         "
         # A consumer of a generator that fails partway, inside a statement, passes the failure up before
-        # the rest of the statement runs: nothing is printed with a partial value, and nothing written
-        # after it in the statement is called. Each generator yields once, then fails.
+        # the rest of the statement runs: nothing is printed with a partial value, nothing written after
+        # it in the statement is called, nothing is yielded or written to a field, and `max` never sees an
+        # empty list. Each generator yields once, or never, then fails.
 
         error Bad:
             code: int
@@ -1056,6 +1057,15 @@ fn a_consumer_of_a_failing_generator_fails_before_its_statement_goes_on() {
         def second(code: int) -> Iterator[int] fails Bad:
             yield 2
             fail Bad(code=code)
+
+        def nothing_then(code: int) -> Iterator[int] fails Bad:
+            for each in range(0):
+                yield each
+            fail Bad(code=code)
+
+        def totals(code: int) -> Iterator[int] fails Bad:
+            yield sum(second(code)?)
+            yield 7
 
         def noisy(stdout: Stdout, said: str) -> int:
             stdout.print('noisy', said)
@@ -1103,6 +1113,21 @@ fn a_consumer_of_a_failing_generator_fails_before_its_statement_goes_on() {
             with opened(stdout) as tally:
                 return sum(second(50)?) + tally.count
 
+        def yielded(stdout: Stdout) fails Bad:
+            made = totals(51)?
+            for total in made:
+                stdout.print('total', total)
+
+        def counted(ref tally: Tally) fails Bad:
+            tally.count = sum(second(52)?)
+
+        def locked(tally: shared Tally) fails Bad:
+            lock tally as ref held:
+                held.count = sum(second(53)?)
+
+        def biggest(stdout: Stdout) fails Bad:
+            stdout.print('the max is', max(nothing_then(54)?))
+
         def show(stdout: Stdout, run: (Stdout) -> nothing fails Bad):
             run(stdout) except why:
                 stdout.print('failed', why)
@@ -1117,12 +1142,23 @@ fn a_consumer_of_a_failing_generator_fails_before_its_statement_goes_on() {
             show(stdout, formatted)
             show(stdout, in_order)
             show(stdout, in_a_with)
+            show(stdout, yielded)
+            mut tally = Tally(count=0)
+            counted(ref tally) except why:
+                stdout.print('failed', why)
+            stdout.print('counted', tally.count)
+            shared kept = Tally(count=0)
+            locked(kept) except why:
+                stdout.print('failed', why)
+            lock kept as held:
+                stdout.print('locked', held.count)
+            show(stdout, biggest)
             got = returned(stdout) except why:
                 stdout.print('failed', why)
                 return
             stdout.print('got', got)
         ",
-        "failed Bad(code=41)\nfailed Bad(code=42)\nfailed Bad(code=43)\nfailed Bad(code=44)\nfailed Bad(code=45)\nfailed Bad(code=46)\nfailed Bad(code=47)\nfailed Bad(code=48)\nopening\ncleaning up\nfailed Bad(code=49)\nopening\ncleaning up\nfailed Bad(code=50)\n",
+        "failed Bad(code=41)\nfailed Bad(code=42)\nfailed Bad(code=43)\nfailed Bad(code=44)\nfailed Bad(code=45)\nfailed Bad(code=46)\nfailed Bad(code=47)\nfailed Bad(code=48)\nopening\ncleaning up\nfailed Bad(code=49)\nfailed Bad(code=51)\nfailed Bad(code=52)\ncounted 0\nfailed Bad(code=53)\nlocked 0\nfailed Bad(code=54)\nopening\ncleaning up\nfailed Bad(code=50)\n",
     );
 }
 

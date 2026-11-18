@@ -19712,6 +19712,153 @@ def main(net: Net, stdout: Stdout) fails NetError:
     Ok(())
 }
 
+/// A chat hub, launched from `main`, writing each line a round hands it to every member's
+/// connection itself, on whichever worker it runs. It counts the writes that went out.
+pub(crate) const HUB_WRITES_TO_EVERY_MEMBER: &str = r#"from std.concurrent import Closed, Crashed, Inbox, Sender
+from std.net import Connection, NetError
+
+## How many lines the hub's writes delivered.
+struct Count:
+    n = 0
+
+    def add(ref self):
+        self.n += 1
+
+## What the hub hears from the rounds.
+enum Note:
+    Joined(conn: Connection)
+    Said(line: str)
+
+## The hub writes to every member's connection itself, on whichever worker it runs, which is most
+## often not the worker serving that connection.
+def hub(inbox: Inbox[Note], delivered: shared Count) fails NetError:
+    mut members = list[Connection]()
+    for note in inbox:
+        match note:
+            case .Joined(conn):
+                members.append(conn)
+                conn.write("JOINED\n")?
+            case .Said(line):
+                for member in members:
+                    member.write(line)?
+                    lock delivered as ref count:
+                        count.add()
+    return
+
+## A round: it joins, then hands the hub each line its client sends, until the client hangs up.
+def attend(conn: Connection, to_hub: Sender[Note]) fails NetError | Closed:
+    to_hub.send(.Joined(conn=conn))?
+    for line in conn.lines()?:
+        to_hub.send(.Said(line=f"{line}\n"))?
+    return
+
+def main(net: Net, stdout: Stdout, stderr: Stderr) fails NetError | Crashed | IoError:
+    shared delivered = Count()
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        with launch((inbox) => hub(inbox, delivered)?, inbox_size=256)? as to_hub:
+            for conn in parallel(server):
+                first = conn.read_line()? else ""
+                if first == "stop":
+                    break
+                attend(conn, to_hub) except why:
+                    stderr.write_line(f"{conn}: {why}")?
+    lock delivered as held:
+        stdout.print(held.n, "delivered")
+    return
+"#;
+
+/// Joins `members` clients to `HUB_WRITES_TO_EVERY_MEMBER`'s server at `port`, has each say a
+/// line, and checks every member hears every line, then hangs them all up and says stop.
+pub(crate) fn every_member_hears_every_line(port: u16, members: usize, threads: &str) -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    let mut joined = Vec::new();
+    for n in 0..members {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+        (&stream).write_all(format!("JOIN {n}\n").as_bytes())?;
+        let mut reader = std::io::BufReader::new(stream.try_clone()?);
+        let mut first = String::new();
+        reader.read_line(&mut first)?;
+        assert_eq!(first, "JOINED\n", "member {n} joining, on {threads} threads");
+        joined.push((stream, reader));
+    }
+    for (n, (stream, _)) in joined.iter().enumerate() {
+        (&*stream).write_all(format!("line from {n}\n").as_bytes())?;
+    }
+    let mut wanted: Vec<String> = (0..members).map(|m| format!("line from {m}\n")).collect();
+    wanted.sort();
+    for (n, (_, reader)) in joined.iter_mut().enumerate() {
+        let mut heard = Vec::new();
+        for _ in 0..members {
+            let mut line = String::new();
+            reader.read_line(&mut line)?;
+            heard.push(line);
+        }
+        heard.sort();
+        assert_eq!(heard, wanted, "what member {n} heard, on {threads} threads");
+    }
+    drop(joined);
+    let mut stop = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stop.write_all(b"stop\n")?;
+    Ok(())
+}
+
+/// A hub writes to every member's connection, at 2, 4 and 16 threads, so mostly to connections
+/// served on other workers than its own: every member hears every line, and every write goes out.
+/// A `Connection` is `shared`, and before, a write from another worker than its round's was
+/// refused, so only the members on the hub's worker heard (#2065).
+#[test]
+fn a_hub_on_another_worker_writes_to_every_members_connection() -> std::io::Result<()> {
+    const MEMBERS: usize = 6;
+    use std::io::{BufRead as _, Read as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("hub-writes")?;
+    let program = dir.join("hub.fen");
+    std::fs::write(&program, HUB_WRITES_TO_EVERY_MEMBER)?;
+    let executable = dir.join("hub");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["2", "4", "16"] {
+        for _ in 0..2 {
+            let mut server = Running(
+                Command::new(&executable)
+                    .env("FENNEC_THREADS", threads)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()?,
+            );
+            let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+            let mut port = String::new();
+            printed.read_line(&mut port)?;
+            every_member_hears_every_line(port.trim().parse().unwrap_or(0), MEMBERS, threads)?;
+            let mut rest = String::new();
+            printed.read_to_string(&mut rest)?;
+            let mut said = String::new();
+            server.0.stderr.take().expect("its errors").read_to_string(&mut said)?;
+            let status = server.0.wait()?;
+            assert_eq!(rest, format!("{} delivered\n", MEMBERS * MEMBERS), "on {threads} threads: {said}");
+            assert!(status.success(), "on {threads} threads: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// On one thread, a handler only computing, given to `serve` by name or kept in a `Router`, still
 /// lets another request be answered: it reaches its round as a value, not by a call, and once never
 /// counted its loops' turns, so it held the thread until it finished.

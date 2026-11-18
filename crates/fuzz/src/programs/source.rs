@@ -1519,13 +1519,13 @@ fn looped_written(id: usize, to: &str, held: Held, looping: Looping, s: usize) -
         "        {taken} = taken{s}\n        turn{s} += 1\n        if turn{s} == {turns}:\n            break\n"
     );
     let pad = "        ";
-    match between {
-        Between::Changed => out.push_str(&match held {
+    let lines = match between {
+        Between::Changed => match held {
             _ if listed => format!("{pad}{taken}.append({n})\n"),
             _ if holds => format!("{pad}{place}.tag = {n}\n{pad}{place}.items.append({n})\n"),
             Held::Rooms => format!("{pad}{place}.counts[\"b\"] = {n}\n"),
             _ => format!("{pad}{place}.x += {n}\n"),
-        }),
+        },
         Between::Grown(count) => {
             let grown_key = format!("{holder}[f\"g{{turn{s}}}x{{more{s}}}\"]");
             let added = match held {
@@ -1538,9 +1538,9 @@ fn looped_written(id: usize, to: &str, held: Held, looping: Looping, s: usize) -
                 Held::Lists => format!("{grown_key} = [more{s}]"),
                 _ => format!("{grown_key} = Point(x=more{s}, y={n})"),
             };
-            let _ = write!(out, "{pad}for more{s} in range({count}):\n{pad}    {added}\n");
+            format!("{pad}for more{s} in range({count}):\n{pad}    {added}\n")
         }
-        Between::Removed => out.push_str(&match held {
+        Between::Removed => match held {
             Held::Table | Held::Entries | Held::Ledger | Held::Rooms => {
                 format!("{pad}_ = {holder}.remove({id_at})\n")
             }
@@ -1557,8 +1557,9 @@ fn looped_written(id: usize, to: &str, held: Held, looping: Looping, s: usize) -
                 format!("{pad}_ = {holder}.remove(\"{key}\")\n{pad}{holder}[\"{key}\"] = {fresh}\n")
             }
             _ => format!("{pad}_ = {holder}.remove(\"{key}\")\n"),
-        }),
-    }
+        },
+    };
+    out.push_str(&lines);
     out
 }
 

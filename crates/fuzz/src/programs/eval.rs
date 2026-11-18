@@ -855,7 +855,7 @@ fn between_turns(value: &mut Kept, looping: Looping, turn: i64) -> Option<bool> 
             held.push(n);
         }
         (Kept::Holders(holders), Between::Grown(count)) => {
-            holders.extend((0..count).map(|more| (vec![more], n)))
+            holders.extend((0..count).map(|more| (vec![more], n)));
         }
         (Kept::Holders(holders), Between::Removed) => {
             if at >= holders.len() {

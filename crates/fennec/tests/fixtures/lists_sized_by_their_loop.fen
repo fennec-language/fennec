@@ -1,0 +1,42 @@
+# Lists a loop right after fills are made with room for every turn first, once the loop's count is
+# known: written `mut xs = list[int]()` as well as `xs = []`, several in one loop, and filled past
+# a test, as a walk through a `Table`'s live slots appends, or a comprehension with a filter. A
+# loop inside the loop could append more than once a turn, so that list keeps growing as it goes.
+
+from std.collections import Id, Table
+
+struct Spot:
+    across: int
+    down: int
+    moved: bool
+
+def main(stdout: Stdout):
+    mut spots = Table[Spot]()
+    mut ids = list[Id[Spot]]()
+    for at in range(40):
+        ids.append(spots.add(Spot(across=at * 7 % 23, down=at * 11 % 19, moved=at % 3 == 0)))
+    # Removed items leave slots a walk passes over, so there are more slots than items.
+    for at in range(0, 40, 4):
+        _ = spots.remove(ids[at])
+    mut acrosses = list[int]()
+    mut downs = list[int]()
+    for spot in spots:
+        acrosses.append(spot.across)
+        downs.append(spot.down)
+    stdout.print(len(acrosses), sum(acrosses), len(downs), sum(downs))
+    moved = [spot.across + spot.down for spot in spots if spot.moved]
+    stdout.print(len(moved), moved)
+    evens = [at for at in range(25) if at % 2 == 0]
+    stdout.print(evens)
+    mut pairs = list[int]()
+    for at in range(6):
+        for again in range(at):
+            pairs.append(at * 10 + again)
+    stdout.print(len(pairs), pairs)
+    # Filled again in a loop that runs twice: made afresh each time, with its own room.
+    for turn in range(2):
+        mut seen = list[int]()
+        for spot in spots:
+            seen.append(spot.across + turn)
+        stdout.print(len(seen), seen[0], seen[len(seen) - 1])
+    return

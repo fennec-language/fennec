@@ -1241,10 +1241,10 @@ impl Emit<'_, '_, '_> {
             alone_left.insert(at, std::mem::take(&mut self.alone_fields));
             inside_left.insert(at, std::mem::take(&mut self.inside_items));
             done.insert(at);
-            if let Some((list, limit)) = self.known.reservations.get(&at).cloned()
-                && matches!(self.kinds.get(list), Some(Kind::List(_)))
-            {
-                self.reserve(LocalId(list), &limit)?;
+            for reserved in self.known.reservations.get(&at).cloned().unwrap_or_default() {
+                if matches!(self.kinds.get(reserved.list), Some(Kind::List(_))) {
+                    self.reserve(LocalId(reserved.list), &reserved.limit)?;
+                }
             }
             // Every loop goes back to a block written no later than where it goes from, so that's
             // where a task counts a turn.
@@ -3314,6 +3314,15 @@ impl Emit<'_, '_, '_> {
             // Used only as a key the runtime finds where it is.
             InstKind::Slice { dest, .. } | InstKind::Copy { dest, .. }
                 if self.known.unmade.contains(&dest.0) =>
+            {
+                Ok(())
+            }
+            // An empty list copied into one a loop right after fills: that one is made at the
+            // block's end, once the loop's count is known, and the empty one never is.
+            InstKind::Copy { dest, value: Operand::Local(from) }
+                if self.known.reservations.get(&self.at.0).is_some_and(|reserved| {
+                    reserved.iter().any(|one| one.list == dest.0 && one.copied_from == Some(from.0))
+                }) =>
             {
                 Ok(())
             }

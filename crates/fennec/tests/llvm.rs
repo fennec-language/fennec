@@ -5711,6 +5711,39 @@ def main(stdout: Stdout):
     stdout.print(h)
 "#;
 
+/// A list a loop right after fills is made with room for every turn first: written
+/// `mut xs = list[int]()`, several filled in one loop, and filled past a test, as a walk through
+/// a `Table`'s live slots with some removed, or a comprehension with a filter. A list a loop inside
+/// the loop fills keeps growing as it goes. It prints what the reference evaluator prints, with
+/// nothing left, built either way and built checking proofs, which checks each append a room
+/// check was left out of stays inside the room.
+#[test]
+fn a_list_a_loop_fills_is_made_with_room_for_every_turn() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/lists_sized_by_their_loop.fen");
+    let wanted = include_str!("fixtures/lists_sized_by_their_loop.out");
+    prints_in_both_builds("lists_sized_by_their_loop", source, wanted)?;
+    assert!(counts_of("lists_sized_by_their_loop_counts", source)?.ends_with(" live 0"));
+    let dir = folder("lists_sized_by_their_loop_proofs")?;
+    let (program, executable) = (dir.join("sized.fen"), dir.join("sized"));
+    std::fs::write(&program, source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_CHECK_PROOFS", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    Ok(())
+}
+
 /// A `for mut` item is taken out for the whole of the body, so what it holds changes in place.
 /// What's shared, and a body that reads the list, see what they should.
 #[test]

@@ -2425,7 +2425,11 @@ impl Emit<'_, '_, '_> {
             return self.assign(dest, &text);
         }
         // A list a loop right after fills is made once the loop's count is known.
-        if self.known.reservations.get(&block).is_some_and(|(list, _)| *list == dest.0) && items.is_empty() {
+        if items.is_empty()
+            && self.known.reservations.get(&block).is_some_and(|reserved| {
+                reserved.iter().any(|one| one.list == dest.0 || one.copied_from == Some(dest.0))
+            })
+        {
             return Ok(());
         }
         let kind = self.kind_of(dest)?.clone();

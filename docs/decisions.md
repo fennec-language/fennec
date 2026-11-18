@@ -1212,6 +1212,7 @@ The build lanes make this one general piece that undoes the writes in a block. O
 *Why:* A bounded buffer pushes back instead of growing without limit, and saying why a receive stopped lets the task decide what to do.
 
 **Dev builds stop with a report when tasks are waiting only on each other.**
+- Built in the runtime: a channel's send or receive, a `with launch` block's end, and the join of a `parallel` call whose ranges can wait, each with no time limit. A deadlock through more stuck ranges than a worker starts at once, 1,024, isn't reported on one thread: the program waits, as it did before.
 *Why:* Lock deadlocks can't compile, but two tasks sending into each other's full inboxes can't be ruled out at compile time, so it has to show up loudly in testing.
 
 **A database connects as a pool, and a keeper lends each connection for one block.** `postgres.connect(url)` always lends a pool, with no single-connection form.

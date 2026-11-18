@@ -1671,6 +1671,27 @@ tagged:
                 self.line(&format!("store i64 {value}, ptr {place}"));
                 Ok(())
             }
+            // Where the next separator starts from byte `at`, or the text's length when there's
+            // none: where the part a loop over a `split` takes next ends. Both go as their
+            // headers' words, only read, so neither is made a block first.
+            "str.split_at" => {
+                if !self.headers() {
+                    return Err("it loops over a split where strings aren't headers".to_owned());
+                }
+                let (text, _) = self.operand(first.ok_or("no argument")?)?;
+                let (separator, _) = self.operand(args.get(1).ok_or("no separator")?)?;
+                let (at, _) = self.operand(args.get(2).ok_or("no place")?)?;
+                let [t0, t1, t2] = [0, 1, 2].map(|word| self.header_word(&text, word));
+                let [s0, s1, s2] = [0, 1, 2].map(|word| self.header_word(&separator, word));
+                self.declare(
+                    "declare i64 @fennec_str_split_at_header(i64, i64, i64, i64, i64, i64, i64) nounwind",
+                );
+                let end = self.temp();
+                self.line(&format!(
+                    "{end} = call i64 @fennec_str_split_at_header(i64 {t0}, i64 {t1}, i64 {t2}, i64 {s0}, i64 {s1}, i64 {s2}, i64 {at})"
+                ));
+                self.assign(dest.ok_or("no result")?, &end)
+            }
             // With no separator, on runs of spaces. An empty one fails. Headers go to the runtime
             // as their words, so neither is made a block first; three zeros, which no header is,
             // say there's no separator.

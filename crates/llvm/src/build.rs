@@ -13,7 +13,7 @@ const KIND: &str = "llvm";
 /// How many of a dev build's functions are compiled at once: one for each core, unless
 /// `FENNEC_BUILD_JOBS` gives a number. It was four on any machine, which left an 18-core Mac
 /// starting LLVM's tools three at a time for a program of thousands of functions (#1902).
-fn workers() -> usize {
+pub(crate) fn workers() -> usize {
     std::env::var("FENNEC_BUILD_JOBS")
         .ok()
         .and_then(|jobs| jobs.parse().ok())

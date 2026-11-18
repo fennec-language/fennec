@@ -117,6 +117,9 @@ pub(crate) struct FnEntry {
     /// For a method from an extension of a generic type, the type's parameters as the
     /// extension names them, with any bounds that make it conditional.
     pub(crate) extension: Vec<Generic>,
+    /// Whether it's written inside another function, whose key its own starts with. A library
+    /// module's function, `json.dumps`, is keyed under the module's name and isn't.
+    pub(crate) nested: bool,
 }
 
 /// Every declaration in a program, keyed the way the signature table is: `name` for a
@@ -200,6 +203,7 @@ impl Program {
                         prelude,
                         inherited: Vec::new(),
                         extension: Vec::new(),
+                        nested: false,
                     };
                     self.functions.insert(def.name.clone(), entry);
                 }

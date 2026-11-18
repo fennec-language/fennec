@@ -35,10 +35,12 @@
 # blocks between rounds is near nothing, where a percentage is no budget at all, and a leak of a
 # block a round is thousands of blocks in an hour.
 #
-# Resident memory may rise by SOAK_RSS_RISE percent, 5 unless set, or 4 MB, whichever is more. It
-# was 10% or 16 MB, which let web_backend in a task rise 6 MB over the hour and pass: its tables'
-# empty pages, held until a first look half an hour in. A server's memory should level off within
-# the warm-up.
+# Resident memory may rise by SOAK_RSS_RISE percent, 5 unless set, or SOAK_RSS_LEAST KB, 4 MB
+# unless set, whichever is more. It was 10% or 16 MB, which let web_backend in a task rise 6 MB over
+# the hour and pass: its tables' empty pages, held until a first look half an hour in (#2156). A
+# server's memory should level off within the warm-up. game_server's job keeps 10% or 16 MB until
+# #2158, its own rise in a task, is fixed: its floor swings by megabytes as its caches fill and
+# empty.
 set -u
 fennec=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 program=$2
@@ -47,6 +49,7 @@ minutes=${4:-60}
 warm=${SOAK_WARM:-10}
 rise=${SOAK_RISE:-10}
 rss_rise=${SOAK_RSS_RISE:-5}
+rss_least=${SOAK_RSS_LEAST:-4096}
 where=${SOAK_IN:-task}
 waiting=${SOAK_WAITING:-}
 name=$(basename "$program" .fen)
@@ -186,7 +189,7 @@ failed=0
   # A task's list of what it made, held to a bound since #1794, which a leak in it passes.
   # What's kept for reuse, in words, may rise by a megabyte's worth: it fills as a program warms up
   # and then has to stay within its bounds.
-  for what in "resident memory, KB:2:4096:$rss_rise" "live blocks:3:64:$rise" "a task's list of what it made:5:4096:$rise" "freed blocks kept for reuse, words:6:131072:$rise"; do
+  for what in "resident memory, KB:2:$rss_least:$rss_rise" "live blocks:3:64:$rise" "a task's list of what it made:5:4096:$rise" "freed blocks kept for reuse, words:6:131072:$rise"; do
     percent=${what##*:}
     what=${what%:*}
     least=${what##*:}

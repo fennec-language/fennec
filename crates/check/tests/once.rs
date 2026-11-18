@@ -79,6 +79,11 @@ fn a_generator_that_can_fail_is_looped_over_in_the_function_that_got_it() {
         // Kept in a list here, or through a generic function, and looped over here.
         "def f(stdout: Stdout) fails Shut:\n    held = [first(\"a\")?]\n    for kept in held:\n        stdout.print(sum(kept))\n",
         "def same[T](value: T) -> T:\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    stdout.print(sum(same(first(\"a\")?)))\n",
+        // `except` on a `def`'s call, generic or not: what it gives back holding one was made, and
+        // counted, here.
+        "error Bad:\n    why: str\n\ndef checked[T](value: T, text: str) -> T fails Bad:\n    if text == \"\":\n        fail Bad(why=\"empty\")\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    kept = checked(first(\"a\")?, \"x\") except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+        // A generator kept for later over held ones, which fails as they do, looped over here.
+        "def f(stdout: Stdout) fails Shut:\n    held = [first(\"a\")?]\n    later = (sum(gen) for gen in held)\n    stdout.print(sum(later))\n",
         // A generator looping over one, which fails as it does.
         "def outer() -> Iterator[int] fails Shut:\n    for each in first(\"a\")?:\n        yield each * 10\n\ndef f(stdout: Stdout) fails Shut:\n    stdout.print(sum(outer()?))\n",
         // `? from`, and `zip` or `enumerate`, right in a loop's own.
@@ -111,11 +116,11 @@ fn a_generator_that_can_fail_can_t_go_where_its_failure_wouldn_t_pass_up() {
         ),
         (
             "def f(stdout: Stdout) fails Shut:\n    kept = first(\"a\")?\n    def walked(out: Stdout):\n        for each in kept:\n            out.print(each)\n    walked(stdout)\n",
-            "`kept` is a generator that can fail, so a nested function, an arrow function or a generator kept for later can't use it @ kept",
+            "`kept` is a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ kept",
         ),
         (
             "def f(stdout: Stdout) fails Shut:\n    kept = first(\"a\")?\n    count = () => sum(kept)\n    stdout.print(count())\n",
-            "`kept` is a generator that can fail, so a nested function, an arrow function or a generator kept for later can't use it @ kept",
+            "`kept` is a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ kept",
         ),
         (
             "def f(stdout: Stdout) fails Wrapped:\n    kept = first(\"a\")? from Wrapped(why=\"w\")\n    stdout.print(sum(kept))\n",
@@ -128,6 +133,108 @@ fn a_generator_that_can_fail_can_t_go_where_its_failure_wouldn_t_pass_up() {
         (
             "def f(stdout: Stdout) fails Shut:\n    numbered = enumerate(first(\"a\")?)\n    for at, each in numbered:\n        stdout.print(at, each)\n",
             "a generator that can fail goes into `enumerate` only as `made()?` written right in a `for` loop's own `enumerate` @ first(\"a\")?",
+        ),
+    ] {
+        assert_eq!(with_failing(rest), [said], "{rest}");
+    }
+}
+
+/// One held in a collection, a union or a generic struct, given to an arrow as its parameter, or
+/// taken out of a call with `except` can't reach a loop whose function didn't count its failure
+/// either (#2097).
+#[test]
+fn a_generator_that_can_fail_held_or_got_with_except_can_t_reach_a_loop_that_didn_t_count_it() {
+    for (rest, said) in [
+        // One held in a list, a tuple or a generic struct, used from around.
+        (
+            "def f(stdout: Stdout) fails Shut:\n    held = [first(\"a\")?]\n    count = () => sum(sum(gen) for gen in held)\n    stdout.print(count())\n",
+            "`held` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ held",
+        ),
+        (
+            "def f(stdout: Stdout) fails Shut:\n    pair = (1, first(\"a\")?)\n    def walked(out: Stdout):\n        out.print(sum(pair[1]))\n    walked(stdout)\n",
+            "`pair` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ pair",
+        ),
+        (
+            "struct Box[T]:\n    item: T\n\ndef f(stdout: Stdout) fails Shut:\n    box = Box(item=first(\"a\")?)\n    count = () => sum(box.item)\n    stdout.print(count())\n",
+            "`box` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ box",
+        ),
+        // `parallel` over held ones, or reading one in its body.
+        (
+            "def f(stdout: Stdout) fails Shut:\n    held = [first(\"a\")?, first(\"b\")?]\n    stdout.print([sum(gen) for gen in parallel(held)])\n",
+            "`parallel` hands each item to another task, so its items can't hold a generator that can fail @ held",
+        ),
+        (
+            "def f(stdout: Stdout) fails Shut:\n    kept = first(\"a\")?\n    stdout.print([sum(kept) + at for at in parallel(range(2))])\n",
+            "`kept` is a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ kept",
+        ),
+        (
+            "def f(stdout: Stdout) fails Shut:\n    held = [first(\"a\")?]\n    mut totals = [0, 0]\n    for ref total in parallel(totals):\n        total = sum(held[0])\n    stdout.print(totals)\n",
+            "`held` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ held",
+        ),
+        // A generator kept for later over held ones fails as they do, so it can't go where one that
+        // can't fail goes.
+        (
+            "def walk(items: Iterator[int]) -> int:\n    return sum(items)\n\ndef f(stdout: Stdout) fails Shut:\n    held = [first(\"a\")?]\n    stdout.print(walk((sum(gen) for gen in held)))\n",
+            "`items` should be an Iterator[int], but this is an Iterator[int] that fails with Shut @ (sum(gen) for gen in held)",
+        ),
+        // `except` on a generator function's call, which can never run, or a generator method's.
+        (
+            "def f(stdout: Stdout):\n    kept = first(\"a\") except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "making a generator runs none of its body, so this can't fail here and `except` would never run @ first(\"a\")",
+        ),
+        (
+            "struct Source:\n    name: str\n\n    def items(self) -> Iterator[int] fails Shut:\n        yield 1\n        fail Shut(name=self.name)\n\ndef f(stdout: Stdout):\n    source = Source(name=\"m\")\n    kept = source.items() except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "making a generator runs none of its body, so this can't fail here and `except` would never run @ source.items()",
+        ),
+        // `except` on an arrow's call that gives back one, which its `?` counted as the arrow's.
+        (
+            "def f(stdout: Stdout):\n    make = () => [first(\"a\")?]\n    held = make() except why:\n        stdout.print(why)\n        return\n    for gen in held:\n        stdout.print(sum(gen))\n",
+            "this arrow function gives back a generator that can fail, and `except` on its call leaves nothing to pass that generator's failure up @ make()",
+        ),
+        // An arrow given one as its own parameter, by a builtin or a generic function.
+        (
+            "def f(stdout: Stdout) fails Shut:\n    held = [first(\"a\")?]\n    stdout.print(len(sorted(held, key=gen => sum(gen))))\n",
+            "this arrow function's `gen` is given a generator that can fail, and its failure can't pass up from inside the arrow @ gen => sum(gen)",
+        ),
+        (
+            "def apply[T](value: T, run: (T) -> int) -> int:\n    return run(value)\n\ndef f(stdout: Stdout) fails Shut:\n    stdout.print(apply(first(\"a\")?, gen => sum(gen)))\n",
+            "this arrow function's `gen` is given a generator that can fail, and its failure can't pass up from inside the arrow @ gen => sum(gen)",
+        ),
+        // One given to an arrow before what says its type, or read from around before it's
+        // known to hold one, is looked at again once the function's types are.
+        (
+            "def apply[T](run: (T) -> bool, value: T) -> bool:\n    return run(value)\n\ndef f(stdout: Stdout) fails Shut:\n    stdout.print(apply(gen => any(True for _ in gen), first(\"a\")?))\n",
+            "this arrow function's `gen` is given a generator that can fail, and its failure can't pass up from inside the arrow @ gen => any(True for _ in gen)",
+        ),
+        (
+            "def f(stdout: Stdout) fails Shut:\n    mut held = []\n    for round in range(2):\n        seen = () => [any(True for _ in gen) for gen in held]\n        held.append(first(\"a\")?)\n        stdout.print(round, seen())\n",
+            "`held` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ held",
+        ),
+        // A nested function reading one from around before it's known to hold one: the function
+        // around it looks again once it knows.
+        (
+            "def f(stdout: Stdout) fails Shut:\n    mut held = []\n    for turn in range(2):\n        def walked(out: Stdout):\n            out.print([any(True for _ in gen) for gen in held])\n        walked(stdout)\n        held.append(first(\"a\")?)\n        stdout.print(turn)\n",
+            "`held` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ held",
+        ),
+        // `except` on a `def`'s call given a function, which may make one: an arrow, or a
+        // function by name.
+        (
+            "def run_it[T, E](run: () -> T fails E) -> T fails E:\n    return run()?\n\ndef f(stdout: Stdout):\n    kept = run_it(() => first(\"a\")?) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ run_it(() => first(\"a\")?)",
+        ),
+        (
+            "def call_with[T, E](make: (str) -> T fails E, name: str) -> T fails E:\n    return make(name)?\n\ndef f(stdout: Stdout):\n    kept = call_with(first, \"a\") except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ call_with(first, \"a\")",
+        ),
+        // A generator function whose only `yield` is inside an `except` block.
+        (
+            "error Bad:\n    why: str\n\ndef risky() fails Bad:\n    fail Bad(why=\"no\")\n\ndef made(name: str) -> Iterator[int] fails Shut:\n    risky() except why:\n        yield 0\n        fail Shut(name=name)\n\ndef f(stdout: Stdout):\n    kept = made(\"a\") except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "making a generator runs none of its body, so this can't fail here and `except` would never run @ made(\"a\")",
+        ),
+        // One in a union's member.
+        (
+            "struct Box[T]:\n    item: T\n\nstruct Empty:\n    why: str\n\ndef boxed[T](item: T) -> Box[T] | Empty:\n    return Box(item=item)\n\ndef f(stdout: Stdout) fails Shut:\n    held = boxed(first(\"a\")?)\n    def walked(out: Stdout):\n        out.print(held)\n    walked(stdout)\n",
+            "`held` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ held",
         ),
     ] {
         assert_eq!(with_failing(rest), [said], "{rest}");

@@ -14,11 +14,13 @@ use fennec_rt::embed::{Tables, dicts};
 use fennec_rt::packed::Element;
 
 mod layouts;
+mod named;
 
 pub use layouts::{
     Case, Field, Layout, Layouts, WORD, Written, WrittenField, boxed_types, closure_definition,
     dict_values_in_place, generator_definition, results_in_place, types_in_place,
 };
+pub use named::{Asked, Named, NamedWord};
 
 /// How native code holds a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

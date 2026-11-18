@@ -147,6 +147,19 @@ pub fn stored_stages(module: &mut Module) -> bool {
     true
 }
 
+/// Whether anything in a function could be a stage to move or a generator to collect in place:
+/// a generator expression, or a call to a yield function. A function with neither is left as it
+/// is, without working out what it declares first.
+fn holds_stage(def: &FnDef, generators: &HashSet<String>) -> bool {
+    let mut found = false;
+    crate::read::in_function(def, &mut |value| {
+        found |= is_generator_expression(value)
+            || matches!(&value.kind, ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Name(name) if generators.contains(name)));
+    });
+    found
+}
+
 fn has_stage_expression(module: &mut Module) -> bool {
     let mut found = false;
     visit::exprs_mut(module, &mut |value| found |= is_generator_expression(value));
@@ -154,6 +167,9 @@ fn has_stage_expression(module: &mut Module) -> bool {
 }
 
 fn in_function(def: &mut FnDef, generators: &HashSet<String>) {
+    if !holds_stage(def, generators) {
+        return;
+    }
     let declared = Declared::of(def);
     let every = names_in(&def.body);
     let mut work = Moving { declared, every, generators };

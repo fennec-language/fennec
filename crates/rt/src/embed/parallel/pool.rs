@@ -561,6 +561,8 @@ pub(super) fn install_for_task(
 /// Runs a call's ranges on `pool`: `start` hands it the first job, and this thread waits until
 /// `done` says the last has finished, lending its blocks to the workers meanwhile.
 pub(super) fn install(call: &super::Run, start: impl FnOnce(), done: &Latch) {
+    // Before its blocks are lent, while they're still its own to count.
+    crate::embed::live::publish_main();
     // What this thread printed comes before anything the ranges print.
     super::super::write_kept_output();
     *call.lent.write().unwrap_or_else(PoisonError::into_inner) = Some(super::super::threads::lend());

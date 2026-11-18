@@ -146,12 +146,12 @@ pub(crate) struct Checker {
     /// What each function to check again gave back last time, for calls to it while it's
     /// being checked again.
     previous: BTreeMap<String, Signature>,
-    /// The functions that used each function's signature, so they're checked again when it
-    /// changes.
-    pub(crate) callers: BTreeMap<String, BTreeSet<String>>,
-    /// The functions that call each function, by their own keys, a nested function's its own: what
-    /// waits and locks is followed up these, so a nested function counts for what it does, not for
-    /// what the function around it does.
+    /// The functions that call each function, or use its signature, by their own keys, a nested
+    /// function's its own. What waits and locks is followed up these, so a nested function counts
+    /// for what it does, not for what the function around it does; and the functions that used a
+    /// signature are checked again when it changes, each with the function it's written in (see
+    /// `outer_callers`). One map serves both: kept twice, as one by each key and one by the
+    /// outermost, each call noted made the check of a program's functions cost 1.3% more.
     pub(crate) own_callers: BTreeMap<String, BTreeSet<String>>,
     /// What each function waits on itself: a network call, a sleep, a channel.
     pub(crate) waits: BTreeMap<String, String>,
@@ -277,7 +277,6 @@ impl Checker {
             checking: Vec::new(),
             revisit: BTreeSet::new(),
             previous: BTreeMap::new(),
-            callers: BTreeMap::new(),
             own_callers: BTreeMap::new(),
             waits: BTreeMap::new(),
             again: false,
@@ -358,7 +357,10 @@ impl Checker {
             self.diagnostics.extend(refused);
         }
         if self.diagnostics.is_empty() {
-            self.crossing = crate::crossing::crossing(&mut self);
+            // Only when asked for: nothing a build lowers reads it yet (`crossing::with_crossing`).
+            if crate::crossing::wanted() {
+                self.crossing = crate::crossing::crossing(&mut self);
+            }
             return Ok(self.checked(structs, errors));
         }
         let mut diagnostics = self.diagnostics;
@@ -554,14 +556,12 @@ impl Checker {
     pub(crate) fn signature(&mut self, key: &str) -> Option<Signature> {
         self.program.functions.get(key)?;
         if let Some(caller) = self.checking.last() {
-            self.own_callers.entry(key.to_owned()).or_default().insert(caller.clone());
-            let caller = self.outermost(caller);
-            self.callers.entry(self.outermost(key)).or_default().insert(caller);
+            note_caller(&mut self.own_callers, key, caller);
         }
         match self.states.get_mut(key) {
             Some(State::Done(signature)) => {
                 let signature = signature.clone();
-                if self.revisit.contains(&self.outermost(key)) {
+                if self.revisit.contains(self.outermost_of(key)) {
                     self.mark_stale();
                 }
                 return Some(signature);
@@ -948,14 +948,37 @@ impl Checker {
     /// The function a nested function is in, all the way out: nested functions are checked
     /// again with the function around them, which gives them the names they read.
     pub(crate) fn outermost(&self, key: &str) -> String {
-        let mut key = key.to_owned();
-        while let Some(entry) = self.program.functions.get(&key)
+        self.outermost_of(key).to_owned()
+    }
+
+    /// `outermost`, as the part of `key` it is, so nothing is made: the outer function's key is
+    /// always the start of a nested one's.
+    pub(crate) fn outermost_of<'k>(&self, key: &'k str) -> &'k str {
+        let mut key = key;
+        while let Some(entry) = self.program.functions.get(key)
             && entry.owner.is_none()
             && let Some((outer, _)) = key.rsplit_once('.')
         {
-            key = outer.to_owned();
+            key = outer;
         }
         key
+    }
+
+    /// The functions that call `outer`, or a function written inside it, or use its signature,
+    /// each by the outermost key it's written under: those checked again when `outer` is. The
+    /// keys of the functions written inside `outer` start with its own, so they're found together.
+    fn outer_callers(&self, outer: &str) -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        let from = (std::ops::Bound::Included(outer), std::ops::Bound::Unbounded);
+        for (callee, callers) in self.own_callers.range::<str, _>(from) {
+            if !callee.starts_with(outer) {
+                break;
+            }
+            if self.outermost_of(callee) == outer {
+                found.extend(callers.iter().map(|caller| self.outermost_of(caller).to_owned()));
+            }
+        }
+        found
     }
 
     /// Checks again the functions that used signatures that were still growing, until a
@@ -965,9 +988,9 @@ impl Checker {
         let mut keys = std::mem::take(&mut self.revisit);
         let mut pending: Vec<String> = keys.iter().cloned().collect();
         while let Some(key) = pending.pop() {
-            for caller in self.callers.get(&key).into_iter().flatten() {
+            for caller in self.outer_callers(&key) {
                 if keys.insert(caller.clone()) {
-                    pending.push(caller.clone());
+                    pending.push(caller);
                 }
             }
         }
@@ -1077,17 +1100,14 @@ impl Checker {
     /// though nothing was reported, is reported now. Only the innermost such expressions
     /// are, since what's around them is unknown because of them.
     fn unknowns_left(&mut self) {
-        let prelude: Vec<String> = self
-            .program
-            .functions
-            .iter()
-            .filter(|(_, entry)| entry.prelude)
-            .map(|(key, _)| key.clone())
-            .collect();
+        // Looked up by key, not searched for in a list of the library's functions: that made this
+        // check about a function's typed body against each of thousands of keys.
+        let functions = &self.program.functions;
+        let prelude = |key: &str| functions.get(key).is_some_and(|entry| entry.prelude);
         let mut unknown: Vec<(u32, u32)> = self
             .typed
             .iter()
-            .filter(|(key, _)| !prelude.contains(key))
+            .filter(|(key, _)| !prelude(key))
             .flat_map(|(_, body)| body.exprs.iter())
             .filter(|(_, ty)| !ty.is_known())
             .map(|(span, _)| *span)
@@ -1105,7 +1125,7 @@ impl Checker {
             .states
             .iter()
             .filter_map(|(key, state)| match state {
-                State::Done(signature) if !prelude.contains(key) => Some((key, signature)),
+                State::Done(signature) if !prelude(key) => Some((key, signature)),
                 _ => None,
             })
             .filter(|(_, signature)| {
@@ -1212,6 +1232,20 @@ impl Checker {
 
     pub(crate) fn is_error_type(&self, ty: &Type) -> bool {
         self.program.kind_of(ty) == Some(TypeKind::Error)
+    }
+}
+
+/// Notes that `caller` calls the function `key`. A function's signature is asked for at each call
+/// of it, so the edge is nearly always noted already: then nothing is made.
+fn note_caller(callers: &mut BTreeMap<String, BTreeSet<String>>, key: &str, caller: &str) {
+    match callers.get_mut(key) {
+        Some(noted) if noted.contains(caller) => {}
+        Some(noted) => {
+            noted.insert(caller.to_owned());
+        }
+        None => {
+            callers.insert(key.to_owned(), BTreeSet::from([caller.to_owned()]));
+        }
     }
 }
 

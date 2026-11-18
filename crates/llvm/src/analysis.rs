@@ -192,6 +192,7 @@ impl Analysis {
             slice_keys,
             unmade,
             aliases,
+            alone_in_loops,
             steady_lengths,
             adjacent_reads,
             reservations,
@@ -239,6 +240,7 @@ impl Analysis {
         hash_map(slice_keys, state);
         hash_set(unmade, state);
         hash_map(aliases, state);
+        alone_in_loops.hash(state);
         hash_set(steady_lengths, state);
         hash_map(adjacent_reads, state);
         hash_map(reservations, state);
@@ -3109,7 +3111,7 @@ fn loop_blocks(function: &Function, header: usize, body: usize) -> HashSet<usize
 /// A loop that changes lists or `Table`s held in locals, each of which nothing in the loop can
 /// give another owner: one check on the way in that each is alone does for every change in the
 /// loop, where today each change checks again.
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 pub(crate) struct AloneInLoop {
     /// The block that goes into the loop, with a jump to its start that nothing else makes.
     pub(crate) entry: usize,

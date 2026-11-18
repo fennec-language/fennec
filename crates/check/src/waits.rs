@@ -56,6 +56,10 @@ pub(crate) struct Values {
     /// Each call inside a lock to an arrow function a local name holds: its span, the name, where
     /// it's called and the lock held.
     local_calls: Vec<((u32, u32), String, Span, String)>,
+    /// Each function parameter a nested function calls, captured from the function it's in: the
+    /// nested function's key, then the parameter's, by its function's key and its name. Calling
+    /// the nested function inside a lock calls the parameter inside it.
+    through: Vec<(String, ParamKey)>,
 }
 
 /// A function's parameter, by the function's key and the parameter's name.
@@ -151,8 +155,10 @@ impl FnCx<'_> {
     /// followed to what each caller passes for it; anything else can't be known, so inside a
     /// lock it's refused.
     pub(crate) fn note_value_call(&mut self, callee: &Expr, span: Span) {
+        // A parameter of this function, or of one around it that a nested function captured it
+        // from, by its function's key.
         let param = match &callee.kind {
-            ExprKind::Name(name) if self.origin(name) == Some(Origin::Param) => Some(name.clone()),
+            ExprKind::Name(name) => self.param_owner(name).map(|owner| (owner, name.clone())),
             _ => None,
         };
         let held = self.lock.clone();
@@ -171,8 +177,11 @@ impl FnCx<'_> {
             return;
         }
         match param {
-            Some(name) if self.arrows_open.is_empty() => {
-                self.checker.values.called.push((self.key.clone(), name, held));
+            Some((owner, name)) if self.arrows_open.is_empty() => {
+                if owner != self.key {
+                    self.checker.values.through.push((self.key.clone(), (owner.clone(), name.clone())));
+                }
+                self.checker.values.called.push((owner, name, held));
             }
             _ => {
                 for arrow in &self.arrows_open {
@@ -296,7 +305,7 @@ impl Checker {
     /// when it waits, locks, or can't be known.
     fn values_under_locks(&mut self, waiting: &BTreeMap<String, String>, locking: &BTreeMap<String, String>) {
         let values = std::mem::take(&mut self.values);
-        let (called, locked) = params_called(&values);
+        let (called, locked) = params_called(&values, &self.lock_calls);
         self.handed_on_by_value(&values, &called);
         for passed in &values.passed {
             let target = (passed.callee.clone(), passed.param.clone());
@@ -428,8 +437,12 @@ fn lock_verdicts(
 }
 
 /// The function parameters called at all, and those called inside a lock, with the lock: a
-/// parameter handed on to one is called as that one is.
-fn params_called(values: &Values) -> (BTreeSet<ParamKey>, BTreeMap<ParamKey, String>) {
+/// parameter handed on to one is called as that one is, and one a nested function calls is called
+/// inside each lock the nested function is called in, of `lock_calls`.
+fn params_called(
+    values: &Values,
+    lock_calls: &[LockCall],
+) -> (BTreeSet<ParamKey>, BTreeMap<ParamKey, String>) {
     let mut called: BTreeSet<ParamKey> =
         values.called.iter().map(|(key, param, _)| (key.clone(), param.clone())).collect();
     let mut locked: BTreeMap<ParamKey, String> = values
@@ -437,6 +450,11 @@ fn params_called(values: &Values) -> (BTreeSet<ParamKey>, BTreeMap<ParamKey, Str
         .iter()
         .filter_map(|(key, param, held)| Some(((key.clone(), param.clone()), held.clone()?)))
         .collect();
+    for (nested, param) in &values.through {
+        if let Some(call) = lock_calls.iter().find(|call| call.callee == *nested) {
+            locked.entry(param.clone()).or_insert_with(|| call.held.clone());
+        }
+    }
     loop {
         let mut grew = false;
         for passed in &values.passed {

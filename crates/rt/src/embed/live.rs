@@ -185,6 +185,17 @@ fn report_text() -> String {
     format!("{}stopping {stopping}\n", total.lines())
 }
 
+/// Publishes the main thread's counts, if it's the main thread, when it's about to wait for other
+/// threads: at a `parallel` call it shares, and at the end of a `with launch` block. Only the
+/// workers published before, so a program run on its own thread, as a server's soak runs one
+/// round after another, left its main thread's blocks and what it keeps for reuse out of the
+/// report, where they can grow.
+pub(crate) fn publish_main() {
+    if super::threads::index() == 0 {
+        publish(false, of_this_thread);
+    }
+}
+
 /// This thread's runtime's own counts, without a worker's tasks.
 pub(crate) fn of_this_thread() -> Counts {
     super::with(|state| {

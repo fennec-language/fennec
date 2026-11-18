@@ -3118,7 +3118,9 @@ impl Emit<'_, '_, '_> {
             }
             buffer if buffer.starts_with("Buffer.") => self.buffer_builtin(dest, name, args, span),
             "str.len" | "str" | "str.code" | "str.join" | "str.contains" | "str.upper" | "str.lower"
-            | "str.replace" | "str.find" | "str.split" => self.text_builtin(dest, name, args, span),
+            | "str.replace" | "str.find" | "str.split" | "str.split_at" => {
+                self.text_builtin(dest, name, args, span)
+            }
             "float" => {
                 let (value, kind) = self.operand(first.ok_or("no argument")?)?;
                 let temp = self.temp();
@@ -4877,6 +4879,32 @@ def main(stdout: Stdout):
         let text = text.ok_or("`halts` wasn't built")?;
         assert!(text.contains("call void @fennec_stop("), "{text}");
         assert!(text.contains("ptr swifterror"), "{text}");
+        Ok(())
+    }
+
+    /// A loop over `items[k:]` with `k` a number goes through the list from `k`, slicing
+    /// nothing; one from the end still makes the slice.
+    #[test]
+    fn a_loop_over_a_list_from_a_place_slices_nothing() -> Result<(), String> {
+        let source = "def main(stdout: Stdout):\n    lines = [\"a\", \"b\", \"c\"]\n    mut joined = \"\"\n    for line in lines[1:]:\n        joined += line\n    stdout.print(joined)\n";
+        let text = text_of(source, "main")?;
+        assert!(!text.contains("@fennec_list_slice("), "{text}");
+        let from_the_end = source.replace("lines[1:]", "lines[-1:]");
+        let text = text_of(&from_the_end, "main")?;
+        assert!(text.contains("@fennec_list_slice("), "{text}");
+        Ok(())
+    }
+
+    /// A loop over a text's parts looks for each separator from where the last part ended, and
+    /// makes no list of them; `split` used as a list still makes one.
+    #[test]
+    fn a_loop_over_a_split_makes_no_list() -> Result<(), String> {
+        let source = "def walked(text: str, stdout: Stdout):\n    mut count = 0\n    for part in text.split(\",\"):\n        count += len(part)\n    stdout.print(count)\n\ndef listed(text: str, stdout: Stdout):\n    parts = text.split(\",\")\n    stdout.print(len(parts))\n\ndef main(stdout: Stdout):\n    walked(\"a,b\", stdout)\n    listed(\"a,b\", stdout)\n";
+        let walked = text_of(source, "walked")?;
+        assert!(walked.contains("@fennec_str_split_at_header("), "{walked}");
+        assert!(!walked.contains("@fennec_str_split_header("), "{walked}");
+        let listed = text_of(source, "listed")?;
+        assert!(listed.contains("@fennec_str_split_header("), "{listed}");
         Ok(())
     }
 

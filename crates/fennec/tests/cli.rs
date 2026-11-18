@@ -4985,7 +4985,7 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
 /// `fennec build` in `kit` to `prog` there, with the Fennec folder `home`, through the daemon or
 /// in its own process, as CI would have it if `ci`.
 #[cfg(unix)]
-fn build_in(kit: &Path, home: &Path, daemon: bool, ci: bool) -> Output {
+fn build_in(kit: &Path, home: &Path, daemon: bool, ci: bool) -> std::io::Result<Output> {
     let mut command = crate::executables::fennec_command();
     command.args(["build", ".", "-o", "prog"]).current_dir(kit).env("FENNEC_HOME", home);
     command.env("FENNEC_DAEMON_IDLE", "30").env_remove("CI");
@@ -4995,7 +4995,7 @@ fn build_in(kit: &Path, home: &Path, daemon: bool, ci: bool) -> Output {
     if ci {
         command.env("CI", "true");
     }
-    command.output().unwrap()
+    command.output()
 }
 
 /// What a build printed, with how long each step took left out: it's never the same twice.
@@ -5030,10 +5030,10 @@ fn a_build_the_daemon_makes_is_the_one_made_here() {
     for (source, built) in [("def main(stdout: Stdout):\n    stdout.print(1)\n", true), (wrong, false)] {
         std::fs::write(&main, source).unwrap();
         let _ = std::fs::remove_file(kit.join("prog"));
-        let here = build_in(&kit, &here_home, false, false);
+        let here = build_in(&kit, &here_home, false, false).unwrap();
         let made_here = std::fs::read(kit.join("prog")).ok();
         let _ = std::fs::remove_file(kit.join("prog"));
-        let made = build_in(&kit, &home, true, false);
+        let made = build_in(&kit, &home, true, false).unwrap();
         assert_eq!(made.status.code(), here.status.code(), "{}", text(&made.stderr));
         assert_eq!(without_times(&made.stdout), without_times(&here.stdout));
         assert_eq!(text(&made.stderr), text(&here.stderr));
@@ -5046,7 +5046,7 @@ fn a_build_the_daemon_makes_is_the_one_made_here() {
     assert!(stops(&kit, &home), "the daemon didn't stop");
     // Under CI it's built here, and no daemon is started.
     let ci_home = folder.join("home-ci");
-    assert_eq!(build_in(&kit, &ci_home, true, true).status.code(), Some(1));
+    assert_eq!(build_in(&kit, &ci_home, true, true).unwrap().status.code(), Some(1));
     let status = text(&with_daemon(&kit, &ci_home, "30", &["daemon", "status"]).unwrap().stdout);
     assert_eq!(status, "not running\n");
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();

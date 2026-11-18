@@ -431,23 +431,21 @@ mod unix {
         let mode = if release { "release" } else { "dev" };
         let request = format!("{}\nbuild\n{folder}\n{path}\n{output}\n{mode}\nend\n", header());
         let socket = socket_path(home, false)?;
-        let mut stream = match connect(&socket, home) {
-            Some(stream) => stream,
-            None => {
-                start(home)?;
-                connect(&socket, home)?
-            }
+        let mut stream = if let Some(stream) = connect(&socket, home) {
+            stream
+        } else {
+            start(home)?;
+            connect(&socket, home)?
         };
         // The connection stays open while the daemon builds: closing it stops the build.
         let mut reply = String::new();
         let answered =
             stream.write_all(request.as_bytes()).is_ok() && stream.read_to_string(&mut reply).is_ok();
-        match Outcome::decode(&reply).filter(|_| answered) {
-            Some(outcome) => Some(outcome.print()),
-            None => {
-                eprintln!("note: the build daemon gave no answer, so this was built here");
-                None
-            }
+        if let Some(outcome) = Outcome::decode(&reply).filter(|_| answered) {
+            Some(outcome.print())
+        } else {
+            eprintln!("note: the build daemon gave no answer, so this was built here");
+            None
         }
     }
 

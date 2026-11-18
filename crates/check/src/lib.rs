@@ -809,7 +809,7 @@ fn resolved_within(
             seen.clone_from(module);
         }
         let next = if let Some(shared_retyped) = still_declared(&declared, &declarations(module)) {
-            checker::Checker::carrying(module, &checked, (shared_retyped, &only_written))
+            checker::Checker::carrying(module, std::mem::take(&mut checked), (shared_retyped, &only_written))
         } else {
             let mut next = checker::Checker::new(module);
             next.again = true;

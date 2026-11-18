@@ -366,8 +366,9 @@ pub(crate) struct Checker {
     tables_merged: bool,
     /// What each function's check added to what's followed across functions, by its key.
     graph_of: BTreeMap<String, Graph>,
-    /// The functions carried over from the round before, which aren't checked again unless a
-    /// function they call gives back or fails with something else now.
+    /// The functions carried over from the round before and not checked since: one is checked
+    /// again only when a function it calls gives back or fails with something else now, and is
+    /// then no longer here.
     carried: BTreeSet<String>,
     /// What the round before found for each function this round left as it was, carried over
     /// when it's first asked for, as it would be checked then: a library function only once
@@ -375,7 +376,7 @@ pub(crate) struct Checker {
     carriable: BTreeMap<String, Carried>,
     /// What checks inside another function's found, for what's followed once that one is done.
     inner_graph: Graph,
-    /// Every function's signature as the round before's check had it.
+    /// Each function's signature as the round before's check had it, but those carried over.
     before: BTreeMap<String, Signature>,
     /// What's followed through function values: which function parameters are called, what's
     /// passed for them, and what each arrow function waits on.
@@ -525,12 +526,11 @@ impl Checker {
 
     pub(crate) fn carrying(
         module: &Module,
-        previous: &Checked,
+        mut previous: Checked,
         (shared_retyped, only_written): (bool, &crate::WrittenDefs),
     ) -> Checker {
         let mut next = Checker::new(module);
         next.again = true;
-        next.before.clone_from(&previous.signatures.functions);
         let mut carried = BTreeSet::new();
         // Those the round only wrote into what their check found, of the kinds a check of what's
         // written finds again or nothing more of.
@@ -580,13 +580,14 @@ impl Checker {
                 }
             }
         }
+        // What the round before found is taken, not copied: it's done with once this is made.
         let mut locals: BTreeMap<String, Vec<(String, Type)>> = BTreeMap::new();
-        for (local, ty) in &previous.signatures.locals {
+        for (local, ty) in std::mem::take(&mut previous.signatures.locals) {
             // A local's name has no `/`, but a function's key can: `Path./` is a method.
             if let Some((key, _)) = local.rsplit_once('/')
                 && carried.contains(key)
             {
-                locals.entry(key.to_owned()).or_default().push((local.clone(), ty.clone()));
+                locals.entry(key.to_owned()).or_default().push((local, ty));
             }
         }
         // One whose check left a type variable open, as a generic library method's can, is
@@ -614,28 +615,29 @@ impl Checker {
         // What's inside one that's checked again is checked again with it.
         carried.retain(|key| !open.iter().any(|outer| key == outer || key.starts_with(&format!("{outer}."))));
         for key in carried {
-            let Some(signature) = previous.signatures.functions.get(&key) else { continue };
+            let Some(signature) = previous.signatures.functions.remove(&key) else { continue };
+            let entry = previous.defs.remove(&key);
             let found = Carried {
-                signature: signature.clone(),
-                body: previous.types.functions.get(&key).cloned(),
+                signature,
+                body: previous.types.functions.remove(&key),
                 tables: previous
                     .tables_of
-                    .get(&key)
-                    .cloned()
+                    .remove(&key)
                     .map(|tables| if written_into.contains(&key) { tables.spent() } else { tables }),
                 // What it hands over is judged in the first check alone (`holds::refused`).
                 graph: previous
                     .graph_of
-                    .get(&key)
-                    .map(|graph| Graph { handovers: crate::holds::Handovers::default(), ..graph.clone() }),
+                    .remove(&key)
+                    .map(|graph| Graph { handovers: crate::holds::Handovers::default(), ..graph }),
                 locals: locals.remove(&key).unwrap_or_default(),
-                entry: (!next.program.functions.contains_key(&key))
-                    .then(|| previous.defs.get(&key).cloned())
-                    .flatten(),
+                entry: entry.filter(|_| !next.program.functions.contains_key(&key)),
                 nested: nested.remove(&key).unwrap_or_default(),
             };
             next.carriable.insert(key, found);
         }
+        // Each function's signature as the round before had it, for those checked again: what
+        // their callers carried over are checked against (`recheck_callers_of_changed`).
+        next.before = std::mem::take(&mut previous.signatures.functions);
         next
     }
 
@@ -1114,8 +1116,12 @@ impl Checker {
         let mut settled = crate::loops::Settled::default();
         let mut live = Vec::new();
         for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
-            problems.extend(crate::loops::check_function(self, &mut settled, key, &entry.def));
             live.extend(crate::ref_lowering::live_loops(self, key, &entry.def));
+            // One carried over from the round before held to these then, as it is now.
+            if self.carried.contains(key) {
+                continue;
+            }
+            problems.extend(crate::loops::check_function(self, &mut settled, key, &entry.def));
             problems.extend(crate::loops::check_arguments(&entry.def.body));
             problems.extend(crate::once::check_function(self, key, &entry.def));
             // What lowering writes reads a failure its own way; the program as written is held
@@ -1243,6 +1249,9 @@ impl Checker {
         let (def, prelude) = (entry.def.clone(), entry.prelude);
         let Some(mut signature) = self.declared(key) else { return };
         self.states.insert(key.to_owned(), State::Checking);
+        // Checked now, as a function carried over is when what it calls changed: what it gives
+        // back is this check's from here on, not the round before's.
+        self.carried.remove(key);
         let effects = effects::of_body(&def.body);
         // What this function's check writes is its own, kept by its key: what's in the tables
         // already is put back after.
@@ -1577,7 +1586,8 @@ impl Checker {
     /// Settles every type in the typed tree, now that every function has been checked.
     fn settle_typed(&mut self) {
         let mut typed = std::mem::take(&mut self.typed);
-        for body in typed.values_mut() {
+        // One carried over from the round before was settled when that check was done.
+        for (_, body) in typed.iter_mut().filter(|(key, _)| !self.carried.contains(*key)) {
             for ty in body.exprs.values_mut().chain(body.names.values_mut()) {
                 *ty = self.settled(ty);
             }

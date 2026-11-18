@@ -5844,6 +5844,64 @@ fn a_program_linked_from_the_caches_objects_is_the_one_built_without_it() -> std
     Ok(())
 }
 
+/// A kept object that goes from the cache after a build found it and before it links, as a cleanup
+/// another command runs can take it, is compiled again from its function's text, so the build
+/// still makes the program a build without the cache makes. `FENNEC_LOSE_KEPT_OBJECTS=1` takes
+/// every kept object just before the link. The next build, finding them gone, compiles them again.
+#[test]
+fn a_kept_object_gone_before_the_link_is_compiled_again() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("lost-objects")?;
+    let program = |factor: u32| {
+        format!(
+            "def scaled(value: int) -> int:\n    return value * {factor}\n\ndef label(value: int) -> str:\n    return f\"value {{value}}\"\n\ndef main(stdout: Stdout):\n    stdout.print(label(scaled(21)))\n    return\n"
+        )
+    };
+    let build = |out: &str, cached: bool, lose: bool| {
+        let mut command = crate::executables::fennec_command();
+        command.args(["build", "edited.fen", "-o", out]).current_dir(&dir);
+        if cached {
+            command.env("FENNEC_HOME", dir.join("home")).env_remove("FENNEC_NO_CACHE");
+        } else {
+            command.env("FENNEC_HOME", dir.join("no-home")).env("FENNEC_NO_CACHE", "1");
+        }
+        if lose {
+            command.env("FENNEC_LOSE_KEPT_OBJECTS", "1");
+        } else {
+            command.env_remove("FENNEC_LOSE_KEPT_OBJECTS");
+        }
+        command.output_within()
+    };
+    std::fs::write(dir.join("edited.fen"), program(2))?;
+    let first = build("first", true, false)?;
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    std::fs::write(dir.join("edited.fen"), program(3))?;
+    let lost = build("lost", true, true)?;
+    assert!(
+        lost.status.success(),
+        "a build whose kept objects went before the link failed: {}",
+        text(&lost.stderr)
+    );
+    let uncached = build("uncached", false, false)?;
+    assert!(uncached.status.success(), "{}", text(&uncached.stderr));
+    assert!(
+        std::fs::read(dir.join("lost"))? == std::fs::read(dir.join("uncached"))?,
+        "the program linked from objects compiled again isn't the one built without the cache"
+    );
+    let ran = std::process::Command::new(dir.join("lost")).output_within()?;
+    assert_eq!(text(&ran.stdout), "value 63\n");
+    std::fs::write(dir.join("edited.fen"), program(4))?;
+    let again = build("again", true, false)?;
+    assert!(again.status.success(), "{}", text(&again.stderr));
+    let ran = std::process::Command::new(dir.join("again")).output_within()?;
+    assert_eq!(text(&ran.stdout), "value 84\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A program built again under the same name, and run each time, is a new file every time: macOS
 /// remembers the code signature of a file it has launched and kills a program written into one,
 /// with no word. So two programs take turns at one path, built through the store, which links one

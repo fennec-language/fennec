@@ -77,7 +77,8 @@ use fennec_layout::{ListItem, Written, generator_definition};
 use fennec_rt::embed::dicts::Word;
 
 pub use build::{
-    Built, Object, Tools, audited, compile, compile_whole, huge_functions, output_switches, sanitize_flag,
+    Built, Object, Tools, audited, compile, compile_again, compile_whole, huge_functions, output_switches,
+    sanitize_flag,
 };
 pub use checks_left::{CheckKind, CheckLeft, checks_left};
 pub use copies_made::{CopyMade, Why as CopyWhy, changed_in_place, copies_made};

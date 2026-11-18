@@ -1003,9 +1003,10 @@ impl Interp {
         // A generator made for the loop is the loop's, as one `iter` makes is, and one made right
         // inside `enumerate` or `zip` is too, and is let go when the loop is.
         let made = !Interp::is_stream(&over) || made_for_loop(iter);
-        let Some(wrap) = loop_wrap(iter) else {
+        if wraps_unknown(iter) {
             return unsupported("a loop over generators wrapping their failures in more than one way");
-        };
+        }
+        let wrap = loop_wrap(iter);
         let mut items = self.items_of(over, iter.span)?;
         let _ = span;
         let mut left = Ok(());
@@ -1345,21 +1346,22 @@ fn made_for_loop(iter: &Expr) -> bool {
 }
 
 /// What a loop's generator fails through partway through the loop: the wrapper of its own
-/// `? from Wrap(...)`, or of the one `?` made right inside `enumerate` or `zip`. Nothing inside
-/// when two `?`s are made there and one wraps, since which failed isn't known then.
-fn loop_wrap(iter: &'static Expr) -> Option<Option<&'static Expr>> {
-    let wraps = arg_wraps(iter);
+/// `? from Wrap(...)`, or of the one `?` made right inside `enumerate` or `zip`.
+fn loop_wrap(iter: &'static Expr) -> Option<&'static Expr> {
+    arg_wraps(iter).into_iter().flatten().next()
+}
+
+/// Whether which of a loop's generators failed partway through decides how it's wrapped, and isn't
+/// known: two `?`s made inside `zip`, one wrapping.
+fn wraps_unknown(iter: &'static Expr) -> bool {
+    let wrapping = arg_wraps(iter).into_iter().flatten().count();
     let tries = match &iter.kind {
         ExprKind::Call { args, .. } => {
             args.iter().filter(|arg| matches!(arg.value.kind, ExprKind::Try { .. })).count()
         }
-        _ => wraps.len(),
+        _ => 1,
     };
-    match wraps.iter().flatten().count() {
-        0 => Some(None),
-        1 if tries <= 1 => Some(wraps.into_iter().flatten().next()),
-        _ => None,
-    }
+    wrapping > 1 || (wrapping == 1 && tries > 1)
 }
 
 /// The wrapper each generator a loop owns fails through when it's let go: its own

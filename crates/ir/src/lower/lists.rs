@@ -600,7 +600,7 @@ impl Lowering<'_> {
             );
         }
         if let Some((made, owned)) = self.made_inside(iter)? {
-            return self.owning(owned, Over { names, iter: &made, back }, span, body);
+            return self.owning(&owned, Over { names, iter: &made, back }, span, body);
         }
         let ty = self.type_at(iter.span).ok_or("what it loops over has no type")?;
         if let Type::Table(item) = &ty {
@@ -1133,12 +1133,12 @@ impl Lowering<'_> {
     /// a failure or `return` with what's left then, and otherwise once the loop's done, the last
     /// first, a failure of its own passing up first. Each is left on what's to be left until it's
     /// let go, so a failure letting one go lets go of those before it.
-    fn owning<F>(&mut self, owned: Vec<Owned>, over: Over<'_>, span: Span, body: F) -> Lowered<()>
+    fn owning<F>(&mut self, owned: &[Owned], over: Over<'_>, span: Span, body: F) -> Lowered<()>
     where
         F: FnOnce(&mut Self) -> Lowered<()>,
     {
         let entered = self.leaving.len();
-        for each in &owned {
+        for each in owned {
             let wrap = each.wrap.clone().map(Box::new);
             self.leaving.push(Leaving::Generator {
                 generator: each.generator.clone(),
@@ -1153,7 +1153,7 @@ impl Lowering<'_> {
         }
         // One that failed partway through, which ends the loop, passes its failure up first, with
         // every one still to be let go, so a failure of another's cleanup is noted on it.
-        for each in &owned {
+        for each in owned {
             let after = self.new_block();
             self.pass_up_failure(&each.generator, after, span, each.wrap.as_ref())?;
             self.current = after;

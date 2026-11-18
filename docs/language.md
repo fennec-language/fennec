@@ -588,6 +588,29 @@ Loading is safe on untrusted input:
 - JSON and TOML refuse what they'd have to guess at: a number too big for a float, a struct's field given twice, a dict's key given twice, and a dict's int key written any way but its plain digits, or not in quotes. A key given twice fails, naming it, as in "the text has `a` twice", never letting the last copy win, since two readers that disagree on which copy wins let a value past a check. `std.pack` refuses it too. Built.
 - Untrusted input has depth and size limits. `std.pack` limits nesting, each string's length, the total it reads and how many items that take no bytes it makes, so bytes can't ask for far more memory than they are. Built. JSON and TOML limit nesting to 500 deep, and don't limit size, string length or collection length yet.
 
+## Strings
+
+```fennec
+usage = """
+    Usage: hoard [options] <path>
+
+      --dry-run    say what would change
+    """
+# usage is "Usage: hoard [options] <path>\n\n  --dry-run    say what would change\n"
+
+greeting = f"""
+    Hello, {visitor.name}!
+    You have {count} new messages.
+    """
+```
+
+- A string is written in `"` on one line, or in `"""` across lines. `f`, `t` and `r` go before either: `f"""` is an f-string, `t"""` a template and `r"""` a raw string, each across lines. Chris decided `"""` on 2026-11-18 (#294). Built.
+- Between `"""`s, newlines are kept. A newline right after the opening `"""` is dropped, so the text can start on the next line.
+- When the closing `"""` is on a line of its own, the spaces before it are taken off the front of every line, so the text can be indented with the code around it. The newline before that closing line is kept, so the text ends with one. A line with fewer spaces than the closing `"""` is a compile error, which says how far to indent it. A line of nothing but spaces may have fewer, and is empty. Text right after the opening `"""` isn't counted as indented. When the closing `"""` comes after text on its line, nothing is taken off.
+- Escapes and `{}`s work as in a string on one line: `\n`, `\"` and the rest, and in an f-string each `{}` opens and closes on one line, with no `"` inside. `\"` writes a quote, so three in a row are written `\"\"\"`. A `\` can't end a line.
+- A `"""` that's never closed is a compile error naming the line it opened on, which may be far above where the file ends.
+- `fennec fmt` keeps what's between `"""`s byte for byte, and `fennec lint` and the language server read it as one string.
+
 ## Templates
 
 ```fennec

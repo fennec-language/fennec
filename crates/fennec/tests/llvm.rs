@@ -11902,6 +11902,22 @@ def main(stdout: Stdout):
     )
 }
 
+/// A string across lines in `"""`s, plain and as an f-string, prints its lines less the spaces
+/// before its closing `"""`, ending with the newline before that line (#294).
+#[test]
+fn strings_in_triple_quotes_print_their_lines() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "triple_quoted",
+        "def main(stdout: Stdout):\n    name = \"Ada\"\n    usage = \"\"\"\n        Usage: tool <path>\n\n          \
+         --dry-run\n        \"\"\"\n    stdout.print(usage)\n    stdout.print(f\"\"\"\n        Hello, {name}!\n        \
+         \"\"\")\n",
+        "Usage: tool <path>\n\n  --dry-run\n\nHello, Ada!\n\n",
+    )
+}
+
 /// An f-string made in one go from its pieces where they are: strings inline and in blocks,
 /// ASCII or not, ints at their ends, floats short and long, formats, values written out, and
 /// results that fit in a header and that don't, on both sides of 23 bytes.

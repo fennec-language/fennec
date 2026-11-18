@@ -29,7 +29,10 @@
 //! - every task waiting on another, which hangs.
 //!
 //! A wait given a timeout times out only when nothing else can go on: whatever could still answer
-//! it is taken to answer in time.
+//! it is taken to answer in time. A wait of no time, `0ms`, looks once, as the runtime's does, so
+//! it's refused unless what it finds is the same on every run: nothing else could still send,
+//! take or close, and what it finds was there before it. A listener of a channel to every
+//! listener read by two tasks at once is refused as one channel's receivers are.
 //!
 //! The rounds of a `parallel` call run one after another here, on the thread that made the call,
 //! but each is one of its own to the channels it uses, as it runs beside the others in the
@@ -246,6 +249,8 @@ struct Chan {
     first: usize,
     /// For each message let go, by its place in `sent`, the clock of the send that let it go.
     dropped: Vec<Clock>,
+    /// The clock of the close, once it's closed.
+    closed_at: Option<Clock>,
     /// Who's tried to take a message from it, each with what it knew when it last tried, or once
     /// it had taken one, and whether it ever has.
     receivers: BTreeMap<usize, (Clock, bool)>,
@@ -266,6 +271,8 @@ struct Listener {
     start: usize,
     drop_oldest: bool,
     reads: BTreeMap<usize, Clock>,
+    /// Who's tried to take a message from it, as a channel's receivers are kept.
+    receivers: BTreeMap<usize, (Clock, bool)>,
 }
 
 impl State {
@@ -293,6 +300,34 @@ impl State {
             }
         }
         Ok(Value::Int(0))
+    }
+
+    /// Whether any but those in `apart` can go on now, or is waiting with a timeout, which could end
+    /// whenever it does.
+    fn others_could_go(&self, apart: &[usize]) -> bool {
+        (0..self.actors.len()).filter(|other| !apart.contains(other)).any(|other| {
+            self.can_go(other)
+                || self.actors.get(other).is_some_and(|found| matches!(found.state, Doing::Waiting(_, true)))
+        })
+    }
+
+    /// Whether what a receive from `number`, a channel or a listener, could find now was there
+    /// before `now` on every run: each message that could be the next one, or else the close.
+    fn there_before(&self, number: i64, now: &Clock) -> bool {
+        let (unread, chan): (Vec<&Sent>, &Chan) = if let Some(listener) = self.listeners.get(&number) {
+            let Some(chan) = self.channels.get(&listener.channel) else { return true };
+            (chan.sent.get(listener.at.max(chan.first)..).unwrap_or_default().iter().collect(), chan)
+        } else {
+            let Some(chan) = self.channels.get(&number) else { return true };
+            (chan.queue.iter().collect(), chan)
+        };
+        if unread.is_empty() {
+            return !chan.closed
+                || chan.closed_at.as_ref().is_some_and(|closed| happened_before(closed, now));
+        }
+        could_come_next(&unread)
+            .into_iter()
+            .all(|at| unread.get(at).is_some_and(|sent| happened_before(&sent.clock, now)))
     }
 
     /// Whether the one numbered `actor` can go on.
@@ -817,6 +852,7 @@ impl Interp {
             sent: Vec::new(),
             first: 0,
             dropped: Vec::new(),
+            closed_at: None,
             receivers: BTreeMap::new(),
             waiting_sends: Vec::new(),
             left: false,
@@ -874,11 +910,10 @@ impl Interp {
                 let at = chan.sent.len();
                 let listener = state.next_number;
                 state.next_number += 1;
-                let reads = BTreeMap::new();
+                let (reads, receivers) = (BTreeMap::new(), BTreeMap::new());
                 let drop_oldest = *drop_oldest;
-                state
-                    .listeners
-                    .insert(listener, Listener { channel: *number, at, start: at, drop_oldest, reads });
+                let made = Listener { channel: *number, at, start: at, drop_oldest, reads, receivers };
+                state.listeners.insert(listener, made);
                 Ok(Value::Int(listener))
             }
             ("send", [Value::Int(number), message, Value::Int(timeout)]) => {
@@ -896,8 +931,14 @@ impl Interp {
             }
             ("close", [Value::Int(number)]) => {
                 self.channel_in_rounds(*number, ChannelUse::Close)?;
-                let mut state = self.sched_state()?;
+                let mut state = lock_state(&self.shared)?;
+                let closer = who(&mut self.rounds_as, self.actor, &mut state)?;
+                let closed_at = state.actors.get_mut(closer).map(|actor| {
+                    tick(&mut actor.clock, closer);
+                    actor.clock.clone()
+                });
                 let Some(chan) = state.channels.get_mut(number) else { return Ok(Value::Unit) };
+                chan.closed_at = closed_at;
                 if !chan.waiting_sends.is_empty() {
                     return unsupported(
                         "a send waiting for room when its channel closes, which got in or not by time",
@@ -973,6 +1014,16 @@ impl Interp {
                     chan.sent.push(sent);
                     return state.kept_for_every(number, &clock);
                 }
+                // A send of no time finds room or not by time unless nothing else could send or
+                // take now, and each take it could find room by happened before it.
+                if timeout == 0 {
+                    let took_beside =
+                        chan.receivers.values().any(|(tried, took)| *took && !happened_before(tried, &clock));
+                    if took_beside || state.others_could_go(&[me, sender]) {
+                        return unsupported("a send of no time, which finds room or not by time");
+                    }
+                }
+                let Some(chan) = state.channels.get_mut(&number) else { return Ok(Value::Int(1)) };
                 if chan.queue.len() < chan.size {
                     chan.queue.push_back(sent);
                     return Ok(Value::Int(0));
@@ -995,6 +1046,25 @@ impl Interp {
         }
     }
 
+    /// A receive of no time: what's there now, as the runtime's looks once. It's the same on every
+    /// run only when nothing else could still send, take or close, and what it could find, a
+    /// message or the close, was there before it.
+    fn receive_now(&mut self, number: i64) -> Run<(Value, i64)> {
+        let me = self.actor;
+        let mut state = lock_state(&self.shared)?;
+        let receiver = who(&mut self.rounds_as, me, &mut state)?;
+        let mut orders =
+            self.shared.sched.orders.lock().map_or_else(|_| unsupported("the tasks were lost"), Ok)?;
+        if cut_short(&mut state, me, receiver) {
+            return Ok((Value::None, 1));
+        }
+        let now = state.actors.get(receiver).map(|actor| actor.clock.clone()).unwrap_or_default();
+        if state.others_could_go(&[me, receiver]) || !state.there_before(number, &now) {
+            return unsupported("a receive of no time, which finds a message or not by time");
+        }
+        Ok(take_message(&mut state, receiver, number, &mut orders)?.unwrap_or((Value::None, 2)))
+    }
+
     /// `channel_receive`: the message, or `None`, and why: 0 a message, 1 closed and empty, 2
     /// timed out.
     pub(crate) fn channel_receive(&mut self, number: i64, timeout: i64) -> Run<(Value, i64)> {
@@ -1002,6 +1072,9 @@ impl Interp {
         // The rounds after this one run beside it, so their messages can be the next.
         self.hand_on_rounds(channel)?;
         self.channel_in_rounds(channel, ChannelUse::Receive)?;
+        if timeout == 0 {
+            return self.receive_now(number);
+        }
         let me = self.actor;
         // Whatever else can go on goes first, so every message that could be the next one has
         // been sent or is waiting to be.
@@ -1075,6 +1148,22 @@ fn take_message(
     let mut read_at = None;
     let taken = if let Some(listener) = state.listeners.get(&number) {
         let (channel, mut at, drop_oldest) = (listener.channel, listener.at, listener.drop_oldest);
+        let Some(chan) = state.channels.get(&channel) else { return Ok(Some((Value::None, 1))) };
+        // Two at once, as for a channel to one receiver: which gets which hangs on time.
+        let now = state.actors.get(receiver).map(|actor| actor.clock.clone()).unwrap_or_default();
+        let takes = at < chan.sent.len();
+        let races = listener.receivers.iter().any(|(other, (tried, took))| {
+            *other != receiver && (takes || *took) && !happened_before(tried, &now)
+        });
+        if races {
+            return unsupported(
+                "two tasks taking messages from one listener of a channel to every listener, which gets which hanging on time",
+            );
+        }
+        let took = listener.receivers.get(&receiver).is_some_and(|(_, took)| *took);
+        if let Some(listener) = state.listeners.get_mut(&number) {
+            listener.receivers.insert(receiver, (now, took));
+        }
         let Some(chan) = state.channels.get(&channel) else { return Ok(Some((Value::None, 1))) };
         // A listener whose next message has gone fails, as a crash does, or goes on from the
         // oldest kept, as the runtime's does. It fell behind on every run only if each send that
@@ -1163,6 +1252,7 @@ fn take_message(
         // A listener's read is stamped, to be held against the send that lets the message go.
         if let (Some(at), Some(listener)) = (read_at, state.listeners.get_mut(&number)) {
             listener.reads.insert(at, took.clone());
+            listener.receivers.insert(receiver, (took.clone(), true));
         }
         if let Some(chan) = state.channels.get_mut(&number)
             && let Some(tried) = chan.receivers.get_mut(&receiver)

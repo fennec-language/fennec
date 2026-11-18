@@ -3047,6 +3047,99 @@ const READ_THEN_SENT_AFTER_A_TIMEOUT: &str = "
                         hits.send(2)?
         ";
 
+/// A wait of no time looks once, as the runtime's does: what it finds is the same on every run
+/// only when nothing else could still send, take or close, and what it finds was there before it.
+/// A receive of no time beside a task that sends, which the compiled program finds empty, was read
+/// as the task's message; it's refused now, as is a send of no time beside a task that takes. One
+/// with nothing beside it prints what the compiled program printed. One listener read by two tasks
+/// at once is refused as one channel's receivers are, which gets which hanging on time (#2116).
+#[test]
+fn a_wait_of_no_time_or_a_listener_read_by_two_tasks_is_refused_where_it_hangs_on_time() {
+    prints(WAITS_OF_NO_TIME, "got 5\nagain -1\nfull\n");
+    for (program, refused) in [
+        (RECEIVE_OF_NO_TIME_BESIDE_A_SENDER, "a receive of no time, which finds a message or not by time"),
+        (SEND_OF_NO_TIME_BESIDE_A_TAKER, "a send of no time, which finds room or not by time"),
+        (
+            ONE_LISTENER_TWO_READERS,
+            "two tasks taking messages from one listener of a channel to every listener, which gets which hanging on time",
+        ),
+    ] {
+        let (printed, ended) = ran(program);
+        assert_eq!(ended, Ended::Unsupported(refused.to_owned()), "{printed}");
+    }
+}
+
+const WAITS_OF_NO_TIME: &str = "
+        from std.concurrent import Closed, Timeout, channel
+
+        def main(stdout: Stdout) fails Closed:
+            with channel[int](size=1) as box:
+                box.send(5)?
+                got = box.receive_within(0ms) except Timeout(): -1
+                stdout.print('got', got)
+                again = box.receive_within(0ms) except Timeout(): -1
+                stdout.print('again', again)
+                box.send(6)?
+                box.send_within(7, 0ms) except why:
+                    case Timeout():
+                        stdout.print('full')
+                        return
+                    case _:
+                        stdout.print('closed', why)
+                        return
+                stdout.print('sent')
+        ";
+
+const RECEIVE_OF_NO_TIME_BESIDE_A_SENDER: &str = "
+        from std.concurrent import Closed, Crashed, Sender, Timeout, channel
+
+        def sending(box: Sender[int]) fails Closed:
+            box.send(5)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1) as box:
+                with launch(() => sending(box.sender())?)?:
+                    got = box.receive_within(0ms) except Timeout(): -1
+                    stdout.print('got', got)
+        ";
+
+const SEND_OF_NO_TIME_BESIDE_A_TAKER: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Timeout, channel
+
+        def taking(box: Inbox[int]):
+            _ = box.receive() else -1
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1) as box:
+                box.send(5)?
+                with launch(() => taking(box.inbox())):
+                    box.send_within(6, 0ms) except why:
+                        case Timeout():
+                            stdout.print('full')
+                            return
+                        case _:
+                            stdout.print('closed', why)
+                            return
+                    stdout.print('sent')
+        ";
+
+const ONE_LISTENER_TWO_READERS: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+        def reading(hits: Inbox[int], back: Sender[int]) fails Closed:
+            got = hits.receive() else -1
+            back.send(got)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=4, to=.Every) as hits, channel[int](size=1) as first, channel[int](size=1) as second:
+                inbox = hits.inbox()
+                with launch(() => reading(inbox, back=first.sender())?)?:
+                    with launch(() => reading(inbox, back=second.sender())?)?:
+                        hits.send(1)?
+                        hits.send(2)?
+                stdout.print('a', first.receive() else -1, 'b', second.receive() else -1)
+        ";
+
 const BEHIND: &str = "
         from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, Timeout, channel
 

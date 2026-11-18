@@ -8,6 +8,8 @@
 //! because of these invariants:
 //!
 //! 1. **`CURRENT` is written only by a running task, to its own yielder, and by `Running`.**
+//!    (`RUNNING`'s stack is also rewritten by `with_stack`, while a task's work runs on another
+//!    stack, which leaves `CURRENT` alone.)
 //!    A task writes it when it starts (`enter`) and each time it's resumed, right after its
 //!    `suspend` returns. `Running`, the guard around every resume, writes back what was there
 //!    before once the task stops running.
@@ -101,6 +103,22 @@ impl Drop for Running {
         CURRENT.set(self.current);
         RUNNING.set(self.resumed);
     }
+}
+
+/// Runs `work` with the running task's stack recorded as `stack`, where `work` runs, then puts
+/// back what was recorded, however `work` ends. `CURRENT` is untouched, so a park meanwhile stops
+/// the process: `check` finds the task's yielder off the stack recorded.
+pub(crate) fn with_stack<R>(stack: Bounds, work: impl FnOnce() -> R) -> R {
+    struct Back(Option<Resumed>);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            RUNNING.set(self.0);
+        }
+    }
+    let before = RUNNING.get();
+    let _back = Back(before);
+    RUNNING.set(before.map(|resumed| Resumed { stack, ..resumed }));
+    work()
 }
 
 /// Called by a task first thing on its own stack, with the yielder corosensei gave it.

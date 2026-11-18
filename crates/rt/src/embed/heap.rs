@@ -404,6 +404,11 @@ pub(super) struct Listing {
     scopes: usize,
 }
 
+/// How many of the blocks taken over at once go in the table's hash map, with no page made: a
+/// message's or a task's few. Past them a batch is many blocks lying close together, as a
+/// `parallel` call's results are, which pages hold in less room and find faster.
+const ADOPTED_HASHED: usize = 64;
+
 /// How many blocks a task lists as made between looks at whether to let the list go, and the
 /// fewest it lets go of. A list this long is 32 KB.
 pub(crate) const MADE_LISTED: usize = 4096;
@@ -585,6 +590,21 @@ thread_local! {
 /// a failure's way out still need.
 #[cfg(any(test, feature = "threads"))]
 const TASK_STACK_KEPT: usize = 64 << 10;
+
+/// How big a stack a parked task reads a value into a tree on, when it hashes one by what it holds:
+/// as big as a worker's, since a task's own is small.
+#[cfg(any(test, feature = "threads"))]
+const DEEP_READ_STACK: usize = 64 << 20;
+
+/// Runs `work`, which reads a value into a tree and is done with it, with as much stack as a
+/// worker has: in a launched task, whose own stack is smaller, on its thread's deep stack, and
+/// anywhere else, here, a range included.
+pub(super) fn with_room_to_read<R>(work: impl FnOnce() -> R) -> R {
+    #[cfg(any(test, feature = "threads"))]
+    return fennec_parked::on_deep_stack(DEEP_READ_STACK, work);
+    #[cfg(not(any(test, feature = "threads")))]
+    work()
+}
 
 /// Says how low on this thread's stack the runtime may still read a value into a tree: for the
 /// program's own thread and each worker, some way below where native code may go. A parked task's
@@ -949,7 +969,14 @@ impl Heap {
         }
     }
 
-    pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
+    pub(crate) fn insert(&mut self, block: Box<[u64]>) -> i64 {
+        self.insert_made_by(block, false)
+    }
+
+    /// `insert`, for a block made here, or by another thread (`adopted`), whose block goes in
+    /// the table without making a page for it (`Table::insert_adopted`).
+    #[inline]
+    fn insert_made_by(&mut self, mut block: Box<[u64]>, adopted: bool) -> i64 {
         self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
         let address = block.as_ptr().addr();
         if block.first().is_some_and(|count| *count >= IMMORTAL) {
@@ -965,7 +992,11 @@ impl Heap {
                 self.list_made(address);
             }
         }
-        self.blocks.insert(block);
+        if adopted {
+            self.blocks.insert_adopted(block);
+        } else {
+            self.blocks.insert(block);
+        }
         i64::try_from(address).unwrap_or(0)
     }
 
@@ -1159,9 +1190,11 @@ impl Heap {
 
     pub(crate) fn adopt_made(&mut self, blocks: impl IntoIterator<Item = Box<[u64]>>) {
         let counts = self.counts;
-        for mut block in blocks {
+        for (taken, mut block) in blocks.into_iter().enumerate() {
             mark_owner(&mut block, self.owner_bits);
-            self.insert(block);
+            // Many taken over at once lie close together, as a `parallel` call's results do: past
+            // the first few, they get pages as blocks made here do.
+            self.insert_made_by(block, taken < ADOPTED_HASHED);
         }
         self.counts = counts;
         self.publish_counts();
@@ -1169,9 +1202,13 @@ impl Heap {
 
     /// Takes over blocks another thread's heap handed over, as this thread's own.
     pub(crate) fn adopt_blocks(&mut self, blocks: Vec<Box<[u64]>>) {
-        for mut block in blocks {
+        for (taken, mut block) in blocks.into_iter().enumerate() {
             mark_owner(&mut block, self.owner_bits);
-            self.blocks.insert(block);
+            if taken < ADOPTED_HASHED {
+                self.blocks.insert_adopted(block);
+            } else {
+                self.blocks.insert(block);
+            }
         }
     }
 

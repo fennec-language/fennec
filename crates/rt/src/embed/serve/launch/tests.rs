@@ -299,6 +299,31 @@ fn a_crash_ends_only_its_task_and_comes_out_as_crashed() {
     finish();
 }
 
+static STACK_SEEN: AtomicI64 = AtomicI64::new(0);
+
+/// Notes how big its own stack is.
+extern "C" fn notes_its_stack(_env: i64, _thread: i64) -> i64 {
+    let size = fennec_parked::stack_size().and_then(|size| i64::try_from(size).ok()).unwrap_or(-1);
+    STACK_SEEN.store(size, Ordering::SeqCst);
+    ENDED
+}
+
+/// A server may launch a task for each connection, so a launched task's stack is a few megabytes,
+/// not a range's 64, whose kernel tables alone cost 16 KB a task.
+#[test]
+fn a_launched_task_runs_on_a_stack_smaller_than_a_range_s() {
+    begin();
+    let task = launch(notes_its_stack, 0);
+    let mut failure = 0;
+    assert_eq!(launch_end(task, -1, 0, &mut failure), ENDED);
+    let seen = usize::try_from(STACK_SEEN.load(Ordering::SeqCst)).unwrap_or(0);
+    assert!(
+        (super::super::LAUNCHED_STACK..super::super::RANGE_STACK).contains(&seen),
+        "a launched task's stack is {seen} bytes"
+    );
+    finish();
+}
+
 static SLEPT: AtomicI64 = AtomicI64::new(0);
 
 /// Sleeps for ten seconds, noting 1 if that's cut short and 2 if it isn't.

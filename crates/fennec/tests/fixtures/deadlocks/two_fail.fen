@@ -1,0 +1,26 @@
+# Two of a waiting call's ranges fail, 3 and 1, while range 0 waits to receive what nobody sends:
+# a deadlock, whose join's line says the lower one, 1, every time. (From Fable 5.2's review of
+# #2142.)
+from std.concurrent import Channel, channel
+
+error Boom:
+    at: int
+
+def part(at: int, pipe: Channel[int]) -> int fails Boom:
+    if at == 0:
+        got = pipe.receive() else -1
+        return got
+    if at == 1 or at == 3:
+        fail Boom(at=at)
+    return at
+
+def all_parts(pipe: Channel[int]) -> int fails Boom:
+    got = [part(at, pipe=pipe)? for at in parallel(range(4))]
+    return sum(got)
+
+def main(stdout: Stdout):
+    with channel[int](size=1) as pipe:
+        total = all_parts(pipe) except why:
+            stdout.print("the call failed:", why)
+            return
+        stdout.print(total)

@@ -117,7 +117,7 @@ impl Emit<'_, '_, '_> {
             crate::kinds::word_named(layouts, key),
             crate::kinds::word_named(layouts, value)
         );
-        self.module.shared.dicts.insert(symbol.clone(), (key, value));
+        self.module.add_dict(&symbol, (key, value));
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         let shape = self.temp();
         self.line(&format!("{shape} = load i64, ptr @\"{symbol}\", !invariant.load !1"));

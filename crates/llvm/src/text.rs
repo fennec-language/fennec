@@ -22,7 +22,7 @@ impl Emit<'_, '_, '_> {
     fn string_number(&mut self, text: &str) -> String {
         let name = format!("s_{}", fennec_blake3::hash(text.as_bytes()).to_hex());
         self.declare(&format!("@\"{name}\" = external dso_local global i64"));
-        self.module.shared.strings.insert(name.clone(), text.to_owned());
+        self.module.add_string(&name, text);
         let temp = self.temp();
         self.line(&format!("{temp} = load i64, ptr @\"{name}\", !invariant.load !1"));
         temp
@@ -49,7 +49,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn literal_symbol(&mut self, text: &str) -> String {
         let name = format!("l_{}", fennec_blake3::hash(text.as_bytes()).to_hex());
         self.declare(&format!("@\"{name}\" = external dso_local global ptr"));
-        self.module.shared.literals.insert(name.clone(), text.to_owned());
+        self.module.add_literal(&name, text);
         format!("@\"{name}\"")
     }
 

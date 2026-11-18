@@ -257,7 +257,7 @@ The end of a `with` block is where what it lent finishes: a file closes and a tr
 - `with conn.split() as reader, writer:` gives a connection's read and write sides, for one task reading while another writes. Several names split what a source lends as a tuple, `-> with (Reader, Writer)`. Built for sources; connections move to them with sockets.
 - `with` never locks.
 
-Writing your own takes `-> with T` and one `lend`, outside any loop. Setup goes above it and cleanup below. Built:
+Writing your own takes `-> with T` and one `lend`, outside any loop, that every way through it reaches unless it fails: a source that could finish without lending is a compile error, so once its call works, the caller's block runs. Setup goes above it and cleanup below. Built:
 
 ```fennec
 def transaction(self) -> with Transaction fails DbError:

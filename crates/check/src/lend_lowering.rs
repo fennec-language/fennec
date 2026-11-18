@@ -1147,7 +1147,9 @@ fn fails_unheld(stmt: &Stmt) -> bool {
         StmtKind::For { iter, .. } => {
             crate::parallel::parallel_items(iter).is_some() || matches!(iter.kind, ExprKind::Try { .. })
         }
-        StmtKind::With { lock, .. } => *lock,
+        // As it's written, or as `lock_lowering` wrote it in an earlier round, as a `ref` case in a
+        // source's body is lowered once the source is written in.
+        StmtKind::With { lock, names, .. } => *lock || crate::lock::lowered(names),
         _ => false,
     }
 }

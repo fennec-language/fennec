@@ -20,6 +20,18 @@ pub fn exprs<'a>(module: &'a Module, look: &mut dyn FnMut(&'a Expr)) {
     }
 }
 
+/// Calls `look` on every function and method in `module`, as `visit::functions_mut` reaches them.
+pub fn each_function<'a>(module: &'a Module, look: &mut dyn FnMut(&'a FnDef)) {
+    for item in &module.items {
+        match item {
+            Item::Function(def) => look(def),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.methods.iter().for_each(&mut *look),
+            Item::Extend(extension) => extension.methods.iter().for_each(&mut *look),
+            _ => {}
+        }
+    }
+}
+
 /// Calls `look` on every expression in a function's body.
 pub fn in_function<'a>(def: &'a FnDef, look: &mut dyn FnMut(&'a Expr)) {
     function(def, look);
@@ -230,6 +242,11 @@ mod tests {
             crate::visit::exprs_mut(&mut module.clone(), &mut |expr| changed.push(expr.span));
             assert_eq!(read, changed);
             reached += read.len();
+            let mut read: Vec<Span> = Vec::new();
+            super::each_function(module, &mut |def| read.push(def.span));
+            let mut changed: Vec<Span> = Vec::new();
+            crate::visit::functions_mut(&mut module.clone(), &mut |def| changed.push(def.span));
+            assert_eq!(read, changed);
         }
         assert!(reached > 1000, "{reached}");
     }

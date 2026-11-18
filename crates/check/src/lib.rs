@@ -490,8 +490,7 @@ fn route_formats_natively(module: &mut Module, checked: &Checked) -> bool {
 /// Whether a call is given `json=`, which only an HTTP call takes.
 fn sends_json(module: &Module) -> bool {
     let mut sends = false;
-    let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+    fennec_syntax::read::exprs(module, &mut |expr| {
         if let ExprKind::Call { args, .. } = &expr.kind {
             sends |= args.iter().any(|arg| arg.name.as_deref() == Some("json"));
         }
@@ -526,7 +525,7 @@ def fennec_sorted_in_order[T: Ordered](items: list[T]) -> list[T]:
 /// checking again costs a build its time.
 fn calls_sorted(module: &Module) -> bool {
     let mut sorts = false;
-    fennec_syntax::visit::exprs_mut(&mut module.clone(), &mut |expr| {
+    fennec_syntax::read::exprs(module, &mut |expr| {
         if let ExprKind::Call { callee, .. } = &expr.kind {
             sorts |= matches!(&callee.kind, ExprKind::Name(name) if name == "sorted");
         }
@@ -830,7 +829,7 @@ fn resolved_within(
 fn still_changing(before: &Module, after: &Module) -> Diagnostic {
     let functions = |module: &Module| -> Vec<(String, fennec_syntax::FnDef)> {
         let mut found = Vec::new();
-        fennec_syntax::visit::functions_mut(&mut module.clone(), &mut |def| {
+        fennec_syntax::read::each_function(module, &mut |def| {
             found.push((def.name.clone(), def.clone()));
         });
         found

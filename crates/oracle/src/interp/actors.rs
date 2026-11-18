@@ -29,12 +29,13 @@
 //! - every task waiting on another, which hangs.
 //!
 //! A wait given a timeout times out only when nothing else can go on: whatever could still answer
-//! it is taken to answer in time, however short its time: only a wait of no time, `0ms`, is read as
-//! looking once, as the runtime's does. It's refused unless what it finds is the same on every
+//! it is taken to answer in time, however short its time. Only a wait of no time, `0ms`, is read
+//! as looking once, as the runtime's does. It's refused unless what it finds is the same on every
 //! run: nothing else could still send, take or close, a task waiting for room behind a send beside
-//! its own counting as one that could, what it finds was there before it, and it isn't in a
-//! `parallel` round beside others, which could use any channel, one the round made included. A listener of a channel to every
-//! listener read by two tasks at once is refused as one channel's receivers are.
+//! its own counting as one that could; what it finds was there before it; and it isn't in a
+//! `parallel` round beside others, which could use any channel, one the round made included. A
+//! listener of a channel to every listener read by two tasks at once is refused as one channel's
+//! receivers are.
 //!
 //! The rounds of a `parallel` call run one after another here, on the thread that made the call,
 //! but each is one of its own to the channels it uses, as it runs beside the others in the

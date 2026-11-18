@@ -1304,7 +1304,7 @@ impl FnCx<'_> {
         }
         let given_a_maker = given.into_iter().any(|span| {
             let ty = self.recorded(span).map_or(Type::Unknown, |ty| self.checker.settled(&ty));
-            self.could_make_a_failing_generator(&ty)
+            self.could_make_a_failing_generator(&ty, &mut Vec::new())
         });
         if given_a_maker {
             self.error(crate::messages::except_on_a_call_given_a_function(written));
@@ -1318,7 +1318,9 @@ impl FnCx<'_> {
     /// only a plain value, like an `(int) -> bool` rule, couldn't. A struct holding a function
     /// counts, its field not looked into. A value whose own type isn't worked out yet counts as
     /// none: the call's result, read on the same line, already holds the generator.
-    fn could_make_a_failing_generator(&mut self, ty: &Type) -> bool {
+    /// `open` holds the functions by name being looked into, so one giving back itself, or two
+    /// giving back each other, count rather than being looked into again.
+    fn could_make_a_failing_generator(&mut self, ty: &Type, open: &mut Vec<String>) -> bool {
         let ty = self.checker.settled(ty);
         let could_be = |returns: &Type| {
             !returns.held_generator_failures().is_empty() || returns.has_params() || !returns.is_known()
@@ -1327,10 +1329,13 @@ impl FnCx<'_> {
             Type::Arrow(params, returns) => {
                 let returns = self.checker.settled(returns);
                 could_be(&returns)
-                    || self.could_make_a_failing_generator(&returns)
+                    || self.could_make_a_failing_generator(&returns, open)
                     || params.iter().any(|param| self.holds_a_function(param))
             }
             Type::Function(key) => {
+                if open.contains(key) {
+                    return true;
+                }
                 let Some((generator, returns)) = self
                     .checker
                     .signature_found(key)
@@ -1338,7 +1343,13 @@ impl FnCx<'_> {
                 else {
                     return true;
                 };
-                generator || could_be(&returns) || self.could_make_a_failing_generator(&returns)
+                if generator || could_be(&returns) {
+                    return true;
+                }
+                open.push(key.clone());
+                let could = self.could_make_a_failing_generator(&returns, open);
+                open.pop();
+                could
             }
             Type::Named(_) | Type::Generic(..) if self.checker.holds_function_value(&ty, &mut Vec::new()) => {
                 true
@@ -1349,7 +1360,7 @@ impl FnCx<'_> {
                 .cloned()
                 .collect::<Vec<_>>()
                 .iter()
-                .any(|child| self.could_make_a_failing_generator(child)),
+                .any(|child| self.could_make_a_failing_generator(child, open)),
         }
     }
 

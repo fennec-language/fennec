@@ -222,6 +222,27 @@ fn a_generator_that_can_fail_held_or_got_with_except_can_t_reach_a_loop_that_did
             "def f(stdout: Stdout) fails Shut:\n    mut held = []\n    for turn in range(2):\n        def walked(out: Stdout):\n            out.print([any(True for _ in gen) for gen in held])\n        walked(stdout)\n        held.append(first(\"a\")?)\n        stdout.print(turn)\n",
             "`held` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ held",
         ),
+        // A generator function whose only `yield` is inside an `except` block.
+        (
+            "error Bad:\n    why: str\n\ndef risky() fails Bad:\n    fail Bad(why=\"no\")\n\ndef made(name: str) -> Iterator[int] fails Shut:\n    risky() except why:\n        yield 0\n        fail Shut(name=name)\n\ndef f(stdout: Stdout):\n    kept = made(\"a\") except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "making a generator runs none of its body, so this can't fail here and `except` would never run @ made(\"a\")",
+        ),
+        // One in a union's member.
+        (
+            "struct Box[T]:\n    item: T\n\nstruct Empty:\n    why: str\n\ndef boxed[T](item: T) -> Box[T] | Empty:\n    return Box(item=item)\n\ndef f(stdout: Stdout) fails Shut:\n    held = boxed(first(\"a\")?)\n    def walked(out: Stdout):\n        out.print(held)\n    walked(stdout)\n",
+            "`held` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ held",
+        ),
+    ] {
+        assert_eq!(with_failing(rest), [said], "{rest}");
+    }
+}
+
+/// `except` on a `def`'s call that gives back a generator that can fail, given a function that
+/// could have made it, is refused: its failure was counted, if at all, where that function's `?`
+/// is, not here (#2117, #2118).
+#[test]
+fn except_on_a_call_given_a_function_that_could_make_one_is_refused() {
+    for (rest, said) in [
         // `except` on a `def`'s call given a function, which may make one: an arrow, or a
         // function by name.
         (
@@ -254,25 +275,34 @@ fn a_generator_that_can_fail_held_or_got_with_except_can_t_reach_a_loop_that_did
             "struct Maker[T]:\n    make: () -> T fails Shut\n\ndef made[T](maker: Maker[T]) -> T fails Shut:\n    make = maker.make\n    return make()?\n\ndef f(stdout: Stdout):\n    kept = made(Maker(make=() => first(\"a\")?)) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
             "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ made(Maker(make=() => first(\"a\")?))",
         ),
+        // One held in a struct an arrow gives back.
+        (
+            "struct Box[T]:\n    item: T\n\ndef boxed_got[T, E](get: () -> Box[(str) -> T fails E]) -> T fails E:\n    box = get()\n    make = box.item\n    return make(\"a\")?\n\ndef f(stdout: Stdout):\n    kept = boxed_got(() => Box(item=first)) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ boxed_got(() => Box(item=first))",
+        ),
         // An arrow taking a function, which could hand one out to it: counted, whatever it gives
         // back.
         (
             "error Bad:\n    why: str\n\ndef stepped[T](value: T, rule: ((int) -> int) -> bool) -> T fails Bad:\n    if not rule((at) => at + 1):\n        fail Bad(why=\"no\")\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    kept = stepped(first(\"a\")?, rule=(step) => step(1) > 0) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
             "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ stepped(first(\"a\")?, rule=(step) => step(1) > 0)",
         ),
-        // A generator function whose only `yield` is inside an `except` block.
-        (
-            "error Bad:\n    why: str\n\ndef risky() fails Bad:\n    fail Bad(why=\"no\")\n\ndef made(name: str) -> Iterator[int] fails Shut:\n    risky() except why:\n        yield 0\n        fail Shut(name=name)\n\ndef f(stdout: Stdout):\n    kept = made(\"a\") except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
-            "making a generator runs none of its body, so this can't fail here and `except` would never run @ made(\"a\")",
-        ),
-        // One in a union's member.
-        (
-            "struct Box[T]:\n    item: T\n\nstruct Empty:\n    why: str\n\ndef boxed[T](item: T) -> Box[T] | Empty:\n    return Box(item=item)\n\ndef f(stdout: Stdout) fails Shut:\n    held = boxed(first(\"a\")?)\n    def walked(out: Stdout):\n        out.print(held)\n    walked(stdout)\n",
-            "`held` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ held",
-        ),
     ] {
         assert_eq!(with_failing(rest), [said], "{rest}");
     }
+}
+
+/// A function giving back itself, given to a `def` whose call's `except` is looked at, is looked
+/// into once rather than without end (#2118's review). Seen again, it counts as one that could
+/// have made the generator, so the `except` is refused beside the program's own two errors.
+#[test]
+fn a_function_giving_back_itself_is_looked_into_once() {
+    let rest = "error Bad:\n    why: str\n\ndef me():\n    return me\n\ndef checked[T](value: T, rule: () -> int) -> T fails Bad:\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    kept = checked(first(\"a\")?, me) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n";
+    let said = [
+        "`me` gives back a function, so its return type has to be written @ def me()",
+        "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ checked(first(\"a\")?, me)",
+        "`rule` should be a () -> int, but this is a function @ me",
+    ];
+    assert_eq!(with_failing(rest), said, "{rest}");
 }
 
 #[test]

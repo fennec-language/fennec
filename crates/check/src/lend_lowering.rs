@@ -1387,6 +1387,16 @@ fn replace_lend(body: &mut Vec<Stmt>, with_block: &mut LentAs<'_>) -> bool {
     false
 }
 
+/// Whether a failure inside this loop leaves as a failure, not held by the block and leaving the
+/// loop as a `break` would:
+/// - a `parallel` round's leaves where the loop ends, which isn't the block's to write;
+/// - a loop over a generator that can fail, `for x in made()?:` or `for x in made()? from Wrap(...)`,
+///   lets go of it as a failure leaves, noting a failure of the generator's own cleanup on that one.
+fn fails_unheld(stmt: &Stmt) -> bool {
+    let StmtKind::For { iter, .. } = &stmt.kind else { return false };
+    crate::parallel::parallel_items(iter).is_some() || matches!(iter.kind, ExprKind::Try { .. })
+}
+
 /// The caller's block's `return`, `break` and `continue`, as setting `exit` and leaving the
 /// loop it runs in. One inside a loop of the block's own leaves that loop, and then the block's.
 fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
@@ -1400,7 +1410,7 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
         // A loop's condition and what it goes through are its own, as its body is: a `break` there
         // is the loop's, not the block's.
         let own_loop = in_loop || matches!(stmt.kind, StmtKind::While { .. } | StmtKind::For { .. });
-        let round = matches!(&stmt.kind, StmtKind::For { iter, .. } if crate::parallel::parallel_items(iter).is_some());
+        let unheld = fails_unheld(stmt);
         for value in stmt_exprs(stmt) {
             outer_cases(value, &mut |cases| exits(cases, caller, own_loop));
         }
@@ -1432,10 +1442,9 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
             StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
                 let before = caller.ways.returned.is_some();
                 let fails_before = caller.fails_made;
-                // A round's failure leaves where the loop ends: it isn't the block's to write.
-                let failed = if round { caller.failed.take() } else { None };
+                let failed = if unheld { caller.failed.take() } else { None };
                 exits(body, caller, true);
-                if round {
+                if unheld {
                     caller.failed = failed;
                 }
                 // A `return` or a failure inside it leaves this loop too.
@@ -1665,6 +1674,17 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
     }
     let span = held.span;
     match &mut held.kind {
+        // A loop over a generator that can fail, `for x in made()?:`, owns the generator: it lets
+        // go of it when it's left, before the cleanup runs, with a failure of the generator's own
+        // cleanup noted on the one leaving. Where the block holds its failure (`otherwise` is
+        // empty), it has an `OnFailure` its failures reach as any from inside a call do, so only
+        // the `?`s inside what it's of come out, and the loop's stays. Where the cleanup is written
+        // in before each failure, as in a `test`, nothing else would run it on the call's failure.
+        StmtKind::For { iter: Expr { kind: ExprKind::Try { value: inner, context: None }, .. }, .. }
+            if otherwise.is_empty() =>
+        {
+            hoist_inside(inner, otherwise, before, made, span);
+        }
         StmtKind::Expr(value)
         | StmtKind::Fail(value)
         | StmtKind::Yield(value)

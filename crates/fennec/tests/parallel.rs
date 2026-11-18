@@ -1388,6 +1388,49 @@ fn a_task_stopped_once_its_turn_was_handed_over_does_no_work() -> std::io::Resul
     Ok(())
 }
 
+/// A server's round serving a server of its own ends, and so does its program, at 1, 2, 4 and 16
+/// threads, in each order the stop can come: two rounds on two workers each serving one, a round
+/// that began to serve after the stop was sent, and one cancelled where it made way, which then
+/// served. Each waited, holding its worker, for workers to leave its server, which they couldn't
+/// while it did, so none ended (#2004). From Fable 5.2's review of #1993.
+#[test]
+fn a_round_serving_a_server_of_its_own_ends_whenever_the_stop_comes() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-parallel-own-servers-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let one = "the slow one began\nhello /one\nthe server is over\n";
+    let programs = [
+        (
+            "twoserving",
+            include_str!("fixtures/stopped_rounds/twoserving.fen"),
+            "a slow one began\na slow one began\nhello /one\nthe server is over\n",
+        ),
+        ("lockthenserve", include_str!("fixtures/stopped_rounds/lockthenserve.fen"), one),
+        ("tickthenserve", include_str!("fixtures/stopped_rounds/tickthenserve.fen"), one),
+    ];
+    for (name, source, printed) in programs {
+        let built = build_on_threads(&dir, source, name)?;
+        for threads in ["1", "2", "4", "16"] {
+            let ran =
+                Command::new(&built).env("FENNEC_THREADS", threads).current_dir(&dir).output_within()?;
+            let said = String::from_utf8_lossy(&ran.stderr);
+            assert_eq!(ran.status.code(), Some(0), "{name} on {threads} threads: {said}");
+            assert_eq!(
+                sorted_lines(&ran.stdout),
+                sorted_lines(printed.as_bytes()),
+                "{name} on {threads} threads: {said}"
+            );
+            assert!(!said.contains("error"), "{name} on {threads} threads: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A launched task can read every constant the program has, not only its strings.
 #[test]
 fn a_task_reads_the_programs_constants() -> std::io::Result<()> {

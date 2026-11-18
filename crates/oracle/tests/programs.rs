@@ -515,6 +515,79 @@ fn a_generator_and_its_reader_take_turns() {
     );
 }
 
+/// A type a `with` source names as a type, and the `parallel` it calls, are its own, though its
+/// caller names something the same: the oracle prints what the compiled program prints since #2039.
+#[test]
+fn a_with_source_s_type_names_are_its_own_though_the_caller_names_them() {
+    prints(
+        "
+        enum Kind:
+            Slider(total: int)
+            Empty
+
+        struct Door:
+            name: str
+
+            def made() -> Door:
+                return Door(name='made')
+
+        struct Gate:
+            width: int
+
+        struct Box[T]:
+            item: T
+
+        def door() -> Door:
+            return Door(name='front')
+
+        def made() -> with str:
+            lend Door.made().name
+
+        def narrowed(thing: Door | Gate) -> with str:
+            mut said = 'gate'
+            if thing is Door:
+                said = thing.name
+            lend said
+
+        def boxed() -> with int:
+            held = Box[int](item=3)
+            lend held.item
+
+        def cased() -> with int:
+            kind = Kind.Slider(total=4)
+            mut seen = 0
+            match kind:
+                case .Slider(total):
+                    seen = total
+                case _:
+                    seen = 0
+            lend seen
+
+        def doubled(items: list[int]) -> with int:
+            mut kept = items
+            for ref item in parallel(kept):
+                item *= 2
+            lend sum(kept)
+
+        def counted(Door: int, Box: int, Kind: int, parallel: int, stdout: Stdout):
+            with made() as got:
+                stdout.print(got, Door)
+            with narrowed(door()) as got:
+                stdout.print(got)
+            with boxed() as got:
+                stdout.print(got + Box)
+            with cased() as got:
+                stdout.print(got + Kind)
+            with doubled([1, 2, 3]) as got:
+                stdout.print(got + parallel)
+
+        def main(stdout: Stdout):
+            counted(Door=1, Box=2, Kind=3, parallel=4, stdout=stdout)
+        ",
+        "made 1\nfront\n5\n7\n16\n",
+    );
+}
+
 #[test]
 fn a_source_lends_to_the_block_and_finishes_after_it() {
     prints(

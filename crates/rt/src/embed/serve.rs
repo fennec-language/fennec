@@ -102,6 +102,12 @@ thread_local! {
     static SLICE: Cell<Option<Instant>> = const { Cell::new(None) };
     /// The task this worker is running, for a server it starts to know where it was started.
     static RESUMED: Cell<Option<TaskId>> = const { Cell::new(None) };
+    /// The servers each task on this worker serves, while it does: so a server it's a round of,
+    /// left, stops them, and cancels the round once they've ended (see `Io::leave`).
+    static SERVING: RefCell<HashMap<TaskId, Vec<Arc<Server>>>> = RefCell::new(HashMap::new());
+    /// The rounds on this worker kept, to cancel once their own servers have ended: each stays in
+    /// its wait until it's cancelled, whoever sees its server's end first.
+    static KEPT: RefCell<HashSet<TaskId>> = RefCell::new(HashSet::new());
     /// Whether, when it was, anything else on the worker wanted the thread: another task ready or
     /// waiting, or a server served.
     static OTHERS: Cell<bool> = const { Cell::new(false) };
@@ -674,8 +680,6 @@ struct Server {
     /// how long its rounds then have to finish.
     stop: Option<Duration>,
     draining: Arc<AtomicBool>,
-    /// The worker and the task on it that serves it, when a task does: a round, say.
-    served_by: Option<(usize, TaskId)>,
 }
 
 /// A recorded round, replayed: what it runs with the handle of its connection.
@@ -701,6 +705,9 @@ struct Here {
     /// Whether a round's `break` has stopped it taking connections, for it to be left once the
     /// rounds running finish.
     draining: bool,
+    /// Whether it's being left, with rounds that serve servers of their own still to cancel once
+    /// those have ended.
+    leaving: bool,
 }
 
 /// What a pool worker serves: its poll, its tasks, which task waits on which connection, and the
@@ -737,6 +744,9 @@ pub(in crate::embed) struct Io {
     /// tasks take turns on the thread, so one's can't be left where another's truncating would
     /// cut them off, and an ended task's go with it.
     temporaries: HashMap<TaskId, super::Temporaries>,
+    /// How many servers here are being left, with rounds kept: while none are, which is nearly
+    /// always, resuming a task looks for no round to cancel.
+    leaving: usize,
 }
 
 impl Io {
@@ -761,6 +771,7 @@ impl Io {
             deferred_tasks: VecDeque::new(),
             accounts: HashMap::new(),
             temporaries: HashMap::new(),
+            leaving: 0,
         }
     }
 
@@ -924,32 +935,51 @@ impl Io {
             return;
         }
         let id = server.id;
-        let here =
-            Here { server, listener, tasks: HashSet::new(), served: Served::default(), draining: false };
+        let here = Here {
+            server,
+            listener,
+            tasks: HashSet::new(),
+            served: Served::default(),
+            draining: false,
+            leaving: false,
+        };
         self.servers.insert(id, here);
     }
 
     /// Leaves a server: its tasks here are cancelled, each told, ending and closing its
     /// connection, and what this worker served goes into the server's total.
     fn leave(&mut self, id: u64) {
-        // A server one of its rounds here serves is left here first, as it would be when the round
-        // ends it. Cancelled, the round stops that server and waits for every worker to leave it,
-        // and this one couldn't take the mail that has it leave while it runs the round: the round,
-        // and the program, never ended (#1950).
-        let Some(rounds) = self.servers.get(&id).map(|here| here.tasks.clone()) else { return };
-        let mut inner: Vec<u64> = self
-            .servers
-            .iter()
-            .filter(|(_, other)| {
-                other.server.served_by.is_some_and(|(at, task)| at == self.at && rounds.contains(&task))
-            })
-            .map(|(inner, _)| *inner)
-            .collect();
-        inner.sort_unstable();
-        for inner in inner {
-            self.leave(inner);
+        // A round that serves a server of its own isn't cancelled yet: that server's stopped, and
+        // the round is cancelled once it's ended (`cut_round_once_its_server_has`). Cancelled
+        // first, the round waited here, holding this worker, for every worker to leave its server,
+        // which this one, and any whose round waited for this one's, couldn't (#2004).
+        let Some(here) = self.servers.get_mut(&id) else { return };
+        let mut serving: Vec<TaskId> = here.tasks.iter().copied().filter(|task| serves(*task)).collect();
+        if !serving.is_empty() {
+            serving.sort_unstable();
+            if !here.leaving {
+                here.leaving = true;
+                self.leaving += 1;
+            }
+            KEPT.with_borrow_mut(|kept| kept.extend(serving.iter().copied()));
+            if let Some(listener) = &mut here.listener {
+                let _ = self.poll.registry().deregister(listener);
+            }
+            let others: Vec<TaskId> =
+                here.tasks.iter().copied().filter(|task| !serving.contains(task)).collect();
+            for task in &serving {
+                let servers = SERVING.with_borrow(|serving| serving.get(task).cloned().unwrap_or_default());
+                for server in servers {
+                    Stopper { server, pool: self.pool }.stop();
+                }
+            }
+            self.cut_rounds(id, others);
+            return;
         }
         let Some(mut here) = self.servers.remove(&id) else { return };
+        if here.leaving {
+            self.leaving -= 1;
+        }
         let left: Vec<usize> = self
             .waiting
             .iter()
@@ -987,6 +1017,61 @@ impl Io {
         here.server.left.finished();
     }
 
+    /// Cancels `tasks`, rounds of the server `id` here, in the order they started, so their
+    /// cleanups run the same way each time. Each ends quietly, however it ended.
+    fn cut_rounds(&mut self, id: u64, mut tasks: Vec<TaskId>) {
+        tasks.sort_unstable();
+        let left: Vec<usize> = self
+            .waiting
+            .iter()
+            .filter(|(_, (task, ..))| tasks.contains(task))
+            .map(|(token, _)| *token)
+            .collect();
+        for token in left {
+            self.unwait(token);
+        }
+        self.ready.retain(|(task, _)| !tasks.contains(task));
+        for task in tasks {
+            if let Some(here) = self.servers.get_mut(&id) {
+                here.tasks.remove(&task);
+            }
+            self.owners.remove(&task);
+            let _ = self.with_own_temporaries(task, |io| io.scheduler.cancel(task));
+            KEPT.with_borrow_mut(|kept| kept.remove(&task));
+            self.temporaries.remove(&task);
+            super::clear_failure();
+        }
+    }
+
+    /// A round of a server being left, which served a server of its own, is cancelled once that
+    /// server has ended, and the server it's a round of is left once its last such round is: gives
+    /// back whether it was.
+    fn cut_round_once_its_server_has(&mut self, task: TaskId) -> bool {
+        let Some(&id) = self.owners.get(&task) else { return false };
+        let leaving = self.servers.get(&id).is_some_and(|here| here.leaving);
+        if !leaving || serves(task) {
+            return false;
+        }
+        self.cut_rounds(id, vec![task]);
+        if self.servers.get(&id).is_some_and(|here| here.tasks.is_empty()) {
+            self.leave(id);
+        }
+        true
+    }
+
+    /// For a test: a pause before resuming a round of a server being left, on the pool that
+    /// `PAUSE_BEFORE_KEPT` names, as if the thread were taken away between this worker's look at
+    /// whether the round's own server has ended and the round's.
+    #[cfg(test)]
+    fn pause_for_a_test(&self, task: TaskId) {
+        let this_pool = std::ptr::from_ref(self.pool).addr();
+        if PAUSE_BEFORE_KEPT.load(Ordering::Acquire) == this_pool
+            && self.owners.get(&task).is_some_and(|id| self.servers.get(id).is_some_and(|here| here.leaving))
+        {
+            std::thread::sleep(Duration::from_micros(300));
+        }
+    }
+
     /// Makes a task for a connection of the server `id`, ready to start, printing as `label`.
     fn take(&mut self, stream: TcpStream, id: u64, label: i64) {
         // Each write goes out at once. A response is its head and then its body, two writes, and
@@ -995,6 +1080,10 @@ impl Io {
         // connection only answers more slowly.
         let _ = stream.set_nodelay(true);
         let Some(here) = self.servers.get_mut(&id) else { return };
+        // A server being left takes no more rounds: dropping the stream closes it.
+        if here.leaving {
+            return;
+        }
         let handler = Arc::clone(&here.server.handler);
         let tls = here.server.tls.clone();
         let draining = here.server.stop.map(|_| Arc::clone(&here.server.draining));
@@ -1065,6 +1154,11 @@ impl Io {
         }
         for _ in 0..self.ready.len() {
             let Some((task, wake)) = self.ready.pop_front() else { break };
+            if self.leaving > 0 && self.cut_round_once_its_server_has(task) {
+                continue;
+            }
+            #[cfg(test)]
+            self.pause_for_a_test(task);
             self.slice_starts();
             if self.accounts.contains_key(&task) {
                 self.resume_range(task, wake);
@@ -1211,6 +1305,7 @@ impl Io {
     /// Notes that a task ended, failed or not, giving back the server it served a round of. A
     /// server that's draining is left once its last round here has ended.
     fn ended(&mut self, task: TaskId, failed: bool) -> Option<u64> {
+        KEPT.with_borrow_mut(|kept| kept.remove(&task));
         let id = self.owners.remove(&task)?;
         let here = self.servers.get_mut(&id)?;
         here.tasks.remove(&task);
@@ -1221,7 +1316,7 @@ impl Io {
         {
             Stopper { server: Arc::clone(&here.server), pool: self.pool }.stop();
         }
-        if here.draining && here.tasks.is_empty() {
+        if (here.draining || here.leaving) && here.tasks.is_empty() {
             self.leave(id);
         }
         Some(id)
@@ -2016,7 +2111,6 @@ pub(super) fn serve(
         tls,
         stop,
         draining: Arc::new(AtomicBool::new(false)),
-        served_by: served_by(),
     });
     // The worker that accepts joins last, so every other worker has joined before it hands one
     // a connection: each worker takes what it's given in turn.
@@ -2033,7 +2127,7 @@ pub(super) fn serve(
         crate::signals::on_stop(Box::new(move || stopping.drain_for(grace)))
     });
     let stopping = Stopper { server: Arc::clone(&server), pool };
-    wait_for_every_worker(&server.left, || stopping.stop());
+    served_here(&server, || stopping.stop());
     if let Some(listening) = listening {
         crate::signals::forget(listening);
     }
@@ -2041,10 +2135,44 @@ pub(super) fn serve(
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
-/// The worker and the task on it that's starting a server here, when a task is.
-fn served_by() -> Option<(usize, TaskId)> {
-    let (_, at) = super::parallel::here()?;
-    Some((at, RESUMED.get()?))
+/// For a test: the pool whose workers pause before resuming a kept round (`Io::pause_for_a_test`).
+#[cfg(test)]
+static PAUSE_BEFORE_KEPT: AtomicUsize = AtomicUsize::new(0);
+
+/// Waits for the server to end, as `wait_for_every_worker` does, with it noted meanwhile as one the
+/// task running here serves, when a task on a worker is: so leaving a server that task is a round
+/// of stops this one first, and cancels the round only once it's ended.
+fn served_here(server: &Arc<Server>, stop: impl Fn()) {
+    let task = RESUMED.get().filter(|_| super::parallel::here().is_some());
+    if let Some(task) = task {
+        SERVING.with_borrow_mut(|serving| serving.entry(task).or_default().push(Arc::clone(server)));
+    }
+    wait_for_every_worker(&server.left, stop);
+    // A round its worker kept is cancelled by that worker, once it sees this server has ended. The
+    // round can see that first, when another worker was the last to leave between its worker's
+    // look and its own: it waits for the cancel, rather than go on uncancelled (#2004).
+    if let Some(task) = task {
+        while KEPT.with_borrow(|kept| kept.contains(&task)) && !fennec_parked::is_cancelled() {
+            let _ = park_on_token(next_token(), Some(Instant::now() + SERVER_END_LOOKS), false, None);
+        }
+    }
+    if let Some(task) = task {
+        SERVING.with_borrow_mut(|serving| {
+            if let Some(servers) = serving.get_mut(&task) {
+                servers.retain(|other| !Arc::ptr_eq(other, server));
+                if servers.is_empty() {
+                    serving.remove(&task);
+                }
+            }
+        });
+    }
+}
+
+/// Whether `task` serves a server of its own on this worker that hasn't ended.
+fn serves(task: TaskId) -> bool {
+    SERVING.with_borrow(|serving| {
+        serving.get(&task).is_some_and(|servers| servers.iter().any(|server| !server.left.is_done()))
+    })
 }
 
 /// Replays a recorded server: its `rounds` recorded rounds run on `pool`'s workers as `serve` runs
@@ -2071,7 +2199,6 @@ pub(super) fn serve_replayed(
         tls: None,
         stop: None,
         draining: Arc::new(AtomicBool::new(false)),
-        served_by: served_by(),
     });
     for at in 0..workers {
         let joining = Arc::clone(&server);
@@ -2087,7 +2214,7 @@ pub(super) fn serve_replayed(
     }
     // A task parks, as a live server's does, so its worker runs the rounds it was given (#1832).
     let stopping = Stopper { server: Arc::clone(&server), pool };
-    wait_for_every_worker(&server.left, || stopping.stop());
+    served_here(&server, || stopping.stop());
     server.lent.lock().unwrap_or_else(PoisonError::into_inner).take();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }

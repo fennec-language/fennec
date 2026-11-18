@@ -4,8 +4,9 @@
 # of what it made holds (`task held`, #1794), and the freed blocks every thread keeps for reuse are
 # read every second, the lowest of each minute kept, and a line fitted through those after a
 # warm-up has to rise by less than a small part of where it started. The pages of the runtime's
-# tables of blocks are read too and shown, as they rise and fall between looks for empty ones. The lowest, because a reading in the middle of a round holds what that round has in
-# flight, which comes and goes: what a leak leaves is the floor between rounds creeping up.
+# tables of blocks are read too and shown, as they rise and fall between looks for empty ones. The
+# lowest, because a reading in the middle of a round holds what that round has in flight, which
+# comes and goes: what a leak leaves is the floor between rounds creeping up.
 #
 #   .github/scripts/soak.sh target/release/fennec bench/realworld/game_server.fen soak.md [minutes]
 #
@@ -29,10 +30,15 @@
 #
 # It writes the curve's start, end and slope for each to `soak.md`, and exits 1 when either rises
 # past its budget after the warm-up, or the program stops before the time is up. SOAK_WARM is the
-# warm-up, 10 minutes unless set, and SOAK_RISE the most either may rise past its start over the
-# rest, as a percentage, 10 unless set. Never less than 16 MB of memory or 64 blocks, though: the
-# floor of live blocks between rounds is near nothing, where a percentage is no budget at all, and
-# a leak of a block a round is thousands of blocks in an hour.
+# warm-up, 10 minutes unless set, and SOAK_RISE the most each count may rise past its start over
+# the rest, as a percentage, 10 unless set. Never less than 64 blocks, though: the floor of live
+# blocks between rounds is near nothing, where a percentage is no budget at all, and a leak of a
+# block a round is thousands of blocks in an hour.
+#
+# Resident memory may rise by SOAK_RSS_RISE percent, 5 unless set, or 4 MB, whichever is more. It
+# was 10% or 16 MB, which let web_backend in a task rise 6 MB over the hour and pass: its tables'
+# empty pages, held until a first look half an hour in. A server's memory should level off within
+# the warm-up.
 set -u
 fennec=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 program=$2
@@ -40,6 +46,7 @@ report=$3
 minutes=${4:-60}
 warm=${SOAK_WARM:-10}
 rise=${SOAK_RISE:-10}
+rss_rise=${SOAK_RSS_RISE:-5}
 where=${SOAK_IN:-task}
 waiting=${SOAK_WAITING:-}
 name=$(basename "$program" .fen)
@@ -174,11 +181,14 @@ failed=0
     echo '```'
     failed=1
   fi
-  # Each measure, its column and the least rise that counts against it.
+  # Each measure, its column, the least rise that counts against it, and the percentage of where
+  # it started that it may rise by.
   # A task's list of what it made, held to a bound since #1794, which a leak in it passes.
   # What's kept for reuse, in words, may rise by a megabyte's worth: it fills as a program warms up
   # and then has to stay within its bounds.
-  for what in "resident memory, KB:2:16384" "live blocks:3:64" "a task's list of what it made:5:4096" "freed blocks kept for reuse, words:6:131072"; do
+  for what in "resident memory, KB:2:4096:$rss_rise" "live blocks:3:64:$rise" "a task's list of what it made:5:4096:$rise" "freed blocks kept for reuse, words:6:131072:$rise"; do
+    percent=${what##*:}
+    what=${what%:*}
     least=${what##*:}
     what=${what%:*}
     read -r start end slope <<< "$(fit "${what##*:}")"
@@ -189,8 +199,8 @@ failed=0
     fi
     # Past the budget: a rise over the window of more than `rise` percent of where it started, and
     # more than the least that counts.
-    over=$(awk -v s="$start" -v e="$end" -v r="$rise" -v l="$least" 'BEGIN { b = s * r / 100; if (b < l) b = l; print (e - s > b) ? 1 : 0 }')
-    verdict=$([ "$over" -eq 1 ] && echo "rising past its budget, $rise% or $least" || echo "level")
+    over=$(awk -v s="$start" -v e="$end" -v r="$percent" -v l="$least" 'BEGIN { b = s * r / 100; if (b < l) b = l; print (e - s > b) ? 1 : 0 }')
+    verdict=$([ "$over" -eq 1 ] && echo "rising past its budget, $percent% or $least" || echo "level")
     echo "- ${what%:*}: $start at minute $((warm + 1)), $end at the end, $slope a minute: $verdict"
     [ "$over" -eq 1 ] && failed=1
   done

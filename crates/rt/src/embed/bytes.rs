@@ -31,18 +31,25 @@ fn words_for(length: usize) -> usize {
 
 /// A new block with room for this many bytes, all zero.
 fn with_room(state: &mut State, length: usize) -> Box<[u64]> {
+    written_from(state, length, 0)
+}
+
+/// A new block with room for `length` bytes, whose first `written` words of bytes the caller
+/// writes, and the rest zero: each word is zeroed once, if at all, by the heap as it gives the
+/// block out (`Heap::fresh_written`).
+fn written_from(state: &mut State, length: usize, written: usize) -> Box<[u64]> {
     let words = words_for(length);
-    let mut block = state.heap.fresh(words);
+    let mut block = state.heap.fresh_written(words, HEADER_WORDS + written);
     if let Some(start) = block.get_mut(..HEADER_WORDS) {
         start.copy_from_slice(&header(length, words - HEADER_WORDS));
     }
-    block.iter_mut().skip(HEADER_WORDS).for_each(|word| *word = 0);
     block
 }
 
 /// A new block holding these bytes.
 pub(super) fn make(state: &mut State, data: &[u8]) -> i64 {
-    let mut block = with_room(state, data.len());
+    // Every word of bytes is written below, the last with zeros after its bytes.
+    let mut block = written_from(state, data.len(), data.len().div_ceil(8));
     for (word, chunk) in block.iter_mut().skip(HEADER_WORDS).zip(data.chunks(8)) {
         let mut packed = [0; 8];
         packed.get_mut(..chunk.len()).unwrap_or_default().copy_from_slice(chunk);
@@ -121,17 +128,27 @@ pub extern "C" fn builder() -> i64 {
 /// the caller's owner of `bytes`, and lets go of it, so what it gives back is the caller's alone.
 pub extern "C" fn grow(bytes: i64, wanted: i64) -> i64 {
     super::made_with("fennec_bytes_grow", |state| {
-        let block = state.heap.block(bytes.cast_unsigned()).unwrap_or_default();
-        let length = block.get(2).and_then(|n| usize::try_from(*n).ok()).unwrap_or(0);
-        let kept: Vec<u64> =
-            block.get(HEADER_WORDS..HEADER_WORDS + length.div_ceil(8)).unwrap_or_default().to_vec();
+        let length = state
+            .heap
+            .block(bytes.cast_unsigned())
+            .and_then(|block| block.get(2))
+            .and_then(|n| usize::try_from(*n).ok())
+            .unwrap_or(0);
+        let used = length.div_ceil(8);
         let room = builder_room(usize::try_from(wanted).unwrap_or(0).max(length));
-        let mut grown = with_room(state, room);
+        // Made first and filled from the old block where it is, with no copy of its bytes between.
+        let mut grown = written_from(state, room, used);
         if let Some(header) = grown.get_mut(2) {
             *header = u64::try_from(length).unwrap_or(0);
         }
-        for (word, held) in grown.iter_mut().skip(HEADER_WORDS).zip(kept) {
-            *word = held;
+        let kept = state.heap.block(bytes.cast_unsigned()).unwrap_or_default();
+        let kept = kept.get(HEADER_WORDS..HEADER_WORDS + used).unwrap_or_default();
+        if let Some(words) = grown.get_mut(HEADER_WORDS..HEADER_WORDS + kept.len()) {
+            words.copy_from_slice(kept);
+        }
+        // Words the old block didn't have, were it ever short of its length, aren't left as they were.
+        if let Some(rest) = grown.get_mut(HEADER_WORDS + kept.len()..HEADER_WORDS + used) {
+            rest.fill(0);
         }
         super::heap::release(state, bytes.cast_unsigned());
         state.heap.insert(grown)
@@ -235,7 +252,8 @@ pub extern "C" fn slice(bytes: i64, start: i64, end: i64) -> i64 {
                 .unwrap_or_default()
                 .to_vec();
             let size = to - from;
-            let mut made = with_room(state, size);
+            // Every word of bytes is written below, the last cleared past its end.
+            let mut made = written_from(state, size, size.div_ceil(8));
             for (word, held) in made.iter_mut().skip(HEADER_WORDS).zip(words) {
                 *word = held;
             }

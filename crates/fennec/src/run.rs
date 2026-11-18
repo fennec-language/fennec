@@ -395,13 +395,16 @@ fn loaded(
     if let Err(diagnostics) = crate::copy_rule::bake(&mut program.module) {
         return Err(reject(&program, &diagnostics));
     }
-    if let Some(files) = &files {
-        crate::image::store(path, &cache, files, &program);
+    // The hash the next run finds the image by, so what this run builds from it is noted for it.
+    let kept = if let Some(files) = &files {
+        crate::image::store(path, &cache, files, &program)
     } else if let Some(files) = crate::verdict::loaded_files(&program) {
-        crate::image::store(path, &cache, &files, &program);
-    }
+        crate::image::store(path, &cache, &files, &program)
+    } else {
+        None
+    };
     match fennec_check::check_to_build(&mut program.module) {
-        Ok(signatures) => Ok((program, Checked::Resolved(signatures.map(Box::new)), None)),
+        Ok(signatures) => Ok((program, Checked::Resolved(signatures.map(Box::new)), kept)),
         // Cutting it down missed something the whole program has.
         Err(_) => whole(path).map(|(program, _)| (program, Checked::Resolved(None), None)),
     }

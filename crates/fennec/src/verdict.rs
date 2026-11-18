@@ -59,12 +59,18 @@ pub(crate) fn noted_files(state: &KitState) -> Option<Vec<KitFile>> {
 /// The files a single file's program was just loaded from, each by its full path, with its size
 /// and changed time now and the hash of the text that was parsed. None if one can't be read, or
 /// isn't the text that was parsed any more, which leaves nothing to keep.
+///
+/// Each is noted by the path it was read by, a link's own rather than where it leads: noted by
+/// where it led, a link taken away or pointed elsewhere changed nothing that was looked at, and a
+/// later run ran what the link once led to.
 pub(crate) fn loaded_files(program: &Program) -> Option<Vec<KitFile>> {
     program
         .sources
         .hashed_files()
         .map(|(path, parsed)| {
-            let file = kit_file(crate::run::absolute(path), Path::new(path), None)?;
+            let noted =
+                std::path::absolute(path).map_or_else(|_| path.to_owned(), |at| at.display().to_string());
+            let file = kit_file(noted, Path::new(path), None)?;
             (file.text == parsed).then_some(file)
         })
         .collect()

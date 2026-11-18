@@ -515,6 +515,113 @@ fn a_generator_and_its_reader_take_turns() {
     );
 }
 
+/// A loop over a generator made for it lets it go when it's left early, as compiled code does: the
+/// generator leaves as if by `return`, so the `with` it's stopped in runs its cleanup there and
+/// then. A cleanup's failure takes the place of a `break` or `return`, and is noted on a failure
+/// leaving the loop. One let go outside any `with` runs nothing, and one a type's `iter` makes is
+/// the loop's too. The output is what the compiled program printed.
+#[test]
+fn a_loop_lets_go_of_its_generator_as_it_is_left() {
+    prints(
+        LOOP_LETS_GO,
+        "opening 2\nclosing 2\nbroken even failed Shut(code=2)\nopening 3\nclosing 3\nafter the loop 3\nbroken odd 3\nopening 4\nclosing 4\nreturned even failed Shut(code=4)\nopening 5\nclosing 5\nreturned odd 50\nopening 2\nclosing 2\nfinished even failed Shut(code=2)\nopening 2\nclosing 2\nfailed even Oops(code=2) [\"Shut(code=2)\"]\nopening 3\nclosing 3\nfailed odd Oops(code=3) []\nplain 1\ncounter 1\n",
+    );
+}
+
+const LOOP_LETS_GO: &str = "
+        error Shut:
+            code: int
+
+        error Oops:
+            code: int
+
+        struct Tally:
+            count: int
+
+        def shutting(code: int, stdout: Stdout) -> with Tally fails Shut:
+            stdout.print('opening', code)
+            lend Tally(count=code) except:
+                stdout.print('undoing', code)
+            stdout.print('closing', code)
+            if code % 2 == 0:
+                fail Shut(code=code)
+
+        def counted(limit: int, stdout: Stdout) -> Iterator[int] fails Shut:
+            with shutting(limit, stdout)? as tally:
+                for at in range(limit):
+                    yield at + tally.count
+
+        def plain(limit: int) -> Iterator[int]:
+            for at in range(limit):
+                yield at
+
+        def broken(limit: int, stop: int, stdout: Stdout) -> int fails Shut:
+            mut total = 0
+            for value in counted(limit, stdout)?:
+                if value == stop:
+                    break
+                total += value
+            stdout.print('after the loop', total)
+            return total
+
+        def returned(limit: int, stdout: Stdout) -> int fails Shut:
+            for value in counted(limit, stdout)?:
+                return value * 10
+            return 0
+
+        def failed(limit: int, stdout: Stdout) fails Shut | Oops:
+            for value in counted(limit, stdout)?:
+                fail Oops(code=value)
+
+        def finished(limit: int, stdout: Stdout) -> int fails Shut:
+            mut total = 0
+            for value in counted(limit, stdout)?:
+                total += value
+            return total
+
+        def plain_broken(stdout: Stdout) -> int:
+            mut total = 0
+            for value in plain(5):
+                if value == 2:
+                    break
+                total += value
+            return total
+
+        struct Counter:
+            limit: int
+
+            def iter(self) -> Iterator[int]:
+                for at in range(self.limit):
+                    yield at
+
+        def counter_broken(stdout: Stdout) -> int:
+            mut seen = 0
+            for value in Counter(limit=4):
+                seen = value
+                if value == 1:
+                    break
+            return seen
+
+        def shown(what: str, stdout: Stdout, run: () -> int fails Shut):
+            got = run() except why:
+                stdout.print(what, 'failed', why)
+                return
+            stdout.print(what, got)
+
+        def main(stdout: Stdout):
+            shown('broken even', stdout, () => broken(2, stop=3, stdout=stdout)?)
+            shown('broken odd', stdout, () => broken(3, stop=4, stdout=stdout)?)
+            shown('returned even', stdout, () => returned(4, stdout)?)
+            shown('returned odd', stdout, () => returned(5, stdout)?)
+            shown('finished even', stdout, () => finished(2, stdout)?)
+            failed(2, stdout) except why:
+                stdout.print('failed even', why, why.notes())
+            failed(3, stdout) except why:
+                stdout.print('failed odd', why, why.notes())
+            stdout.print('plain', plain_broken(stdout))
+            stdout.print('counter', counter_broken(stdout))
+        ";
+
 /// A type a `with` source names as a type, and the `parallel` it calls, are its own, though its
 /// caller names something the same: the oracle prints what the compiled program prints since #2039.
 #[test]

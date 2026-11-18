@@ -237,8 +237,9 @@ mod tests {
 
     /// The least share of random programs, in percent, the oracle has to run. It refuses the rest,
     /// and a refusal skips the target's comparison with it without a word. It goes up as what it
-    /// refuses comes to be modeled, and never down.
-    const ORACLE_RUNS_AT_LEAST: usize = 50;
+    /// refuses comes to be modeled, and never down: it runs 62 of the 64 since it let go of a
+    /// loop's own generator, refusing only a channel to every listener sent past what it keeps.
+    const ORACLE_RUNS_AT_LEAST: usize = 96;
 
     /// The oracle runs at least `ORACLE_RUNS_AT_LEAST` percent of random programs, or holding the
     /// builds to it says little. What it refused, by why, is in the message.
@@ -577,9 +578,7 @@ mod tests {
                 let lines: Vec<&str> = source.lines().collect();
                 for (at, line) in lines.iter().enumerate() {
                     let trimmed = line.trim_start();
-                    let Some((_, gives)) =
-                        trimmed.strip_prefix("def ").and_then(|def| def.rsplit_once(") -> "))
-                    else {
+                    let Some(gives) = trimmed.strip_prefix("def ").and_then(def_gives) else {
                         continue;
                     };
                     if gives.starts_with("with ") || gives.starts_with("Iterator") {
@@ -608,6 +607,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// What a `def` line says its function gives, written after the parenthesis that closes its
+    /// parameters, so a parameter's own `() -> int` isn't taken for it.
+    fn def_gives(def: &str) -> Option<&str> {
+        let mut depth = 0_usize;
+        for (at, written) in def.char_indices() {
+            match written {
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return def.get(at + 1..)?.strip_prefix(" -> ");
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Programs are written only in the forms locked on 2026-11-11: no failure is handled with

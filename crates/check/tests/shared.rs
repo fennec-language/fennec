@@ -261,7 +261,15 @@ fn a_nested_function_calling_a_captured_value_takes_what_it_takes() {
         def guarded(scores: shared Account, work: () -> nothing):\n    def step():\n        work()\n    \
         lock scores as held:\n        step()\n        _ = held\n\n\
         def serve(stdout: Stdout, clock: Clock):\n    shared scores = Account()\n    guarded(scores, () => nap(clock))\n";
-    assert_eq!(locking(parameter), ["`step` takes `scores`'s lock while `held` is locked @ step()"]);
+    // Both: the coarse one this test is for, and #2077's, which follows the parameter to what each
+    // caller passes for it.
+    assert_eq!(
+        locking(parameter),
+        [
+            "`step` takes `scores`'s lock while `held` is locked @ step()",
+            "`guarded` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ () => nap(clock)",
+        ]
+    );
     let interface = "struct Scores:\n    total = 0\n\ninterface Counter:\n    def count(self) -> int\n\n\
         struct Plain:\n    n = 0\n\n    def count(self) -> int:\n        return self.n\n\n\
         def through[T: Counter](counter: T, scores: shared Scores) -> int:\n    lock scores as held:\n        \

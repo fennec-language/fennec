@@ -32,6 +32,10 @@ pub(crate) struct Binding {
     /// The function whose parameter it is, by key, when it's one: kept when a nested function
     /// captures it, so the nested function calling it is a call of that function's parameter.
     pub(crate) param_of: Option<String>,
+    /// The arrow function, by span, a name that isn't `mut` was given where it's declared: all it
+    /// can hold, so calling it does what the arrow's own body does. It ends with the name's scope,
+    /// as a name declared again after it holds something else.
+    pub(crate) arrow: Option<(u32, u32)>,
 }
 
 /// Where a name came from, for explaining how to make it changeable.
@@ -70,6 +74,9 @@ struct Scope {
     bindings: Vec<Binding>,
     /// An arrow function's scope: names from outside it can be read but not changed.
     barrier: bool,
+    /// A `parallel` loop's or comprehension's body, which runs on other tasks: a generator that
+    /// can fail, from outside it, can't pass its failure up from there.
+    apart: bool,
 }
 
 /// What a function's body gives back.
@@ -120,6 +127,10 @@ pub(crate) struct FnCx<'c> {
     pub(crate) pending_bounds: Vec<(Type, Vec<String>, Span)>,
     /// Calls to `sum` whose items weren't worked out when they were checked.
     pub(crate) pending_sums: Vec<crate::sum::SumCall>,
+    /// Names read where a generator that can fail can't go, whose types weren't worked out yet
+    /// when they were read: each name, its type, where, and whether it's an arrow's own
+    /// parameter. They're looked at again once the function's types are.
+    pub(crate) pending_generators: Vec<(String, Type, Span, bool)>,
     /// Every expression's type and every declared name's, as they're found.
     exprs: Vec<(Span, Type)>,
     pub(crate) names: Vec<(Span, String, Type)>,
@@ -190,7 +201,7 @@ impl<'c> FnCx<'c> {
             checker,
             key: key.to_owned(),
             name: name.to_owned(),
-            scopes: vec![Scope { bindings: Vec::new(), barrier: false }],
+            scopes: vec![Scope { bindings: Vec::new(), barrier: false, apart: false }],
             report,
             declared: None,
             generator: false,
@@ -208,6 +219,7 @@ impl<'c> FnCx<'c> {
             generics: Vec::new(),
             pending_bounds: Vec::new(),
             pending_sums: Vec::new(),
+            pending_generators: Vec::new(),
             reported: 0,
             exprs: Vec::new(),
             names: Vec::new(),
@@ -242,6 +254,7 @@ impl<'c> FnCx<'c> {
     pub(crate) fn finish(mut self, extra: &[Type]) {
         self.check_pending_bounds();
         self.check_pending_sums();
+        self.check_pending_generators();
         // An expression looked at twice, like an argument peeked at first, keeps the type
         // it got last.
         let exprs: std::collections::BTreeMap<(u32, u32), Type> =
@@ -733,7 +746,57 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn push(&mut self, barrier: bool) {
-        self.scopes.push(Scope { bindings: Vec::new(), barrier });
+        self.scopes.push(Scope { bindings: Vec::new(), barrier, apart: false });
+    }
+
+    /// Marks the innermost scope as a `parallel` loop's or comprehension's body, which runs on
+    /// other tasks.
+    pub(crate) fn set_apart(&mut self) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.apart = true;
+        }
+    }
+
+    /// A name read where a generator that can fail can't go, as one from around a nested
+    /// function, an arrow function, a generator kept for later or a `parallel` body, or an arrow's
+    /// own parameter: refused when its type is or holds one. A type not worked out yet is looked at
+    /// again once the function's types are.
+    pub(crate) fn no_failing_generator_here(&mut self, name: &str, ty: &Type, span: Span, param: bool) {
+        let settled = self.checker.settled(ty);
+        if !settled.held_generator_failures().is_empty() {
+            self.error(failing_generator_reached(name, &settled, span, param));
+        } else if !settled.is_known() {
+            self.pending_generators.push((name.to_owned(), ty.clone(), span, param));
+        }
+    }
+
+    /// The names `no_failing_generator_here` couldn't tell about as they were read, now that the
+    /// function's types are worked out. One still open is a name a nested function read from the
+    /// function around it, whose type that function works out: it's handed up to it.
+    fn check_pending_generators(&mut self) {
+        for (name, ty, span, param) in std::mem::take(&mut self.pending_generators) {
+            let settled = self.checker.settled(&ty);
+            if !settled.held_generator_failures().is_empty() {
+                self.error(failing_generator_reached(&name, &settled, span, param));
+            } else if !settled.is_known() {
+                self.checker.generators_handed_up.push((name, ty, span, param));
+            }
+        }
+    }
+
+    /// The items of a `parallel` loop or comprehension over `iter`, when it's one: `parallel(xs)`
+    /// written as the standard library's, and not a name of the program's own.
+    pub(crate) fn parallel_over<'e>(&self, iter: &'e Expr) -> Option<&'e Expr> {
+        let outer = crate::parallel::called_as_outer(iter);
+        crate::parallel::parallel_items(iter).filter(|_| outer || self.lookup("parallel").is_none())
+    }
+
+    /// `parallel` over items that hold a generator that can fail is refused: each item goes to
+    /// another task, where its failure can't pass up.
+    pub(crate) fn no_failing_generator_apart(&mut self, item: &Type, span: Span) {
+        if !self.checker.settled(item).held_generator_failures().is_empty() {
+            self.error(crate::messages::failing_generator_in_parallel(span));
+        }
     }
 
     /// The names declared in the innermost scope, with what each holds.
@@ -767,6 +830,7 @@ impl<'c> FnCx<'c> {
                 mut_at: None,
                 to_every: false,
                 param_of,
+                arrow: None,
             },
             at,
         );
@@ -788,6 +852,7 @@ impl<'c> FnCx<'c> {
             mut_at: Some(at.start),
             to_every: false,
             param_of: None,
+            arrow: None,
         };
         self.declare_with(binding, at);
     }
@@ -900,15 +965,15 @@ impl<'c> FnCx<'c> {
         None
     }
 
-    /// Whether `name` is from around the nested function, arrow function or generator kept for
-    /// later that this is in, rather than this function's own.
+    /// Whether `name` is from around the nested function, arrow function, generator kept for
+    /// later or `parallel` body that this is in, rather than this function's own.
     pub(crate) fn came_from_around(&self, name: &str) -> bool {
         let mut crossed = false;
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.bindings.iter().rev().find(|binding| binding.name == name) {
                 return crossed || binding.origin == Origin::Captured;
             }
-            crossed |= scope.barrier;
+            crossed |= scope.barrier || scope.apart;
         }
         false
     }
@@ -937,6 +1002,35 @@ impl<'c> FnCx<'c> {
             .flat_map(|scope| scope.bindings.iter().rev())
             .find(|binding| binding.name == name)
             .map(|binding| binding.origin)
+    }
+
+    /// The arrow function the local name in sight was declared with, by span, when it isn't
+    /// `mut`: then it's all the name can hold. A `mut` name can hold another value by the time it's
+    /// read, and a name declared again, even by unpacking, is another binding with none.
+    pub(crate) fn local_arrow(&self, name: &str) -> Option<(u32, u32)> {
+        let binding = self
+            .scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.bindings.iter().rev())
+            .find(|binding| binding.name == name)?;
+        (binding.origin == Origin::Local && !binding.is_mut).then_some(binding.arrow).flatten()
+    }
+
+    /// Keeps the arrow function a name that isn't `mut` is declared with, `name = () => ...`, on
+    /// the name's binding: see `local_arrow`.
+    pub(crate) fn keep_arrow(&mut self, target: &Expr, value: &Expr) {
+        let (ExprKind::Name(name), ExprKind::Lambda { .. }) = (&target.kind, &value.kind) else { return };
+        let Some(binding) = self
+            .scopes
+            .last_mut()
+            .and_then(|scope| scope.bindings.iter_mut().rev().find(|b| b.name == *name))
+        else {
+            return;
+        };
+        if binding.origin == Origin::Local && !binding.is_mut && binding.arrow.is_none() {
+            binding.arrow = Some((value.span.start, value.span.end));
+        }
     }
 
     /// The function `name` is a parameter of, by key: this one's, or one around it that a nested
@@ -1208,5 +1302,16 @@ impl<'c> FnCx<'c> {
                 binding.ty = narrowed;
             }
         }
+    }
+}
+
+/// The refusal of a name that is or holds a generator that can fail, read where its failure can't
+/// pass up: from around, or as an arrow's own parameter.
+fn failing_generator_reached(name: &str, ty: &Type, span: Span, param: bool) -> Diagnostic {
+    let holds = ty.generator_failure().is_none();
+    if param {
+        crate::messages::failing_generator_given_to_arrow(name, holds, span)
+    } else {
+        crate::messages::failing_generator_inside(name, holds, span)
     }
 }

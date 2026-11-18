@@ -523,7 +523,12 @@ fn a_generator_and_its_reader_take_turns() {
 #[test]
 fn a_loop_lets_go_of_its_generator_as_it_is_left() {
     prints(
-        "
+        LOOP_LETS_GO,
+        "opening 2\nclosing 2\nbroken even failed Shut(code=2)\nopening 3\nclosing 3\nafter the loop 3\nbroken odd 3\nopening 4\nclosing 4\nreturned even failed Shut(code=4)\nopening 5\nclosing 5\nreturned odd 50\nopening 2\nclosing 2\nfinished even failed Shut(code=2)\nopening 2\nclosing 2\nfailed even Oops(code=2) [\"Shut(code=2)\"]\nopening 3\nclosing 3\nfailed odd Oops(code=3) []\nplain 1\ncounter 1\n",
+    );
+}
+
+const LOOP_LETS_GO: &str = "
         error Shut:
             code: int
 
@@ -615,10 +620,7 @@ fn a_loop_lets_go_of_its_generator_as_it_is_left() {
                 stdout.print('failed odd', why, why.notes())
             stdout.print('plain', plain_broken(stdout))
             stdout.print('counter', counter_broken(stdout))
-        ",
-        "opening 2\nclosing 2\nbroken even failed Shut(code=2)\nopening 3\nclosing 3\nafter the loop 3\nbroken odd 3\nopening 4\nclosing 4\nreturned even failed Shut(code=4)\nopening 5\nclosing 5\nreturned odd 50\nopening 2\nclosing 2\nfinished even failed Shut(code=2)\nopening 2\nclosing 2\nfailed even Oops(code=2) [\"Shut(code=2)\"]\nopening 3\nclosing 3\nfailed odd Oops(code=3) []\nplain 1\ncounter 1\n",
-    );
-}
+        ";
 
 /// A type a `with` source names as a type, and the `parallel` it calls, are its own, though its
 /// caller names something the same: the oracle prints what the compiled program prints since #2039.

@@ -58,6 +58,10 @@ pub(crate) struct Checker {
     pub(crate) defaults: BTreeMap<(u32, u32), Vec<(String, Expr)>>,
     /// The type of each generator expression, which printing one shows.
     pub(crate) generator_types: BTreeMap<(u32, u32), String>,
+    /// What a nested function's check couldn't tell about a generator that can fail, its types
+    /// still open: handed up to the function around it, which looks again once its own are worked
+    /// out (`FnCx::check_pending_generators`).
+    pub(crate) generators_handed_up: Vec<(String, Type, Span, bool)>,
     /// The `!=`s on a type with its own `def ==`, which become `not (a == b)`.
     pub(crate) not_equals: BTreeSet<(u32, u32)>,
     /// The calls `len(x)` and `abs(x)`, which become `x.len()` and `x.abs()`.
@@ -240,6 +244,7 @@ impl Checker {
             sized_sums: BTreeMap::new(),
             defaults: BTreeMap::new(),
             generator_types: BTreeMap::new(),
+            generators_handed_up: Vec::new(),
             not_equals: BTreeSet::new(),
             method_calls: BTreeSet::new(),
             array_zeros: BTreeMap::new(),
@@ -703,7 +708,10 @@ impl Checker {
     }
 
     fn check_function(&mut self, key: &str) {
+        // A function of the program's own has nothing around it to hand up to.
+        let handed = self.generators_handed_up.len();
         self.check_with(key, Vec::new());
+        self.generators_handed_up.truncate(handed);
     }
 
     /// Checks a function defined inside another, which can read the names around it.

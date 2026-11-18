@@ -115,7 +115,7 @@ impl Lowering<'_> {
     /// `for` loop goes through the same way: `list(queue)` is the list of what `queue.iter()` gives.
     fn gives_items(&self, value: &Expr) -> bool {
         match self.type_at(value.span) {
-            Some(Type::Iterator(_)) => true,
+            Some(Type::Iterator(..)) => true,
             Some(ty) => self.own_iter_items(&ty).is_some(),
             None => false,
         }
@@ -125,7 +125,7 @@ impl Lowering<'_> {
     pub(super) fn own_iter_items(&self, ty: &Type) -> Option<Type> {
         let Type::Named(name) = ty else { return None };
         let (_, found) = self.resolve(&format!("{name}.iter"), &[Some(ty.clone())], None)?;
-        let Type::Iterator(item) = found.returns else { return None };
+        let Type::Iterator(item, _) = found.returns else { return None };
         Some(*item)
     }
 

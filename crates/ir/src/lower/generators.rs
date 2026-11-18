@@ -54,9 +54,9 @@ fn leaving_from(pc: i64) -> i64 {
 /// A generator's type's item, and the error it can fail with, from what its call gives back.
 fn parts(returns: &Type) -> Lowered<(Type, Option<Type>)> {
     match returns {
-        Type::Iterator(item) => Ok(((**item).clone(), None)),
+        Type::Iterator(item, _) => Ok(((**item).clone(), None)),
         Type::Result(ok, error) => match &**ok {
-            Type::Iterator(item) => Ok(((**item).clone(), Some((**error).clone()))),
+            Type::Iterator(item, _) => Ok(((**item).clone(), Some((**error).clone()))),
             other => Err(format!("it's a generator giving back {other}")),
         },
         other => Err(format!("it's a generator giving back {other}")),
@@ -104,7 +104,7 @@ impl<'a> Lowering<'a> {
     /// Starts lowering a generator: its block is the first local, and the first block is left
     /// for choosing where to go on from.
     pub(super) fn begin_generator(&mut self, item: Type) {
-        self.declare("\0self", Type::Iterator(Box::new(item.clone())));
+        self.declare("\0self", Type::iterator(item.clone()));
         self.generating = Some(Generating { item, yields: Vec::new(), abandoning: None });
         let body = self.new_block();
         self.finish(Terminator::Jump(body));
@@ -387,7 +387,7 @@ impl<'a> Lowering<'a> {
             return streamed;
         }
         let ty = self.ty(expr)?;
-        let Type::Iterator(item) = &ty else { return Err(format!("a generator expression is {ty}")) };
+        let Type::Iterator(item, _) = &ty else { return Err(format!("a generator expression is {ty}")) };
         let source_ty = self.ty(iter)?;
         let source_value = self.expr(iter)?;
         let mut mentioned = Vec::new();
@@ -436,7 +436,7 @@ impl<'a> Lowering<'a> {
     pub(super) fn enumerated_generator(&mut self, expr: &Expr, items: &Expr) -> Lowered<Operand> {
         const SOURCE: &str = "\0source";
         let ty = self.ty(expr)?;
-        let Type::Iterator(pair) = &ty else { return Err(format!("`enumerate` gives {ty}")) };
+        let Type::Iterator(pair, _) = &ty else { return Err(format!("`enumerate` gives {ty}")) };
         let Type::Tuple(parts) = &**pair else { return Err(format!("`enumerate` gives {ty}")) };
         let span = expr.span;
         let source_ty = self.ty(items)?;
@@ -476,7 +476,7 @@ impl<'a> Lowering<'a> {
         const FIRST: &str = "\0first";
         const SECOND: &str = "\0second";
         let ty = self.ty(expr)?;
-        let Type::Iterator(pair) = &ty else { return Err(format!("`zip` gives {ty}")) };
+        let Type::Iterator(pair, _) = &ty else { return Err(format!("`zip` gives {ty}")) };
         let Type::Tuple(parts) = &**pair else { return Err(format!("`zip` gives {ty}")) };
         let [_, wanted] = parts.as_slice() else { return Err(format!("`zip` gives {ty}")) };
         let span = expr.span;
@@ -491,7 +491,7 @@ impl<'a> Lowering<'a> {
         let other = params.get(1).copied().ok_or("`zip` lost an argument")?;
         let at = lifted.temporary(Type::Int);
         lifted.emit(InstKind::Copy { dest: at, value: Operand::Int(0) }, span);
-        if matches!(second_ty, Type::Iterator(_)) {
+        if matches!(second_ty, Type::Iterator(..)) {
             lifted.start_generator(&Operand::Local(other), span);
         }
         let each = "\0each".to_owned();
@@ -520,7 +520,7 @@ impl<'a> Lowering<'a> {
         let exit = self.loops.last().ok_or("`zip` outside its loop")?.exit;
         let more = self.temporary(Type::Bool);
         let source = Operand::Local(other);
-        if matches!(self.local_type(other), Type::Iterator(_)) {
+        if matches!(self.local_type(other), Type::Iterator(..)) {
             self.emit(InstKind::Resume { dest: more, generator: source.clone(), known: None }, span);
         } else {
             let length = self.temporary(Type::Int);
@@ -534,7 +534,7 @@ impl<'a> Lowering<'a> {
         self.finish(Terminator::Branch { cond: Operand::Local(more), then, otherwise: exit });
         self.current = then;
         let taken = self.temporary(item.clone());
-        if matches!(self.local_type(other), Type::Iterator(_)) {
+        if matches!(self.local_type(other), Type::Iterator(..)) {
             self.emit(InstKind::GetSlot { dest: taken, generator: source, slot: slot::ITEM }, span);
         } else {
             self.emit(InstKind::GetIndex { dest: taken, object: source, index: Operand::Local(at) }, span);
@@ -695,12 +695,11 @@ impl<'a> Lowering<'a> {
     }
 
     /// A generator's own error, from the result `?` took it out of.
+    /// What asking `generator` for an item fails with, from its type: the checker keeps a
+    /// generator's failure with it, however it got here, as a name, a parameter or a call.
     fn generator_error(&self, generator: &Operand) -> Option<Type> {
         let Operand::Local(local) = generator else { return None };
-        match self.local_type(self.taken_from(*local)?) {
-            Type::Result(_, own) => Some(*own),
-            _ => None,
-        }
+        self.local_type(*local).generator_failure().cloned()
     }
 
     fn set_generator_slot(&mut self, generator: &Operand, at: usize, value: Operand, span: Span) {
@@ -766,14 +765,20 @@ impl<'a> Lowering<'a> {
         let then = self.new_block();
         self.finish(Terminator::Branch { cond: Operand::Local(failed), then, otherwise: exit });
         self.current = then;
+        // The slot holds the generator's own error, which its type says. One whose type says it
+        // can't fail never gets here, so its slot isn't read as anything.
+        let Some(own) = self.generator_error(generator) else {
+            let message = "a generator that can't fail failed, which is a bug in the compiler".to_owned();
+            self.finish(Terminator::Stop { message, span });
+            return Ok(());
+        };
         let Type::Result(_, error) = self.returns.clone() else {
             let message = "this function can't pass up a generator's failure".to_owned();
             self.finish(Terminator::Stop { message, span });
             return Ok(());
         };
-        // The slot holds the generator's own error, which this function's may hold among others.
-        let own = self.generator_error(generator);
-        let held = self.temporary(own.unwrap_or_else(|| (*error).clone()));
+        // This function's error may hold the generator's among others.
+        let held = self.temporary(own);
         self.emit(InstKind::GetSlot { dest: held, generator: generator.clone(), slot: slot::FAILURE }, span);
         let widened = self.coerce(Operand::Local(held), &error, span)?;
         self.pass_up_error(widened, span)
@@ -886,8 +891,7 @@ fn abandon_function(
         return None;
     }
     let this = Operand::Local(LocalId(0));
-    let mut locals =
-        vec![Local { copied: false, name: None, ty: Type::Iterator(Box::new(generating.item.clone())) }];
+    let mut locals = vec![Local { copied: false, name: None, ty: Type::iterator(generating.item.clone()) }];
     let mut temporary = |ty: Type| {
         locals.push(Local { name: None, ty, copied: false });
         LocalId(locals.len() - 1)

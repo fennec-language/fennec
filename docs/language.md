@@ -82,6 +82,8 @@ for even in found:
 #        a generator can be used once: `list(...)` keeps its items to use again
 ```
 
+A generator that can fail, got with `?` as in `lines = file.lines()?`, is looped over in the function that got it, which passes its failure up. It can be named there and looped over later, but it can't be passed to a function, given back, kept in a field, used inside a nested function, an arrow function or a generator kept for later, or go into `enumerate` or `zip` anywhere but right in a `for` loop's own. Each is a compile error, since a written `Iterator[T]` can't fail, and `list(...)` keeps its items to use anywhere. A name keeps one kind of failure, so a name given generators that fail in different ways is a compile error too. `? from` wraps a generator's failure only where a `for` loops over it right there, as `for line in file.lines()? from LoadError(...)`. Built.
+
 One silent mistake remains: changing a `mut` copy and then reading it, believing the list changed. A rule gets added for that only if testing shows real bugs.
 
 ## Loops

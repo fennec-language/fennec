@@ -383,7 +383,7 @@ impl Context<'_> {
             }
             Type::List(item)
             | Type::Buffer(item)
-            | Type::Iterator(item)
+            | Type::Iterator(item, _)
             | Type::Set(item)
             | Type::Optional(item)
             | Type::Table(item)

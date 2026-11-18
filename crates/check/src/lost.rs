@@ -23,7 +23,7 @@ type Live = HashSet<String>;
 /// in it or anywhere inside it. What's not known yet counts as able to.
 fn does_more_than_hold(checker: &mut Checker, ty: &Type) -> bool {
     match ty {
-        Type::Unknown | Type::Iterator(_) | Type::Function(_) | Type::Arrow(..) => true,
+        Type::Unknown | Type::Iterator(..) | Type::Function(_) | Type::Arrow(..) => true,
         _ => {
             checker.holds_capability(ty, &mut Vec::new())
                 || checker.shared_inside(ty, &mut Vec::new()).is_some()

@@ -63,7 +63,7 @@ pub(super) fn mentions_param(ty: &Type) -> bool {
         Type::List(item)
         | Type::Buffer(item)
         | Type::Array(item, _)
-        | Type::Iterator(item)
+        | Type::Iterator(item, _)
         | Type::Set(item)
         | Type::Optional(item)
         | Type::Table(item)
@@ -96,7 +96,9 @@ impl Context<'_> {
             Type::List(item) => Type::List(inner(item)),
             Type::Buffer(item) => Type::Buffer(inner(item)),
             Type::Array(item, size) => Type::Array(inner(item), *size),
-            Type::Iterator(item) => Type::Iterator(inner(item)),
+            Type::Iterator(item, failure) => {
+                Type::Iterator(inner(item), failure.as_ref().map(|failure| inner(failure)))
+            }
             Type::Set(item) => Type::Set(inner(item)),
             // As the checker has it, an optional of an optional is that optional: `V?` with `V`
             // a `str?` is a `str?`.
@@ -213,7 +215,7 @@ impl Context<'_> {
             }
             (Type::List(first), Type::List(second))
             | (Type::Set(first), Type::Set(second))
-            | (Type::Iterator(first), Type::Iterator(second))
+            | (Type::Iterator(first, _), Type::Iterator(second, _))
             | (Type::Buffer(first), Type::Buffer(second))
             | (Type::Array(first, _), Type::Array(second, _))
             | (Type::Optional(first), Type::Optional(second))

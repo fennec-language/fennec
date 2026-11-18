@@ -56,7 +56,7 @@ impl Signatures {
             Type::List(item) => self.wrapped(("list[", "]"), &[item], open, out),
             Type::Buffer(item) => self.wrapped(("Buffer[", "]"), &[item], open, out),
             Type::Set(item) => self.wrapped(("set[", "]"), &[item], open, out),
-            Type::Iterator(item) => self.wrapped(("Iterator[", "]"), &[item], open, out),
+            Type::Iterator(item, _) => self.wrapped(("Iterator[", "]"), &[item], open, out),
             Type::Id(item) => self.wrapped(("Id[", "]"), &[item], open, out),
             Type::Table(item) => self.wrapped(("Table[", "]"), &[item], open, out),
             Type::Optional(item) => self.wrapped(("", "?"), &[item], open, out),

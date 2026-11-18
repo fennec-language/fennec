@@ -145,6 +145,10 @@ pub(crate) struct FnCx<'c> {
     pub(crate) returned_errs: std::collections::HashMap<(u32, u32), Span>,
     /// How many generators kept for later this is inside.
     pub(crate) kept_generators: usize,
+    /// Each `?` a `for` loops over right there, as the loop's own `made()?` or an argument of its
+    /// `enumerate` or `zip`, by span. Only there does a generator that can fail go into
+    /// `enumerate` or `zip`, or a `? from` wrap what a generator fails with.
+    pub(crate) looped_here: Vec<Span>,
     /// The arrow functions being checked, innermost last, by span: what each waits on and calls
     /// is kept for wherever it's called.
     pub(crate) arrows_open: Vec<(u32, u32)>,
@@ -216,6 +220,7 @@ impl<'c> FnCx<'c> {
             int_divisions: std::collections::HashSet::new(),
             returned_errs: std::collections::HashMap::new(),
             kept_generators: 0,
+            looped_here: Vec::new(),
             arrows_open: Vec::new(),
             calling: Vec::new(),
             arrow_locals: std::collections::HashMap::new(),
@@ -374,7 +379,7 @@ impl<'c> FnCx<'c> {
             declared.clone()
         } else if cx.generator {
             let yields = cx.yields.clone();
-            Type::Iterator(Box::new(cx.joined(&yields, def.span, "yields")))
+            Type::iterator(cx.joined(&yields, def.span, "yields"))
         } else if values.is_empty() {
             // A body that never finishes, like `while True:` with no `break`, gives nothing.
             Type::Unit
@@ -422,7 +427,7 @@ impl<'c> FnCx<'c> {
 
     /// Joins what a function gives back from several places, reporting values that don't
     /// fit together.
-    fn joined(&mut self, types: &[Type], span: Span, verb: &str) -> Type {
+    pub(crate) fn joined(&mut self, types: &[Type], span: Span, verb: &str) -> Type {
         if let Some(joined) = self.checker.join_all(types) {
             return joined;
         }
@@ -876,6 +881,19 @@ impl<'c> FnCx<'c> {
             crossed |= scope.barrier;
         }
         None
+    }
+
+    /// Whether `name` is from around the nested function, arrow function or generator kept for
+    /// later that this is in, rather than this function's own.
+    pub(crate) fn came_from_around(&self, name: &str) -> bool {
+        let mut crossed = false;
+        for scope in self.scopes.iter().rev() {
+            if let Some(binding) = scope.bindings.iter().rev().find(|binding| binding.name == name) {
+                return crossed || binding.origin == Origin::Captured;
+            }
+            crossed |= scope.barrier;
+        }
+        false
     }
 
     /// The innermost name in sight that holds this type.

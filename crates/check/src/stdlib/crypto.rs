@@ -61,7 +61,7 @@ fn pieces(name: &str) -> Type {
 fn of_chunks(cx: &mut FnCx<'_>, name: &str, ty: &Type) -> Option<String> {
     let (item, form) = match cx.checker.settled(ty) {
         Type::List(item) => (*item, "list"),
-        Type::Iterator(item) => (*item, "chunks"),
+        Type::Iterator(item, _) => (*item, "chunks"),
         _ => return None,
     };
     let given = match cx.checker.settled(&item) {

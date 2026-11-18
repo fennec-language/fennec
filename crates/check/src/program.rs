@@ -594,7 +594,7 @@ impl Program {
             "list" | "SoaList" => Type::List(arg()),
             "Buffer" => Type::Buffer(arg()),
             "array" => Type::Array(arg(), array_size(written)?),
-            "Iterator" => Type::Iterator(arg()),
+            "Iterator" => Type::Iterator(arg(), None),
             "set" => Type::Set(arg()),
             "dict" => Type::Dict(arg(), arg()),
             "Result" => self.result_written(written, arg(), arg())?,

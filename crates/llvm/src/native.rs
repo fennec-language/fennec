@@ -140,7 +140,7 @@ fn mentions(program: &Program, ty: &Type, target: &str, seen: &mut HashSet<Strin
         | Type::Buffer(item)
         | Type::Array(item, _)
         | Type::Set(item)
-        | Type::Iterator(item)
+        | Type::Iterator(item, _)
         | Type::Optional(item)
         | Type::Id(item)
         | Type::Table(item) => inside(item),

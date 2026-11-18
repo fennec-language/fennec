@@ -56,3 +56,92 @@ fn a_generator_passed_in_is_used_once_there_too() {
     );
     assert_eq!(problems(&twice), ["this generator has already been used @ numbers"]);
 }
+
+/// Two generators that can fail, each in its own way, for the tests of where one can go.
+const FAILING: &str = "error Shut:\n    name: str\n\nerror Wrapped:\n    why: str\n\ndef first(name: str) -> Iterator[int] fails Shut:\n    yield 1\n    fail Shut(name=name)\n\ndef second(why: str) -> Iterator[int] fails Wrapped:\n    yield 2\n    fail Wrapped(why=why)\n\n";
+
+/// What the checker says about `rest` after the two failing generators.
+fn with_failing(rest: &str) -> Vec<String> {
+    problems(&format!("{FAILING}{rest}"))
+}
+
+#[test]
+fn a_generator_that_can_fail_is_looped_over_in_the_function_that_got_it() {
+    let empty: [&str; 0] = [];
+    for rest in [
+        // Named, and looped over later, in a loop, a comprehension or `list`.
+        "def f(stdout: Stdout) fails Shut | Wrapped:\n    kept = first(\"a\")?\n    for each in kept:\n        stdout.print(each)\n    stdout.print(second(\"b\")?)\n",
+        "def f(stdout: Stdout) fails Shut:\n    kept = first(\"a\")?\n    stdout.print([each * 2 for each in kept])\n",
+        "def f(stdout: Stdout) fails Shut:\n    kept = first(\"a\")?\n    stdout.print(list(kept))\n",
+        // Given again one that fails the same way.
+        "def f(stdout: Stdout) fails Shut:\n    mut kept = first(\"a\")?\n    kept = first(\"b\")?\n    stdout.print(sum(kept))\n",
+        // Kept in a list here, or through a generic function, and looped over here.
+        "def f(stdout: Stdout) fails Shut:\n    held = [first(\"a\")?]\n    for kept in held:\n        stdout.print(sum(kept))\n",
+        "def same[T](value: T) -> T:\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    stdout.print(sum(same(first(\"a\")?)))\n",
+        // A generator looping over one, which fails as it does.
+        "def outer() -> Iterator[int] fails Shut:\n    for each in first(\"a\")?:\n        yield each * 10\n\ndef f(stdout: Stdout) fails Shut:\n    stdout.print(sum(outer()?))\n",
+        // `? from`, and `zip` or `enumerate`, right in a loop's own.
+        "def f(stdout: Stdout) fails Wrapped:\n    for each in first(\"a\")? from Wrapped(why=\"w\"):\n        stdout.print(each)\n",
+        "def f(stdout: Stdout) fails Shut:\n    for left, right in zip([1, 2], first(\"a\")?):\n        stdout.print(left, right)\n",
+        "def f(stdout: Stdout) fails Shut | Wrapped:\n    for at, each in enumerate(second(\"a\")? from Wrapped(why=\"w\")):\n        stdout.print(at, each)\n",
+    ] {
+        assert_eq!(with_failing(rest), empty, "{rest}");
+    }
+}
+
+#[test]
+fn a_generator_that_can_fail_can_t_go_where_its_failure_wouldn_t_pass_up() {
+    for (rest, said) in [
+        (
+            "def walk(items: Iterator[int]) -> int:\n    return sum(items)\n\ndef f(stdout: Stdout) fails Shut:\n    stdout.print(walk(first(\"a\")?))\n",
+            "`items` should be an Iterator[int], but this is an Iterator[int] that fails with Shut @ first(\"a\")?",
+        ),
+        (
+            "def get() -> Iterator[int] fails Shut:\n    return first(\"a\")?\n\ndef f(stdout: Stdout) fails Shut:\n    stdout.print(sum(get()?))\n",
+            "`get` returns an Iterator[int], but this is an Iterator[int] that fails with Shut @ first(\"a\")?",
+        ),
+        (
+            "struct Kept:\n    items: Iterator[int]\n\ndef f(stdout: Stdout) fails Shut:\n    kept = Kept(items=first(\"a\")?)\n    stdout.print(sum(kept.items))\n",
+            "`items` should be an Iterator[int], but this is an Iterator[int] that fails with Shut @ first(\"a\")?",
+        ),
+        (
+            "def f(stdout: Stdout, pick: bool) fails Shut | Wrapped:\n    mut kept = first(\"a\")?\n    if pick:\n        kept = second(\"b\")?\n    stdout.print(sum(kept))\n",
+            "`kept` holds an Iterator[int] that fails with Shut, so it can't be given an Iterator[int] that fails with Wrapped @ kept",
+        ),
+        (
+            "def f(stdout: Stdout) fails Shut:\n    kept = first(\"a\")?\n    def walked(out: Stdout):\n        for each in kept:\n            out.print(each)\n    walked(stdout)\n",
+            "`kept` is a generator that can fail, so a nested function, an arrow function or a generator kept for later can't use it @ kept",
+        ),
+        (
+            "def f(stdout: Stdout) fails Shut:\n    kept = first(\"a\")?\n    count = () => sum(kept)\n    stdout.print(count())\n",
+            "`kept` is a generator that can fail, so a nested function, an arrow function or a generator kept for later can't use it @ kept",
+        ),
+        (
+            "def f(stdout: Stdout) fails Wrapped:\n    kept = first(\"a\")? from Wrapped(why=\"w\")\n    stdout.print(sum(kept))\n",
+            "`? from` wraps a generator's failure only where a `for` loops over it right there @ first(\"a\")",
+        ),
+        (
+            "def f(stdout: Stdout) fails Shut:\n    kept = first(\"a\")?\n    for left, right in zip([1, 2], kept):\n        stdout.print(left, right)\n",
+            "a generator that can fail goes into `zip` only as `made()?` written right in a `for` loop's own `zip` @ kept",
+        ),
+        (
+            "def f(stdout: Stdout) fails Shut:\n    numbered = enumerate(first(\"a\")?)\n    for at, each in numbered:\n        stdout.print(at, each)\n",
+            "a generator that can fail goes into `enumerate` only as `made()?` written right in a `for` loop's own `enumerate` @ first(\"a\")?",
+        ),
+    ] {
+        assert_eq!(with_failing(rest), [said], "{rest}");
+    }
+}
+
+#[test]
+fn an_interface_s_generator_fails_exactly_as_its_types_own_do() {
+    let interface = "interface Source:\n    def items(self) -> Iterator[int] fails Shut | Wrapped\n\n";
+    let narrower = "struct Counter:\n    start: int\n\n    def items(self) -> Iterator[int] fails Shut:\n        yield self.start\n        fail Shut(name=\"counter\")\n\n";
+    let used = "def total[T: Source](source: T) -> int fails Shut | Wrapped:\n    return sum(source.items()?)\n\ndef f(stdout: Stdout) fails Shut | Wrapped:\n    stdout.print(total(Counter(start=1))?)\n";
+    let said = "`Counter` isn't a `Source`: it has no `items(self) -> Iterator[int] fails Shut | Wrapped`. Its `items` returns a result of Iterator[int] that fails with Shut @ total(Counter(start=1))";
+    assert_eq!(with_failing(&format!("{interface}{narrower}{used}")), [said]);
+    // One that fails just as the interface says fits.
+    let exact = narrower.replace("fails Shut:", "fails Shut | Wrapped:");
+    let empty: [&str; 0] = [];
+    assert_eq!(with_failing(&format!("{interface}{exact}{used}")), empty);
+}

@@ -647,13 +647,20 @@ impl<'c> Walk<'c> {
         let Some(body) = self.checker.typed.get(key) else { return Vec::new() };
         let mut made: BTreeSet<(String, Vec<Type>)> = BTreeSet::new();
         for (_, ty) in body.exprs() {
-            visit(&self.checker.settled(ty).substitute(given), &mut |part| {
+            let mut look = |part: &Type| {
                 if let Type::Generic(name, args) = part
                     && self.methods.contains_key(name)
                 {
                     made.insert((name.clone(), args.clone()));
                 }
-            });
+            };
+            // A type with nothing left to settle, in a copy given no types, is looked at as it is:
+            // settling and filling it in would only make the same type again.
+            if given.is_empty() && !ty.has_var() {
+                visit(ty, &mut look);
+            } else {
+                visit(&self.checker.settled(ty).substitute(given), &mut look);
+            }
         }
         let mut copies = Vec::new();
         for (name, args) in made {
@@ -875,6 +882,11 @@ impl<'c> Walk<'c> {
     /// whoever holds it can call it with that, its own kit's code handing it out included.
     fn functions_as_values(&mut self, key: &str, given: &Given) {
         let Some(body) = self.checker.typed.get(key) else { return };
+        // With no value typed a function, there's nothing to note: where it calls and names would
+        // be found for nothing.
+        if !body.exprs().any(|(_, ty)| matches!(ty, Type::Function(_))) {
+            return;
+        }
         let (called, naming) = self.function_names(key);
         let named: Vec<(Span, String)> = body
             .exprs()

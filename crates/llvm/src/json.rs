@@ -167,7 +167,7 @@ impl Emit<'_, '_, '_> {
             }
             Kind::List(item) => {
                 let symbol = element_symbol(self.module.layouts, *item);
-                self.module.shared.elements.insert(symbol.clone(), *item);
+                self.module.add_element(&symbol, *item);
                 self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
                 self.declare("declare ptr @fennec_list_from_value(i64, i64, i64, i64) nounwind");
                 let element = self.temp();

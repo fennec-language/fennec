@@ -142,7 +142,10 @@ fn a_task_s_ranges_run_on_its_own_worker_while_it_s_parked_when_that_s_the_only_
 }
 
 static HEAVY_POOL: OnceLock<&'static Pool> = OnceLock::new();
-/// The thread another range than the first ran on, plus one.
+/// The thread the first range other than the first ran on, plus one: the one that let the first
+/// stop waiting. Only that one is kept. Kept for whichever ran last, under load it could be the
+/// first's own thread, which ran the rest once it stopped waiting while the other worker was slow
+/// to, and the ranges seemed to have run on one thread (2 runs in 150 beside 12 busy loops).
 static ANOTHER_RAN_ON: AtomicI64 = AtomicI64::new(0);
 /// The thread the first range ran on, plus one, once another had run elsewhere: -1 if none did.
 static FIRST_RAN_ON: AtomicI64 = AtomicI64::new(0);
@@ -152,7 +155,7 @@ static HEAVY_LEFT: AtomicI64 = AtomicI64::new(0);
 /// any other to have run, which only another worker can do meanwhile.
 extern "C" fn first_waits_for_another_thread(_env: i64, from: i64, _to: i64, thread: i64, _out: i64) -> i64 {
     if from != 0 {
-        ANOTHER_RAN_ON.store(thread + 1, Ordering::SeqCst);
+        let _ = ANOTHER_RAN_ON.compare_exchange(0, thread + 1, Ordering::SeqCst, Ordering::SeqCst);
         return 0;
     }
     let started = Instant::now();

@@ -86,7 +86,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn shape_of(&mut self, id: u32) -> Result<String, String> {
         let name = self.layout_of(id)?.name.clone();
         let symbol = format!("h_{name}");
-        self.module.shared.shapes.insert(symbol.clone(), id);
+        self.module.add_shape(&symbol, id);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         let shape = self.temp();
         self.line(&format!("{shape} = load i64, ptr @\"{symbol}\", !invariant.load !1"));
@@ -1551,7 +1551,7 @@ impl Emit<'_, '_, '_> {
 
     fn new_list_with(&mut self, item: ListItem, count: &str, helper: &str) -> String {
         let symbol = element_symbol(self.module.layouts, item);
-        self.module.shared.elements.insert(symbol.clone(), item);
+        self.module.add_element(&symbol, item);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         self.declare(&format!("declare ptr @{helper}(i64, i64) nounwind"));
         let (element, list) = (self.temp(), self.temp());
@@ -1689,9 +1689,8 @@ impl Emit<'_, '_, '_> {
     /// Whether the index of the instruction being written is proven not negative (see `signs`).
     fn index_not_negative(&self) -> bool {
         self.module
-            .whole
-            .non_negative
-            .get(self.function.name.as_str())
+            .reads
+            .non_negative(self.function.name.as_str())
             .is_some_and(|found| found.contains(&self.at))
     }
 

@@ -5979,6 +5979,209 @@ fn a_kept_object_gone_before_the_link_is_compiled_again() -> std::io::Result<()>
     Ok(())
 }
 
+/// The program [`an_edit_build_makes_what_a_build_without_the_cache_makes`] edits.
+const EDITED_BASE: &str = r#"error Short:
+    excess: int
+
+struct Spot:
+    across = 0
+    down = 0
+
+struct Named:
+    name: str? = None
+
+LIMIT = 40
+
+def tiny(value: int) -> int:
+    return value + 1
+
+def picked(items: list[int], index: int) -> int:
+    return items[index]
+
+def bound(value: int) -> int:
+    return value
+
+def checked(value: int) -> int fails Short:
+    limit = bound(value)
+    if limit > 1000:
+        fail Short(excess=limit - 1000)
+    return limit
+
+def pair_of[T](first: T, second: T) -> list[T]:
+    return [first, second]
+
+def moved(spot: Spot, steps: int) -> Spot:
+    return Spot(across=spot.across + steps, down=spot.down)
+
+def summed() -> int:
+    mut total = 0
+    for step in range(LIMIT):
+        total += tiny(step)
+    return total
+
+def main(stdout: Stdout):
+    items = [3, 5, 7, 9]
+    stdout.print(picked(items, 2))
+    stdout.print(summed())
+    checked_value = checked(tiny(41)) except Short(): -1
+    stdout.print(checked_value)
+    stdout.print(len(pair_of(first=1, second=2)), pair_of(first="a", second="b")[0])
+    stdout.print(moved(Spot(across=1, down=2), steps=3).across)
+    stdout.print(Named(name="spot").name else "none")
+    return
+"#;
+
+/// The edits [`an_edit_build_makes_what_a_build_without_the_cache_makes`] makes, each to
+/// [`EDITED_BASE`]: what it is, and what it replaces with what.
+const EDITS: &[(&str, &[(&str, &str)])] = &[
+    ("a body", &[("        total += tiny(step)\n", "        total += tiny(step) * 2\n")]),
+    ("a small function others hold a copy of", &[("    return value + 1\n", "    return value + 2\n")]),
+    (
+        "a caller whose argument changes what its callee may assume",
+        &[("picked(items, 2)", "picked(items, len(items) - 2)")],
+    ),
+    (
+        "a callee that starts to fail",
+        &[
+            (
+                "def bound(value: int) -> int:\n    return value\n",
+                "def bound(value: int) -> int fails Short:\n    if value < 0:\n        fail Short(excess=value)\n    return value\n",
+            ),
+            ("    limit = bound(value)\n", "    limit = bound(value)?\n"),
+        ],
+    ),
+    ("a type's field", &[("    down = 0\n", "    down = 0\n    depth = 0\n")]),
+    (
+        "a use elsewhere that lays a type out in a dict and a list",
+        &[(
+            "    stdout.print(moved(",
+            "    places = {\"home\": Spot(across=5, down=6)}\n    stdout.print(places[\"home\"].across, len([Spot(across=7)]))\n    stdout.print(moved(",
+        )],
+    ),
+    ("a constant", &[("LIMIT = 40", "LIMIT = 41")]),
+    ("a generic, with its copies", &[("    return [first, second]", "    return [second, first]")]),
+    ("lines added above a function", &[("def picked(", "# Two lines above `picked`.\n\ndef picked(")]),
+    (
+        "the program's first `parallel`",
+        &[(
+            "    stdout.print(summed())\n",
+            "    stdout.print(summed())\n    stdout.print(sum(tiny(step) for step in parallel([1, 2, 3])))\n",
+        )],
+    ),
+    ("a function renamed, so one is added and one removed", &[("moved", "shifted")]),
+    (
+        "a type, a tuple and a closure added early",
+        &[
+            ("struct Spot:", "struct Early:\n    flag = False\n\nstruct Spot:"),
+            (
+                "    items = [3, 5, 7, 9]\n",
+                "    items = [3, 5, 7, 9]\n    pairing = (Early(flag=True).flag, 3)\n    stdout.print(pairing[1], sorted(items, key=(item) => -item)[0])\n",
+            ),
+        ],
+    ),
+];
+
+/// A build of `edited.fen` in `dir` for [`an_edit_build_makes_what_a_build_without_the_cache_makes`]:
+/// its output, the objects it linked in order, and the program. It's from the cache in `dir`, or
+/// with none, and with types boxed or not.
+type EditBuilt = (Output, Vec<Vec<u8>>, Vec<u8>);
+
+fn edit_build(dir: &Path, name: &str, cached: bool, boxed: bool) -> std::io::Result<EditBuilt> {
+    use crate::executables::Within as _;
+    let objects = dir.join(format!("{name}-objects"));
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", "edited.fen", "-o", name]).current_dir(dir).env("FENNEC_LINK_KEEP", &objects);
+    if cached {
+        command.env("FENNEC_HOME", dir.join("home")).env_remove("FENNEC_NO_CACHE");
+    } else {
+        command.env("FENNEC_HOME", dir.join("no-home")).env("FENNEC_NO_CACHE", "1");
+    }
+    if boxed {
+        command.env("FENNEC_BOXED_TYPES", "1");
+    } else {
+        command.env_remove("FENNEC_BOXED_TYPES");
+    }
+    let output = command.output_within()?;
+    assert!(output.status.success(), "{name}: {}", text(&output.stderr));
+    // A program the store had whole links nothing, so it keeps no objects.
+    let count = std::fs::read_dir(&objects).map_or(0, Iterator::count);
+    let linked =
+        (0..count).map(|at| std::fs::read(objects.join(format!("{at}.o")))).collect::<Result<_, _>>()?;
+    Ok((output, linked, std::fs::read(dir.join(name))?))
+}
+
+/// How many functions a build compiled, of how many, as it says.
+fn compiled_of(output: &Output) -> Option<(usize, usize)> {
+    let said = text(&output.stdout);
+    let (_, rest) = said.split_once("compiled ")?;
+    let (counts, _) = rest.split_once(" functions")?;
+    let (fresh, total) = counts.split_once(" of ")?;
+    Some((fresh.parse().ok()?, total.parse().ok()?))
+}
+
+/// What a dev build makes after an edit, from the cache the builds before it filled, is what a
+/// build with no cache at all makes: every object it links and the program, byte for byte. Each
+/// of the twelve edits changes what some function's object is made from in a way of its own (see
+/// [`EDITS`]), and a switch that lays types out another way goes on, then off again. So whatever
+/// a build reuses, it can never be an object made from anything but what it would make now.
+#[test]
+fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("edit-kinds")?;
+    let same = |what: &str, step: &str, cached: &EditBuilt, whole: &EditBuilt| {
+        assert!(!whole.1.is_empty(), "{what}: the build without the cache kept no objects");
+        assert_eq!(cached.1.len(), whole.1.len(), "{what}: {step} linked another number of objects");
+        if let Some(at) = cached.1.iter().zip(&whole.1).position(|(cached, whole)| cached != whole) {
+            panic!("{what}: object {at} of {} isn't the one built without the cache", cached.1.len());
+        }
+        assert!(cached.2 == whole.2, "{what}: the program isn't the one built without the cache");
+        let ran = std::process::Command::new(dir.join(step)).output_within().expect("the program runs");
+        assert!(ran.status.success(), "{what}: {}", text(&ran.stderr));
+    };
+    std::fs::write(dir.join("edited.fen"), EDITED_BASE)?;
+    let base = (edit_build(&dir, "base", true, false)?, edit_build(&dir, "base-whole", false, false)?);
+    same("the first build", "base", &base.0, &base.1);
+    let mut reused = Vec::new();
+    for (at, (what, changes)) in EDITS.iter().enumerate() {
+        let mut edited = EDITED_BASE.to_owned();
+        for (from, to) in *changes {
+            assert!(edited.contains(from), "{what}: no {from:?}");
+            edited = edited.replace(from, to);
+        }
+        std::fs::write(dir.join("edited.fen"), &edited)?;
+        let step = format!("edit{at}");
+        let cached = edit_build(&dir, &step, true, false)?;
+        same(what, &step, &cached, &edit_build(&dir, &format!("{step}-whole"), false, false)?);
+        reused.push((*what, compiled_of(&cached.0)));
+    }
+    // Every edit compiles again only some of the functions, and an edit to a body at least one.
+    let all_again: Vec<_> =
+        reused.iter().filter(|(_, counts)| counts.is_none_or(|(fresh, total)| fresh >= total)).collect();
+    assert!(all_again.is_empty(), "edits that reused nothing: {all_again:?}");
+    assert!(
+        reused.first().is_some_and(|(_, counts)| counts.is_some_and(|(fresh, _)| fresh > 0)),
+        "{reused:?}"
+    );
+    std::fs::write(dir.join("edited.fen"), EDITED_BASE)?;
+    let boxed = (edit_build(&dir, "boxed", true, true)?, edit_build(&dir, "boxed-whole", false, true)?);
+    same("types boxed", "boxed", &boxed.0, &boxed.1);
+    assert!(boxed.0.2 != base.1.2, "boxing types changed nothing: the switch tests nothing here");
+    // Back as it was, the program is the first one again, from the store; and a program not built
+    // before reuses what was compiled with types in place.
+    assert!(
+        edit_build(&dir, "back", true, false)?.2 == base.1.2,
+        "the program after boxing and back changed"
+    );
+    std::fs::write(dir.join("edited.fen"), EDITED_BASE.replace("LIMIT = 40", "LIMIT = 42"))?;
+    let last = (edit_build(&dir, "last", true, false)?, edit_build(&dir, "last-whole", false, false)?);
+    same("types in place again", "last", &last.0, &last.1);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A program built again under the same name, and run each time, is a new file every time: macOS
 /// remembers the code signature of a file it has launched and kills a program written into one,
 /// with no word. So two programs take turns at one path, built through the store, which links one

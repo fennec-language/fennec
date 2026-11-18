@@ -361,7 +361,10 @@ impl Checker {
             self.diagnostics.extend(refused);
         }
         if self.diagnostics.is_empty() {
-            self.crossing = crate::crossing::crossing(&mut self);
+            // Only when asked for: nothing a build lowers reads it yet (`crossing::with_crossing`).
+            if crate::crossing::wanted() {
+                self.crossing = crate::crossing::crossing(&mut self);
+            }
             return Ok(self.checked(structs, errors));
         }
         let mut diagnostics = self.diagnostics;
@@ -1101,17 +1104,14 @@ impl Checker {
     /// though nothing was reported, is reported now. Only the innermost such expressions
     /// are, since what's around them is unknown because of them.
     fn unknowns_left(&mut self) {
-        let prelude: Vec<String> = self
-            .program
-            .functions
-            .iter()
-            .filter(|(_, entry)| entry.prelude)
-            .map(|(key, _)| key.clone())
-            .collect();
+        // Looked up by key, not searched for in a list of the library's functions: that made this
+        // check about a function's typed body against each of thousands of keys.
+        let functions = &self.program.functions;
+        let prelude = |key: &str| functions.get(key).is_some_and(|entry| entry.prelude);
         let mut unknown: Vec<(u32, u32)> = self
             .typed
             .iter()
-            .filter(|(key, _)| !prelude.contains(key))
+            .filter(|(key, _)| !prelude(key))
             .flat_map(|(_, body)| body.exprs.iter())
             .filter(|(_, ty)| !ty.is_known())
             .map(|(span, _)| *span)
@@ -1129,7 +1129,7 @@ impl Checker {
             .states
             .iter()
             .filter_map(|(key, state)| match state {
-                State::Done(signature) if !prelude.contains(key) => Some((key, signature)),
+                State::Done(signature) if !prelude(key) => Some((key, signature)),
                 _ => None,
             })
             .filter(|(_, signature)| {

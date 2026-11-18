@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # A real program run for a long time under its own scripted load, to see that what it holds levels
-# off: its resident memory, the runtime's count of live blocks, and the most any running task's list
-# of what it made holds (`task held`, #1794) are read every second, the lowest of each minute kept,
-# and a line fitted through those after a warm-up has to rise by less than a small part of where it
-# started. The lowest, because a reading in the middle of a round holds what that round has in
+# off: its resident memory, the runtime's count of live blocks, the most any running task's list
+# of what it made holds (`task held`, #1794), and the freed blocks every thread keeps for reuse are
+# read every second, the lowest of each minute kept, and a line fitted through those after a
+# warm-up has to rise by less than a small part of where it started. The pages of the runtime's
+# tables of blocks are read too and shown, as they rise and fall between looks for empty ones. The lowest, because a reading in the middle of a round holds what that round has in
 # flight, which comes and goes: what a leak leaves is the floor between rounds creeping up.
 #
 #   .github/scripts/soak.sh target/release/fennec bench/realworld/game_server.fen soak.md [minutes]
@@ -93,12 +94,12 @@ blocked=$(sed -nE 's/.* blocked_waits ([0-9]+).*/\1/p' <<< "$counted")
 # Started in a folder of its own, its output thrown away, and read every minute.
 FENNEC_LIVE_REPORT="$work/live" TMPDIR="$work" "$work/$name" > "$work/printed" 2> "$work/said" &
 pid=$!
-echo "minute rss_kb live_blocks printed_lines task_held" > "$work/samples"
+echo "minute rss_kb live_blocks printed_lines task_held spare_words table_pages" > "$work/samples"
 stopped=no
 stalled=no
 printed=0
 for minute in $(seq 1 "$minutes"); do
-  rss='' live='' held=''
+  rss='' live='' held='' spare='' pages=''
   for _ in $(seq 1 60); do
     sleep 1
     kill -0 "$pid" 2> /dev/null || break
@@ -109,6 +110,13 @@ for minute in $(seq 1 "$minutes"); do
     # The most any running task's list of what it made holds, where the runtime says (#1794).
     now=$(sed -n 's/^task held //p' "$work/live" 2> /dev/null)
     [ -n "$now" ] && { [ -z "$held" ] || [ "$now" -lt "$held" ]; } && held=$now
+    # What every thread's heap keeps for reuse, and the pages of its tables of blocks: caches,
+    # bounded by design, so a rise in the floor of either says which one holds what the memory
+    # does.
+    now=$(sed -n 's/^cached spare //p' "$work/live" 2> /dev/null)
+    [ -n "$now" ] && { [ -z "$spare" ] || [ "$now" -lt "$spare" ]; } && spare=$now
+    now=$(sed -n 's/^cached pages //p' "$work/live" 2> /dev/null)
+    [ -n "$now" ] && { [ -z "$pages" ] || [ "$now" -lt "$pages" ]; } && pages=$now
   done
   if ! kill -0 "$pid" 2> /dev/null; then
     stopped=$minute
@@ -118,7 +126,7 @@ for minute in $(seq 1 "$minutes"); do
   now=$(wc -l < "$work/printed" | tr -d ' ')
   [ "$now" -gt "$printed" ] || [ "$stalled" != no ] || stalled=$minute
   printed=$now
-  echo "$minute ${rss:-0} ${live:-0} $printed ${held:-0}" >> "$work/samples"
+  echo "$minute ${rss:-0} ${live:-0} $printed ${held:-0} ${spare:-0} ${pages:-0}" >> "$work/samples"
   echo "$name $([ "$where" = task ] && echo "in a task" || echo "on its own thread"), minute $minute: at least ${rss:-?} KB resident and ${live:-?} live blocks, $printed lines printed"
 done
 kill "$pid" 2> /dev/null
@@ -168,7 +176,9 @@ failed=0
   fi
   # Each measure, its column and the least rise that counts against it.
   # A task's list of what it made, held to a bound since #1794, which a leak in it passes.
-  for what in "resident memory, KB:2:16384" "live blocks:3:64" "a task's list of what it made:5:4096"; do
+  # What's kept for reuse, in words, may rise by a megabyte's worth: it fills as a program warms up
+  # and then has to stay within its bounds.
+  for what in "resident memory, KB:2:16384" "live blocks:3:64" "a task's list of what it made:5:4096" "freed blocks kept for reuse, words:6:131072"; do
     least=${what##*:}
     what=${what%:*}
     read -r start end slope <<< "$(fit "${what##*:}")"
@@ -185,7 +195,7 @@ failed=0
     [ "$over" -eq 1 ] && failed=1
   done
   echo
-  echo "Each minute's lowest reading, resident memory in KB, live blocks, the lines it had printed, and the most a task's list held:"
+  echo "Each minute's lowest reading, resident memory in KB, live blocks, the lines it had printed, the most a task's list held, the words of freed blocks kept for reuse, and the pages of the tables of blocks:"
   echo
   echo '```'
   cat "$work/samples"

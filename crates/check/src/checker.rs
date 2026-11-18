@@ -357,7 +357,10 @@ impl Checker {
             self.diagnostics.extend(refused);
         }
         if self.diagnostics.is_empty() {
-            self.crossing = crate::crossing::crossing(&mut self);
+            // Only when asked for: nothing a build lowers reads it yet (`crossing::with_crossing`).
+            if crate::crossing::wanted() {
+                self.crossing = crate::crossing::crossing(&mut self);
+            }
             return Ok(self.checked(structs, errors));
         }
         let mut diagnostics = self.diagnostics;

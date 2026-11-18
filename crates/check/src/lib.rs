@@ -32,7 +32,7 @@ mod except_fix;
 mod expect;
 mod expr;
 mod extend;
-pub use crossing::Crossing;
+pub use crossing::{Crossing, with_crossing};
 pub use extend::method_key;
 pub use shapes::SavedAs;
 mod fields;

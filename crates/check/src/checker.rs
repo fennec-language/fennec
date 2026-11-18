@@ -433,6 +433,13 @@ fn library() -> &'static Program {
 
 impl Checker {
     pub(crate) fn new(module: &Module) -> Self {
+        let mut checker = Checker::with_imports_unchecked(module);
+        checker.diagnostics.extend(crate::imports::unimported(module, &checker.program));
+        checker
+    }
+
+    /// `new`, but not yet looking for library types used without their import.
+    fn with_imports_unchecked(module: &Module) -> Self {
         let mut program = library().clone();
         program.add(module, false);
         // The library's functions as this program runs them, rewritten as its own code is.
@@ -442,7 +449,6 @@ impl Checker {
             }
         }
         let mut diagnostics = std::mem::take(&mut program.problems);
-        diagnostics.extend(crate::imports::unimported(module, &program));
         diagnostics.extend(crate::privacy::top_level_underscores(module));
         diagnostics.extend(crate::privacy::unbuildable(module));
         Checker {
@@ -529,7 +535,7 @@ impl Checker {
         mut previous: Checked,
         (shared_retyped, only_written): (bool, &crate::WrittenDefs),
     ) -> Checker {
-        let mut next = Checker::new(module);
+        let mut next = Checker::with_imports_unchecked(module);
         next.again = true;
         let mut carried = BTreeSet::new();
         // Those the round only wrote into what their check found, of the kinds a check of what's
@@ -614,6 +620,17 @@ impl Checker {
         let open: BTreeSet<String> = carried.iter().filter(|key| open(key)).cloned().collect();
         // What's inside one that's checked again is checked again with it.
         carried.retain(|key| !open.iter().any(|outer| key == outer || key.starts_with(&format!("{outer}."))));
+        // One carried over used no type without its import when the round before looked, and
+        // the round wrote into it only what its check found.
+        let passed: BTreeSet<(&str, u32, u32)> = carried
+            .iter()
+            .filter_map(|key| previous.defs.get(key))
+            .map(|entry| (entry.def.name.as_str(), entry.def.span.start, entry.def.span.end))
+            .collect();
+        let unimported = crate::imports::unimported_but(module, &next.program, &|def| {
+            passed.contains(&(def.name.as_str(), def.span.start, def.span.end))
+        });
+        next.diagnostics.extend(unimported);
         for key in carried {
             let Some(signature) = previous.signatures.functions.remove(&key) else { continue };
             let entry = previous.defs.remove(&key);

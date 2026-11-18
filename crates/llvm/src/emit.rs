@@ -1298,6 +1298,8 @@ impl Emit<'_, '_, '_> {
             }
             self.terminator(&block.end)?;
         }
+        // What follows runs on a crash from anywhere in the function, in no loop.
+        self.alone_in_block.clear();
         // A crash inside a `lock ... as ref` block puts back what it changed before leaving, and a
         // crash anywhere lets go of what the function owns, so a server whose rounds crash keeps
         // nothing of theirs.

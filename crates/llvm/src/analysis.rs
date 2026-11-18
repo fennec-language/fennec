@@ -3044,6 +3044,12 @@ fn find_alone_in_loops(function: &Function, known: &mut Analysis) {
                 waiting.extend(coming_from.get(&at).into_iter().flatten().copied());
             }
         }
+        // Where control flow isn't reducible, as in a generator's resume, walking back from a
+        // jump to the start can reach the function's first block without passing the start:
+        // there's a way in that doesn't go through the entry, so the loop is left as it is.
+        if blocks.contains(&0) {
+            continue;
+        }
         let outside: Vec<usize> = coming_from
             .get(&start)
             .into_iter()
@@ -3075,6 +3081,40 @@ fn find_alone_in_loops(function: &Function, known: &mut Analysis) {
     }
 }
 
+/// The builtins on a list or a `Table` that give it no other owner, called on it: what each gives
+/// back, if anything, is an item, a count, a flag, an `Id` or a list of those, never what it's
+/// called on. A builtin added to either has to be added here to keep a loop's values alone.
+const GIVE_NO_OWNER: [&str; 28] = [
+    "list.append",
+    "list.insert",
+    "list.extend",
+    "list.pop",
+    "list.remove",
+    "list.clear",
+    "list.remove_where",
+    "list.sort",
+    "list.sort.key",
+    "list.len",
+    "list.contains",
+    "list.reverse",
+    "list.swap",
+    "Table.add",
+    "Table.remove",
+    "Table.get",
+    "Table.modify",
+    "Table.remove_where",
+    "Table.values",
+    "Table.ids",
+    "Table.items",
+    "Table.clear",
+    "Table.len",
+    "Table.contains",
+    "Table.slots",
+    "Table.slot_live",
+    "Table.slot_id",
+    "Table.at_slot",
+];
+
 /// Whether a loop's blocks change `held`, or an item taken out of it.
 fn changes_in(inside: &[&Block], known: &Analysis, held: LocalId) -> bool {
     inside.iter().flat_map(|block| &block.insts).any(|inst| match &inst.kind {
@@ -3102,11 +3142,11 @@ fn gives_no_owner(function: &Function, inside: &[&Block], known: &Analysis, held
                     is_held(*object) && !held_operand(index) && !held_operand(value)
                 }
                 InstKind::SetField { object, value, .. } => is_held(*object) && !held_operand(value),
-                // A collection's own builtins on it, giving back nothing of its own type.
+                // A collection's own builtins on it, each of which gives back nothing that holds it.
                 InstKind::Builtin { dest, name, args, .. } => {
                     args.first().is_some_and(held_operand)
                         && args.iter().skip(1).all(|arg| !held_operand(arg))
-                        && ["list.", "Table.", "dict."].iter().any(|own| name.starts_with(own))
+                        && GIVE_NO_OWNER.contains(&name.as_str())
                         && dest.is_none_or(|dest| {
                             !is_held(dest) && function.locals.get(dest.0).map(|local| &local.ty) != ty
                         })

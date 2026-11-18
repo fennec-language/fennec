@@ -158,10 +158,11 @@ impl FnCx<'_> {
                     CompKind::List => Type::list(elem),
                     CompKind::Generator => {
                         // It fails as what it loops over does, and as each `?` inside it does,
-                        // when it's asked for an item.
+                        // when it's asked for an item. Each item may be a generator that can fail,
+                        // or hold one, which it can loop over: it fails as that does too.
                         let mut failures = self.errors.get(failed_before..).unwrap_or_default().to_vec();
                         let looped = self.recorded(iter.span).map(|ty| self.checker.settled(&ty));
-                        failures.extend(looped.as_ref().and_then(Type::generator_failure).cloned());
+                        failures.extend(looped.iter().flat_map(Type::held_generator_failures).cloned());
                         let failure =
                             (!failures.is_empty()).then(|| self.joined(&failures, span, "fails with"));
                         let shown = Type::iterator(elem.clone()).to_string();
@@ -298,14 +299,12 @@ impl FnCx<'_> {
         }
         if !outer && let Some((ty, _)) = self.lookup(name) {
             // A generator that can fail passes its failure up from where it's looped over, so only
-            // the function that made it, and counts its failure, may loop over it.
-            let failing = match &ty {
-                Type::Iterator(_, failure) => failure.is_some(),
-                Type::Var(_) => self.checker.settled(&ty).generator_failure().is_some(),
-                _ => false,
-            };
-            if failing && self.came_from_around(name) {
-                self.error(crate::messages::failing_generator_inside(name, span));
+            // the function that made it, and counts its failure, may loop over it: not one around
+            // it, from a name that is one or that holds one in a list, a tuple or a struct.
+            let settled = self.checker.settled(&ty);
+            let maybe = !settled.is_known() || !settled.held_generator_failures().is_empty();
+            if maybe && self.came_from_around(name) {
+                self.no_failing_generator_here(name, &ty, span, false);
             }
             return ty;
         }
@@ -1123,6 +1122,10 @@ impl FnCx<'_> {
         let before = self.snapshot();
         // One kept for later runs after this line, so it can't change what's around it.
         self.push(kept);
+        if let Some(items) = self.parallel_over(iter) {
+            self.no_failing_generator_apart(&item, items.span);
+            self.set_apart();
+        }
         self.value_functions += 1;
         self.bind_names(names, &item, false, (iter.span, span));
         if let Some(cond) = cond {
@@ -1148,6 +1151,7 @@ impl FnCx<'_> {
         else_steps(value, &mut steps);
         self.else_chain.extend(steps.iter().copied());
         let written = value.span;
+        let value_expr = value;
         let value = self.expr(value);
         for step in &steps {
             self.else_chain.remove(step);
@@ -1170,6 +1174,12 @@ impl FnCx<'_> {
         }
         if except && !matches!(self.checker.settled(&value), Type::Result(..) | Type::Unknown) {
             self.nothing_to_except(&value, written);
+        }
+        if except
+            && let Type::Result(made, _) = self.checker.settled(&value)
+            && !made.held_generator_failures().is_empty()
+        {
+            self.except_on_failing_generator(value_expr);
         }
         let default = match default.else_block() {
             Some((failure, block)) => {
@@ -1256,6 +1266,50 @@ impl FnCx<'_> {
         }
     }
 
+    /// `except` on a call whose value is, or holds, a generator that can fail. That generator's
+    /// failure is counted only where a `?` takes it out, so `except` leaves it with nowhere to go,
+    /// unless what's called is a `def` given no function, which gives back only what its caller
+    /// made and counted. A generator function's call runs none of its body, so its `except` would
+    /// never run; an arrow function's `?` counted the generator as its own failure, not this
+    /// function's, and so may a function a `def` is given and calls.
+    fn except_on_failing_generator(&mut self, value: &Expr) {
+        let written = value.span;
+        let ExprKind::Call { callee, args } = &value.kind else {
+            self.error(crate::messages::except_on_a_generator(written));
+            return;
+        };
+        let called = self.recorded(callee.span).map(|ty| self.checker.settled(&ty));
+        if let Some(Type::Arrow(..)) = called {
+            self.error(crate::messages::except_on_an_arrow_giving_one(written));
+            return;
+        }
+        let def = match (&callee.kind, &called) {
+            (_, Some(Type::Function(key))) => self.checker.program.functions.get(key),
+            (ExprKind::Attr { object, name, .. }, _) => self
+                .recorded(object.span)
+                .map(|ty| self.checker.settled(&ty))
+                .and_then(|ty| ty.type_name().map(str::to_owned))
+                .and_then(|owner| self.checker.program.method(&owner, name).map(|(_, entry)| entry)),
+            _ => None,
+        };
+        let plain_def = def.is_some_and(|entry| !crate::effects::of_body(&entry.def.body).yields);
+        if !plain_def {
+            self.error(crate::messages::except_on_a_generator(written));
+            return;
+        }
+        let mut given: Vec<Span> = args.iter().map(|arg| arg.value.span).collect();
+        if let ExprKind::Attr { object, .. } = &callee.kind {
+            given.push(object.span);
+        }
+        let given_a_function = given.into_iter().any(|span| {
+            let ty = self.recorded(span).map_or(Type::Unknown, |ty| self.checker.settled(&ty));
+            mentions_a_function(&ty) || self.checker.holds_function_value(&ty, &mut Vec::new())
+        });
+        if given_a_function {
+            self.error(crate::messages::except_on_a_call_given_a_function(written));
+        }
+    }
+
     /// An arrow function. Its parameters' types come from where it's passed, so it has to
     /// be passed straight to something that says what it receives.
     pub(crate) fn lambda(&mut self, params: &[String], body: &Expr, types: &[Type], span: Span) -> Type {
@@ -1272,6 +1326,9 @@ impl FnCx<'_> {
                     ),
                 );
             }
+            // One given a generator that can fail, or a value holding one, would loop over it
+            // where its failure can't pass up: the arrow is a function of its own.
+            self.no_failing_generator_here(param, &ty, span, true);
             self.declare(param, ty.clone(), true, span);
             known.push(ty);
         }
@@ -1470,4 +1527,10 @@ fn swallows_failure(written: Span, inner: &Type) -> Diagnostic {
             a(inner)
         ))
         .with_hint("pass the failure up", end, "?")
+}
+
+/// Whether a type is, or holds where its parts are written, a function named as a value, which an
+/// arrow function's type doesn't cover.
+fn mentions_a_function(ty: &Type) -> bool {
+    matches!(ty, Type::Function(_)) || ty.children().into_iter().any(mentions_a_function)
 }

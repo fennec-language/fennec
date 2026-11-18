@@ -1268,10 +1268,11 @@ impl FnCx<'_> {
 
     /// `except` on a call whose value is, or holds, a generator that can fail. That generator's
     /// failure is counted only where a `?` takes it out, so `except` leaves it with nowhere to go,
-    /// unless what's called is a `def` given no function, which gives back only what its caller
-    /// made and counted. A generator function's call runs none of its body, so its `except` would
-    /// never run; an arrow function's `?` counted the generator as its own failure, not this
-    /// function's, and so may a function a `def` is given and calls.
+    /// unless what's called is a `def` given nothing that could have made one, which gives back
+    /// only what its caller made and counted. A generator function's call runs none of its body,
+    /// so its `except` would never run; an arrow function's `?` counted the generator as its own
+    /// failure, not this function's, and so may a function a `def` is given and calls, as
+    /// `could_make_a_failing_generator` says.
     fn except_on_failing_generator(&mut self, value: &Expr) {
         let written = value.span;
         let ExprKind::Call { callee, args } = &value.kind else {
@@ -1311,21 +1312,34 @@ impl FnCx<'_> {
     }
 
     /// Whether a value of this type, given to a call, could have made a generator that can fail
-    /// the call gives back: it is, or holds, a function whose result is or holds one, or a type
-    /// parameter, or a type not worked out yet. One that gives back only a plain value, like an
-    /// `(int) -> bool` rule, couldn't. A struct holding a function counts, its field not looked
-    /// into.
+    /// the call gives back: it is, or holds, a function whose result is, or holds, one, a type
+    /// parameter, a type not worked out yet, or another function that could; or an arrow function
+    /// taking a function, which could carry one out to a callback. A function that gives back
+    /// only a plain value, like an `(int) -> bool` rule, couldn't. A struct holding a function
+    /// counts, its field not looked into. A value whose own type isn't worked out yet counts as
+    /// none: the call's result, read on the same line, already holds the generator.
     fn could_make_a_failing_generator(&mut self, ty: &Type) -> bool {
         let ty = self.checker.settled(ty);
         let could_be = |returns: &Type| {
             !returns.held_generator_failures().is_empty() || returns.has_params() || !returns.is_known()
         };
         match &ty {
-            Type::Arrow(_, returns) => could_be(&self.checker.settled(returns)),
-            Type::Function(key) => self
-                .checker
-                .signature_found(key)
-                .is_none_or(|signature| signature.generator || could_be(&signature.returns)),
+            Type::Arrow(params, returns) => {
+                let returns = self.checker.settled(returns);
+                could_be(&returns)
+                    || self.could_make_a_failing_generator(&returns)
+                    || params.iter().any(|param| self.holds_a_function(param))
+            }
+            Type::Function(key) => {
+                let Some((generator, returns)) = self
+                    .checker
+                    .signature_found(key)
+                    .map(|signature| (signature.generator, signature.returns.clone()))
+                else {
+                    return true;
+                };
+                generator || could_be(&returns) || self.could_make_a_failing_generator(&returns)
+            }
             Type::Named(_) | Type::Generic(..) if self.checker.holds_function_value(&ty, &mut Vec::new()) => {
                 true
             }
@@ -1336,6 +1350,25 @@ impl FnCx<'_> {
                 .collect::<Vec<_>>()
                 .iter()
                 .any(|child| self.could_make_a_failing_generator(child)),
+        }
+    }
+
+    /// Whether a value of this type is, or holds, a function: an arrow function, a function by
+    /// name, or a struct with a function in a field.
+    fn holds_a_function(&mut self, ty: &Type) -> bool {
+        let ty = self.checker.settled(ty);
+        match &ty {
+            Type::Arrow(..) | Type::Function(_) => true,
+            Type::Named(_) | Type::Generic(..) if self.checker.holds_function_value(&ty, &mut Vec::new()) => {
+                true
+            }
+            other => other
+                .children()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .iter()
+                .any(|child| self.holds_a_function(child)),
         }
     }
 

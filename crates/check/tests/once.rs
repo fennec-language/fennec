@@ -84,6 +84,10 @@ fn a_generator_that_can_fail_is_looped_over_in_the_function_that_got_it() {
         "error Bad:\n    why: str\n\ndef checked[T](value: T, text: str) -> T fails Bad:\n    if text == \"\":\n        fail Bad(why=\"empty\")\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    kept = checked(first(\"a\")?, \"x\") except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
         // `except` on a `def`'s call given a function that makes no generator, as a rule (#2118).
         "error Bad:\n    why: str\n\ndef checked[T](value: T, rule: (int) -> bool) -> T fails Bad:\n    if not rule(3):\n        fail Bad(why=\"no\")\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    kept = checked(first(\"a\")?, rule=(at) => at > 0) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+        // A function by name as the rule, and an arrow that loops over one inside and gives back a
+        // list: neither gives back a generator, or a function that could make one.
+        "error Bad:\n    why: str\n\ndef is_positive(at: int) -> bool:\n    return at > 0\n\ndef checked[T](value: T, rule: (int) -> bool) -> T fails Bad:\n    if not rule(3):\n        fail Bad(why=\"no\")\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    kept = checked(first(\"a\")?, rule=is_positive) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+        "error Bad:\n    why: str\n\ndef counted[T](value: T, rule: () -> list[int] fails Shut) -> T fails Bad | Shut:\n    if len(rule()?) == 0:\n        fail Bad(why=\"none\")\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    kept = counted(first(\"a\")?, rule=() => list(first(\"b\")?)) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
         // A generator kept for later over held ones, which fails as they do, looped over here.
         "def f(stdout: Stdout) fails Shut:\n    held = [first(\"a\")?]\n    later = (sum(gen) for gen in held)\n    stdout.print(sum(later))\n",
         // A generator looping over one, which fails as it does.
@@ -227,6 +231,34 @@ fn a_generator_that_can_fail_held_or_got_with_except_can_t_reach_a_loop_that_did
         (
             "def call_with[T, E](make: (str) -> T fails E, name: str) -> T fails E:\n    return make(name)?\n\ndef f(stdout: Stdout):\n    kept = call_with(first, \"a\") except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
             "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ call_with(first, \"a\")",
+        ),
+        // An arrow giving back a function that makes one, one in a list, or one in a list given
+        // whole or held in a struct's field (#2118's review).
+        (
+            "def call_got[T, E](get: () -> (str) -> T fails E) -> T fails E:\n    make = get()\n    return make(\"a\")?\n\ndef f(stdout: Stdout):\n    kept = call_got(() => first) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ call_got(() => first)",
+        ),
+        (
+            "def call_twice[T, E](get: () -> () -> T fails E) -> T fails E:\n    make = get()\n    return make()?\n\ndef f(stdout: Stdout):\n    kept = call_twice(() => () => first(\"a\")?) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ call_twice(() => () => first(\"a\")?)",
+        ),
+        (
+            "def first_of[T, E](get: () -> list[(str) -> T fails E]) -> T fails E:\n    makers = get()\n    make = makers[0]\n    return make(\"a\")?\n\ndef f(stdout: Stdout):\n    kept = first_of(() => [first]) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ first_of(() => [first])",
+        ),
+        (
+            "def run_first[T, E](makers: list[() -> T fails E]) -> T fails E:\n    make = makers[0]\n    return make()?\n\ndef f(stdout: Stdout):\n    kept = run_first([() => first(\"a\")?]) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ run_first([() => first(\"a\")?])",
+        ),
+        (
+            "struct Maker[T]:\n    make: () -> T fails Shut\n\ndef made[T](maker: Maker[T]) -> T fails Shut:\n    make = maker.make\n    return make()?\n\ndef f(stdout: Stdout):\n    kept = made(Maker(make=() => first(\"a\")?)) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ made(Maker(make=() => first(\"a\")?))",
+        ),
+        // An arrow taking a function, which could hand one out to it: counted, whatever it gives
+        // back.
+        (
+            "error Bad:\n    why: str\n\ndef stepped[T](value: T, rule: ((int) -> int) -> bool) -> T fails Bad:\n    if not rule((at) => at + 1):\n        fail Bad(why=\"no\")\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    kept = stepped(first(\"a\")?, rule=(step) => step(1) > 0) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+            "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go @ stepped(first(\"a\")?, rule=(step) => step(1) > 0)",
         ),
         // A generator function whose only `yield` is inside an `except` block.
         (

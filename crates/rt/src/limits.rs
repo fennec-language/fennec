@@ -915,6 +915,7 @@ mod tests {
     }
 
     /// The `Fs` a narrowed `Fs` gives when it's narrowed again.
+    #[cfg(unix)]
     fn narrowed_again(fs: &Rc<Limited>, folder: &str) -> Rc<Limited> {
         match call(fs, "only", &[Value::str(folder)]) {
             Value::Limited(limited) => limited,

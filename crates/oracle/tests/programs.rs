@@ -541,6 +541,14 @@ fn a_loop_wraps_its_generator_s_failure_and_owns_one_inside_enumerate_or_zip() {
     prints(GENERATOR_ZIPPED_SECOND_FAILS, "a 1\nfailed Shut(name=\"mid\")\n");
     prints(GENERATOR_ZIPPED_FIRST_FAILS, "a 1\nfailed Shut(name=\"mid\")\n");
     prints(GENERATOR_ENUMERATED_FAILS, "0 1\nfailed Shut(name=\"mid\")\n");
+    prints(
+        GENERATOR_ZIPPED_FIRST_FAILS_SECOND_PARKED,
+        "1 1\nclosing second\nShut(name=\"first\") [\"Shut(name=\\\"second\\\")\"]\n",
+    );
+    prints(
+        GENERATOR_ENUMERATED_WRAPPED_IN_WITH,
+        "closing enumerated\nfailed outer\nOops(code=91) [\"Shut(name=\\\"enumerated\\\")\"]\n",
+    );
 }
 
 const GENERATORS_ZIPPED_BOTH: &str = r#"error Shut:
@@ -665,6 +673,87 @@ def run(stdout: Stdout) fails Shut:
 def main(stdout: Stdout):
     run(stdout) except why:
         stdout.print("failed", why)
+"#;
+
+const GENERATOR_ZIPPED_FIRST_FAILS_SECOND_PARKED: &str = r#"error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def breaking(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut:
+    for step, other in zip(breaking("first")?, held_stuck("second", stdout)?):
+        stdout.print(step, other)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_ENUMERATED_WRAPPED_IN_WITH: &str = r#"error Oops:
+    code: int
+
+error Wrapped:
+    why: str
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def enumerated(stdout: Stdout) fails Oops | Wrapped:
+    with opened("outer", stdout) as door:
+        for at, step in enumerate(held_stuck("enumerated", stdout)? from Wrapped(why="the loop")):
+            fail Oops(code=90 + step + at)
+
+def main(stdout: Stdout):
+    enumerated(stdout) except why:
+        stdout.print(why, why.notes())
 "#;
 
 const GENERATOR_WRAPPED: &str = r#"error Oops:

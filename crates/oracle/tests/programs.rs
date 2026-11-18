@@ -1112,7 +1112,12 @@ fn a_loop_lets_go_of_its_generator_as_it_is_left() {
 #[test]
 fn a_consumer_of_a_failing_generator_fails_before_its_statement_goes_on() {
     prints(
-        "
+        CONSUMER_FAILS_FIRST,
+        "failed Bad(code=41)\nfailed Bad(code=42)\nfailed Bad(code=43)\nfailed Bad(code=44)\nfailed Bad(code=45)\nfailed Bad(code=46)\nfailed Bad(code=47)\nfailed Bad(code=48)\nopening\ncleaning up\nfailed Bad(code=49)\nfailed Bad(code=51)\nfailed Bad(code=52)\ncounted 0\nfailed Bad(code=53)\nlocked 0\nfailed Bad(code=54)\nopening\ncleaning up\nfailed Bad(code=50)\n",
+    );
+}
+
+const CONSUMER_FAILS_FIRST: &str = "
         # A consumer of a generator that fails partway, inside a statement, passes the failure up before
         # the rest of the statement runs: nothing is printed with a partial value, nothing written after
         # it in the statement is called, nothing is yielded or written to a field, and `max` never sees an
@@ -1227,10 +1232,7 @@ fn a_consumer_of_a_failing_generator_fails_before_its_statement_goes_on() {
                 stdout.print('failed', why)
                 return
             stdout.print('got', got)
-        ",
-        "failed Bad(code=41)\nfailed Bad(code=42)\nfailed Bad(code=43)\nfailed Bad(code=44)\nfailed Bad(code=45)\nfailed Bad(code=46)\nfailed Bad(code=47)\nfailed Bad(code=48)\nopening\ncleaning up\nfailed Bad(code=49)\nfailed Bad(code=51)\nfailed Bad(code=52)\ncounted 0\nfailed Bad(code=53)\nlocked 0\nfailed Bad(code=54)\nopening\ncleaning up\nfailed Bad(code=50)\n",
-    );
-}
+        ";
 
 const LOOP_LETS_GO: &str = "
         error Shut:

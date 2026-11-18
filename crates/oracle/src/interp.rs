@@ -1032,7 +1032,7 @@ impl Interp {
         }
         match left {
             Err(Flow::Break) if !made => Ok(()),
-            left if made => self.let_go_of(&items, left, (wrap, iter.span)),
+            left if made => self.let_go_of(&items, left, (&arg_wraps(iter), iter.span)),
             left => left,
         }
     }
@@ -1058,7 +1058,7 @@ impl Interp {
         &mut self,
         items: &stream::Items,
         left: Run<()>,
-        (wrap, at): (Option<&'static Expr>, Span),
+        (wraps, at): (&[Option<&'static Expr>], Span),
     ) -> Run<()> {
         let mut left = match left {
             Err(Flow::Break) => Ok(()),
@@ -1067,8 +1067,9 @@ impl Interp {
         };
         let stream::Items::Stream(stream) = items else { return left };
         let mut failures = Vec::new();
-        stream::let_go_owned(&stream.source, &mut failures);
-        for failed in failures {
+        stream::let_go_owned(&stream.source, &mut failures, 0);
+        for (index, failed) in failures {
+            let wrap = wraps.get(index).copied().flatten();
             left = match (failed, left) {
                 (Flow::Fail(cleanup, _), Err(Flow::Fail(mut error, failed_at))) => {
                     let Value::Instance(instance) = &mut error else {
@@ -1338,25 +1339,38 @@ fn made_for_loop(iter: &Expr) -> bool {
     matches!(made.kind, ExprKind::Call { .. })
 }
 
-/// What a loop's generators fail through when the loop is left: the wrapper of its own
-/// `? from Wrap(...)`, or of the one made right inside `enumerate` or `zip` that has one. Nothing
-/// inside, when several each wrap their own way.
+/// What a loop's generator fails through partway through the loop: the wrapper of its own
+/// `? from Wrap(...)`, or of the one `?` made right inside `enumerate` or `zip`. Nothing inside
+/// when two `?`s are made there and one wraps, since which failed isn't known then.
 fn loop_wrap(iter: &'static Expr) -> Option<Option<&'static Expr>> {
+    let wraps = arg_wraps(iter);
+    let tries = match &iter.kind {
+        ExprKind::Call { args, .. } => {
+            args.iter().filter(|arg| matches!(arg.value.kind, ExprKind::Try { .. })).count()
+        }
+        _ => wraps.len(),
+    };
+    match wraps.iter().flatten().count() {
+        0 => Some(None),
+        1 if tries <= 1 => Some(wraps.into_iter().flatten().next()),
+        _ => None,
+    }
+}
+
+/// The wrapper each generator a loop owns fails through when it's let go: its own
+/// `? from Wrap(...)`'s, or for `enumerate` and `zip`, each argument's, in order.
+fn arg_wraps(iter: &'static Expr) -> Vec<Option<&'static Expr>> {
     let context = |value: &'static Expr| match &value.kind {
         ExprKind::Try { context, .. } => context.as_deref(),
         _ => None,
     };
-    if let Some(wrap) = context(iter) {
-        return Some(Some(wrap));
+    if matches!(iter.kind, ExprKind::Try { .. }) {
+        return vec![context(iter)];
     }
-    let ExprKind::Call { callee, args } = &iter.kind else { return Some(None) };
-    if !matches!(&callee.kind, ExprKind::Name(name) if name == "enumerate" || name == "zip") {
-        return Some(None);
-    }
-    let mut wraps = args.iter().filter_map(|arg| context(&arg.value));
-    match (wraps.next(), wraps.next()) {
-        (wrap, None) => Some(wrap),
-        (Some(_), Some(_)) => None,
-        (None, Some(_)) => Some(None),
+    match &iter.kind {
+        ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if name == "enumerate" || name == "zip") => {
+            args.iter().map(|arg| context(&arg.value)).collect()
+        }
+        _ => Vec::new(),
     }
 }

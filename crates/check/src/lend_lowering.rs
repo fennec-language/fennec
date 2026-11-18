@@ -1147,8 +1147,7 @@ fn fails_unheld(stmt: &Stmt) -> bool {
         StmtKind::For { iter, .. } => {
             crate::parallel::parallel_items(iter).is_some()
                 || matches!(iter.kind, ExprKind::Try { .. })
-                || matches!(&iter.kind, ExprKind::Call { callee, args }
-                    if reads_a_generator(callee) && args.iter().any(|arg| matches!(arg.value.kind, ExprKind::Try { .. })))
+                || owns_inside(iter)
         }
         // As it's written, or as `lock_lowering` wrote it in an earlier round, as a `ref` case in a
         // source's body is lowered once the source is written in.
@@ -1157,10 +1156,12 @@ fn fails_unheld(stmt: &Stmt) -> bool {
     }
 }
 
-/// Whether a call is `enumerate` or `zip`, whose loop owns a generator made right inside it, as it
-/// does one it goes over by itself.
-fn reads_a_generator(callee: &Expr) -> bool {
-    matches!(&callee.kind, ExprKind::Name(name) if name == "enumerate" || name == "zip")
+/// Whether a loop goes over `enumerate(...)` or `zip(...)` with a `?` that's a whole argument, whose
+/// loop owns the generator that gives, as it does one it goes over by itself.
+fn owns_inside(iter: &Expr) -> bool {
+    matches!(&iter.kind, ExprKind::Call { callee, args }
+        if matches!(&callee.kind, ExprKind::Name(name) if name == "enumerate" || name == "zip")
+            && args.iter().any(|arg| matches!(arg.value.kind, ExprKind::Try { context: None, .. })))
 }
 
 /// `exits` in a body inside the block, where the block's failure isn't held when `unheld` says.
@@ -1458,18 +1459,11 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
             hoist_inside(inner, otherwise, before, made, span);
         }
         // So does one over `enumerate(made()?)` or `zip(made()?, ...)`, for the generator made
-        // right there: its `?` stays too, and only those inside what it's made from come out.
-        StmtKind::For { iter: Expr { kind: ExprKind::Call { callee, args }, .. }, .. }
-            if otherwise.is_empty() && reads_a_generator(callee) =>
+        // right there: its `?` stays too, where that keeps what runs in the order it's written.
+        StmtKind::For { iter: call @ Expr { kind: ExprKind::Call { .. }, .. }, .. }
+            if otherwise.is_empty() && owns_inside(call) =>
         {
-            for arg in args.iter_mut() {
-                match &mut arg.value.kind {
-                    ExprKind::Try { value: inner, context: None } => {
-                        hoist_inside(inner, otherwise, before, made, span)
-                    }
-                    _ => hoist_inside(&mut arg.value, otherwise, before, made, span),
-                }
-            }
+            hoist_owning(call, otherwise, before, made, span);
         }
         StmtKind::Expr(value)
         | StmtKind::Fail(value)
@@ -1531,6 +1525,51 @@ fn hoist_inside(value: &mut Expr, otherwise: &[Stmt], before: &mut Vec<Stmt>, ma
         before.push(assign(&got, matched, false, None));
         // As the `?` it stands for, whose span its type is found by.
         *value = Expr { kind: ExprKind::Name(got), span: at };
+    }
+}
+
+/// `hoist_inside` for `enumerate(...)` or `zip(...)` a loop goes over, keeping each `?` that's a
+/// whole argument where it is when nothing after it has to run first, so the loop owns the
+/// generator it gives. Each part before the last that has to run first is named first, in order,
+/// as `hoist_inside` does, a kept `?` among them only when what it's of holds one.
+fn hoist_owning(call: &mut Expr, otherwise: &[Stmt], before: &mut Vec<Stmt>, made: &mut usize, span: Span) {
+    let whole_try = |part: &Expr| matches!(part.kind, ExprKind::Try { context: None, .. });
+    let inner_holds = |part: &mut Expr| match &mut part.kind {
+        ExprKind::Try { value, context: None } => holds_try(value),
+        _ => false,
+    };
+    // Which whole-argument `?`s stay: each with nothing after it that has to run first.
+    let mut kept = Vec::new();
+    let mut later = false;
+    for part in runs_first(call).into_iter().rev() {
+        let keep = !later && whole_try(part);
+        later |= if keep { inner_holds(part) } else { holds_try(part) };
+        kept.push(keep);
+    }
+    kept.reverse();
+    let places = places_first(call);
+    let holding: Vec<bool> = runs_first(call)
+        .into_iter()
+        .zip(&kept)
+        .map(|(part, keep)| if *keep { inner_holds(part) } else { holds_try(part) })
+        .collect();
+    let Some(last) = holding.iter().rposition(|holds| *holds) else { return };
+    let parts = runs_first(call).into_iter().zip(holding).zip(kept).zip(places);
+    for (((part, holds), keep), place) in parts.take(last + 1) {
+        if keep {
+            if let ExprKind::Try { value: inner, context: None } = &mut part.kind {
+                hoist_inside(inner, otherwise, before, made, span);
+            }
+        } else if holds {
+            hoist_inside(part, otherwise, before, made, span);
+        } else if !place && !written_out(part) {
+            let held = format!("ran__try{}_{}", here(span).start, *made);
+            *made += 1;
+            // The name keeps the span of what it stands for, which its type is found by.
+            let name_of = Expr { kind: ExprKind::Name(held.clone()), span: part.span };
+            let ran = std::mem::replace(part, name_of);
+            before.push(assign(&held, ran, false, None));
+        }
     }
 }
 

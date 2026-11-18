@@ -159,28 +159,29 @@ impl GenLink {
 
 /// Lets go of each generator a loop owns in what it reads, the last first: the one it goes over,
 /// or each made right inside `enumerate` or `zip`, as each is held by nothing else. What each
-/// failed with or how it stopped as it left goes in `failures`, in that order.
-pub(crate) fn let_go_owned(source: &Arc<Mutex<Source>>, failures: &mut Vec<Flow>) {
+/// failed with or how it stopped as it left goes in `failures`, in that order, with which of
+/// `zip`'s arguments it is, from `at`.
+pub(crate) fn let_go_owned(source: &Arc<Mutex<Source>>, failures: &mut Vec<(usize, Flow)>, at: usize) {
     if Arc::strong_count(source) > 1 {
         return;
     }
     let Ok(mut source) = source.lock() else {
-        failures.push(Flow::Unsupported("a generator was lost".to_owned()));
+        failures.push((at, Flow::Unsupported("a generator was lost".to_owned())));
         return;
     };
-    source.let_go(failures);
+    source.let_go(failures, at);
 }
 
 impl Source {
-    fn let_go(&mut self, failures: &mut Vec<Flow>) {
+    fn let_go(&mut self, failures: &mut Vec<(usize, Flow)>, at: usize) {
         match self {
-            Source::Gen(link) => failures.extend(link.let_go()),
-            Source::Numbered(inner, _) => inner.let_go(failures),
+            Source::Gen(link) => failures.extend(link.let_go().map(|flow| (at, flow))),
+            Source::Numbered(inner, _) => inner.let_go(failures, at),
             Source::Paired(first, second) => {
-                second.let_go(failures);
-                first.let_go(failures);
+                second.let_go(failures, 1);
+                first.let_go(failures, 0);
             }
-            Source::Of(stream) => let_go_owned(&stream.source, failures),
+            Source::Of(stream) => let_go_owned(&stream.source, failures, at),
             Source::Items(_) | Source::Lines(_) => {}
         }
     }

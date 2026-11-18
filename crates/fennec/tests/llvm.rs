@@ -13476,9 +13476,11 @@ fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Resul
 /// A loop's generator wraps what it fails with in the loop's `? from Wrap(...)`, as a call's
 /// failure is wrapped, when it passes up from the loop: a cleanup failing as a `break` lets it go.
 /// A generator made right inside `enumerate` or `zip` is the loop's too, let go as the loop is,
-/// its cleanup's failure noted on one leaving or passing up. Each holds inside a `with` block.
-/// Before, the first stopped the build ("gives Shut where Oops | Wrapped goes"), and the second
-/// ended the program, its generator let go by its last owner (#2041).
+/// its cleanup's failure noted on one leaving or passing up, and one failing partway through
+/// passes its failure up. Two made inside `zip` are both let go, the last first, the second's
+/// failure noted on the first's, and what `zip` reads runs in the order written. Each holds
+/// inside a `with` block. Before, the first stopped the build ("gives Shut where Oops | Wrapped
+/// goes"), and the second ended the program, its generator let go by its last owner (#2041).
 #[test]
 fn a_loop_wraps_its_generator_s_failure_and_owns_one_made_inside_enumerate_or_zip() -> std::io::Result<()> {
     if !ready() {
@@ -13510,8 +13512,158 @@ fn a_loop_wraps_its_generator_s_failure_and_owns_one_made_inside_enumerate_or_zi
         "closing broken\nbroken Wrapped(why=\"the break\")\n",
     )?;
     prints_in_both_builds("p6_zip", GENERATOR_ZIPPED, "closing zipped\nzipped Shut(name=\"zipped\") []\n")?;
+    prints_in_both_builds(
+        "r1_zip_two",
+        GENERATORS_ZIPPED_BOTH,
+        "closing second\nclosing first\nShut(name=\"second\") [\"Shut(name=\\\"first\\\")\"]\n",
+    )?;
+    prints_in_both_builds("r2_order", GENERATOR_ZIPPED_IN_ORDER, "first\nsecond\nfirst second\n")?;
+    prints_in_both_builds(
+        "r3_order_in_with",
+        GENERATOR_ZIPPED_IN_ORDER_IN_WITH,
+        "first\nchecked second\nsecond\nfirst second\nclosed outer\n",
+    )?;
+    prints_in_both_builds(
+        "r5_zip_second_fails",
+        GENERATOR_ZIPPED_SECOND_FAILS,
+        "a 1\nfailed Shut(name=\"mid\")\n",
+    )?;
+    prints_in_both_builds(
+        "r6_zip_first_fails",
+        GENERATOR_ZIPPED_FIRST_FAILS,
+        "a 1\nfailed Shut(name=\"mid\")\n",
+    )?;
+    prints_in_both_builds(
+        "r7_enumerate_fails",
+        GENERATOR_ENUMERATED_FAILS,
+        "0 1\nfailed Shut(name=\"mid\")\n",
+    )?;
     Ok(())
 }
+
+const GENERATORS_ZIPPED_BOTH: &str = r#"error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def zipped(stdout: Stdout) -> int fails Shut:
+    for left, right in zip(held_stuck("first", stdout)?, held_stuck("second", stdout)?):
+        break
+    return 0
+
+def main(stdout: Stdout):
+    got = zipped(stdout) except why:
+        stdout.print(why, why.notes())
+        return
+    stdout.print(got)
+"#;
+
+const GENERATOR_ZIPPED_IN_ORDER: &str = r#"def noisy(word: str, stdout: Stdout) -> list[str]:
+    stdout.print(word)
+    return [word]
+
+def counted(words: list[str]) -> Iterator[str]:
+    for word in words:
+        yield word
+
+def main(stdout: Stdout):
+    for first, second in zip(noisy("first", stdout), counted(noisy("second", stdout))):
+        stdout.print(first, second)
+"#;
+
+const GENERATOR_ZIPPED_IN_ORDER_IN_WITH: &str = r#"error Oops:
+    code: int
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    lend Door(name=name) except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def noisy(word: str, stdout: Stdout) -> list[str]:
+    stdout.print(word)
+    return [word]
+
+def checked(word: str, stdout: Stdout) -> str fails Oops:
+    stdout.print("checked", word)
+    if word == "":
+        fail Oops(code=1)
+    return word
+
+def run(stdout: Stdout) fails Oops:
+    with opened("outer", stdout) as door:
+        for first, second in zip(noisy("first", stdout), noisy(checked("second", stdout)?, stdout)):
+            stdout.print(first, second)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const GENERATOR_ZIPPED_SECOND_FAILS: &str = r#"error Shut:
+    name: str
+
+def breaking(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut:
+    for word, step in zip(["a", "b", "c"], breaking("mid")?):
+        stdout.print(word, step)
+    stdout.print("after")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+"#;
+
+const GENERATOR_ZIPPED_FIRST_FAILS: &str = r#"error Shut:
+    name: str
+
+def breaking(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut:
+    for step, word in zip(breaking("mid")?, ["a", "b", "c"]):
+        stdout.print(word, step)
+    stdout.print("after")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+"#;
+
+const GENERATOR_ENUMERATED_FAILS: &str = r#"error Shut:
+    name: str
+
+def breaking(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut:
+    for word, step in enumerate(breaking("mid")?):
+        stdout.print(word, step)
+    stdout.print("after")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+"#;
 
 const GENERATOR_WRAPPED: &str = r#"error Oops:
     code: int

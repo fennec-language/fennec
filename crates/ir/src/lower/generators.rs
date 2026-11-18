@@ -445,6 +445,7 @@ impl<'a> Lowering<'a> {
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);
+        lifted.owner_passes_up = super::lists::owned_name(items);
         lifted.begin_generator((**pair).clone());
         let source = lifted.declare(SOURCE, source_ty);
         let count = lifted.temporary(Type::Int);
@@ -486,6 +487,7 @@ impl<'a> Lowering<'a> {
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
         let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);
+        lifted.owner_passes_up = super::lists::owned_name(first);
         lifted.begin_generator((**pair).clone());
         let params = vec![lifted.declare(FIRST, first_ty), lifted.declare(SECOND, second_ty.clone())];
         let other = params.get(1).copied().ok_or("`zip` lost an argument")?;
@@ -601,25 +603,25 @@ impl<'a> Lowering<'a> {
         if made_here {
             self.let_go_now(&generator, (known, wrap), span)?;
         }
-        if let Operand::Local(local) = &generator
-            && made_here
-        {
-            let name = "generator.let_go".to_owned();
-            self.emit(
-                InstKind::Builtin { dest: None, name, args: vec![generator.clone()], changes: true },
-                span,
-            );
-            // One taken out of a call's result by `?` is held by that result too, until the
-            // function ends, so that goes now as well.
-            if let Some(result) = self.taken_from(*local)
-                && self.locals.get(result.0).is_some_and(|held| held.name.is_none())
-            {
-                let name = "value.let_go".to_owned();
-                let args = vec![Operand::Local(result)];
-                self.emit(InstKind::Builtin { dest: None, name, args, changes: true }, span);
-            }
+        if made_here {
+            self.release_generator(&generator, span);
         }
         Ok(())
+    }
+
+    /// Gives up the hold on a generator made for a loop, as the loop ends, and on the result `?`
+    /// took it out of, which holds it too until the function ends otherwise.
+    pub(super) fn release_generator(&mut self, generator: &Operand, span: Span) {
+        let Operand::Local(local) = generator else { return };
+        let name = "generator.let_go".to_owned();
+        self.emit(InstKind::Builtin { dest: None, name, args: vec![generator.clone()], changes: true }, span);
+        if let Some(result) = self.taken_from(*local)
+            && self.locals.get(result.0).is_some_and(|held| held.name.is_none())
+        {
+            let name = "value.let_go".to_owned();
+            let args = vec![Operand::Local(result)];
+            self.emit(InstKind::Builtin { dest: None, name, args, changes: true }, span);
+        }
     }
 
     /// Lets go of a generator stopped at a `yield` now: it's told to leave and goes on once, so
@@ -765,7 +767,7 @@ impl<'a> Lowering<'a> {
     /// After a generator's last item: a failure passes up from here, as from any call, wrapped in
     /// `wrap` when the loop over it says `? from Wrap(...)`. One in a function that can't pass it up
     /// ends the program.
-    fn pass_up_failure(
+    pub(super) fn pass_up_failure(
         &mut self,
         generator: &Operand,
         exit: crate::BlockId,
@@ -781,6 +783,12 @@ impl<'a> Lowering<'a> {
         self.finish(Terminator::Branch { cond: Operand::Local(failed), then, otherwise: exit });
         self.current = then;
         let Type::Result(_, error) = self.returns.clone() else {
+            // `enumerate`'s or `zip`'s generator over one its loop owns ends here, the failure
+            // left in that one for the loop to pass up.
+            if self.owner_passes_up {
+                self.finish(Terminator::Jump(exit));
+                return Ok(());
+            }
             let message = "this function can't pass up a generator's failure".to_owned();
             self.finish(Terminator::Stop { message, span });
             return Ok(());

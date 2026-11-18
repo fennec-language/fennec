@@ -10,8 +10,8 @@ use super::ast::{
     StreamMap, StreamRead, Streaming, TABLE, Turn, Turning, Via, Writing, XS, YS, alias_name, starting,
 };
 use super::ast::{
-    Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
-    SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
+    Between, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, Looping, REF_TEXTS,
+    RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
 };
 
 /// What every program starts with, for its body to use.
@@ -1228,7 +1228,9 @@ fn aliased_written(aliasing: &Aliasing) -> String {
     let changed: Vec<usize> = steps
         .iter()
         .filter_map(|step| match step {
-            Alias::Written { to, .. } | Alias::Read { from: to, how: Reading::Replaced, .. } => Some(*to),
+            Alias::Written { to, .. }
+            | Alias::Looped(Looping { to, .. })
+            | Alias::Read { from: to, how: Reading::Replaced, .. } => Some(*to),
             _ => None,
         })
         .collect();
@@ -1342,6 +1344,10 @@ fn aliased_written(aliasing: &Aliasing) -> String {
             Alias::Written { to, how, at, n } => {
                 let kind = held.get(to).copied().unwrap_or(Held::Numbers);
                 out.push_str(&written_change(*id, &alias_name(to), kind, (how, at, n), s));
+            }
+            Alias::Looped(looping) => {
+                let kind = held.get(looping.to).copied().unwrap_or(Held::Holders);
+                out.push_str(&looped_written(*id, &alias_name(looping.to), kind, looping, s));
             }
             Alias::Tasked { from } => {
                 let (_, suffix) = handed_type(*id, held.get(from).copied().unwrap_or(Held::Numbers));
@@ -1474,6 +1480,86 @@ fn removed_written(to: &str, held: Held, at: usize, n: i64) -> String {
     let key = key_written(at);
     let fresh = fresh_written(held, n);
     format!("    _ = {to}.remove(\"{key}\")\n{}    {to}[\"{key}\"] = {fresh}\n", walk_written(to, held))
+}
+
+/// What a `Looped` step writes, taking an item out of `to`, which holds `held`, as step `s` of
+/// `aliased{id}`.
+fn looped_written(id: usize, to: &str, held: Held, looping: Looping, s: usize) -> String {
+    let Looping { at, n, turns, between, inside, items, .. } = looping;
+    let key = key_written(at);
+    // What holds the item, and where the item is in it.
+    let (holder, place, id_at) = match held {
+        Held::Ledger => {
+            (format!("{to}.points"), format!("{to}.points[{}]", entry_written(at)), entry_written(at))
+        }
+        Held::Entries => (to.to_owned(), format!("{to}[{}]", entry_written(at)), entry_written(at)),
+        Held::Table => (to.to_owned(), format!("{to}[{}]", id_written(at)), id_written(at)),
+        Held::Rooms => (to.to_owned(), format!("{to}[{}]", room_written(at)), room_written(at)),
+        Held::Holders => (to.to_owned(), format!("{to}[{at}]"), ""),
+        _ => (to.to_owned(), format!("{to}[\"{key}\"]"), ""),
+    };
+    let taken = if items { format!("{place}.items") } else { place.clone() };
+    let listed = items || held == Held::Lists;
+    let holds = matches!(held, Held::Holders | Held::Keepers);
+    // The copy changed as a `PutBack` step changes it, then each turn's put-back and exit.
+    let copy_changed = |pad: &str| match held {
+        _ if listed => format!("{pad}taken{s}.append({n})\n"),
+        _ if holds => format!("{pad}taken{s}.tag += {n}\n{pad}taken{s}.items.append({n})\n"),
+        Held::Rooms => format!("{pad}taken{s}.counts[\"a\"] += {n}\n"),
+        _ => format!("{pad}taken{s}.y += {n}\n"),
+    };
+    let mut out = format!("    mut turn{s} = 0\n");
+    if inside {
+        let _ = write!(out, "    while True:\n        mut taken{s} = {taken}\n{}", copy_changed("        "));
+    } else {
+        let _ = write!(out, "    mut taken{s} = {taken}\n{}    while True:\n", copy_changed("    "));
+    }
+    let _ = write!(
+        out,
+        "        {taken} = taken{s}\n        turn{s} += 1\n        if turn{s} == {turns}:\n            break\n"
+    );
+    let pad = "        ";
+    match between {
+        Between::Changed => out.push_str(&match held {
+            _ if listed => format!("{pad}{taken}.append({n})\n"),
+            _ if holds => format!("{pad}{place}.tag = {n}\n{pad}{place}.items.append({n})\n"),
+            Held::Rooms => format!("{pad}{place}.counts[\"b\"] = {n}\n"),
+            _ => format!("{pad}{place}.x += {n}\n"),
+        }),
+        Between::Grown(count) => {
+            let grown_key = format!("{holder}[f\"g{{turn{s}}}x{{more{s}}}\"]");
+            let added = match held {
+                Held::Table | Held::Entries | Held::Ledger => {
+                    format!("_ = {holder}.add(Point(x=more{s}, y={n}))")
+                }
+                Held::Rooms => format!("_ = {holder}.add(Room{id}(counts={{\"a\": more{s}}}, label=\"g\"))"),
+                Held::Holders => format!("{holder}.append(Holder(items=[more{s}], tag={n}))"),
+                Held::Keepers => format!("{grown_key} = Holder(items=[more{s}], tag={n})"),
+                Held::Lists => format!("{grown_key} = [more{s}]"),
+                _ => format!("{grown_key} = Point(x=more{s}, y={n})"),
+            };
+            let _ = write!(out, "{pad}for more{s} in range({count}):\n{pad}    {added}\n");
+        }
+        Between::Removed => out.push_str(&match held {
+            Held::Table | Held::Entries | Held::Ledger | Held::Rooms => {
+                format!("{pad}_ = {holder}.remove({id_at})\n")
+            }
+            Held::Holders => {
+                format!("{pad}_ = {holder}.pop({at})\n{pad}{holder}.append(Holder(items=[{n}], tag={n}))\n")
+            }
+            // The next turn reads the item, or puts back only its items, so it has to be there.
+            _ if inside || items => {
+                let fresh = match held {
+                    Held::Keepers => format!("Holder(items=[{n}], tag={n})"),
+                    Held::Lists => format!("[{n}]"),
+                    _ => format!("Point(x={n}, y={n})"),
+                };
+                format!("{pad}_ = {holder}.remove(\"{key}\")\n{pad}{holder}[\"{key}\"] = {fresh}\n")
+            }
+            _ => format!("{pad}_ = {holder}.remove(\"{key}\")\n"),
+        }),
+    }
+    out
 }
 
 /// What a `Written` step writes, changing `to`, which holds `held`, as step `s` of `aliased{id}`.

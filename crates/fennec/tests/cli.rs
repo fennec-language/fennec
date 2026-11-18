@@ -1109,6 +1109,40 @@ fn test_runs_the_tests_in_every_file_of_a_kit() {
     assert!(stdout.ends_with("3 passed, 0 failed\n"), "{stdout}");
 }
 
+/// Two tests of one name, in two files of a kit or twice in one file, each run, told apart by
+/// their module, and in one module by their line. Neither ran before: both failed, saying LLVM
+/// couldn't build them (#1860).
+#[test]
+fn tests_of_one_name_in_a_kit_each_run_told_apart_by_their_modules() {
+    let dir = scratch("one-name").unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"dup\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n").unwrap();
+    std::fs::write(
+        dir.join("src/one.fen"),
+        "def twice(n: int) -> int:\n    return n * 2\n\ntest \"it works\":\n    assert twice(2) == 4\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/two.fen"),
+        "def thrice(n: int) -> int:\n    return n * 3\n\ntest \"it works\":\n    assert thrice(2) == 6\n\n\
+         test \"again\":\n    assert thrice(1) == 3\n\ntest \"again\":\n    assert thrice(0) == 0\n",
+    )
+    .unwrap();
+    let test = fennec_in(&dir, &["test", "--verbose"], "").unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let stdout = text(&test.stdout);
+    assert!(test.status.success(), "{stdout}{}", text(&test.stderr));
+    for shown in [
+        "✓ it works (in one)",
+        "✓ it works (in two)",
+        "✓ again (in two, line 7)",
+        "✓ again (in two, line 10)",
+    ] {
+        assert!(stdout.contains(shown), "{shown}:\n{stdout}");
+    }
+    assert!(stdout.ends_with("4 passed, 0 failed\n"), "{stdout}");
+}
+
 #[test]
 fn run_points_at_the_import_and_names_the_file() {
     let output = fennec(&["run", "examples/projects/errors/cycle"], "").unwrap();

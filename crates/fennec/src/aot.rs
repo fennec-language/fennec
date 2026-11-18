@@ -3,6 +3,7 @@
 //! next to the `fennec` command. On Windows, that's LLD with MinGW-w64's libraries, which come
 //! with LLVM's tools in the `llvm` folder beside `fennec`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Instant;
@@ -208,7 +209,7 @@ pub(crate) fn tests_executable(
     let compiled = compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::tests_entry(lowered, shared, image, bytes, tests)
     })?;
-    finish(&compiled, output, false)?;
+    finish(&compiled, output, false, &emitted.units)?;
     Ok(emitted.shared.ran.iter().cloned().collect())
 }
 
@@ -232,7 +233,7 @@ pub(crate) fn tracing_executable(
     let compiled = compile_emitted(&emitted, false, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::entry(lowered, shared, image, bytes)
     })?;
-    finish(&compiled, output, false)?;
+    finish(&compiled, output, false, &emitted.units)?;
     Ok((emitted.shared.sites, emitted.lowered))
 }
 
@@ -310,13 +311,13 @@ pub(crate) fn executable_checked(
     checked: Option<fennec_check::Signatures>,
 ) -> Result<Built, String> {
     let started = Instant::now();
-    let built = llvm_objects(program, release, checked)?;
+    let (built, units) = llvm_objects(program, release, checked)?;
     let compiled = started.elapsed();
     // A release built with the runtime's bitcode has its Rust inside already.
     let runtime_in = release && runtime_bitcode(built.runtime, built.statically).is_some();
     // A missing runtime with threads fails here, so `fennec run` says so rather than quietly
     // taking another way.
-    let linked = finish(&built, output, runtime_in)?;
+    let linked = finish(&built, output, runtime_in, &units)?;
     let root = built.stored.as_ref().map(|stored| stored.root.clone());
     Ok(Built { total: built.total, fresh: built.fresh, compiled, linked, root })
 }
@@ -377,7 +378,12 @@ pub(crate) fn dev_build_settings() -> String {
 /// Puts the finished program at `output`: the one in the store under its root hash, or else the
 /// objects linked, which then go in the store under it, with the list of its functions' hashes
 /// beside them. Gives back how long linking took, which is nothing for a stored one.
-fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::time::Duration, String> {
+fn finish(
+    compiled: &Compiled,
+    output: &Path,
+    runtime_in: bool,
+    units: &[fennec_llvm::Unit],
+) -> Result<std::time::Duration, String> {
     if let Some(Stored { cache, root, program: Some(bytes), .. }) = &compiled.stored {
         if stored_executable(cache, root, output).is_none() {
             put_program(output, bytes)?;
@@ -386,14 +392,35 @@ fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::t
     }
     // The linker writes a new file where none is, rather than into one a run may have launched.
     let _ = std::fs::remove_file(output);
-    let linked = link_objects(
-        &compiled.objects,
-        output,
-        compiled.runtime,
-        runtime_in,
-        compiled.tls,
-        (compiled.statically, compiled.release),
-    )?;
+    // `FENNEC_LOSE_KEPT_OBJECTS=1`, for a test: every kept object goes before the link, as a
+    // cleanup another command runs may take them.
+    if std::env::var("FENNEC_LOSE_KEPT_OBJECTS").as_deref() == Ok("1") {
+        for object in &compiled.objects {
+            if let fennec_llvm::Object::Kept(path) = object {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    // Each kept object compiled again because it went, by its place among the objects.
+    let mut again = HashMap::new();
+    let mut tries = 0;
+    let linked = loop {
+        tries += 1;
+        compiled_again(&compiled.objects, &mut again, units)?;
+        let objects: Vec<&fennec_llvm::Object> = compiled
+            .objects
+            .iter()
+            .enumerate()
+            .map(|(at, object)| again.get(&at).unwrap_or(object))
+            .collect();
+        let how = (compiled.statically, compiled.release);
+        match link_objects(&objects, output, compiled.runtime, runtime_in, compiled.tls, how) {
+            Ok(linked) => break linked,
+            // An object taken while the linker read the others: compiled again, and linked again.
+            Err(_) if tries < LINK_TRIES && lost(&compiled.objects, &again).next().is_some() => {}
+            Err(failed) => return Err(failed),
+        }
+    };
     if let Some(Stored { cache, root, functions, .. }) = &compiled.stored {
         // A store that can't be written only means linking it again next time. A run's program
         // is kept as the file just linked, the one about to be launched, so a later run of the
@@ -409,6 +436,44 @@ fn finish(compiled: &Compiled, output: &Path, runtime_in: bool) -> Result<std::t
         }
     }
     Ok(linked)
+}
+
+/// How many times a build links while kept objects go from under it, compiling each again.
+const LINK_TRIES: usize = 3;
+
+/// The places of the kept objects that are gone from the cache and not compiled again yet.
+fn lost<'o>(
+    objects: &'o [fennec_llvm::Object],
+    again: &'o HashMap<usize, fennec_llvm::Object>,
+) -> impl Iterator<Item = usize> + 'o {
+    objects.iter().enumerate().filter_map(move |(at, object)| match object {
+        fennec_llvm::Object::Kept(path) if !again.contains_key(&at) && !path.is_file() => Some(at),
+        _ => None,
+    })
+}
+
+/// Compiles again each of a dev build's kept objects that's gone from the cache since the build
+/// found it, as a cleanup another command started can take it, for the link to use its bytes. So
+/// a cache file going missing can never fail a build: it only costs compiling that function again.
+/// `objects` are the units' in order, and the entry's after them, which is never kept.
+fn compiled_again(
+    objects: &[fennec_llvm::Object],
+    again: &mut HashMap<usize, fennec_llvm::Object>,
+    units: &[fennec_llvm::Unit],
+) -> Result<(), String> {
+    let gone: Vec<usize> = lost(objects, again).collect();
+    if gone.is_empty() {
+        return Ok(());
+    }
+    let tools = fennec_llvm::Tools::find()?;
+    let work = crate::own_temp("llvm-again");
+    let made = gone.into_iter().try_for_each(|at| {
+        let unit = units.get(at).ok_or("a kept object that's gone is no function's")?;
+        again.insert(at, fennec_llvm::Object::Bytes(fennec_llvm::compile_again(&tools, unit, &work)?));
+        Ok::<(), String>(())
+    });
+    let _ = std::fs::remove_dir_all(&work);
+    made
 }
 
 /// Lets a program written to `path` run.
@@ -776,7 +841,7 @@ fn llvm_objects(
     program: &fennec_kit::Program,
     release: bool,
     checked: Option<fennec_check::Signatures>,
-) -> Result<Compiled, String> {
+) -> Result<(Compiled, Vec<fennec_llvm::Unit>), String> {
     // A release build leaves native blocks unwatched, paying nothing for it; a dev build tells
     // the runtime of each, for it to stop if it's ever given one.
     fennec_llvm::trust_native_blocks(release);
@@ -793,9 +858,11 @@ fn llvm_objects(
         }
         .to_bytes()
     };
-    compile_emitted(&emitted, release, image_of, |lowered, shared, image, bytes| {
+    let compiled = compile_emitted(&emitted, release, image_of, |lowered, shared, image, bytes| {
         fennec_llvm::entry(lowered, shared, image, bytes)
-    })
+    })?;
+    // Kept for compiling again any kept object a cleanup takes before the link.
+    Ok((compiled, emitted.units))
 }
 
 /// Compiles what LLVM has text for, with the module made fresh each build from `entry_of`.
@@ -885,7 +952,7 @@ fn compile_emitted(
 /// files, read where they lie. When the runtime's Rust is in the objects already, only its C parts
 /// are linked, so nothing of it is there twice.
 fn link_objects(
-    objects: &[fennec_llvm::Object],
+    objects: &[&fennec_llvm::Object],
     output: &Path,
     runtime: Runtime,
     runtime_in: bool,
@@ -898,7 +965,7 @@ fn link_objects(
     std::fs::create_dir_all(&work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
     let mut paths = Vec::with_capacity(objects.len());
     for (at, object) in objects.iter().enumerate() {
-        match object {
+        match *object {
             fennec_llvm::Object::Kept(path) => paths.push(path.clone()),
             fennec_llvm::Object::Bytes(bytes) => {
                 let path = work.join(format!("{at}.o"));

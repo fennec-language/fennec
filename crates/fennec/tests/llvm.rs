@@ -10447,6 +10447,285 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A `with` source written in twice in one function, its union parameter given a different member
+/// each time, takes each copy's own: each copy is lowered with the types found for its own spans.
+/// Before, both took the last copy's member, which printed `gate gate` one way round, and the
+/// other way round read a `Gate` as a `Door` and crashed (#2056). A source written into another
+/// written in twice does the same.
+#[test]
+fn a_source_written_in_twice_gives_each_copy_its_own_union_member() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "source_twice_union",
+        SOURCE_TWICE_UNION,
+        "front gate\ngate front\ngate front | back gate\n",
+    )
+}
+
+/// A `with` source that declares a `shared` value and takes its `lock` is written in with both,
+/// once or twice in one function, and so is one with a `for ref` loop or a loop over `items()`: what's lowered later in the round a copy is written in finds the
+/// copy's `shared` value at its own spans. Before the copies' spans were kept apart, the copy's
+/// `lock` was lowered and its `shared` value wasn't.
+#[test]
+fn a_source_holding_a_shared_value_is_written_in_with_its_lock() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("source_shared_lock", SOURCE_SHARED_LOCK, "1\n1 1\n")?;
+    // A `for ref` and a `for key, ref value in x.items()` in a source written in twice, which are
+    // lowered in the round each copy is written in, at its own spans.
+    prints_in_both_builds(
+        "source_ref_items",
+        SOURCE_REF_ITEMS,
+        "2 [2, 4]\n1 [10]\n2 {\"a\": 2, \"bb\": 4}\n1 {\"ccc\": 3}\n",
+    )
+}
+
+const SOURCE_REF_ITEMS: &str = r#"def doubled(ref items: list[int]) -> with int:
+    for ref item in items:
+        item *= 2
+    lend len(items)
+
+def bumped(ref counts: dict[str, int]) -> with int:
+    for key, ref value in counts.items():
+        value += len(key)
+    lend len(counts)
+
+def run(stdout: Stdout):
+    mut items = [1, 2]
+    mut more = [5]
+    with doubled(ref items) as got:
+        stdout.print(got, items)
+    with doubled(ref more) as got:
+        stdout.print(got, more)
+    mut counts = {"a": 1, "bb": 2}
+    mut others = {"ccc": 0}
+    with bumped(ref counts) as got:
+        stdout.print(got, counts)
+    with bumped(ref others) as got:
+        stdout.print(got, others)
+
+def main(stdout: Stdout):
+    run(stdout)
+"#;
+
+const SOURCE_SHARED_LOCK: &str = r"struct Tally:
+    count: int
+
+def tallied() -> with int:
+    shared tally = Tally(count=0)
+    lock tally as ref held:
+        held.count += 1
+    mut seen = 0
+    lock tally as now:
+        seen = now.count
+    lend seen
+
+def twice(stdout: Stdout):
+    mut first = 0
+    with tallied() as got:
+        first = got
+    with tallied() as got:
+        stdout.print(first, got)
+
+def main(stdout: Stdout):
+    with tallied() as got:
+        stdout.print(got)
+    twice(stdout)
+";
+
+/// What goes wrong in a copy of the program's text written in more than once says where its text
+/// is, in a dev and a release build: an `assert` in a source's second copy, one in a `with` block
+/// written in for each member of a union, one in a generic function's copy for its second type, and
+/// one in a source's `except:` cleanup, which is written in for each way the block fails. Before,
+/// the union's and the generic's pointed past the end of the file.
+#[test]
+fn a_failure_in_a_copy_written_in_says_where_its_text_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, source, printed, line) in [
+        ("copy_assert_source", COPY_ASSERT_SOURCE, "", ":11:12"),
+        ("copy_assert_union", COPY_ASSERT_UNION, "lite\n", ":15:16"),
+        ("copy_assert_generic", COPY_ASSERT_GENERIC, "front\n", ":18:16"),
+        ("copy_assert_cleanup", COPY_ASSERT_CLEANUP, "1\n", ":6:16"),
+    ] {
+        let dir = folder(name)?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let args: Vec<String> = ["build"]
+                .into_iter()
+                .chain(how.iter().copied())
+                .map(str::to_owned)
+                .chain([program.to_string_lossy().into_owned(), "-o".to_owned()])
+                .chain([executable.to_string_lossy().into_owned()])
+                .collect();
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let built = fennec(&args, &dir)?;
+            assert!(built.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            let (out, err) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(out, printed, "{name} {how:?}: {err}");
+            let at = format!("{name}.fen{line}");
+            assert!(err.contains("this assertion failed") && err.contains(&at), "{name} {how:?}: {err}");
+            assert_eq!(ran.status.code(), Some(1), "{name} {how:?}");
+        }
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
+const SOURCE_TWICE_UNION: &str = r#"struct Door:
+    name: str
+
+struct Gate:
+    width: int
+
+def narrowed(thing: Door | Gate) -> with str:
+    mut said = "gate"
+    if thing is Door:
+        said = thing.name
+    lend said
+
+def door_first() -> str:
+    mut seen = ""
+    with narrowed(Door(name="front")) as got:
+        seen = got
+    with narrowed(Gate(width=2)) as got:
+        seen = seen + " " + got
+    return seen
+
+def gate_first() -> str:
+    mut seen = ""
+    with narrowed(Gate(width=2)) as got:
+        seen = got
+    with narrowed(Door(name="front")) as got:
+        seen = seen + " " + got
+    return seen
+
+def twice(first: Door | Gate, second: Door | Gate) -> with str:
+    mut seen = ""
+    with narrowed(first) as got:
+        seen = got
+    with narrowed(second) as got:
+        seen = seen + " " + got
+    lend seen
+
+def nested() -> str:
+    mut seen = ""
+    with twice(Gate(width=1), Door(name="front")) as got:
+        seen = got
+    with twice(Door(name="back"), Gate(width=2)) as got:
+        seen = seen + " | " + got
+    return seen
+
+def main(stdout: Stdout):
+    stdout.print(door_first())
+    stdout.print(gate_first())
+    stdout.print(nested())
+"#;
+
+const COPY_ASSERT_CLEANUP: &str = r"error Oops:
+    code: int
+
+def guarded(code: int) -> with int:
+    lend code except:
+        assert code < 3
+
+def risky(code: int) -> int fails Oops:
+    if code > 1:
+        fail Oops(code=code)
+    return code
+
+def run(code: int) -> int fails Oops:
+    with guarded(code) as got:
+        if got == 5:
+            fail Oops(code=got)
+        kept = risky(got)?
+        return kept
+    return 0
+
+def main(stdout: Stdout):
+    stdout.print(run(1)?)
+    stdout.print(run(5)?)
+";
+
+const COPY_ASSERT_SOURCE: &str = r#"struct Door:
+    name: str
+
+struct Gate:
+    width: int
+
+def narrowed(thing: Door | Gate) -> with str:
+    mut said = "gate"
+    if thing is Door:
+        said = thing.name
+    assert said != "gate"
+    lend said
+
+def counted() -> str:
+    mut seen = ""
+    with narrowed(Door(name="front")) as got:
+        seen = got
+    with narrowed(Gate(width=2)) as got:
+        seen = seen + " " + got
+    return seen
+
+def main(stdout: Stdout):
+    stdout.print(counted())
+"#;
+
+const COPY_ASSERT_UNION: &str = r#"struct Lite:
+    name: str
+
+    def opened(self) -> with str:
+        lend "lite"
+
+struct Pg:
+    port: int
+
+    def opened(self) -> with str:
+        lend "pg"
+
+def run(store: Lite | Pg) -> str:
+    with store.opened() as got:
+        assert got != "pg"
+        return got
+
+def main(stdout: Stdout):
+    stdout.print(run(Lite(name="a")))
+    stdout.print(run(Pg(port=1)))
+"#;
+
+const COPY_ASSERT_GENERIC: &str = r#"interface Opener:
+    def opened(self) -> with str
+
+struct Front:
+    name: str
+
+    def opened(self) -> with str:
+        lend "front"
+
+struct Back:
+    width: int
+
+    def opened(self) -> with str:
+        lend "back"
+
+def run[T: Opener](held: T) -> str:
+    with held.opened() as got:
+        assert got == "front"
+        return got
+
+def main(stdout: Stdout):
+    stdout.print(run(Front(name="a")))
+    stdout.print(run(Back(width=1)))
+"#;
+
 /// A type parameter named only in a parameter's type, as `E` is in `make: () -> T fails E`: a
 /// generic source written in where it's used doesn't know it, and a call to a generic function
 /// learns it from the function it's given.

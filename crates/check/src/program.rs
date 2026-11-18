@@ -131,6 +131,9 @@ pub(crate) struct Program {
     /// Each file of the program, the program's own and its kits', by the span its text covers.
     /// None for a program parsed from one text, which is one file.
     pub(crate) files: Vec<Span>,
+    /// Where each copy of the program's text written in went (`Module::copied`): code in one is in
+    /// the file its text is in, and sees what that file imports.
+    pub(crate) copied: Vec<fennec_syntax::Copied>,
     /// What each of those files imports from the standard library, in the same order: one file's
     /// imports are its own, never another's.
     pub(crate) file_imports: Vec<Imports>,
@@ -185,6 +188,7 @@ impl Program {
     pub(crate) fn add_with<'m>(&mut self, module: &'m Module, prelude: bool, hold: &impl Holds<'m>) {
         if !prelude {
             self.files.clone_from(&module.files);
+            self.copied.clone_from(&module.copied);
             self.file_imports = vec![Imports::default(); module.files.len().max(1)];
         }
         for item in &module.items {
@@ -329,7 +333,7 @@ impl Program {
     /// lowering writes in only what it imports itself. What lowering imports, under names no file
     /// can write, every file's code reaches too.
     pub(crate) fn imports_at(&self, span: Span) -> [Option<&Imports>; 2] {
-        match crate::place(&self.files, span) {
+        match crate::place(&self.files, span.copied_from(&self.copied)) {
             crate::Place::Std => [Some(&self.std_imports), None],
             crate::Place::File(at) => [self.file_imports.get(at), Some(&self.written_imports)],
             crate::Place::Written => [None, Some(&self.written_imports)],

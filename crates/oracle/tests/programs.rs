@@ -2988,6 +2988,102 @@ fn tasks_talk_through_channels_and_listeners() {
     );
 }
 
+/// A channel to every listener keeps the last `size` messages. Where nothing else can go on as it
+/// lets the oldest go, a listener that hadn't read it falls behind on every run: its next receive
+/// fails as a crash does, or with `when_behind=.DropOldest` goes on from the oldest kept, as the
+/// runtime's does. An inbox made after some were sent hears from there. What it prints is what the
+/// compiled program printed, the same each run. Where a listener's task could be reading as the
+/// oldest goes, whether it read it first hangs on time, and the run is refused.
+#[test]
+fn a_listener_left_behind_fails_or_skips_and_one_that_could_be_reading_is_refused() {
+    prints(BEHIND, "early fell behind\ntook [4, 5]\nskipped to [4, 5]\n");
+    let (printed, ended) = ran(RACING);
+    let refused = "a channel to every listener let go of a message a listener that could be reading hadn't read, which it read first or not by time";
+    assert_eq!(ended, Ended::Unsupported(refused.to_owned()), "{printed}");
+}
+
+const BEHIND: &str = "
+        from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def took(hits: Inbox[int], count: int, stdout: Stdout):
+            mut got: list[int] = []
+            for _ in range(count):
+                got.append(hits.receive() else -1)
+            stdout.print('took', got)
+
+        def reading(hits: Inbox[int], count: int, stdout: Stdout) fails Crashed:
+            with launch(() => took(hits, count=count, stdout=stdout)):
+                pass
+
+        def skipping(hits: Channel[int], replies: Sender[int], gate: Channel[int], stdout: Stdout) fails Closed:
+            mut waited = False
+            mut got: list[int] = []
+            for hit in hits.listen(when_behind=.DropOldest):
+                if hit < 0:
+                    if not waited:
+                        replies.send(-1)?
+                        waited = True
+                        _ = gate.receive() else fail Closed()
+                    continue
+                got.append(hit)
+                if hit == 5:
+                    break
+            stdout.print('skipped to', got)
+            replies.send(0)?
+
+        def until_heard(hits: Channel[int], replies: Channel[int]) fails Closed | Timeout:
+            while True:
+                hits.send(-1)?
+                heard = replies.receive_within(2ms) except Timeout(): continue
+                if heard is not None:
+                    return
+
+        def inboxes(stdout: Stdout) fails Closed:
+            with channel[int](size=2, to=.Every) as hits:
+                early = hits.inbox()
+                for hit in range(1, 4):
+                    hits.send(hit)?
+                late = hits.inbox()
+                hits.send(4)?
+                reading(early, count=2, stdout=stdout) except Crashed():
+                    stdout.print('early fell behind')
+                hits.send(5)?
+                reading(late, count=2, stdout=stdout) except Crashed():
+                    stdout.print('late fell behind')
+
+        def dropping(stdout: Stdout) fails Closed | Crashed | Timeout:
+            with channel[int](size=2, to=.Every) as hits:
+                with channel[int](size=4) as replies:
+                    with channel[int](size=1) as gate:
+                        with launch(() => skipping(hits, replies=replies.sender(), gate=gate, stdout=stdout)?)?:
+                            until_heard(hits, replies=replies)?
+                            for hit in range(1, 6):
+                                hits.send(hit)?
+                            gate.send(1)?
+                            _ = replies.receive() else fail Closed()
+
+        def main(stdout: Stdout) fails Closed | Crashed | Timeout:
+            inboxes(stdout)?
+            dropping(stdout)?
+        ";
+
+const RACING: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, channel
+
+        def took(hits: Inbox[int], count: int, stdout: Stdout):
+            mut got: list[int] = []
+            for _ in range(count):
+                got.append(hits.receive() else -1)
+            stdout.print('took', got)
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1, to=.Every) as hits:
+                inbox = hits.inbox()
+                with launch(() => took(inbox, count=2, stdout=stdout))?:
+                    hits.send(1)?
+                    hits.send(2)?
+        ";
+
 /// A task that crashes cuts short every wait its block is in, as a closed channel does, so a
 /// receive in the block, itself or in each of its `parallel` pieces, gives `None` and the block
 /// reaches its end, where the crash comes out. A wait the block starts after the crash is cut

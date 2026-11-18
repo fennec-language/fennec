@@ -18,8 +18,11 @@
 //!   on time: one after another, where each had heard of the other's last take, is in order;
 //! - several senders' messages to a listener of a channel to every listener, or waiting for room,
 //!   when the next ones differ;
-//! - a channel to every listener sent more messages than it keeps, which a listener could fall
-//!   behind on or not;
+//! - a channel to every listener letting go of its oldest message, to keep only as many as it
+//!   keeps, while a listener that hasn't read it could be reading: on another task that can go on,
+//!   one waiting with a timeout, or another `parallel` round. Where nothing else can go on, a
+//!   listener that hasn't read it falls behind on every run: its next receive fails as a crash
+//!   does, as the runtime's does, or with `when_behind=.DropOldest` goes on from the oldest kept;
 //! - a send waiting for room when its channel closes, which got in or not;
 //! - waiting on a channel inside a `lock`;
 //! - every task waiting on another, which hangs.
@@ -237,6 +240,9 @@ struct Chan {
     queue: VecDeque<Sent>,
     /// Every message sent, for a channel to every listener.
     sent: Vec<Sent>,
+    /// For a channel to every listener, the place in `sent` of the oldest message it still keeps:
+    /// it keeps the last `size`, letting the oldest go as another is sent.
+    first: usize,
     /// Who's tried to take a message from it, each with what it knew when it last tried, or once
     /// it had taken one, and whether it ever has.
     receivers: BTreeMap<usize, (Clock, bool)>,
@@ -248,13 +254,45 @@ struct Chan {
     task: Option<usize>,
 }
 
-/// A listener to a channel to every listener: the channel, and how many of its messages it's read.
+/// A listener to a channel to every listener: the channel, how many of its messages it's read,
+/// and whether, fallen behind, it goes on from the oldest kept rather than failing.
 struct Listener {
     channel: i64,
     at: usize,
+    drop_oldest: bool,
 }
 
 impl State {
+    /// After a send on the channel to every listener numbered `number`: it keeps the last `size`,
+    /// so the oldest goes. A listener that hasn't read it falls behind, unless it reads it first:
+    /// that hangs on time when it could be reading now, on another task that can go on or waits
+    /// with a timeout, or on another `parallel` round, which `sender` not being `me` says.
+    fn kept_for_every(&mut self, number: i64, sender: usize, me: usize) -> Run<Value> {
+        let Some(chan) = self.channels.get_mut(&number) else { return Ok(Value::Int(1)) };
+        if chan.sent.len() - chan.first <= chan.size {
+            return Ok(Value::Int(0));
+        }
+        let gone = chan.first;
+        chan.first += 1;
+        let missed =
+            self.listeners.values().any(|listener| listener.channel == number && listener.at <= gone);
+        if missed && (sender != me || self.others_could_go(sender)) {
+            return unsupported(
+                "a channel to every listener let go of a message a listener that could be reading hadn't read, which it read first or not by time",
+            );
+        }
+        Ok(Value::Int(0))
+    }
+
+    /// Whether any but `actor` can go on now, or is waiting with a timeout, which could end
+    /// whenever it does.
+    fn others_could_go(&self, actor: usize) -> bool {
+        (0..self.actors.len()).filter(|&other| other != actor).any(|other| {
+            self.can_go(other)
+                || self.actors.get(other).is_some_and(|found| matches!(found.state, Doing::Waiting(_, true)))
+        })
+    }
+
     /// Whether the one numbered `actor` can go on.
     fn can_go(&self, actor: usize) -> bool {
         let Some(found) = self.actors.get(actor) else { return false };
@@ -775,6 +813,7 @@ impl Interp {
             closed: false,
             queue: VecDeque::new(),
             sent: Vec::new(),
+            first: 0,
             receivers: BTreeMap::new(),
             waiting_sends: Vec::new(),
             left: false,
@@ -821,7 +860,7 @@ impl Interp {
                 let Ok(size) = usize::try_from(*size) else { return unsupported("a channel of no size") };
                 self.new_channel(size, name == "new_every").map(Value::Int)
             }
-            ("listen", [Value::Int(number), Value::Bool(_)]) => {
+            ("listen", [Value::Int(number), Value::Bool(drop_oldest)]) => {
                 let mut state = self.sched_state()?;
                 let Some(chan) = state.channels.get(number) else {
                     return unsupported("a channel let go of");
@@ -832,7 +871,9 @@ impl Interp {
                 let at = chan.sent.len();
                 let listener = state.next_number;
                 state.next_number += 1;
-                state.listeners.insert(listener, Listener { channel: *number, at });
+                state
+                    .listeners
+                    .insert(listener, Listener { channel: *number, at, drop_oldest: *drop_oldest });
                 Ok(Value::Int(listener))
             }
             ("send", [Value::Int(number), message, Value::Int(timeout)]) => {
@@ -925,12 +966,7 @@ impl Interp {
                 let sent = Sent { sender, value: message.clone(), clock, race };
                 if chan.every {
                     chan.sent.push(sent);
-                    if chan.sent.len() > chan.size {
-                        return unsupported(
-                            "a channel to every listener sent more than it keeps, which a listener could fall behind on or not",
-                        );
-                    }
-                    return Ok(Value::Int(0));
+                    return state.kept_for_every(number, sender, me);
                 }
                 if chan.queue.len() < chan.size {
                     chan.queue.push_back(sent);
@@ -1032,8 +1068,27 @@ fn take_message(
     orders: &mut Orders,
 ) -> Run<Option<(Value, i64)>> {
     let taken = if let Some(listener) = state.listeners.get(&number) {
-        let channel = listener.channel;
-        let at = listener.at;
+        let (channel, mut at, drop_oldest) = (listener.channel, listener.at, listener.drop_oldest);
+        let Some(chan) = state.channels.get(&channel) else { return Ok(Some((Value::None, 1))) };
+        // A listener whose next message has gone fails, as a crash does, or goes on from the
+        // oldest kept, as the runtime's does.
+        if at < chan.first {
+            if !drop_oldest {
+                let missed = chan.first - at;
+                return super::crash(
+                    format!(
+                        "this listener fell behind a channel to `.Every`, missing {missed} message{}: listen \
+                         with `when_behind=.DropOldest` to skip what it misses",
+                        if missed == 1 { "" } else { "s" }
+                    ),
+                    Span::default(),
+                );
+            }
+            at = chan.first;
+            if let Some(listener) = state.listeners.get_mut(&number) {
+                listener.at = at;
+            }
+        }
         let Some(chan) = state.channels.get(&channel) else { return Ok(Some((Value::None, 1))) };
         if at >= chan.sent.len() {
             return Ok(chan.closed.then_some((Value::None, 1)));

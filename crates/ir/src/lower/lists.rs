@@ -599,6 +599,9 @@ impl Lowering<'_> {
                 body,
             );
         }
+        if let Some((made, owned)) = self.made_inside(iter, span)? {
+            return self.owning(owned, Over { names, iter: &made, back }, span, body);
+        }
         let ty = self.type_at(iter.span).ok_or("what it loops over has no type")?;
         if let Type::Table(item) = &ty {
             return self.through_slots(names, (iter, (**item).clone()), back.as_ref(), span, body);
@@ -606,7 +609,16 @@ impl Lowering<'_> {
         let value = self.expr(iter)?;
         if let Type::Iterator(item) = &ty {
             let known = known_generator(iter, &|key| self.context.generators.contains_key(key));
-            return self.through_generator(names, (value, (**item).clone()), known, (span, iter.span), body);
+            // `for x in made()? from Wrap(...)`: what the generator fails with is wrapped too, as is
+            // what one made right inside `enumerate` or `zip` fails with, through it.
+            let pending = self.wrap_next_loop.take();
+            let wrap = match &iter.kind {
+                ExprKind::Try { context, .. } => context.as_deref(),
+                _ => None,
+            }
+            .or(pending.as_ref());
+            let item = (**item).clone();
+            return self.through_generator(names, (value, item), (known, wrap), (span, iter.span), body);
         }
         if ty == Type::Str && back.is_none() {
             return self.through_text(names, value, span, body);
@@ -628,7 +640,7 @@ impl Lowering<'_> {
                     let kind = InstKind::Call { dest: Some(generated), function, args: vec![value] };
                     self.emit(kind, span);
                     let source = (Operand::Local(generated), (**item).clone());
-                    return self.through_generator(names, source, None, (span, iter.span), body);
+                    return self.through_generator(names, source, (None, None), (span, iter.span), body);
                 }
                 let Type::List(item) = found.returns else {
                     return Err(format!("it has a `for` loop over {name}"));
@@ -933,6 +945,104 @@ pub(super) fn range_args(iter: &Expr) -> Option<(Vec<&Expr>, bool)> {
 }
 
 /// The function that resumes what a loop goes over, when it can be seen from here.
+/// A generator a loop owns besides the one it goes over: one `enumerate` or `zip` reads, made
+/// right there. It's let go as the loop is, as `for x in made()?:` lets go of its own.
+pub(super) struct Owned {
+    generator: Operand,
+    known: Option<String>,
+    wrap: Option<Expr>,
+}
+
+impl Lowering<'_> {
+    /// `enumerate(made()?)` or `zip(made()?, ...)`, each generator made right there in it lowered
+    /// first and named apart, as what the loop goes over then, with the generators it owns. Nothing
+    /// for anything else.
+    fn made_inside(&mut self, iter: &Expr, span: Span) -> Lowered<Option<(Expr, Vec<Owned>)>> {
+        let ExprKind::Call { callee, args } = &iter.kind else { return Ok(None) };
+        let ExprKind::Name(called) = &callee.kind else { return Ok(None) };
+        if !matches!(called.as_str(), "enumerate" | "zip") || self.lookup(called).is_some() {
+            return Ok(None);
+        }
+        let made_here = |arg: &fennec_syntax::Arg| {
+            let made = match &arg.value.kind {
+                ExprKind::Try { value, .. } => value.as_ref(),
+                _ => &arg.value,
+            };
+            arg.name.is_none() && matches!(made.kind, ExprKind::Call { .. })
+        };
+        if !args
+            .iter()
+            .any(|arg| made_here(arg) && matches!(self.type_at(arg.value.span), Some(Type::Iterator(_))))
+        {
+            return Ok(None);
+        }
+        let mut made = iter.clone();
+        let ExprKind::Call { args, .. } = &mut made.kind else { return Ok(None) };
+        let mut owned = Vec::new();
+        for arg in args.iter_mut() {
+            if !made_here(arg) || !matches!(self.type_at(arg.value.span), Some(Type::Iterator(_))) {
+                continue;
+            }
+            let known = known_generator(
+                match &arg.value.kind {
+                    ExprKind::Try { value, .. } => value,
+                    _ => &arg.value,
+                },
+                &|key| self.context.generators.contains_key(key),
+            );
+            let wrap = match &arg.value.kind {
+                ExprKind::Try { context, .. } => context.as_deref().cloned(),
+                _ => None,
+            };
+            let Operand::Local(held) = self.expr(&arg.value)? else {
+                return Err("a generator made for a loop isn't held".to_owned());
+            };
+            // Named so nothing a program writes names it, and read through that name where it was.
+            let name = format!("\0owned{}", arg.value.span.start);
+            if let Some(scope) = self.scopes.last_mut() {
+                scope.insert(name.clone(), held);
+            }
+            arg.value = Expr { kind: ExprKind::Name(name), span: arg.value.span };
+            owned.push(Owned { generator: Operand::Local(held), known, wrap });
+        }
+        let _ = span;
+        Ok(Some((made, owned)))
+    }
+
+    /// Runs a loop over what `over` says, owning `owned` too: each is let go as the loop is left,
+    /// by a failure or `return` with what's left then, and otherwise once it's done, the last first.
+    fn owning<F>(&mut self, owned: Vec<Owned>, over: Over<'_>, span: Span, body: F) -> Lowered<()>
+    where
+        F: FnOnce(&mut Self) -> Lowered<()>,
+    {
+        let mut wraps = owned.iter().filter_map(|each| each.wrap.as_ref());
+        let wrap = wraps.next().cloned();
+        if wraps.next().is_some() {
+            return Err("it reads generators that wrap their failures in more than one way".to_owned());
+        }
+        let entered = self.leaving.len();
+        for each in &owned {
+            let wrap = each.wrap.clone().map(Box::new);
+            self.leaving.push(Leaving::Generator {
+                generator: each.generator.clone(),
+                known: each.known.clone(),
+                wrap,
+            });
+        }
+        self.wrap_next_loop = wrap;
+        let ran = self.looping(over, span, body);
+        self.wrap_next_loop = None;
+        self.leaving.truncate(entered);
+        ran?;
+        if self.is_open() {
+            for each in owned.iter().rev() {
+                self.let_go_now(&each.generator, (each.known.clone(), each.wrap.as_ref()), span)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 fn known_generator(iter: &Expr, is_generator: &dyn Fn(&str) -> bool) -> Option<String> {
     let ExprKind::Call { callee, .. } = &iter.kind else { return None };
     let ExprKind::Name(key) = &callee.kind else { return None };

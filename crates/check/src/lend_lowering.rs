@@ -1145,13 +1145,22 @@ fn replace_lend(body: &mut Vec<Stmt>, with_block: &mut LentAs<'_>) -> bool {
 fn fails_unheld(stmt: &Stmt) -> bool {
     match &stmt.kind {
         StmtKind::For { iter, .. } => {
-            crate::parallel::parallel_items(iter).is_some() || matches!(iter.kind, ExprKind::Try { .. })
+            crate::parallel::parallel_items(iter).is_some()
+                || matches!(iter.kind, ExprKind::Try { .. })
+                || matches!(&iter.kind, ExprKind::Call { callee, args }
+                    if reads_a_generator(callee) && args.iter().any(|arg| matches!(arg.value.kind, ExprKind::Try { .. })))
         }
         // As it's written, or as `lock_lowering` wrote it in an earlier round, as a `ref` case in a
         // source's body is lowered once the source is written in.
         StmtKind::With { lock, names, .. } => *lock || crate::lock::lowered(names),
         _ => false,
     }
+}
+
+/// Whether a call is `enumerate` or `zip`, whose loop owns a generator made right inside it, as it
+/// does one it goes over by itself.
+fn reads_a_generator(callee: &Expr) -> bool {
+    matches!(&callee.kind, ExprKind::Name(name) if name == "enumerate" || name == "zip")
 }
 
 /// `exits` in a body inside the block, where the block's failure isn't held when `unheld` says.
@@ -1447,6 +1456,20 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
             if otherwise.is_empty() =>
         {
             hoist_inside(inner, otherwise, before, made, span);
+        }
+        // So does one over `enumerate(made()?)` or `zip(made()?, ...)`, for the generator made
+        // right there: its `?` stays too, and only those inside what it's made from come out.
+        StmtKind::For { iter: Expr { kind: ExprKind::Call { callee, args }, .. }, .. }
+            if otherwise.is_empty() && reads_a_generator(callee) =>
+        {
+            for arg in args.iter_mut() {
+                match &mut arg.value.kind {
+                    ExprKind::Try { value: inner, context: None } => {
+                        hoist_inside(inner, otherwise, before, made, span)
+                    }
+                    _ => hoist_inside(&mut arg.value, otherwise, before, made, span),
+                }
+            }
         }
         StmtKind::Expr(value)
         | StmtKind::Fail(value)

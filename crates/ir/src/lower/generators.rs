@@ -544,12 +544,14 @@ impl<'a> Lowering<'a> {
         Ok(taken)
     }
 
-    /// Runs `body` for each item a generator gives, failing if it's been used already.
+    /// Runs `body` for each item a generator gives, failing if it's been used already. A failure
+    /// of the generator's own that passes up from the loop is wrapped in `wrap`, the loop's
+    /// `? from Wrap(...)`, as a call's is.
     pub(super) fn through_generator<F>(
         &mut self,
         names: &[String],
         (generator, item): (Operand, Type),
-        known: Option<String>,
+        (known, wrap): (Option<String>, Option<&Expr>),
         (span, used_at): (Span, Span),
         body: F,
     ) -> Lowered<()>
@@ -564,7 +566,12 @@ impl<'a> Lowering<'a> {
             if self.locals.get(local.0).is_some_and(|held| held.name.is_none()));
         let entered = self.leaving.len();
         if made_here {
-            self.leaving.push(Leaving::Generator { generator: generator.clone(), known: known.clone() });
+            let wrap = wrap.map(|wrap| Box::new(wrap.clone()));
+            self.leaving.push(Leaving::Generator {
+                generator: generator.clone(),
+                known: known.clone(),
+                wrap,
+            });
         }
         let (head, then, done, exit) =
             (self.new_block(), self.new_block(), self.new_block(), self.new_block());
@@ -587,12 +594,12 @@ impl<'a> Lowering<'a> {
         lowered?;
         self.finish(Terminator::Jump(head));
         self.current = done;
-        self.pass_up_failure(&generator, exit, span)?;
+        self.pass_up_failure(&generator, exit, span, wrap)?;
         self.current = exit;
         // One made for this loop goes when the loop does, closing what it's still holding, then
         // and not when the function ends.
         if made_here {
-            self.let_go_now(&generator, known, span)?;
+            self.let_go_now(&generator, (known, wrap), span)?;
         }
         if let Operand::Local(local) = &generator
             && made_here
@@ -621,7 +628,7 @@ impl<'a> Lowering<'a> {
     pub(super) fn let_go_now(
         &mut self,
         generator: &Operand,
-        known: Option<String>,
+        (known, wrap): (Option<String>, Option<&Expr>),
         span: Span,
     ) -> Lowered<()> {
         let pc = self.temporary(Type::Int);
@@ -638,7 +645,7 @@ impl<'a> Lowering<'a> {
         self.set_generator_slot(generator, slot::PC, Operand::Local(leaving), span);
         let more = self.temporary(Type::Bool);
         self.emit(InstKind::Resume { dest: more, generator: generator.clone(), known }, span);
-        self.pass_up_failure(generator, after, span)?;
+        self.pass_up_failure(generator, after, span, wrap)?;
         self.current = after;
         Ok(())
     }
@@ -755,9 +762,16 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    /// After a generator's last item: a failure passes up from here, as from any call. One in
-    /// a function that can't pass it up ends the program.
-    fn pass_up_failure(&mut self, generator: &Operand, exit: crate::BlockId, span: Span) -> Lowered<()> {
+    /// After a generator's last item: a failure passes up from here, as from any call, wrapped in
+    /// `wrap` when the loop over it says `? from Wrap(...)`. One in a function that can't pass it up
+    /// ends the program.
+    fn pass_up_failure(
+        &mut self,
+        generator: &Operand,
+        exit: crate::BlockId,
+        span: Span,
+        wrap: Option<&Expr>,
+    ) -> Lowered<()> {
         let pc = self.temporary(Type::Int);
         self.emit(InstKind::GetSlot { dest: pc, generator: generator.clone(), slot: slot::PC }, span);
         let failed = self.temporary(Type::Bool);
@@ -775,7 +789,19 @@ impl<'a> Lowering<'a> {
         let own = self.generator_error(generator);
         let held = self.temporary(own.unwrap_or_else(|| (*error).clone()));
         self.emit(InstKind::GetSlot { dest: held, generator: generator.clone(), slot: slot::FAILURE }, span);
-        let widened = self.coerce(Operand::Local(held), &error, span)?;
+        let mut passed = Operand::Local(held);
+        if let Some(wrap) = wrap {
+            let wrapper = self.expr(wrap)?;
+            let ty = crate::type_in(&self.locals, &wrapper).ok_or("a value has no type")?;
+            let dest = self.temporary(ty);
+            let name = "error.with_cause".to_owned();
+            self.emit(
+                InstKind::Builtin { dest: Some(dest), name, args: vec![wrapper, passed], changes: false },
+                span,
+            );
+            passed = Operand::Local(dest);
+        }
+        let widened = self.coerce(passed, &error, span)?;
         self.pass_up_error(widened, span)
     }
 }

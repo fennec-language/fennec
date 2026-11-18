@@ -767,12 +767,15 @@ impl<'c> FnCx<'c> {
     }
 
     /// The names `no_failing_generator_here` couldn't tell about as they were read, now that the
-    /// function's types are worked out.
+    /// function's types are worked out. One still open is a name a nested function read from the
+    /// function around it, whose type that function works out: it's handed up to it.
     fn check_pending_generators(&mut self) {
         for (name, ty, span, param) in std::mem::take(&mut self.pending_generators) {
             let settled = self.checker.settled(&ty);
             if !settled.held_generator_failures().is_empty() {
                 self.error(failing_generator_reached(&name, &settled, span, param));
+            } else if !settled.is_known() {
+                self.checker.generators_handed_up.push((name, ty, span, param));
             }
         }
     }

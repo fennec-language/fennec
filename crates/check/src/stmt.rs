@@ -643,7 +643,11 @@ impl FnCx<'_> {
         });
         let report = self.report;
         let inherited = self.generics.clone();
+        let handed = self.checker.generators_handed_up.len();
         self.checker.check_nested(&key, def, captured, !report, inherited);
+        // What it couldn't tell about a name of this function's, this function looks at again.
+        let handed_up: Vec<_> = self.checker.generators_handed_up.drain(handed..).collect();
+        self.pending_generators.extend(handed_up);
         self.declare(&def.name, function, false, def.span);
     }
 

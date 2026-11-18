@@ -210,6 +210,12 @@ fn a_generator_that_can_fail_held_or_got_with_except_can_t_reach_a_loop_that_did
             "def f(stdout: Stdout) fails Shut:\n    mut held = []\n    for round in range(2):\n        seen = () => [any(True for _ in gen) for gen in held]\n        held.append(first(\"a\")?)\n        stdout.print(round, seen())\n",
             "`held` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ held",
         ),
+        // A nested function reading one from around before it's known to hold one: the function
+        // around it looks again once it knows.
+        (
+            "def f(stdout: Stdout) fails Shut:\n    mut held = []\n    for turn in range(2):\n        def walked(out: Stdout):\n            out.print([any(True for _ in gen) for gen in held])\n        walked(stdout)\n        held.append(first(\"a\")?)\n        stdout.print(turn)\n",
+            "`held` holds a generator that can fail, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it @ held",
+        ),
         // `except` on a `def`'s call given a function, which may make one: an arrow, or a
         // function by name.
         (

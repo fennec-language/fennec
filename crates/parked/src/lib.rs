@@ -98,13 +98,13 @@ pub fn stack_size() -> Option<usize> {
     current::stack_size()
 }
 
-/// Runs `work` on a stack of at least `bytes` that this thread keeps for deep work, when a task is
-/// running here: a task's own stack may be small. While `work` runs, `stack_low` and `stack_size`
-/// say where that stack is, so what checks how far its stack has grown checks that one. With no
-/// task running, with the deep stack already in use, or with none to be had, `work` runs here.
-/// `work` mustn't park: that stops the process.
+/// Runs `work` on a stack of at least `bytes` that this thread keeps for deep work, when the task
+/// running here has a smaller one of its own. While `work` runs, `stack_low` and `stack_size` say
+/// where that stack is, so what checks how far its stack has grown checks that one. With no task
+/// running, with one whose stack is big enough, with the deep stack already in use, or with none to
+/// be had, `work` runs here. `work` mustn't park: that stops the process.
 pub fn on_deep_stack<R>(bytes: usize, work: impl FnOnce() -> R) -> R {
-    if current::stack_low().is_none() {
+    if current::stack_size().is_none_or(|size| size >= bytes) {
         return work();
     }
     let kept = DEEP.with_borrow_mut(Option::take);

@@ -592,8 +592,8 @@ const TASK_STACK_KEPT: usize = 64 << 10;
 const DEEP_READ_STACK: usize = 64 << 20;
 
 /// Runs `work`, which reads a value into a tree and is done with it, with as much stack as a
-/// worker has: in a parked task, on its thread's deep stack, since a task's own is small, and
-/// anywhere else, here.
+/// worker has: in a launched task, whose own stack is smaller, on its thread's deep stack, and
+/// anywhere else, here, a range included.
 pub(super) fn with_room_to_read<R>(work: impl FnOnce() -> R) -> R {
     #[cfg(any(test, feature = "threads"))]
     return fennec_parked::on_deep_stack(DEEP_READ_STACK, work);

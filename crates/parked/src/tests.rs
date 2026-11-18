@@ -421,6 +421,10 @@ fn deep_work_in_a_task_runs_on_the_thread_s_deep_stack_and_comes_back() {
         })
         .unwrap();
     assert_eq!(scheduler.resume(task, Wake::Ready(0)), Step::Done(1));
+    // A task whose own stack is big enough does it on its own.
+    let big = scheduler.spawn_with_stack(DEEP * 2, || super::on_deep_stack(DEEP, own_size)).unwrap();
+    let Step::Done(size) = scheduler.resume(big, Wake::Ready(0)) else { panic!("it ended") };
+    assert!(size >= i64::try_from(DEEP * 2).unwrap(), "{size}");
 }
 
 /// Thousands of short tasks one after another, as a worker running ranges makes them, on stacks as

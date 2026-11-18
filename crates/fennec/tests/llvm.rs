@@ -27550,6 +27550,11 @@ fn an_item_put_back_twice_from_one_read_looks_it_up_each_time() -> std::io::Resu
     let source = include_str!("fixtures/put_back_twice.fen");
     prints_in_both_builds("put_back_twice", source, include_str!("fixtures/put_back_twice.out"))?;
     assert!(counts_of("put_back_twice_counts", source)?.ends_with(" live 0"));
+    // The coverage lane's loop shapes: list items and dict values as well, changed in place, their
+    // list popped and appended to, or their dict's key removed between the turns.
+    let loops = include_str!("fixtures/put_back_loops.fen");
+    prints_in_both_builds("put_back_loops", loops, include_str!("fixtures/put_back_loops.out"))?;
+    assert!(counts_of("put_back_loops_counts", loops)?.ends_with(" live 0"));
     let removed = "from std.collections import Id, Table\n\nstruct Unit:\n    health: int\n\ndef twice(ref units: Table[Unit], id: Id[Unit]):\n    mut unit = units[id]\n    unit.health -= 1\n    mut turn = 0\n    while True:\n        units[id] = unit\n        turn += 1\n        if turn == 2:\n            break\n        _ = units.remove(id)\n    return\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    id = units.add(Unit(health=5))\n    twice(ref units, id)\n    stdout.print(\"not reached\")\n";
     for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
         let dir = folder("put_back_twice_removed")?;

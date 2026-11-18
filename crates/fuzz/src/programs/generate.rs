@@ -13,7 +13,6 @@
     reason = "one match chooses each kind of statement, and one each kind of value"
 )]
 
-use super::ast::Reading;
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
@@ -24,6 +23,7 @@ use super::ast::{
     REF_TEXTS, REF_WAYS, RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping,
     Waking, Yielding, ZIP_WAYS, ZipSumming, ZipWay,
 };
+use super::ast::{InOrder, ORDER_STEPS, OrderStep, Reading};
 
 /// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending
 /// from a source or failing partway (`ZipSumming`): the loop owns it since #2041.
@@ -42,6 +42,11 @@ const ELSE_LEAVES_RUN_CLEANUPS: bool = true;
 /// ordered stream since #1479. Turned off, no input reads the byte that picks it, so the shape
 /// can be taken out without changing what any other input writes.
 const PARALLEL_STREAMS: bool = true;
+
+/// Whether random programs read what a later call in the same line changes: receivers, an index's
+/// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
+/// code and the oracle both read a receiver before its arguments (#546).
+const EVALUATION_ORDER: bool = true;
 
 /// Whether random programs make copies of collections and their parts, change each through every
 /// way of writing in place, and print them all: the shape that shows an in-place write reaching a
@@ -676,6 +681,7 @@ impl Writer<'_> {
             26 if PART_CRASHES && !self.threadless && self.choice(4) == 0 => self.shelves(body),
             26 if REF_CASES && self.choice(4) == 0 => self.ref_cases(body),
             26 if NAME_CAPTURE && self.choice(4) == 0 => self.captures(body),
+            26 if EVALUATION_ORDER && self.choice(4) == 0 => self.in_order(body),
             26 => self.change_counts(body),
             // The guarded shapes are tried first, as they were before the shapes after them, so
             // each of their cases still comes up as often.
@@ -1365,6 +1371,20 @@ impl Writer<'_> {
             steps.push(Alias::Written { to: from, how, at, n });
         }
         body.push(Stmt::Aliased(Aliasing { id, base, steps }));
+    }
+
+    /// An `Ordered` statement: 3 to 10 steps, each with what its call adds, from 0 to 9.
+    fn in_order(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let base = i64::from(self.byte() % 10);
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let step =
+                ORDER_STEPS.get(self.choice(ORDER_STEPS.len())).copied().unwrap_or(OrderStep::Receiver);
+            steps.push((step, i64::from(self.byte() % 10)));
+        }
+        body.push(Stmt::Ordered(InOrder { id, base, steps }));
     }
 
     /// A loop whose int is at least 0 on its first turn and changes sign later, used as an index,

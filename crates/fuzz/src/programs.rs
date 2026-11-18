@@ -898,6 +898,39 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
     }
 
+    /// Every step of an `Ordered` statement checks, and the evaluator prints what the oracle
+    /// prints, each line read left to right: a receiver, a field's receiver, a list's and a dict's
+    /// method, an index's base, arguments, operators, a list, a text, and writes, each changed by
+    /// a call to its right (#546).
+    #[test]
+    fn the_evaluation_order_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{InOrder, ORDER_STEPS, Program, Stmt};
+        let body = (0..3)
+            .map(|round| {
+                let steps =
+                    ORDER_STEPS.iter().enumerate().map(|(at, step)| (*step, (at as i64 + round * 4) % 10));
+                Stmt::Ordered(InOrder {
+                    id: usize::try_from(round).unwrap_or(0) + 1,
+                    base: round * 3,
+                    steps: steps.collect(),
+                })
+            })
+            .collect();
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert!(printed.contains("receiver [0, 1, 2, 3] 0 1\n"), "{printed}");
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
     /// Every way of writing a `Listened` statement checks, and the evaluator is sure what it
     /// prints: inboxes kept up or behind, read one at a time or in a loop, and a loop dropping
     /// the oldest, with a message sent before any of them listens or not.

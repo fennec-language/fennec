@@ -2077,6 +2077,11 @@ pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
 #[inline(never)]
 fn children_in_place(state: &State, block: &[u64], layout: Layout) -> Vec<u64> {
     let Some(element) = value_element(state, layout.value) else { return Vec::new() };
+    // Keys and values of kinds that hold no blocks, as numbers and structs of numbers are, leave
+    // nothing to look through.
+    if !layout.key.owned() && layout.key != Word::Text && !super::heap::holds_blocks(&element) {
+        return Vec::new();
+    }
     let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
     let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
     let start = DICT_HEADER_WORDS + slots;

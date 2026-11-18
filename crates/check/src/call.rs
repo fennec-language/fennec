@@ -942,8 +942,11 @@ impl FnCx<'_> {
     /// interfaces and no others.
     fn interface_call(&mut self, call: &MethodCall<'_>, name: &str) -> Type {
         let MethodCall { object, method, types, args, span } = *call;
-        // Any type's method of this name could be the one called.
-        self.note_lock_call(&format!("*.{method}"), method, span);
+        // Any type's method of this name could be the one called, inside a lock or not: what any
+        // of them waits on or locks reaches this function (see `up_the_calls`).
+        let any = format!("*.{method}");
+        self.checker.own_callers.entry(any.clone()).or_default().insert(self.key.clone());
+        self.note_lock_call(&any, method, span);
         let owner = Type::Param(name.to_owned());
         let Some((_, def)) = self.bound_method(name, method) else {
             let help = match self.bounds_of(name).as_slice() {

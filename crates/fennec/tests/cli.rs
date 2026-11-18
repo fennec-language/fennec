@@ -5081,6 +5081,38 @@ fn a_build_the_daemon_makes_is_the_one_made_here() {
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// Two builds of one kit at once through the daemon queue, so neither's output takes in the
+/// other's: each prints what a build made here prints, once.
+#[cfg(unix)]
+#[test]
+fn two_builds_of_one_kit_at_once_queue_in_the_daemon() {
+    let (folder, kit, home) = small_kit("queued-daemon").unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    // Each side built once first, so the builds compared find what they need kept.
+    let here_home = folder.join("home-here");
+    for (side, daemon) in [(&here_home, false), (&home, true)] {
+        let first = build_in(&kit, side, daemon, false).unwrap();
+        assert!(first.status.success(), "{}", text(&first.stderr));
+    }
+    let here = build_in(&kit, &here_home, false, false).unwrap();
+    let both: Vec<Output> = std::thread::scope(|scope| {
+        let builds = [(); 2].map(|()| scope.spawn(|| build_in(&kit, &home, true, false).unwrap()));
+        builds.into_iter().map(|build| build.join().unwrap()).collect()
+    });
+    for made in both {
+        assert_eq!(made.status.code(), Some(0), "{}", text(&made.stderr));
+        assert_eq!(without_times(&made.stdout), without_times(&here.stdout));
+        assert_eq!(text(&made.stderr), text(&here.stderr));
+    }
+    let status = text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    assert!(status.contains("3 requests served"), "{status}");
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn an_idle_daemon_exits_by_itself() {

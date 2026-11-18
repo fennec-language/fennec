@@ -155,6 +155,7 @@ mod unix {
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
     use std::process::{ExitCode, Stdio};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
     use std::time::{Duration, Instant};
 
@@ -709,18 +710,8 @@ mod unix {
         let printed = home.join("daemon").join(format!("build-{}-{}", std::process::id(), *building));
         let outcome = taking_printing(&printed, || {
             fennec_build::clear_cancel();
-            // The command going while this still builds stops the build. Its connection closes
-            // after the answer too, by when nothing is running.
-            let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
-            if let Ok(mut watched) = client.try_clone() {
-                let running = Arc::clone(&running);
-                std::thread::spawn(move || {
-                    let _ = watched.read(&mut [0; 1]);
-                    if running.load(std::sync::atomic::Ordering::Relaxed) {
-                        fennec_build::cancel();
-                    }
-                });
-            }
+            let running = Arc::new(AtomicBool::new(true));
+            let _watching = stop_when_gone(client, &running, fennec_build::cancel);
             let before = std::env::current_dir().ok();
             let code = if std::env::set_current_dir(folder).is_ok() {
                 let made = std::thread::scope(|scope| {
@@ -738,13 +729,34 @@ mod unix {
             if let Some(before) = before {
                 let _ = std::env::set_current_dir(before);
             }
-            running.store(false, std::sync::atomic::Ordering::Relaxed);
+            running.store(false, Ordering::Relaxed);
             code
         });
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         state.sessions = state.sessions.saturating_sub(1);
         state.last_work = Instant::now();
         outcome
+    }
+
+    /// Watches a command's connection while its build runs: the command going, by Ctrl-C or
+    /// otherwise, closes it, and `stop` is called if the build is still `running`. The connection
+    /// closes after the answer too, by when nothing is. Anything more the command sends is read
+    /// and passed over, so only its going stops the build.
+    fn stop_when_gone(
+        client: &UnixStream,
+        running: &Arc<AtomicBool>,
+        stop: fn(),
+    ) -> Option<std::thread::JoinHandle<()>> {
+        let mut watched = client.try_clone().ok()?;
+        let running = Arc::clone(running);
+        let watching = std::thread::spawn(move || {
+            let mut sent = [0; 64];
+            while matches!(watched.read(&mut sent), Ok(1..)) {}
+            if running.load(Ordering::Relaxed) {
+                stop();
+            }
+        });
+        Some(watching)
     }
 
     /// Runs `run` with standard output and error going to files beside `printed`, and gives back
@@ -840,7 +852,7 @@ mod unix {
 
         use super::{
             BUILD, Reply, State, VERSION, answer, ask_within, environment, handle, send_within, socket_in,
-            socket_owned_by, socket_path,
+            socket_owned_by, socket_path, stop_when_gone,
         };
 
         fn state() -> State {
@@ -1014,6 +1026,30 @@ mod unix {
             std::fs::write(&plain, "").unwrap();
             assert!(!socket_owned_by(&plain, me));
             assert!(super::connect(&plain, &folder).is_none());
+        }
+
+        /// A command that goes while its build runs, by Ctrl-C or otherwise, closes its connection,
+        /// and that stops the build. Bytes it sent before going don't, and once the build is done
+        /// its going stops nothing.
+        #[test]
+        fn a_command_gone_while_its_build_runs_stops_it() {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static STOPPED: AtomicBool = AtomicBool::new(false);
+            fn stop() {
+                STOPPED.store(true, Ordering::Relaxed);
+            }
+            // Gone mid-build, after sending a stray byte or two, and gone once the build is done.
+            for building in [true, false] {
+                STOPPED.store(false, Ordering::Relaxed);
+                let (client, command) = UnixStream::pair().unwrap();
+                let running = Arc::new(AtomicBool::new(building));
+                let watching = stop_when_gone(&client, &running, stop).unwrap();
+                (&command).write_all(b"\n\n").unwrap();
+                drop(command);
+                watching.join().unwrap();
+                assert_eq!(STOPPED.load(Ordering::Relaxed), building, "building: {building}");
+            }
         }
 
         /// A daemon answers only a command of its own build: one of the same version built from

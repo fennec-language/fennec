@@ -245,6 +245,16 @@ impl Interp {
         Ok(())
     }
 
+    /// Whether this runs in a `parallel` round with other rounds beside it, which could use any
+    /// channel it waits on: one made in the round too, since its ends are plain values another
+    /// round can be sent. What a wait of no time finds there hangs on time.
+    pub(crate) fn beside_other_rounds(&self) -> Run<bool> {
+        let Ok(scopes) = self.shared.scopes.lock() else {
+            return unsupported("a `parallel` call was lost");
+        };
+        Ok(scopes.iter().any(|scope| matches!(scope, Scope::Rounds(call) if call.count > 1)))
+    }
+
     /// Refuses what a `parallel` round does with `channel`, made outside it, where what runs
     /// beside it in the compiled program could come first, or not, as time has it: anything at
     /// all in a round that may not run, or in a stream's item, which runs alongside its reader; a

@@ -131,11 +131,22 @@ fn copies_made(
 
 /// Each of the program's own calls whose positional arguments are easy to get backwards.
 fn positional_arguments(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
-    fennec_lint::positional_arguments(module, sources)
+    let found: Vec<Diagnostic> = fennec_lint::positional_arguments(module, sources)
         .into_iter()
         .filter(|lint| !lint.diagnostic.span.in_prelude())
         .map(|lint| Diagnostic { message: lint.message().to_owned(), ..lint.diagnostic })
-        .collect()
+        .collect();
+    let (copied, mut kept): (Vec<Diagnostic>, Vec<Diagnostic>) =
+        found.into_iter().partition(|problem| problem.span.copied_from(&module.copied) != problem.span);
+    // A call in a copy the compiler wrote in is said where its text is, once, and with no fix:
+    // a fix is worked out from the text at the copy's own spans, which have none.
+    for problem in copied {
+        let problem = Diagnostic { fixes: Vec::new(), hint: None, ..problem }.copied_from(&module.copied);
+        if !kept.iter().any(|known| known.span == problem.span && known.message == problem.message) {
+            kept.push(problem);
+        }
+    }
+    kept
 }
 
 /// Where a function says it's `@hot`, if it does.

@@ -102,7 +102,11 @@ says they are, at the version the workspace pins.
   runs when the block fails: a failure out of the cleanup is noted on the block's, as it prints,
   when it's a `fail` or a line whose whole value is a `?`, and takes the block's place when it's a
   `?` deeper in a line or on a `with`. An error's notes are read with `notes()` and added with
-  `add_note`, and never printed; `==` on errors that carry any is refused.
+  `add_note`, and never printed; `==` on errors that carry any is refused. A generator that can
+  fail, given a name and let go of partway, leaves at its `yield` where compiled code frees it: as
+  its function ends, or as the name is given another. Each `with` it's in runs its cleanup there,
+  and a cleanup that fails stops the program. One made in an inner block, or two let go of at
+  once, are refused, as is any other generator let go of inside a `with` block.
 - A `shared` value is one cell, which every copy of it reaches. A `lock` copies what each cell
   holds into the name it gives it, runs its block, and as the block ends writes back what each
   `ref` name holds, unless a failure or a crash left it, which undoes the block's changes, while

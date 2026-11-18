@@ -1064,6 +1064,41 @@ fn cut_short(state: &mut State, me: usize, who: usize) -> bool {
     true
 }
 
+/// Where the listener numbered `number` reads next. One whose next message has gone fails, as a
+/// crash does, or goes on from the oldest kept, as the runtime's does. It fell behind on every run
+/// only if each send that let what it missed go happened before this receive, by `receiver`.
+fn fallen_behind(state: &mut State, receiver: usize, number: i64) -> Run<usize> {
+    let Some(listener) = state.listeners.get(&number) else { return Ok(0) };
+    let (at, drop_oldest) = (listener.at, listener.drop_oldest);
+    let Some(chan) = state.channels.get(&listener.channel) else { return Ok(at) };
+    if at >= chan.first {
+        return Ok(at);
+    }
+    let now = state.actors.get(receiver).map(|actor| actor.clock.clone()).unwrap_or_default();
+    let missed_drops = chan.dropped.get(at..chan.first).unwrap_or_default();
+    if !missed_drops.iter().all(|dropped| happened_before(dropped, &now)) {
+        return unsupported(
+            "a listener of a channel to every listener found a message gone that it could have read first, by time",
+        );
+    }
+    if !drop_oldest {
+        let missed = chan.first - at;
+        return super::crash(
+            format!(
+                "this listener fell behind a channel to `.Every`, missing {missed} message{}: listen \
+                 with `when_behind=.DropOldest` to skip what it misses",
+                if missed == 1 { "" } else { "s" }
+            ),
+            Span::default(),
+        );
+    }
+    let first = chan.first;
+    if let Some(listener) = state.listeners.get_mut(&number) {
+        listener.at = first;
+    }
+    Ok(first)
+}
+
 /// Takes the next message from `number`, a channel or a listener, for `receiver`: `None` while
 /// there's none, `(None, 1)` once it's closed and empty. The taker's clock takes in the sender's.
 fn take_message(
@@ -1074,35 +1109,8 @@ fn take_message(
 ) -> Run<Option<(Value, i64)>> {
     let mut read_at = None;
     let taken = if let Some(listener) = state.listeners.get(&number) {
-        let (channel, mut at, drop_oldest) = (listener.channel, listener.at, listener.drop_oldest);
-        let Some(chan) = state.channels.get(&channel) else { return Ok(Some((Value::None, 1))) };
-        // A listener whose next message has gone fails, as a crash does, or goes on from the
-        // oldest kept, as the runtime's does. It fell behind on every run only if each send that
-        // let what it missed go happened before this receive.
-        if at < chan.first {
-            let now = state.actors.get(receiver).map(|actor| actor.clock.clone()).unwrap_or_default();
-            let missed_drops = chan.dropped.get(at..chan.first).unwrap_or_default();
-            if !missed_drops.iter().all(|dropped| happened_before(dropped, &now)) {
-                return unsupported(
-                    "a listener of a channel to every listener found a message gone that it could have read first, by time",
-                );
-            }
-            if !drop_oldest {
-                let missed = chan.first - at;
-                return super::crash(
-                    format!(
-                        "this listener fell behind a channel to `.Every`, missing {missed} message{}: listen \
-                         with `when_behind=.DropOldest` to skip what it misses",
-                        if missed == 1 { "" } else { "s" }
-                    ),
-                    Span::default(),
-                );
-            }
-            at = chan.first;
-            if let Some(listener) = state.listeners.get_mut(&number) {
-                listener.at = at;
-            }
-        }
+        let channel = listener.channel;
+        let at = fallen_behind(state, receiver, number)?;
         let Some(chan) = state.channels.get(&channel) else { return Ok(Some((Value::None, 1))) };
         if at >= chan.sent.len() {
             return Ok(chan.closed.then_some((Value::None, 1)));

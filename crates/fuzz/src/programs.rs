@@ -237,9 +237,9 @@ mod tests {
 
     /// The least share of random programs, in percent, the oracle has to run. It refuses the rest,
     /// and a refusal skips the target's comparison with it without a word. It goes up as what it
-    /// refuses comes to be modeled, and never down: it runs 62 of the 64 since it let go of a
-    /// loop's own generator, refusing only a channel to every listener sent past what it keeps.
-    const ORACLE_RUNS_AT_LEAST: usize = 96;
+    /// refuses comes to be modeled, and never down: it runs all 64 since a listener left behind a
+    /// channel to every listener, with nothing else able to read, falls behind as the runtime's does.
+    const ORACLE_RUNS_AT_LEAST: usize = 100;
 
     /// The oracle runs at least `ORACLE_RUNS_AT_LEAST` percent of random programs, or holding the
     /// builds to it says little. What it refused, by why, is in the message.

@@ -158,19 +158,19 @@ def zipped_after(limit: int, stop: int, words: list[int], stdout: Stdout) -> int
 
 def enumerated_failing(limit: int, at: int) -> int fails Shut:
     mut total = 0
-    for place, value in enumerate(failing_counts(limit, at)?):
+    for place, value in enumerate(failing_counts(limit, at=at)?):
         total += value + place
     return total
 
 def zipped_failing(limit: int, at: int, words: list[int]) -> int fails Shut:
     mut total = 0
-    for value, word in zip(failing_counts(limit, at)?, words):
+    for value, word in zip(failing_counts(limit, at=at)?, words):
         total += value + word
     return total
 
 def zipped_failing_after(limit: int, at: int, words: list[int]) -> int fails Shut:
     mut total = 0
-    for word, value in zip(words, failing_counts(limit, at)?):
+    for word, value in zip(words, failing_counts(limit, at=at)?):
         total += value + word
     return total
 

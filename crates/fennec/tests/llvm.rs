@@ -6081,6 +6081,149 @@ def main(stdout: Stdout):
     stdout.print(grid)
 ";
 
+/// A failure inside a `lock` in a `with` block or a `ref` case rolls back what the lock's body
+/// changed, as a failure leaving a lock does anywhere: by `fail`, by a `?` on its own line, and in a
+/// `ref` case, whose change to its part is still put back, a source's own among them. Before, the
+/// block held the failure and left the lock by `break`, which kept the changes. A `lock` in a block
+/// whose `with` is written in only in a later round builds too: before, the `lock` lowered in the
+/// first round seemed a `with` still to write in, forever. The oracle prints the same, debug and
+/// release.
+#[test]
+fn a_failure_inside_a_lock_in_a_with_rolls_the_lock_back() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_in_a_with_rolls_back",
+        LOCK_IN_A_WITH_ROLLS_BACK,
+        "failed fail\nOops(code=1)\nfailed try\nOops(code=2)\nOops(code=3)\n10 Bag.Full(count=6)\n",
+    )?;
+    // A `ref` case in a source's body, lowered a round after its lock was, the lock already written
+    // as the lowering writes one.
+    prints_in_both_builds(
+        "lock_in_a_source_s_case_rolls_back",
+        LOCK_IN_A_SOURCE_S_CASE,
+        "Oops(code=4)\n10\n",
+    )?;
+    prints_in_both_builds("lock_in_a_later_with", LOCK_IN_A_LATER_WITH, "1 2\n1\n")
+}
+
+const LOCK_IN_A_LATER_WITH: &str = r"struct Counter:
+    total: int
+
+def other() -> with int:
+    lend 1
+
+def inner() -> with int:
+    with other() as one:
+        lend one
+
+def outer() -> with int:
+    lend 2
+
+def main(stdout: Stdout):
+    shared counter = Counter(total=0)
+    with outer() as two:
+        with inner() as one:
+            stdout.print(one, two)
+        lock counter as ref held:
+            held.total += 1
+    lock counter as now:
+        stdout.print(now.total)
+";
+
+const LOCK_IN_A_SOURCE_S_CASE: &str = r#"error Oops:
+    code: int
+
+struct Counter:
+    total: int
+
+enum Kind:
+    Slider(value: int)
+    Empty
+
+def opened(ref kind: Kind, counter: shared Counter) -> with int fails Oops:
+    match kind:
+        case .Slider(ref value):
+            lock counter as ref held:
+                held.total += 1
+                fail Oops(code=value)
+        case _:
+            pass
+    lend 1
+
+def run(ref kind: Kind, counter: shared Counter, stdout: Stdout) fails Oops:
+    with opened(ref kind, counter)? as got:
+        stdout.print("in the block", got)
+
+def main(stdout: Stdout):
+    shared counter = Counter(total=10)
+    mut kind = Kind.Slider(value=4)
+    run(ref kind, counter, stdout) except why:
+        stdout.print(why)
+    lock counter as now:
+        stdout.print(now.total)
+"#;
+
+const LOCK_IN_A_WITH_ROLLS_BACK: &str = r#"error Oops:
+    code: int
+
+struct Counter:
+    total: int
+
+struct Door:
+    name: str
+
+enum Bag:
+    Full(count: int)
+    Empty
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def risky(code: int) -> int fails Oops:
+    if code > 0:
+        fail Oops(code=code)
+    return code
+
+def failing(counter: shared Counter, stdout: Stdout) fails Oops:
+    with opened("fail", stdout) as door:
+        lock counter as ref held:
+            held.total += 1
+            fail Oops(code=1)
+
+def trying(counter: shared Counter, stdout: Stdout) fails Oops:
+    with opened("try", stdout) as door:
+        lock counter as ref held:
+            held.total += 100
+            _ = risky(2)?
+
+def in_a_case(ref bag: Bag, counter: shared Counter) fails Oops:
+    match bag:
+        case .Full(ref count):
+            count += 1
+            lock counter as ref held:
+                held.total += 1000
+                fail Oops(code=3)
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    shared counter = Counter(total=10)
+    failing(counter, stdout) except why:
+        stdout.print(why)
+    trying(counter, stdout) except why:
+        stdout.print(why)
+    mut bag = Bag.Full(count=5)
+    in_a_case(ref bag, counter) except why:
+        stdout.print(why)
+    lock counter as now:
+        stdout.print(now.total, bag)
+"#;
+
 /// What a failure from deep inside a `ref` case leaves inside it is left once, the last first, and
 /// before the case is put back: a lock's changes are rolled back and it's given back, a generator's
 /// source is closed, and the `for ref` loop around them writes its item back.
@@ -10304,6 +10447,285 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A `with` source written in twice in one function, its union parameter given a different member
+/// each time, takes each copy's own: each copy is lowered with the types found for its own spans.
+/// Before, both took the last copy's member, which printed `gate gate` one way round, and the
+/// other way round read a `Gate` as a `Door` and crashed (#2056). A source written into another
+/// written in twice does the same.
+#[test]
+fn a_source_written_in_twice_gives_each_copy_its_own_union_member() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "source_twice_union",
+        SOURCE_TWICE_UNION,
+        "front gate\ngate front\ngate front | back gate\n",
+    )
+}
+
+/// A `with` source that declares a `shared` value and takes its `lock` is written in with both,
+/// once or twice in one function, and so is one with a `for ref` loop or a loop over `items()`: what's lowered later in the round a copy is written in finds the
+/// copy's `shared` value at its own spans. Before the copies' spans were kept apart, the copy's
+/// `lock` was lowered and its `shared` value wasn't.
+#[test]
+fn a_source_holding_a_shared_value_is_written_in_with_its_lock() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("source_shared_lock", SOURCE_SHARED_LOCK, "1\n1 1\n")?;
+    // A `for ref` and a `for key, ref value in x.items()` in a source written in twice, which are
+    // lowered in the round each copy is written in, at its own spans.
+    prints_in_both_builds(
+        "source_ref_items",
+        SOURCE_REF_ITEMS,
+        "2 [2, 4]\n1 [10]\n2 {\"a\": 2, \"bb\": 4}\n1 {\"ccc\": 3}\n",
+    )
+}
+
+const SOURCE_REF_ITEMS: &str = r#"def doubled(ref items: list[int]) -> with int:
+    for ref item in items:
+        item *= 2
+    lend len(items)
+
+def bumped(ref counts: dict[str, int]) -> with int:
+    for key, ref value in counts.items():
+        value += len(key)
+    lend len(counts)
+
+def run(stdout: Stdout):
+    mut items = [1, 2]
+    mut more = [5]
+    with doubled(ref items) as got:
+        stdout.print(got, items)
+    with doubled(ref more) as got:
+        stdout.print(got, more)
+    mut counts = {"a": 1, "bb": 2}
+    mut others = {"ccc": 0}
+    with bumped(ref counts) as got:
+        stdout.print(got, counts)
+    with bumped(ref others) as got:
+        stdout.print(got, others)
+
+def main(stdout: Stdout):
+    run(stdout)
+"#;
+
+const SOURCE_SHARED_LOCK: &str = r"struct Tally:
+    count: int
+
+def tallied() -> with int:
+    shared tally = Tally(count=0)
+    lock tally as ref held:
+        held.count += 1
+    mut seen = 0
+    lock tally as now:
+        seen = now.count
+    lend seen
+
+def twice(stdout: Stdout):
+    mut first = 0
+    with tallied() as got:
+        first = got
+    with tallied() as got:
+        stdout.print(first, got)
+
+def main(stdout: Stdout):
+    with tallied() as got:
+        stdout.print(got)
+    twice(stdout)
+";
+
+/// What goes wrong in a copy of the program's text written in more than once says where its text
+/// is, in a dev and a release build: an `assert` in a source's second copy, one in a `with` block
+/// written in for each member of a union, one in a generic function's copy for its second type, and
+/// one in a source's `except:` cleanup, which is written in for each way the block fails. Before,
+/// the union's and the generic's pointed past the end of the file.
+#[test]
+fn a_failure_in_a_copy_written_in_says_where_its_text_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    for (name, source, printed, line) in [
+        ("copy_assert_source", COPY_ASSERT_SOURCE, "", ":11:12"),
+        ("copy_assert_union", COPY_ASSERT_UNION, "lite\n", ":15:16"),
+        ("copy_assert_generic", COPY_ASSERT_GENERIC, "front\n", ":18:16"),
+        ("copy_assert_cleanup", COPY_ASSERT_CLEANUP, "1\n", ":6:16"),
+    ] {
+        let dir = folder(name)?;
+        let program = dir.join(format!("{name}.fen"));
+        std::fs::write(&program, source)?;
+        let executable = dir.join(name);
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let args: Vec<String> = ["build"]
+                .into_iter()
+                .chain(how.iter().copied())
+                .map(str::to_owned)
+                .chain([program.to_string_lossy().into_owned(), "-o".to_owned()])
+                .chain([executable.to_string_lossy().into_owned()])
+                .collect();
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let built = fennec(&args, &dir)?;
+            assert!(built.status.success(), "{name} {how:?}: {}", String::from_utf8_lossy(&built.stderr));
+            let ran = Command::new(&executable).output_within()?;
+            let (out, err) = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+            assert_eq!(out, printed, "{name} {how:?}: {err}");
+            let at = format!("{name}.fen{line}");
+            assert!(err.contains("this assertion failed") && err.contains(&at), "{name} {how:?}: {err}");
+            assert_eq!(ran.status.code(), Some(1), "{name} {how:?}");
+        }
+        std::fs::remove_dir_all(&dir)?;
+    }
+    Ok(())
+}
+
+const SOURCE_TWICE_UNION: &str = r#"struct Door:
+    name: str
+
+struct Gate:
+    width: int
+
+def narrowed(thing: Door | Gate) -> with str:
+    mut said = "gate"
+    if thing is Door:
+        said = thing.name
+    lend said
+
+def door_first() -> str:
+    mut seen = ""
+    with narrowed(Door(name="front")) as got:
+        seen = got
+    with narrowed(Gate(width=2)) as got:
+        seen = seen + " " + got
+    return seen
+
+def gate_first() -> str:
+    mut seen = ""
+    with narrowed(Gate(width=2)) as got:
+        seen = got
+    with narrowed(Door(name="front")) as got:
+        seen = seen + " " + got
+    return seen
+
+def twice(first: Door | Gate, second: Door | Gate) -> with str:
+    mut seen = ""
+    with narrowed(first) as got:
+        seen = got
+    with narrowed(second) as got:
+        seen = seen + " " + got
+    lend seen
+
+def nested() -> str:
+    mut seen = ""
+    with twice(Gate(width=1), Door(name="front")) as got:
+        seen = got
+    with twice(Door(name="back"), Gate(width=2)) as got:
+        seen = seen + " | " + got
+    return seen
+
+def main(stdout: Stdout):
+    stdout.print(door_first())
+    stdout.print(gate_first())
+    stdout.print(nested())
+"#;
+
+const COPY_ASSERT_CLEANUP: &str = r"error Oops:
+    code: int
+
+def guarded(code: int) -> with int:
+    lend code except:
+        assert code < 3
+
+def risky(code: int) -> int fails Oops:
+    if code > 1:
+        fail Oops(code=code)
+    return code
+
+def run(code: int) -> int fails Oops:
+    with guarded(code) as got:
+        if got == 5:
+            fail Oops(code=got)
+        kept = risky(got)?
+        return kept
+    return 0
+
+def main(stdout: Stdout):
+    stdout.print(run(1)?)
+    stdout.print(run(5)?)
+";
+
+const COPY_ASSERT_SOURCE: &str = r#"struct Door:
+    name: str
+
+struct Gate:
+    width: int
+
+def narrowed(thing: Door | Gate) -> with str:
+    mut said = "gate"
+    if thing is Door:
+        said = thing.name
+    assert said != "gate"
+    lend said
+
+def counted() -> str:
+    mut seen = ""
+    with narrowed(Door(name="front")) as got:
+        seen = got
+    with narrowed(Gate(width=2)) as got:
+        seen = seen + " " + got
+    return seen
+
+def main(stdout: Stdout):
+    stdout.print(counted())
+"#;
+
+const COPY_ASSERT_UNION: &str = r#"struct Lite:
+    name: str
+
+    def opened(self) -> with str:
+        lend "lite"
+
+struct Pg:
+    port: int
+
+    def opened(self) -> with str:
+        lend "pg"
+
+def run(store: Lite | Pg) -> str:
+    with store.opened() as got:
+        assert got != "pg"
+        return got
+
+def main(stdout: Stdout):
+    stdout.print(run(Lite(name="a")))
+    stdout.print(run(Pg(port=1)))
+"#;
+
+const COPY_ASSERT_GENERIC: &str = r#"interface Opener:
+    def opened(self) -> with str
+
+struct Front:
+    name: str
+
+    def opened(self) -> with str:
+        lend "front"
+
+struct Back:
+    width: int
+
+    def opened(self) -> with str:
+        lend "back"
+
+def run[T: Opener](held: T) -> str:
+    with held.opened() as got:
+        assert got == "front"
+        return got
+
+def main(stdout: Stdout):
+    stdout.print(run(Front(name="a")))
+    stdout.print(run(Back(width=1)))
+"#;
+
 /// A type parameter named only in a parameter's type, as `E` is in `make: () -> T fails E`: a
 /// generic source written in where it's used doesn't know it, and a call to a generic function
 /// learns it from the function it's given.
@@ -10648,6 +11070,112 @@ def main(stdout: Stdout) fails Nope:
         "lite 3 pg 6 lite 3\npg 6/pg 6 lite 3\n4 2\n",
     )
 }
+
+/// A function whose last line is a `with` whose block always fails leaves on every way, once the
+/// source is written in: with a cleanup that fails too, in each branch of an `if`, and with no
+/// cleanup. So does one ending in a `match` whose `ref` case always fails. Before, the written-in body seemed to end giving back nothing, and the build stopped
+/// with an internal error. The oracle prints the same, debug and release.
+#[test]
+fn a_function_ending_in_a_with_that_fails_builds_natively() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("with_fails_last", WITH_FAILS_LAST, "unguard 3\n3\n2 []\n0\n")?;
+    prints_in_both_builds("with_fails_last_ways", WITH_FAILS_LAST_WAYS, "unguard 7\nunguard 2\n7 -2 8\n")?;
+    // A function ending in a `match` whose `ref` case always fails, which ends failing too.
+    prints_in_both_builds("ref_case_fails_last", REF_CASE_FAILS_LAST, "5 Kind.Slider(value=5)\n")
+}
+
+const REF_CASE_FAILS_LAST: &str = r"error Oops:
+    code: int
+
+enum Kind:
+    Slider(value: int)
+    Empty
+
+def bump(ref kind: Kind) -> int fails Oops:
+    match kind:
+        case .Slider(ref value):
+            value += 1
+            fail Oops(code=value)
+        case _:
+            return 0
+
+def main(stdout: Stdout):
+    mut kind = Kind.Slider(value=4)
+    got = bump(ref kind) except why:
+        why.code
+    stdout.print(got, kind)
+";
+
+const WITH_FAILS_LAST: &str = r#"error Refused:
+    code: int
+
+struct Tally:
+    count: int
+
+def guarded(code: int, stdout: Stdout) -> with Tally fails Refused:
+    lend Tally(count=code) except:
+        stdout.print("unguard", code)
+        if code % 3 == 0:
+            fail Refused(code=code + 1000)
+
+def run(code: int, stdout: Stdout) -> int fails Refused:
+    with guarded(code, stdout)? as tally:
+        fail Refused(code=tally.count)
+
+def inner() -> int fails Refused:
+    fail Refused(code=1)
+
+def outer() -> int fails Refused:
+    value = inner() except why:
+        fail Refused(code=why.code + 1)
+    return value
+
+def main(stdout: Stdout):
+    got = run(3, stdout) except why:
+        why.code
+    stdout.print(got)
+    again = outer() except why:
+        stdout.print(why.code, why.notes())
+        0
+    stdout.print(again)
+"#;
+
+const WITH_FAILS_LAST_WAYS: &str = r#"error Refused:
+    code: int
+
+struct Tally:
+    count: int
+
+def guarded(code: int, stdout: Stdout) -> with Tally:
+    lend Tally(count=code) except:
+        stdout.print("unguard", code)
+    stdout.print("closed", code)
+
+def plain(code: int) -> with Tally:
+    lend Tally(count=code)
+
+def branches(code: int, stdout: Stdout) -> int fails Refused:
+    with guarded(code, stdout) as tally:
+        if tally.count > 5:
+            fail Refused(code=tally.count)
+        else:
+            fail Refused(code=-tally.count)
+
+def bare(code: int) -> str fails Refused:
+    with plain(code) as tally:
+        fail Refused(code=tally.count * 2)
+
+def main(stdout: Stdout):
+    first = branches(7, stdout) except why:
+        why.code
+    second = branches(2, stdout) except why:
+        why.code
+    third = bare(4) except why:
+        f"{why.code}"
+    stdout.print(first, second, third)
+"#;
 
 /// A function whose last line is a `with` whose block always returns gives back a value on every
 /// way, once the source is written in: alone, in each branch of an `if`, and in each case of

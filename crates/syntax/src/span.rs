@@ -37,6 +37,34 @@ impl Span {
     }
 }
 
+/// Spans a copy of some text was moved to, so each copy written in is apart from every other in
+/// what's found by span, and where the text it copies starts. A span in it points, for whatever
+/// says where something is, at the text it's a copy of (`Span::copied_from`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Copied {
+    /// The first span of the copy.
+    pub at: u32,
+    /// How many spans the copy takes.
+    pub len: u32,
+    /// The span of the text the copy's first span copies.
+    pub from: u32,
+}
+
+impl Span {
+    /// Where this span's text is: in the text a copy `copied` lists was made from, when it's in
+    /// one, and otherwise this span. `copied` is in order of `at`.
+    #[must_use]
+    pub fn copied_from(self, copied: &[Copied]) -> Span {
+        let after = copied.partition_point(|copy| copy.at <= self.start);
+        let Some(copy) = after.checked_sub(1).and_then(|at| copied.get(at)) else { return self };
+        if self.start - copy.at >= copy.len {
+            return self;
+        }
+        let moved = |at: u32| at - copy.at + copy.from;
+        Span { start: moved(self.start), end: moved(self.end.max(self.start)) }
+    }
+}
+
 fn to_u32(offset: usize) -> u32 {
     u32::try_from(offset).unwrap_or(u32::MAX)
 }

@@ -28,12 +28,7 @@ fn image_name(path: &str) -> String {
 /// hash of it as it was kept, which says it's the same program another run had: see `kept_hash`.
 pub(crate) fn load(path: &str, cache: &Cache) -> Option<(Program, String)> {
     let state = cache.kit_state(&name_of(path), BUILD)?;
-    // A single file's are the files it read last time, which it reads again unless one changed.
-    let files = if std::path::Path::new(path).is_dir() {
-        crate::verdict::kit_files(path, Some(&state))?
-    } else {
-        crate::verdict::noted_files(&state)?
-    };
+    let files = kept_files(path, &state)?;
     if !crate::verdict::same_files(&state, &files) {
         return None;
     }
@@ -49,6 +44,16 @@ pub(crate) fn load(path: &str, cache: &Cache) -> Option<(Program, String)> {
         dependency_files: std::collections::HashSet::new(),
     };
     Some((program, kept))
+}
+
+/// The files a kept image is held to, by the state it was kept with: a kit's files, or a single
+/// file's, which are the files it read last time and reads again unless one changed.
+fn kept_files(path: &str, state: &KitState) -> Option<Vec<KitFile>> {
+    if std::path::Path::new(path).is_dir() {
+        crate::verdict::kit_files(path, Some(state))
+    } else {
+        crate::verdict::noted_files(state)
+    }
 }
 
 /// What says a kept image is the program another run built, so that run's executable can be run
@@ -71,17 +76,21 @@ fn kept_hash(path: &str, files: &[KitFile], bytes: &[u8]) -> String {
 }
 
 /// Keeps a kit's program as it was cut down, before anything was checked. `state` is what the kit
-/// looked like before it was read, so an edit made since is seen next time.
-pub(crate) fn store(path: &str, cache: &Cache, files: &[KitFile], program: &Program) {
+/// looked like before it was read, so an edit made since is seen next time. Gives back the hash
+/// the next run's `load` will find it by, so the run keeping it can note what it builds from it
+/// for that one: without it, the run after a change checked and built the program again, though
+/// the run before had just built it.
+pub(crate) fn store(path: &str, cache: &Cache, files: &[KitFile], program: &Program) -> Option<String> {
     let mut writer = Writer::default();
     program.module.encode(&mut writer);
+    let bytes = writer.into_bytes();
     // A cache that can't be written only means reading the kit again next time.
-    let image = cache.write("run-image", &image_name(path), &writer.into_bytes());
-    if fennec_build::kept("keep the checked program for the next run", image).is_some() {
-        let state =
-            cache.store_kit_state(&name_of(path), BUILD, &crate::verdict::with_embedded(files, program));
-        fennec_build::kept("keep the kit's state", state);
-    }
+    let image = cache.write("run-image", &image_name(path), &bytes);
+    fennec_build::kept("keep the checked program for the next run", image)?;
+    let noted = crate::verdict::with_embedded(files, program);
+    fennec_build::kept("keep the kit's state", cache.store_kit_state(&name_of(path), BUILD, &noted))?;
+    let state = cache.kit_state(&name_of(path), BUILD)?;
+    Some(kept_hash(path, &kept_files(path, &state)?, &bytes))
 }
 
 /// What a kit's files are now, with what was last noted to save reading them.

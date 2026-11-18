@@ -3110,6 +3110,39 @@ const READ_THEN_SENT_AFTER_A_TIMEOUT: &str = "
                         hits.send(2)?
         ";
 
+/// A loop polling with waits of no time, while a task beside it waits with a timeout, runs: each
+/// poll asks who could still send on the channel, and the answer is worked out without going
+/// over every message for every task each time (#2131). What it prints is what the compiled
+/// program printed.
+#[test]
+fn a_loop_polling_with_waits_of_no_time_beside_a_waiting_task_runs() {
+    prints(POLLING_WITH_NO_TIME, "found 20\n");
+}
+
+const POLLING_WITH_NO_TIME: &str = "
+        from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def waiting(quiet: Inbox[int], done: Sender[int]) fails Closed:
+            _ = quiet.receive_within(10s) except Timeout(): -1
+            done.send(0)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            mut kept: list[Channel[int]] = []
+            with channel[int](size=1) as quiet, channel[int](size=1) as done:
+                with launch(() => waiting(quiet.inbox(), done=done.sender())?)?:
+                    with channel[int](size=4) as box:
+                        mut found = 0
+                        for at in range(2000):
+                            if at % 100 == 0:
+                                box.send(at)?
+                            got = box.receive_within(0ms) except Timeout(): -1
+                            if got is not None and got >= 0:
+                                found += 1
+                        stdout.print('found', found)
+                    quiet.send(1)?
+                    _ = done.receive() else -1
+        ";
+
 /// A listener started in a task beside the block's sends hears them or not by time: each place it
 /// could start among them is tried, and here they print differently, so the run is refused. One
 /// started before the sends, which its task says before they go, hears them all. A timed wait that

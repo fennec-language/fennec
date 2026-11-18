@@ -939,6 +939,17 @@ impl<'c> FnCx<'c> {
             .map(|binding| binding.origin)
     }
 
+    /// Whether the name in sight was declared `mut`, so it can hold another value by the time it's
+    /// read than the one first given it: an arrow function it was given isn't all it can hold.
+    pub(crate) fn declared_mut(&self, name: &str) -> bool {
+        self.scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.bindings.iter().rev())
+            .find(|binding| binding.name == name)
+            .is_some_and(|binding| binding.is_mut)
+    }
+
     /// The function `name` is a parameter of, by key: this one's, or one around it that a nested
     /// function captured it from.
     pub(crate) fn param_owner(&self, name: &str) -> Option<String> {

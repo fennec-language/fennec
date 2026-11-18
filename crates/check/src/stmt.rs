@@ -598,24 +598,32 @@ impl FnCx<'_> {
     }
 
     /// What a nested function, `key`, does through each function value it reads from around it,
-    /// of the names it `reads` that aren't its `own`. A parameter of a function around it is
-    /// followed as that function's, called or handed on (see `note_value_call`). An arrow function
-    /// a local name holds counts for what its own body does, and a named function as a call of
-    /// it. Anything else, as a value held in a list, an optional or a field, is checked as part of
-    /// the function around it, so the nested function counts for all that function does.
+    /// of the names it `reads` that aren't its `own`.
+    /// - A parameter of a function around it, read in any way, counts as called by the nested
+    ///   function, as a direct call does (see `note_value_call`): handed on, given to a local, or
+    ///   called in an arrow function, it's still called wherever the nested function is.
+    /// - An arrow function a local name holds counts for what its own body does, when the name
+    ///   isn't `mut`: one that is can hold another value by the time the nested function runs.
+    /// - Anything else, as a `mut` name or a value held in a list, an optional or a field, is
+    ///   checked as part of the function around it, so the nested function counts for all that
+    ///   function does.
+    ///
+    /// A named function, which a local can hold too, isn't a function value here: calling it is a
+    /// call of it, followed as any call is.
     fn captured_values(&mut self, reads: &[String], own: &[String], key: &str) {
         let mut around = false;
         for name in reads.iter().filter(|name| !own.contains(name)) {
             let Some((ty, _)) = self.lookup(name) else { continue };
-            if !self.checker.holds_function_value(&ty, &mut Vec::new()) || self.param_owner(name).is_some() {
+            if !self.checker.holds_function_value(&ty, &mut Vec::new()) {
                 continue;
             }
-            if self.origin(name) == Some(Origin::Local)
+            if let Some(owner) = self.param_owner(name) {
+                self.checker.values.note_captured_param(key, owner, name);
+            } else if self.origin(name) == Some(Origin::Local)
+                && !self.declared_mut(name)
                 && let Some(Some(arrow)) = self.arrow_locals.get(name).copied()
             {
                 self.checker.values.captured_arrows.push((key.to_owned(), arrow));
-            } else if let Type::Function(called) = &ty {
-                self.checker.own_callers.entry(called.clone()).or_default().insert(key.to_owned());
             } else {
                 around = true;
             }

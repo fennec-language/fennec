@@ -301,6 +301,91 @@ fn a_nested_function_calling_a_captured_value_takes_what_it_takes() {
     assert_eq!(locking(in_a_list), ["`later` waits on `Clock.sleep` while `held` is locked @ later()"]);
 }
 
+/// Each way a function value from around a nested function can reach it, or the nested function
+/// reach a lock, that following the value precisely could miss: called inside a lock, each waits,
+/// so each is refused, as the checker lane's review of #2109 found they weren't.
+#[test]
+fn a_nested_function_is_refused_however_a_captured_value_reaches_it() {
+    const NAP: &str = "def nap(clock: Clock):\n    clock.sleep(1s)\n\n";
+    const RUN: &str = "def run(job: () -> nothing):\n    job()\n\n";
+    const MAIN: &str = "def main(clock: Clock):\n    shared scores = Account()\n    guarded(scores, () => nap(clock))\n";
+    let refused = |program: String| {
+        let problems = locking(&program);
+        assert!(!problems.is_empty(), "built, though it waits inside a lock:\n{program}");
+        problems
+    };
+    // A `mut` local given an arrow function after another value: at run time it holds `work`.
+    let reassigned = format!(
+        "{NAP}def guarded(stdout: Stdout, scores: shared Account, work: () -> nothing, quick: bool):\n    \
+         mut job = work\n    if quick:\n        job = () => stdout.print(1)\n    def later():\n        job()\n    \
+         lock scores as held:\n        later()\n        _ = held\n\n\
+         def main(stdout: Stdout, clock: Clock):\n    shared scores = Account()\n    \
+         guarded(stdout, scores, () => nap(clock), False)\n"
+    );
+    assert_eq!(
+        refused(reassigned),
+        ["`later` takes `scores`'s lock while `held` is locked @ later()"]
+    );
+    // The same through a loop, given the arrow that waits after the nested function is written.
+    let in_a_loop = format!(
+        "{NAP}def quiet(clock: Clock):\n    pass\n\n\
+         def serve(clock: Clock):\n    shared scores = Account()\n    mut job = () => quiet(clock)\n    \
+         mut rounds = 0\n    while rounds < 2:\n        def later():\n            job()\n        \
+         lock scores as held:\n            later()\n            _ = held\n        job = () => nap(clock)\n        \
+         rounds += 1\n"
+    );
+    assert_eq!(refused(in_a_loop), ["`later` waits on `Clock.sleep` while `held` is locked @ later()"]);
+    // Calling the `mut` local inside the lock itself can't be followed either.
+    let called_there = format!(
+        "{NAP}def quiet(clock: Clock):\n    pass\n\n\
+         def serve(clock: Clock):\n    shared scores = Account()\n    mut job = () => quiet(clock)\n    \
+         mut rounds = 0\n    while rounds < 2:\n        lock scores as held:\n            job()\n            _ = held\n        \
+         job = () => nap(clock)\n        rounds += 1\n"
+    );
+    assert_eq!(
+        refused(called_there),
+        ["what `job` holds can't be known here, so it can't be shown not to wait while `held` is locked @ job()"]
+    );
+    let waits = ["`guarded` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ () => nap(clock)"];
+    // A captured parameter handed on.
+    let handed_on = format!(
+        "{NAP}{RUN}def guarded(scores: shared Account, work: () -> nothing):\n    def step():\n        run(work)\n    \
+         lock scores as held:\n        step()\n        _ = held\n\n{MAIN}"
+    );
+    assert_eq!(refused(handed_on), waits);
+    // A captured parameter given to a local, called in an arrow function, or held by an arrow.
+    for used in [
+        "        job = work\n        job()\n",
+        "        run(() => work())\n",
+        "        again = () => work()\n        again()\n",
+    ] {
+        let program = format!(
+            "{NAP}{RUN}def guarded(scores: shared Account, work: () -> nothing):\n    def step():\n{used}    \
+             lock scores as held:\n        step()\n        _ = held\n\n{MAIN}"
+        );
+        assert_eq!(refused(program), waits, "{used}");
+    }
+    // A nested function calling a captured parameter, passed by name inside the lock.
+    let by_name = format!(
+        "{NAP}{RUN}def guarded(scores: shared Account, work: () -> nothing):\n    def step():\n        work()\n    \
+         lock scores as held:\n        run(step)\n        _ = held\n\n{MAIN}"
+    );
+    assert_eq!(refused(by_name), waits);
+    // An arrow function calling an interface's method, which a type's method that waits gives.
+    let interface = format!(
+        "{NAP}interface Napper:\n    def nap(self, clock: Clock)\n\n\
+         struct Slow:\n    held = 0\n\n    def nap(self, clock: Clock):\n        clock.sleep(1s)\n\n\
+         def serve[T: Napper](napper: T, clock: Clock):\n    shared scores = Account()\n    \
+         resting = () => napper.nap(clock)\n    def later():\n        resting()\n    \
+         lock scores as held:\n        later()\n        _ = held\n\n\
+         def main(clock: Clock):\n    serve(Slow(), clock)\n"
+    );
+    assert_eq!(
+        refused(interface),
+        ["`later` waits on `Clock.sleep` while `held` is locked @ later()"]
+    );
+}
+
 const HOLDERS: &str = "struct Cell:
     count = 0
 

@@ -1000,7 +1000,9 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);
     let sources = cases_named(&checked.sources, &checked.cases);
-    let sources_written = lend_lowering::lower(module, &sources, &checked.launches, &checked.ref_matches);
+    let test_fails = tests_failing(module, &checked.test_errors);
+    let sources_written =
+        lend_lowering::lower(module, &sources, &checked.launches, (&checked.ref_matches, &test_fails));
     // A copy just written in has spans of its own: what the check found in a source's text is
     // found in each copy too.
     let (ref_items, live_refs) = (
@@ -1016,6 +1018,49 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
         return Round::Again;
     }
     Round::Done
+}
+
+/// What each test fails with, worked out from its body, by its span, as `errors` has it, written. One
+/// that can't fail isn't here.
+fn tests_failing(
+    module: &Module,
+    errors: &BTreeMap<(u32, u32), Type>,
+) -> BTreeMap<(u32, u32), fennec_syntax::TypeExpr> {
+    // The program's own types, which its files name. Any other is the standard library's, written
+    // where that library's code would name it, which needs no import.
+    let own: BTreeSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) if !def.span.in_prelude() => {
+                Some(def.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut found = BTreeMap::new();
+    for item in &module.items {
+        let Item::Test(test) = item else { continue };
+        let at = (test.span.start, test.span.end);
+        if let Some(error) = errors.get(&at)
+            && let Some(mut written) = error.written(test.span)
+        {
+            library_named(&mut written, &own);
+            found.insert(at, written);
+        }
+    }
+    found
+}
+
+/// A written type with each type in it that isn't one of `own` given a span in the standard
+/// library's text, where its name needs no import.
+fn library_named(written: &mut fennec_syntax::TypeExpr, own: &BTreeSet<&str>) {
+    if written.name != "|" && !own.contains(written.name.as_str()) {
+        written.span = Span { start: Span::PRELUDE, end: Span::PRELUDE };
+    }
+    for arg in &mut written.args {
+        library_named(arg, own);
+    }
 }
 
 /// What the checker found an operator or builtin calls written in: `a != b` as `not (a == b)`
@@ -1199,6 +1244,8 @@ pub struct Checked {
     opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, which lowering writes in as a source.
     launches: BTreeMap<(u32, u32), launch::Launch>,
+    /// What each test or bench can fail with, worked out from its body, by its span.
+    test_errors: BTreeMap<(u32, u32), Type>,
     /// Each route written with a method, as `router.get(...)`, which lowering writes in as a call
     /// to `handle`.
     routes: BTreeMap<(u32, u32), routes::Route>,

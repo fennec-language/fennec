@@ -194,6 +194,14 @@ pub(crate) fn failing_generator_in_parallel(span: Span) -> Diagnostic {
     Diagnostic::new(message, span).with_help(FAILING_GENERATOR_HELP)
 }
 
+/// `except` on an arrow function's call whose value holds a generator that can fail: the arrow's
+/// `?` counted that failure as the arrow's own, and `except` leaves it nowhere to go here.
+pub(crate) fn except_on_an_arrow_giving_one(span: Span) -> Diagnostic {
+    let message = "this arrow function gives back a generator that can fail, and `except` on its call leaves nothing to pass that generator's failure up";
+    Diagnostic::new(message, span)
+        .with_help("write `?`: then this function passes the generator's failure up where it's looped over")
+}
+
 /// `except` on a generator function's call. Making a generator runs none of its body, so it can't
 /// fail there: its failure comes from where it's looped over, and the `except` would never run.
 pub(crate) fn except_on_a_generator(span: Span) -> Diagnostic {

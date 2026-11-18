@@ -176,8 +176,8 @@ impl Type {
     }
 
     /// What each generator that can fail in a value of this type fails with, at any depth: the
-    /// value's own, and one in a list, a tuple, a dict, an optional, a generic type's copy, or
-    /// what a generator gives.
+    /// value's own, and one in a list, a tuple, a dict, an optional, a generic type's copy, a
+    /// union's member, or what a generator gives.
     #[must_use]
     pub fn held_generator_failures(&self) -> Vec<&Type> {
         let mut failures = Vec::new();
@@ -199,7 +199,7 @@ impl Type {
             | Type::Table(inner)
             | Type::Result(inner, _) => vec![inner],
             Type::Dict(key, value) => vec![key, value],
-            Type::Tuple(items) | Type::Generic(_, items) => items.iter().collect(),
+            Type::Tuple(items) | Type::Generic(_, items) | Type::Union(items) => items.iter().collect(),
             _ => Vec::new(),
         };
         for inner in held {

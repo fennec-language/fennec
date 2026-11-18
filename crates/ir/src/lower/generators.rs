@@ -163,6 +163,13 @@ impl<'a> Lowering<'a> {
     ) -> Lowered<Vec<Function>> {
         let generating = self.generating.take().ok_or("a generator with nothing yielded")?;
         let name = self.name.clone();
+        // What it fails with is what it was lowered to pass up: a yield function's error, or a
+        // kept generator's, whose call gives back the generator itself.
+        let failure = match &self.returns {
+            Type::Result(_, error) => Some((**error).clone()),
+            _ => None,
+        };
+        let fails = failure.is_some();
         // What each `yield` gives back is read there, so a value read nowhere else, like a name
         // the generator was given, is kept across every stop too.
         let live = self.live_in(&generating.yields);
@@ -187,10 +194,6 @@ impl<'a> Lowering<'a> {
                 .filter_map(|local| slots.get(&local).map(|slot| (local, *slot)))
                 .collect()
         };
-        let failure = match returns {
-            Type::Result(_, error) => Some((**error).clone()),
-            _ => None,
-        };
         let abandon = abandon_function(&name, &generating, failure, span);
         let mut places = vec![(0, body, saved_at(body), false)];
         for (at, stop) in generating.yields.iter().enumerate() {
@@ -204,7 +207,6 @@ impl<'a> Lowering<'a> {
         }
         self.finish_returns(span);
         self.choose_where_to_go_on(&places, generating.abandoning, span);
-        let fails = matches!(returns, Type::Result(..));
         self.returns = Type::Bool;
         self.counts.clear();
         self.places.clear();
@@ -387,7 +389,14 @@ impl<'a> Lowering<'a> {
             return streamed;
         }
         let ty = self.ty(expr)?;
-        let Type::Iterator(item, _) = &ty else { return Err(format!("a generator expression is {ty}")) };
+        let Type::Iterator(item, failure) = &ty else {
+            return Err(format!("a generator expression is {ty}"));
+        };
+        // It fails as the checker says, as a generator function does: with what its `?`s and the
+        // generators it loops over fail with, which pass up from it when it's asked for an item.
+        let returns = failure
+            .as_deref()
+            .map_or(Type::Unit, |error| Type::Result(Box::new(Type::Unit), Box::new(error.clone())));
         let source_ty = self.ty(iter)?;
         let source_value = self.expr(iter)?;
         let mut mentioned = Vec::new();
@@ -404,7 +413,7 @@ impl<'a> Lowering<'a> {
         let key = self.lifted_name("generator", expr.span.start);
         let instance =
             FunctionInstance { base: self.base.clone(), name: key.clone(), subst: self.subst.clone() };
-        let mut lifted = Lowering::new(&instance, self.context, self.body, Type::Unit);
+        let mut lifted = Lowering::new(&instance, self.context, self.body, returns);
         lifted.begin_generator((**item).clone());
         let mut params = Vec::new();
         for (name, local) in &captures {

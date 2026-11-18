@@ -1151,6 +1151,7 @@ impl FnCx<'_> {
         else_steps(value, &mut steps);
         self.else_chain.extend(steps.iter().copied());
         let written = value.span;
+        let value_expr = value;
         let value = self.expr(value);
         for step in &steps {
             self.else_chain.remove(step);
@@ -1176,9 +1177,9 @@ impl FnCx<'_> {
         }
         if except
             && let Type::Result(made, _) = self.checker.settled(&value)
-            && made.generator_failure().is_some()
+            && !made.held_generator_failures().is_empty()
         {
-            self.error(crate::messages::except_on_a_generator(written));
+            self.except_on_failing_generator(value_expr);
         }
         let default = match default.else_block() {
             Some((failure, block)) => {
@@ -1265,6 +1266,37 @@ impl FnCx<'_> {
         }
     }
 
+    /// `except` on a call whose value is, or holds, a generator that can fail. That generator's
+    /// failure is counted only where a `?` takes it out, so `except` leaves it with nowhere to go,
+    /// unless what's called is a `def`, which gives back only what its caller made and counted.
+    /// A generator function's call runs none of its body, so its `except` would never run; an
+    /// arrow function's `?` counted the generator as its own failure, not this function's.
+    fn except_on_failing_generator(&mut self, value: &Expr) {
+        let written = value.span;
+        let ExprKind::Call { callee, .. } = &value.kind else {
+            self.error(crate::messages::except_on_a_generator(written));
+            return;
+        };
+        let called = self.recorded(callee.span).map(|ty| self.checker.settled(&ty));
+        if let Some(Type::Arrow(..)) = called {
+            self.error(crate::messages::except_on_an_arrow_giving_one(written));
+            return;
+        }
+        let def = match (&callee.kind, &called) {
+            (_, Some(Type::Function(key))) => self.checker.program.functions.get(key),
+            (ExprKind::Attr { object, name, .. }, _) => self
+                .recorded(object.span)
+                .map(|ty| self.checker.settled(&ty))
+                .and_then(|ty| ty.type_name().map(str::to_owned))
+                .and_then(|owner| self.checker.program.method(&owner, name).map(|(_, entry)| entry)),
+            _ => None,
+        };
+        let plain_def = def.is_some_and(|entry| !fennec_syntax::fuse::has_yield(&entry.def.body));
+        if !plain_def {
+            self.error(crate::messages::except_on_a_generator(written));
+        }
+    }
+
     /// An arrow function. Its parameters' types come from where it's passed, so it has to
     /// be passed straight to something that says what it receives.
     pub(crate) fn lambda(&mut self, params: &[String], body: &Expr, types: &[Type], span: Span) -> Type {
@@ -1280,6 +1312,13 @@ impl FnCx<'_> {
                         "pass the arrow function straight to a call that gives it values, like `sorted(items, key=x => ...)`, or write a nested `def` with its parameters' types",
                     ),
                 );
+            }
+            // One given a generator that can fail, or a value holding one, would loop over it
+            // where its failure can't pass up: the arrow is a function of its own.
+            let settled = self.checker.settled(&ty);
+            if !settled.held_generator_failures().is_empty() {
+                let holds = settled.generator_failure().is_none();
+                self.error(crate::messages::failing_generator_inside(param, holds, span));
             }
             self.declare(param, ty.clone(), true, span);
             known.push(ty);

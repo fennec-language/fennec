@@ -13983,6 +13983,91 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A generator kept for later fails as what it loops over, held generators included, and its
+/// `?`s do. Kept in a list, it's lifted into a function of its own, which on main was lowered as
+/// one that can't fail, so its failure stopped the program (#2097's review). It passes that
+/// failure up, over held generators, over a named one and with a `?` inside, in both builds.
+/// `except` on a generic `def` given one handles only the `def`'s own failure.
+#[test]
+fn a_kept_generator_lifted_passes_up_what_it_fails_with() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("kept_generator_lifted", KEPT_GENERATOR_LIFTED, KEPT_GENERATOR_LIFTED_PRINTS)
+}
+
+const KEPT_GENERATOR_LIFTED: &str = r#"# A generator kept for later fails as what it loops over and its `?`s do, and kept in a list, so
+# it's a function of its own, it passes that failure up where it's asked for an item. `except` on
+# a generic `def`'s call given one handles only the `def`'s own failure.
+
+error Shut:
+    name: str
+
+error Bad:
+    why: str
+
+def first(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def shown(at: int) -> int fails Bad:
+    if at > 1:
+        fail Bad(why=f"at {at}")
+    return at
+
+def checked[T](value: T, text: str) -> T fails Bad:
+    if text == "":
+        fail Bad(why="empty")
+    return value
+
+def over_held(stdout: Stdout) fails Shut:
+    held = [first("a")?, first("b")?]
+    kept = [(sum(gen) for gen in held)]
+    stdout.print("made")
+    for total in kept[0]:
+        stdout.print("total", total)
+
+def over_named(stdout: Stdout) fails Shut:
+    named = first("c")?
+    kept = [(each * 10 for each in named)]
+    for total in kept[0]:
+        stdout.print("total", total)
+
+def with_try(stdout: Stdout) fails Bad:
+    kept = [(shown(at)? for at in range(3))]
+    for each in kept[0]:
+        stdout.print("shown", each)
+
+def through_def(stdout: Stdout, text: str) fails Shut:
+    kept = checked(first("d")?, text) except why:
+        stdout.print("checked failed", why)
+        return
+    stdout.print("sum", sum(kept))
+
+def main(stdout: Stdout):
+    over_held(stdout) except why:
+        stdout.print("failed", why)
+    over_named(stdout) except why:
+        stdout.print("failed", why)
+    with_try(stdout) except why:
+        stdout.print("failed", why)
+    through_def(stdout, "") except why:
+        stdout.print("failed", why)
+    through_def(stdout, "x") except why:
+        stdout.print("failed", why)
+"#;
+
+const KEPT_GENERATOR_LIFTED_PRINTS: &str = r#"made
+failed Shut(name="a")
+total 10
+failed Shut(name="c")
+shown 0
+shown 1
+failed Bad(why="at 2")
+checked failed Bad(why="empty")
+failed Shut(name="d")
+"#;
+
 /// A `sum`, `list`, `max`, `sorted`, `any` or comprehension of a generator that fails partway,
 /// inside a statement, passes the failure up before the rest of the statement runs (#2098). On main
 /// the generator, copied in, held its failure and the statement went on before failing: it printed

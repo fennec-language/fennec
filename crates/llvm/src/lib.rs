@@ -285,10 +285,14 @@ fn each_type(ty: &fennec_check::Type, found: &mut dyn FnMut(&fennec_check::Type)
         | Type::List(inner)
         | Type::Buffer(inner)
         | Type::Set(inner)
-        | Type::Iterator(inner)
+        | Type::Iterator(inner, None)
         | Type::Id(inner)
         | Type::Table(inner)
         | Type::Array(inner, _) => each_type(inner, found),
+        Type::Iterator(inner, Some(failure)) => {
+            each_type(inner, found);
+            each_type(failure, found);
+        }
         Type::Dict(a, b) | Type::Result(a, b) => {
             each_type(a, found);
             each_type(b, found);
@@ -345,7 +349,7 @@ fn optionals_agree(ty: &fennec_check::Type, first: &Layouts, finished: &Layouts)
         Type::List(inner)
         | Type::Buffer(inner)
         | Type::Set(inner)
-        | Type::Iterator(inner)
+        | Type::Iterator(inner, _)
         | Type::Id(inner)
         | Type::Table(inner)
         | Type::Array(inner, _) => optionals_agree(inner, first, finished),
@@ -449,7 +453,7 @@ fn definitions_of(program: &Program, blocks: Option<&Layouts>) -> Vec<(String, W
     // keeps what it failed with as a block of its own, whose address is in the header's failure
     // slot: the slot is laid out as an iterator's is, a block whose own shape says what it holds,
     // so the generator lets go of it when it's freed. Laid out as a number, it never was.
-    let failure = fennec_check::Type::Iterator(Box::new(fennec_check::Type::Int));
+    let failure = fennec_check::Type::iterator(fennec_check::Type::Int);
     let generators = program.generators.iter().map(|def| {
         let slots: Vec<_> = def.slots.iter().map(|slot| kinds::canon_in(blocks, slot)).collect();
         let item = kinds::canon_in(blocks, &def.item);

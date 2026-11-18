@@ -146,7 +146,7 @@ fn a_generator_gives_back_an_iterator() {
     );
     assert_eq!(
         returns("def letters() -> Iterator[str]:\n    yield 'a'\n", "letters"),
-        Ok(Type::Iterator(Box::new(Type::Str)))
+        Ok(Type::iterator(Type::Str))
     );
 }
 

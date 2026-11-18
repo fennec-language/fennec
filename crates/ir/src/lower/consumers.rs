@@ -115,7 +115,7 @@ impl Lowering<'_> {
     /// `for` loop goes through the same way: `list(queue)` is the list of what `queue.iter()` gives.
     fn gives_items(&self, value: &Expr) -> bool {
         match self.type_at(value.span) {
-            Some(Type::Iterator(_)) => true,
+            Some(Type::Iterator(..)) => true,
             Some(ty) => self.own_iter_items(&ty).is_some(),
             None => false,
         }
@@ -125,7 +125,7 @@ impl Lowering<'_> {
     pub(super) fn own_iter_items(&self, ty: &Type) -> Option<Type> {
         let Type::Named(name) = ty else { return None };
         let (_, found) = self.resolve(&format!("{name}.iter"), &[Some(ty.clone())], None)?;
-        let Type::Iterator(item) = found.returns else { return None };
+        let Type::Iterator(item, _) = found.returns else { return None };
         Some(*item)
     }
 
@@ -311,6 +311,76 @@ impl Lowering<'_> {
         };
         let body = with_condition(parts.cond, vec![stmt(decide, span)], span);
         self.looping_for_value(&found, first, parts, body, span)
+    }
+
+    /// `blake3`, `sha256` or a `_digest` form of one, given chunks from a generator that can fail,
+    /// as `blake3(file.chunks(size)?)`: the hash, its name, the chunks and their type. The checker
+    /// sends chunks from any other generator, or a list, to `crypto.fen`'s functions instead.
+    pub(super) fn hashing_failing_chunks<'e>(
+        &self,
+        callee: &Expr,
+        args: &'e [Arg],
+    ) -> Option<(String, &'e Expr, Type)> {
+        let hash = match &callee.kind {
+            ExprKind::Name(name) => name.clone(),
+            _ => self.std_member(callee)?,
+        };
+        if !matches!(
+            hash.as_str(),
+            "crypto.blake3" | "crypto.sha256" | "crypto.blake3_digest" | "crypto.sha256_digest"
+        ) {
+            return None;
+        }
+        let [Arg { name: None, is_mut: false, value }] = args else { return None };
+        let Some(Type::Iterator(item, Some(_))) = self.type_at(value.span) else { return None };
+        Some((hash, value, *item))
+    }
+
+    /// A hash of chunks from a generator that can fail, written where it's called: the hash
+    /// started, given each chunk, then ended, as `crypto.fen`'s functions do. The loop over the
+    /// chunks is this function's, so a failure reading one passes up from here, as what it is,
+    /// as any loop's does.
+    pub(super) fn hashed_in_place(
+        &mut self,
+        hash: &str,
+        chunks: &Expr,
+        item: Type,
+        keep: Option<&Type>,
+        span: Span,
+    ) -> Lowered<Option<crate::LocalId>> {
+        let algorithm = if hash.starts_with("crypto.blake3") { "blake3" } else { "sha256" };
+        let (end, hashed) = if hash.ends_with("_digest") {
+            ("crypto._end_digest", Type::Bytes)
+        } else {
+            ("crypto._end", Type::Str)
+        };
+        let generator = self.expr(chunks)?;
+        let handle = self.temporary(Type::Int);
+        let start = InstKind::Builtin {
+            dest: Some(handle),
+            name: "crypto._start".to_owned(),
+            args: vec![Operand::Str(algorithm.to_owned())],
+            changes: false,
+        };
+        self.emit(start, span);
+        let chunk = format!("\0chunk{}", span.start);
+        let named = [chunk.clone()];
+        self.through_generator(&named, (generator, item), (None, None), (span, chunks.span), |this| {
+            let piece = this.lookup(&chunk).ok_or("a chunk being hashed has no name")?;
+            let args = vec![Operand::Local(handle), Operand::Local(piece)];
+            let add = InstKind::Builtin { dest: None, name: "crypto._add".to_owned(), args, changes: false };
+            this.emit(add, span);
+            Ok(())
+        })?;
+        let dest = self.temporary(keep.cloned().unwrap_or(hashed));
+        let ended = InstKind::Builtin {
+            dest: Some(dest),
+            name: end.to_owned(),
+            args: vec![Operand::Local(handle)],
+            changes: false,
+        };
+        self.emit(ended, span);
+        Ok(keep.map(|_| dest))
     }
 
     /// Gives a hidden name its first value, runs the loop, and gives back what it ends up holding.

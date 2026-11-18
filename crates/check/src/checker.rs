@@ -612,7 +612,7 @@ impl Checker {
         };
         Some(Signature {
             params: self.params(entry),
-            returns,
+            returns: failing_items(returns, effects.yields),
             can_fail: effects.fails || entry.def.fails.is_some(),
             generator: effects.yields,
             generics: entry.def.generics.iter().map(|generic| generic.name.clone()).collect(),
@@ -797,6 +797,7 @@ impl Checker {
             Some(error) => Type::result(value, error),
             None => wrap(value, body.error, effects),
         };
+        let returns = failing_items(returns, effects.yields);
         // Anything still open in what it gives back has been reported, and callers
         // mustn't settle it.
         signature.returns = forget_vars(&returns);
@@ -1241,6 +1242,21 @@ fn field_needs_type(name: &str, ty: &Type, span: Span) -> Diagnostic {
 }
 
 /// What a call gives back, from what the body gives back.
+/// What a generator function's call gives back: a generator that fails as the function says, so
+/// whatever loops over it knows what its failure is, wherever the generator has gone by then.
+/// Anything else is as it was.
+pub(crate) fn failing_items(returns: Type, generator: bool) -> Type {
+    match returns {
+        Type::Result(value, error) if generator => match *value {
+            Type::Iterator(item, None) => {
+                Type::Result(Box::new(Type::Iterator(item, Some(error.clone()))), error)
+            }
+            value => Type::Result(Box::new(value), error),
+        },
+        other => other,
+    }
+}
+
 fn wrap(value: Type, error: Type, effects: Effects) -> Type {
     match value {
         // A function that can fail passes a result it gives back through unchanged.
@@ -1272,7 +1288,7 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
         .collect();
     let signature = format!("def {}({})", def.name, params.join(", "));
     let (what, written) = match value {
-        Type::Iterator(item) if generator => {
+        Type::Iterator(item, _) if generator => {
             (format!("yields {}", a(item)), item.source().map(|item| format!(" -> Iterator[{item}]")))
         }
         // What can fail says so with `fails`, as `-> int fails IoError`, not as a `Result`.

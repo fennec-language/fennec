@@ -318,6 +318,9 @@ impl Lowering<'_> {
         if let ExprKind::Attr { object, name, optional: true } = &callee.kind {
             return Some(self.optional_method((object, name), args, keep.cloned(), span));
         }
+        if let Some((hash, chunks, item)) = self.hashing_failing_chunks(callee, args) {
+            return Some(self.hashed_in_place(&hash, chunks, item, keep, span));
+        }
         if !self.popping
             && let Some(object) = popped_place(callee, args)
             && matches!(self.type_at(object.span), Some(Type::List(_)))

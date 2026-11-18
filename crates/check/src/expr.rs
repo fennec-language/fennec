@@ -96,7 +96,7 @@ impl FnCx<'_> {
             }
             ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),
             ExprKind::Else { value, default, except } => self.else_value(value, default, *except, span),
-            ExprKind::Try { value, context } => self.try_value(value, context.as_deref()),
+            ExprKind::Try { value, context } => self.try_value(value, context.as_deref(), span),
             ExprKind::Call { callee, args } => self.call(callee, args, span),
             ExprKind::Attr { object, name, optional } => self.read_attr(object, name, *optional, span),
             ExprKind::Index { object, index } => self.index(object, index, span),
@@ -151,14 +151,22 @@ impl FnCx<'_> {
                 let kept =
                     *kind == CompKind::Generator && !self.worked_out_here.contains(&(span.start, span.end));
                 self.kept_generators += usize::from(kept);
+                let failed_before = self.errors.len();
                 let (elem, value) = self.comprehension(parts, names, iter, span, kept);
                 self.kept_generators -= usize::from(kept);
                 match kind {
                     CompKind::List => Type::list(elem),
                     CompKind::Generator => {
-                        let made = Type::Iterator(Box::new(elem));
-                        self.checker.generator_types.insert((span.start, span.end), made.to_string());
-                        made
+                        // It fails as what it loops over does, and as each `?` inside it does,
+                        // when it's asked for an item.
+                        let mut failures = self.errors.get(failed_before..).unwrap_or_default().to_vec();
+                        let looped = self.recorded(iter.span).map(|ty| self.checker.settled(&ty));
+                        failures.extend(looped.as_ref().and_then(Type::generator_failure).cloned());
+                        let failure =
+                            (!failures.is_empty()).then(|| self.joined(&failures, span, "fails with"));
+                        let shown = Type::iterator(elem.clone()).to_string();
+                        self.checker.generator_types.insert((span.start, span.end), shown);
+                        Type::generating(elem, failure)
                     }
                     CompKind::Set => Type::Set(Box::new(elem)),
                     CompKind::Dict => Type::Dict(Box::new(elem), Box::new(value)),
@@ -289,6 +297,16 @@ impl FnCx<'_> {
             self.note_outer();
         }
         if !outer && let Some((ty, _)) = self.lookup(name) {
+            // A generator that can fail passes its failure up from where it's looped over, so only
+            // the function that made it, and counts its failure, may loop over it.
+            let failing = match &ty {
+                Type::Iterator(_, failure) => failure.is_some(),
+                Type::Var(_) => self.checker.settled(&ty).generator_failure().is_some(),
+                _ => false,
+            };
+            if failing && self.came_from_around(name) {
+                self.error(crate::messages::failing_generator_inside(name, span));
+            }
             return ty;
         }
         if self.names_function(name) {
@@ -1025,7 +1043,7 @@ impl FnCx<'_> {
             | Type::Array(item, _)
             | Type::Buffer(item)
             | Type::Set(item)
-            | Type::Iterator(item)
+            | Type::Iterator(item, _)
             | Type::Table(item)
             | Type::Dict(item, _) => *item,
             Type::Tuple(items) => {
@@ -1072,7 +1090,7 @@ impl FnCx<'_> {
         let name = ty.type_name().unwrap_or_default();
         if let Some((key, _)) = self.checker.program.method(name, "iter") {
             return match self.method_signature(ty, &key).map(|signature| signature.returns) {
-                Some(Type::List(item) | Type::Iterator(item)) => *item,
+                Some(Type::List(item) | Type::Iterator(item, _)) => *item,
                 Some(Type::Unknown) | None => Type::Unknown,
                 Some(other) => {
                     let message =
@@ -1287,7 +1305,7 @@ impl FnCx<'_> {
     }
 
     /// `value?`: the value inside a result, passing its error up.
-    fn try_value(&mut self, value: &Expr, context: Option<&Expr>) -> Type {
+    fn try_value(&mut self, value: &Expr, context: Option<&Expr>, span: Span) -> Type {
         // Inside an arrow function, what's passed up is the arrow's failure.
         let ty = self.expr(value);
         let inner = match &ty {
@@ -1317,6 +1335,15 @@ impl FnCx<'_> {
                 self.error(Diagnostic::new(message, context.span).with_help(help));
             }
             self.errors.push(error);
+            // What a generator fails with later is wrapped only where a loop goes over it right
+            // here; anywhere else, nothing would wrap it, and nothing counts what it fails with.
+            if self.checker.settled(&inner).generator_failure().is_some() && !self.looped_here.contains(&span)
+            {
+                let message =
+                    "`? from` wraps a generator's failure only where a `for` loops over it right there";
+                let help = "write it as the loop's own, `for item in made()? from E(...):`, or take the `from` off and handle the failure where it's looped over";
+                self.error(Diagnostic::new(message, value.span).with_help(help));
+            }
         }
         inner
     }

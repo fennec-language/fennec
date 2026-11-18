@@ -13681,6 +13681,228 @@ inside: shut 103 inside 3, in words long enough for a block
 a thousand: -6000
 ";
 
+/// A generator held in a name fails through its loop as what it fails with, in a function that fails
+/// with a union of errors: what it fails with goes with it in its type, so the loop reads its
+/// failure as that, in a loop, a list comprehension, `list`, `zip`, a generator looping over it, a
+/// generic function it went through, and a list it was kept in. Before, its failure was read as the
+/// union and printed as nothing, or as another error, which could read a number as text (#2086).
+#[test]
+fn a_named_generator_s_failure_passes_up_as_its_own_into_a_union() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("loop_union", NAMED_GENERATOR_LOOP_UNION, "1\nShut(name=\"other\")\n")?;
+    prints_in_both_builds(
+        "r4b_comprehension_union",
+        NAMED_GENERATOR_COMPREHENSION_UNION,
+        "Shut(name=\"other\")\n",
+    )?;
+    prints_in_both_builds("mut_union", NAMED_GENERATOR_GIVEN_TWICE_UNION, "1\nShut(name=\"second\")\n")?;
+    prints_in_both_builds("r4_wrap_leak", NAMED_GENERATOR_ZIPPED_UNION, "Shut(name=\"other\")\n")?;
+    prints_in_both_builds("listed_union", NAMED_GENERATOR_LISTED_UNION, "Shut(name=\"listed\")\n")?;
+    prints_in_both_builds("outer_union", GENERATOR_OVER_A_FAILING_ONE_UNION, "10\nShut(name=\"inner\")\n")?;
+    prints_in_both_builds("same_union", GENERATOR_THROUGH_A_GENERIC_UNION, "1\nShut(name=\"generic\")\n")?;
+    prints_in_both_builds("held_union", GENERATORS_KEPT_IN_A_LIST_UNION, "1\nShut(name=\"held\")\n")?;
+    prints_in_both_builds("joined_union", GENERATORS_JOINED_UNION, "n0, n1, n2\nShut(name=\"joined\")\n")?;
+    Ok(())
+}
+
+const NAMED_GENERATOR_LOOP_UNION: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def other(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    kept = other("other")?
+    for each in kept:
+        stdout.print(each)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const NAMED_GENERATOR_COMPREHENSION_UNION: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def other(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    kept = other("other")?
+    items = [each for each in kept]
+    stdout.print(items)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const NAMED_GENERATOR_GIVEN_TWICE_UNION: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def other(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    mut kept = other("first")?
+    kept = other("second")?
+    for each in kept:
+        stdout.print(each)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const NAMED_GENERATOR_ZIPPED_UNION: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def other(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def made(name: str) -> Iterator[int] fails Shut:
+    yield 10
+    yield 20
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    kept = other("other")?
+    for step, item in zip(made("made")? from Wrapped(why="zip"), [each for each in kept]):
+        stdout.print(step, item)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const NAMED_GENERATOR_LISTED_UNION: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def other(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    kept = other("listed")?
+    stdout.print(list(kept))
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const GENERATOR_OVER_A_FAILING_ONE_UNION: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def other(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def outer() -> Iterator[int] fails Shut | Wrapped:
+    for each in other("inner")?:
+        yield each * 10
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    for each in outer()?:
+        stdout.print(each)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const GENERATOR_THROUGH_A_GENERIC_UNION: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def other(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def same[T](value: T) -> T:
+    return value
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    kept = same(other("generic")?)
+    for each in kept:
+        stdout.print(each)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const GENERATORS_JOINED_UNION: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def other(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def shown(n: int) -> str fails Wrapped:
+    if n > 2:
+        fail Wrapped(why=f"n{n}")
+    return f"n{n}"
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    stdout.print(", ".join(shown(n)? for n in [0, 1, 2]))
+    joined = ", ".join(f"{each}" for each in other("joined")?)
+    stdout.print(joined)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const GENERATORS_KEPT_IN_A_LIST_UNION: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def other(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    held = [other("held")?]
+    for kept in held:
+        for each in kept:
+            stdout.print(each)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
 /// A generator's failure passes up however the generator was reached: from a name, and from inside
 /// `with` blocks, where the loop is over a name too, as well as from the loop that calls it.
 #[test]
@@ -17574,6 +17796,42 @@ const BIG_FILE_HASHES: &str = "\
 b90b9707076bbeb116e530ba67192a831f21a039eaba115c14e0f3cac0b23586
 e37d10b0cfad1de842e395ddc89deef2c86d9abe99d363ad67bd21b919128e69
 ";
+
+/// Chunks from a generator that can fail are hashed where the call is, in a loop of the caller's,
+/// so the hash is what hashing the whole text gives, and a failure partway passes up as what it is:
+/// `crypto.fen`'s functions take a generator that can't fail.
+#[test]
+fn chunks_from_a_generator_that_can_fail_are_hashed_where_the_call_is() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("hash_union", HASH_FAILING_CHUNKS, "True\nTrue\nShut(name=\"pieces\")\n")
+}
+
+const HASH_FAILING_CHUNKS: &str = r#"from std.crypto import blake3, sha256_digest
+
+error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def pieces(fails_after: bool) -> Iterator[str] fails Shut:
+    yield "fen"
+    yield "nec"
+    if fails_after:
+        fail Shut(name="pieces")
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    stdout.print(blake3(pieces(False)?) == blake3("fennec"))
+    stdout.print(sha256_digest(pieces(False)?) == sha256_digest("fennec"))
+    hashed = blake3(pieces(True)?)
+    stdout.print(hashed)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
 
 /// 64 MB hashed as it's read holds next to nothing, as writing it does.
 #[test]

@@ -165,7 +165,7 @@ pub(crate) fn settled(ty: &Type) -> bool {
         | Type::Buffer(inner)
         | Type::Table(inner)
         | Type::Id(inner)
-        | Type::Iterator(inner)
+        | Type::Iterator(inner, _)
         | Type::Array(inner, _) => settled(inner),
         Type::Dict(key, value) | Type::Result(key, value) => settled(key) && settled(value),
         Type::Tuple(items) | Type::Union(items) | Type::Generic(_, items) => items.iter().all(settled),

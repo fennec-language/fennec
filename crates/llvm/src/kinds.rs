@@ -185,7 +185,7 @@ impl Kind {
                 params.iter().map(|param| Kind::of(layouts, param)).collect();
             return Ok(Kind::Closure(params?, Box::new(Kind::of(layouts, returns)?)));
         }
-        if let Type::Iterator(_) = ty {
+        if let Type::Iterator(..) = ty {
             return Ok(Kind::Gen);
         }
         let held = layouts.ty(&canon_in(Some(layouts), ty));

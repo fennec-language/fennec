@@ -87,6 +87,15 @@ impl Interp {
         }
         match value {
             Value::Cap(Cap::Fs(reach)) => self.fs_method(&reach, name, &args, &named, span),
+            // A generator's text joined: each is asked for in turn, and a failure passes up from
+            // there, as compiled code's loop does.
+            Value::Str(text)
+                if name == "join" && args.first().is_some_and(|over| !matches!(over, Value::List(_))) =>
+            {
+                let over = args.first().cloned().unwrap_or(Value::None);
+                let parts = self.all_items(over, span)?;
+                str_method(&text, name, &[Value::List(parts.into_iter().collect())], &named, span)
+            }
             Value::Str(text) => str_method(&text, name, &args, &named, span),
             Value::Bytes(data) if named.is_empty() => bytes_method(&data, name, &args, span),
             Value::List(items) => self.list_method(receiver, items.into_inner(), name, (&args, named), expr),

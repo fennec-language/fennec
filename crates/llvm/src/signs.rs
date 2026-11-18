@@ -243,10 +243,14 @@ fn named_in(ty: &Type, found: &mut dyn FnMut(&str)) {
         | Type::Buffer(inner)
         | Type::Array(inner, _)
         | Type::Set(inner)
-        | Type::Iterator(inner)
+        | Type::Iterator(inner, None)
         | Type::Optional(inner)
         | Type::Id(inner)
         | Type::Table(inner) => named_in(inner, found),
+        Type::Iterator(inner, Some(failure)) => {
+            named_in(inner, found);
+            named_in(failure, found);
+        }
         Type::Dict(key, value) | Type::Result(key, value) => {
             named_in(key, found);
             named_in(value, found);

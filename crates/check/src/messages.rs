@@ -171,6 +171,19 @@ pub(crate) fn needless_mut(function: &str, span: Span) -> Diagnostic {
 pub(crate) const LITERAL_HELP: &str = "a `LiteralStr` is text written in quotes here in the source, or such text joined with `+`; \
      an f-string or a `str` made while the program runs isn't one, so pass what changes as a value instead";
 
+/// How to use a generator that can fail where it can't go: it fails where it's looped over, so
+/// only the function that made it, which passes its failure up, can loop over it.
+const FAILING_GENERATOR_HELP: &str = "loop over a generator that can fail where it's made, so its failure passes up from there, or keep its items with `list(...)` first";
+
+/// A generator that can fail, used inside a nested function, an arrow function or a generator
+/// kept for later, which would loop over it where its failure can't pass up as it says.
+pub(crate) fn failing_generator_inside(name: &str, span: Span) -> Diagnostic {
+    let message = format!(
+        "`{name}` is a generator that can fail, so a nested function, an arrow function or a generator kept for later can't use it"
+    );
+    Diagnostic::new(message, span).with_help(FAILING_GENERATOR_HELP)
+}
+
 pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -> Diagnostic {
     if actual.maybe_none() && !expected.maybe_none() {
         return might_be_none(span);
@@ -196,6 +209,7 @@ pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -
         (Type::Str, Type::Int | Type::Float | Type::Bool) => {
             diagnostic.with_help("turn it into text with an f-string, as `f\"{count}\"`, or `str(count)`")
         }
+        (Type::Iterator(_, None), Type::Iterator(_, Some(_))) => diagnostic.with_help(FAILING_GENERATOR_HELP),
         (Type::Arrow(..), Type::Function(key)) => {
             let name = key.rsplit('.').next().unwrap_or(key);
             diagnostic.with_help(format!(

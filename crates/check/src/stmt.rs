@@ -214,7 +214,7 @@ impl FnCx<'_> {
         );
         let ty = self.expr(value);
         // `-> Iterator[T]` says what each item it yields is.
-        if let Some(Type::Iterator(item) | Type::List(item)) = self.declared.clone()
+        if let Some(Type::Iterator(item, _) | Type::List(item)) = self.declared.clone()
             && !self.checker.fits(&item, &ty)
         {
             let what = format!("what `{}` yields", self.name);
@@ -386,6 +386,8 @@ impl FnCx<'_> {
         if !is_mut && self.fields_loop(names, iter, body, span).is_some() {
             return;
         }
+        let looped_before = self.looped_here.len();
+        self.looped_here.extend(looped_here(iter));
         let outer = crate::parallel::called_as_outer(iter);
         let parallel =
             crate::parallel::parallel_items(iter).filter(|_| outer || self.lookup("parallel").is_none());
@@ -423,6 +425,7 @@ impl FnCx<'_> {
             let iter_ty = self.expr(iter);
             self.item_type(&iter_ty, iter.span)
         };
+        self.looped_here.truncate(looped_before);
         self.forget_changed_in(body);
         let before = self.snapshot();
         self.push(false);
@@ -456,7 +459,7 @@ impl FnCx<'_> {
                 (Type::Unknown, Type::Unknown, false)
             }
         };
-        self.record(iter.span, &Type::Iterator(Box::new(Type::Tuple(vec![key_ty.clone(), item_ty.clone()]))));
+        self.record(iter.span, &Type::iterator(Type::Tuple(vec![key_ty.clone(), item_ty.clone()])));
         self.checker.ref_items.insert((span.start, span.end), table);
         self.forget_changed_in(body);
         let before = self.snapshot();
@@ -522,7 +525,7 @@ impl FnCx<'_> {
             let ty = self.expr(items);
             self.item_type(&ty, items.span)
         };
-        self.record(iter.span, &Type::Iterator(Box::new(Type::Tuple(vec![Type::Int, item_ty.clone()]))));
+        self.record(iter.span, &Type::iterator(Type::Tuple(vec![Type::Int, item_ty.clone()])));
         self.forget_changed_in(body);
         let before = self.snapshot();
         self.push(false);
@@ -759,4 +762,16 @@ fn items_of(iter: &Expr) -> Option<&Expr> {
     let ExprKind::Call { callee, args } = &iter.kind else { return None };
     let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
     (name == "items" && args.is_empty()).then_some(object.as_ref())
+}
+
+/// Each `?` a `for` over `iter` loops over right there: `iter` itself, as in
+/// `for x in made()?`, or each argument of an `enumerate` or `zip` it is.
+fn looped_here(iter: &Expr) -> Vec<Span> {
+    let wrapped = |expr: &Expr| matches!(expr.kind, ExprKind::Try { .. }).then_some(expr.span);
+    match &iter.kind {
+        ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if name == "enumerate" || name == "zip") => {
+            args.iter().filter_map(|arg| wrapped(&arg.value)).collect()
+        }
+        _ => wrapped(iter).into_iter().collect(),
+    }
 }

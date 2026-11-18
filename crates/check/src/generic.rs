@@ -427,6 +427,9 @@ impl FnCx<'_> {
             Some(error) => Type::result(value, resolve(self, error)),
             None => value,
         };
+        // An interface's `-> Iterator[T] fails E` is a generator that fails with an `E`, as each
+        // type's own method has to be: `Reader.lines` is.
+        let returns = crate::checker::failing_items(returns, true);
         let generics = method.generics.iter().map(|generic| generic.name.clone()).collect();
         Signature { params, returns, can_fail: method.fails.is_some(), generator: false, generics }
     }

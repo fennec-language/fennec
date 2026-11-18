@@ -48,7 +48,7 @@ impl<'p> Emit<'_, '_, 'p> {
                         return Err("a generator that isn't a local".to_owned());
                     };
                     match self.function.locals.get(local.0).map(|local| &local.ty) {
-                        Some(Type::Iterator(item)) => (**item).clone(),
+                        Some(Type::Iterator(item, _)) => (**item).clone(),
                         _ => return Err("a generator whose items aren't known".to_owned()),
                     }
                 };

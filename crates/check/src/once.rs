@@ -45,7 +45,7 @@ struct Walk<'b> {
 
 impl Walk<'_> {
     fn is_generator(&self, expr: &Expr) -> bool {
-        matches!(self.body.expr(expr.span), Some(Type::Iterator(_)))
+        matches!(self.body.expr(expr.span), Some(Type::Iterator(..)))
     }
 
     /// Walks a block, giving back whether it goes on past its end.

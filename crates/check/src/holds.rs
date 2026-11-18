@@ -948,7 +948,7 @@ impl<'c> Walk<'c> {
                 held.function = true;
                 held
             }
-            Type::Iterator(_) if value.ty.is_none() && self.made_at_top(key, given, value) => {
+            Type::Iterator(..) if value.ty.is_none() && self.made_at_top(key, given, value) => {
                 let mut held = Held { function: true, ..Held::default() };
                 for given_to in &value.made_by {
                     let at = Span { start: given_to.0, end: given_to.1 };
@@ -960,7 +960,7 @@ impl<'c> Walk<'c> {
                 }
                 held
             }
-            Type::Iterator(_) => {
+            Type::Iterator(..) => {
                 Held { capabilities: self.everything(), unseen: true, function: true, ..Held::default() }
             }
             other => self.type_held(other),
@@ -1062,7 +1062,7 @@ impl<'c> Walk<'c> {
             // A function or an iterator inside a value may hold anything: what it captures can't be
             // seen from here. A named one holds what it captures. A type parameter left unknown
             // may be anything the program holds too.
-            Type::Arrow(..) | Type::Iterator(_) | Type::Param(_) => held.extend(self.everything()),
+            Type::Arrow(..) | Type::Iterator(..) | Type::Param(_) => held.extend(self.everything()),
             Type::Function(function) => {
                 let function = function.clone();
                 held.extend(self.captured_by(&function));

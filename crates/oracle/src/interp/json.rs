@@ -255,7 +255,9 @@ pub(crate) fn filled(ty: &Type, params: &[(String, Type)]) -> Type {
         Type::Id(inner) => Type::Id(each(inner)),
         Type::Table(inner) => Type::Table(each(inner)),
         Type::Buffer(inner) => Type::Buffer(each(inner)),
-        Type::Iterator(inner) => Type::Iterator(each(inner)),
+        Type::Iterator(inner, failure) => {
+            Type::Iterator(each(inner), failure.as_ref().map(|failure| each(failure)))
+        }
         Type::Array(inner, size) => Type::Array(each(inner), *size),
         Type::Dict(key, value) => Type::Dict(each(key), each(value)),
         Type::Result(value, error) => Type::Result(each(value), each(error)),

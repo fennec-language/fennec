@@ -10556,7 +10556,7 @@ def main(stdout: Stdout) fails Nope:
 
 /// A function whose last line is a `with` whose block always fails leaves on every way, once the
 /// source is written in: with a cleanup that fails too, in each branch of an `if`, and with no
-/// cleanup. Before, the written-in body seemed to end giving back nothing, and the build stopped
+/// cleanup. So does one ending in a `match` whose `ref` case always fails. Before, the written-in body seemed to end giving back nothing, and the build stopped
 /// with an internal error. The oracle prints the same, debug and release.
 #[test]
 fn a_function_ending_in_a_with_that_fails_builds_natively() -> std::io::Result<()> {
@@ -10564,8 +10564,54 @@ fn a_function_ending_in_a_with_that_fails_builds_natively() -> std::io::Result<(
         return Ok(());
     }
     prints_in_both_builds("with_fails_last", WITH_FAILS_LAST, "unguard 3\n3\n2 []\n0\n")?;
-    prints_in_both_builds("with_fails_last_ways", WITH_FAILS_LAST_WAYS, "unguard 7\nunguard 2\n7 -2 8\n")
+    prints_in_both_builds("with_fails_last_ways", WITH_FAILS_LAST_WAYS, "unguard 7\nunguard 2\n7 -2 8\n")?;
+    // A function ending in a `match` whose `ref` case always fails, which ends failing too.
+    prints_in_both_builds("ref_case_fails_last", REF_CASE_FAILS_LAST, "5 Kind.Slider(value=5)\n")?;
+    // A source that skips its `lend` skips the block, and what follows the `with` still runs: the
+    // ending is written only where the `with` is a value-giving function's last line.
+    prints_in_both_builds("with_fails_then_more", WITH_FAILS_THEN_MORE, "skipped\nOops(code=1)\n")
 }
+
+const REF_CASE_FAILS_LAST: &str = r"error Oops:
+    code: int
+
+enum Kind:
+    Slider(value: int)
+    Empty
+
+def bump(ref kind: Kind) -> int fails Oops:
+    match kind:
+        case .Slider(ref value):
+            value += 1
+            fail Oops(code=value)
+        case _:
+            return 0
+
+def main(stdout: Stdout):
+    mut kind = Kind.Slider(value=4)
+    got = bump(ref kind) except why:
+        why.code
+    stdout.print(got, kind)
+";
+
+const WITH_FAILS_THEN_MORE: &str = r#"error Oops:
+    code: int
+
+def maybe(flag: bool) -> with int:
+    if flag:
+        lend 1
+
+def run(flag: bool, stdout: Stdout) fails Oops:
+    with maybe(flag) as n:
+        fail Oops(code=n)
+    stdout.print("skipped")
+
+def main(stdout: Stdout):
+    run(False, stdout) except why:
+        stdout.print(why)
+    run(True, stdout) except why:
+        stdout.print(why)
+"#;
 
 const WITH_FAILS_LAST: &str = r#"error Refused:
     code: int

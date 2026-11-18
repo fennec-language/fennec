@@ -3056,11 +3056,11 @@ const READ_THEN_SENT_AFTER_A_TIMEOUT: &str = "
 /// Refused too, from the review: a send of no time to a channel a task beside it filled, one in
 /// a `parallel` round beside another round that takes, and a receive of no time while a task waits
 /// for room behind a send beside its own, which on another run got in first and went on, the send
-/// a task's or a `parallel` round's. A wait of no time on a channel a round made for itself runs.
+/// a task's or a `parallel` round's. A round's wait of no time beside other rounds is refused on a
+/// channel it made itself too, since its ends are plain values another round can be sent.
 #[test]
 fn a_wait_of_no_time_or_a_listener_read_by_two_tasks_is_refused_where_it_hangs_on_time() {
     prints(WAITS_OF_NO_TIME, "got 5\nagain -1\nfull\n");
-    prints(WAITS_OF_NO_TIME_ON_A_ROUND_S_OWN_CHANNEL, "[-1, 9, 19]\n");
     for (program, refused) in [
         (RECEIVE_OF_NO_TIME_BESIDE_A_SENDER, "a receive of no time, which finds a message or not by time"),
         (SEND_OF_NO_TIME_BESIDE_A_TAKER, "a send of no time, which finds room or not by time"),
@@ -3072,6 +3072,10 @@ fn a_wait_of_no_time_or_a_listener_read_by_two_tasks_is_refused_where_it_hangs_o
         ),
         (
             RECEIVE_OF_NO_TIME_BEHIND_A_RACING_SEND_IN_A_ROUND,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            WAITS_OF_NO_TIME_ON_A_ROUND_S_OWN_CHANNEL,
             "a receive of no time, which finds a message or not by time",
         ),
         (

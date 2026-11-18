@@ -160,8 +160,8 @@ says they are, at the version the workspace pins.
   on, however short its time, even `1ns`: only a wait of no time, `0ms`, looks once, as the
   runtime's does. That one is refused unless nothing else could still send, take or close, a task
   waiting for room behind a send beside its own counting as one that could; what it finds, a
-  message, room, the messages filling it or the close, was there before it; and no other
-  `parallel` round beside it could use the channel. A task that ends with messages left in its inbox that its block sent as it
+  message, room, the messages filling it or the close, was there before it; and it isn't in a
+  `parallel` round beside others, which could use any channel, one the round made included. A task that ends with messages left in its inbox that its block sent as it
   ran: whether each
   send came before the task ended or after, and failed with `Closed`, hangs on time, so a later run
   tries the task going on first at that send, and the runs have to end the same.

@@ -32,8 +32,8 @@
 //! it is taken to answer in time, however short its time: only a wait of no time, `0ms`, is read as
 //! looking once, as the runtime's does. It's refused unless what it finds is the same on every
 //! run: nothing else could still send, take or close, a task waiting for room behind a send beside
-//! its own counting as one that could, what it finds was there before it, and no other `parallel`
-//! round beside it could use the channel. A listener of a channel to every
+//! its own counting as one that could, what it finds was there before it, and it isn't in a
+//! `parallel` round beside others, which could use any channel, one the round made included. A listener of a channel to every
 //! listener read by two tasks at once is refused as one channel's receivers are.
 //!
 //! The rounds of a `parallel` call run one after another here, on the thread that made the call,
@@ -979,7 +979,7 @@ impl Interp {
     /// `channel_send`: 0 sent, 1 closed, 2 timed out.
     pub(crate) fn channel_send(&mut self, number: i64, message: &Value, timeout: i64) -> Run<Value> {
         self.channel_in_rounds(number, ChannelUse::Send)?;
-        let beside_rounds = timeout == 0 && self.beside_other_rounds(number)?;
+        let beside_rounds = timeout == 0 && self.beside_other_rounds()?;
         let me = self.actor;
         // A send to a task's inbox, which the task could end before, without taking it.
         let inbox_of = self.sched_state()?.channels.get(&number).and_then(|chan| chan.task);
@@ -1036,7 +1036,7 @@ impl Interp {
                 }
                 // A send of no time finds room or not by time unless nothing else could send or
                 // take now, each take it could find room by and each message filling it happened
-                // before it, and no other `parallel` round beside it could use the channel.
+                // before it, and it isn't in a `parallel` round beside others.
                 if timeout == 0 {
                     let took_beside =
                         chan.receivers.values().any(|(tried, took)| *took && !happened_before(tried, &clock));
@@ -1072,7 +1072,7 @@ impl Interp {
 
     /// A receive of no time: what's there now, as the runtime's looks once. It's the same on every
     /// run only when nothing else could still send, take or close, what it could find, a message or
-    /// the close, was there before it, and no other `parallel` round beside it could use the channel.
+    /// the close, was there before it, and it isn't in a `parallel` round beside others.
     fn receive_now(&mut self, number: i64, beside_rounds: bool) -> Run<(Value, i64)> {
         let me = self.actor;
         let mut state = lock_state(&self.shared)?;
@@ -1097,7 +1097,7 @@ impl Interp {
         // The rounds after this one run beside it, so their messages can be the next.
         if timeout == 0 {
             self.channel_in_rounds(channel, ChannelUse::Receive)?;
-            let beside_rounds = self.beside_other_rounds(channel)?;
+            let beside_rounds = self.beside_other_rounds()?;
             return self.receive_now(number, beside_rounds);
         }
         self.hand_on_rounds(channel)?;

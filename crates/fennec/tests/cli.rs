@@ -1116,7 +1116,8 @@ fn test_runs_the_tests_in_every_file_of_a_kit() {
 fn tests_of_one_name_in_a_kit_each_run_told_apart_by_their_modules() {
     let dir = scratch("one-name").unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("kit.toml"), "name = \"dup\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n").unwrap();
+    std::fs::write(dir.join("kit.toml"), "name = \"dup\"\nversion = \"0.1.0\"\nfennec = \"0.0.1\"\n")
+        .unwrap();
     std::fs::write(
         dir.join("src/one.fen"),
         "def twice(n: int) -> int:\n    return n * 2\n\ntest \"it works\":\n    assert twice(2) == 4\n",

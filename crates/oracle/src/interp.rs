@@ -1013,9 +1013,14 @@ impl Interp {
             let item = match self.next_item(&mut items) {
                 Ok(Some(item)) => item,
                 Ok(None) => break,
-                // `for x in made()? from Wrap(...)`: what the generator fails with is wrapped too.
-                Err(Flow::Fail(_, _)) if made && Interp::is_stream_items(&items) && wrap.is_some() => {
-                    return self.wrapped(wrap, iter.span);
+                // One the loop owns failing partway through fails the loop, wrapped as its
+                // `? from Wrap(...)` says, and the others it owns are let go on its way out.
+                Err(Flow::Fail(error, failed_at)) if made && Interp::is_stream_items(&items) => {
+                    left = match wrap {
+                        Some(_) => self.wrapped(wrap, iter.span),
+                        None => Err(Flow::Fail(error, failed_at)),
+                    };
+                    break;
                 }
                 Err(other) => return Err(other),
             };

@@ -1102,8 +1102,10 @@ impl Lowering<'_> {
                     held
                 }
             };
-            // Named so nothing a program writes names it, and read through that name where it was.
-            let name = format!("\0arg{}", arg.value.span.start);
+            // Named so nothing a program writes names it, and read through that name where it was:
+            // an owned generator's name says so, for `enumerate`'s or `zip`'s generator over it.
+            let mark = if known.is_some() { OWNED } else { "\0arg" };
+            let name = format!("{mark}{}", arg.value.span.start);
             if let Some(scope) = self.scopes.last_mut() {
                 scope.insert(name.clone(), held);
             }
@@ -1149,13 +1151,15 @@ impl Lowering<'_> {
             self.leaving.truncate(entered);
             return ran;
         }
-        for (at, each) in owned.iter().enumerate().rev() {
-            self.leaving.truncate(entered + at);
-            // One that failed partway through, as `zip`'s second does when it ends the loop, passes
-            // its failure up here.
+        // One that failed partway through, which ends the loop, passes its failure up first, with
+        // every one still to be let go, so a failure of another's cleanup is noted on it.
+        for each in &owned {
             let after = self.new_block();
             self.pass_up_failure(&each.generator, after, span, each.wrap.as_ref())?;
             self.current = after;
+        }
+        for (at, each) in owned.iter().enumerate().rev() {
+            self.leaving.truncate(entered + at);
             self.let_go_now(&each.generator, (each.known.clone(), each.wrap.as_ref()), span)?;
             self.release_generator(&each.generator, span);
         }
@@ -1167,5 +1171,8 @@ impl Lowering<'_> {
 /// Whether what `enumerate` or `zip` reads is a generator the loop it's made for owns, which
 /// `made_inside` names apart.
 pub(super) fn owned_name(read: &Expr) -> bool {
-    matches!(&read.kind, ExprKind::Name(name) if name.starts_with("\0arg"))
+    matches!(&read.kind, ExprKind::Name(name) if name.starts_with(OWNED))
 }
+
+/// What starts the name `made_inside` gives a generator the loop owns.
+const OWNED: &str = "\0owned";

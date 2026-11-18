@@ -1147,7 +1147,7 @@ fn fails_unheld(stmt: &Stmt) -> bool {
         StmtKind::For { iter, .. } => {
             crate::parallel::parallel_items(iter).is_some()
                 || matches!(iter.kind, ExprKind::Try { .. })
-                || owns_inside(iter)
+                || owns_inside(iter, true)
         }
         // As it's written, or as `lock_lowering` wrote it in an earlier round, as a `ref` case in a
         // source's body is lowered once the source is written in.
@@ -1157,11 +1157,16 @@ fn fails_unheld(stmt: &Stmt) -> bool {
 }
 
 /// Whether a loop goes over `enumerate(...)` or `zip(...)` with a `?` that's a whole argument, whose
-/// loop owns the generator that gives, as it does one it goes over by itself.
-fn owns_inside(iter: &Expr) -> bool {
+/// loop owns the generator that gives, as it does one it goes over by itself: one with `from` too
+/// when `wrapped` says.
+fn owns_inside(iter: &Expr, wrapped: bool) -> bool {
+    let whole_try = |arg: &fennec_syntax::Arg| match &arg.value.kind {
+        ExprKind::Try { context, .. } => wrapped || context.is_none(),
+        _ => false,
+    };
     matches!(&iter.kind, ExprKind::Call { callee, args }
         if matches!(&callee.kind, ExprKind::Name(name) if name == "enumerate" || name == "zip")
-            && args.iter().any(|arg| matches!(arg.value.kind, ExprKind::Try { context: None, .. })))
+            && args.iter().any(whole_try))
 }
 
 /// `exits` in a body inside the block, where the block's failure isn't held when `unheld` says.
@@ -1461,7 +1466,7 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
         // So does one over `enumerate(made()?)` or `zip(made()?, ...)`, for the generator made
         // right there: its `?` stays too, where that keeps what runs in the order it's written.
         StmtKind::For { iter: call @ Expr { kind: ExprKind::Call { .. }, .. }, .. }
-            if otherwise.is_empty() && owns_inside(call) =>
+            if otherwise.is_empty() && owns_inside(call, false) =>
         {
             hoist_owning(call, otherwise, before, made, span);
         }

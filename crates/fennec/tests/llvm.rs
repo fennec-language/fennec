@@ -5989,8 +5989,10 @@ def main(stdout: Stdout):
 /// A failure inside a `lock` in a `with` block or a `ref` case rolls back what the lock's body
 /// changed, as a failure leaving a lock does anywhere: by `fail`, by a `?` on its own line, and in a
 /// `ref` case, whose change to its part is still put back, a source's own among them. Before, the
-/// block held the failure and
-/// left the lock by `break`, which kept the changes. The oracle prints the same, debug and release.
+/// block held the failure and left the lock by `break`, which kept the changes. A `lock` in a block
+/// whose `with` is written in only in a later round builds too: before, the `lock` lowered in the
+/// first round seemed a `with` still to write in, forever. The oracle prints the same, debug and
+/// release.
 #[test]
 fn a_failure_inside_a_lock_in_a_with_rolls_the_lock_back() -> std::io::Result<()> {
     if !ready() {
@@ -6003,8 +6005,37 @@ fn a_failure_inside_a_lock_in_a_with_rolls_the_lock_back() -> std::io::Result<()
     )?;
     // A `ref` case in a source's body, lowered a round after its lock was, the lock already written
     // as the lowering writes one.
-    prints_in_both_builds("lock_in_a_source_s_case_rolls_back", LOCK_IN_A_SOURCE_S_CASE, "Oops(code=4)\n10\n")
+    prints_in_both_builds(
+        "lock_in_a_source_s_case_rolls_back",
+        LOCK_IN_A_SOURCE_S_CASE,
+        "Oops(code=4)\n10\n",
+    )?;
+    prints_in_both_builds("lock_in_a_later_with", LOCK_IN_A_LATER_WITH, "1 2\n1\n")
 }
+
+const LOCK_IN_A_LATER_WITH: &str = r"struct Counter:
+    total: int
+
+def other() -> with int:
+    lend 1
+
+def inner() -> with int:
+    with other() as one:
+        lend one
+
+def outer() -> with int:
+    lend 2
+
+def main(stdout: Stdout):
+    shared counter = Counter(total=0)
+    with outer() as two:
+        with inner() as one:
+            stdout.print(one, two)
+        lock counter as ref held:
+            held.total += 1
+    lock counter as now:
+        stdout.print(now.total)
+";
 
 const LOCK_IN_A_SOURCE_S_CASE: &str = r#"error Oops:
     code: int

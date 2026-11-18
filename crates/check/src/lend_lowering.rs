@@ -1251,7 +1251,8 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
 /// function written inside.
 fn holds_with(body: &[Stmt]) -> bool {
     body.iter().any(|each| match &each.kind {
-        StmtKind::With { lock: false, .. } => true,
+        // A `lock` `lock_lowering` wrote in is never written in again: it waits on nothing.
+        StmtKind::With { lock: false, names, .. } if !crate::lock::lowered(names) => true,
         StmtKind::With { body, .. }
         | StmtKind::While { body, .. }
         | StmtKind::For { body, .. }

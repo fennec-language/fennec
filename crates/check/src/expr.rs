@@ -81,9 +81,8 @@ impl FnCx<'_> {
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Binary { op: BinOp::Is | BinOp::IsNot, lhs, rhs }
-                if let ExprKind::Name(member) = &rhs.kind
-                    && self.lookup(member).is_none()
-                    && self.member_type(member, rhs.span).is_some() =>
+                if let ExprKind::Name(written) = &rhs.kind
+                    && let Some(member) = self.member_named(written, rhs.span) =>
             {
                 self.is_member(lhs, member, rhs.span)
             }
@@ -389,22 +388,27 @@ impl FnCx<'_> {
     }
 
     /// A name used as a type, like `Enemy` in `Enemy.at(...)` or `collections.Table` in
-    /// `collections.Table[Enemy]()`, rather than as a value.
-    pub(crate) fn as_type_name<'e>(&self, expr: &'e Expr) -> Option<&'e str> {
-        let name = match &expr.kind {
-            ExprKind::Name(name) => name,
+    /// `collections.Table[Enemy]()`, rather than as a value. A type or module a `with` source
+    /// names, written into its caller where something there names it too (`sight::outer`), is the
+    /// type or module.
+    pub(crate) fn as_type_name<'e>(&mut self, expr: &'e Expr) -> Option<&'e str> {
+        let (name, outer) = match &expr.kind {
+            ExprKind::Name(name) => self.meant(name),
             ExprKind::Attr { object, name, optional: false } => {
-                let alias = fennec_syntax::dotted(object)?;
-                if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
-                    return None;
-                }
+                let written = fennec_syntax::dotted(object)?;
+                let first = written.split('.').next().unwrap_or_default();
+                let alias = match self.meant(first) {
+                    (meant, true) => written.replacen(first, meant, 1),
+                    (_, false) if self.lookup(first).is_some() => return None,
+                    (_, false) => written.clone(),
+                };
                 let module = *self.checker.program.modules_at(expr.span).get(&alias)?;
                 fennec_syntax::std_member(module, name, expr.span).ok()?;
-                name
+                (name.as_str(), false)
             }
             _ => return None,
         };
-        (self.lookup(name).is_none() && self.checker.program.is_type_name(name)).then_some(name.as_str())
+        ((outer || self.lookup(name).is_none()) && self.checker.program.is_type_name(name)).then_some(name)
     }
 
     /// `x != x` on a float: how other languages ask about NaN, but here NaN equals NaN, so it's

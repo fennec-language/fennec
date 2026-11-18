@@ -431,10 +431,21 @@ fn narrowed_fs<D: Databases>(
         return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(reason)));
     }
     let full = absolute(&path);
-    let followed = with_links_followed(&full);
-    let reaching = limited
-        .named()
-        .find(|folder| inside(&full, folder) && inside(&followed, &with_links_followed(folder)));
+    let reaching = if real && method != "only" {
+        // The real file system's work goes through a handle held on the folder, by names beneath
+        // it, which refuses each step out as it's taken, links included, with nothing to race
+        // (see `fs::beneath_with`). Following the path's links here first only said the same
+        // thing earlier, racily, for two `realpath`s a call, each a look at every folder on the
+        // way: 12 `getattrlist`s for a path 12 folders deep.
+        limited.named().find(|folder| inside(&full, folder))
+    } else {
+        // A test's fake file system has no handle to refuse a link out, and a folder narrowed to
+        // is kept as its path, so both are checked with their links followed.
+        let followed = with_links_followed(&full);
+        limited
+            .named()
+            .find(|folder| inside(&full, folder) && inside(&followed, &with_links_followed(folder)))
+    };
     if method == "only" {
         let mut allowed: Vec<Rc<str>> = limited.marks().collect();
         if reaching.is_some() {
@@ -746,6 +757,122 @@ mod tests {
         swapping.join().unwrap();
         assert!(read > 0 && refused > 0, "{read} read, {refused} refused: the swap never raced the reads");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The same swap raced by writes: a write finds the folder it writes in once and does every
+    /// step there, and nothing it writes, whole or partway, lands in the folder the link leads to.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_swapped_for_a_link_out_never_lets_a_narrowed_fs_write_outside() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let base = scratch("write-race");
+        let (inside, outside) = (format!("{base}/inside"), format!("{base}/outside"));
+        let (staged, link, sub) = (format!("{base}/staged"), format!("{base}/link"), format!("{inside}/sub"));
+        for made in [&inside, &outside, &staged] {
+            std::fs::create_dir_all(made).unwrap();
+        }
+        std::fs::write(format!("{outside}/secret.txt"), "OUTSIDE").unwrap();
+        std::fs::write(format!("{staged}/secret.txt"), "INSIDE").unwrap();
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        std::fs::rename(&staged, &sub).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapping = {
+            let stop = Arc::clone(&stop);
+            let (staged, link, sub) = (staged.clone(), link.clone(), sub.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::fs::rename(&sub, &staged);
+                    let _ = std::fs::rename(&link, &sub);
+                    let _ = std::fs::rename(&sub, &link);
+                    let _ = std::fs::rename(&staged, &sub);
+                }
+            })
+        };
+        let fs = fs_in(&inside);
+        let (mut wrote, mut refused) = (0, 0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until {
+            for path in ["sub/secret.txt", "sub/new.txt"] {
+                let at = Value::str(&format!("{inside}/{path}"));
+                match call(&fs, "write_text", &[at, Value::str("WRITTEN")]) {
+                    Value::Ok(_) => wrote += 1,
+                    _ => refused += 1,
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapping.join().unwrap();
+        let mut left: Vec<String> = std::fs::read_dir(&outside)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        let secret = std::fs::read_to_string(format!("{outside}/secret.txt")).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(left, ["secret.txt"], "a narrowed Fs wrote outside its folder");
+        assert_eq!(secret, "OUTSIDE", "a narrowed Fs replaced a file outside its folder");
+        assert!(
+            wrote > 0 && refused > 0,
+            "{wrote} written, {refused} refused: the swap never raced the writes"
+        );
+    }
+
+    /// Replacing files through a narrowed `Fs`, in a folder below its own, keeps what was true of
+    /// them, as the whole `Fs` does: who can read them, that a link stays a link to the file it
+    /// points at, here in another folder beneath, and that nothing written partway is left behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_narrowed_fs_replacing_files_below_its_folder_keeps_their_modes_and_links() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let folder = scratch("replace");
+        let fs = fs_in(&folder);
+        let at = |name: &str| Value::str(&format!("{folder}/{name}"));
+        let on_disk = |name: &str| format!("{folder}/{name}");
+        let mode_of = |name: &str| std::fs::metadata(on_disk(name)).unwrap().permissions().mode() & 0o777;
+        std::fs::create_dir_all(on_disk("a/b")).unwrap();
+        std::fs::create_dir_all(on_disk("c")).unwrap();
+        for (name, mode) in [("a/b/secret.txt", 0o600), ("a/b/shared.txt", 0o664), ("c/real.txt", 0o640)] {
+            std::fs::write(on_disk(name), "old").unwrap();
+            std::fs::set_permissions(on_disk(name), std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        std::os::unix::fs::symlink("../../c/real.txt", on_disk("a/b/link.txt")).unwrap();
+        ok(call(&fs, "write_text", &[at("a/b/secret.txt"), Value::str("new")]));
+        ok(call(&fs, "write_bytes", &[at("a/b/shared.txt"), Value::Bytes(Rc::from(b"new".to_vec()))]));
+        ok(call(&fs, "write_text", &[at("a/b/link.txt"), Value::str("through")]));
+        assert_eq!(std::fs::read_to_string(on_disk("c/real.txt")).unwrap(), "through");
+        let made = ok(call(&fs, "_create", &[at("a/b/link.txt"), Value::Bool(true)]));
+        ok(crate::stdlib::fs::real_file(handle(&made), "write", &[Value::str("created")], Span::default())
+            .unwrap());
+        ok(call(&fs, "_finish", &[made]));
+        ok(call(&fs, "write_text", &[at("a/b/fresh.txt"), Value::str("fresh")]));
+        assert_eq!(
+            (mode_of("a/b/secret.txt"), mode_of("a/b/shared.txt"), mode_of("c/real.txt")),
+            (0o600, 0o664, 0o640)
+        );
+        assert!(std::fs::symlink_metadata(on_disk("a/b/link.txt")).unwrap().is_symlink());
+        for (name, text) in [
+            ("a/b/secret.txt", "new"),
+            ("a/b/shared.txt", "new"),
+            ("c/real.txt", "created"),
+            ("a/b/fresh.txt", "fresh"),
+        ] {
+            assert_eq!(std::fs::read_to_string(on_disk(name)).unwrap(), text, "{name}");
+        }
+        let names = |under: &str| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(on_disk(under))
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        let (in_b, in_c) = (names("a/b"), names("c"));
+        let _ = std::fs::remove_dir_all(&folder);
+        assert_eq!(in_b, ["fresh.txt", "link.txt", "secret.txt", "shared.txt"], "something was left behind");
+        assert_eq!(in_c, ["real.txt"], "something was left behind");
     }
 
     /// `.` and `..` are worked out, so a path can't climb out of a folder by naming its parent.

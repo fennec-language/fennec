@@ -1127,6 +1127,10 @@ pub(crate) enum Stmt {
     /// is `stop`, letting it go there. The source prints as it opens and closes, and its cleanup
     /// fails for an even `limit`, which fails the loop: that prints `shut`.
     Summed(Expr, Expr),
+    /// `through_shown(way, limit, stop, words)`: a loop over `enumerate` or `zip` of a generator
+    /// made right there (`ZipWay`). The generator lends from a source, summed until an item is
+    /// `stop` and let go there or when the list runs out, or fails partway, at `stop`.
+    ZipSummed(ZipSumming),
     /// An arrow function that fails, `() => capped(n, limit=limit)?`, its `?` passing its own
     /// failure up to what it's given to, as #1305 has it. `capped` fails with `n` when it's over
     /// `limit`.
@@ -1314,4 +1318,39 @@ pub(crate) struct Program {
     /// Whether nothing in it launches a task or runs `parallel`, so its `Named` values can be
     /// native blocks.
     pub(crate) threadless: bool,
+}
+
+/// Where a generator made right there sits in a loop over `enumerate` or `zip`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ZipWay {
+    Enumerated,
+    First,
+    Second,
+}
+
+/// Every place a generator sits in `enumerate` or `zip`, for a test to write each.
+pub(crate) const ZIP_WAYS: [ZipWay; 3] = [ZipWay::Enumerated, ZipWay::First, ZipWay::Second];
+
+/// A loop over `enumerate` or `zip` of a generator made right there: the one lending from a
+/// source (`lent_counts`) or one failing partway (`failing_counts`), with a list of `words` items,
+/// `1` to `words`, beside it in `zip`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ZipSumming {
+    pub(crate) way: ZipWay,
+    pub(crate) failing: bool,
+    pub(crate) limit: i64,
+    pub(crate) stop: i64,
+    pub(crate) words: i64,
+}
+
+impl ZipSumming {
+    /// The number `through_shown` takes for this way.
+    pub(crate) fn number(&self) -> i64 {
+        let at = match self.way {
+            ZipWay::Enumerated => 0,
+            ZipWay::First => 1,
+            ZipWay::Second => 2,
+        };
+        if self.failing { at + 3 } else { at }
+    }
 }

@@ -753,7 +753,9 @@ fn fs_method(
     match (method, args) {
         ("only", [path, ..]) => {
             let Value::Str(folder) = path_text(path) else { return Err(wrong_arguments(method, at)) };
-            Ok(Limited::to(Capability::Fs, vec![Rc::from(crate::limits::absolute(&folder))]))
+            // A path holding a NUL names no folder, and the `Fs` it gives reaches nothing.
+            let named = (!folder.contains('\0')).then(|| Rc::from(crate::limits::absolute(&folder)));
+            Ok(Limited::to(Capability::Fs, named.into_iter().collect()))
         }
         ("read_only", []) => {
             narrowed_whole(Capability::Fs, method, args).ok_or_else(|| wrong_arguments(method, at))

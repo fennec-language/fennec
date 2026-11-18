@@ -33,16 +33,54 @@ pub type ConnBody = extern "C" fn(env: i64, conn: i64, thread: i64) -> i64;
 type Passed = Arc<Mutex<Option<(u64, Box<crate::embed::table::Table>)>>>;
 
 thread_local! {
-    /// The connections this I/O worker serves, by the number native code holds.
-    static CONNS: RefCell<HashMap<i64, Rc<Conn>>> = RefCell::new(HashMap::new());
+    /// The connections this I/O worker serves, by the number native code holds: each round's,
+    /// found here first, with no lock.
+    static CONNS: RefCell<HashMap<i64, Arc<Conn>>> = RefCell::new(HashMap::new());
     /// The failure the last `fennec_net_serve` on this thread passed up, for
     /// `fennec_net_serve_failure`.
     static PASSED_UP: Cell<i64> = const { Cell::new(0) };
 }
 
-/// The number the next connection served gets. There's one count for the whole process: a number
-/// sent to a task on another worker isn't in that worker's table, and so is refused, rather than
-/// naming another client there.
+/// Every connection being served, by its number, for a task on another worker than the one serving
+/// it: a `Connection` is `shared`, so one sent to a hub on another worker is written to there
+/// (#2065). Each is held weakly: its round ending closes it, wherever else it's been sent.
+static SERVED_CONNS: std::sync::LazyLock<Mutex<HashMap<i64, std::sync::Weak<Conn>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// How many connections `SERVED_CONNS` holds, kept beside it, so a call on a connection the program
+/// opened itself, which is in neither table, looks no further while nothing is served, rather than
+/// taking the table's lock to miss (Fable 5.2's review of #2081, finding 4).
+static SERVED_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Puts `handle`'s connection in `SERVED_CONNS`, or takes it out, keeping `SERVED_COUNT` with it.
+fn note_served(handle: i64, conn: Option<&Arc<Conn>>) {
+    let mut served = SERVED_CONNS.lock().unwrap_or_else(PoisonError::into_inner);
+    match conn {
+        Some(conn) => drop(served.insert(handle, Arc::downgrade(conn))),
+        None => drop(served.remove(&handle)),
+    }
+    SERVED_COUNT.store(served.len(), Ordering::Release);
+}
+
+/// The connection served with `handle`, on this worker or another, while its round runs.
+fn conn_of(handle: i64) -> Option<Arc<Conn>> {
+    if let Some(here) = CONNS.with_borrow(|conns| conns.get(&handle).cloned()) {
+        return Some(here);
+    }
+    // Its number reached this task after its round put it in the table, by a send or a call, so
+    // the count says it's there.
+    if SERVED_COUNT.load(Ordering::Acquire) == 0 {
+        return None;
+    }
+    SERVED_CONNS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&handle)
+        .and_then(std::sync::Weak::upgrade)
+}
+
+/// The number the next connection served gets. There's one count for the whole process, so a
+/// number names one connection wherever it's sent.
 static NEXT: AtomicI64 = AtomicI64::new(1);
 
 pub(super) fn next_handle() -> i64 {
@@ -125,12 +163,15 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let passing = Arc::clone(&passed);
     let handler: Handler = Arc::new(move |conn: Conn| {
         let handle = next_handle();
-        CONNS.with_borrow_mut(|conns| conns.insert(handle, Rc::new(conn)));
+        let conn = Arc::new(conn);
+        note_served(handle, Some(&conn));
+        CONNS.with_borrow_mut(|conns| conns.insert(handle, conn));
         let result = body(env, handle, i64::from(threads::index()));
         // The failure it handed over is taken at once: lingering may park this task, and another
         // task on the thread, a task launched in a round say, starts by clearing what's handed over.
         let failure = if result == super::ROUND_FAILED { super::launch::take_failed_with() } else { None };
         // Its task is done with it: it ends gracefully, and dropping it closes it.
+        note_served(handle, None);
         if let Some(conn) = CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
             conn.linger();
         }
@@ -311,7 +352,7 @@ fn pass_up(passed: &Passed, failure: u64) {
 /// Runs `call` on a served connection taken out of the table, so nothing stays borrowed while
 /// it waits, and puts it back. A connection that isn't there is closed.
 pub(super) fn on_conn<T>(conn: i64, call: impl FnOnce(&Conn) -> Result<T, Failure>) -> Result<T, NetFailure> {
-    let Some(shared) = CONNS.with_borrow(|conns| conns.get(&conn).cloned()) else {
+    let Some(shared) = conn_of(conn) else {
         return Err(NetFailure::Closed);
     };
     call(&shared).map_err(|failure| match failure {
@@ -332,9 +373,7 @@ pub(in crate::embed) fn served_call(
     at: Span,
 ) -> Option<Result<Value, Diagnostic>> {
     use crate::stdlib::net::{bytes_asked, data_of, done_or_failed, trimmed_line_value};
-    if !CONNS.with_borrow(|conns| conns.contains_key(&handle)) {
-        return None;
-    }
+    let conn = conn_of(handle)?;
     let done = match (method, args) {
         ("read", [Value::Int(count)]) => match bytes_asked(*count, at) {
             Ok(count) => {
@@ -357,28 +396,30 @@ pub(in crate::embed) fn served_call(
                 Ok(after) => after,
                 Err(wrong) => return Some(Err(wrong)),
             };
-            CONNS.with_borrow(|conns| conns.get(&handle).map(|conn| conn.reads_within(after)));
+            conn.reads_within(after);
             return Some(Ok(Value::Unit));
         }
         ("close", []) => {
-            if let Some(conn) = CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
-                conn.linger();
+            // Closed by its own round, it's taken out of its worker's table. Closed by a task on
+            // another worker, it ends there too: its round, reading, then finds the end.
+            note_served(handle, None);
+            match CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
+                Some(here) => here.linger(),
+                None => conn.end(),
             }
             return Some(Ok(Value::Unit));
         }
         ("draining", []) => {
-            let draining = CONNS.with_borrow(|conns| conns.get(&handle).is_some_and(|conn| conn.draining()));
+            let draining = conn.draining();
             return Some(Ok(Value::Bool(draining)));
         }
         ("peer", []) => {
-            let peer =
-                CONNS.with_borrow(|conns| conns.get(&handle).map(|conn| conn.peer())).unwrap_or_default();
+            let peer = conn.peer();
             return Some(Ok(Value::str(&peer)));
         }
         // The label a task serving the connection makes its `Connection` with.
         ("_label", []) => {
-            let label =
-                CONNS.with_borrow(|conns| conns.get(&handle).map(|conn| conn.label())).unwrap_or_default();
+            let label = conn.label();
             return Some(Ok(Value::Int(label)));
         }
         _ => {

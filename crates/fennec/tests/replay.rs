@@ -696,6 +696,57 @@ fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()>
     Ok(())
 }
 
+/// A hub's writes to connections served on other workers are recorded as the hub's, and a replay
+/// at 4 threads or 1 gives what they gave, so it counts the same writes, with no network (#2065).
+#[test]
+fn a_hub_writing_to_connections_on_other_workers_replays_its_writes() -> std::io::Result<()> {
+    const MEMBERS: usize = 4;
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("hub")?;
+    let program = dir.join("hub.fen");
+    std::fs::write(&program, crate::llvm::HUB_WRITES_TO_EVERY_MEMBER)?;
+    let log = dir.join("hub.log");
+    let mut record = fennec_command()
+        .args(["run", "--record", &log.to_string_lossy()])
+        .arg(&program)
+        .env("FENNEC_THREADS", "4")
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut out =
+        std::io::BufReader::new(record.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+    let mut port = String::new();
+    std::io::BufRead::read_line(&mut out, &mut port)?;
+    let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+    crate::llvm::every_member_hears_every_line(port, MEMBERS, "4")?;
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut out, &mut rest)?;
+    let status = record.wait()?;
+    assert!(status.success(), "the recorded hub failed");
+    assert_eq!(rest, format!("{} delivered\n", MEMBERS * MEMBERS));
+    let recorded = format!("{port}\n{rest}");
+    for threads in ["4", "1"] {
+        let replayed = fennec_command()
+            .env("FENNEC_THREADS", threads)
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_within()?;
+        let printed = String::from_utf8_lossy(&replayed.stdout);
+        assert_eq!(
+            printed,
+            recorded,
+            "replayed with FENNEC_THREADS={threads}: {}",
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A task serves, `main` makes one request of it and closes the server: no stop comes into it.
 const SERVED_IN_A_TASK: &str = "from std.concurrent import Crashed
 from std.net import NetError, Request, Response, Server

@@ -157,7 +157,35 @@ impl GenLink {
     }
 }
 
+/// Lets go of each generator a loop owns in what it reads, the last first: the one it goes over,
+/// or each made right inside `enumerate` or `zip`, as each is held by nothing else. What each
+/// failed with or how it stopped as it left goes in `failures`, in that order, with which of
+/// `zip`'s arguments it is, from `at`.
+pub(crate) fn let_go_owned(source: &Arc<Mutex<Source>>, failures: &mut Vec<(usize, Flow)>, at: usize) {
+    if Arc::strong_count(source) > 1 {
+        return;
+    }
+    let Ok(mut source) = source.lock() else {
+        failures.push((at, Flow::Unsupported("a generator was lost".to_owned())));
+        return;
+    };
+    source.let_go(failures, at);
+}
+
 impl Source {
+    fn let_go(&mut self, failures: &mut Vec<(usize, Flow)>, at: usize) {
+        match self {
+            Source::Gen(link) => failures.extend(link.let_go().map(|flow| (at, flow))),
+            Source::Numbered(inner, _) => inner.let_go(failures, at),
+            Source::Paired(first, second) => {
+                second.let_go(failures, 1);
+                first.let_go(failures, 0);
+            }
+            Source::Of(stream) => let_go_owned(&stream.source, failures, at),
+            Source::Items(_) | Source::Lines(_) => {}
+        }
+    }
+
     fn next(&mut self, shared: &Shared) -> Run<Option<Value>> {
         match self {
             Source::Items(items) => Ok(items.next()),
@@ -262,6 +290,11 @@ impl Interp {
     /// A stream over a source made here.
     pub(crate) fn stream_of(source: Source, shown: Option<String>) -> Value {
         Value::Stream(Stream { source: Arc::new(Mutex::new(source)), shown })
+    }
+
+    /// Whether a loop's items come from a stream, a generator's among them.
+    pub(crate) fn is_stream_items(items: &Items) -> bool {
+        matches!(items, Items::Stream(_))
     }
 
     /// Whether a value is a stream, whose items are made as they're asked for.

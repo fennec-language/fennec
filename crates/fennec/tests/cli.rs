@@ -5527,6 +5527,32 @@ fn a_build_refuses_a_mistake_in_a_function_nothing_calls() -> std::io::Result<()
     Ok(())
 }
 
+/// A build hands its check to lowering, cut to what `main` reaches. A function nothing calls that
+/// starts tasks makes more types cross between threads than what's reached does, which a dev build's
+/// check of the cut module finds within what was handed on, so the build goes ahead and runs.
+#[test]
+fn a_build_whose_unreached_function_starts_tasks_builds_and_runs() -> std::io::Result<()> {
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec_build_unreached_tasks_{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("tasks.fen");
+    std::fs::write(
+        &program,
+        "struct Unit:\n    hp: int\n\ndef unused() -> int:\n    mut units = [Unit(hp=1), Unit(hp=2)]\n    \
+         for ref unit in parallel(units):\n        unit.hp += 1\n    return units[0].hp\n\ndef main(stdout: Stdout):\n    \
+         stdout.print(1)\n",
+    )?;
+    let program = program.to_string_lossy().into_owned();
+    let executable = dir.join("tasks").to_string_lossy().into_owned();
+    let built = fennec(&["build", &program, "-o", &executable], "")?;
+    assert!(built.status.success(), "{}", text(&built.stderr));
+    let ran = std::process::Command::new(&executable).output()?;
+    assert_eq!(text(&ran.stdout), "1\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// One program built for release in two folders, with two Fennec folders, a second apart, is the
 /// same bytes each time, as a signed release has to be to check by building it again, and a dev
 /// build is the same bytes in one folder a second later: a kit built by its whole path, as `.`, and with a dependency it names by a path, and

@@ -27536,6 +27536,41 @@ fn an_item_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An item read out of a `Table` once and put back by its `Id` in a loop that comes round to the
+/// put-back again with no read between, as `while True:` with its way out after the put-back
+/// makes. Each put-back looks the `Id` up again: one whose item was removed between the turns
+/// stops the program there, on its line, and one after the item changed in place, or after the
+/// `Table` grew past its room, puts back what was read. It prints what the reference evaluator
+/// prints, built either way, with nothing left.
+#[test]
+fn an_item_put_back_twice_from_one_read_looks_it_up_each_time() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/put_back_twice.fen");
+    prints_in_both_builds("put_back_twice", source, include_str!("fixtures/put_back_twice.out"))?;
+    assert!(counts_of("put_back_twice_counts", source)?.ends_with(" live 0"));
+    let removed = "from std.collections import Id, Table\n\nstruct Unit:\n    health: int\n\ndef twice(ref units: Table[Unit], id: Id[Unit]):\n    mut unit = units[id]\n    unit.health -= 1\n    mut turn = 0\n    while True:\n        units[id] = unit\n        turn += 1\n        if turn == 2:\n            break\n        _ = units.remove(id)\n    return\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    id = units.add(Unit(health=5))\n    twice(ref units, id)\n    stdout.print(\"not reached\")\n";
+    for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+        let dir = folder("put_back_twice_removed")?;
+        let (at, executable) = (dir.join("twice.fen"), dir.join("twice"));
+        std::fs::write(&at, removed)?;
+        let args: Vec<&str> = ["build"]
+            .into_iter()
+            .chain(how.iter().copied())
+            .chain([at.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+            .collect();
+        let built = fennec(&args, &dir)?;
+        assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+        let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!((printed.as_str(), code), ("", Some(1)), "{how:?}: {said}");
+        let why = "this Id refers to something that's been removed";
+        assert!(said.contains(why) && said.contains("twice.fen:11:"), "{how:?}: {said}");
+    }
+    Ok(())
+}
+
 const COPIED_OUT_PUT_BACK: &str = r#"from std.collections import Id, Table
 from std.concurrent import Crashed
 

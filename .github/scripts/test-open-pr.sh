@@ -2,6 +2,10 @@
 # Tries `open-pr.sh` against a throwaway repository, with a gate and a `gh` that do as they're told,
 # so that a mistake in it can't push a branch that conflicts with main or failed its gate.
 set -u
+# What `open-pr.sh`, and the gate and `gh` standing in for the real ones here, read from the
+# environment, cleared so each case is the plain one it says unless it sets one itself: run by a
+# gate that `REGATE=1 open-pr.sh` started, every case inherited `REGATE=1` and was a regate.
+unset REGATE OPEN_PR EDIT_FAILS EDIT_IGNORED GATE_FAILS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 here="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d)"
 trap '/bin/rm -rf "$work"' EXIT
@@ -169,6 +173,14 @@ EDIT_IGNORED=1 OPEN_PR=7 REGATE=1 .github/scripts/open-pr.sh "Regated" "$work/bo
 check "an edit that changes nothing fails it too" 1 "$?"
 grep -q "text starts 'Unchanged.'" "$work/said"
 check "saying what the text starts with" 0 "$?"
+
+# All of it again as a gate that a regate started runs it, with `REGATE=1`, `GH=true` and an open
+# pull request's number in the environment, once.
+if [ -z "${TEST_OPEN_PR_AS_REGATE:-}" ]; then
+  TEST_OPEN_PR_AS_REGATE=1 REGATE=1 GH=true OPEN_PR=7 "$here/.github/scripts/test-open-pr.sh" > "$work/as-regate" 2>&1
+  check "and it all passes the same inside a regate's gate, with REGATE=1 and GH=true set" 0 "$?"
+  grep FAILED "$work/as-regate"
+fi
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures failed"

@@ -386,7 +386,12 @@ impl FnCx<'_> {
         if !is_mut && self.fields_loop(names, iter, body, span).is_some() {
             return;
         }
-        let parallel = crate::parallel::parallel_items(iter).filter(|_| self.lookup("parallel").is_none());
+        let outer = crate::parallel::called_as_outer(iter);
+        let parallel =
+            crate::parallel::parallel_items(iter).filter(|_| outer || self.lookup("parallel").is_none());
+        if outer && parallel.is_some() {
+            self.note_outer();
+        }
         if is_mut {
             let what = "`for ref` changes each item, so loop over something held in a mut name";
             self.mut_place(parallel.unwrap_or(iter), what);
@@ -664,7 +669,11 @@ type Arm<'s> = (Vec<String>, Vec<Member>, Option<&'s [Stmt]>);
 pub(crate) fn members(cond: &Expr, when: bool) -> Vec<Member> {
     match &cond.kind {
         ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs } => match (path(lhs), &rhs.kind) {
-            (Some(path), ExprKind::Name(member)) => vec![(path, member.clone(), (*op == BinOp::Is) == when)],
+            // A `with` source's type, written in as its own (`sight::outer`), is the type.
+            (Some(path), ExprKind::Name(member)) => {
+                let member = fennec_syntax::sight::outer(member).unwrap_or(member);
+                vec![(path, member.to_owned(), (*op == BinOp::Is) == when)]
+            }
             _ => Vec::new(),
         },
         ExprKind::Binary { op: BinOp::And, lhs, rhs } if when => {

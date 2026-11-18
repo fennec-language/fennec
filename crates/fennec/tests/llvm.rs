@@ -13473,6 +13473,313 @@ fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Resul
     Ok(())
 }
 
+/// A loop's generator wraps what it fails with in the loop's `? from Wrap(...)`, as a call's
+/// failure is wrapped, when it passes up from the loop: a cleanup failing as a `break` lets it go.
+/// A generator made right inside `enumerate` or `zip` is the loop's too, let go as the loop is,
+/// its cleanup's failure noted on one leaving or passing up. Each holds inside a `with` block.
+/// Before, the first stopped the build ("gives Shut where Oops | Wrapped goes"), and the second
+/// ended the program, its generator let go by its last owner (#2041).
+#[test]
+fn a_loop_wraps_its_generator_s_failure_and_owns_one_made_inside_enumerate_or_zip() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "p1_wrapped",
+        GENERATOR_WRAPPED,
+        "closing wrapped\nOops(code=91) [\"Shut(name=\\\"wrapped\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "p2_enumerated",
+        GENERATOR_ENUMERATED,
+        "closing enumerated\nOops(code=91) [\"Shut(name=\\\"enumerated\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "p3_wrapped_in_with",
+        GENERATOR_WRAPPED_IN_WITH,
+        "closing wrapped\nfailed outer\nOops(code=91) [\"Shut(name=\\\"wrapped\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "p4_enumerated_in_with",
+        GENERATOR_ENUMERATED_IN_WITH,
+        "closing enumerated\nfailed outer\nOops(code=91) [\"Shut(name=\\\"enumerated\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "p5_wrap_break",
+        GENERATOR_WRAPPED_BREAK,
+        "closing broken\nbroken Wrapped(why=\"the break\")\n",
+    )?;
+    prints_in_both_builds("p6_zip", GENERATOR_ZIPPED, "closing zipped\nzipped Shut(name=\"zipped\") []\n")?;
+    Ok(())
+}
+
+const GENERATOR_WRAPPED: &str = r#"error Oops:
+    code: int
+
+error Wrapped:
+    why: str
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def wrapped(stdout: Stdout) fails Oops | Wrapped:
+    for step in held_stuck("wrapped", stdout)? from Wrapped(why="the loop"):
+        fail Oops(code=90 + step)
+
+def main(stdout: Stdout):
+    wrapped(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_ENUMERATED: &str = r#"error Oops:
+    code: int
+
+error Wrapped:
+    why: str
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def enumerated(stdout: Stdout) fails Oops | Shut:
+    for at, step in enumerate(held_stuck("enumerated", stdout)?):
+        fail Oops(code=90 + step + at)
+
+def main(stdout: Stdout):
+    enumerated(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_WRAPPED_IN_WITH: &str = r#"error Oops:
+    code: int
+
+error Wrapped:
+    why: str
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def wrapped(stdout: Stdout) fails Oops | Wrapped:
+    with opened("outer", stdout) as door:
+        for step in held_stuck("wrapped", stdout)? from Wrapped(why="the loop"):
+            fail Oops(code=90 + step)
+
+def main(stdout: Stdout):
+    wrapped(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_ENUMERATED_IN_WITH: &str = r#"error Oops:
+    code: int
+
+error Wrapped:
+    why: str
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def enumerated(stdout: Stdout) fails Oops | Shut:
+    with opened("outer", stdout) as door:
+        for at, step in enumerate(held_stuck("enumerated", stdout)?):
+            fail Oops(code=90 + step + at)
+
+def main(stdout: Stdout):
+    enumerated(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_WRAPPED_BREAK: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+struct Door:
+    name: str
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def broken(stdout: Stdout) -> int fails Wrapped:
+    for step in held_stuck("broken", stdout)? from Wrapped(why="the break"):
+        if step == 1:
+            break
+    return 1
+
+def main(stdout: Stdout):
+    got = broken(stdout) except why:
+        stdout.print("broken", why)
+        return
+    stdout.print("broken gave", got)
+"#;
+
+const GENERATOR_ZIPPED: &str = r#"error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def zipped(stdout: Stdout) -> int fails Shut:
+    mut total = 0
+    for step, word in zip(held_stuck("zipped", stdout)?, ["a", "b", "c"]):
+        total += step + len(word)
+        if step == 1:
+            break
+    return total
+
+def main(stdout: Stdout):
+    got = zipped(stdout) except why:
+        stdout.print("zipped", why, why.notes())
+        return
+    stdout.print("zipped gave", got)
+"#;
+
 /// A loop over a generator that can fail, `for x in made()?:`, inside a `with` block or a `ref`
 /// case owns the generator, as it does anywhere: a failure leaving the block lets go of it before
 /// the block's cleanup runs, and a failure of the generator's own cleanup is a note on the one

@@ -1332,7 +1332,7 @@ fn plain_key(key: &Value) -> String {
 /// and not one held in a name or a field, which something else may hold too.
 fn made_for_loop(iter: &Expr) -> bool {
     let made = match &iter.kind {
-        ExprKind::Try { value, context: None } => value,
+        ExprKind::Try { value, .. } => value,
         _ => iter,
     };
     matches!(made.kind, ExprKind::Call { .. })

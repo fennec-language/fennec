@@ -2379,6 +2379,49 @@ fn what_is_indexed_is_read_before_its_index() {
     assert!(said.contains("index 1 is out of range for length 1"), "{said}");
 }
 
+/// What a method is called on is read before its arguments, left to right, as `docs/decisions.md`
+/// says: a method taking its value as a copy, through a name or a field, sees it as it was before
+/// an argument changed it, and so does a dict's `get`. The compiled program prints the same for
+/// `get`; it reads a copy's receiver after its arguments until #546's fix for compiled code.
+#[test]
+fn what_a_method_is_called_on_is_read_before_its_arguments() {
+    prints(RECEIVER_BEFORE_ITS_ARGUMENTS, "[1] 0 1\n1\n1 7 2\n");
+}
+
+const RECEIVER_BEFORE_ITS_ARGUMENTS: &str = "
+        struct Tally:
+            items: list[int]
+            count: int
+            names: dict[str, int]
+
+            def grow(ref self) -> int:
+                self.items.append(self.count + 5)
+                self.count += 1
+                return self.count
+
+            def key(ref self) -> str:
+                self.names['a'] = self.names['a'] + 100
+                return 'a'
+
+            def show(self, given: int) -> str:
+                return f'{self.items} {self.count} {given}'
+
+        struct Pair:
+            left: Tally
+            right: int
+
+            def shown(self, given: int) -> str:
+                return f'{self.left.count} {self.right} {given}'
+
+        def main(stdout: Stdout):
+            mut tally = Tally(items=[1], count=0, names={'a': 1})
+            stdout.print(tally.show(tally.grow()))
+            stdout.print(tally.names.get(tally.key()))
+            mut pair = Pair(left=tally, right=7)
+            stdout.print(pair.shown(pair.left.grow()))
+            return
+        ";
+
 const INDEXED_BEFORE_ITS_INDEX: &str = "
         struct Tally:
             items: list[int]

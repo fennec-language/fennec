@@ -2,7 +2,7 @@
 //! `fennec_ir::facts`, which lists keep one length, who a value can move to, and so which
 //! functions can fail at all.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use fennec_check::Type;
 use fennec_ir::facts::{Facts, Range};
@@ -102,6 +102,9 @@ pub(crate) struct Analysis {
     /// Locals standing for a list that a `for` loop goes through while changing only the item
     /// it's on: a copy of the list would say the same, and cost a whole list.
     aliases: HashMap<usize, LocalId>,
+    /// Loops that change a list or a `Table` nothing in them can give another owner, which is
+    /// made alone once on the way in rather than at every change (see [`find_alone_in_loops`]).
+    pub(crate) alone_in_loops: Vec<AloneInLoop>,
     /// List locals whose length nothing in the function changes: their length is read where
     /// they're given their value and kept, so checks against it can leave a loop (see
     /// `steady_lengths`).
@@ -644,6 +647,7 @@ fn analyze(
     find_unmade_enumerates(function, &mut known);
     find_counts_inside(function, &mut known);
     find_adjacent_reads(function, &mut known);
+    find_alone_in_loops(function, &mut known);
     known
 }
 
@@ -887,7 +891,7 @@ fn compared(function: &Function, op: BinOp, lhs: &Operand, rhs: &Operand) -> Vec
 /// other side is written: `x > y`, with `y` written, still says `x` is above the lowest `y` can be.
 fn guarded_after(
     function: &Function,
-    known: &mut std::collections::BTreeSet<Guard>,
+    known: &mut BTreeSet<Guard>,
     inst: &InstKind,
     (range, stepped, given_mut): (&dyn Fn(usize) -> Range, &HashSet<usize>, &HashSet<usize>),
 ) {
@@ -2999,6 +3003,177 @@ fn loop_blocks(function: &Function, header: usize, body: usize) -> HashSet<usize
     found
 }
 
+/// A loop that changes lists or `Table`s held in locals, each of which nothing in the loop can
+/// give another owner: one check on the way in that each is alone does for every change in the
+/// loop, where today each change checks again.
+#[derive(Debug)]
+pub(crate) struct AloneInLoop {
+    /// The block that goes into the loop, with a jump to its start that nothing else makes.
+    pub(crate) entry: usize,
+    /// The loop's blocks, its start among them.
+    pub(crate) blocks: BTreeSet<usize>,
+    /// The locals made alone on the way in.
+    pub(crate) locals: Vec<LocalId>,
+}
+
+/// For each loop with one way in, a plain jump to its start, the lists and `Table`s held in
+/// locals that it changes and that nothing in it can give another owner. A value gets another
+/// owner by being copied, passed to a call or a closure, captured, put inside another value, or
+/// yielded; a local written anew in the loop might hold a block another owner has; and a list a
+/// lock's log may have marked never reads as alone. Reading items and fields, setting them, and
+/// a collection's own builtins on it give it no owner, so a value made alone before the loop is
+/// still alone at every change in it.
+fn find_alone_in_loops(function: &Function, known: &mut Analysis) {
+    let mut coming_from: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        for target in block.end.targets() {
+            coming_from.entry(target.0).or_default().push(at);
+        }
+    }
+    let mut back: Vec<(usize, usize)> = crate::emit::back_edges(function).into_iter().collect();
+    back.sort_unstable();
+    let mut starts: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (from, start) in back {
+        starts.entry(start).or_default().push(from);
+    }
+    for (start, ends) in starts {
+        let mut blocks = BTreeSet::from([start]);
+        let mut waiting = ends;
+        while let Some(at) = waiting.pop() {
+            if blocks.insert(at) {
+                waiting.extend(coming_from.get(&at).into_iter().flatten().copied());
+            }
+        }
+        // Where control flow isn't reducible, as in a generator's resume, walking back from a
+        // jump to the start can reach the function's first block without passing the start:
+        // there's a way in that doesn't go through the entry, so the loop is left as it is.
+        if blocks.contains(&0) {
+            continue;
+        }
+        let outside: Vec<usize> = coming_from
+            .get(&start)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|from| !blocks.contains(from))
+            .collect();
+        let [entry] = outside.as_slice() else { continue };
+        if !matches!(function.blocks.get(*entry).map(|block| &block.end), Some(Terminator::Jump(to)) if to.0 == start)
+        {
+            continue;
+        }
+        let inside: Vec<&Block> = blocks.iter().filter_map(|at| function.blocks.get(*at)).collect();
+        let locals: Vec<LocalId> = function
+            .locals
+            .iter()
+            .enumerate()
+            .filter(|(at, local)| {
+                matches!(local.ty, Type::List(_) | Type::Table(_)) && !known.maybe_marked.contains(at)
+            })
+            .map(|(at, _)| LocalId(at))
+            .filter(|held| {
+                changes_in(&inside, known, *held) && gives_no_owner(function, &inside, known, *held)
+            })
+            .collect();
+        if !locals.is_empty() {
+            known.alone_in_loops.push(AloneInLoop { entry: *entry, blocks, locals });
+        }
+    }
+}
+
+/// The builtins on a list or a `Table` that give it no other owner, called on it: what each gives
+/// back, if anything, is an item, a count, a flag, an `Id` or a list of those, never what it's
+/// called on. A builtin added to either has to be added here to keep a loop's values alone.
+const GIVE_NO_OWNER: [&str; 28] = [
+    "list.append",
+    "list.insert",
+    "list.extend",
+    "list.pop",
+    "list.remove",
+    "list.clear",
+    "list.remove_where",
+    "list.sort",
+    "list.sort.key",
+    "list.len",
+    "list.contains",
+    "list.reverse",
+    "list.swap",
+    "Table.add",
+    "Table.remove",
+    "Table.get",
+    "Table.modify",
+    "Table.remove_where",
+    "Table.values",
+    "Table.ids",
+    "Table.items",
+    "Table.clear",
+    "Table.len",
+    "Table.contains",
+    "Table.slots",
+    "Table.slot_live",
+    "Table.slot_id",
+    "Table.at_slot",
+];
+
+/// Whether a loop's blocks change `held`, or an item taken out of it.
+fn changes_in(inside: &[&Block], known: &Analysis, held: LocalId) -> bool {
+    inside.iter().flat_map(|block| &block.insts).any(|inst| match &inst.kind {
+        InstKind::SetIndex { object, .. } | InstKind::SetField { object, .. } => *object == held,
+        InstKind::Builtin { args, changes: true, .. } => args.first() == Some(&Operand::Local(held)),
+        InstKind::GetIndex { dest, .. } | InstKind::Builtin { dest: Some(dest), .. } => {
+            known.items_taken.get(&dest.0).is_some_and(|(root, _)| *root == held)
+        }
+        _ => false,
+    })
+}
+
+/// Whether nothing in a loop's blocks can give `held`, or a local standing for it, another owner
+/// (see [`find_alone_in_loops`]).
+fn gives_no_owner(function: &Function, inside: &[&Block], known: &Analysis, held: LocalId) -> bool {
+    let is_held = |local: LocalId| local == held || known.alias(local) == Some(held);
+    let held_operand = |operand: &Operand| matches!(operand, Operand::Local(local) if is_held(*local));
+    let ty = function.locals.get(held.0).map(|local| &local.ty);
+    for block in inside {
+        for inst in &block.insts {
+            let allowed = match &inst.kind {
+                InstKind::GetIndex { object, index, .. } => held_operand(object) && !held_operand(index),
+                InstKind::GetField { object, .. } => held_operand(object),
+                InstKind::SetIndex { object, index, value, .. } => {
+                    is_held(*object) && !held_operand(index) && !held_operand(value)
+                }
+                InstKind::SetField { object, value, .. } => is_held(*object) && !held_operand(value),
+                // A collection's own builtins on it, each of which gives back nothing that holds it.
+                InstKind::Builtin { dest, name, args, .. } => {
+                    args.first().is_some_and(held_operand)
+                        && args.iter().skip(1).all(|arg| !held_operand(arg))
+                        && GIVE_NO_OWNER.contains(&name.as_str())
+                        && dest.is_none_or(|dest| {
+                            !is_held(dest) && function.locals.get(dest.0).map(|local| &local.ty) != ty
+                        })
+                }
+                _ => false,
+            };
+            let (mut read, mut written) = (false, false);
+            visit(&inst.kind, |operand| read |= held_operand(operand), |dest| written |= is_held(dest));
+            if (read || written) && !allowed {
+                return false;
+            }
+        }
+        // Handing it on out of the function leaves the loop; anything else that names it doesn't.
+        let named = match &block.end {
+            Terminator::Branch { cond: value, .. } | Terminator::NoMatch { value, .. } => held_operand(value),
+            Terminator::Jump(_)
+            | Terminator::Return(_)
+            | Terminator::Stop { .. }
+            | Terminator::Unreachable => false,
+        };
+        if named {
+            return false;
+        }
+    }
+    true
+}
+
 /// Whether anything in a loop does more to a list than change the item at the loop's count.
 fn loop_touches(body: &[&InstKind], list: LocalId, at_count: &dyn Fn(&Operand) -> bool) -> bool {
     body.iter().any(|inst| match inst {
@@ -3344,6 +3519,7 @@ impl Analysis {
             slice_keys: HashMap::new(),
             unmade: HashSet::new(),
             aliases: HashMap::new(),
+            alone_in_loops: Vec::new(),
             steady_lengths: HashSet::new(),
             adjacent_reads: HashMap::new(),
             reservations: HashMap::new(),
@@ -4414,6 +4590,69 @@ mod tests {
         let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
         let at = function.locals.iter().position(|local| local.name.as_deref() == Some("unit"));
         Ok(known.taken_over_loop(LocalId(at.ok_or("no `unit`")?)))
+    }
+
+    /// Whether the local called `name` in a function called `go` is made alone on the way into a
+    /// loop, with `imports` before the types.
+    fn alone_in_a_loop(imports: &str, body: &str, name: &str) -> Result<bool, String> {
+        let source = format!("{imports}{TYPES}{body}");
+        let mut module = fennec_syntax::parse(&source).map_err(|err| format!("{err:?}"))?;
+        let checked =
+            fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}\n{source}"))?;
+        let program = fennec_ir::lower(&module, &checked);
+        let names: Vec<&str> = program.functions.iter().map(|function| function.name.as_str()).collect();
+        let function = program
+            .functions
+            .iter()
+            .find(|function| function.name == "go")
+            .ok_or_else(|| format!("no `go` among {names:?}"))?;
+        let known = analyze(function, &|_| Vec::new(), &|_, _| false, &[], &|_| false);
+        let at = function.locals.iter().position(|local| local.name.as_deref() == Some(name));
+        let held = LocalId(at.ok_or_else(|| format!("no `{name}`"))?);
+        Ok(known.alone_in_loops.iter().any(|alone| alone.locals.contains(&held)))
+    }
+
+    /// A list or a `Table` a loop changes is made alone on the way in, once, when nothing in the
+    /// loop can give it another owner, however it's shared before or after. Copied in the loop,
+    /// given to a call or a closure, put inside another value, written anew, or held by a task, it
+    /// isn't: each change in the loop checks for itself.
+    #[test]
+    fn a_value_a_loop_gives_no_owner_is_made_alone_on_the_way_in() -> Result<(), String> {
+        let summed = "def summed(items: list[int]) -> int:\n    return sum(items)\n\n";
+        let around = |inside: &str| {
+            format!(
+                "{summed}def go(count: int) -> int:\n    mut items = list[int]()\n    mut seen = 0\n    mut lists = list[list[int]]()\n    for at in range(count):\n        items.append(at)\n{inside}    return seen + summed(items) + len(lists)\n"
+            )
+        };
+        assert!(alone_in_a_loop("", &around(""), "items")?, "shared only after the loop");
+        for (what, inside) in [
+            ("copied", "        kept = items\n        seen += len(kept)\n"),
+            ("given to a call", "        seen += summed(items)\n"),
+            ("given to a closure", "        length = () => len(items)\n        seen += length()\n"),
+            ("put inside another value", "        lists.append(items)\n"),
+            ("written anew", "        if at == 3:\n            items = [at]\n"),
+        ] {
+            assert!(
+                !alone_in_a_loop("", &around(inside), "items").map_err(|err| format!("{what}: {err}"))?,
+                "{what}"
+            );
+        }
+        let tables = "from std.collections import Id, Table\nfrom std.concurrent import Crashed\n\n";
+        let units = |inside: &str| {
+            format!(
+                "def report(units: Table[Unit]) -> int:\n    return len(units)\n\ndef go(ref units: Table[Unit], ids: list[Id[Unit]]) fails Crashed:\n    for id in ids:\n        units[id].hp += 1\n{inside}    return\n"
+            )
+        };
+        assert!(
+            alone_in_a_loop(tables, &units(""), "units").map_err(|err| format!("a `Table`: {err}"))?,
+            "a `Table` changed by `Id`"
+        );
+        let task = "        with launch(() => report(units))?:\n            pass\n";
+        assert!(
+            !alone_in_a_loop(tables, &units(task), "units").map_err(|err| format!("a task: {err}"))?,
+            "held by a task"
+        );
+        Ok(())
     }
 
     #[test]

@@ -80,10 +80,19 @@ fn result(cx: &mut FnCx<'_>, name: &str, plain: &[(Type, Span)], span: Span) -> 
     let given = if name.ends_with("_digest") { Type::Bytes } else { Type::Str };
     if matches!(name, "crypto.blake3" | "crypto.sha256" | "crypto.blake3_digest" | "crypto.sha256_digest")
         && let [(ty, _)] = plain
-        && let Some(written) = of_chunks(cx, name, ty)
     {
-        cx.checker.std_calls.insert((span.start, span.end), written);
-        return given;
+        // Chunks from a generator that can fail are hashed where the call is, which loops over
+        // them and passes a failure reading one up, as what it is: `crypto.fen`'s functions take
+        // a generator that can't.
+        if let Type::Iterator(item, Some(_)) = cx.checker.settled(ty)
+            && matches!(cx.checker.settled(&item), Type::Str | Type::Bytes)
+        {
+            return given;
+        }
+        if let Some(written) = of_chunks(cx, name, ty) {
+            cx.checker.std_calls.insert((span.start, span.end), written);
+            return given;
+        }
     }
     for ((ty, at), (what, bytes_too)) in plain.iter().zip(arguments(name)) {
         let ty = cx.checker.settled(ty);

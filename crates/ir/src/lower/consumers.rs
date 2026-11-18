@@ -313,6 +313,76 @@ impl Lowering<'_> {
         self.looping_for_value(&found, first, parts, body, span)
     }
 
+    /// `blake3`, `sha256` or a `_digest` form of one, given chunks from a generator that can fail,
+    /// as `blake3(file.chunks(size)?)`: the hash, its name, the chunks and their type. The checker
+    /// sends chunks from any other generator, or a list, to `crypto.fen`'s functions instead.
+    pub(super) fn hashing_failing_chunks<'e>(
+        &self,
+        callee: &Expr,
+        args: &'e [Arg],
+    ) -> Option<(String, &'e Expr, Type)> {
+        let hash = match &callee.kind {
+            ExprKind::Name(name) => name.clone(),
+            _ => self.std_member(callee)?,
+        };
+        if !matches!(
+            hash.as_str(),
+            "crypto.blake3" | "crypto.sha256" | "crypto.blake3_digest" | "crypto.sha256_digest"
+        ) {
+            return None;
+        }
+        let [Arg { name: None, is_mut: false, value }] = args else { return None };
+        let Some(Type::Iterator(item, Some(_))) = self.type_at(value.span) else { return None };
+        Some((hash, value, *item))
+    }
+
+    /// A hash of chunks from a generator that can fail, written where it's called: the hash
+    /// started, given each chunk, then ended, as `crypto.fen`'s functions do. The loop over the
+    /// chunks is this function's, so a failure reading one passes up from here, as what it is,
+    /// as any loop's does.
+    pub(super) fn hashed_in_place(
+        &mut self,
+        hash: &str,
+        chunks: &Expr,
+        item: Type,
+        keep: Option<&Type>,
+        span: Span,
+    ) -> Lowered<Option<crate::LocalId>> {
+        let algorithm = if hash.starts_with("crypto.blake3") { "blake3" } else { "sha256" };
+        let (end, gives) = if hash.ends_with("_digest") {
+            ("crypto._end_digest", Type::Bytes)
+        } else {
+            ("crypto._end", Type::Str)
+        };
+        let generator = self.expr(chunks)?;
+        let handle = self.temporary(Type::Int);
+        let start = InstKind::Builtin {
+            dest: Some(handle),
+            name: "crypto._start".to_owned(),
+            args: vec![Operand::Str(algorithm.to_owned())],
+            changes: false,
+        };
+        self.emit(start, span);
+        let chunk = format!("\0chunk{}", span.start);
+        let named = [chunk.clone()];
+        self.through_generator(&named, (generator, item), None, (span, chunks.span), |this| {
+            let given = this.lookup(&chunk).ok_or("a chunk being hashed has no name")?;
+            let args = vec![Operand::Local(handle), Operand::Local(given)];
+            let add = InstKind::Builtin { dest: None, name: "crypto._add".to_owned(), args, changes: false };
+            this.emit(add, span);
+            Ok(())
+        })?;
+        let dest = self.temporary(keep.cloned().unwrap_or(gives));
+        let ended = InstKind::Builtin {
+            dest: Some(dest),
+            name: end.to_owned(),
+            args: vec![Operand::Local(handle)],
+            changes: false,
+        };
+        self.emit(ended, span);
+        Ok(keep.map(|_| dest))
+    }
+
     /// Gives a hidden name its first value, runs the loop, and gives back what it ends up holding.
     fn looping_for_value(
         &mut self,

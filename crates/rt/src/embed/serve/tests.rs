@@ -116,7 +116,7 @@ fn goodbye(stream: &mut std::net::TcpStream, reader: &mut impl std::io::Read) {
 #[test]
 fn a_taken_connection_sends_each_write_at_once() {
     let says_if_it_waits: Handler = Arc::new(|conn: Conn| {
-        let at_once = conn.stream.borrow().nodelay().unwrap_or(false);
+        let at_once = super::locked(&conn.stream).nodelay().unwrap_or(false);
         i64::from(conn.write(if at_once { b"at once\n" } else { b"waits\n" }).is_err())
     });
     run(1, &says_if_it_waits, |address| {

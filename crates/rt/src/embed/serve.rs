@@ -83,8 +83,9 @@ static BLOCKED_WAITS: AtomicU64 = AtomicU64::new(0);
 static WARNED: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
 
 thread_local! {
-    /// On an I/O worker, its poll's registry, for connections to register with.
-    static REGISTRY: RefCell<Option<Registry>> = const { RefCell::new(None) };
+    /// On an I/O worker, its poll's registry, for connections to register with, and keep, so a
+    /// task on another worker can tell its connection isn't its own.
+    static REGISTRY: RefCell<Option<Arc<Registry>>> = const { RefCell::new(None) };
     /// The token the next connection on this thread gets.
     static NEXT_TOKEN: Cell<usize> = const { Cell::new(0) };
     /// What the wait a task is about to park on waits for, when it gives up, and the note it
@@ -193,30 +194,42 @@ enum Waited {
 
 /// A connection, read and written by its task, which parks while it would block.
 ///
-/// Tasks on its worker share it, one reading while another writes, so each part is borrowed only
-/// for one step, and never across a park.
+/// A `Connection` is `shared`, so tasks on any worker use it, one reading while another writes,
+/// a hub on another worker writing to each member's say (#2065). So each part is locked only for
+/// one step, and never across a park, and the stream's lock comes after the TLS session's.
 pub struct Conn {
-    stream: RefCell<TcpStream>,
+    stream: Mutex<TcpStream>,
     token: Token,
     /// Bytes read past the end of the last line.
-    ahead: RefCell<Vec<u8>>,
-    /// Whether it's registered with this thread's poll.
-    registered: bool,
+    ahead: Mutex<Vec<u8>>,
+    /// The registry of the worker whose poll it's registered with, when it is. Only a task on that
+    /// worker parks on it: a wait on another thread blocks it, moving the socket off that poll and
+    /// back as a second wait there does.
+    home: Option<Arc<Registry>>,
     /// Whether a task is parked on it. The poll knows one task for each socket, so a second waits
     /// blocking its thread.
-    parked: Cell<bool>,
+    parked: AtomicBool,
+    /// Held by a wait that blocks its thread while it has the socket off its worker's poll, so two
+    /// such waits, on two threads, take turns at it.
+    blocking: Mutex<()>,
     /// Its TLS, when its server has some.
-    tls: RefCell<Option<Box<dyn ServerSession>>>,
+    tls: Mutex<Option<Box<dyn ServerSession>>>,
     /// Whether its server's draining, when its server stops when the program's asked to: a read
     /// with nothing of a next message in hand then ends, as at the end of what was sent.
     draining: Option<Arc<AtomicBool>>,
     /// Whether anything's been read since it last wrote: a read before anything has is waiting
     /// for a next message, not partway through one.
-    read_since_write: Cell<bool>,
+    read_since_write: AtomicBool,
     /// The label it prints as, given as its server took it.
     label: i64,
     /// When every read has to be done by, and how long that was, once `reads_within` is called.
-    reads_by: Cell<Option<(Instant, Duration)>>,
+    reads_by: Mutex<Option<(Instant, Duration)>>,
+}
+
+/// One of a connection's parts, locked for one step. Nothing panics while one is held, so a
+/// poisoned lock's part is as good as any.
+fn locked<T: ?Sized>(part: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    part.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// How long a connection has to finish its TLS handshake.
@@ -228,23 +241,35 @@ impl Conn {
         crate::stdlib::net::bound_send_buffer(&stream);
         let token = Token(NEXT_TOKEN.get());
         NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
-        let registered = REGISTRY.with_borrow(|registry| {
-            registry.as_ref().is_some_and(|registry| {
-                registry.register(&mut stream, token, Interest::READABLE | Interest::WRITABLE).is_ok()
-            })
+        let home = REGISTRY.with_borrow(|registry| {
+            registry
+                .as_ref()
+                .filter(|registry| {
+                    registry.register(&mut stream, token, Interest::READABLE | Interest::WRITABLE).is_ok()
+                })
+                .map(Arc::clone)
         });
         Conn {
-            stream: RefCell::new(stream),
+            stream: Mutex::new(stream),
             token,
-            ahead: RefCell::new(Vec::new()),
-            registered,
-            parked: Cell::new(false),
-            tls: RefCell::new(None),
+            ahead: Mutex::new(Vec::new()),
+            home,
+            parked: AtomicBool::new(false),
+            blocking: Mutex::new(()),
+            tls: Mutex::new(None),
             draining: None,
-            read_since_write: Cell::new(false),
+            read_since_write: AtomicBool::new(false),
             label: 0,
-            reads_by: Cell::new(None),
+            reads_by: Mutex::new(None),
         }
+    }
+
+    /// Whether this thread is the worker whose poll it's registered with, where a task waiting on it
+    /// can park.
+    fn is_home(&self) -> bool {
+        self.home.as_ref().is_some_and(|home| {
+            REGISTRY.with_borrow(|here| here.as_ref().is_some_and(|here| Arc::ptr_eq(here, home)))
+        })
     }
 
     /// It, printing as `label`, which its server gave it as it took it.
@@ -273,7 +298,9 @@ impl Conn {
     /// since it last wrote, and its server's draining. While such a read waits, its server's drain
     /// wakes it, so it ends at once rather than when the other side next sends.
     fn wait_to_read(&self, until: Until, call: &'static str) -> Result<bool, Failure> {
-        let idle = self.draining.is_some() && !self.read_since_write.get() && self.ahead.borrow().is_empty();
+        let idle = self.draining.is_some()
+            && !self.read_since_write.load(Ordering::Relaxed)
+            && locked(&self.ahead).is_empty();
         if !idle {
             self.wait(self.read_interest(), until, call)?;
             return Ok(false);
@@ -293,7 +320,8 @@ impl Conn {
         let mut session = tls.session().map_err(|_| Failure::Closed)?;
         let until = Until::after(Some(HANDSHAKE_TIMEOUT));
         loop {
-            match session.handshake(&mut *self.stream.borrow_mut()) {
+            let shaken = session.handshake(&mut *locked(&self.stream));
+            match shaken {
                 Ok(_) => break,
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
                     let interest =
@@ -304,26 +332,28 @@ impl Conn {
                 Err(error) => return Err(Failure::of(&error)),
             }
         }
-        *self.tls.borrow_mut() = Some(session);
+        *locked(&self.tls) = Some(session);
         Ok(())
     }
 
     /// Up to `count` more bytes onto `bytes`, through TLS if it has any.
     fn fill(&self, bytes: &mut Vec<u8>, count: usize) -> std::io::Result<usize> {
-        let mut stream = self.stream.borrow_mut();
-        let filled = match &mut *self.tls.borrow_mut() {
+        // The TLS session's lock first, as a write takes them.
+        let mut tls = locked(&self.tls);
+        let mut stream = locked(&self.stream);
+        let filled = match &mut *tls {
             Some(session) => session.read_onto(&mut *stream, bytes, count),
             None => read_onto(&mut stream, bytes, count),
         };
         if filled.as_ref().is_ok_and(|read| *read > 0) {
-            self.read_since_write.set(true);
+            self.read_since_write.store(true, Ordering::Relaxed);
         }
         filled
     }
 
     /// What a read that would block is waiting for: TLS may have something to send first.
     fn read_interest(&self) -> Interest {
-        if self.tls.borrow().as_ref().is_some_and(|session| session.wants_write()) {
+        if locked(&self.tls).as_ref().is_some_and(|session| session.wants_write()) {
             Interest::WRITABLE
         } else {
             Interest::READABLE
@@ -332,13 +362,14 @@ impl Conn {
 
     /// Has every read from now on done within `after`, however long each is given.
     pub fn reads_within(&self, after: Duration) {
-        self.reads_by.set(Some((Instant::now() + after, after)));
+        *locked(&self.reads_by) = Some((Instant::now() + after, after));
     }
 
     /// How long a read given `timeout` waits: no longer than what's left before every read has to
     /// be done by.
     fn read_until(&self, timeout: Option<Duration>) -> Until {
-        match self.reads_by.get() {
+        let reads_by = *locked(&self.reads_by);
+        match reads_by {
             Some((by, whole)) if timeout.is_none_or(|timeout| Instant::now() + timeout > by) => {
                 Until { timeout: Some(whole), deadline: Some(by) }
             }
@@ -350,7 +381,7 @@ impl Conn {
     pub fn read(&self, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
         let until = self.read_until(timeout);
         {
-            let mut ahead = self.ahead.borrow_mut();
+            let mut ahead = locked(&self.ahead);
             if !ahead.is_empty() {
                 let taken = ahead.len().min(count);
                 return Ok(ahead.drain(..taken).collect());
@@ -385,7 +416,7 @@ impl Conn {
         let mut looked = 0;
         loop {
             let found = {
-                let ahead = self.ahead.borrow();
+                let ahead = locked(&self.ahead);
                 let from = looked.min(ahead.len());
                 looked = ahead.len();
                 ahead
@@ -395,11 +426,11 @@ impl Conn {
                     .position(|byte| *byte == b'\n')
                     .map(|at| from + at)
             };
-            if found.is_none() && self.ahead.borrow().len() > most {
+            if found.is_none() && locked(&self.ahead).len() > most {
                 return Err(Failure::Other(format!("a line was longer than {most} bytes")));
             }
             if let Some(end) = found {
-                let mut line: Vec<u8> = self.ahead.borrow_mut().drain(..=end).collect();
+                let mut line: Vec<u8> = locked(&self.ahead).drain(..=end).collect();
                 if let Some(why) = crate::stdlib::net::line_refused(&line, crlf) {
                     return Err(Failure::Other(why));
                 }
@@ -409,14 +440,15 @@ impl Conn {
                 }
                 return Ok(Some(line));
             }
-            let mut ahead = self.ahead.take();
+            let mut ahead = std::mem::take(&mut *locked(&self.ahead));
             let filled = self.fill(&mut ahead, READ_BYTES);
-            *self.ahead.borrow_mut() = ahead;
+            let ended = ahead.is_empty();
+            *locked(&self.ahead) = ahead;
             match filled {
-                Ok(0) if self.ahead.borrow().is_empty() => return Ok(None),
+                Ok(0) if ended => return Ok(None),
                 Ok(0) => {
                     // A last line with no `\n` loses a `\r` it ends with, as one with a `\n` does.
-                    let mut line = self.ahead.take();
+                    let mut line = std::mem::take(&mut *locked(&self.ahead));
                     if line.last() == Some(&b'\r') {
                         line.pop();
                     }
@@ -438,11 +470,11 @@ impl Conn {
     /// other side still sends, for a while. Closing with what it sent unread would reset the
     /// connection, and the other side would lose what it hadn't read yet: the answer it was sent.
     pub fn linger(&self) {
-        let _ = self.stream.borrow().shutdown(std::net::Shutdown::Write);
+        let _ = locked(&self.stream).shutdown(std::net::Shutdown::Write);
         let until = Until::after(Some(LINGER));
         let mut sink = [0_u8; READ_BYTES];
         loop {
-            let read = self.stream.borrow_mut().read(&mut sink);
+            let read = locked(&self.stream).read(&mut sink);
             match read {
                 Ok(0) => return,
                 Ok(_) => {}
@@ -463,9 +495,16 @@ impl Conn {
         }
     }
 
+    /// Ends the connection both ways at once, for a task on another worker than its round's
+    /// closing it: lingering there would read, and throw away, what its round is reading. Its round
+    /// then reads the end, and its client is told nothing more is coming.
+    pub fn end(&self) {
+        let _ = locked(&self.stream).shutdown(std::net::Shutdown::Both);
+    }
+
     /// The other side's address.
     pub fn peer(&self) -> String {
-        self.stream.borrow().peer_addr().map(|peer| peer.to_string()).unwrap_or_default()
+        locked(&self.stream).peer_addr().map(|peer| peer.to_string()).unwrap_or_default()
     }
 
     /// Writes all of `data`.
@@ -477,12 +516,12 @@ impl Conn {
     pub fn write_within(&self, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
         crate::stdlib::net::wrote_to_a_connection();
         let until = Until::after(timeout);
-        self.read_since_write.set(false);
-        if self.tls.borrow().is_some() {
+        self.read_since_write.store(false, Ordering::Relaxed);
+        if locked(&self.tls).is_some() {
             return self.write_securely(data, until);
         }
         while !data.is_empty() {
-            let wrote = self.stream.borrow_mut().write(crate::stdlib::net::piece(data));
+            let wrote = locked(&self.stream).write(crate::stdlib::net::piece(data));
             match wrote {
                 Ok(0) => return Err(Failure::Closed),
                 Ok(written) => data = data.get(written..).unwrap_or_default(),
@@ -500,11 +539,9 @@ impl Conn {
     fn write_securely(&self, mut data: &[u8], until: Until) -> Result<(), Failure> {
         loop {
             let wrote = {
-                let mut tls = self.tls.borrow_mut();
+                let mut tls = locked(&self.tls);
                 let Some(session) = tls.as_mut() else { return Err(Failure::Closed) };
-                session
-                    .write_some(&mut *self.stream.borrow_mut(), data)
-                    .map(|taken| (taken, session.wants_write()))
+                session.write_some(&mut *locked(&self.stream), data).map(|taken| (taken, session.wants_write()))
             };
             match wrote {
                 Ok((taken, wants_write)) => {
@@ -533,11 +570,10 @@ impl Conn {
         }
         // What a task has printed comes out before it waits, however long that is.
         super::write_kept_output();
-        let waited = if self.registered && !super::state_is_borrowed() && !self.parked.get() {
+        let waited = if self.is_home() && !super::state_is_borrowed() && !self.parked.swap(true, Ordering::Acquire) {
             parking(interest, until.deadline, None);
-            self.parked.set(true);
             let woken = fennec_parked::park(u64::try_from(self.token.0).unwrap_or(0));
-            self.parked.set(false);
+            self.parked.store(false, Ordering::Release);
             match woken {
                 Some(Wake::Ready(TIMED_OUT)) => Waited::TimedOut,
                 // A round cancelled in its connection's wait fails as stopped, as at any other wait,
@@ -571,36 +607,30 @@ impl Conn {
         warn_once(call);
         let mut poll = Poll::new().map_err(|error| Failure::of(&error))?;
         let token = Token(0);
-        if self.registered {
-            REGISTRY.with_borrow(|registry| {
-                registry.as_ref().map(|registry| registry.deregister(&mut *self.stream.borrow_mut()))
-            });
+        // One such wait at a time has the socket off its worker's poll, from whichever thread.
+        let _turn = locked(&self.blocking);
+        if let Some(home) = &self.home {
+            let _ = home.deregister(&mut *locked(&self.stream));
         }
-        poll.registry()
-            .register(&mut *self.stream.borrow_mut(), token, interest)
-            .map_err(|error| Failure::of(&error))?;
-        let mut events = Events::with_capacity(1);
-        let polled = poll.poll(&mut events, timeout);
-        let _ = poll.registry().deregister(&mut *self.stream.borrow_mut());
-        if self.registered {
+        let registered = poll.registry().register(&mut *locked(&self.stream), token, interest);
+        let polled = registered.and_then(|()| {
+            let mut events = Events::with_capacity(1);
+            poll.poll(&mut events, timeout).map(|()| events.is_empty())
+        });
+        let _ = poll.registry().deregister(&mut *locked(&self.stream));
+        if let Some(home) = &self.home {
             let both = Interest::READABLE | Interest::WRITABLE;
-            REGISTRY.with_borrow(|registry| {
-                registry
-                    .as_ref()
-                    .map(|registry| registry.register(&mut *self.stream.borrow_mut(), self.token, both))
-            });
+            let _ = home.register(&mut *locked(&self.stream), self.token, both);
         }
-        polled.map_err(|error| Failure::of(&error))?;
-        Ok(if events.is_empty() && timeout.is_some() { Waited::TimedOut } else { Waited::Ready })
+        let quiet = polled.map_err(|error| Failure::of(&error))?;
+        Ok(if quiet && timeout.is_some() { Waited::TimedOut } else { Waited::Ready })
     }
 }
 
 impl Drop for Conn {
     fn drop(&mut self) {
-        if self.registered {
-            REGISTRY.with_borrow(|registry| {
-                registry.as_ref().map(|registry| registry.deregister(self.stream.get_mut()))
-            });
+        if let Some(home) = &self.home {
+            let _ = home.deregister(self.stream.get_mut().unwrap_or_else(PoisonError::into_inner));
         }
     }
 }
@@ -752,7 +782,7 @@ pub(in crate::embed) struct Io {
 impl Io {
     /// A worker's, on its own thread, with the poll its waker was made with.
     pub(in crate::embed) fn new(poll: Poll, workers: &'static Pool, at: usize) -> Io {
-        REGISTRY.set(poll.registry().try_clone().ok());
+        REGISTRY.set(poll.registry().try_clone().ok().map(Arc::new));
         Io {
             poll,
             events: Events::with_capacity(1024),

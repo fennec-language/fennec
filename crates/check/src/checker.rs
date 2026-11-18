@@ -30,6 +30,9 @@ pub(crate) enum Scope {
     Reached,
     /// Just the functions the program reaches, and every type's fields.
     ReachedWithFields,
+    /// What a build checks: as `ReachedWithFields`, so lowering can have its signatures, and
+    /// refusing all a check of what's written refuses, a lost change included.
+    Building,
 }
 
 pub(crate) struct Checker {
@@ -298,7 +301,7 @@ impl Checker {
                 self.check_function(key);
             }
         }
-        if scope == Scope::ReachedWithFields {
+        if matches!(scope, Scope::ReachedWithFields | Scope::Building) {
             self.check_implicit_methods();
         }
         self.revisit_cycles();

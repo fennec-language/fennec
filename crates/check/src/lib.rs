@@ -612,14 +612,14 @@ pub fn check_to_build_saying(module: &mut Module) -> Result<(Signatures, bool), 
     let names = own_types_apart(module);
     refuse_reserved(module)?;
     let checked = checker::Checker::new(module)
-        .run(checker::Scope::ReachedWithFields)
+        .run(checker::Scope::Building)
         .map_err(|problems| as_written(problems, &names))?;
     refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
     // Resolving writes in what the check found, as a default left out of a call, which checking
     // the module again types as what's written there: the first check's types are only those of
     // a module it left as it was.
     let seen = module.clone();
-    resolved_saying(module, (checked, seen), checker::Scope::ReachedWithFields)
+    resolved_saying(module, (checked, seen), checker::Scope::Building)
 }
 
 /// Like `check_to_run`, with every standard library type's fields typed too, so the module can
@@ -1374,9 +1374,10 @@ impl Signatures {
 
     /// Whether these signatures, of a module cut down to what `main` reaches, agree with `wider`,
     /// those of the whole module the cut one came from: every function, type, local, verdict and
-    /// body here is there too and the same, and so is what crosses between threads, which is
-    /// worked out from what `main` reaches either way. `wider` may hold more: what was cut away,
-    /// and the library functions only that reached.
+    /// body here is there too and the same. `wider` may hold more: what was cut away, and the
+    /// library functions only that reached. What crosses between threads is worked out from every
+    /// function the program has, so `wider`'s may say more types cross, never fewer, which keeps
+    /// a count two threads can change where one would do.
     #[must_use]
     pub fn agree_within(&self, wider: &Signatures) -> bool {
         fn within<V: PartialEq>(narrow: &BTreeMap<String, V>, wide: &BTreeMap<String, V>) -> bool {
@@ -1390,7 +1391,7 @@ impl Signatures {
             && within(&self.types.functions, &wider.types.functions)
             && within(&self.lock_verdicts, &wider.lock_verdicts)
             && within(&self.own_saving, &wider.own_saving)
-            && self.crossing == wider.crossing
+            && self.crossing.within(&wider.crossing)
     }
 
     /// What each function waits on or locks, itself or however many calls down, by its key, as

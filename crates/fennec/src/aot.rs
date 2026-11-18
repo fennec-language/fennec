@@ -554,7 +554,9 @@ fn emitted_with(
             emitted_as_written(reached, emit, tests, checked)
         }
         fennec_check::Routed::Unchanged(found) => {
-            emitted_as_written(reached, emit, tests, checked.or(found.map(|found| *found)))
+            // Routing's own check of the cut module is exact, so it goes before what the build's
+            // check handed on.
+            emitted_as_written(reached, emit, tests, found.map(|found| *found).or(checked))
         }
     }
 }
@@ -681,26 +683,43 @@ fn portable_name(shown: &str, root: Option<&Path>) -> String {
     real.file_name().map_or_else(|| shown.to_owned(), |name| name.to_string_lossy().into_owned())
 }
 
-/// The signatures' keys of what cutting `whole` down to `kept` let go: each function's, with the
-/// functions written inside it, and each type's, with its methods. Kept items are left out by name.
+/// The signatures' keys of what cutting `whole` down to `kept` let go: every key `whole` defines
+/// that `kept` doesn't. That's each function's, with the functions written inside it, each type's,
+/// with its methods, and each extension's methods.
 fn cut_keys(
     whole: &fennec_syntax::Module,
     kept: &fennec_syntax::Module,
 ) -> std::collections::BTreeSet<String> {
-    use fennec_syntax::{Expr, ExprKind, FnDef, Item, StmtKind};
+    let still = defined_keys(kept);
+    defined_keys(whole).into_iter().filter(|key| !still.contains(key)).collect()
+}
+
+/// The keys of what a module defines, as the checker keys their signatures: a function by its name,
+/// a type by its name and a method as `Type.method`, an extension's method as a type's own, and a
+/// function written inside one as `owner.inner`.
+fn defined_keys(module: &fennec_syntax::Module) -> std::collections::BTreeSet<String> {
+    use fennec_syntax::{Expr, ExprKind, FnDef, Item, Stmt, StmtKind};
     fn nested(def: &FnDef, owner: &str, keys: &mut std::collections::BTreeSet<String>) {
         let mut defs = Vec::new();
         collect_defs(&def.body, &mut defs);
         for inner in defs {
             let key = format!("{owner}.{}", inner.name);
-            nested(&inner, &key, keys);
+            nested(inner, &key, keys);
             keys.insert(key);
         }
     }
-    fn collect_defs(body: &[fennec_syntax::Stmt], defs: &mut Vec<FnDef>) {
+    /// The arms of a `match` written as a value, which can hold a `def` of their own.
+    fn arms<'a>(value: &'a Expr, defs: &mut Vec<&'a FnDef>) {
+        if let ExprKind::Match { arms, .. } = &value.kind {
+            for arm in arms {
+                collect_defs(&arm.body, defs);
+            }
+        }
+    }
+    fn collect_defs<'a>(body: &'a [Stmt], defs: &mut Vec<&'a FnDef>) {
         for stmt in body {
             match &stmt.kind {
-                StmtKind::Def(def) => defs.push(def.clone()),
+                StmtKind::Def(def) => defs.push(def),
                 StmtKind::If { branches, otherwise } => {
                     for (_, block) in branches {
                         collect_defs(block, defs);
@@ -709,40 +728,43 @@ fn cut_keys(
                         collect_defs(block, defs);
                     }
                 }
-                StmtKind::While { body, .. }
-                | StmtKind::For { body, .. }
-                | StmtKind::With { body, .. }
-                | StmtKind::OnFailure { body, .. } => collect_defs(body, defs),
-                StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
-                    for arm in arms {
-                        collect_defs(&arm.body, defs);
-                    }
+                StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::With { body, .. } => {
+                    collect_defs(body, defs);
+                }
+                StmtKind::OnFailure { cleanup, body, .. } => {
+                    collect_defs(cleanup, defs);
+                    collect_defs(body, defs);
+                }
+                StmtKind::Lend { value, otherwise, .. } => {
+                    arms(value, defs);
+                    collect_defs(otherwise, defs);
+                }
+                StmtKind::Expr(value) | StmtKind::Assign { value, .. } | StmtKind::Return(Some(value)) => {
+                    arms(value, defs);
                 }
                 _ => {}
             }
         }
     }
-    let names = |item: &Item| match item {
-        Item::Function(def) => Some(def.name.clone()),
-        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => Some(def.name.clone()),
-        _ => None,
-    };
-    let still: std::collections::BTreeSet<String> = kept.items.iter().filter_map(names).collect();
+    fn methods(owner: &str, defs: &[FnDef], keys: &mut std::collections::BTreeSet<String>) {
+        for method in defs {
+            let key = format!("{owner}.{}", method.name);
+            nested(method, &key, keys);
+            keys.insert(key);
+        }
+    }
     let mut keys = std::collections::BTreeSet::new();
-    for item in &whole.items {
+    for item in &module.items {
         match item {
-            Item::Function(def) if !still.contains(&def.name) => {
+            Item::Function(def) => {
                 keys.insert(def.name.clone());
                 nested(def, &def.name, &mut keys);
             }
-            Item::Struct(def) | Item::Enum(def) | Item::Error(def) if !still.contains(&def.name) => {
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
                 keys.insert(def.name.clone());
-                for method in &def.methods {
-                    let key = format!("{}.{}", def.name, method.name);
-                    nested(method, &key, &mut keys);
-                    keys.insert(key);
-                }
+                methods(&def.name, &def.methods, &mut keys);
             }
+            Item::Extend(extension) => methods(&extension.name, &extension.methods, &mut keys),
             _ => {}
         }
     }

@@ -1771,8 +1771,10 @@ fn remove_words(set: i64, key: &[u64], whose: Key, must: i8, (start, end): (i64,
                     .block(at)
                     .and_then(|block| kind(state, block))
                     .map_or(Word::Int, |kind| kind.0);
-                let value = key_value(state, key_word, key);
-                let message = format!("{} isn't in the set", crate::format::repr(&value));
+                // Read for the message, written and let go of with room for however deep it is.
+                let message = super::heap::with_room_to_read(|| {
+                    format!("{} isn't in the set", crate::format::repr(&key_value(state, key_word, key)))
+                });
                 Err(Diagnostic::new(message, span(start, end)))
             }
             Taken::NotOne => Ok(set),
@@ -2031,8 +2033,10 @@ fn pop_words<const IN_PLACE: bool>(dict: i64, key: &[u64], whose: Key, (start, e
                     .block(at)
                     .and_then(|block| kind(state, block))
                     .map_or(Word::Int, |kind| kind.0);
-                let value = key_value(state, key_word, key);
-                let message = format!("the dict has no key {}", crate::format::repr(&value));
+                // Read for the message, written and let go of with room for however deep it is.
+                let message = super::heap::with_room_to_read(|| {
+                    format!("the dict has no key {}", crate::format::repr(&key_value(state, key_word, key)))
+                });
                 (held, Some(Diagnostic::new(message, span(start, end))))
             }
             Taken::NotOne => (dict, None),
@@ -2079,11 +2083,12 @@ fn missing_words(dict: i64, key: &[u64], whose: Key, augmented: i8, (start, end)
         let at = u64::try_from(dict).unwrap_or(0);
         let key_word =
             state.heap.block(at).and_then(|block| kind(state, block)).map_or(Word::Int, |kind| kind.0);
-        let said = key_value(state, key_word, key);
-        // The key is read for the message, and then let go of: the failure holds only its text.
+        // The key is read for the message, written and let go of with room for however deep it is,
+        // and then let go of itself: the failure holds only its text.
+        let message = super::heap::with_room_to_read(|| {
+            format!("the dict has no key {}", crate::format::repr(&key_value(state, key_word, key)))
+        });
         let_go_of_key(state, at, key, whose);
-        let key = said;
-        let message = format!("the dict has no key {}", crate::format::repr(&key));
         let failure = Diagnostic::new(message, span(start, end));
         Err(if augmented == 0 {
             failure.with_help("use `.get(key)`, which gives None instead")

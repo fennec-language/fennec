@@ -1235,12 +1235,15 @@ pub extern "C" fn remove(list: i64, word: i64, start: i64, end: i64) {
             return Ok(());
         }
         let element = state.heap.block(address).and_then(|block| element_of(state, block));
-        let value = match element {
-            Some(element) if passed_as_block(&element) => read_block(state, word),
-            Some(element) => super::heap::read_word(state, &element, word),
-            None => Value::None,
-        };
-        let message = format!("{} isn't in the list", crate::format::repr(&value));
+        // Read for the message, written and let go of with room for however deep it is.
+        let message = super::heap::with_room_to_read(|| {
+            let value = match element {
+                Some(element) if passed_as_block(&element) => read_block(state, word),
+                Some(element) => super::heap::read_word(state, &element, word),
+                None => Value::None,
+            };
+            format!("{} isn't in the list", crate::format::repr(&value))
+        });
         Err(Diagnostic::new(message, span(start, end)))
     });
 }

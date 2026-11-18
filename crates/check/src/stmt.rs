@@ -633,6 +633,7 @@ impl FnCx<'_> {
             origin: Origin::Captured,
             mut_at: None,
             to_every: false,
+            param_of: None,
         });
         let report = self.report;
         let inherited = self.generics.clone();

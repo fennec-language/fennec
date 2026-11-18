@@ -766,6 +766,63 @@ fn a_function_value_called_inside_a_lock_is_followed_to_what_it_holds() {
     );
 }
 
+/// A function parameter a nested function calls is called by the function around it: what each
+/// caller passes is checked as when that function calls it itself. `runs` calling `work` through
+/// its nested `step` once let `nap` sleep while `held` was locked, where `runs_plain`, calling it
+/// itself, was refused.
+#[test]
+fn a_parameter_a_nested_function_calls_is_followed_as_its_function_calls_it() {
+    let declared = "struct Account:\n    total = 0\n\n\
+        def nap(clock: Clock):\n    clock.sleep(1s)\n\n\
+        def quiet():\n    pass\n\n\
+        def runs(work: () -> nothing):\n    def step():\n        work()\n    step()\n\n\
+        def runs_plain(work: () -> nothing):\n    work()\n\n\
+        def deeper(work: () -> nothing):\n    def outer():\n        def inner():\n            work()\n        inner()\n    outer()\n\n\
+        def shadows(work: () -> nothing):\n    def step(work: () -> nothing):\n        work()\n    step(quiet)\n\n";
+    let found = |body: &str| -> Vec<String> {
+        problems(&format!(
+            "{declared}def main(stdout: Stdout, clock: Clock):\n    shared scores = Account()\n    resting = () => nap(clock)\n{body}"
+        ))
+    };
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        found(
+            "    lock scores as held:\n        runs(resting)\n        stdout.print(held.total)\n    lock scores as again:\n        runs_plain(resting)\n        stdout.print(again.total)\n"
+        ),
+        [
+            "`runs` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ resting",
+            "`runs_plain` calls `work` while `again` is locked, and this waits on `Clock.sleep` @ resting"
+        ]
+    );
+    // However deep it's nested, and whoever's around it, it's the outer function's parameter.
+    assert_eq!(
+        found("    lock scores as held:\n        deeper(resting)\n        stdout.print(held.total)\n"),
+        ["`deeper` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ resting"]
+    );
+    // What waits on nothing is fine, and a nested function's own parameter of the same name isn't
+    // the outer one's.
+    assert_eq!(
+        found(
+            "    lock scores as held:\n        runs(quiet)\n        runs(() => stdout.print(1))\n        shadows(resting)\n        stdout.print(held.total)\n"
+        ),
+        empty
+    );
+    // The nested function called inside a lock its function takes calls the parameter inside it.
+    // Until #2011 is fixed, calling a nested function inside its own function's lock is also
+    // refused as taking that lock, so this looks for the parameter's refusal among them.
+    let inside = "struct Account:\n    total = 0\n\n\
+        def nap(clock: Clock):\n    clock.sleep(1s)\n\n\
+        def counted(scores: shared Account, work: () -> nothing):\n    def step():\n        work()\n    \
+        lock scores as held:\n        step()\n        _ = held\n\n\
+        def main(clock: Clock):\n    shared scores = Account()\n    counted(scores, () => nap(clock))\n";
+    let problems = problems(inside);
+    assert!(
+        problems.iter().any(|problem| problem
+            == "`counted` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ () => nap(clock)"),
+        "{problems:?}"
+    );
+}
+
 /// A source can't lend while it holds a lock it took: the block lent to runs inside the lock.
 #[test]
 fn a_source_cant_lend_inside_a_lock() {

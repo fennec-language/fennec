@@ -2988,19 +2988,64 @@ fn tasks_talk_through_channels_and_listeners() {
     );
 }
 
-/// A channel to every listener keeps the last `size` messages. Where nothing else can go on as it
-/// lets the oldest go, a listener that hadn't read it falls behind on every run: its next receive
+/// A channel to every listener keeps the last `size` messages. A listener whose receive happens
+/// after the sends that let what it hadn't read go falls behind on every run: its next receive
 /// fails as a crash does, or with `when_behind=.DropOldest` goes on from the oldest kept, as the
 /// runtime's does. An inbox made after some were sent hears from there. What it prints is what the
-/// compiled program printed, the same each run. Where a listener's task could be reading as the
-/// oldest goes, whether it read it first hangs on time, and the run is refused.
+/// compiled program printed, the same each run. Where whether a listener read a message or found it
+/// gone hangs on time, the run is refused: its receive not after the send that let it go, or its
+/// read not before it, whether the sender came to the send through another task's message or its
+/// own timeout.
 #[test]
 fn a_listener_left_behind_fails_or_skips_and_one_that_could_be_reading_is_refused() {
     prints(BEHIND, "early fell behind\ntook [4, 5]\nskipped to [4, 5]\n");
     let (printed, ended) = ran(RACING);
-    let refused = "a channel to every listener let go of a message a listener that could be reading hadn't read, which it read first or not by time";
+    let refused = "a listener of a channel to every listener found a message gone that it could have read first, by time";
     assert_eq!(ended, Ended::Unsupported(refused.to_owned()), "{printed}");
+    let refused = "a channel to every listener let go of a message a listener read, the read not before the send, so it read it or fell behind by time";
+    for read_first in [READ_THEN_SENT_ON_A_GATE, READ_THEN_SENT_AFTER_A_TIMEOUT] {
+        let (printed, ended) = ran(read_first);
+        assert_eq!(ended, Ended::Unsupported(refused.to_owned()), "{printed}");
+    }
 }
+
+const READ_THEN_SENT_ON_A_GATE: &str = "
+        from std.concurrent import Channel, Closed, Crashed, Inbox, channel
+
+        def took(hits: Inbox[int], stdout: Stdout):
+            got = hits.receive() else -1
+            stdout.print('took', got)
+
+        def later(hits: Channel[int], gate: Channel[int]) fails Closed:
+            _ = gate.receive() else fail Closed()
+            hits.send(2)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1, to=.Every) as hits:
+                with channel[int](size=1) as gate:
+                    inbox = hits.inbox()
+                    hits.send(1)?
+                    with launch(() => took(inbox, stdout=stdout))?:
+                        with launch(() => later(hits, gate=gate)?)?:
+                            gate.send(0)?
+        ";
+
+const READ_THEN_SENT_AFTER_A_TIMEOUT: &str = "
+        from std.concurrent import Channel, Closed, Crashed, Inbox, Timeout, channel
+
+        def took(hits: Inbox[int], stdout: Stdout):
+            got = hits.receive() else -1
+            stdout.print('took', got)
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1, to=.Every) as hits:
+                with channel[int](size=1) as quiet:
+                    inbox = hits.inbox()
+                    hits.send(1)?
+                    with launch(() => took(inbox, stdout=stdout))?:
+                        _ = quiet.receive_within(2ms) except Timeout(): -1
+                        hits.send(2)?
+        ";
 
 const BEHIND: &str = "
         from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, Timeout, channel

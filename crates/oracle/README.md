@@ -149,8 +149,9 @@ says they are, at the version the workspace pins.
   `with` ends as the task does, with its failure, or `Crashed(why="the task crashed")` for a crash.
   Refused: two tasks taking from one channel to one receiver at once, where neither had heard of
   the other's last take; several senders to a listener whose
-  next messages differ; a channel to every listener letting go of a message a listener that could
-  be reading hadn't read, its task able to go on or waiting with a timeout; a send waiting for room
+  next messages differ; a channel to every listener letting go of a message a listener read, the
+  read not before the send, or a listener finding one gone, its receive not after the send that let
+  it go; a send waiting for room
   when its channel closes; a send to the inbox of a task that's ended, on a run that didn't try the
   task ending first; a `shared` value one side changes and the other reaches; a block that fails,
   which cuts its task short at once, unless it's a send failing with `Closed` to a task that's

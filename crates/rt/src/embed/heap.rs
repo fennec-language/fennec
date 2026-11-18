@@ -75,9 +75,11 @@ pub(super) struct Cursor {
 #[derive(Default)]
 pub(crate) struct Heap {
     pub(super) blocks: super::table::Table,
-    spare: Vec<Vec<Box<[u64]>>>,
+    spare: Vec<SizeList>,
     /// How many words `spare`'s blocks hold.
     spare_words: usize,
+    /// Whether blocks freed now go back to the allocator, not into `spare`: `freed` is `GivenBack`.
+    gives_back: bool,
     /// How many of the blocks live for the whole run.
     statics: usize,
     /// How many blocks left outside tasks this thread has counted already, as a worker that
@@ -155,6 +157,13 @@ pub(crate) struct Heap {
     pub(super) scratch: Vec<u64>,
     /// Where blocks freed now go (see `give_back`).
     freed: Freed,
+}
+
+/// Freed blocks of one size kept for reuse, and how many more of them there's room for.
+#[derive(Default)]
+struct SizeList {
+    blocks: Vec<Box<[u64]>>,
+    room: usize,
 }
 
 /// Where a heap puts the blocks it frees.
@@ -697,15 +706,28 @@ const SPARE_SIZE_WORDS: usize = 1 << 17;
 /// The biggest block, in words, kept for reuse.
 const SPARE_WORDS: usize = 256;
 
-/// Zeroes a block, with plain stores for the small blocks most are, which costs less than
-/// calling `memset`.
+/// Zeroes a block, with plain stores for the small blocks most are, up to 16 words, which costs
+/// less than calling `memset`.
+#[inline]
 fn zero(block: &mut [u64]) {
     let zeroed = match block.len() {
+        0 => true,
+        1 => zero_words::<1>(block),
         2 => zero_words::<2>(block),
         3 => zero_words::<3>(block),
         4 => zero_words::<4>(block),
         5 => zero_words::<5>(block),
         6 => zero_words::<6>(block),
+        7 => zero_words::<7>(block),
+        8 => zero_words::<8>(block),
+        9 => zero_words::<9>(block),
+        10 => zero_words::<10>(block),
+        11 => zero_words::<11>(block),
+        12 => zero_words::<12>(block),
+        13 => zero_words::<13>(block),
+        14 => zero_words::<14>(block),
+        15 => zero_words::<15>(block),
+        16 => zero_words::<16>(block),
         _ => false,
     };
     if !zeroed {
@@ -803,19 +825,15 @@ impl Heap {
 
     /// A block of `words` words whose first `written` the caller writes straight away: those of a
     /// freed one reused are left as they were, and the rest are zero.
+    #[inline]
     pub(super) fn fresh_written(&mut self, words: usize, written: usize) -> Box<[u64]> {
-        match self.spare.get_mut(words).and_then(Vec::pop) {
-            Some(mut block) => {
-                self.spare_words -= block.len();
-                match block.get_mut(written..) {
-                    // What's left after what's written is a few words, mostly, for plain stores.
-                    Some(rest) if written > 0 => zero(rest),
-                    _ => zero(&mut block),
-                }
-                block
-            }
-            None => vec![0; words].into_boxed_slice(),
-        }
+        let Some(list) = self.spare.get_mut(words) else { return vec![0; words].into_boxed_slice() };
+        let Some(mut block) = list.blocks.pop() else { return vec![0; words].into_boxed_slice() };
+        list.room += 1;
+        self.spare_words -= words;
+        // What's left after what's written is a few words, mostly, for plain stores.
+        zero(block.get_mut(written..).unwrap_or_default());
+        block
     }
 
     /// Says where blocks freed from now on go, giving back where they went before. They should go
@@ -827,46 +845,58 @@ impl Heap {
         expect(dead_code, reason = "only a launched task frees what another thread made")
     )]
     pub(super) fn freeing(&mut self, freed: Freed) -> Freed {
+        self.gives_back = freed == Freed::GivenBack;
         std::mem::replace(&mut self.freed, freed)
     }
 
     /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
     /// rare enough to give back.
+    #[inline]
     pub(super) fn recycle(&mut self, block: Box<[u64]>) {
         // Under AddressSanitizer every freed block is given back, for it to watch.
-        if cfg!(feature = "sanitize") || self.freed == Freed::GivenBack {
-            return;
-        }
-        if self.spare_words + block.len() > SPARE_TOTAL_WORDS {
+        if cfg!(feature = "sanitize") || self.gives_back {
             return;
         }
         let words = block.len();
+        // Each size gets a share, so one nothing reuses, like most strings', can't take all of it.
         match self.spare.get_mut(words) {
-            // Each size gets a share, so one nothing reuses, like most strings', can't take all of it.
-            Some(spare) if (spare.len() + 1) * words > SPARE_SIZE_WORDS => {}
-            Some(spare) => {
-                spare.push(block);
+            Some(list) if list.room > 0 && self.spare_words + words <= SPARE_TOTAL_WORDS => {
+                list.room -= 1;
+                list.blocks.push(block);
                 self.spare_words += words;
             }
+            Some(_) => {}
             None => self.recycle_first(block),
         }
     }
 
-    /// `recycle`, for the first block of its size.
+    /// `recycle`, for the first block freed here: makes a list for every size kept, each with room
+    /// for its share.
     #[cold]
     #[inline(never)]
     fn recycle_first(&mut self, block: Box<[u64]>) {
-        let words = block.len();
-        if words > SPARE_WORDS {
+        if !self.spare.is_empty() {
             return;
         }
-        if self.spare.len() <= words {
-            self.spare.resize_with(words + 1, Vec::new);
-        }
-        if let Some(spare) = self.spare.get_mut(words) {
-            spare.push(block);
-            self.spare_words += words;
-        }
+        self.spare = (0..=SPARE_WORDS)
+            .map(|words| SizeList {
+                blocks: Vec::new(),
+                room: SPARE_SIZE_WORDS.checked_div(words).unwrap_or(0),
+            })
+            .collect();
+        self.recycle(block);
+    }
+
+    /// How many blocks of `words` words are kept for reuse.
+    #[cfg(test)]
+    pub(super) fn spare_of(&self, words: usize) -> usize {
+        self.spare.get(words).map_or(0, |list| list.blocks.len())
+    }
+
+    /// How many words the blocks kept for reuse hold, counted again from the lists.
+    #[cfg(test)]
+    pub(super) fn spare_counted(&self) -> usize {
+        self.spare.iter().enumerate().map(|(words, list)| words * list.blocks.len()).sum()
     }
 
     /// Its live blocks, by how many words each takes, and apart from them how many are never freed.

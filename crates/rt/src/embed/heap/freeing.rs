@@ -852,12 +852,12 @@ mod tests {
         start(Tables::default(), crate::Inputs::default());
         free_many(400_000, 7);
         with(|state| {
-            let sevens = state.heap.spare.get(7).map_or(0, Vec::len) * 7;
+            let sevens = state.heap.spare_of(7) * 7;
             assert!(sevens <= super::super::SPARE_SIZE_WORDS, "{sevens} words of one size");
             assert!(sevens > super::super::SPARE_SIZE_WORDS - 7, "it kept less than its share");
         });
         free_many(1_000, 4);
-        with(|state| assert_eq!(state.heap.spare.get(4).map_or(0, Vec::len), 1_000, "room for the next"));
+        with(|state| assert_eq!(state.heap.spare_of(4), 1_000, "room for the next"));
         finish();
     }
 
@@ -884,8 +884,7 @@ mod tests {
         for words in [4, 5, 16, 100] {
             free_many(400_000, words);
             with(|state| {
-                let kept: usize =
-                    state.heap.spare.iter().enumerate().map(|(size, blocks)| size * blocks.len()).sum();
+                let kept = state.heap.spare_counted();
                 assert_eq!(kept, state.heap.spare_words);
                 assert!(kept <= super::super::SPARE_TOTAL_WORDS, "{kept} words kept");
                 assert!(kept > 0, "nothing's kept for reuse");

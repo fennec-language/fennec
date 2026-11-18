@@ -326,14 +326,8 @@ pub extern "C" fn of(address: i64) -> Text {
         if length > INLINE_BYTES {
             return Text { words: [at, u64::try_from(length).unwrap_or(0), 0] };
         }
-        let bytes: Vec<u8> = block
-            .get(TEXT_HEADER_WORDS..)
-            .unwrap_or_default()
-            .iter()
-            .flat_map(|word| word.to_le_bytes())
-            .take(length)
-            .collect();
-        let words = inline(&bytes);
+        // Packed from the block's own words, with nothing made to hold them on the way.
+        let words = inline_from_words(block.get(TEXT_HEADER_WORDS..).unwrap_or_default(), 0, length);
         release(state, at);
         Text { words }
     })
@@ -570,6 +564,28 @@ mod tests {
 
     fn live() -> usize {
         with(|state| state.heap.live())
+    }
+
+    /// A string's block of 23 bytes or fewer comes back inline, every byte in its place, and the
+    /// block is let go of. A longer one comes back as the block itself.
+    #[test]
+    fn a_string_s_text_comes_back_inline_whenever_it_fits() {
+        begin();
+        let before = live();
+        let alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+        for length in 0..=32 {
+            let text = alphabet.get(..length).unwrap_or_default();
+            let address = with(|state| Some(heap::text_address(state, text))).unwrap();
+            let words = super::of(address).words;
+            if length <= super::INLINE_BYTES {
+                assert_eq!(words, super::inline(text.as_bytes()), "{length} bytes");
+                assert_eq!(live(), before, "{length} bytes left their block");
+            } else {
+                assert_eq!(block_of(&words), u64::try_from(address).ok(), "{length} bytes");
+                assert_eq!(text_of(words), text);
+            }
+        }
+        finish();
     }
 
     /// An int's text, as a header or as a string's block, is what Rust writes for it, at both ends

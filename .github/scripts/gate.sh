@@ -42,6 +42,9 @@ log="$logs/gate.log"
 : > "$log"
 # LLVM is the main backend, so its tests have to run, not skip.
 export FENNEC_EXPECT_LLVM=1
+# Everything builds in its own process, as a first build and CI do, never through a build daemon
+# kept between commands: what's checked and timed is the build on its own.
+export FENNEC_NO_DAEMON=1
 # Every executable a build makes as a new file, a line each, which macOS may hold at its first
 # launch: counted for each step at the end.
 export FENNEC_NEW_EXECUTABLES="$logs/new-executables.txt"

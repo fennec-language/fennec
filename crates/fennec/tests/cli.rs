@@ -4982,6 +4982,76 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// `fennec build` in `kit` to `prog` there, with the Fennec folder `home`, through the daemon or
+/// in its own process, as CI would have it if `ci`.
+#[cfg(unix)]
+fn build_in(kit: &Path, home: &Path, daemon: bool, ci: bool) -> Output {
+    let mut command = crate::executables::fennec_command();
+    command.args(["build", ".", "-o", "prog"]).current_dir(kit).env("FENNEC_HOME", home);
+    command.env("FENNEC_DAEMON_IDLE", "30").env_remove("CI");
+    if daemon {
+        command.env_remove("FENNEC_NO_DAEMON");
+    }
+    if ci {
+        command.env("CI", "true");
+    }
+    command.output().unwrap()
+}
+
+/// What a build printed, with how long each step took left out: it's never the same twice.
+fn without_times(printed: &[u8]) -> String {
+    let mut out = String::new();
+    let mut digits = String::new();
+    for c in text(printed).chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            continue;
+        }
+        out.push_str(if c == ' ' && !digits.is_empty() { "N" } else { &digits });
+        digits.clear();
+        out.push(c);
+    }
+    out + &digits
+}
+
+/// A program built by the daemon is the one built in the command's own process: the same exit code,
+/// the same output but for how long its steps took, the same problems, and the same file, byte
+/// for byte. A build under CI never starts a daemon.
+#[cfg(unix)]
+#[test]
+fn a_build_the_daemon_makes_is_the_one_made_here() {
+    let (folder, kit, home) = small_kit("build-daemon").unwrap();
+    let manifest =
+        format!("name = \"demo\"\nversion = \"0.1.0\"\nfennec = \"{}\"\n", env!("CARGO_PKG_VERSION"));
+    std::fs::write(kit.join("kit.toml"), manifest).unwrap();
+    let here_home = folder.join("home-here");
+    let main = kit.join("src/main.fen");
+    let wrong = "def main(stdout: Stdout):\n    stdout.print(1 + \"x\")\n";
+    for (source, built) in [("def main(stdout: Stdout):\n    stdout.print(1)\n", true), (wrong, false)] {
+        std::fs::write(&main, source).unwrap();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let here = build_in(&kit, &here_home, false, false);
+        let made_here = std::fs::read(kit.join("prog")).ok();
+        let _ = std::fs::remove_file(kit.join("prog"));
+        let made = build_in(&kit, &home, true, false);
+        assert_eq!(made.status.code(), here.status.code(), "{}", text(&made.stderr));
+        assert_eq!(without_times(&made.stdout), without_times(&here.stdout));
+        assert_eq!(text(&made.stderr), text(&here.stderr));
+        assert_eq!(std::fs::read(kit.join("prog")).ok(), made_here);
+        assert_eq!(made_here.is_some(), built);
+    }
+    let status = text(&with_daemon(&kit, &home, "30", &["daemon", "status"]).unwrap().stdout);
+    assert!(status.contains("2 requests served"), "{status}");
+    with_daemon(&kit, &home, "30", &["daemon", "stop"]).unwrap();
+    assert!(stops(&kit, &home), "the daemon didn't stop");
+    // Under CI it's built here, and no daemon is started.
+    let ci_home = folder.join("home-ci");
+    assert_eq!(build_in(&kit, &ci_home, true, true).status.code(), Some(1));
+    let status = text(&with_daemon(&kit, &ci_home, "30", &["daemon", "status"]).unwrap().stdout);
+    assert_eq!(status, "not running\n");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn an_idle_daemon_exits_by_itself() {

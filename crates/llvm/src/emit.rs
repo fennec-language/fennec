@@ -356,6 +356,10 @@ pub(crate) fn emit_keeping(
     let mut refused = Vec::new();
     let mut kept = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
+        // A build asked to stop writes no more (`fennec_build::cancel`).
+        if fennec_build::cancelled() {
+            return Err(crate::STOPPED.to_owned());
+        }
         if keeping {
             layouts.note_asked();
         }

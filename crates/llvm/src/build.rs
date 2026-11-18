@@ -648,6 +648,9 @@ fn object_key(version: &str, pipeline: &str, text: &fennec_blake3::Hash) -> Stri
 /// Compiles every function's module, using the cache's copy of any it already has, and `entry`.
 /// The cache comes with the hash of each unit's text, in order, which the build has already
 /// worked out for its root hash.
+/// What a build asked to stop gives instead of its objects.
+pub const STOPPED: &str = "the build was stopped";
+
 pub fn compile(
     tools: &Tools,
     units: &[Unit],
@@ -668,6 +671,10 @@ pub fn compile(
         for _ in 0..threads.saturating_sub(1).max(1) {
             scope.spawn(|| {
                 loop {
+                    // A build asked to stop compiles nothing more (`fennec_build::cancel`).
+                    if fennec_build::cancelled() {
+                        return;
+                    }
                     let at = {
                         let Ok(mut next) = next.lock() else { return };
                         let at = *next;
@@ -713,6 +720,9 @@ pub fn compile(
     });
     let mut results =
         results.into_inner().map_err(|_| "a compiling thread stopped unexpectedly".to_owned())?;
+    if fennec_build::cancelled() {
+        return Err(STOPPED.to_owned());
+    }
     results.sort_by_key(|(at, _)| *at);
     let mut built = Built::default();
     for (_, result) in results {

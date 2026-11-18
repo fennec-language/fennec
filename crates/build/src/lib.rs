@@ -10,6 +10,7 @@
 #![deny(clippy::iter_over_hash_type)]
 
 mod cache;
+mod cancel;
 mod changes;
 mod locals;
 mod reach;
@@ -24,6 +25,7 @@ mod verdict;
 pub use cache::{
     CLEANUP_EVERY, Cache, Cleanup, DEFAULT_CAP, FOLDER, KEPT_RECENT, UNUSED_BUILD, VERSION, set_time,
 };
+pub use cancel::{cancel, cancelled, clear_cancel};
 pub use changes::{Change, Kind, changes};
 pub use fennec_dist::{Refused, private_folder};
 pub use reach::test_keys;

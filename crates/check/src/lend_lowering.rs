@@ -767,9 +767,9 @@ impl Lowering<'_> {
 
     /// What's written after a source's body: the block's way out taken again. A block that always
     /// returns gives back what it returned, which says to the check that the body always leaves.
-    /// So does one that always fails, where the `with` is a value-giving function's last line,
-    /// which needs it: elsewhere, a source that doesn't reach its `lend` skips the block, and the
-    /// code after the `with` runs then.
+    /// So does one that always fails, where the `with` is a value-giving function's last line, the
+    /// one place the check needs it. Nothing reaches it, as a source reaches its `lend` on every way
+    /// that doesn't fail (#2066).
     fn ending(
         &self,
         (always_returns, ways): (bool, Ways),

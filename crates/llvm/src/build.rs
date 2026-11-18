@@ -563,6 +563,17 @@ fn whole_object(
     std::fs::read(&output).map_err(|err| format!("couldn't read {}: {err}", output.display()))
 }
 
+/// One function's module compiled on its own, with no cache: for a dev build whose kept object
+/// for it went from the cache before the link.
+///
+/// # Errors
+/// When LLVM's tools fail on it.
+pub fn compile_again(tools: &Tools, unit: &Unit, work: &Path) -> Result<Vec<u8>, String> {
+    std::fs::create_dir_all(work).map_err(|err| format!("couldn't make {}: {err}", work.display()))?;
+    let way = if huge(&unit.text) { Way::Quickly } else { Way::Optimized };
+    one(tools, &unit.text, work, "again", way)
+}
+
 /// What names a function's compiled object in the cache: the hash of its module's text, with the
 /// LLVM it's compiled by and how.
 fn object_key(version: &str, pipeline: &str, text: &fennec_blake3::Hash) -> String {

@@ -666,9 +666,9 @@ pub(crate) fn beneath_with<D: Databases>(
     if let Some(refused) = holding_nul(paths) {
         return Ok(refused);
     }
-    let folder = match cap_std::fs::Dir::open_ambient_dir(folder, cap_std::ambient_authority()) {
+    let folder = match open_narrowed(folder) {
         Ok(folder) => Arc::new(folder),
-        Err(err) => return Ok(io_failed(&Fail::from(err))),
+        Err(fail) => return Ok(io_failed(&fail)),
     };
     let io = Fail::from;
     let at = relative.to_path_buf();
@@ -740,6 +740,32 @@ pub(crate) fn beneath_with<D: Databases>(
         // Wrong arguments, and a method that isn't the file system's, say so as the whole `Fs` does.
         _ => return real_fs_with::<D>(method, paths, span),
     })
+}
+
+/// The folder a narrowed `Fs` keeps as `kept` (see `limits::folder_parts`), opened: the folder it
+/// was narrowed to from the whole `Fs`, by its path, and for one narrowed again since, the path
+/// beneath that, a folder at a time, following no link. A folder on that path swapped for a link
+/// since the `Fs` was narrowed is refused, wherever the link points. Only the holder of the whole
+/// `Fs` chose the first folder's path, so that one is opened as its path is now.
+fn open_narrowed(kept: &str) -> Result<cap_std::fs::Dir, Fail> {
+    let (outer, below) = crate::limits::folder_parts(kept);
+    let mut here = cap_std::fs::Dir::open_ambient_dir(outer, cap_std::ambient_authority())?.into_std_file();
+    for name in below.into_iter().flat_map(|below| below.split('/')).filter(|name| !name.is_empty()) {
+        here = match cap_primitives::fs::open_dir_nofollow(&here, Path::new(name)) {
+            Ok(next) => next,
+            Err(err) => {
+                let found = cap_std::fs::Dir::from_std_file(here).symlink_metadata(name);
+                if found.is_ok_and(|found| found.file_type().is_symlink()) {
+                    let whole = crate::limits::whole_folder(kept);
+                    return Err(Fail::permission_denied(format!(
+                        "a folder on the way to `{whole}` is a link now, and this Fs follows no link to its folder"
+                    )));
+                }
+                return Err(Fail::from(err));
+            }
+        };
+    }
+    Ok(cap_std::fs::Dir::from_std_file(here))
 }
 
 /// Where writing to `at` beneath `folder` really puts a file: what a link there points at, when

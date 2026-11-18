@@ -270,6 +270,48 @@ fn stopping_a_server_cancels_its_parked_connections() {
     assert_eq!(served.failed, 0);
 }
 
+/// A round serving a server of its own when its server is stopped is cancelled once its own
+/// server has ended, on 2 workers, however late the worker that keeps it looks: with a pause
+/// between that worker's look and the round's, another worker could be the last to leave the
+/// round's server in between, and the round went on uncancelled (#2004, from Fable 5.2's review).
+#[test]
+fn a_round_serving_its_own_server_is_cancelled_however_late_its_worker_looks() {
+    let went_on = Arc::new(AtomicUsize::new(0));
+    let serving = Arc::new(AtomicUsize::new(0));
+    let (noting, counting) = (Arc::clone(&went_on), Arc::clone(&serving));
+    let serves_its_own: Handler = Arc::new(move |_conn: Conn| {
+        let Some((pool, _)) = crate::embed::parallel::here() else { return 1 };
+        let (inner, _) = listener();
+        counting.fetch_add(1, Ordering::SeqCst);
+        let _ = serve(inner, pool, None, &echo(), (|_: Stopper| {}, None, Listened::default()));
+        if !fennec_parked::is_cancelled() {
+            noting.fetch_add(1, Ordering::SeqCst);
+        }
+        0
+    });
+    for _ in 0..60 {
+        let (listener, address) = listener();
+        let (sent, ran) = std::sync::mpsc::channel();
+        let seen = Arc::clone(&serving);
+        let started = move |stopper: Stopper| {
+            std::thread::spawn(move || {
+                let streams: Vec<_> =
+                    (0..6).map(|_| std::net::TcpStream::connect(address).unwrap()).collect();
+                wait_until("every round to serve", || seen.load(Ordering::SeqCst) >= 6);
+                stopper.stop();
+                let _ = sent.send(streams);
+            });
+        };
+        serving.store(0, Ordering::SeqCst);
+        let pool = crate::embed::parallel::with_setup(2, &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>));
+        super::PAUSE_BEFORE_KEPT.store(std::ptr::from_ref(pool).addr(), Ordering::Release);
+        let _ = serve(listener, pool, None, &serves_its_own, (started, None, Listened::default()));
+        drop(ran.recv());
+    }
+    super::PAUSE_BEFORE_KEPT.store(0, Ordering::Release);
+    assert_eq!(went_on.load(Ordering::SeqCst), 0, "rounds went on uncancelled after their servers ended");
+}
+
 #[test]
 fn a_wait_that_cant_park_blocks_its_thread_and_is_counted() {
     let (listener, address) = listener();

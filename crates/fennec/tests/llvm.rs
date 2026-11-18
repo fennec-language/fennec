@@ -14068,6 +14068,91 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A generator kept for later fails as what it loops over, held generators included, and its
+/// `?`s do. Kept in a list, it's lifted into a function of its own, which on main was lowered as
+/// one that can't fail, so its failure stopped the program (#2097's review). It passes that
+/// failure up, over held generators, over a named one and with a `?` inside, in both builds.
+/// `except` on a generic `def` given one handles only the `def`'s own failure.
+#[test]
+fn a_kept_generator_lifted_passes_up_what_it_fails_with() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("kept_generator_lifted", KEPT_GENERATOR_LIFTED, KEPT_GENERATOR_LIFTED_PRINTS)
+}
+
+const KEPT_GENERATOR_LIFTED: &str = r#"# A generator kept for later fails as what it loops over and its `?`s do, and kept in a list, so
+# it's a function of its own, it passes that failure up where it's asked for an item. `except` on
+# a generic `def`'s call given one handles only the `def`'s own failure.
+
+error Shut:
+    name: str
+
+error Bad:
+    why: str
+
+def first(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def shown(at: int) -> int fails Bad:
+    if at > 1:
+        fail Bad(why=f"at {at}")
+    return at
+
+def checked[T](value: T, text: str) -> T fails Bad:
+    if text == "":
+        fail Bad(why="empty")
+    return value
+
+def over_held(stdout: Stdout) fails Shut:
+    held = [first("a")?, first("b")?]
+    kept = [(sum(gen) for gen in held)]
+    stdout.print("made")
+    for total in kept[0]:
+        stdout.print("total", total)
+
+def over_named(stdout: Stdout) fails Shut:
+    named = first("c")?
+    kept = [(each * 10 for each in named)]
+    for total in kept[0]:
+        stdout.print("total", total)
+
+def with_try(stdout: Stdout) fails Bad:
+    kept = [(shown(at)? for at in range(3))]
+    for each in kept[0]:
+        stdout.print("shown", each)
+
+def through_def(stdout: Stdout, text: str) fails Shut:
+    kept = checked(first("d")?, text) except why:
+        stdout.print("checked failed", why)
+        return
+    stdout.print("sum", sum(kept))
+
+def main(stdout: Stdout):
+    over_held(stdout) except why:
+        stdout.print("failed", why)
+    over_named(stdout) except why:
+        stdout.print("failed", why)
+    with_try(stdout) except why:
+        stdout.print("failed", why)
+    through_def(stdout, "") except why:
+        stdout.print("failed", why)
+    through_def(stdout, "x") except why:
+        stdout.print("failed", why)
+"#;
+
+const KEPT_GENERATOR_LIFTED_PRINTS: &str = r#"made
+failed Shut(name="a")
+total 10
+failed Shut(name="c")
+shown 0
+shown 1
+failed Bad(why="at 2")
+checked failed Bad(why="empty")
+failed Shut(name="d")
+"#;
+
 /// A `sum`, `list`, `max`, `sorted`, `any` or comprehension of a generator that fails partway,
 /// inside a statement, passes the failure up before the rest of the statement runs (#2098). On main
 /// the generator, copied in, held its failure and the statement went on before failing: it printed
@@ -15366,7 +15451,8 @@ def main(stdout: Stdout):
 
 /// A generator held in a name, let go by its last owner, has nothing there to take its cleanup's
 /// failure: the task stops with it, saying so, as for a crash, where the loop over a call it's
-/// made for would fail.
+/// made for would fail. It's got with `?` and let go as its function ends. Got with `except`, as
+/// this program once did first, it's refused now (#2097): `except` on making one never runs.
 #[test]
 fn a_cleanup_failing_as_a_named_generator_is_let_go_stops_the_task() -> std::io::Result<()> {
     if !ready() {
@@ -15382,10 +15468,10 @@ fn a_cleanup_failing_as_a_named_generator_is_let_go_stops_the_task() -> std::io:
     let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(code, Some(1), "{err}");
-    assert_eq!(out, "after quiet\nclosing quiet\n");
+    assert_eq!(out, "after kept\nclosing kept\n");
     assert!(
         err.contains(
-            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"quiet\")"
+            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"kept\")"
         ),
         "{err}"
     );
@@ -15414,15 +15500,6 @@ def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
         yield 2
 
 
-def quiet(stdout: Stdout):
-    walk = held("quiet", stdout) except why:
-        stdout.print("opening failed", why)
-        stdout.print("after quiet")
-        return
-    for n in walk:
-        break
-    stdout.print("after quiet")
-
 def kept(stdout: Stdout) fails Shut:
     walk = held("kept", stdout)?
     for n in walk:
@@ -15430,7 +15507,6 @@ def kept(stdout: Stdout) fails Shut:
     stdout.print("after kept")
 
 def main(stdout: Stdout):
-    quiet(stdout)
     kept(stdout) except why:
         stdout.print("kept failed", why)
         return
@@ -18164,7 +18240,12 @@ fn writes_in_little_memory(name: &str, megabytes: usize, most: u64) -> std::io::
         String::from_utf8_lossy(&ran.stderr)
     );
     assert!(!partial, "the file written beside big.txt was left behind");
-    if let Some(peak) = measured(peak) {
+    // What the program holds, which a sanitizer's own share is no part of: AddressSanitizer adds
+    // about 20 MB to every run, and keeps back what's freed to catch a use after it, so under it
+    // the bound measured the sanitizer. The builds without one hold every program to it.
+    if let Some(peak) = measured(peak)
+        && std::env::var_os("FENNEC_SANITIZE").is_none()
+    {
         assert!(peak < most, "writing {megabytes} MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())

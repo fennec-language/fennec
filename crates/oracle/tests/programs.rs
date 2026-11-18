@@ -2367,6 +2367,43 @@ fn std_collections_runs_from_its_own_source() {
     );
 }
 
+/// What's indexed is read before its index, left to right, as `docs/decisions.md` says: an index
+/// that grows a list, or changes a dict's value, reads the list or dict from before. An index too
+/// big for the list as it was stops the program, though the list has grown to hold it. What it
+/// prints is what the compiled program printed, the same on three runs.
+#[test]
+fn what_is_indexed_is_read_before_its_index() {
+    let (printed, ended) = ran(INDEXED_BEFORE_ITS_INDEX);
+    assert_eq!(printed, "2 [1, 2, 3, 5]\n1 {\"a\": 101}\n3\n");
+    let Ended::Stopped(said) = ended else { panic!("{ended:?}") };
+    assert!(said.contains("index 1 is out of range for length 1"), "{said}");
+}
+
+const INDEXED_BEFORE_ITS_INDEX: &str = "
+        struct Tally:
+            items: list[int]
+            count: int
+            names: dict[str, int]
+
+            def grow(ref self) -> int:
+                self.items.append(self.count + 5)
+                self.count += 1
+                return self.count
+
+            def key(ref self) -> str:
+                self.names['a'] = self.names['a'] + 100
+                return 'a'
+
+        def main(stdout: Stdout):
+            mut tally = Tally(items=[1, 2, 3], count=0, names={'a': 1})
+            stdout.print(tally.items[tally.grow()], tally.items)
+            stdout.print(tally.names[tally.key()], tally.names)
+            stdout.print(tally.items[tally.count + 1])
+            mut short = Tally(items=[1], count=0, names={'a': 1})
+            stdout.print(short.items[short.grow()])
+            return
+        ";
+
 /// Places through a type's own `def []`, as `docs/decisions.md` sets them out. Through the plain
 /// form beside a `def []=`, a change reads the part, changes the copy and writes it back once,
 /// nested too, and once for a method that changes it twice. Through the `ref` form a position is

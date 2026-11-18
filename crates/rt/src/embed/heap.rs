@@ -1244,6 +1244,13 @@ impl Heap {
         }
     }
 
+    /// Whether the code running here marks what it makes as a task's: a launched task's, or a range
+    /// run as a task of its own.
+    #[cfg(any(test, feature = "threads"))]
+    pub(crate) fn has_task_mark(&self) -> bool {
+        self.owner_bits & TASK_BITS != 0
+    }
+
     /// Takes every block the task running here made and still holds, as it ends, for the thread
     /// that launched it to adopt. What it listed is taken from the list. A task that let its list
     /// go, once handing it over would have cost what this look does, has the rest found by its mark: every block

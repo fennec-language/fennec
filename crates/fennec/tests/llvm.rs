@@ -1878,6 +1878,19 @@ fn a_with_source_s_own_names_mean_its_own_where_it_s_written_in() -> std::io::Re
     )
 }
 
+/// A type a `with` source names as a type, and the `parallel` and `fields` it calls, are its own
+/// wherever it's written in, though the caller names something the same: a static method, a
+/// generic type's constructor, an enum's case, `is` and what it narrows, a `for ref` over
+/// `parallel`, and a loop over `fields`. Before, the build stopped with an internal error (#2039).
+#[test]
+fn a_with_source_s_types_and_special_forms_mean_its_own_where_it_s_written_in() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("source_type_names", SOURCE_TYPE_NAMES, "made 1\nfront\n5\n7\n16\n")?;
+    prints_in_both_builds("source_fields", SOURCE_FIELDS, "[\"depth\", \"name\"] 3\n")
+}
+
 /// In a `test`, where nothing holds a failure for the source's cleanup to run once after the block,
 /// the cleanup is written in before the failure, inside a loop that names the caller's `log` again:
 /// it still reads the caller's. Before, the build stopped with an internal error.
@@ -2101,6 +2114,88 @@ def main(stdout: Stdout):
     with tallied(ref total) as got:
         total = got * 2
     stdout.print(total)
+";
+
+const SOURCE_TYPE_NAMES: &str = r#"enum Kind:
+    Slider(total: int)
+    Empty
+
+struct Door:
+    name: str
+
+    def made() -> Door:
+        return Door(name="made")
+
+struct Gate:
+    width: int
+
+struct Box[T]:
+    item: T
+
+def door() -> Door:
+    return Door(name="front")
+
+def made() -> with str:
+    lend Door.made().name
+
+def narrowed(thing: Door | Gate) -> with str:
+    mut said = "gate"
+    if thing is Door:
+        said = thing.name
+    lend said
+
+def boxed() -> with int:
+    held = Box[int](item=3)
+    lend held.item
+
+def cased() -> with int:
+    kind = Kind.Slider(total=4)
+    mut seen = 0
+    match kind:
+        case .Slider(total):
+            seen = total
+        case _:
+            seen = 0
+    lend seen
+
+def doubled(items: list[int]) -> with int:
+    mut kept = items
+    for ref item in parallel(kept):
+        item *= 2
+    lend sum(kept)
+
+def counted(Door: int, Box: int, Kind: int, parallel: int, stdout: Stdout):
+    with made() as got:
+        stdout.print(got, Door)
+    with narrowed(door()) as got:
+        stdout.print(got)
+    with boxed() as got:
+        stdout.print(got + Box)
+    with cased() as got:
+        stdout.print(got + Kind)
+    with doubled([1, 2, 3]) as got:
+        stdout.print(got + parallel)
+
+def main(stdout: Stdout):
+    counted(Door=1, Box=2, Kind=3, parallel=4, stdout=stdout)
+"#;
+
+const SOURCE_FIELDS: &str = r"struct Inner:
+    depth: int
+    name: str
+
+def named() -> with list[str]:
+    mut found = list[str]()
+    for field in fields(Inner):
+        found.append(field.name)
+    lend found
+
+def counted(fields: int, Inner: int, stdout: Stdout):
+    with named() as got:
+        stdout.print(got, fields + Inner)
+
+def main(stdout: Stdout):
+    counted(fields=1, Inner=2, stdout=stdout)
 ";
 
 const SOURCE_CLEANUP_IN_A_TEST: &str = r#"error Bad:
@@ -12491,6 +12586,57 @@ def main(stdout: Stdout):
 "#,
     )
 }
+
+/// A nested function called with an argument named, as `scaled(5, by=3)`, or with a default left
+/// out, takes each where it names: the arguments run in the order they're written, and land in
+/// their parameters. So does one a `with` source calls where it's written in. Before, a closure call
+/// that named an argument wasn't lowered. The oracle prints the same, debug and release.
+#[test]
+fn a_nested_function_s_arguments_land_where_they_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("nested_named_arguments", NESTED_NAMED_ARGUMENTS, "15 10 24\n[4, 6]\n15\n")?;
+    // A nested function named as a `with` source's function, given a name apart where the source is
+    // written in, still takes its named argument.
+    prints_in_both_builds("nested_named_apart", NESTED_NAMED_APART, "521\n")
+}
+
+const NESTED_NAMED_APART: &str = r"def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def counted() -> int:
+    def total(by=1) -> int:
+        return 7 * by
+    with opened() as got:
+        return got * 100 + total(by=3)
+
+def main(stdout: Stdout):
+    stdout.print(counted())
+";
+
+const NESTED_NAMED_ARGUMENTS: &str = r"def noted(value: int, ref log: list[int]) -> int:
+    log.append(value)
+    return value
+
+def opened() -> with int:
+    def scaled(value: int, by=2) -> int:
+        return value * by
+    lend scaled(5, by=3)
+
+def main(stdout: Stdout):
+    def scaled(value: int, by=2) -> int:
+        return value * by
+    mut log = list[int]()
+    reversed = scaled(by=noted(4, ref log), value=noted(6, ref log))
+    stdout.print(scaled(5, by=3), scaled(5), reversed)
+    stdout.print(log)
+    with opened() as got:
+        stdout.print(got)
+";
 
 /// A closure that captures a struct holding blocks lets go of them when it's let go of: an arrow
 /// reading a struct's list, and the `else:` a `with` source's crash runs, which captures a `ref`

@@ -24,11 +24,19 @@ enum OpenFile {
 }
 
 /// Where a file being written is, and where it goes when its block ends: by path, or, for an `Fs`
-/// narrowed with `only`, by name beneath the handle of the folder it's narrowed to, so nothing
-/// swapped in on the way can send it outside.
+/// narrowed with `only`, by name in the folder it's in, held by a handle opened beneath the folder
+/// it's narrowed to, so nothing swapped in on the way can send it outside.
 enum Written {
-    Path { temporary: PathBuf, target: PathBuf },
-    Beneath { folder: Arc<cap_std::fs::Dir>, temporary: PathBuf, target: PathBuf },
+    Path {
+        temporary: PathBuf,
+        target: PathBuf,
+    },
+    /// `temporary` and `target` are names in `folder`, the folder the file is in.
+    Beneath {
+        folder: Arc<cap_std::fs::Dir>,
+        temporary: PathBuf,
+        target: PathBuf,
+    },
 }
 
 impl Written {
@@ -768,46 +776,85 @@ fn open_narrowed(kept: &str) -> Result<cap_std::fs::Dir, Fail> {
     Ok(cap_std::fs::Dir::from_std_file(here))
 }
 
-/// Where writing to `at` beneath `folder` really puts a file: what a link there points at, when
-/// that's beneath the folder too, so the link stays a link. One pointing out is refused.
-fn through_links_beneath(folder: &cap_std::fs::Dir, at: &Path) -> std::io::Result<PathBuf> {
-    match folder.symlink_metadata(at) {
-        Ok(found) if found.file_type().is_symlink() => folder.canonicalize(at),
-        _ => Ok(at.to_path_buf()),
-    }
+/// Where writing to `at` beneath `folder` puts a file, for each step of writing it to be done by
+/// name in the folder it's in.
+struct WrittenAt {
+    /// The folder the file is in, opened beneath `folder` once, or `folder` itself.
+    here: Arc<cap_std::fs::Dir>,
+    /// The file's name in `here`.
+    name: PathBuf,
+    /// Its path from `folder`, for a message.
+    target: PathBuf,
+    /// What's there now, if anything can be found.
+    found: Option<cap_std::fs::Metadata>,
 }
 
-/// [`replaceable`], beneath `folder`.
-fn replaceable_beneath(folder: &cap_std::fs::Dir, target: &Path) -> bool {
-    folder.metadata(target).map_or(true, |found| found.is_file())
+/// Where writing to `at` beneath `folder` puts a file: what a link there points at, when that's
+/// beneath the folder too, so the link stays a link. One pointing out is refused.
+///
+/// The folder the file is in is found once, and every step of writing it, looking at what's there,
+/// making a file beside it and renaming that into its place, is then done by name in that folder.
+/// Each step found the folder from `folder` again before, opening every folder on the way, which
+/// on macOS is a system call each. One folder for every step also keeps them together: a folder on
+/// the way swapped partway can't split a write between two folders.
+fn written_at(folder: &Arc<cap_std::fs::Dir>, at: &Path) -> std::io::Result<WrittenAt> {
+    let mut place = in_its_folder(folder, at)?;
+    let found = place.here.symlink_metadata(&place.name);
+    if found.as_ref().is_ok_and(|found| found.file_type().is_symlink()) {
+        let target = folder.canonicalize(at)?;
+        place = in_its_folder(folder, &target)?;
+        place.found = place.here.metadata(&place.name).ok();
+        return Ok(place);
+    }
+    place.found = found.ok();
+    Ok(place)
 }
 
-/// [`new_beside`], beneath `folder`: a new file beside `target`, with `target`'s permissions.
-fn new_beside_beneath(folder: &cap_std::fs::Dir, target: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
-    let replaced = folder.metadata(target).ok();
-    let mut options = cap_std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    if replaced.is_some() {
-        use cap_std::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+/// The folder `target`, a path beneath `folder`, is in, opened beneath it, with the name `target`
+/// has there, and nothing yet found there. A path with no name of its own, as `.`, is left whole,
+/// in `folder`.
+fn in_its_folder(folder: &Arc<cap_std::fs::Dir>, target: &Path) -> std::io::Result<WrittenAt> {
+    let parent = target.parent().filter(|parent| !parent.as_os_str().is_empty());
+    let (here, name) = match (target.file_name(), parent) {
+        (Some(name), Some(parent)) => (Arc::new(folder.open_dir(parent)?), PathBuf::from(name)),
+        (Some(name), None) => (Arc::clone(folder), PathBuf::from(name)),
+        (None, _) => (Arc::clone(folder), target.to_path_buf()),
+    };
+    Ok(WrittenAt { here, name, target: target.to_path_buf(), found: None })
+}
+
+impl WrittenAt {
+    /// [`replaceable`]: whether what's there can be replaced by renaming another file over it.
+    fn replaceable(&self) -> bool {
+        self.found.as_ref().is_none_or(cap_std::fs::Metadata::is_file)
     }
-    let mut last = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
-    for _ in 0..32 {
-        let temporary = temporary_beside(target);
-        match folder.open_with(&temporary, &options) {
-            Ok(file) => {
-                let file = file.into_std();
-                if let Some(replaced) = &replaced {
-                    permissions_like(&file, replaced)?;
-                }
-                return Ok((file, temporary));
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last = err,
-            Err(err) => return Err(err),
+
+    /// [`new_beside`], in the file's folder: a new file beside it, with its permissions.
+    fn new_beside(&self) -> std::io::Result<(std::fs::File, PathBuf)> {
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if self.found.is_some() {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.mode(0o600);
         }
+        let mut last = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+        for _ in 0..32 {
+            let temporary = temporary_beside(&self.name);
+            match self.here.open_with(&temporary, &options) {
+                Ok(file) => {
+                    let file = file.into_std();
+                    if let Some(replaced) = &self.found {
+                        permissions_like(&file, replaced)?;
+                    }
+                    return Ok((file, temporary));
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last = err,
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last)
     }
-    Err(last)
 }
 
 /// Gives `file` the permissions of the file it's to replace.
@@ -827,21 +874,22 @@ fn permissions_like(file: &std::fs::File, replaced: &cap_std::fs::Metadata) -> s
 }
 
 /// [`write_whole`], beneath `folder`.
-fn write_whole_beneath(folder: &cap_std::fs::Dir, at: &Path, data: &[u8]) -> std::io::Result<()> {
-    let target = through_links_beneath(folder, at)?;
-    if !replaceable_beneath(folder, &target) {
-        return folder.write(&target, data);
+fn write_whole_beneath(folder: &Arc<cap_std::fs::Dir>, at: &Path, data: &[u8]) -> std::io::Result<()> {
+    let place = written_at(folder, at)?;
+    let (here, name) = (&place.here, &place.name);
+    if !place.replaceable() {
+        return here.write(name, data);
     }
-    let (mut file, temporary) = match new_beside_beneath(folder, &target) {
+    let (mut file, temporary) = match place.new_beside() {
         Ok(made) => made,
         Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-            return folder.write(&target, data);
+            return here.write(name, data);
         }
         Err(err) => return Err(err),
     };
-    let done = file.write_all(data).and_then(|()| folder.rename(&temporary, folder, &target));
+    let done = file.write_all(data).and_then(|()| here.rename(&temporary, here, name));
     if done.is_err() {
-        let _ = folder.remove_file(&temporary);
+        let _ = here.remove_file(&temporary);
     }
     done
 }
@@ -850,12 +898,15 @@ fn write_whole_beneath(folder: &cap_std::fs::Dir, at: &Path, data: &[u8]) -> std
 /// beneath the folder when its block ends.
 fn create_beneath(folder: Arc<cap_std::fs::Dir>, at: PathBuf, durable: bool) -> Value {
     let made = blocking(move || {
-        let target = through_links_beneath(&folder, &at).map_err(Fail::from)?;
-        if !replaceable_beneath(&folder, &target) {
-            return Err(Fail::from(format!("`{}` isn't a file that can be replaced", target.display())));
+        let place = written_at(&folder, &at).map_err(Fail::from)?;
+        if !place.replaceable() {
+            return Err(Fail::from(format!(
+                "`{}` isn't a file that can be replaced",
+                place.target.display()
+            )));
         }
-        let (file, temporary) = new_beside_beneath(&folder, &target).map_err(Fail::from)?;
-        Ok((file, Written::Beneath { folder, temporary, target }))
+        let (file, temporary) = place.new_beside().map_err(Fail::from)?;
+        Ok((file, Written::Beneath { folder: place.here, temporary, target: place.name }))
     });
     match made {
         Ok((file, at)) => {

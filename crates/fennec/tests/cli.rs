@@ -4982,6 +4982,35 @@ fn the_daemon_starts_on_demand_and_keeps_runs_in_memory() {
     std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
 }
 
+/// `fennec daemon status` and `stop` reach every daemon the user has running, one for each
+/// environment commands ran in: a terminal set up another way still sees and stops them all.
+#[cfg(unix)]
+#[test]
+fn status_and_stop_reach_the_daemon_of_every_environment() {
+    let (_folder, kit, home) = small_kit("daemons").unwrap();
+    // Commands whose environments differ in one variable, so each has a daemon of its own.
+    let run_in = |environment: &str, args: &[&str]| {
+        crate::executables::fennec_command()
+            .args(args)
+            .current_dir(&kit)
+            .env("FENNEC_HOME", &home)
+            .env("FENNEC_DAEMON_IDLE", "30")
+            .env("FENNEC_DAEMON_TEST_ENVIRONMENT", environment)
+            .env_remove("FENNEC_NO_DAEMON")
+            .output()
+            .unwrap()
+    };
+    for environment in ["first", "second"] {
+        let ran = run_in(environment, &["dev", "changes"]);
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+    }
+    let status = text(&run_in("third", &["daemon", "status"]).stdout);
+    assert_eq!(status.matches("running: Fennec").count(), 2, "{status}");
+    assert_eq!(text(&run_in("third", &["daemon", "stop"]).stdout), "stopped 2 daemons\n");
+    assert!(stops(&kit, &home), "the daemons didn't stop");
+    std::fs::remove_dir_all(kit.parent().unwrap()).unwrap();
+}
+
 /// `fennec build` in `kit` to `prog` there, with the Fennec folder `home`, through the daemon or
 /// in its own process, as CI would have it if `ci`.
 #[cfg(unix)]

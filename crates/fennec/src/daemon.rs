@@ -79,17 +79,24 @@ pub(crate) fn command(action: &str) -> ExitCode {
         return ExitCode::FAILURE;
     };
     match action {
+        // Every daemon of this build the user has running is reached, one for each environment
+        // commands ran in, so a terminal set up another way still sees and stops them all.
         "status" => {
-            if let unix::Reply::Answered(outcome) = unix::send(&home, &["status"]) {
-                outcome.print()
-            } else {
+            let answers = unix::ask_every(&home, &["status"]);
+            if answers.is_empty() {
                 println!("not running");
-                ExitCode::SUCCESS
             }
+            for answer in answers {
+                print!("{}", answer.stdout);
+            }
+            ExitCode::SUCCESS
         }
         "stop" => {
-            let stopped = matches!(unix::send(&home, &["stop"]), unix::Reply::Answered(_));
-            println!("{}", if stopped { "stopped" } else { "not running" });
+            match unix::ask_every(&home, &["stop"]).len() {
+                0 => println!("not running"),
+                1 => println!("stopped"),
+                stopped => println!("stopped {stopped} daemons"),
+            }
             ExitCode::SUCCESS
         }
         "serve" => unix::serve(&home),
@@ -219,7 +226,7 @@ mod unix {
 
     /// `socket_path`, with the user's runtime folder as given.
     fn socket_in(home: &Path, runtime: Option<PathBuf>, makes: bool) -> Option<PathBuf> {
-        let name = format!("{VERSION}-{}-{}.sock", BUILD.get(..16).unwrap_or(BUILD), environment());
+        let name = format!("{}{}.sock", this_build(), environment());
         // Wherever it is, its folder is its user's alone: connecting needs a way into the folder,
         // so nobody else can reach the daemon, which reads any file it's pointed at.
         let preferred = home.join("daemon").join(&name);
@@ -227,8 +234,7 @@ mod unix {
             owned_privately(&home.join("daemon"), home, makes)?;
             return Some(preferred);
         }
-        let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
-        let hash = hash.get(..16).unwrap_or(&hash);
+        let hash = home_hash(home);
         // The user's own runtime folder, which only they can reach, as long as it is theirs alone.
         if let Some(runtime) = runtime.filter(|runtime| owned_privately(runtime, home, false).is_some()) {
             let socket = runtime.join(format!("fennec-{hash}-{name}"));
@@ -239,6 +245,46 @@ mod unix {
         let folder = Path::new("/tmp").join(format!("fennec-{hash}"));
         owned_privately(&folder, home, makes)?;
         Some(folder.join(name))
+    }
+
+    /// How every socket of this build of Fennec starts: its version, then its build.
+    fn this_build() -> String {
+        format!("{VERSION}-{}-", BUILD.get(..16).unwrap_or(BUILD))
+    }
+
+    /// A short hash of Fennec's folder, naming its sockets outside it.
+    fn home_hash(home: &Path) -> String {
+        let hash = fennec_blake3::hash(home.to_string_lossy().as_bytes()).to_hex();
+        hash.get(..16).unwrap_or(&hash).to_owned()
+    }
+
+    /// The sockets of this build's daemons, one for each environment commands ran in, in every
+    /// folder `socket_in` may choose. A folder that isn't the user's alone is passed over.
+    fn sockets(home: &Path) -> Vec<PathBuf> {
+        let hash = home_hash(home);
+        let mut folders = vec![(home.join("daemon"), String::new())];
+        if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+            folders.push((PathBuf::from(runtime), format!("fennec-{hash}-")));
+        }
+        folders.push((Path::new("/tmp").join(format!("fennec-{hash}")), String::new()));
+        let mut found = Vec::new();
+        for (folder, prefix) in folders {
+            let start = format!("{prefix}{}", this_build());
+            let Some(entries) =
+                owned_privately(&folder, home, false).and_then(|()| std::fs::read_dir(&folder).ok())
+            else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with(&start) && name.ends_with(".sock") {
+                    found.push(entry.path());
+                }
+            }
+        }
+        found.sort();
+        found
     }
 
     /// Whether `folder` will do for a socket: open to nobody but its owner, who owns Fennec's
@@ -372,13 +418,30 @@ mod unix {
         Unanswered,
     }
 
-    pub(super) fn send(home: &Path, request: &[&str]) -> Reply {
-        send_within(home, request, REPLY_WAIT)
+    /// Sends a request to every daemon of this build the user has running, and gives back the
+    /// answers of those that answered.
+    pub(super) fn ask_every(home: &Path, request: &[&str]) -> Vec<Outcome> {
+        sockets(home)
+            .iter()
+            .filter_map(|socket| match send_at(socket, home, request, REPLY_WAIT) {
+                Reply::Answered(outcome) => Some(outcome),
+                Reply::Unreached | Reply::Unanswered => None,
+            })
+            .collect()
     }
 
-    /// `send`, waiting at most `wait` for the answer.
+    /// Sends a request to the daemon for this command's environment, waiting at most `wait` for
+    /// the answer.
     fn send_within(home: &Path, request: &[&str], wait: Duration) -> Reply {
-        let Some(mut stream) = socket_path(home, false).and_then(|socket| connect(&socket, home)) else {
+        match socket_path(home, false) {
+            Some(socket) => send_at(&socket, home, request, wait),
+            None => Reply::Unreached,
+        }
+    }
+
+    /// `send_within`, to the daemon listening at `socket`.
+    fn send_at(socket: &Path, home: &Path, request: &[&str], wait: Duration) -> Reply {
+        let Some(mut stream) = connect(socket, home) else {
             return Reply::Unreached;
         };
         let message = format!("{}\n{}\n", header(), request.join("\n"));
@@ -776,7 +839,7 @@ mod unix {
         use std::time::{Duration, Instant};
 
         use super::{
-            BUILD, Reply, State, VERSION, answer, ask_within, handle, send_within, socket_in,
+            BUILD, Reply, State, VERSION, answer, ask_within, environment, handle, send_within, socket_in,
             socket_owned_by, socket_path,
         };
 
@@ -959,7 +1022,8 @@ mod unix {
         fn a_daemon_answers_only_its_own_build() {
             let home = Path::new("/home/fennec/.fennec");
             let socket = socket_path(home, false);
-            let named = format!("{VERSION}-{}.sock", BUILD.get(..16).unwrap_or(BUILD));
+            // Named by its version, its build and its environment, so another build's is another.
+            let named = format!("{VERSION}-{}-{}.sock", BUILD.get(..16).unwrap_or(BUILD), environment());
             assert_eq!(socket, Some(home.join("daemon").join(named)));
             let mut state = State {
                 home: home.to_path_buf(),
@@ -1045,15 +1109,9 @@ mod unix {
 
     pub(super) const REPLY_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
-    /// What came of sending a request, which here is always that there's no daemon.
-    pub(super) enum Reply {
-        #[expect(dead_code, reason = "no daemon runs here to answer, but `fennec daemon` names it")]
-        Answered(Outcome),
-        Unreached,
-    }
-
-    pub(super) fn send(_: &Path, _: &[&str]) -> Reply {
-        Reply::Unreached
+    /// There's no daemon here to answer.
+    pub(super) fn ask_every(_: &Path, _: &[&str]) -> Vec<Outcome> {
+        Vec::new()
     }
 
     pub(super) fn ask_within(_: &Path, _: &[&str], _: std::time::Duration) -> Option<Outcome> {

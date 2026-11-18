@@ -51,7 +51,16 @@ pub(crate) struct Snapshot {
     /// What every name in sight holds.
     types: Vec<Type>,
     /// Whether a source has passed its `lend` on the way here.
-    pub(crate) lent: bool,
+    pub(crate) lent: Lending,
+}
+
+/// Whether a source has passed its `lend` on every way to somewhere in it that hasn't failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lending {
+    /// Some way there hasn't.
+    NotYet,
+    /// Every way there has.
+    Lent,
 }
 
 struct Scope {
@@ -84,9 +93,9 @@ pub(crate) struct FnCx<'c> {
     pub(crate) lent: usize,
     /// Whether every way through the source to here that hasn't failed has passed its `lend`,
     /// kept with each path at a branch and joined where paths meet, as what names hold is.
-    pub(crate) lent_here: bool,
-    /// Whether a `lend` is in a loop, which is refused for that already.
-    pub(crate) lent_in_loop: bool,
+    pub(crate) lent_here: Lending,
+    /// Where a `lend` in a loop is, refused for that already.
+    pub(crate) lend_in_loop: Option<Span>,
     /// The spans of the values `with` blocks are taking now, where a source may be called.
     pub(crate) with_values: Vec<(u32, u32)>,
     /// The `match`es written as statements of their own, which may change what they're over
@@ -180,8 +189,8 @@ impl<'c> FnCx<'c> {
             generator: false,
             lends: None,
             lent: 0,
-            lent_here: false,
-            lent_in_loop: false,
+            lent_here: Lending::NotYet,
+            lend_in_loop: None,
             with_values: Vec::new(),
             statement_matches: Vec::new(),
             routes_here: Vec::new(),
@@ -932,7 +941,8 @@ impl<'c> FnCx<'c> {
             merged.push(ty);
         }
         self.restore_types(&merged);
-        self.lent_here = paths.iter().all(|path| path.lent);
+        let lent = paths.iter().all(|path| path.lent == Lending::Lent);
+        self.lent_here = if lent { Lending::Lent } else { Lending::NotYet };
     }
 
     /// Starts following the field paths a condition checks for None, like `player.weapon`,

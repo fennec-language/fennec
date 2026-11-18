@@ -93,8 +93,8 @@ impl FnCx<'_> {
         self.merge(&paths);
         // A `match` that might take no case goes on past it from where it started, so a source
         // has lent after it only if it had before it.
-        if !self.takes_every_case(&ty, arms) {
-            self.lent_here &= before.lent;
+        if !self.takes_every_case(&ty, arms) && before.lent == crate::function::Lending::NotYet {
+            self.lent_here = crate::function::Lending::NotYet;
         }
         self.check_cases(&ty, arms, subject.span);
         let refs = arms.iter().any(|arm| arm.pattern.holds_ref());

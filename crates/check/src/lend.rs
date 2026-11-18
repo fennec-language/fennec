@@ -6,7 +6,7 @@
 
 use fennec_syntax::{Diagnostic, Expr, ExprKind, FnDef, Span, Stmt, StmtKind};
 
-use crate::function::FnCx;
+use crate::function::{FnCx, Lending};
 use crate::stmt::Flow;
 use crate::types::{Type, a};
 
@@ -44,9 +44,9 @@ impl FnCx<'_> {
             self.error(Diagnostic::new(message, value.span));
         }
         self.lent += 1;
-        self.lent_here = true;
+        self.lent_here = Lending::Lent;
         if self.loops > 0 {
-            self.lent_in_loop = true;
+            self.lend_in_loop = Some(span);
             self.error(
                 Diagnostic::new("this `lend` is in a loop, so it could lend more than once", span).with_help(
                     "lend once, outside the loop: a `with` source lends one value for its caller's block",
@@ -161,7 +161,7 @@ impl FnCx<'_> {
     /// that ends without one would skip the block with nothing said, where the rest of the check
     /// takes it that the block ran once the source's call worked.
     pub(crate) fn source_finished(&mut self, def: &FnDef, flow: &Flow) {
-        if self.lent == 1 && !self.lent_in_loop && !self.lent_here && !flow.exits {
+        if self.lent == 1 && self.lend_in_loop.is_none() && self.lent_here == Lending::NotYet && !flow.exits {
             self.error(
                 Diagnostic::new(
                     format!(

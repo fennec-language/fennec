@@ -10321,6 +10321,43 @@ fn a_source_written_in_twice_gives_each_copy_its_own_union_member() -> std::io::
     )
 }
 
+/// A `with` source that declares a `shared` value and takes its `lock` is written in with both,
+/// once or twice in one function: what's lowered later in the round a copy is written in finds the
+/// copy's `shared` value at its own spans. Before the copies' spans were kept apart, the copy's
+/// `lock` was lowered and its `shared` value wasn't.
+#[test]
+fn a_source_holding_a_shared_value_is_written_in_with_its_lock() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("source_shared_lock", SOURCE_SHARED_LOCK, "1\n1 1\n")
+}
+
+const SOURCE_SHARED_LOCK: &str = r"struct Tally:
+    count: int
+
+def tallied() -> with int:
+    shared tally = Tally(count=0)
+    lock tally as ref held:
+        held.count += 1
+    mut seen = 0
+    lock tally as now:
+        seen = now.count
+    lend seen
+
+def twice(stdout: Stdout):
+    mut first = 0
+    with tallied() as got:
+        first = got
+    with tallied() as got:
+        stdout.print(first, got)
+
+def main(stdout: Stdout):
+    with tallied() as got:
+        stdout.print(got)
+    twice(stdout)
+";
+
 /// What goes wrong in a copy of the program's text written in more than once says where its text
 /// is, in a dev and a release build: an `assert` in a source's second copy, one in a `with` block
 /// written in for each member of a union, and one in a generic function's copy for its second type.

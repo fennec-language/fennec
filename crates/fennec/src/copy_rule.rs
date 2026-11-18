@@ -134,8 +134,16 @@ fn positional_arguments(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
     fennec_lint::positional_arguments(module, sources)
         .into_iter()
         .filter(|lint| !lint.diagnostic.span.in_prelude())
-        .map(|lint| Diagnostic { message: lint.message().to_owned(), ..lint.diagnostic })
-        .collect()
+        // A call in a copy the compiler wrote in is said where its text is, once.
+        .map(|lint| {
+            Diagnostic { message: lint.message().to_owned(), ..lint.diagnostic }.copied_from(&module.copied)
+        })
+        .fold(Vec::new(), |mut kept: Vec<Diagnostic>, found| {
+            if !kept.contains(&found) {
+                kept.push(found);
+            }
+            kept
+        })
 }
 
 /// Where a function says it's `@hot`, if it does.

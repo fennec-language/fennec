@@ -980,15 +980,17 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
     let nested = lend_lowering::nest(module, &checked.opened_apart);
     let sources = cases_named(&checked.sources, &checked.cases);
     let sources_written = lend_lowering::lower(module, &sources, &checked.launches, &checked.ref_matches);
-    let counted = enumerate_lowering::lower(module, &checked.ref_items);
-    let live = ref_lowering::lower(module, &checked.live_refs);
+    // A copy just written in has spans of its own: what the check found in a source's text is
+    // found in each copy too.
+    let (ref_items, live_refs) = (
+        lend_lowering::found_in_copies(&checked.ref_items),
+        lend_lowering::found_in_copies(&checked.live_refs),
+    );
+    let shared_values = lend_lowering::found_in_copies(&checked.shared_values);
+    let counted = enumerate_lowering::lower(module, &ref_items);
+    let live = ref_lowering::lower(module, &live_refs);
     let tuples = tuple_lowering::lower(module, &checked.saved_types);
-    if lock_lowering::lower(module, &checked.shared_values)
-        || sources_written
-        || counted
-        || live
-        || nested
-        || tuples
+    if lock_lowering::lower(module, &shared_values) || sources_written || counted || live || nested || tuples
     {
         return Round::Again;
     }

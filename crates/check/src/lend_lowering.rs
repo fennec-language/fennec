@@ -216,10 +216,18 @@ thread_local! {
     /// Where each copy of the program's text written in so far went, as `Module::copied` holds it,
     /// so a copy of text inside an earlier copy is noted with the text too.
     static COPIED: std::cell::RefCell<Vec<Copied>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Each span a copy written in this round moved, and where to, in the order they moved: what
+    /// the check found at the text is found at the copy too, for what's lowered later in the round.
+    static MOVED: std::cell::RefCell<Vec<Move>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Copies just made, noted in `COPIED` once it's no longer being read.
+    static PENDING: std::cell::RefCell<Vec<Copied>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The next span for a copy of the program's text that stays the program's, counting down
     /// from just below the spans lowering writes, and the lowest it can be, past the program's text.
     static PROGRAM_COPIES: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((WRITTEN_FROM - 1, 0)) };
 }
+
+/// A span a copy moved, as its start and end, and where to.
+type Move = ((u32, u32), (u32, u32));
 
 /// Starts a round's writing in with the copies `module` holds, the next copy that stays the
 /// program's text below every one of them, and above all of the program's own text.
@@ -236,6 +244,28 @@ pub(crate) fn copies_from(module: &mut Module) {
     let floor = text_end.saturating_add(1 << 20);
     PROGRAM_COPIES.with(|next| next.set((top.saturating_sub(1), floor)));
     COPIED.with(|held| *held.borrow_mut() = copied);
+    MOVED.with(|moved| moved.borrow_mut().clear());
+}
+
+/// What a check found by span, found too at each span a copy written in this round moved its
+/// text's to, so a lowering later in the round reads a copy as it would the text it copies: a
+/// `shared` value a source declares is lowered in each copy with its `lock`s.
+pub(crate) fn found_in_copies<V: Clone>(
+    found: &BTreeMap<(u32, u32), V>,
+) -> std::borrow::Cow<'_, BTreeMap<(u32, u32), V>> {
+    MOVED.with(|moved| {
+        let moved = moved.borrow();
+        if found.is_empty() || moved.is_empty() {
+            return std::borrow::Cow::Borrowed(found);
+        }
+        let mut all = found.clone();
+        for (from, to) in moved.iter() {
+            if let Some(value) = all.get(from).cloned() {
+                all.insert(*to, value);
+            }
+        }
+        std::borrow::Cow::Owned(all)
+    })
 }
 
 /// Where a copy goes.
@@ -323,8 +353,21 @@ type Spans<'s> = dyn FnMut(&mut dyn FnMut(Span) -> Span) + 's;
 /// `copied_apart` for whatever `spans` changes every span of, through what it's handed: it's
 /// handed something that leaves each as it is first, then what moves each.
 fn copied_apart_by(region: Region, spans: &mut Spans<'_>) -> Option<()> {
-    let mut copied = COPIED.with(|copied| copied.borrow().clone());
-    copied.sort_by_key(|copy| copy.at);
+    let made = COPIED.with(|copied| copied_apart_from(region, spans, &copied.borrow()));
+    // Each kept where it goes among the others, in order of where it went.
+    let pending = PENDING.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+    COPIED.with(|copied| {
+        let mut copied = copied.borrow_mut();
+        for copy in pending {
+            let at = copied.partition_point(|known| known.at < copy.at);
+            copied.insert(at, copy);
+        }
+    });
+    made
+}
+
+/// `copied_apart_by`, with the copies made so far, in order of where each went.
+fn copied_apart_from(region: Region, spans: &mut Spans<'_>, copied: &[Copied]) -> Option<()> {
     let kind = |span: Span| {
         if span.in_prelude() {
             return Kind::Std;
@@ -349,31 +392,39 @@ fn copied_apart_by(region: Region, spans: &mut Spans<'_>) -> Option<()> {
         span
     });
     let Moved { made, own: moved_own, earlier: moved_earlier } =
-        moved(region, &stretched(own), &earlier, &copied)?;
+        moved(region, &stretched(own), &earlier, copied)?;
     let shifted = |span: Span, from: u32, to: u32| Span {
         start: span.start - from + to,
         end: span.end.max(span.start) - from + to,
     };
     let mut written: BTreeMap<(u32, u32), Span> = BTreeMap::new();
-    spans(&mut |span| match kind(span) {
-        Kind::Own => {
-            let after = moved_own.partition_point(|(start, ..)| *start <= span.start);
-            after
-                .checked_sub(1)
-                .and_then(|at| moved_own.get(at))
-                .map_or(span, |&(start, _, at)| shifted(span, start, at))
+    let mut moves: Vec<Move> = Vec::new();
+    spans(&mut |span| {
+        let to = match kind(span) {
+            Kind::Own => {
+                let after = moved_own.partition_point(|(start, ..)| *start <= span.start);
+                after
+                    .checked_sub(1)
+                    .and_then(|at| moved_own.get(at))
+                    .map_or(span, |&(start, _, at)| shifted(span, start, at))
+            }
+            Kind::Copy(index) => match (copied.get(index), moved_earlier.get(&index)) {
+                (Some(copy), Some(&at)) => shifted(span, copy.at, at),
+                _ => span,
+            },
+            Kind::Written => *written.entry((span.start, span.end)).or_insert_with(|| {
+                let at = reserved(0);
+                Span { start: at, end: at }
+            }),
+            Kind::Std => span,
+        };
+        if to != span {
+            moves.push(((span.start, span.end), (to.start, to.end)));
         }
-        Kind::Copy(index) => match (copied.get(index), moved_earlier.get(&index)) {
-            (Some(copy), Some(&at)) => shifted(span, copy.at, at),
-            _ => span,
-        },
-        Kind::Written => *written.entry((span.start, span.end)).or_insert_with(|| {
-            let at = reserved(0);
-            Span { start: at, end: at }
-        }),
-        Kind::Std => span,
+        to
     });
-    COPIED.with(|copied| copied.borrow_mut().extend(made));
+    MOVED.with(|moved| moved.borrow_mut().extend(moves));
+    PENDING.with(|pending| pending.borrow_mut().extend(made));
     Some(())
 }
 
@@ -1616,7 +1667,7 @@ fn fail_through(body: &mut Vec<Stmt>, otherwise: &[Stmt]) {
                 before.extend(failing);
             }
             StmtKind::Fail(_) => {
-                before.extend(otherwise.iter().cloned());
+                before.extend(cleanup_copy(otherwise));
             }
             StmtKind::If { branches, otherwise: rest } => {
                 for (_, body) in branches {
@@ -1864,12 +1915,12 @@ fn failed_arm(otherwise: &[Stmt], span: Span) -> MatchArm {
 /// cleanup is skipped, so the block's own failure is the one that passes up.
 fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
     if !otherwise.iter().any(cleanup_fails) {
-        let mut failed = otherwise.to_vec();
+        let mut failed = cleanup_copy(otherwise);
         failed.push(stmt(StmtKind::Fail(error), span));
         return failed;
     }
     let held = format!("failed__noted{}", here(span).start);
-    let mut cleanup = noted(otherwise, &held, span);
+    let mut cleanup = noted(&cleanup_copy(otherwise), &held, span);
     cleanup.push(stmt(StmtKind::Break, span));
     let always = Expr { kind: ExprKind::Bool(true), span: here(span) };
     vec![
@@ -1877,6 +1928,18 @@ fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
         stmt(StmtKind::While { cond: always, body: cleanup }, span),
         stmt(StmtKind::Fail(name(&held, span)), span),
     ]
+}
+
+/// A `lend`'s `else:` written in once more, as before each way the block fails, on spans of its
+/// own, so what's found by span in one copy, which may be checked where another isn't, as in a
+/// crash's function, is never another's (#2056). As it is only when spans have run out, which
+/// takes more than a program has.
+fn cleanup_copy(cleanup: &[Stmt]) -> Vec<Stmt> {
+    let mut copy = cleanup.to_vec();
+    match copied_apart(Region::Program, &mut [&mut copy]) {
+        Some(()) => copy,
+        None => cleanup.to_vec(),
+    }
 }
 
 /// `if failed is not None:` the `lend`'s `else:`, then failing with what's held, which a block's
@@ -2275,7 +2338,7 @@ fn as_written(cleanup: &[Stmt], held: &str, at: Span) -> Vec<Stmt> {
         ret: None,
         arrow: None,
         fails: None,
-        body: cleanup.to_vec(),
+        body: cleanup_copy(cleanup),
         annotations: Vec::new(),
         span: here(at),
     };

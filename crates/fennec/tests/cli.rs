@@ -1596,9 +1596,53 @@ fn a_single_files_run_after_an_edit_to_it_or_what_it_imports_runs_the_edit() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The run after a change starts from what the run before it built, as every run after that does:
+/// the run that keeps the program's image notes what it built for it, so the next run, finding the
+/// image, has nothing to check or build. It once checked and built the program all over again, a
+/// third of a cold run, and only the run after that was free.
+#[test]
+fn the_run_after_a_change_starts_from_what_the_run_before_built() {
+    let dir = scratch("second_run_kept").unwrap();
+    let main = "def main(stdout: Stdout):\n    stdout.print(42)\n    return\n";
+    std::fs::write(dir.join("main.fen"), main).unwrap();
+    let home = dir.join("home");
+    let run = || {
+        crate::executables::fennec_command()
+            .args(["run", "--no-test", "main.fen"])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", &home)
+            .env_remove("FENNEC_NO_CACHE")
+            .output()
+            .unwrap()
+    };
+    // What runs have noted they built for a kept image, one entry each, in every version's cache.
+    let builds_noted = || -> usize {
+        std::fs::read_dir(home.join("cache"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|version| std::fs::read_dir(version.path().join("run-roots")).ok())
+            .map(|entries| entries.flatten().count())
+            .sum()
+    };
+    let first = run();
+    assert_eq!(text(&first.stdout), "42\n", "{}", text(&first.stderr));
+    assert_eq!(builds_noted(), 1, "the first run notes what it built for the image it kept");
+    // The next run finds it, and builds nothing to note.
+    assert_eq!(text(&run().stdout), "42\n");
+    assert_eq!(builds_noted(), 1);
+    // A change is another program: its first run notes its own.
+    std::fs::write(dir.join("main.fen"), main.replace("42", "43")).unwrap();
+    assert_eq!(text(&run().stdout), "43\n");
+    assert_eq!(builds_noted(), 2);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A single file's kept image holds every file it read, however deep: an edit to what an import
-/// imports, one of them swapped for a link to a file that says otherwise, or taken away, is seen,
-/// and never runs the old program.
+/// imports, one of them swapped for a link to a file that says otherwise, the link pointed at
+/// another, or taken away, is seen, and never runs the old program. Each file is noted by the path
+/// it was read by: noted by where a link led, a link pointed elsewhere or taken away was missed,
+/// and a later run ran what it once led to.
 #[test]
 fn a_single_files_kept_image_is_passed_over_when_any_file_it_read_changes() {
     let dir = scratch("single_file_deep").unwrap();
@@ -1635,6 +1679,13 @@ fn a_single_files_kept_image_is_passed_over_when_any_file_it_read_changes() {
         std::fs::remove_file(dir.join("leaf.fen")).unwrap();
         std::os::unix::fs::symlink(dir.join("other.fen"), dir.join("leaf.fen")).unwrap();
         assert_eq!(text(&run().stdout), "14\n");
+        assert_eq!(text(&run().stdout), "14\n");
+        // The link is pointed at another file, after a run that started from what the last built.
+        std::fs::write(dir.join("third.fen"), "export def base() -> int:\n    return 3\n").unwrap();
+        std::fs::remove_file(dir.join("leaf.fen")).unwrap();
+        std::os::unix::fs::symlink(dir.join("third.fen"), dir.join("leaf.fen")).unwrap();
+        assert_eq!(text(&run().stdout), "6\n");
+        assert_eq!(text(&run().stdout), "6\n");
     }
     // It's taken away.
     std::fs::remove_file(dir.join("leaf.fen")).unwrap();
@@ -5476,6 +5527,32 @@ fn a_build_refuses_a_mistake_in_a_function_nothing_calls() -> std::io::Result<()
     Ok(())
 }
 
+/// A build hands its check to lowering, cut to what `main` reaches. A function nothing calls that
+/// starts tasks makes more types cross between threads than what's reached does, which a dev build's
+/// check of the cut module finds within what was handed on, so the build goes ahead and runs.
+#[test]
+fn a_build_whose_unreached_function_starts_tasks_builds_and_runs() -> std::io::Result<()> {
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec_build_unreached_tasks_{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("tasks.fen");
+    std::fs::write(
+        &program,
+        "struct Unit:\n    hp: int\n\ndef unused() -> int:\n    mut units = [Unit(hp=1), Unit(hp=2)]\n    \
+         for ref unit in parallel(units):\n        unit.hp += 1\n    return units[0].hp\n\ndef main(stdout: Stdout):\n    \
+         stdout.print(1)\n",
+    )?;
+    let program = program.to_string_lossy().into_owned();
+    let executable = dir.join("tasks").to_string_lossy().into_owned();
+    let built = fennec(&["build", &program, "-o", &executable], "")?;
+    assert!(built.status.success(), "{}", text(&built.stderr));
+    let ran = std::process::Command::new(&executable).output()?;
+    assert_eq!(text(&ran.stdout), "1\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// One program built for release in two folders, with two Fennec folders, a second apart, is the
 /// same bytes each time, as a signed release has to be to check by building it again, and a dev
 /// build is the same bytes in one folder a second later: a kit built by its whole path, as `.`, and with a dependency it names by a path, and
@@ -5763,6 +5840,64 @@ fn a_program_linked_from_the_caches_objects_is_the_one_built_without_it() -> std
     );
     let ran = std::process::Command::new(dir.join("edited")).output_within()?;
     assert_eq!(text(&ran.stdout), "value 63\n");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// A kept object that goes from the cache after a build found it and before it links, as a cleanup
+/// another command runs can take it, is compiled again from its function's text, so the build
+/// still makes the program a build without the cache makes. `FENNEC_LOSE_KEPT_OBJECTS=1` takes
+/// every kept object just before the link. The next build, finding them gone, compiles them again.
+#[test]
+fn a_kept_object_gone_before_the_link_is_compiled_again() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("lost-objects")?;
+    let program = |factor: u32| {
+        format!(
+            "def scaled(value: int) -> int:\n    return value * {factor}\n\ndef label(value: int) -> str:\n    return f\"value {{value}}\"\n\ndef main(stdout: Stdout):\n    stdout.print(label(scaled(21)))\n    return\n"
+        )
+    };
+    let build = |out: &str, cached: bool, lose: bool| {
+        let mut command = crate::executables::fennec_command();
+        command.args(["build", "edited.fen", "-o", out]).current_dir(&dir);
+        if cached {
+            command.env("FENNEC_HOME", dir.join("home")).env_remove("FENNEC_NO_CACHE");
+        } else {
+            command.env("FENNEC_HOME", dir.join("no-home")).env("FENNEC_NO_CACHE", "1");
+        }
+        if lose {
+            command.env("FENNEC_LOSE_KEPT_OBJECTS", "1");
+        } else {
+            command.env_remove("FENNEC_LOSE_KEPT_OBJECTS");
+        }
+        command.output_within()
+    };
+    std::fs::write(dir.join("edited.fen"), program(2))?;
+    let first = build("first", true, false)?;
+    assert!(first.status.success(), "{}", text(&first.stderr));
+    std::fs::write(dir.join("edited.fen"), program(3))?;
+    let lost = build("lost", true, true)?;
+    assert!(
+        lost.status.success(),
+        "a build whose kept objects went before the link failed: {}",
+        text(&lost.stderr)
+    );
+    let uncached = build("uncached", false, false)?;
+    assert!(uncached.status.success(), "{}", text(&uncached.stderr));
+    assert!(
+        std::fs::read(dir.join("lost"))? == std::fs::read(dir.join("uncached"))?,
+        "the program linked from objects compiled again isn't the one built without the cache"
+    );
+    let ran = std::process::Command::new(dir.join("lost")).output_within()?;
+    assert_eq!(text(&ran.stdout), "value 63\n");
+    std::fs::write(dir.join("edited.fen"), program(4))?;
+    let again = build("again", true, false)?;
+    assert!(again.status.success(), "{}", text(&again.stderr));
+    let ran = std::process::Command::new(dir.join("again")).output_within()?;
+    assert_eq!(text(&ran.stdout), "value 84\n");
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

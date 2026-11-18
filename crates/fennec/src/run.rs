@@ -395,13 +395,16 @@ fn loaded(
     if let Err(diagnostics) = crate::copy_rule::bake(&mut program.module) {
         return Err(reject(&program, &diagnostics));
     }
-    if let Some(files) = &files {
-        crate::image::store(path, &cache, files, &program);
+    // The hash the next run finds the image by, so what this run builds from it is noted for it.
+    let kept = if let Some(files) = &files {
+        crate::image::store(path, &cache, files, &program)
     } else if let Some(files) = crate::verdict::loaded_files(&program) {
-        crate::image::store(path, &cache, &files, &program);
-    }
+        crate::image::store(path, &cache, &files, &program)
+    } else {
+        None
+    };
     match fennec_check::check_to_build(&mut program.module) {
-        Ok(signatures) => Ok((program, Checked::Resolved(signatures.map(Box::new)), None)),
+        Ok(signatures) => Ok((program, Checked::Resolved(signatures.map(Box::new)), kept)),
         // Cutting it down missed something the whole program has.
         Err(_) => whole(path).map(|(program, _)| (program, Checked::Resolved(None), None)),
     }
@@ -483,13 +486,16 @@ pub(crate) fn check(program: &mut fennec_kit::Program) -> bool {
 /// check the rest. A build works its constants out when the program starts. Returns whether it
 /// passed. Tools that report on a program use `check`, since what they report may be why.
 pub(crate) fn check_to_build(program: &mut fennec_kit::Program) -> bool {
-    match crate::copy_rule::check_rules(&mut program.module, &program.sources) {
-        Ok(_) => true,
-        Err(diagnostics) => {
-            reject(program, &diagnostics);
-            false
-        }
-    }
+    checked_to_build(program).is_ok()
+}
+
+/// `check_to_build`, giving back what the check found when it passed, if that's what checking
+/// the program as it's left would find: the build then lowers it without checking it again.
+pub(crate) fn checked_to_build(
+    program: &mut fennec_kit::Program,
+) -> Result<Option<fennec_check::Signatures>, ExitCode> {
+    crate::copy_rule::check_rules_to_build(&mut program.module, &program.sources)
+        .map_err(|diagnostics| reject(program, &diagnostics))
 }
 
 /// Prints the problems a check found.

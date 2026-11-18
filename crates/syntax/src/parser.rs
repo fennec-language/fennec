@@ -367,7 +367,13 @@ impl Parser {
             };
             items.push(item);
         }
-        Ok(Module { items, std_rewritten: Vec::new(), holds: crate::Holds::default(), files: Vec::new() })
+        Ok(Module {
+            items,
+            std_rewritten: Vec::new(),
+            holds: crate::Holds::default(),
+            files: Vec::new(),
+            copied: Vec::new(),
+        })
     }
 
     fn item(&mut self) -> Result<Item, Diagnostic> {
@@ -621,7 +627,7 @@ impl Parser {
         let span = start.to(self.prev_span());
         self.expect_p(Punct::Colon)?;
         let body = self.block()?;
-        Ok(Item::Test(TestDef { name, capabilities, inputs, body, bench, span }))
+        Ok(Item::Test(TestDef { name, capabilities, inputs, body, bench, span, fails: None }))
     }
 
     fn import(&mut self) -> Result<Import, Diagnostic> {

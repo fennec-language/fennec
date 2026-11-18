@@ -79,7 +79,7 @@ impl FnCx<'_> {
                     Type::Set(_) => {
                         "a set has no order: check for an item with `item in items`, or index `sorted(items)`"
                     }
-                    Type::Iterator(_) => "make a list of it first, as `list(items)[0]`",
+                    Type::Iterator(..) => "make a list of it first, as `list(items)[0]`",
                     _ => "index a list, str, dict, tuple or array, as `items[0]`",
                 };
                 let message = format!("{} can't be indexed", article(&other.kind()));

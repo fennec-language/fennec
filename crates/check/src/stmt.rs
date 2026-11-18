@@ -214,7 +214,7 @@ impl FnCx<'_> {
         );
         let ty = self.expr(value);
         // `-> Iterator[T]` says what each item it yields is.
-        if let Some(Type::Iterator(item) | Type::List(item)) = self.declared.clone()
+        if let Some(Type::Iterator(item, _) | Type::List(item)) = self.declared.clone()
             && !self.checker.fits(&item, &ty)
         {
             let what = format!("what `{}` yields", self.name);
@@ -386,7 +386,14 @@ impl FnCx<'_> {
         if !is_mut && self.fields_loop(names, iter, body, span).is_some() {
             return;
         }
-        let parallel = crate::parallel::parallel_items(iter).filter(|_| self.lookup("parallel").is_none());
+        let looped_before = self.looped_here.len();
+        self.looped_here.extend(looped_here(iter));
+        let outer = crate::parallel::called_as_outer(iter);
+        let parallel =
+            crate::parallel::parallel_items(iter).filter(|_| outer || self.lookup("parallel").is_none());
+        if outer && parallel.is_some() {
+            self.note_outer();
+        }
         if is_mut {
             let what = "`for ref` changes each item, so loop over something held in a mut name";
             self.mut_place(parallel.unwrap_or(iter), what);
@@ -418,6 +425,7 @@ impl FnCx<'_> {
             let iter_ty = self.expr(iter);
             self.item_type(&iter_ty, iter.span)
         };
+        self.looped_here.truncate(looped_before);
         self.forget_changed_in(body);
         let before = self.snapshot();
         self.push(false);
@@ -451,7 +459,7 @@ impl FnCx<'_> {
                 (Type::Unknown, Type::Unknown, false)
             }
         };
-        self.record(iter.span, &Type::Iterator(Box::new(Type::Tuple(vec![key_ty.clone(), item_ty.clone()]))));
+        self.record(iter.span, &Type::iterator(Type::Tuple(vec![key_ty.clone(), item_ty.clone()])));
         self.checker.ref_items.insert((span.start, span.end), table);
         self.forget_changed_in(body);
         let before = self.snapshot();
@@ -517,7 +525,7 @@ impl FnCx<'_> {
             let ty = self.expr(items);
             self.item_type(&ty, items.span)
         };
-        self.record(iter.span, &Type::Iterator(Box::new(Type::Tuple(vec![Type::Int, item_ty.clone()]))));
+        self.record(iter.span, &Type::iterator(Type::Tuple(vec![Type::Int, item_ty.clone()])));
         self.forget_changed_in(body);
         let before = self.snapshot();
         self.push(false);
@@ -604,6 +612,20 @@ impl FnCx<'_> {
             );
             self.error(Diagnostic::new(message, def.span).with_help("call it something else"));
         }
+        // A function value it reads from around it, an arrow function or a parameter, or one held
+        // in a list, an optional or a field, is checked as part of the function around it, which
+        // notes what the value waits on and locks: so the nested function counts for what the
+        // function around it does, as if it called it.
+        let captured_types: Vec<Type> = reads
+            .iter()
+            .filter(|name| !own.contains(name))
+            .filter_map(|name| Some(self.lookup(name)?.0))
+            .collect();
+        let reads_a_value =
+            captured_types.iter().any(|ty| self.checker.holds_function_value(ty, &mut Vec::new()));
+        if reads_a_value {
+            self.checker.own_callers.entry(self.key.clone()).or_default().insert(key.clone());
+        }
         let mut captured = self.visible();
         let function = Type::Function(key.clone());
         captured.push(Binding {
@@ -614,6 +636,7 @@ impl FnCx<'_> {
             origin: Origin::Captured,
             mut_at: None,
             to_every: false,
+            param_of: None,
         });
         let report = self.report;
         let inherited = self.generics.clone();
@@ -664,7 +687,11 @@ type Arm<'s> = (Vec<String>, Vec<Member>, Option<&'s [Stmt]>);
 pub(crate) fn members(cond: &Expr, when: bool) -> Vec<Member> {
     match &cond.kind {
         ExprKind::Binary { op: op @ (BinOp::Is | BinOp::IsNot), lhs, rhs } => match (path(lhs), &rhs.kind) {
-            (Some(path), ExprKind::Name(member)) => vec![(path, member.clone(), (*op == BinOp::Is) == when)],
+            // A `with` source's type, written in as its own (`sight::outer`), is the type.
+            (Some(path), ExprKind::Name(member)) => {
+                let member = fennec_syntax::sight::outer(member).unwrap_or(member);
+                vec![(path, member.to_owned(), (*op == BinOp::Is) == when)]
+            }
             _ => Vec::new(),
         },
         ExprKind::Binary { op: BinOp::And, lhs, rhs } if when => {
@@ -735,4 +762,16 @@ fn items_of(iter: &Expr) -> Option<&Expr> {
     let ExprKind::Call { callee, args } = &iter.kind else { return None };
     let ExprKind::Attr { object, name, optional: false } = &callee.kind else { return None };
     (name == "items" && args.is_empty()).then_some(object.as_ref())
+}
+
+/// Each `?` a `for` over `iter` loops over right there: `iter` itself, as in
+/// `for x in made()?`, or each argument of an `enumerate` or `zip` it is.
+fn looped_here(iter: &Expr) -> Vec<Span> {
+    let wrapped = |expr: &Expr| matches!(expr.kind, ExprKind::Try { .. }).then_some(expr.span);
+    match &iter.kind {
+        ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if name == "enumerate" || name == "zip") => {
+            args.iter().filter_map(|arg| wrapped(&arg.value)).collect()
+        }
+        _ => wrapped(iter).into_iter().collect(),
+    }
 }

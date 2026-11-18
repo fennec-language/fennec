@@ -41,7 +41,9 @@ fn outcome(ran: &Output) -> Outcome {
 /// outcomes.
 fn recorded_and_replayed(program: &Path, input: &[u8], log: &Path) -> std::io::Result<(Outcome, Outcome)> {
     let mut record = fennec_command();
-    record.args(["run", "--record", &log.to_string_lossy()]);
+    // Without the program's tests first: a replay never runs them, nothing they do is recorded,
+    // and `unchanged_tests` runs every example's.
+    record.args(["run", "--no-test", "--record", &log.to_string_lossy()]);
     record.arg(program).arg("given").current_dir(program.parent().unwrap_or(Path::new(".")));
     let recorded = record.output_given(input, DEADLINE)?;
     // With nothing on standard input, so what it read can only come from the recording.
@@ -86,6 +88,37 @@ fn a_run_using_the_clock_and_random_numbers_replays_identically() -> std::io::Re
     // Another run draws other numbers at another time: the replay's are the recording's.
     let again = outcome(&fennec_command().args(["run"]).arg(&program).arg("given").output_within()?);
     assert_ne!(again.0, recorded.0, "a fresh run printed the same");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// `fennec run --no-test --record` records as `--no-test` runs, without the program's tests first,
+/// which a replay never runs either: a program whose test fails is recorded and replays the same,
+/// where `--record` alone stops at the failing test and records nothing that ran.
+#[test]
+fn a_recording_without_the_tests_first_replays_as_it_ran() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("untested")?;
+    let program = dir.join("untested.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    stdout.print(\"ran\")\n    return\n\ntest \"one is two\":\n    assert 1 == 2\n",
+    )?;
+    let log = dir.join("untested.log");
+    let tested =
+        fennec_command().args(["run", "--record", &log.to_string_lossy()]).arg(&program).output_within()?;
+    assert!(!tested.status.success() && !outcome(&tested).0.contains("ran"), "{}", outcome(&tested).1);
+    let recorded = outcome(
+        &fennec_command()
+            .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .output_within()?,
+    );
+    assert_eq!((recorded.0.as_str(), recorded.2), ("ran\n", Some(0)), "{}", recorded.1);
+    let replayed = outcome(&fennec_command().args(["replay", &log.to_string_lossy()]).output_within()?);
+    assert_eq!(without_build_hints(replayed), without_build_hints(recorded));
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -663,6 +696,57 @@ fn a_recorded_server_replays_its_rounds_with_no_network() -> std::io::Result<()>
     Ok(())
 }
 
+/// A hub's writes to connections served on other workers are recorded as the hub's, and a replay
+/// at 4 threads or 1 gives what they gave, so it counts the same writes, with no network (#2065).
+#[test]
+fn a_hub_writing_to_connections_on_other_workers_replays_its_writes() -> std::io::Result<()> {
+    const MEMBERS: usize = 4;
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("hub")?;
+    let program = dir.join("hub.fen");
+    std::fs::write(&program, crate::llvm::HUB_WRITES_TO_EVERY_MEMBER)?;
+    let log = dir.join("hub.log");
+    let mut record = fennec_command()
+        .args(["run", "--record", &log.to_string_lossy()])
+        .arg(&program)
+        .env("FENNEC_THREADS", "4")
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut out =
+        std::io::BufReader::new(record.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?);
+    let mut port = String::new();
+    std::io::BufRead::read_line(&mut out, &mut port)?;
+    let port: u16 = port.trim().parse().map_err(std::io::Error::other)?;
+    crate::llvm::every_member_hears_every_line(port, MEMBERS, "4")?;
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut out, &mut rest)?;
+    let status = record.wait()?;
+    assert!(status.success(), "the recorded hub failed");
+    assert_eq!(rest, format!("{} delivered\n", MEMBERS * MEMBERS));
+    let recorded = format!("{port}\n{rest}");
+    for threads in ["4", "1"] {
+        let replayed = fennec_command()
+            .env("FENNEC_THREADS", threads)
+            .args(["replay", &log.to_string_lossy()])
+            .current_dir(&dir)
+            .output_within()?;
+        let printed = String::from_utf8_lossy(&replayed.stdout);
+        assert_eq!(
+            printed,
+            recorded,
+            "replayed with FENNEC_THREADS={threads}: {}",
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        assert!(replayed.status.success(), "{}", String::from_utf8_lossy(&replayed.stderr));
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A task serves, `main` makes one request of it and closes the server: no stop comes into it.
 const SERVED_IN_A_TASK: &str = "from std.concurrent import Crashed
 from std.net import NetError, Request, Response, Server
@@ -919,6 +1003,18 @@ fn a_task_stopped_in_one_of_its_pieces_of_work_replays_as_it_ran() -> std::io::R
         "work-task",
         "a task checking passwords",
         include_str!("fixtures/stopped_rounds/taskverify.fen"),
+    )
+}
+
+/// Two rounds on two workers, each serving a server of its own when their server is stopped,
+/// replay as they ran: each is cancelled once its own server has ended, which the run never got to
+/// (#2004).
+#[test]
+fn two_rounds_serving_servers_of_their_own_replay_as_they_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "two-own-servers",
+        "two rounds serving servers of their own",
+        include_str!("fixtures/stopped_rounds/twoserving.fen"),
     )
 }
 

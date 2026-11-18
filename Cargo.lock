@@ -476,6 +476,7 @@ name = "fennec-rt"
 version = "0.0.1"
 dependencies = [
  "argon2",
+ "cap-primitives",
  "cap-std",
  "crossbeam-deque",
  "ctrlc",

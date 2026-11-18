@@ -30,6 +30,9 @@ pub(crate) enum Scope {
     Reached,
     /// Just the functions the program reaches, and every type's fields.
     ReachedWithFields,
+    /// What a build checks: as `ReachedWithFields`, so lowering can have its signatures, and
+    /// refusing all a check of what's written refuses, a lost change included.
+    Building,
 }
 
 pub(crate) struct Checker {
@@ -106,6 +109,9 @@ pub(crate) struct Checker {
     pub(crate) opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, by the call's span, which lowering writes in as a source.
     pub(crate) launches: BTreeMap<(u32, u32), crate::launch::Launch>,
+    /// What each test or bench can fail with, worked out from its body, by its span: two may share
+    /// a name (#2040).
+    pub(crate) test_errors: BTreeMap<(u32, u32), Type>,
     /// Each route written with a method, as `router.get(...)`, by the call's span, which lowering
     /// writes in as a call to `handle`.
     pub(crate) routes: BTreeMap<(u32, u32), crate::routes::Route>,
@@ -139,6 +145,10 @@ pub(crate) struct Checker {
     /// The functions that used each function's signature, so they're checked again when it
     /// changes.
     pub(crate) callers: BTreeMap<String, BTreeSet<String>>,
+    /// The functions that call each function, by their own keys, a nested function's its own: what
+    /// waits and locks is followed up these, so a nested function counts for what it does, not for
+    /// what the function around it does.
+    pub(crate) own_callers: BTreeMap<String, BTreeSet<String>>,
     /// What each function waits on itself: a network call, a sleep, a channel.
     pub(crate) waits: BTreeMap<String, String>,
     /// Set when what's checked is a program as lowering rewrote it, checked again: the rules
@@ -250,6 +260,7 @@ impl Checker {
             union_sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
             launches: BTreeMap::new(),
+            test_errors: BTreeMap::new(),
             routes: BTreeMap::new(),
             ref_matches: BTreeMap::new(),
             live_refs: BTreeMap::new(),
@@ -262,6 +273,7 @@ impl Checker {
             revisit: BTreeSet::new(),
             previous: BTreeMap::new(),
             callers: BTreeMap::new(),
+            own_callers: BTreeMap::new(),
             waits: BTreeMap::new(),
             again: false,
             takes_locks: BTreeMap::new(),
@@ -293,7 +305,7 @@ impl Checker {
                 self.check_function(key);
             }
         }
-        if scope == Scope::ReachedWithFields {
+        if matches!(scope, Scope::ReachedWithFields | Scope::Building) {
             self.check_implicit_methods();
         }
         self.revisit_cycles();
@@ -437,6 +449,7 @@ impl Checker {
         Checked {
             signatures,
             types,
+            test_errors: self.test_errors,
             cases: self.cases,
             float_sums: self.float_sums,
             sized_sums: self.sized_sums,
@@ -536,6 +549,7 @@ impl Checker {
     pub(crate) fn signature(&mut self, key: &str) -> Option<Signature> {
         self.program.functions.get(key)?;
         if let Some(caller) = self.checking.last() {
+            self.own_callers.entry(key.to_owned()).or_default().insert(caller.clone());
             let caller = self.outermost(caller);
             self.callers.entry(self.outermost(key)).or_default().insert(caller);
         }
@@ -598,7 +612,7 @@ impl Checker {
         };
         Some(Signature {
             params: self.params(entry),
-            returns,
+            returns: failing_items(returns, effects.yields),
             can_fail: effects.fails || entry.def.fails.is_some(),
             generator: effects.yields,
             generics: entry.def.generics.iter().map(|generic| generic.name.clone()).collect(),
@@ -783,6 +797,7 @@ impl Checker {
             Some(error) => Type::result(value, error),
             None => wrap(value, body.error, effects),
         };
+        let returns = failing_items(returns, effects.yields);
         // Anything still open in what it gives back has been reported, and callers
         // mustn't settle it.
         signature.returns = forget_vars(&returns);
@@ -1227,6 +1242,21 @@ fn field_needs_type(name: &str, ty: &Type, span: Span) -> Diagnostic {
 }
 
 /// What a call gives back, from what the body gives back.
+/// What a generator function's call gives back: a generator that fails as the function says, so
+/// whatever loops over it knows what its failure is, wherever the generator has gone by then.
+/// Anything else is as it was.
+pub(crate) fn failing_items(returns: Type, generator: bool) -> Type {
+    match returns {
+        Type::Result(value, error) if generator => match *value {
+            Type::Iterator(item, None) => {
+                Type::Result(Box::new(Type::Iterator(item, Some(error.clone()))), error)
+            }
+            value => Type::Result(Box::new(value), error),
+        },
+        other => other,
+    }
+}
+
 fn wrap(value: Type, error: Type, effects: Effects) -> Type {
     match value {
         // A function that can fail passes a result it gives back through unchanged.
@@ -1258,7 +1288,7 @@ fn missing_return_type(def: &FnDef, value: &Type, generator: bool, fixable: bool
         .collect();
     let signature = format!("def {}({})", def.name, params.join(", "));
     let (what, written) = match value {
-        Type::Iterator(item) if generator => {
+        Type::Iterator(item, _) if generator => {
             (format!("yields {}", a(item)), item.source().map(|item| format!(" -> Iterator[{item}]")))
         }
         // What can fail says so with `fails`, as `-> int fails IoError`, not as a `Result`.

@@ -75,6 +75,19 @@ impl Checker {
         true
     }
 
+    /// Whether two generators fail the same way: neither can fail, or both fail with the same
+    /// error. An error already reported as unknown is the same as any.
+    pub(crate) fn same_failure(&self, failure: Option<&Type>, other: Option<&Type>) -> bool {
+        match (failure, other) {
+            (None, None) => true,
+            (Some(failure), Some(other)) => {
+                let (failure, other) = (self.settled(failure), self.settled(other));
+                failure == other || matches!(failure, Type::Unknown) || matches!(other, Type::Unknown)
+            }
+            _ => false,
+        }
+    }
+
     /// Whether a value of type `actual` can go where `expected` is wanted, settling any
     /// variables that make it fit. Something already reported as unknown fits anything.
     pub(crate) fn fits(&mut self, expected: &Type, actual: &Type) -> bool {
@@ -92,9 +105,13 @@ impl Checker {
             (Type::List(a), Type::List(b))
             | (Type::Buffer(a), Type::Buffer(b))
             | (Type::Set(a), Type::Set(b))
-            | (Type::Iterator(a), Type::Iterator(b))
             | (Type::Id(a), Type::Id(b))
             | (Type::Table(a), Type::Table(b)) => self.fits(a, b),
+            // What a generator fails with is where its failure is read from, so it has to be the
+            // same error, not one of several that holds it: the layouts differ.
+            (Type::Iterator(a, failure), Type::Iterator(b, other)) => {
+                self.same_failure(failure.as_deref(), other.as_deref()) && self.fits(a, b)
+            }
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) | (Type::Result(k1, v1), Type::Result(k2, v2)) => {
                 self.fits(k1, k2) && self.fits(v1, v2)
             }
@@ -166,7 +183,11 @@ impl Checker {
             (Type::List(a), Type::List(b)) => Type::list(self.join(a, b)?),
             (Type::Array(a, n), Type::Array(b, m)) if n == m => Type::Array(Box::new(self.join(a, b)?), *n),
             (Type::Set(a), Type::Set(b)) => Type::Set(Box::new(self.join(a, b)?)),
-            (Type::Iterator(a), Type::Iterator(b)) => Type::Iterator(Box::new(self.join(a, b)?)),
+            (Type::Iterator(a, failure), Type::Iterator(b, other))
+                if self.same_failure(failure.as_deref(), other.as_deref()) =>
+            {
+                Type::Iterator(Box::new(self.join(a, b)?), failure.clone().or_else(|| other.clone()))
+            }
             (Type::Id(a), Type::Id(b)) => Type::Id(Box::new(self.join(a, b)?)),
             (Type::Table(a), Type::Table(b)) => Type::Table(Box::new(self.join(a, b)?)),
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {

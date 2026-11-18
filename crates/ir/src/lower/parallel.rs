@@ -480,7 +480,7 @@ impl Lowering<'_> {
         let [name] = names else { return None };
         let (items, item) = self.parallel_list(iter)?;
         let ty = self.type_at(expr.span)?;
-        let Type::Iterator(each) = &ty else { return None };
+        let Type::Iterator(each, _) = &ty else { return None };
         let each = (**each).clone();
         let runs = Runs::Chunk(elem, each.clone());
         let span = expr.span;
@@ -503,7 +503,7 @@ impl Lowering<'_> {
             && cond.is_none()
             && !expr_tries(elem)
             && self.parallel_list(iter).is_some()
-            && matches!(self.type_at(expr.span), Some(Type::Iterator(_)))
+            && matches!(self.type_at(expr.span), Some(Type::Iterator(..)))
     }
 
     /// The generator a stream is read through, given the list and the range function's closure,

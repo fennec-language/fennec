@@ -22,8 +22,12 @@ use super::ast::{
 use super::ast::{
     CAPTURE_WAYS, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_STARTS,
     REF_TEXTS, REF_WAYS, RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping,
-    Waking, Yielding,
+    Waking, Yielding, ZIP_WAYS, ZipSumming, ZipWay,
 };
+
+/// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending
+/// from a source or failing partway (`ZipSumming`): the loop owns it since #2041.
+const ZIP_GENERATORS: bool = true;
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
 /// It does since #1333; turned off, only a block that fails is given `guarded_noted`'s cleanup.
@@ -91,9 +95,9 @@ const REF_CASES: bool = true;
 /// case's, a nested function's or an arrow's name under `lock ... as ref` that name, and a `with`
 /// source calling a function its caller has a same-typed parameter named as (#1997). The checker
 /// lane's sweep found them, each a silent wrong answer, or a refusal or crash where none is due.
-/// On since #2024 made every rewrite change only the uses in its sight. Two ways aren't written
-/// yet: `LockDef`, which the checker refuses as taking the lock until #2011, which is lock order,
-/// not capture; and `SourceCall`, whose source still calls the caller's parameter (#1997).
+/// On since #2024 made every rewrite change only the uses in its sight, and `SourceCall` since #2051
+/// kept a source's own function its own. `LockDef` isn't written yet: the checker refuses it as
+/// taking the lock until #2011, which is lock order, not capture.
 const NAME_CAPTURE: bool = true;
 
 /// Whether random programs crash inside a `ref self` method, or a change by hand, on part of a
@@ -698,6 +702,16 @@ impl Writer<'_> {
                 let by = self.bounded(by);
                 body.push(Stmt::TableRound { table, ids, xs, removed, read, by });
             }
+            28 if ZIP_GENERATORS && self.choice(3) == 0 => {
+                // A generator made right inside `enumerate` or `zip`, let go partway, run out, or
+                // failing partway.
+                let way = ZIP_WAYS.get(self.choice(ZIP_WAYS.len())).copied().unwrap_or(ZipWay::First);
+                let failing = self.choice(2) == 0;
+                let limit = i64::from(self.byte() % 6);
+                let stop = i64::from(self.byte() % if failing { 7 } else { 10 });
+                let words = i64::from(self.byte() % 6);
+                body.push(Stmt::ZipSummed(ZipSumming { way, failing, limit, stop, words }));
+            }
             28 if self.choice(2) == 0 => self.arrows_or_floats(body),
             28 => {
                 // A generator lending from a source, let go partway or run out.
@@ -1119,11 +1133,9 @@ impl Writer<'_> {
     fn captures(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;
         let id = self.made;
-        // `LockDef` waits for #2011, and `SourceCall` for #1997.
-        let ways: Vec<CaptureWay> = CAPTURE_WAYS
-            .into_iter()
-            .filter(|way| !matches!(way, CaptureWay::LockDef | CaptureWay::SourceCall))
-            .collect();
+        // `LockDef` waits for #2011.
+        let ways: Vec<CaptureWay> =
+            CAPTURE_WAYS.into_iter().filter(|way| *way != CaptureWay::LockDef).collect();
         let way = ways.get(self.choice(ways.len())).copied().unwrap_or(CaptureWay::WithDef);
         let n = i64::from(self.byte() % 20);
         body.push(Stmt::Captured(Capturing { id, way, n }));

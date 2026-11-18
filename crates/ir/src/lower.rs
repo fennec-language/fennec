@@ -155,7 +155,26 @@ fn lower_from(
     take_what_was_found(&mut program, &context);
     (program.structs, program.enums, program.errors) = (defs, enums, errors);
     crate::arrays::spill_big_arrays(&mut program);
+    at_the_text(&mut program, &module.copied);
     program
+}
+
+/// Each step's place, where it's in a copy of the program's text the checker wrote in, as the
+/// text it copies, so what goes wrong there says where it's written. Each copy was lowered with
+/// the types found for its own spans (#2056); nothing after this finds anything by span.
+fn at_the_text(program: &mut Program, copied: &[fennec_syntax::Copied]) {
+    if copied.is_empty() {
+        return;
+    }
+    let functions = program.functions.iter_mut().chain(&mut program.constants);
+    for block in functions.flat_map(|function| &mut function.blocks) {
+        for inst in &mut block.insts {
+            inst.span = inst.span.copied_from(copied);
+        }
+        if let Terminator::NoMatch { span, .. } | Terminator::Stop { span, .. } = &mut block.end {
+            *span = span.copied_from(copied);
+        }
+    }
 }
 
 /// The functions in `every` that `keep` picks.
@@ -364,7 +383,7 @@ impl Context<'_> {
             }
             Type::List(item)
             | Type::Buffer(item)
-            | Type::Iterator(item)
+            | Type::Iterator(item, _)
             | Type::Set(item)
             | Type::Optional(item)
             | Type::Table(item)
@@ -415,6 +434,9 @@ struct Lowering<'a> {
     loops: Vec<Loop>,
     /// The `for mut` loops being lowered, innermost last.
     leaving: Vec<places::Leaving>,
+    /// Whether this is `enumerate`'s or `zip`'s generator over one the loop it's made for owns
+    /// (`lists::Owned`): a failure of that one partway through ends this, and the loop passes it up.
+    owner_passes_up: bool,
     /// Whether what's being left is left by a failure, which a `lock ... as ref` block doesn't keep
     /// the changes of.
     failing_out: bool,
@@ -583,6 +605,7 @@ impl<'a> Lowering<'a> {
             blocks: vec![Open::default()],
             current: BlockId(0),
             scopes: vec![HashMap::new()],
+            owner_passes_up: false,
             loops: Vec::new(),
             leaving: Vec::new(),
             failing_out: false,
@@ -1127,11 +1150,18 @@ impl<'a> Lowering<'a> {
         self.narrowed(Operand::Local(local), expr)
     }
 
+    /// Lowers an expression. One that always leaves partway, like a `sum` of a generator copied
+    /// in that always fails, ends its block: what's lowered after it goes in a block nothing
+    /// reaches, which goes, so none of it runs before the leaving does.
     fn expr(&mut self, expr: &Expr) -> Lowered<Operand> {
-        match builtin_as_method(expr) {
+        let lowered = match builtin_as_method(expr) {
             Some(method) => self.expr_as_written(&method),
             None => self.expr_as_written(expr),
+        };
+        if !self.is_open() {
+            self.current = self.new_block();
         }
+        lowered
     }
 
     /// Lowers an expression whose `len(x)` or `abs(x)`, if it is one, is already the method it calls.

@@ -39,8 +39,12 @@ pub enum Type {
     Array(Box<Type>, u64),
     Set(Box<Type>),
     Dict(Box<Type>, Box<Type>),
-    /// A generator: items one at a time, as they're asked for, once.
-    Iterator(Box<Type>),
+    /// A generator: items one at a time, as they're asked for, once. The second is what asking
+    /// for an item can fail with: the error a generator function says it fails with, kept with
+    /// the generator so whatever loops over it knows what its failure is. `None` for one that
+    /// can't fail, which is every `Iterator[T]` written in a program, since a failing one has no
+    /// written form.
+    Iterator(Box<Type>, Option<Box<Type>>),
     Tuple(Vec<Type>),
     /// `T?`: a `T`, or `None`.
     Optional(Box<Type>),
@@ -149,6 +153,28 @@ impl Type {
         Type::List(Box::new(item))
     }
 
+    /// A generator of `item` that can't fail: what `Iterator[T]` written in a program is.
+    #[must_use]
+    pub fn iterator(item: Type) -> Type {
+        Type::Iterator(Box::new(item), None)
+    }
+
+    /// A generator of `item` whose items can fail with `error`, as a generator function's call
+    /// gives, or one that can't when `error` is `None`.
+    #[must_use]
+    pub fn generating(item: Type, error: Option<Type>) -> Type {
+        Type::Iterator(Box::new(item), error.map(Box::new))
+    }
+
+    /// What asking a generator for an item can fail with, for a generator that can fail.
+    #[must_use]
+    pub fn generator_failure(&self) -> Option<&Type> {
+        match self {
+            Type::Iterator(_, failure) => failure.as_deref(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn optional(inner: Type) -> Type {
         match inner {
             Type::Optional(_) | Type::None | Type::Unknown => inner,
@@ -211,7 +237,7 @@ impl Type {
             Type::Buffer(_) => "Buffer".to_owned(),
             Type::Array(..) => "array".to_owned(),
             Type::Set(_) => "set".to_owned(),
-            Type::Iterator(_) => "Iterator".to_owned(),
+            Type::Iterator(..) => "Iterator".to_owned(),
             Type::Dict(..) => "dict".to_owned(),
             Type::Tuple(_) => "tuple".to_owned(),
             Type::Optional(inner) => format!("{}?", inner.kind()),
@@ -277,12 +303,13 @@ impl Type {
             | Type::Buffer(inner)
             | Type::Array(inner, _)
             | Type::Set(inner)
-            | Type::Iterator(inner)
+            | Type::Iterator(inner, None)
             | Type::Optional(inner)
             | Type::Id(inner)
             | Type::Table(inner) => {
                 vec![inner]
             }
+            Type::Iterator(item, Some(failure)) => vec![item, failure],
             Type::Dict(a, b) | Type::Result(a, b) => vec![a, b],
             Type::Tuple(items) | Type::Generic(_, items) | Type::Union(items) => items.iter().collect(),
             Type::Arrow(params, ret) => params.iter().chain(std::iter::once(ret.as_ref())).collect(),
@@ -307,7 +334,10 @@ impl Type {
             Type::Buffer(item) => Type::Buffer(inner(item)),
             Type::Array(item, size) => Type::Array(inner(item), *size),
             Type::Set(item) => Type::Set(inner(item)),
-            Type::Iterator(item) => Type::Iterator(inner(item)),
+            Type::Iterator(item, failure) => {
+                let failure = failure.as_ref().map(|failure| inner(failure));
+                Type::Iterator(inner(item), failure)
+            }
             Type::Optional(item) => Type::optional(*inner(item)),
             Type::Id(item) => Type::Id(inner(item)),
             Type::Table(item) => Type::Table(inner(item)),
@@ -443,7 +473,7 @@ impl Type {
                 plain("array", vec![item.written(span)?, plain(&size.to_string(), Vec::new())])
             }
             Type::Set(item) => plain("set", vec![item.written(span)?]),
-            Type::Iterator(item) => plain("Iterator", vec![item.written(span)?]),
+            Type::Iterator(item, None) => plain("Iterator", vec![item.written(span)?]),
             Type::Dict(key, value) => plain("dict", vec![key.written(span)?, value.written(span)?]),
             Type::Tuple(items) => plain("tuple", all(items)?),
             Type::Optional(inner) => TypeExpr { optional: true, ..inner.written(span)? },
@@ -462,7 +492,8 @@ impl Type {
                 args.push(ret.written(span)?);
                 plain("->", args)
             }
-            Type::Unknown | Type::Function(_) | Type::Var(_) => return None,
+            // A generator that can fail has no written form: only its function's `fails` says so.
+            Type::Unknown | Type::Function(_) | Type::Var(_) | Type::Iterator(_, Some(_)) => return None,
         })
     }
 
@@ -485,7 +516,7 @@ impl Type {
             Type::Buffer(item) => format!("Buffer[{}]", item.source()?),
             Type::Array(item, size) => format!("array[{}, {size}]", item.source()?),
             Type::Set(item) => format!("set[{}]", item.source()?),
-            Type::Iterator(item) => format!("Iterator[{}]", item.source()?),
+            Type::Iterator(item, None) => format!("Iterator[{}]", item.source()?),
             Type::Dict(key, value) => format!("dict[{}, {}]", key.source()?, value.source()?),
             // One of a single item keeps its comma, or it would read back as the item.
             Type::Tuple(items) if items.len() == 1 => format!("({},)", all(items)?),
@@ -512,7 +543,13 @@ impl Type {
             Type::Id(item) => format!("Id[{}]", item.source()?),
             Type::Table(item) => format!("Table[{}]", item.source()?),
             Type::Arrow(params, ret) => format!("({}) -> {}", all(params)?, ret.source()?),
-            Type::Unknown | Type::Unit | Type::Function(_) | Type::Errors(_) | Type::Var(_) => return None,
+            // A generator that can fail has no written form either.
+            Type::Unknown
+            | Type::Unit
+            | Type::Function(_)
+            | Type::Errors(_)
+            | Type::Var(_)
+            | Type::Iterator(_, Some(_)) => return None,
         })
     }
 
@@ -530,7 +567,8 @@ impl fmt::Display for Type {
             Type::Buffer(item) => write!(f, "Buffer[{item}]"),
             Type::Array(item, size) => write!(f, "array[{item}, {size}]"),
             Type::Set(item) => write!(f, "set[{item}]"),
-            Type::Iterator(item) => write!(f, "Iterator[{item}]"),
+            Type::Iterator(item, None) => write!(f, "Iterator[{item}]"),
+            Type::Iterator(item, Some(failure)) => write!(f, "Iterator[{item}] that fails with {failure}"),
             Type::Dict(key, value) => write!(f, "dict[{key}, {value}]"),
             Type::Tuple(items) => {
                 let items: Vec<String> = items.iter().map(ToString::to_string).collect();

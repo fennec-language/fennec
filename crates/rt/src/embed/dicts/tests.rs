@@ -36,7 +36,7 @@ fn point_or_text() -> Element {
 }
 
 /// The kinds of item a run here has: a `Point`, a tuple of a number and a string, an optional
-/// `Point`, and a result of a `Point` or a string: numbers 0 to 3.
+/// `Point`, a result of a `Point` or a string, and a `Visit` of two numbers: numbers 0 to 4.
 fn elements() -> Vec<Rc<Element>> {
     let pair = named("(int, str)", vec![("0", Element::Int), ("1", Element::Text)]);
     let none: Vec<(Rc<str>, Element)> = Vec::new();
@@ -45,7 +45,8 @@ fn elements() -> Vec<Rc<Element>> {
         cases: vec![(Rc::from("None"), none), (Rc::from("Some"), vec![(Rc::from("value"), point())])],
         words: 6,
     };
-    vec![Rc::new(point()), Rc::new(pair), Rc::new(maybe), Rc::new(point_or_text())]
+    let visit = named("Visit", vec![("cost", Element::Int), ("from", Element::Int)]);
+    vec![Rc::new(point()), Rc::new(pair), Rc::new(maybe), Rc::new(point_or_text()), Rc::new(visit)]
 }
 
 /// Starts a run with those kinds of item.
@@ -171,8 +172,9 @@ fn an_entry_is_as_wide_as_its_key_and_its_values_kind() {
     assert_eq!(width(Word::Int, 1), Some((6, 2)));
     assert_eq!(width(Word::Str, 2), Some((8, 2)));
     assert_eq!(width(Word::Int, 3), Some((8, 2)));
+    assert_eq!(width(Word::Int, 4), Some((4, 2)));
     // A kind the run doesn't have is no dict's.
-    assert_eq!(width(Word::Int, 4), None);
+    assert_eq!(width(Word::Int, 5), None);
     finish();
 }
 
@@ -287,6 +289,36 @@ fn a_value_in_place_taken_out_leaves_as_its_words_with_what_they_hold() {
     for address in held {
         let_go(address);
     }
+    let_go(dict);
+    assert_eq!(live(), before);
+    finish();
+}
+
+/// A `Visit` of two numbers, as a path search keeps for each place.
+fn a_visit(cost: i64, from: i64) -> Value {
+    let fields = vec![(Rc::from("cost"), Value::Int(cost)), (Rc::from("from"), Value::Int(from))];
+    Value::Instance(Rc::new(Instance {
+        type_name: Rc::from("Visit"),
+        case: None,
+        fields,
+        is_error: false,
+        cause: None,
+        notes: None,
+    }))
+}
+
+/// A dict of numbers to structs of numbers holds no blocks, so freeing it finds none, and it's
+/// freed whole.
+#[test]
+fn a_dict_of_numbers_to_numbers_in_place_holds_no_blocks_to_free() {
+    started();
+    let before = live();
+    let visits = dict_of((0..100).map(|at| (Value::Int(at), a_visit(at * 3, at - 1))).collect());
+    let dict = made(Word::Int, 4, &visits);
+    let children = with(|state| Some(super::children(state, state.heap.block(dict)?))).unwrap();
+    assert_eq!(children, Vec::<u64>::new());
+    assert_eq!(read(dict), visits);
+    audited(&[dict]);
     let_go(dict);
     assert_eq!(live(), before);
     finish();

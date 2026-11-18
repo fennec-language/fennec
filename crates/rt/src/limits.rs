@@ -59,12 +59,61 @@ impl Limited {
         if self.has(EVERYWHERE) {
             return "everything".to_owned();
         }
-        let names: Vec<String> = self.named().map(|name| format!("`{name}`")).collect();
+        let names: Vec<String> = self.named().map(|name| format!("`{}`", whole_folder(name))).collect();
         if names.is_empty() {
             return "nothing".to_owned();
         }
         names.join(" or ")
     }
+}
+
+/// Between the parts of what a narrowed `Fs` keeps for a folder it was narrowed to again:
+/// `written\0outer\0below`. No path holds a NUL, as `only` refuses one, and a mark starts with one,
+/// so a folder narrowed to once is kept as its path alone.
+const PARTS: char = '\0';
+
+/// The parts of a folder a narrowed `Fs` keeps:
+/// - its path as it was written, which a path given the `Fs` is checked against, and a message says;
+/// - the folder it was first narrowed to from the whole `Fs`, opened by its path;
+/// - for one narrowed again since, the real path beneath that, which each call goes down following
+///   no link (`fs::open_narrowed`).
+pub(crate) fn folder_parts(kept: &str) -> (&str, &str, Option<&str>) {
+    let mut parts = kept.splitn(3, PARTS);
+    let written = parts.next().unwrap_or(kept);
+    match (parts.next(), parts.next()) {
+        (Some(outer), Some(below)) => (written, outer, Some(below)),
+        _ => (written, written, None),
+    }
+}
+
+/// A folder's path as it was written, as a narrowed `Fs` keeps it.
+pub(crate) fn whole_folder(kept: &str) -> &str {
+    folder_parts(kept).0
+}
+
+/// What an `Fs` narrowed to the folder it keeps as `kept` keeps for a folder `full` inside it that
+/// it's narrowed to again, on the real file system, or `None` when its folder can't reach it now.
+///
+/// Its folder is opened as each of its calls opens it, and the new folder is found beneath that
+/// handle, a link followed only while it stays beneath (`fs::real_beneath`). So a link swapped in
+/// for its folder is refused here as at any call, and nothing is followed out of its folder,
+/// sideways within the first folder included. Found from the path, links followed, the swapped link
+/// led wherever it pointed in the first folder (Fable 5.2's review of #2075, finding 1).
+fn narrowed_again(kept: &str, full: &str) -> Option<String> {
+    let (written, outer, below) = folder_parts(kept);
+    let rest = beneath(full, written);
+    if rest == std::path::Path::new(".") {
+        return Some(kept.to_owned());
+    }
+    let real = crate::stdlib::fs::real_beneath(kept, &rest)?;
+    let below: Vec<&str> = below.into_iter().chain([real.as_str()]).filter(|part| !part.is_empty()).collect();
+    Some(format!("{full}{PARTS}{outer}{PARTS}{}", below.join("/")))
+}
+
+/// Whether a folder `only` is given names one: a path holding a NUL doesn't, and would read as the
+/// parts of one narrowed again (see `folder_parts`).
+fn names_a_folder(path: &str) -> bool {
+    !path.contains(PARTS)
 }
 
 /// Whether `host`, on `port`, is one `patterns` names: a name as it's written, in lower case; `*.`
@@ -415,6 +464,12 @@ fn narrowed_fs<D: Databases>(
     }
     // An `Fs` that reaches everywhere is the whole one, but for what it may do.
     let method = if read_only && method == "_sqlite_open" { "_sqlite_read" } else { method };
+    if method == "only" && !names_a_folder(&path) {
+        return Ok(Limited::to(
+            Capability::Fs,
+            limited.marks().filter(|mark| &**mark != EVERYWHERE).collect(),
+        ));
+    }
     if limited.has(EVERYWHERE) {
         if method == "only" {
             let mut allowed: Vec<Rc<str>> = limited.marks().filter(|mark| &**mark != EVERYWHERE).collect();
@@ -431,21 +486,35 @@ fn narrowed_fs<D: Databases>(
         return Ok(crate::stdlib::fs::io_failed(&crate::stdlib::fs::Fail::permission_denied(reason)));
     }
     let full = absolute(&path);
-    let followed = with_links_followed(&full);
-    let reaching = limited
-        .named()
-        .find(|folder| inside(&full, folder) && inside(&followed, &with_links_followed(folder)));
+    let reaching = if real {
+        // The real file system's work goes through a handle held on the folder, by names beneath
+        // it, which refuses each step out as it's taken, links included, with nothing to race
+        // (see `fs::beneath_with`). Following the path's links here first only said the same
+        // thing earlier, racily, for two `realpath`s a call, each a look at every folder on the
+        // way: 12 `getattrlist`s for a path 12 folders deep.
+        // `only` finds the new folder beneath its folder's handle the same way (`narrowed_again`).
+        limited.named().find(|folder| inside(&full, whole_folder(folder)))
+    } else {
+        // A test's fake file system has no handle to refuse a link out, so its paths are checked
+        // with their links followed.
+        let followed = with_links_followed(&full);
+        limited.named().find(|folder| {
+            let whole = whole_folder(folder);
+            inside(&full, whole) && inside(&followed, &with_links_followed(whole))
+        })
+    };
     if method == "only" {
         let mut allowed: Vec<Rc<str>> = limited.marks().collect();
-        if reaching.is_some() {
-            allowed.push(Rc::from(full));
+        if let Some(folder) = reaching {
+            let kept = if real { narrowed_again(folder, &full) } else { Some(full) };
+            allowed.extend(kept.map(Rc::from));
         }
         return Ok(Limited::to(Capability::Fs, allowed));
     }
     if let Some(folder) = reaching {
         if real {
             let paths: Vec<Value> = args.iter().map(path_text).collect();
-            let place = (full.as_str(), beneath(&full, folder));
+            let place = (full.as_str(), beneath(&full, whole_folder(folder)));
             return crate::stdlib::fs::beneath_with::<D>(folder, (place.0, &place.1), (method, &paths), at);
         }
         return call(Capability::Fs, method, args);
@@ -746,6 +815,465 @@ mod tests {
         swapping.join().unwrap();
         assert!(read > 0 && refused > 0, "{read} read, {refused} refused: the swap never raced the reads");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The same swap raced by writes: a write finds the folder it writes in once and does every
+    /// step there, and nothing it writes, whole or partway, lands in the folder the link leads to.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_swapped_for_a_link_out_never_lets_a_narrowed_fs_write_outside() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let base = scratch("write-race");
+        let (inside, outside) = (format!("{base}/inside"), format!("{base}/outside"));
+        let (staged, link, sub) = (format!("{base}/staged"), format!("{base}/link"), format!("{inside}/sub"));
+        for made in [&inside, &outside, &staged] {
+            std::fs::create_dir_all(made).unwrap();
+        }
+        std::fs::write(format!("{outside}/secret.txt"), "OUTSIDE").unwrap();
+        std::fs::write(format!("{staged}/secret.txt"), "INSIDE").unwrap();
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        std::fs::rename(&staged, &sub).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapping = {
+            let stop = Arc::clone(&stop);
+            let (staged, link, sub) = (staged.clone(), link.clone(), sub.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::fs::rename(&sub, &staged);
+                    let _ = std::fs::rename(&link, &sub);
+                    let _ = std::fs::rename(&sub, &link);
+                    let _ = std::fs::rename(&staged, &sub);
+                }
+            })
+        };
+        let fs = fs_in(&inside);
+        let (mut wrote, mut refused) = (0, 0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until {
+            for path in ["sub/secret.txt", "sub/new.txt"] {
+                let at = Value::str(&format!("{inside}/{path}"));
+                match call(&fs, "write_text", &[at, Value::str("WRITTEN")]) {
+                    Value::Ok(_) => wrote += 1,
+                    _ => refused += 1,
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapping.join().unwrap();
+        let mut left: Vec<String> = std::fs::read_dir(&outside)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        let secret = std::fs::read_to_string(format!("{outside}/secret.txt")).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(left, ["secret.txt"], "a narrowed Fs wrote outside its folder");
+        assert_eq!(secret, "OUTSIDE", "a narrowed Fs replaced a file outside its folder");
+        assert!(
+            wrote > 0 && refused > 0,
+            "{wrote} written, {refused} refused: the swap never raced the writes"
+        );
+    }
+
+    /// Replacing files through a narrowed `Fs`, in a folder below its own, keeps what was true of
+    /// them, as the whole `Fs` does: who can read them, that a link stays a link to the file it
+    /// points at, here in another folder beneath, and that nothing written partway is left behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_narrowed_fs_replacing_files_below_its_folder_keeps_their_modes_and_links() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let folder = scratch("replace");
+        let fs = fs_in(&folder);
+        let at = |name: &str| Value::str(&format!("{folder}/{name}"));
+        let on_disk = |name: &str| format!("{folder}/{name}");
+        let mode_of = |name: &str| std::fs::metadata(on_disk(name)).unwrap().permissions().mode() & 0o777;
+        std::fs::create_dir_all(on_disk("a/b")).unwrap();
+        std::fs::create_dir_all(on_disk("c")).unwrap();
+        for (name, mode) in [("a/b/secret.txt", 0o600), ("a/b/shared.txt", 0o664), ("c/real.txt", 0o640)] {
+            std::fs::write(on_disk(name), "old").unwrap();
+            std::fs::set_permissions(on_disk(name), std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        std::os::unix::fs::symlink("../../c/real.txt", on_disk("a/b/link.txt")).unwrap();
+        ok(call(&fs, "write_text", &[at("a/b/secret.txt"), Value::str("new")]));
+        ok(call(&fs, "write_bytes", &[at("a/b/shared.txt"), Value::Bytes(Rc::from(b"new".to_vec()))]));
+        ok(call(&fs, "write_text", &[at("a/b/link.txt"), Value::str("through")]));
+        assert_eq!(std::fs::read_to_string(on_disk("c/real.txt")).unwrap(), "through");
+        let made = ok(call(&fs, "_create", &[at("a/b/link.txt"), Value::Bool(true)]));
+        ok(crate::stdlib::fs::real_file(handle(&made), "write", &[Value::str("created")], Span::default())
+            .unwrap());
+        ok(call(&fs, "_finish", &[made]));
+        ok(call(&fs, "write_text", &[at("a/b/fresh.txt"), Value::str("fresh")]));
+        assert_eq!(
+            (mode_of("a/b/secret.txt"), mode_of("a/b/shared.txt"), mode_of("c/real.txt")),
+            (0o600, 0o664, 0o640)
+        );
+        assert!(std::fs::symlink_metadata(on_disk("a/b/link.txt")).unwrap().is_symlink());
+        for (name, text) in [
+            ("a/b/secret.txt", "new"),
+            ("a/b/shared.txt", "new"),
+            ("c/real.txt", "created"),
+            ("a/b/fresh.txt", "fresh"),
+        ] {
+            assert_eq!(std::fs::read_to_string(on_disk(name)).unwrap(), text, "{name}");
+        }
+        let names = |under: &str| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(on_disk(under))
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        let (in_b, in_c) = (names("a/b"), names("c"));
+        let _ = std::fs::remove_dir_all(&folder);
+        assert_eq!(in_b, ["fresh.txt", "link.txt", "secret.txt", "shared.txt"], "something was left behind");
+        assert_eq!(in_c, ["real.txt"], "something was left behind");
+    }
+
+    /// The `Fs` a narrowed `Fs` gives when it's narrowed again.
+    #[cfg(unix)]
+    fn narrowed_again(fs: &Rc<Limited>, folder: &str) -> Rc<Limited> {
+        match call(fs, "only", &[Value::str(folder)]) {
+            Value::Limited(limited) => limited,
+            other => panic!("not narrowed: {other:?}"),
+        }
+    }
+
+    /// An `Fs` narrowed again keeps its folder beneath the one it was narrowed from, and goes down
+    /// to it following no link. Its folder swapped for a link out, in a race with its reads and
+    /// writes, never lets it read or change what's outside. Kept as a path, as it was, it followed
+    /// the link: Fable 5.2 read the outside file 13,002 times in 42,100 and replaced it.
+    #[cfg(unix)]
+    #[test]
+    fn an_fs_narrowed_again_never_follows_its_folder_swapped_for_a_link_out() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let base = scratch("again-race");
+        let (outer, outside) = (format!("{base}/box"), format!("{base}/outside"));
+        let (staged, link, sub) = (format!("{base}/staged"), format!("{base}/link"), format!("{outer}/sub"));
+        for made in [&outer, &outside, &staged] {
+            std::fs::create_dir_all(made).unwrap();
+        }
+        std::fs::write(format!("{outside}/secret.txt"), "OUTSIDE").unwrap();
+        std::fs::write(format!("{staged}/secret.txt"), "INSIDE").unwrap();
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        std::fs::rename(&staged, &sub).unwrap();
+        let inner = narrowed_again(&fs_in(&outer), &sub);
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapping = {
+            let stop = Arc::clone(&stop);
+            let (staged, link, sub) = (staged.clone(), link.clone(), sub.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::fs::rename(&sub, &staged);
+                    let _ = std::fs::rename(&link, &sub);
+                    let _ = std::fs::rename(&sub, &link);
+                    let _ = std::fs::rename(&staged, &sub);
+                }
+            })
+        };
+        let secret = Value::str(&format!("{sub}/secret.txt"));
+        let made = Value::str(&format!("{sub}/made.txt"));
+        let (mut read, mut wrote, mut refused) = (0, 0, 0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until {
+            match call(&inner, "read_text", std::slice::from_ref(&secret)) {
+                Value::Ok(text) => {
+                    assert_eq!(*text, Value::str("INSIDE"), "an Fs narrowed again read outside its folder");
+                    read += 1;
+                }
+                _ => refused += 1,
+            }
+            for path in [&secret, &made] {
+                match call(&inner, "write_text", &[path.clone(), Value::str("INSIDE")]) {
+                    Value::Ok(_) => wrote += 1,
+                    _ => refused += 1,
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapping.join().unwrap();
+        let mut left: Vec<String> = std::fs::read_dir(&outside)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        let kept = std::fs::read_to_string(format!("{outside}/secret.txt")).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(left, ["secret.txt"], "an Fs narrowed again wrote outside its folder");
+        assert_eq!(kept, "OUTSIDE", "an Fs narrowed again replaced a file outside its folder");
+        assert!(
+            read > 0 && wrote > 0 && refused > 0,
+            "{read} read, {wrote} written, {refused} refused: the swap never raced the calls"
+        );
+    }
+
+    /// An `Fs` narrowed again, through a link inside, to a folder inside, is used by the path it was
+    /// narrowed to, and goes down to the folder the link led to then. Narrowed again from there, it's
+    /// still beneath the first folder. A link later found on the way, wherever it points, is refused
+    /// and named, and its messages say its folder as it was written.
+    #[cfg(unix)]
+    #[test]
+    fn an_fs_narrowed_again_keeps_the_folder_its_links_led_to_and_refuses_a_link_found_later() {
+        let base = scratch("again-links");
+        let outer = format!("{base}/box");
+        for made in ["real/deeper/down", "other"] {
+            std::fs::create_dir_all(format!("{outer}/{made}")).unwrap();
+        }
+        std::fs::write(format!("{outer}/real/deeper/note.txt"), "real").unwrap();
+        std::fs::write(format!("{outer}/real/deeper/down/note.txt"), "down").unwrap();
+        std::fs::write(format!("{outer}/other/note.txt"), "other").unwrap();
+        std::os::unix::fs::symlink("real", format!("{outer}/alias")).unwrap();
+        let fs = fs_in(&outer);
+        let inner = narrowed_again(&fs, &format!("{outer}/alias/deeper"));
+        let note = Value::str(&format!("{outer}/alias/deeper/note.txt"));
+        assert_eq!(ok(call(&inner, "read_text", std::slice::from_ref(&note))), Value::str("real"));
+        // The same folder by its real path is another path, as for an `Fs` narrowed once.
+        let by_real = call(&inner, "read_text", &[Value::str(&format!("{outer}/real/deeper/note.txt"))]);
+        assert!(format!("{by_real:?}").contains("outside what this Fs can reach"), "{by_real:?}");
+        // Narrowed again from there, it's still beneath the first folder.
+        let innermost = narrowed_again(&inner, &format!("{outer}/alias/deeper/down"));
+        let down = Value::str(&format!("{outer}/alias/deeper/down/note.txt"));
+        assert_eq!(ok(call(&innermost, "read_text", std::slice::from_ref(&down))), Value::str("down"));
+        // The alias now leads elsewhere inside: the folder it led to is still the one reached.
+        std::fs::remove_file(format!("{outer}/alias")).unwrap();
+        std::os::unix::fs::symlink("other", format!("{outer}/alias")).unwrap();
+        assert_eq!(ok(call(&inner, "read_text", std::slice::from_ref(&note))), Value::str("real"));
+        // The real folder swapped for a link to another inside is refused, and the refusal says so.
+        std::fs::rename(format!("{outer}/real"), format!("{outer}/moved")).unwrap();
+        std::os::unix::fs::symlink("moved", format!("{outer}/real")).unwrap();
+        let refused = call(&inner, "read_text", std::slice::from_ref(&note));
+        let said = format!("{refused:?}");
+        assert!(
+            said.contains("PermissionDenied") && said.contains("is a link now, and this Fs follows no link"),
+            "{said}"
+        );
+        let outside = call(&inner, "read_text", &[Value::str(&format!("{outer}/other/note.txt"))]);
+        assert!(format!("{outside:?}").contains(&format!("`{outer}/alias/deeper`")), "{outside:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `only` on an `Fs` narrowed again finds the new folder beneath its own folder's handle, as its
+    /// calls do. Its folder swapped for a link beside it, or to the first folder, in a race with
+    /// `only` to a folder below it and the new `Fs`'s reads and writes, never gives it anything
+    /// outside its own folder. Found by its path, links followed, `only` followed the swapped link
+    /// anywhere in the first folder (Fable 5.2's review of #2075, finding 1). `only` to its own
+    /// folder gives the same folder, gone down to the same way.
+    #[cfg(unix)]
+    #[test]
+    fn only_on_an_fs_narrowed_again_never_follows_a_link_swapped_in_at_its_folder() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let base = scratch("only-race");
+        let outer = format!("{base}/box");
+        let (folder, staged) = (format!("{outer}/a"), format!("{base}/staged"));
+        for (made, said) in [
+            (format!("{outer}/x"), "FIRST"),
+            (format!("{outer}/c/x"), "BESIDE"),
+            (format!("{staged}/x"), "INSIDE"),
+        ] {
+            std::fs::create_dir_all(&made).unwrap();
+            std::fs::write(format!("{made}/note.txt"), said).unwrap();
+        }
+        std::fs::write(format!("{staged}/note.txt"), "INSIDE").unwrap();
+        std::fs::rename(&staged, &folder).unwrap();
+        let inner = narrowed_again(&fs_in(&outer), &folder);
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapping = {
+            let stop = Arc::clone(&stop);
+            let (folder, staged) = (folder.clone(), staged.clone());
+            std::thread::spawn(move || {
+                let mut turn = 0_usize;
+                while !stop.load(Ordering::Relaxed) {
+                    let link = if turn.is_multiple_of(2) { "c" } else { "." };
+                    turn += 1;
+                    // Each held a moment, so `only` meets the link as often as the folder.
+                    let _ = std::fs::rename(&folder, &staged);
+                    let _ = std::os::unix::fs::symlink(link, &folder);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    let _ = std::fs::remove_file(&folder);
+                    let _ = std::fs::rename(&staged, &folder);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            })
+        };
+        let (mut read, mut refused) = (0, 0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until {
+            for (narrowed_to, inside) in
+                [(format!("{folder}/x"), format!("{folder}/x")), (folder.clone(), folder.clone())]
+            {
+                let again = narrowed_again(&inner, &narrowed_to);
+                let note = Value::str(&format!("{inside}/note.txt"));
+                match call(&again, "read_text", std::slice::from_ref(&note)) {
+                    Value::Ok(text) => {
+                        assert_eq!(*text, Value::str("INSIDE"), "`only` reached outside the Fs's own folder");
+                        read += 1;
+                    }
+                    _ => refused += 1,
+                }
+                let made = Value::str(&format!("{inside}/made.txt"));
+                if !matches!(call(&again, "write_text", &[made, Value::str("INSIDE")]), Value::Ok(_)) {
+                    refused += 1;
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapping.join().unwrap();
+        let said = |at: &str| std::fs::read_to_string(format!("{outer}/{at}/note.txt")).unwrap();
+        let (first, beside) = (said("x"), said("c/x"));
+        let made_outside = ["made.txt", "x/made.txt", "c/made.txt", "c/x/made.txt"]
+            .iter()
+            .filter(|at| std::path::Path::new(&format!("{outer}/{at}")).exists())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!((first.as_str(), beside.as_str()), ("FIRST", "BESIDE"));
+        assert!(
+            made_outside.is_empty(),
+            "`only` let writes land outside the Fs's own folder: {made_outside:?}"
+        );
+        assert!(read > 0 && refused > 0, "{read} read, {refused} refused: the swap never raced `only`");
+    }
+
+    /// A path holding a NUL names no folder, so `only` on the whole `Fs` or a narrowed one gives an
+    /// `Fs` that reaches nothing, rather than one whose NUL reads as the parts of a folder narrowed
+    /// again (Fable 5.2's review of #2075, finding 3).
+    #[test]
+    fn only_refuses_a_path_holding_a_nul() {
+        let base = scratch("only-nul");
+        std::fs::create_dir_all(format!("{base}/box/real")).unwrap();
+        std::fs::write(format!("{base}/box/real/note.txt"), "real").unwrap();
+        let fs = fs_in(&base);
+        let held = match call(&fs, "only", &[Value::str(&format!("{base}/box\0real"))]) {
+            Value::Limited(limited) => limited,
+            other => panic!("not narrowed: {other:?}"),
+        };
+        assert_eq!(held.named().count(), 0, "{:?}", held.allowed);
+        let read = call(&held, "read_text", &[Value::str(&format!("{base}/box/real/note.txt"))]);
+        assert!(matches!(read, Value::Err(_)), "{read:?}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// On macOS a narrowed `Fs` looks a plain path up in one call, and gives what cap-std's walk
+    /// gives, for every path the walk answers: links in, out, absolute and up, a folder, a missing
+    /// file, a resource fork, and a path too long for one call.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_path_looked_up_in_one_call_answers_as_the_walk_does() {
+        let base = scratch("one-call");
+        let (folder, outside) = (format!("{base}/box"), format!("{base}/outside"));
+        // Ten folders of 120 characters: a path past the 1,023 bytes one call takes, made a folder at
+        // a time, as no whole path that long can be.
+        let names: Vec<String> = (0..10).map(|n| n.to_string().repeat(120)).collect();
+        let long = names.iter().fold(String::new(), |long, name| long + "/" + name);
+        std::fs::create_dir_all(format!("{folder}/a/b")).unwrap();
+        let mut deeper =
+            cap_std::fs::Dir::open_ambient_dir(format!("{folder}/a"), cap_std::ambient_authority()).unwrap();
+        for name in &names {
+            deeper.create_dir(name).unwrap();
+            deeper = deeper.open_dir(name).unwrap();
+        }
+        deeper.write("f.txt", "long").unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(format!("{folder}/a/b/f.txt"), "in").unwrap();
+        std::fs::write(format!("{outside}/secret.txt"), "OUTSIDE").unwrap();
+        let link =
+            |target: &str, at: &str| std::os::unix::fs::symlink(target, format!("{folder}/{at}")).unwrap();
+        link("b/f.txt", "a/rel_in");
+        link("../../outside/secret.txt", "a/rel_out");
+        link(&format!("{folder}/a/b/f.txt"), "a/abs_in");
+        link("..", "a/up");
+        link("b", "a/folder_link");
+        let fs = fs_in(&folder);
+        let paths = [
+            "a/b/f.txt".to_owned(),
+            "a/rel_in".to_owned(),
+            "a/rel_out".to_owned(),
+            "a/abs_in".to_owned(),
+            "a/up/a/b/f.txt".to_owned(),
+            "a/folder_link/f.txt".to_owned(),
+            "a/b".to_owned(),
+            "a/none.txt".to_owned(),
+            "a/b/f.txt/inside".to_owned(),
+            "a/b/f.txt/..namedfork/rsrc".to_owned(),
+            format!("a{long}/f.txt"),
+        ];
+        for path in &paths {
+            let at = Value::str(&format!("{folder}/{path}"));
+            for method in ["exists", "read_text", "read_bytes", "metadata"] {
+                let one_call = call(&fs, method, std::slice::from_ref(&at));
+                crate::stdlib::fs::walk_only(true);
+                let walked = call(&fs, method, std::slice::from_ref(&at));
+                crate::stdlib::fs::walk_only(false);
+                assert_eq!(format!("{one_call:?}"), format!("{walked:?}"), "`{method}` of `{path}`");
+            }
+        }
+        // A file written through one call is read back through the walk, and the other way round.
+        for (writer, reader) in [(false, true), (true, false)] {
+            let at = Value::str(&format!("{folder}/a/b/written.txt"));
+            crate::stdlib::fs::walk_only(writer);
+            ok(call(&fs, "write_text", &[at.clone(), Value::str(&format!("{writer}"))]));
+            crate::stdlib::fs::walk_only(reader);
+            assert_eq!(ok(call(&fs, "read_text", &[at])), Value::str(&format!("{writer}")));
+            crate::stdlib::fs::walk_only(false);
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The race that the kernel's beneath flag alone loses (Fable 5.2's review of the one-call
+    /// design, finding 1): another thread moves a folder holding a link to `..` out of a narrowed
+    /// `Fs`'s folder, and back, while the `Fs` reads through that link. A path with a link on it is
+    /// never looked up in one call, and the walk goes back up to the folder it came down through, so
+    /// no read reaches the folder it was moved into.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_moved_out_mid_lookup_never_leads_a_read_through_a_link_up_out() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let base = scratch("moved-up");
+        let (folder, away) = (format!("{base}/box"), format!("{base}/outside/x"));
+        std::fs::create_dir_all(format!("{folder}/a/deep/in")).unwrap();
+        std::fs::create_dir_all(&away).unwrap();
+        std::fs::write(format!("{folder}/a/secret.txt"), "INSIDE").unwrap();
+        std::fs::write(format!("{folder}/a/deep/in/f.txt"), "DEEP").unwrap();
+        std::fs::write(format!("{away}/secret.txt"), "OUTSIDE").unwrap();
+        std::os::unix::fs::symlink("..", format!("{folder}/a/deep/up")).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let moving = {
+            let stop = Arc::clone(&stop);
+            let (deep, moved) = (format!("{folder}/a/deep"), format!("{away}/deep"));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::fs::rename(&deep, &moved);
+                    let _ = std::fs::rename(&moved, &deep);
+                }
+            })
+        };
+        let fs = fs_in(&folder);
+        let through = Value::str(&format!("{folder}/a/deep/up/secret.txt"));
+        let plain = Value::str(&format!("{folder}/a/deep/in/f.txt"));
+        let (mut read, mut refused) = (0, 0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until {
+            for (at, inside) in [(&through, "INSIDE"), (&plain, "DEEP")] {
+                match call(&fs, "read_text", std::slice::from_ref(at)) {
+                    Value::Ok(text) => {
+                        assert_eq!(*text, Value::str(inside), "a read through a link up reached outside");
+                        read += 1;
+                    }
+                    _ => refused += 1,
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        moving.join().unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(read > 0 && refused > 0, "{read} read, {refused} refused: the move never raced the reads");
     }
 
     /// `.` and `..` are worked out, so a path can't climb out of a folder by naming its parent.

@@ -161,11 +161,9 @@ pub(crate) fn build_kept(
     release: bool,
 ) -> Result<(fennec_kit::Program, Built), ExitCode> {
     let Some(mut program) = crate::load(path, fennec_kit::Entry::Main) else { return Err(ExitCode::FAILURE) };
-    if !crate::run::check_to_build(&mut program) {
-        return Err(ExitCode::FAILURE);
-    }
+    let checked = crate::run::checked_to_build(&mut program)?;
     let output = output.map_or_else(|| default_output(path, &program), PathBuf::from);
-    match executable(&program, &output, release) {
+    match executable_checked(&program, &output, release, checked) {
         Ok(built) => {
             said_built(&output, &built);
             Ok((program, built))
@@ -575,7 +573,7 @@ fn emitted_as_written(
             if cfg!(debug_assertions) {
                 let again = fennec_check::check_to_emit(reached).ok();
                 assert!(
-                    again.as_ref() == Some(&checked),
+                    again.as_ref().is_some_and(|again| again.agree_within(&checked)),
                     "a run's check found other signatures than a build's"
                 );
             }
@@ -683,6 +681,74 @@ fn portable_name(shown: &str, root: Option<&Path>) -> String {
     real.file_name().map_or_else(|| shown.to_owned(), |name| name.to_string_lossy().into_owned())
 }
 
+/// The signatures' keys of what cutting `whole` down to `kept` let go: each function's, with the
+/// functions written inside it, and each type's, with its methods. Kept items are left out by name.
+fn cut_keys(
+    whole: &fennec_syntax::Module,
+    kept: &fennec_syntax::Module,
+) -> std::collections::BTreeSet<String> {
+    use fennec_syntax::{Expr, ExprKind, FnDef, Item, StmtKind};
+    fn nested(def: &FnDef, owner: &str, keys: &mut std::collections::BTreeSet<String>) {
+        let mut defs = Vec::new();
+        collect_defs(&def.body, &mut defs);
+        for inner in defs {
+            let key = format!("{owner}.{}", inner.name);
+            nested(&inner, &key, keys);
+            keys.insert(key);
+        }
+    }
+    fn collect_defs(body: &[fennec_syntax::Stmt], defs: &mut Vec<FnDef>) {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::Def(def) => defs.push(def.clone()),
+                StmtKind::If { branches, otherwise } => {
+                    for (_, block) in branches {
+                        collect_defs(block, defs);
+                    }
+                    if let Some(block) = otherwise {
+                        collect_defs(block, defs);
+                    }
+                }
+                StmtKind::While { body, .. }
+                | StmtKind::For { body, .. }
+                | StmtKind::With { body, .. }
+                | StmtKind::OnFailure { body, .. } => collect_defs(body, defs),
+                StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
+                    for arm in arms {
+                        collect_defs(&arm.body, defs);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let names = |item: &Item| match item {
+        Item::Function(def) => Some(def.name.clone()),
+        Item::Struct(def) | Item::Enum(def) | Item::Error(def) => Some(def.name.clone()),
+        _ => None,
+    };
+    let still: std::collections::BTreeSet<String> = kept.items.iter().filter_map(names).collect();
+    let mut keys = std::collections::BTreeSet::new();
+    for item in &whole.items {
+        match item {
+            Item::Function(def) if !still.contains(&def.name) => {
+                keys.insert(def.name.clone());
+                nested(def, &def.name, &mut keys);
+            }
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) if !still.contains(&def.name) => {
+                keys.insert(def.name.clone());
+                for method in &def.methods {
+                    let key = format!("{}.{}", def.name, method.name);
+                    nested(method, &key, &mut keys);
+                    keys.insert(key);
+                }
+            }
+            _ => {}
+        }
+    }
+    keys
+}
+
 /// Lowers what the program reaches and compiles it.
 fn llvm_objects(
     program: &fennec_kit::Program,
@@ -693,8 +759,9 @@ fn llvm_objects(
     // the runtime of each, for it to stop if it's ever given one.
     fennec_llvm::trust_native_blocks(release);
     let reached = main_reaches(&program.module);
-    // What was checked is only this module if cutting it down left it as it was.
-    let checked = checked.filter(|_| reached == program.module);
+    // Cutting it down only lets items go, so what was checked holds for what's left once what was
+    // cut is let go of too.
+    let checked = checked.map(|checked| checked.cut_to(&cut_keys(&program.module, &reached)));
     let emitted = emitted_with(&reached, fennec_llvm::emit_for, false, checked)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {

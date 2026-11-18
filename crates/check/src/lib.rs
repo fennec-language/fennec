@@ -817,14 +817,14 @@ fn resolved_within(
 }
 
 /// What's said when the program's text leaves no room for the copies of its `with` sources
-/// written in where they're used: each file takes a slot of a mebibyte or more, and the copies go
+/// written in where they're used: each file takes a slot of 256 KiB or more, and the copies go
 /// below what the compiler writes in, past the last file.
 fn no_room_for_copies() -> Diagnostic {
     Diagnostic::new(
         "this program's files leave no room for the copies of its `with` sources written in where they're used",
         Span::default(),
     )
-    .with_help("each file takes a mebibyte of the room spans have: a program of fewer or smaller files fits")
+    .with_help("each file takes a slot of 256 KiB, or more for a bigger one, of the room spans have: a program of fewer files fits (#2114)")
 }
 
 /// What's said when writing in what the check found is still changing the program after every
@@ -1619,7 +1619,7 @@ mod rounds {
 
     /// A program whose files leave no room for the copies of its `with` sources, written in where
     /// they're used, is refused, saying so: its copies never share spans, which once read one
-    /// copy's types as another's (#2056). Each file takes a slot of a mebibyte, so a program of
+    /// copy's types as another's (#2056). Each file takes a slot of 256 KiB, so a program of
     /// many files gets here sooner than one of a few; here the file runs up to just below where
     /// what the compiler writes in starts.
     #[test]

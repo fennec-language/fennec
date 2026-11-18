@@ -9,7 +9,7 @@ use crate::span::Span;
 /// `parse_at(source, base)` has spans in `base..base + len`, so spans from different files
 /// never overlap and one `Span` says which file it's in.
 ///
-/// Each file starts at a slot of its own, a mebibyte apart, so a change to one file's length
+/// Each file starts at a slot of its own, 256 KiB apart, so a change to one file's length
 /// moves no other file's spans, and what's worked out from a file's text keeps its spans from one
 /// build to the next. A file longer than a slot fills as many as it needs. Past `SLOTS_END`, the
 /// files left are packed one after another, as all of them were before: theirs move when an
@@ -19,11 +19,12 @@ pub struct Sources {
     files: Vec<File>,
 }
 
-/// How far apart files start, while there's room for slots.
-pub(crate) const SLOT: u32 = 1 << 20;
+/// How far apart files start, while there's room for slots: 256 KiB, past nearly any file a
+/// person writes, so few fill more than one, while 6,144 fit below `SLOTS_END`.
+pub(crate) const SLOT: u32 = 1 << 18;
 
 /// Where the slots end. The files after it are packed, up to `Span::WRITTEN`: a quarter of a
-/// gibibyte for those of a program with more than 1,536 slots' worth.
+/// gibibyte for those of a program with more than 6,144 slots' worth.
 pub(crate) const SLOTS_END: u32 = Span::WRITTEN - (1 << 28);
 
 #[derive(Clone, Debug)]
@@ -507,13 +508,13 @@ mod tests {
         assert_eq!(bases(&["one\n", &big, "three\n"]), [0, slot, 3 * slot]);
     }
 
-    /// As many files as there are slots, 1,536, each start at their own. The next is packed right
+    /// As many files as there are slots, 6,144, each start at their own. The next is packed right
     /// past the slots, and the rest one after another, as `packed_past` says, and the program
     /// still fits.
     #[test]
     fn files_past_the_slots_are_packed_after_them() {
         let slots = super::SLOTS_END / super::SLOT;
-        assert_eq!(slots, 1536);
+        assert_eq!(slots, 6144);
         let mut sources = Sources::new();
         for at in 0..slots {
             assert_eq!(sources.add(format!("f{at}.fen"), "x\n"), at * super::SLOT);

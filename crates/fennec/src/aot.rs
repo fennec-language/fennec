@@ -1534,7 +1534,7 @@ mod packed {
     #[test]
     fn a_build_says_when_files_are_packed_past_the_slots() {
         let mut sources = fennec_syntax::Sources::new();
-        for at in 0..1536 {
+        for at in 0..6144 {
             sources.add(format!("f{at}.fen"), "x\n");
         }
         assert_eq!(super::packed_note(&sources), None);
@@ -1542,7 +1542,7 @@ mod packed {
         sources.add("after.fen", "x\n");
         let note = super::packed_note(&sources).unwrap_or_default();
         assert!(
-            note.contains("the first 1536 files each start at a slot of their own, and the 2 after them"),
+            note.contains("the first 6144 files each start at a slot of their own, and the 2 after them"),
             "{note}"
         );
     }

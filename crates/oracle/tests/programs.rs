@@ -3047,6 +3047,357 @@ const READ_THEN_SENT_AFTER_A_TIMEOUT: &str = "
                         hits.send(2)?
         ";
 
+/// A wait of no time looks once, as the runtime's does: what it finds is the same on every run
+/// only when nothing else could still send, take or close, and what it finds was there before it.
+/// A receive of no time beside a task that sends, which the compiled program finds empty, was read
+/// as the task's message; it's refused now, as is a send of no time beside a task that takes. One
+/// with nothing beside it prints what the compiled program printed. One listener read by two tasks
+/// at once is refused as one channel's receivers are, which gets which hanging on time (#2116).
+/// Refused too, from the review: a send of no time to a channel a task beside it filled, one in
+/// a `parallel` round beside another round that takes, and a receive of no time while a task waits
+/// for room behind a send beside its own, which on another run got in first and went on, the send
+/// a task's or a `parallel` round's. A round's wait of no time beside other rounds is refused on a
+/// channel it made itself too, since its ends are plain values another round can be sent.
+/// A task that doesn't know a channel was made holds no end of it, so std's `pool` runs; but one
+/// whose `parallel` round took an end, on its thread or one it handed rounds to, or that could take
+/// one handed on through two channels, does, and a task that knows nothing of it but could wake
+/// one blocked that holds an end counts too.
+#[test]
+fn a_wait_of_no_time_or_a_listener_read_by_two_tasks_is_refused_where_it_hangs_on_time() {
+    prints(WAITS_OF_NO_TIME, "got 5\nagain -1\nfull\n");
+    for (program, refused) in [
+        (RECEIVE_OF_NO_TIME_BESIDE_A_SENDER, "a receive of no time, which finds a message or not by time"),
+        (SEND_OF_NO_TIME_BESIDE_A_TAKER, "a send of no time, which finds room or not by time"),
+        (SEND_OF_NO_TIME_TO_ONE_FILLED_BESIDE, "a send of no time, which finds room or not by time"),
+        (SEND_OF_NO_TIME_IN_A_ROUND, "a send of no time, which finds room or not by time"),
+        (
+            RECEIVE_OF_NO_TIME_BEHIND_A_RACING_SEND,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            RECEIVE_OF_NO_TIME_BEHIND_A_RACING_SEND_IN_A_ROUND,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            WAITS_OF_NO_TIME_ON_A_ROUND_S_OWN_CHANNEL,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            RECEIVE_OF_NO_TIME_ON_AN_END_A_ROUND_TOOK,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            RECEIVE_OF_NO_TIME_ON_AN_END_HANDED_TWICE,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            RECEIVE_OF_NO_TIME_WHILE_A_HOLDER_COULD_BE_WOKEN,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            RECEIVE_OF_NO_TIME_ON_AN_END_A_HANDED_ROUND_TOOK,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            ONE_LISTENER_TWO_READERS,
+            "two tasks taking messages from one listener of a channel to every listener, which gets which hanging on time",
+        ),
+    ] {
+        let (printed, ended) = ran(program);
+        assert_eq!(ended, Ended::Unsupported(refused.to_owned()), "{printed}");
+    }
+}
+
+const WAITS_OF_NO_TIME: &str = "
+        from std.concurrent import Closed, Timeout, channel
+
+        def main(stdout: Stdout) fails Closed:
+            with channel[int](size=1) as box:
+                box.send(5)?
+                got = box.receive_within(0ms) except Timeout(): -1
+                stdout.print('got', got)
+                again = box.receive_within(0ms) except Timeout(): -1
+                stdout.print('again', again)
+                box.send(6)?
+                box.send_within(7, 0ms) except why:
+                    case Timeout():
+                        stdout.print('full')
+                        return
+                    case _:
+                        stdout.print('closed', why)
+                        return
+                stdout.print('sent')
+        ";
+
+const RECEIVE_OF_NO_TIME_BESIDE_A_SENDER: &str = "
+        from std.concurrent import Closed, Crashed, Sender, Timeout, channel
+
+        def sending(box: Sender[int]) fails Closed:
+            box.send(5)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1) as box:
+                with launch(() => sending(box.sender())?)?:
+                    got = box.receive_within(0ms) except Timeout(): -1
+                    stdout.print('got', got)
+        ";
+
+const SEND_OF_NO_TIME_BESIDE_A_TAKER: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Timeout, channel
+
+        def taking(box: Inbox[int]):
+            _ = box.receive() else -1
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1) as box:
+                box.send(5)?
+                with launch(() => taking(box.inbox())):
+                    box.send_within(6, 0ms) except why:
+                        case Timeout():
+                            stdout.print('full')
+                            return
+                        case _:
+                            stdout.print('closed', why)
+                            return
+                    stdout.print('sent')
+        ";
+
+const ONE_LISTENER_TWO_READERS: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, channel
+
+        def reading(hits: Inbox[int], back: Sender[int]) fails Closed:
+            got = hits.receive() else -1
+            back.send(got)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=4, to=.Every) as hits, channel[int](size=1) as first, channel[int](size=1) as second:
+                inbox = hits.inbox()
+                with launch(() => reading(inbox, back=first.sender())?)?:
+                    with launch(() => reading(inbox, back=second.sender())?)?:
+                        hits.send(1)?
+                        hits.send(2)?
+                stdout.print('a', first.receive() else -1, 'b', second.receive() else -1)
+        ";
+
+const RECEIVE_OF_NO_TIME_WHILE_A_HOLDER_COULD_BE_WOKEN: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def holder(pipe: Inbox[Sender[int]], ack: Sender[int], wake: Inbox[int], done: Sender[int]) fails Closed:
+            out = pipe.receive() else return
+            ack.send(0)?
+            _ = wake.receive() else -1
+            out.send(7)?
+            done.send(0)?
+
+        def waker(quiet: Inbox[int], wake: Sender[int]) fails Closed:
+            _ = quiet.receive_within(1ns) except Timeout(): -1
+            wake.send(0)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[Sender[int]](size=1) as pipe, channel[int](size=1) as ack, channel[int](size=1) as wake:
+                with channel[int](size=1) as quiet, channel[int](size=1) as done:
+                    with launch(() => waker(quiet.inbox(), wake=wake.sender())?)?:
+                        with launch(() => holder(pipe.inbox(), ack=ack.sender(), wake=wake.inbox(), done=done.sender())?)?:
+                            with channel[int](size=1) as box:
+                                pipe.send(box.sender())?
+                                _ = ack.receive() else -1
+                                got = box.receive_within(0ms) except Timeout(): -1
+                                stdout.print('got', got)
+                                _ = done.receive() else -1
+        ";
+
+const RECEIVE_OF_NO_TIME_ON_AN_END_A_HANDED_ROUND_TOOK: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def take(pipe: Inbox[Sender[int]], ack: Sender[int], go: Inbox[int], at: int) -> list[Sender[int]] fails Closed:
+            if at == 0:
+                _ = go.receive() else -1
+                return []
+            out = pipe.receive() else return []
+            ack.send(0)?
+            return [out]
+
+        def worker(pipe: Inbox[Sender[int]], ack: Sender[int], go: Inbox[int], done: Sender[int]) fails Closed:
+            taken = [take(pipe, ack=ack, go=go, at=at)? for at in parallel(range(2))]
+            for outs in taken:
+                for out in outs:
+                    out.send(7)?
+            done.send(0)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[Sender[int]](size=1) as pipe, channel[int](size=1) as ack, channel[int](size=1) as go:
+                with channel[int](size=1) as done:
+                    go.send(0)?
+                    with launch(() => worker(pipe.inbox(), ack=ack.sender(), go=go.inbox(), done=done.sender())?)?:
+                        with channel[int](size=1) as box:
+                            pipe.send(box.sender())?
+                            _ = ack.receive() else -1
+                            got = box.receive_within(0ms) except Timeout(): -1
+                            stdout.print('got', got)
+                            _ = done.receive() else -1
+        ";
+
+const RECEIVE_OF_NO_TIME_ON_AN_END_A_ROUND_TOOK: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def relay(pipe: Inbox[Sender[int]], ack: Sender[int], gate: Inbox[int], done: Sender[int], at: int) -> int fails Closed:
+            out = pipe.receive() else return -1
+            ack.send(0)?
+            _ = gate.receive() else -1
+            out.send(7)?
+            done.send(0)?
+            return at
+
+        def worker(pipe: Inbox[Sender[int]], ack: Sender[int], gate: Inbox[int], done: Sender[int]) fails Closed:
+            _ = [relay(pipe, ack=ack, gate=gate, done=done, at=at)? for at in parallel(range(1))]
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[Sender[int]](size=1) as pipe, channel[int](size=1) as ack:
+                with channel[int](size=1) as gate, channel[int](size=1) as done:
+                    gate.send(0)?
+                    with launch(() => worker(pipe.inbox(), ack=ack.sender(), gate=gate.inbox(), done=done.sender())?)?:
+                        with channel[int](size=1) as box:
+                            pipe.send(box.sender())?
+                            _ = ack.receive() else -1
+                            got = box.receive_within(0ms) except Timeout(): -1
+                            stdout.print('got', got)
+                            _ = done.receive() else -1
+        ";
+
+const RECEIVE_OF_NO_TIME_ON_AN_END_HANDED_TWICE: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def relay(first: Inbox[Inbox[Sender[int]]], done: Sender[int]) fails Closed:
+            second = first.receive() else return
+            out = second.receive() else return
+            out.send(7)?
+            done.send(0)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[Inbox[Sender[int]]](size=1) as first, channel[int](size=1) as done:
+                with launch(() => relay(first.inbox(), done=done.sender())?)?:
+                    with channel[Sender[int]](size=1) as second:
+                        first.send(second.inbox())?
+                        with channel[int](size=1) as box:
+                            second.send(box.sender())?
+                            got = box.receive_within(0ms) except Timeout(): -1
+                            stdout.print('got', got)
+                            _ = done.receive() else -1
+        ";
+
+const SEND_OF_NO_TIME_TO_ONE_FILLED_BESIDE: &str = "
+        from std.concurrent import Closed, Crashed, Sender, Timeout, channel
+
+        def filling(box: Sender[int]) fails Closed:
+            box.send(5)?
+
+        def signalling(ready: Sender[int]) fails Closed:
+            ready.send(1)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1) as box, channel[int](size=1) as ready:
+                with launch(() => filling(box.sender())?)?:
+                    with launch(() => signalling(ready.sender())?)?:
+                        _ = ready.receive() else -1
+                        box.send_within(6, 0ms) except why:
+                            case Timeout():
+                                stdout.print('full')
+                                return
+                            case _:
+                                stdout.print('closed', why)
+                                return
+                        stdout.print('sent')
+        ";
+
+const SEND_OF_NO_TIME_IN_A_ROUND: &str = "
+        from std.concurrent import Channel, Closed, Timeout, channel
+
+        def turn(box: Channel[int], at: int) -> int fails Closed:
+            if at == 0:
+                box.send_within(6, 0ms) except why:
+                    case Timeout():
+                        return -1
+                    case _:
+                        fail why
+                return 6
+            return box.receive() else -1
+
+        def rounds(box: Channel[int]) -> list[int] fails Closed:
+            return [turn(box, at)? for at in parallel(range(2))]
+
+        def main(stdout: Stdout) fails Closed:
+            with channel[int](size=1) as box:
+                box.send(5)?
+                stdout.print(rounds(box)?)
+        ";
+
+const RECEIVE_OF_NO_TIME_BEHIND_A_RACING_SEND: &str = "
+        from std.concurrent import Closed, Crashed, Sender, Timeout, channel
+
+        def first_in(ready: Sender[int], spot: Sender[int]) fails Closed:
+            ready.send(0)?
+            spot.send(1)?
+
+        def second_in(spot: Sender[int], box: Sender[int]) fails Closed:
+            spot.send(1)?
+            box.send(9)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1) as ready, channel[int](size=1) as spot, channel[int](size=1) as box:
+                with launch(() => first_in(ready.sender(), spot=spot.sender())?)?:
+                    with launch(() => second_in(spot.sender(), box=box.sender())?)?:
+                        _ = ready.receive() else -1
+                        got = box.receive_within(0ms) except Timeout(): -1
+                        stdout.print('got', got)
+                        _ = spot.receive() else -1
+                        _ = spot.receive() else -1
+                        _ = box.receive() else -1
+        ";
+
+const RECEIVE_OF_NO_TIME_BEHIND_A_RACING_SEND_IN_A_ROUND: &str = "
+        from std.concurrent import Closed, Crashed, Sender, Timeout, channel
+
+        def first_in(ready: Sender[int], spot: Sender[int]) fails Closed:
+            ready.send(0)?
+            spot.send(1)?
+
+        def pass_on(spot: Sender[int], box: Sender[int], at: int) -> int fails Closed:
+            spot.send(1)?
+            box.send(9)?
+            return at
+
+        def second_in(spot: Sender[int], box: Sender[int]) fails Closed:
+            _ = [pass_on(spot, box=box, at=at)? for at in parallel(range(1))]
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1) as ready, channel[int](size=1) as spot, channel[int](size=1) as box:
+                with launch(() => first_in(ready.sender(), spot=spot.sender())?)?:
+                    with launch(() => second_in(spot.sender(), box=box.sender())?)?:
+                        _ = ready.receive() else -1
+                        got = box.receive_within(0ms) except Timeout(): -1
+                        stdout.print('got', got)
+                        _ = spot.receive() else -1
+                        _ = spot.receive() else -1
+                        _ = box.receive() else -1
+        ";
+
+const WAITS_OF_NO_TIME_ON_A_ROUND_S_OWN_CHANNEL: &str = "
+        from std.concurrent import Closed, Timeout, channel
+
+        def own(at: int) -> int fails Closed:
+            with channel[int](size=1) as box:
+                box.send(at)?
+                got = box.receive_within(0ms) except Timeout(): -1
+                again = box.receive_within(0ms) except Timeout(): -1
+                return (got else -2) * 10 + (again else -2)
+
+        def rounds() -> list[int] fails Closed:
+            return [own(at)? for at in parallel(range(3))]
+
+        def main(stdout: Stdout) fails Closed:
+            stdout.print(rounds()?)
+        ";
+
 const BEHIND: &str = "
         from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, Timeout, channel
 

@@ -4,6 +4,7 @@
 //! finding one is a few array reads with no hashing.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::hash::BuildHasherDefault;
 
 use super::heap::AddressHasher;
@@ -268,10 +269,13 @@ impl Table {
     #[cold]
     #[inline(never)]
     fn insert_short(&mut self, address: usize, block: Box<[u64]>) {
-        if self.short.contains_key(&address) {
-            two_owners(address);
+        // Found once, through its entry.
+        match self.short.entry(address) {
+            Entry::Occupied(_) => two_owners(address),
+            Entry::Vacant(place) => {
+                place.insert(block);
+            }
         }
-        self.short.insert(address, block);
         self.len += 1;
     }
 
@@ -367,7 +371,9 @@ impl Table {
     #[cold]
     #[inline(never)]
     fn release_short(&mut self, address: usize) -> Released {
-        let Some(block) = self.short.get_mut(&address) else { return Released::Missing };
+        // Found once, through its entry, whether it's held or taken out.
+        let Entry::Occupied(mut entry) = self.short.entry(address) else { return Released::Missing };
+        let block = entry.get_mut();
         let Some(&count) = block.first() else { return Released::Missing };
         if count > 1 {
             if !super::heap::uncounted(block)
@@ -378,7 +384,7 @@ impl Table {
             return Released::Held;
         }
         self.len -= 1;
-        self.short.remove(&address).map_or(Released::Missing, Released::Gone)
+        Released::Gone(entry.remove())
     }
 
     /// Says which block the heap's keeping a place in, or 0 for none.

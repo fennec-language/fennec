@@ -8,10 +8,24 @@ use crate::span::Span;
 /// Every file of a program, each at its own range of byte offsets. A file parsed with
 /// `parse_at(source, base)` has spans in `base..base + len`, so spans from different files
 /// never overlap and one `Span` says which file it's in.
+///
+/// Each file starts at a slot of its own, 256 KiB apart, so a change to one file's length
+/// moves no other file's spans, and what's worked out from a file's text keeps its spans from one
+/// build to the next. A file longer than a slot fills as many as it needs. Past `SLOTS_END`, the
+/// files left are packed one after another, as all of them were before: theirs move when an
+/// earlier one's length changes.
 #[derive(Clone, Debug, Default)]
 pub struct Sources {
     files: Vec<File>,
 }
+
+/// How far apart files start, while there's room for slots: 256 KiB, past nearly any file a
+/// person writes, so few fill more than one, while 6,144 fit below `SLOTS_END`.
+pub(crate) const SLOT: u32 = 1 << 18;
+
+/// Where the slots end. The files after it are packed, up to `Span::WRITTEN`: a quarter of a
+/// gibibyte for those of a program with more than 6,144 slots' worth.
+pub(crate) const SLOTS_END: u32 = Span::WRITTEN - (1 << 28);
 
 #[derive(Clone, Debug)]
 struct File {
@@ -38,24 +52,39 @@ impl Sources {
     }
 
     /// Whether the files reach where what the compiler writes in starts: a program that long, past
-    /// 1.75 GiB, would have its own text read as the compiler's.
+    /// 1.75 GiB with its slots, would have its own text read as the compiler's.
     #[must_use]
     pub fn too_long(&self) -> bool {
         self.files.last().is_some_and(|file| file.end() >= Span::WRITTEN)
     }
 
-    /// Adds a file, shown as `path` in messages. Returns the base offset to parse it at.
+    /// Adds a file, shown as `path` in messages. Returns the base offset to parse it at: the next
+    /// slot, or past the slots, right after the last file.
     pub fn add(&mut self, path: impl Into<String>, text: impl Into<String>) -> u32 {
+        let text = text.into();
         // One byte of room after each file, so a span at its very end stays in it.
-        let base = self.files.last().map_or(0, |file| file.end().saturating_add(1));
+        let after = self.files.last().map_or(0, |file| file.end().saturating_add(1));
+        let length = u32::try_from(text.len()).unwrap_or(u32::MAX);
+        let slot = after.checked_next_multiple_of(SLOT).unwrap_or(u32::MAX);
+        // Once one file is packed, the rest are, so bases only grow.
+        let packed = self.files.last().is_some_and(|file| file.base >= SLOTS_END);
+        let base =
+            if !packed && slot.saturating_add(length) < SLOTS_END { slot } else { after.max(SLOTS_END) };
         self.files.push(File {
             path: path.into(),
-            text: text.into(),
+            text,
             base,
             lines: std::sync::OnceLock::new(),
             hash: std::sync::OnceLock::new(),
         });
         base
+    }
+
+    /// How many files start at a slot of their own, when some past them are packed: those whose
+    /// spans move when an earlier one's length changes.
+    #[must_use]
+    pub fn packed_past(&self) -> Option<usize> {
+        self.files.iter().position(|file| file.base >= SLOTS_END)
     }
 
     /// Renders a diagnostic against the file it points into. Spans from no file, like the
@@ -253,8 +282,8 @@ impl Sources {
         self.files.iter().map(|file| (file.path.as_str(), file.text_hash()))
     }
 
-    /// The file a span starts in. Files are added each one past the end of the last, so their
-    /// bases only grow and their ranges never overlap: the one it can be in is the last that
+    /// The file a span starts in. Files are added each one past the end of the last, at a slot or
+    /// packed, so their bases only grow and their ranges never overlap: the one it can be in is the last that
     /// starts at or before it, found by halving, since lints ask this of every item of a program.
     fn file(&self, span: Span) -> Option<&File> {
         let after = self.files.partition_point(|file| file.base <= span.start);
@@ -435,7 +464,17 @@ mod tests {
             sources.add(format!("f{at}.fen"), *text);
         }
         let end = sources.files.last().map_or(0, super::File::end);
-        for start in 0..=end + 2 {
+        // Around each file's first and last offset, and in the gap after it, up to its next slot.
+        let around = |at: u32| at.saturating_sub(2)..=at + 2;
+        let offsets: std::collections::BTreeSet<u32> = sources
+            .files
+            .iter()
+            .flat_map(|file| {
+                around(file.base).chain(around(file.end())).chain(around(file.base + super::SLOT / 2))
+            })
+            .chain(around(end + 2))
+            .collect();
+        for start in offsets {
             let span = Span { start, end: start };
             let read = sources.files.iter().rev().find(|file| file.base <= start && start <= file.end());
             let halved = sources.file(span);
@@ -446,6 +485,49 @@ mod tests {
             }
         }
         assert!(sources.hashed_text_at(end + 2).is_none());
+    }
+
+    /// Each file starts at a slot of its own, so a change to one file's length moves no other
+    /// file's spans; a file longer than a slot fills as many as it needs.
+    #[test]
+    fn each_file_starts_at_a_slot_and_another_file_s_length_moves_none() {
+        let bases = |texts: &[&str]| {
+            let mut sources = Sources::new();
+            texts
+                .iter()
+                .enumerate()
+                .map(|(at, text)| sources.add(format!("f{at}.fen"), *text))
+                .collect::<Vec<u32>>()
+        };
+        let slot = super::SLOT;
+        assert_eq!(bases(&["one\n", "two\n", "three\n"]), [0, slot, 2 * slot]);
+        // The first file grows: the others stay where they were.
+        assert_eq!(bases(&["one, and more\n", "two\n", "three\n"]), [0, slot, 2 * slot]);
+        // A file over a slot fills two, and the next starts after them.
+        let big = "x".repeat(usize::try_from(slot).unwrap() + 10);
+        assert_eq!(bases(&["one\n", &big, "three\n"]), [0, slot, 3 * slot]);
+    }
+
+    /// As many files as there are slots, 6,144, each start at their own. The next is packed right
+    /// past the slots, and the rest one after another, as `packed_past` says, and the program
+    /// still fits.
+    #[test]
+    fn files_past_the_slots_are_packed_after_them() {
+        let slots = super::SLOTS_END / super::SLOT;
+        assert_eq!(slots, 6144);
+        let mut sources = Sources::new();
+        for at in 0..slots {
+            assert_eq!(sources.add(format!("f{at}.fen"), "x\n"), at * super::SLOT);
+        }
+        assert_eq!(sources.packed_past(), None);
+        let packed = sources.add("over.fen", "x\n");
+        assert_eq!(packed, super::SLOTS_END);
+        assert_eq!(sources.add("after.fen", "y\n"), super::SLOTS_END + 3);
+        assert_eq!(sources.packed_past(), Some(usize::try_from(slots).unwrap()));
+        assert!(!sources.too_long());
+        // A span in a packed file is found in it.
+        let found = sources.file_at(Span { start: packed + 1, end: packed + 1 }).map(|(path, _, _)| path);
+        assert_eq!(found, Some("over.fen"));
     }
 
     /// Rendering against a program's files finds each line from an index of where lines start,

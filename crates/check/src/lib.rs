@@ -32,7 +32,7 @@ mod except_fix;
 mod expect;
 mod expr;
 mod extend;
-pub use crossing::Crossing;
+pub use crossing::{Crossing, with_crossing};
 pub use extend::method_key;
 pub use shapes::SavedAs;
 mod fields;
@@ -791,6 +791,9 @@ fn resolved_within(
         let std_in = std_rewritten_in(module, &checked);
         let written = resolved_round(module, &checked);
         std_rewritten_out(module);
+        if lend_lowering::program_copies_ran_out() {
+            return Err(vec![no_room_for_copies()]);
+        }
         let again = match written {
             Round::Again => {
                 // Each `_` has a name of its own, as the first check gave it.
@@ -823,6 +826,17 @@ fn resolved_within(
         })?;
     }
     unreachable!("the rounds go on until one returns")
+}
+
+/// What's said when the program's text leaves no room for the copies of its `with` sources
+/// written in where they're used: each file takes a slot of 256 KiB or more, and the copies go
+/// below what the compiler writes in, past the last file.
+fn no_room_for_copies() -> Diagnostic {
+    Diagnostic::new(
+        "this program's files leave no room for the copies of its `with` sources written in where they're used",
+        Span::default(),
+    )
+    .with_help("each file takes a slot of 256 KiB, or more for a bigger one, of the room spans have: a program of fewer files fits (#2114)")
 }
 
 /// What's said when writing in what the check found is still changing the program after every
@@ -1614,6 +1628,23 @@ pub struct ParamType {
 #[cfg(test)]
 mod rounds {
     use super::*;
+
+    /// A program whose files leave no room for the copies of its `with` sources, written in where
+    /// they're used, is refused, saying so: its copies never share spans, which once read one
+    /// copy's types as another's (#2056). Each file takes a slot of 256 KiB, so a program of
+    /// many files gets here sooner than one of a few; here the file runs up to just below where
+    /// what the compiler writes in starts.
+    #[test]
+    fn a_program_whose_files_leave_no_room_for_copies_is_refused() {
+        let source = "def opened(stdout: Stdout) -> with int:\n    stdout.print(\"open\")\n    lend 1\n    stdout.print(\"close\")\n\ndef main(stdout: Stdout):\n    with opened(stdout) as one:\n        stdout.print(one)\n";
+        library_parses().unwrap();
+        let mut module = fennec_syntax::parse(source).unwrap();
+        module.files = vec![Span { start: 0, end: Span::WRITTEN - 16 }];
+        let checked = checked_typed_in(&module, checker::Scope::Reached).unwrap();
+        let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None);
+        let Err(problems) = resolved else { panic!("a program with no room for its copies was written in") };
+        assert!(problems.iter().any(|problem| problem.message.contains("leave no room")), "{problems:?}");
+    }
 
     /// Every kernel, the eight real programs among them, every example and every real-world
     /// program is written in and checked again in a quarter of the rounds it's given, at most:

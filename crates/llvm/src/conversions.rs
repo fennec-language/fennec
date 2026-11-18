@@ -494,7 +494,7 @@ impl Emit<'_, '_, '_> {
     fn codes_of_text(&mut self, dest: LocalId, text: &Operand) -> Result<(), String> {
         let (text, _) = self.operand(text)?;
         let symbol = crate::kinds::element_symbol(self.module.layouts, ListItem::Int);
-        self.module.shared.elements.insert(symbol.clone(), ListItem::Int);
+        self.module.add_element(&symbol, ListItem::Int);
         self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
         self.declare("declare ptr @fennec_str_codes(ptr, i64) nounwind");
         let (element, list) = (self.temp(), self.temp());
@@ -835,7 +835,7 @@ impl Emit<'_, '_, '_> {
             Kind::Struct(id) | Kind::Boxed(id) => {
                 let layout = self.layout_of(*id)?;
                 let own = format!("{}.<", layout.name);
-                if self.module.whole.functions.contains_key(own.as_str()) {
+                if self.module.reads.function(own.as_str()).is_some() {
                     let less = self.own_less(&own, (score, best), span)?;
                     if !is_max {
                         return Ok(less);
@@ -893,7 +893,7 @@ impl Emit<'_, '_, '_> {
 
     /// A call to a type's own `<`, whose values come as addresses, either way they're held.
     fn own_less(&mut self, name: &str, (a, b): (&str, &str), span: Span) -> Result<String, String> {
-        let callee = *self.module.whole.functions.get(name).ok_or("a `<` that isn't lowered")?;
+        let callee = self.module.reads.function(name).ok_or("a `<` that isn't lowered")?;
         if !self.module.defined.contains(name) {
             let (ret, params) = (self.module.ret_text(callee)?, self.module.params(callee, false)?);
             self.declare(&format!("declare swiftcc {ret} {}({params}) #0", symbol(name)));

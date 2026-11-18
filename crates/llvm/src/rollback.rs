@@ -371,7 +371,7 @@ impl Emit<'_, '_, '_> {
     /// lock that saves what it changes, or it may be handed part of what one holds. A block the log
     /// marked then stays where it is, the change noted, where plain code would copy all of it.
     pub(crate) fn asks_the_log(&self) -> bool {
-        !self.saving.is_empty() || self.module.whole.under_locks.contains(self.function.name.as_str())
+        !self.saving.is_empty() || self.module.reads.under_locks(self.function.name.as_str())
     }
 
     /// Whether a crash gives back `handle`'s lock with nothing to put back: it's a read lock.

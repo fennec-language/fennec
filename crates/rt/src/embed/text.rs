@@ -50,6 +50,11 @@ pub(in crate::embed) fn block_of(words: &[u64; 3]) -> Option<u64> {
     (tag(words) & INLINE == 0).then_some(first)
 }
 
+/// How many bytes an inline header holds.
+pub(super) fn inline_length(words: &[u64; 3]) -> usize {
+    usize::from(tag(words) & !INLINE).min(INLINE_BYTES)
+}
+
 /// The bytes an inline header holds, when it's inline.
 pub(super) fn inline_bytes(words: &[u64; 3]) -> Option<Vec<u8>> {
     let tag = tag(words);

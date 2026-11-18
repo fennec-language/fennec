@@ -1776,7 +1776,7 @@ fn children_into(state: &State, block: &[u64], found: &mut Vec<u64>) {
             return;
         }
         if super::dicts::is_dict(state, block) {
-            found.extend(super::dicts::children(state, block));
+            super::dicts::children(state, block, found);
             return;
         }
         if let Some(element) = super::lists::element_in(state, block) {
@@ -1870,9 +1870,15 @@ pub extern "C" fn unshare(address: i64) -> i64 {
         // The copy is this thread's, whoever made what it was copied from.
         mark_owner(&mut copy, state.heap.owner_bits);
         state.heap.copied(copy.len());
-        for child in children(state, &copy) {
+        // Listed in the heap's scratch words, taken while they're used, so none are made.
+        let mut held = std::mem::take(&mut state.heap.scratch);
+        held.clear();
+        children_into(state, &copy, &mut held);
+        for child in held.iter().copied() {
             retain(state, child);
         }
+        held.clear();
+        state.heap.scratch = held;
         state.heap.insert(copy)
     })
 }

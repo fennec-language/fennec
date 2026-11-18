@@ -44,6 +44,25 @@ pub(crate) enum Origin {
     Locked,
 }
 
+/// What the checker knows at one point in a function, to come back to after a path through the
+/// code and to join where paths meet.
+#[derive(Clone)]
+pub(crate) struct Snapshot {
+    /// What every name in sight holds.
+    types: Vec<Type>,
+    /// Whether a source has passed its `lend` on the way here.
+    pub(crate) lent: Lending,
+}
+
+/// Whether a source has passed its `lend` on every way to somewhere in it that hasn't failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lending {
+    /// Some way there hasn't.
+    NotYet,
+    /// Every way there has.
+    Lent,
+}
+
 struct Scope {
     bindings: Vec<Binding>,
     /// An arrow function's scope: names from outside it can be read but not changed.
@@ -72,6 +91,11 @@ pub(crate) struct FnCx<'c> {
     /// What a `with` source lends, from its `-> with T`, and how many `lend`s it has so far.
     pub(crate) lends: Option<Type>,
     pub(crate) lent: usize,
+    /// Whether every way through the source to here that hasn't failed has passed its `lend`,
+    /// kept with each path at a branch and joined where paths meet, as what names hold is.
+    pub(crate) lent_here: Lending,
+    /// Where a `lend` in a loop is, refused for that already.
+    pub(crate) lend_in_loop: Option<Span>,
     /// The spans of the values `with` blocks are taking now, where a source may be called.
     pub(crate) with_values: Vec<(u32, u32)>,
     /// The `match`es written as statements of their own, which may change what they're over
@@ -165,6 +189,8 @@ impl<'c> FnCx<'c> {
             generator: false,
             lends: None,
             lent: 0,
+            lent_here: Lending::NotYet,
+            lend_in_loop: None,
             with_values: Vec::new(),
             statement_matches: Vec::new(),
             routes_here: Vec::new(),
@@ -248,6 +274,19 @@ impl<'c> FnCx<'c> {
         }
     }
 
+    /// A name read for what it stands for at the top level, a type or a special form: the name a
+    /// `with` source's own is written in as (`sight::outer`), noted, and whether it was one, which
+    /// nothing in sight takes.
+    pub(crate) fn meant<'n>(&mut self, written: &'n str) -> (&'n str, bool) {
+        match fennec_syntax::sight::outer(written) {
+            Some(meant) => {
+                self.note_outer();
+                (meant, true)
+            }
+            None => (written, false),
+        }
+    }
+
     /// The type found for the expression written at a span, if it's been checked.
     pub(crate) fn recorded(&self, span: Span) -> Option<Type> {
         self.exprs.iter().rev().find(|(at, _)| *at == span).map(|(_, ty)| ty.clone())
@@ -297,7 +336,7 @@ impl<'c> FnCx<'c> {
         cx.tail = if cx.generator || cx.lends.is_some() { None } else { cx.declared.clone() };
         let flow = cx.stmts(&def.body, cx.lends.is_none());
         if cx.lends.is_some() {
-            cx.source_finished(def);
+            cx.source_finished(def, &flow);
         }
         // A body that always leaves early has an unknown value, which fits any type.
         if cx.lends.is_some() {
@@ -879,33 +918,44 @@ impl<'c> FnCx<'c> {
         self.scopes.iter().flat_map(|scope| scope.bindings.iter().cloned()).collect()
     }
 
-    /// What every name holds right now, to come back to after one path through the code.
-    pub(crate) fn snapshot(&self) -> Vec<Type> {
-        self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|b| b.ty.clone())).collect()
+    /// What every name holds right now, and whether a source has lent on the way here, to come
+    /// back to after one path through the code.
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        let types =
+            self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|b| b.ty.clone())).collect();
+        Snapshot { types, lent: self.lent_here }
     }
 
-    pub(crate) fn restore(&mut self, types: &[Type]) {
+    pub(crate) fn restore(&mut self, snapshot: &Snapshot) {
+        self.restore_types(&snapshot.types);
+        self.lent_here = snapshot.lent;
+    }
+
+    fn restore_types(&mut self, types: &[Type]) {
         let bindings = self.scopes.iter_mut().flat_map(|scope| scope.bindings.iter_mut());
         for (binding, ty) in bindings.zip(types) {
             binding.ty = ty.clone();
         }
     }
 
-    /// Where paths meet: each name holds what it held on any of them.
-    pub(crate) fn merge(&mut self, paths: &[Vec<Type>]) {
+    /// Where paths meet: each name holds what it held on any of them, and a source has lent only
+    /// if it did on every one.
+    pub(crate) fn merge(&mut self, paths: &[Snapshot]) {
         let Some((first, rest)) = paths.split_first() else { return };
         let declared: Vec<Type> =
             self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|b| b.declared.clone())).collect();
         let mut merged = Vec::new();
-        for (at, ty) in first.iter().enumerate() {
+        for (at, ty) in first.types.iter().enumerate() {
             let mut ty = ty.clone();
-            for other in rest.iter().filter_map(|path| path.get(at)) {
+            for other in rest.iter().filter_map(|path| path.types.get(at)) {
                 let fallback = declared.get(at).cloned().unwrap_or(Type::Unknown);
                 ty = self.checker.join(&ty, other).unwrap_or(fallback);
             }
             merged.push(ty);
         }
-        self.restore(&merged);
+        self.restore_types(&merged);
+        let lent = paths.iter().all(|path| path.lent == Lending::Lent);
+        self.lent_here = if lent { Lending::Lent } else { Lending::NotYet };
     }
 
     /// Starts following the field paths a condition checks for None, like `player.weapon`,
@@ -1052,6 +1102,14 @@ impl<'c> FnCx<'c> {
         let written =
             fennec_syntax::TypeExpr { name: name.to_owned(), args: Vec::new(), optional: false, span };
         self.checker.program.resolve(&written).ok().filter(|ty| !matches!(ty, Type::Unknown))
+    }
+
+    /// The type a name after `is` stands for, as it's written, when it names one no local takes:
+    /// `Circle` in `s is Circle`. A `with` source's own, written into its caller where something
+    /// there names it too (`sight::outer`), is the type.
+    pub(crate) fn member_named<'n>(&mut self, written: &'n str, at: Span) -> Option<&'n str> {
+        let (member, outer) = self.meant(written);
+        ((outer || self.lookup(member).is_none()) && self.member_type(member, at).is_some()).then_some(member)
     }
 
     /// `s is Circle`: a bool, for a name or field holding a union with that member.

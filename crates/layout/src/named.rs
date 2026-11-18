@@ -108,6 +108,34 @@ impl Layouts {
     /// don't have.
     #[must_use]
     pub fn resolved(&self, named: &Named) -> Option<Ty> {
+        self.resolve(named, true)
+    }
+
+    /// What a named word is in these layouts, numbering as [`Self::resolved`] does.
+    #[must_use]
+    pub fn resolved_word(&self, word: &NamedWord) -> Option<Word> {
+        self.resolve_word(word, true)
+    }
+
+    /// What a named kind is in these layouts, with every block it holds numbered already: `None`
+    /// if one has no number yet, or a type isn't here. A unit used again adds what it shares this
+    /// way, after asking again for what it asked, so it can never number a kind out of order.
+    #[must_use]
+    pub fn found(&self, named: &Named) -> Option<Ty> {
+        self.resolve(named, false)
+    }
+
+    /// What a named word is in these layouts, as [`Self::found`] finds it.
+    #[must_use]
+    pub fn found_word(&self, word: &NamedWord) -> Option<Word> {
+        self.resolve_word(word, false)
+    }
+
+    fn resolve(&self, named: &Named, numbering: bool) -> Option<Ty> {
+        let block = |kind: &Named| -> Option<u32> {
+            let ty = self.resolve(kind, numbering)?;
+            if numbering { self.block_number(ty) } else { self.block_found(ty) }
+        };
         Some(match named {
             Named::Int => Ty::Int,
             Named::Float => Ty::Float,
@@ -122,16 +150,16 @@ impl Layouts {
             Named::Str => Ty::Str,
             Named::Bytes => Ty::Bytes,
             Named::Gen => Ty::Gen,
-            Named::Dict(key, value) => Ty::Dict(self.resolved_word(key)?, self.resolved_word(value)?),
-            Named::List(item) => Ty::List(ListItem::of(self.resolved(item)?)?),
-            Named::Maybe(block) => Ty::Maybe(Block::of(self.resolved(block)?)?),
-            Named::Block(kind) => Ty::Block(self.block_number(self.resolved(kind)?)?),
+            Named::Dict(key, value) => {
+                Ty::Dict(self.resolve_word(key, numbering)?, self.resolve_word(value, numbering)?)
+            }
+            Named::List(item) => Ty::List(ListItem::of(self.resolve(item, numbering)?)?),
+            Named::Maybe(inner) => Ty::Maybe(Block::of(self.resolve(inner, numbering)?)?),
+            Named::Block(kind) => Ty::Block(block(kind)?),
         })
     }
 
-    /// What a named word is in these layouts, numbering as [`Self::resolved`] does.
-    #[must_use]
-    pub fn resolved_word(&self, word: &NamedWord) -> Option<Word> {
+    fn resolve_word(&self, word: &NamedWord, numbering: bool) -> Option<Word> {
         Some(match word {
             NamedWord::Int => Word::Int,
             NamedWord::Float => Word::Float,
@@ -140,10 +168,20 @@ impl Layouts {
             NamedWord::Nothing => Word::Nothing,
             NamedWord::Plain(name) => Word::Plain(self.id(name)?),
             NamedWord::Text => Word::Text,
-            NamedWord::Block(kind) => Word::Block(self.block_number(self.resolved(kind)?)?),
+            NamedWord::Block(kind) => {
+                let ty = self.resolve(kind, numbering)?;
+                Word::Block(if numbering { self.block_number(ty)? } else { self.block_found(ty)? })
+            }
             NamedWord::U64 => Word::U64,
             NamedWord::F32 => Word::F32,
-            NamedWord::InPlace(name) => Word::InPlace(self.dict_value_number(self.id(name)?)?),
+            NamedWord::InPlace(name) => {
+                let id = self.id(name)?;
+                Word::InPlace(if numbering {
+                    self.dict_value_number(id)?
+                } else {
+                    self.dict_value_found(id)?
+                })
+            }
         })
     }
 

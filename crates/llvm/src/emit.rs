@@ -359,15 +359,25 @@ pub(crate) fn emit_keeping(
         if keeping {
             layouts.note_asked();
         }
-        let made = unit(function, (&reads, threads), &layouts, &mut shared, (header, &attributes));
+        // A build keeping units writes each into a `Shared` of its own, then adds that to what
+        // units share, so the audit checks what each kept against exactly what it wrote.
+        let mut wrote = keeping.then(|| crate::share::settings_of(&shared));
+        let made = unit(
+            function,
+            (&reads, threads),
+            &layouts,
+            wrote.as_mut().unwrap_or(&mut shared),
+            (header, &attributes),
+        );
         let read = reads.take();
         let asked = layouts.asked();
         match made {
             Ok((text, share)) => {
                 units.push(Unit { function: function.name.clone(), text });
-                if keeping {
+                if let Some(wrote) = wrote {
+                    crate::share::merge(&mut shared, &wrote);
                     let reads = read.into_iter().map(|(what, name)| (what, name.into_owned())).collect();
-                    kept.push(Kept { function: function.name.clone(), reads, share, asked });
+                    kept.push(Kept { function: function.name.clone(), reads, share, asked, wrote });
                 }
             }
             Err(why) => refused.push(format!("`{}`: {why}", function.name)),
@@ -377,7 +387,7 @@ pub(crate) fn emit_keeping(
         return Err(refused.join("\n"));
     }
     if keeping {
-        crate::share::audit(program, &shared, &layouts, &kept)?;
+        crate::share::audit(program, &layouts, &kept)?;
     }
     shared.native = native;
     shared.waiting_closures = waiting_closures;
@@ -5181,12 +5191,37 @@ def main(stdout: Stdout):
         let (mut moved, mut written) = (Shared::default(), Shared::default());
         for (before, after) in before.iter().zip(&after) {
             assert_eq!(before.function, after.function);
+            // As a build using the unit again does: its asking asked again, then what it kept.
+            layouts.ask_again(after.asked.as_deref().unwrap_or_default()).ok_or("didn't ask again")?;
             before.share.add_to(&mut moved, &layouts, &anchor_of).ok_or("didn't add again")?;
             after.share.add_to(&mut written, &layouts, &anchor_of).ok_or("didn't add")?;
         }
         assert!(!written.places.values().all(Vec::is_empty), "no places to move: {:?}", written.places);
         assert_eq!(moved.places, written.places);
         assert_eq!(moved.starts, written.starts);
+        Ok(())
+    }
+
+    /// A place at the program's very first byte is kept as it is, and the anchor a function's other
+    /// places are kept from leaves it out: so a `main` written on the file's first line, part of
+    /// which goes by its whole definition, keeps its other places moving with it, and its key (see
+    /// the next step's `keys`) changes when text above it moves rather than leaving a place behind.
+    #[test]
+    fn a_place_at_the_first_byte_is_kept_as_it_is() -> Result<(), String> {
+        let source = "def main(stdout: Stdout) fails Oops:\n    picked_value = picked([3, 5, 7], 1)\n    if picked_value > 6: fail Oops(why=picked_value)\n    stdout.print(picked_value)\n    return\n\nerror Oops:\n    why: int\n\ndef picked(items: list[int], index: int) -> int:\n    return items[index]\n";
+        // Lowered as a build lowers it, which has `main` stop on a failure it gives back.
+        let mut module = fennec_syntax::parse(source).map_err(|err| format!("{err:?}"))?;
+        let checked = fennec_check::check_and_resolve(&mut module).map_err(|err| format!("{err:?}"))?;
+        let options =
+            fennec_ir::Options { outline_parallel: true, stop_on_failed_main: true, serve_in_order: false };
+        let program = fennec_ir::lower_with(&module, &checked, options);
+        let main = program.functions.iter().find(|function| function.name == "main").ok_or("no main")?;
+        let starts: Vec<u32> =
+            main.blocks.iter().flat_map(|block| &block.insts).map(|inst| inst.span.start).collect();
+        assert!(starts.contains(&0), "nothing of main is at byte 0: {starts:?}");
+        let anchor = crate::share::anchor(main);
+        assert!(anchor.is_some_and(|at| at > 0), "the anchor is {anchor:?}");
+        assert_eq!(place(0, anchor), Place::At(0));
         Ok(())
     }
 

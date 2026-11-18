@@ -792,6 +792,18 @@ impl Layouts {
         self.block_number(item).map(ListItem::Block)
     }
 
+    /// The number a kind of block has already, if it has one: never a new one, and not noted.
+    pub(crate) fn block_found(&self, item: Ty) -> Option<u32> {
+        let at = self.blocks.borrow().iter().position(|known| *known == item)?;
+        u32::try_from(at).ok()
+    }
+
+    /// The number a plain type a dict holds in its entries has already, if it has one.
+    pub(crate) fn dict_value_found(&self, id: u32) -> Option<u32> {
+        let at = self.dict_values.borrow().iter().position(|known| *known == id)?;
+        u32::try_from(at).ok()
+    }
+
     /// The number of a kind of block, which a list's items and a dict's values go by.
     pub(crate) fn block_number(&self, item: Ty) -> Option<u32> {
         self.noted(AskedNow::Block(item));

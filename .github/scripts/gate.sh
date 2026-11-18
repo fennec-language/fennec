@@ -19,9 +19,16 @@ cd "$root" || exit 1
 # How much the disk it builds on has free, said loudly first when it's under 40 GB, and again by
 # its summary: a gate builds 7 to 13 GB in its worktree, and a build that runs out of room part way
 # leaves broken objects behind, as one lane's did with 12 GB free on 2026-11-17. It still runs.
+# Under the mark, it first deletes the builds of the worktrees nothing has built in for two hours,
+# as the lanes' two-hourly sweep does, since the warning alone left the disk to fill on 2026-11-18.
 # GATE_LEAST_FREE_GB sets the mark.
 least_free=${GATE_LEAST_FREE_GB:-40}
 free_gb=$(df -Pk "$root" 2> /dev/null | awk 'NR == 2 { print int($4 / 1048576) }')
+if [[ $free_gb =~ ^[0-9]+$ ]] && [ "$free_gb" -lt "$least_free" ]; then
+  echo "gate: only $free_gb GB free, so the builds idle for two hours go first" >&2
+  "$root/.github/scripts/sweep-builds.sh" --hours 2 >&2 || echo "gate: the sweep of idle builds failed" >&2
+  free_gb=$(df -Pk "$root" 2> /dev/null | awk 'NR == 2 { print int($4 / 1048576) }')
+fi
 low_disk=''
 if [[ $free_gb =~ ^[0-9]+$ ]] && [ "$free_gb" -lt "$least_free" ]; then
   low_disk="WARNING: only $free_gb GB free on the disk this builds on, under $least_free GB: a build that runs out part way leaves broken objects. Free some first: remove the worktrees of merged pull requests, their target folders first."

@@ -3072,13 +3072,57 @@ fn find_alone_in_loops(function: &Function, known: &mut Analysis) {
             })
             .map(|(at, _)| LocalId(at))
             .filter(|held| {
-                changes_in(&inside, known, *held) && gives_no_owner(function, &inside, known, *held)
+                changes_in(&inside, known, *held)
+                    && gives_no_owner(function, &inside, known, *held)
+                    && !copy_read_in(function, &blocks, &inside, known, *held)
             })
             .collect();
         if !locals.is_empty() {
             known.alone_in_loops.push(AloneInLoop { entry: *entry, blocks, locals });
         }
     }
+}
+
+/// Whether a loop reads a copy of `held` made before it, as a loop through `items[k:]` holds the
+/// list as it was while its body changes it. `held` then has another owner on every way in, so
+/// making it alone there would copy all of it, where its first change in the loop does that work
+/// anyway: an append to a list held twice grows it into a block of its own, with no copy made
+/// first. So such a loop is left to check at each change. A local that only stands for `held`,
+/// with no count of its own (see [`Analysis::alias`]), is no other owner.
+fn copy_read_in(
+    function: &Function,
+    loop_blocks: &BTreeSet<usize>,
+    inside: &[&Block],
+    known: &Analysis,
+    held: LocalId,
+) -> bool {
+    let mut copies = BTreeSet::from([held]);
+    let mut grew = true;
+    while grew {
+        grew = false;
+        let before: Vec<&Block> = function
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| !loop_blocks.contains(at))
+            .map(|(_, block)| block)
+            .collect();
+        for inst in before.iter().flat_map(|block| &block.insts) {
+            if let InstKind::Copy { dest, value: Operand::Local(from) } = &inst.kind
+                && copies.contains(from)
+                && known.alias(*dest).is_none()
+                && copies.insert(*dest)
+            {
+                grew = true;
+            }
+        }
+    }
+    copies.remove(&held);
+    inside.iter().any(|block| {
+        copies.iter().any(|copy| {
+            block.insts.iter().any(|inst| reads_local(&inst.kind, *copy)) || reads_in_end(&block.end, *copy)
+        })
+    })
 }
 
 /// The builtins on a list or a `Table` that give it no other owner, called on it: what each gives
@@ -4614,8 +4658,9 @@ mod tests {
 
     /// A list or a `Table` a loop changes is made alone on the way in, once, when nothing in the
     /// loop can give it another owner, however it's shared before or after. Copied in the loop,
-    /// given to a call or a closure, put inside another value, written anew, or held by a task, it
-    /// isn't: each change in the loop checks for itself.
+    /// given to a call or a closure, put inside another value, written anew, held by a task, or
+    /// held as it was by a loop through it from a place, it isn't: each change in the loop checks
+    /// for itself.
     #[test]
     fn a_value_a_loop_gives_no_owner_is_made_alone_on_the_way_in() -> Result<(), String> {
         let summed = "def summed(items: list[int]) -> int:\n    return sum(items)\n\n";
@@ -4637,6 +4682,10 @@ mod tests {
                 "{what}"
             );
         }
+        // A loop through it from a place holds it as it was, so it's held twice on the way in:
+        // the body's first append grows it into a block of its own, with no copy made first.
+        let walked = "def go(count: int) -> int:\n    mut items = [1, 2, 3]\n    for item in items[1:]:\n        items.append(item + count)\n    return len(items)\n";
+        assert!(!alone_in_a_loop("", walked, "items")?, "held as it was by a loop through it from a place");
         let tables = "from std.collections import Id, Table\nfrom std.concurrent import Crashed\n\n";
         let units = |inside: &str| {
             format!(

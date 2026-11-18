@@ -1,0 +1,26 @@
+# A waiting call's range waits to receive what another range would send, and that other range
+# fails first. The program can't move, so it's a deadlock, and the join's line says the failure.
+# (From Fable 5.2's review of the phase 2 design.)
+from std.concurrent import Channel, channel
+
+error Boom:
+    at: int
+
+def part(at: int, pipe: Channel[int]) -> int fails Boom:
+    if at == 0:
+        got = pipe.receive() else -1
+        return got
+    if at == 1:
+        fail Boom(at=at)
+    return at
+
+def all_parts(pipe: Channel[int]) -> int fails Boom:
+    got = [part(at, pipe=pipe)? for at in parallel(range(4))]
+    return sum(got)
+
+def main(stdout: Stdout):
+    with channel[int](size=1) as pipe:
+        total = all_parts(pipe) except why:
+            stdout.print("the call failed:", why)
+            return
+        stdout.print(total)

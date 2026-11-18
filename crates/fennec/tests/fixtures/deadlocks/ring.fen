@@ -1,0 +1,27 @@
+# A waiting call's three ranges in a ring of channels: each waits to hear from the one before it
+# before it passes on to the one after, and none goes first.
+from std.concurrent import Channel, Closed, channel
+
+def hears_then_passes(inbox: Channel[int], outbox: Channel[int]) -> int:
+    heard = inbox.receive() else -1
+    outbox.send(heard + 1) except Closed():
+        return -100
+    return heard
+
+def part(at: int, first: Channel[int], second: Channel[int], third: Channel[int]) -> int:
+    if at == 0:
+        return hears_then_passes(first, outbox=second)
+    if at == 1:
+        return hears_then_passes(second, outbox=third)
+    return hears_then_passes(third, outbox=first)
+
+def all_parts(first: Channel[int], second: Channel[int], third: Channel[int]) -> int:
+    got = [part(at, first=first, second=second, third=third) for at in parallel(range(3))]
+    return sum(got)
+
+def main(stdout: Stdout):
+    with channel[int](size=1) as first:
+        with channel[int](size=1) as second:
+            with channel[int](size=1) as third:
+                stdout.print("made the ring")
+                stdout.print(all_parts(first, second=second, third=third))

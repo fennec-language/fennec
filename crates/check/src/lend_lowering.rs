@@ -347,7 +347,12 @@ impl Lowering<'_> {
         self.binds.push(fennec_syntax::sight::bound_in(&def.body, &params));
         if def.ret.is_some() {
             self.tail_returned(&mut def.body);
-            tail_withs(&def.body, &mut self.tails);
+            // A source and a generator give back no last value, so a `with` ending one needs no
+            // ending that says it always leaves.
+            let source = def.ret.as_ref().is_some_and(|ret| ret.name == crate::lend::WITH);
+            if !source && !fennec_syntax::fuse::has_yield(&def.body) {
+                tail_withs(&def.body, &mut self.tails);
+            }
         }
         self.stmts(&mut def.body);
         self.binds.pop();

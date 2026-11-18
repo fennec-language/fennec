@@ -21,7 +21,8 @@
 //! `cc` and the linker see it. A command that goes before the answer, as with Ctrl-C, stops the
 //! build. Under CI it's built in the command's own process, as a first build is.
 //!
-//! `fennec daemon status` and `fennec daemon stop` manage it. It exits by itself after thirty
+//! `fennec daemon status` and `fennec daemon stop` manage every daemon of this build the user has
+//! running, one for each environment commands ran in. Each exits by itself after thirty
 //! minutes with nothing to do; `FENNEC_DAEMON_IDLE` sets that in seconds. `FENNEC_NO_DAEMON`
 //! makes commands do their work in-process.
 

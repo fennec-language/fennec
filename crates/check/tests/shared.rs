@@ -308,7 +308,8 @@ fn a_nested_function_calling_a_captured_value_takes_what_it_takes() {
 fn a_nested_function_is_refused_however_a_captured_value_reaches_it() {
     const NAP: &str = "def nap(clock: Clock):\n    clock.sleep(1s)\n\n";
     const RUN: &str = "def run(job: () -> nothing):\n    job()\n\n";
-    const MAIN: &str = "def main(clock: Clock):\n    shared scores = Account()\n    guarded(scores, () => nap(clock))\n";
+    const MAIN: &str =
+        "def main(clock: Clock):\n    shared scores = Account()\n    guarded(scores, () => nap(clock))\n";
     let refused = |program: String| {
         let problems = locking(&program);
         assert!(!problems.is_empty(), "built, though it waits inside a lock:\n{program}");
@@ -322,10 +323,7 @@ fn a_nested_function_is_refused_however_a_captured_value_reaches_it() {
          def main(stdout: Stdout, clock: Clock):\n    shared scores = Account()\n    \
          guarded(stdout, scores, () => nap(clock), False)\n"
     );
-    assert_eq!(
-        refused(reassigned),
-        ["`later` takes `scores`'s lock while `held` is locked @ later()"]
-    );
+    assert_eq!(refused(reassigned), ["`later` takes `scores`'s lock while `held` is locked @ later()"]);
     // The same through a loop, given the arrow that waits after the nested function is written.
     let in_a_loop = format!(
         "{NAP}def quiet(clock: Clock):\n    pass\n\n\
@@ -344,9 +342,12 @@ fn a_nested_function_is_refused_however_a_captured_value_reaches_it() {
     );
     assert_eq!(
         refused(called_there),
-        ["what `job` holds can't be known here, so it can't be shown not to wait while `held` is locked @ job()"]
+        [
+            "what `job` holds can't be known here, so it can't be shown not to wait while `held` is locked @ job()"
+        ]
     );
-    let waits = ["`guarded` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ () => nap(clock)"];
+    let waits =
+        ["`guarded` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ () => nap(clock)"];
     // A captured parameter handed on.
     let handed_on = format!(
         "{NAP}{RUN}def guarded(scores: shared Account, work: () -> nothing):\n    def step():\n        run(work)\n    \
@@ -380,10 +381,7 @@ fn a_nested_function_is_refused_however_a_captured_value_reaches_it() {
          lock scores as held:\n        later()\n        _ = held\n\n\
          def main(clock: Clock):\n    serve(Slow(), clock)\n"
     );
-    assert_eq!(
-        refused(interface),
-        ["`later` waits on `Clock.sleep` while `held` is locked @ later()"]
-    );
+    assert_eq!(refused(interface), ["`later` waits on `Clock.sleep` while `held` is locked @ later()"]);
 }
 
 const HOLDERS: &str = "struct Cell:

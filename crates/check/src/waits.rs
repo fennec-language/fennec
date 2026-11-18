@@ -441,7 +441,9 @@ impl Checker {
                     },
                     // What can't be known counts as all the function around does.
                     None => vec![
-                        nested.rsplit_once('.').map_or_else(|| nested.clone(), |(around, _)| around.to_owned()),
+                        nested
+                            .rsplit_once('.')
+                            .map_or_else(|| nested.clone(), |(around, _)| around.to_owned()),
                     ],
                 };
                 for callee in callees {
@@ -536,8 +538,10 @@ fn params_called(
         for passed in &values.passed {
             let Given::Function(function) = &passed.given else { continue };
             let target = (passed.callee.clone(), passed.param.clone());
-            let held =
-                locked.get(&target).cloned().or_else(|| passed.held.clone().filter(|_| called.contains(&target)));
+            let held = locked
+                .get(&target)
+                .cloned()
+                .or_else(|| passed.held.clone().filter(|_| called.contains(&target)));
             let Some(held) = held else { continue };
             for (nested, param) in &values.through {
                 if !locked.contains_key(param)

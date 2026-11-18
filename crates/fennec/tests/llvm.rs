@@ -18039,7 +18039,12 @@ fn writes_in_little_memory(name: &str, megabytes: usize, most: u64) -> std::io::
         String::from_utf8_lossy(&ran.stderr)
     );
     assert!(!partial, "the file written beside big.txt was left behind");
-    if let Some(peak) = measured(peak) {
+    // What the program holds, which a sanitizer's own share is no part of: AddressSanitizer adds
+    // about 20 MB to every run, and keeps back what's freed to catch a use after it, so under it
+    // the bound measured the sanitizer. The builds without one hold every program to it.
+    if let Some(peak) = measured(peak)
+        && std::env::var_os("FENNEC_SANITIZE").is_none()
+    {
         assert!(peak < most, "writing {megabytes} MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())

@@ -932,11 +932,12 @@ fn differing_table(one: &Checked, other: &Checked) -> &'static str {
 fn same_as_checked_again(module: &Module, scope: checker::Scope, carried: &Checked) {
     let mut again = checker::Checker::new(module);
     again.again = true;
-    let Ok(again) = again.run(scope) else {
-        panic!(
-            "a round that carried over what the round before found passed, but checking it all again doesn't"
-        )
-    };
+    let again = again.run(scope);
+    assert!(
+        again.is_ok(),
+        "a round that carried over what the round before found passed, but checking it all again doesn't"
+    );
+    let Ok(again) = again else { return };
     let comparable = |mut checked: Checked| {
         checked.tables_of.clear();
         checked.graph_of.clear();
@@ -946,8 +947,19 @@ fn same_as_checked_again(module: &Module, scope: checker::Scope, carried: &Check
     let (again, carried) = (comparable(again), comparable(carried.clone()));
     // A type variable left open is numbered by the check that made it, so two checks that
     // agree on everything else can number theirs apart.
-    if again != carried
-        && without_var_numbers(&format!("{again:?}")) != without_var_numbers(&format!("{carried:?}"))
+    let part = (again != carried
+        && without_var_numbers(&format!("{again:?}")) != without_var_numbers(&format!("{carried:?}")))
+    .then(|| differing_part(&again, &carried));
+    assert!(
+        part.is_none(),
+        "a round that carried over what the round before found disagrees with checking it all again, in {}: a mistake in the compiler",
+        part.unwrap_or_default()
+    );
+}
+
+/// What two checks of a module disagree on, first: a function's signature, then the rest of the
+/// signatures, the typed bodies, then what they found to write in.
+fn differing_part(again: &Checked, carried: &Checked) -> String {
     {
         let differs = again
             .signatures
@@ -956,7 +968,7 @@ fn same_as_checked_again(module: &Module, scope: checker::Scope, carried: &Check
             .find(|(key, signature)| carried.signatures.functions.get(*key) != Some(*signature));
         let missing =
             carried.signatures.functions.keys().find(|key| !again.signatures.functions.contains_key(*key));
-        let part = if let Some((key, signature)) = differs {
+        if let Some((key, signature)) = differs {
             format!(
                 "what `{key}` gives back and fails with: {signature:?} against {:?}",
                 carried.signatures.functions.get(key)
@@ -990,11 +1002,8 @@ fn same_as_checked_again(module: &Module, scope: checker::Scope, carried: &Check
         } else if again.types != carried.types {
             "the typed bodies".to_owned()
         } else {
-            format!("what it found to write in, in `{}`", differing_table(&again, &carried))
-        };
-        panic!(
-            "a round that carried over what the round before found disagrees with checking it all again, in {part}: a mistake in the compiler"
-        );
+            format!("what it found to write in, in `{}`", differing_table(again, carried))
+        }
     }
 }
 

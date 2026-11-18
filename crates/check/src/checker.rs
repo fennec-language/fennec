@@ -787,12 +787,9 @@ impl Checker {
         tables
     }
 
-    /// What a check that found nothing wrong gives back.
-    fn checked(
-        mut self,
-        structs: BTreeMap<String, crate::Struct>,
-        errors: BTreeMap<String, crate::Struct>,
-    ) -> Checked {
+    /// What each function's check wrote in the tables and added to what's followed, settled, for a
+    /// later round to carry over.
+    fn settled_by_function(&mut self) -> (BTreeMap<String, Tables>, BTreeMap<String, Graph>) {
         let tables_of = std::mem::take(&mut self.tables_of)
             .into_iter()
             .map(|(key, tables)| (key, self.settled_tables(tables)))
@@ -804,6 +801,16 @@ impl Checker {
                 (key, graph)
             })
             .collect();
+        (tables_of, graph_of)
+    }
+
+    /// What a check that found nothing wrong gives back.
+    fn checked(
+        mut self,
+        structs: BTreeMap<String, crate::Struct>,
+        errors: BTreeMap<String, crate::Struct>,
+    ) -> Checked {
+        let (tables_of, graph_of) = self.settled_by_function();
         // What each source lends, now that what it's given is known, for lowering to write in.
         let mut sources = std::mem::take(&mut self.sources);
         for source in sources.values_mut() {
@@ -1786,6 +1793,11 @@ fn lowering_calls(key: &str, entry: &FnEntry) -> bool {
         || method.chars().next().is_some_and(|first| !first.is_alphanumeric() && first != '_')
 }
 
+/// Whether `functions` holds `entry` under `key`, as it was.
+fn self_same(functions: &BTreeMap<String, FnEntry>, key: &str, entry: &FnEntry) -> bool {
+    functions.get(key).is_some_and(|now| now == entry)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1800,9 +1812,4 @@ mod tests {
             .collect();
         assert_eq!(problems, ["`Duration` doesn't exist"]);
     }
-}
-
-/// Whether `functions` holds `entry` under `key`, as it was.
-fn self_same(functions: &BTreeMap<String, FnEntry>, key: &str, entry: &FnEntry) -> bool {
-    functions.get(key).is_some_and(|now| now == entry)
 }

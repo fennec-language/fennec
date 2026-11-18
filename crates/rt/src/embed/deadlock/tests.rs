@@ -77,10 +77,11 @@ fn a_report_says_who_waits_for_what_and_a_note_asks_what_it_waits_on() {
 }
 
 /// A range of a waiting `parallel` call is named by its call and where it starts, and comes after
-/// `main` and the tasks: one call's ranges together, range 2 before range 10. A task's call is named
-/// by the task's number as the report finds it, from the notes too, since a launcher come to its
-/// block's end no longer has its task among those to be waited for. A call made in a range is
-/// named by that range.
+/// `main` and the tasks: one call's ranges together, range 2 before range 10, and calls in the
+/// order of who made them, `main`'s before task 3's. A task's call is named by the task's number as
+/// the report finds it, from the notes too, since a launcher come to its block's end no longer has
+/// its task among those to be waited for. A call made in a range is named by that range, and goes
+/// with its maker's.
 #[test]
 fn a_report_names_each_range_by_its_call_and_where_it_starts() {
     let on: Arc<dyn Awaited> = Arc::new(Told { holds: AtomicBool::new(true), task: None });
@@ -107,8 +108,8 @@ fn a_report_names_each_range_by_its_call_and_where_it_starts() {
          main is waiting for BlockEnd\n  \
          range 2 of main's `parallel` call is waiting for Receive\n  \
          range 10 of main's `parallel` call is waiting for Receive\n  \
-         range 0 of task 3's `parallel` call is waiting for Receive\n  \
-         range 1 of the `parallel` call in range 4 of main's `parallel` call is waiting for Receive\n"
+         range 1 of the `parallel` call in range 4 of main's `parallel` call is waiting for Receive\n  \
+         range 0 of task 3's `parallel` call is waiting for Receive\n"
     );
 }
 

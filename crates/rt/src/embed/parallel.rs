@@ -320,13 +320,18 @@ impl Run {
     /// then an item each; a reduction's leaves stay as its length gives them.
     fn waiting(mut self, waiting: bool) -> Run {
         self.waiting = waiting;
-        // Only a waiting call's join is a stuck wait for the deadlock check: a call whose body can't
-        // wait can't be part of a deadlock, and costs it nothing.
-        self.done.counts_joins(waiting);
-        if waiting {
+        self
+    }
+
+    /// For a call about to go to a pool: when its body can wait, its join is a stuck wait for the
+    /// deadlock check, and its ranges are named in a report. It's done here, and not in `waiting`,
+    /// which every call goes through: a call whose body can't wait can't be part of a deadlock, and
+    /// one that runs where it's made has no join, so neither pays for one.
+    fn joins_on_a_pool(&mut self) {
+        if self.waiting {
+            self.done.counts_joins(true);
             self.named = Some(super::deadlock::CallName::here());
         }
-        self
     }
 
     /// For a range of a waiting call, starting at `from`, how a deadlock's report names it.
@@ -340,6 +345,8 @@ impl Run {
         self.caller = None;
         self.calling = self.calling.of_task(stop);
         self.lent = RwLock::new(Some(lent));
+        // A task's call always goes to its worker's pool.
+        self.joins_on_a_pool();
         self
     }
 
@@ -754,7 +761,8 @@ fn run_each(run: Run, length: usize, words: usize, leaf: Leaf, weight: Weight) -
 }
 
 /// A loop's or a comprehension's ranges run on `pool`, with the call's ranges to finish.
-fn each_on_pool(run: Run, pool: &'static Pool, length: usize, leaf: Leaf) -> Run {
+fn each_on_pool(mut run: Run, pool: &'static Pool, length: usize, leaf: Leaf) -> Run {
+    run.joins_on_a_pool();
     let run = Arc::new(run);
     pool::install(&run, || run.each_on_start(pool, length, leaf), &run.done);
     alone(run)
@@ -777,11 +785,12 @@ fn alone(mut run: Arc<Run>) -> Run {
 /// A reduction's ranges run on `pool`, combined in the tree `reduce` uses: what they come to,
 /// with the call's ranges to finish.
 fn reduce_on_pool(
-    run: Run,
+    mut run: Run,
     pool: &'static Pool,
     length: usize,
     steps: (ReduceBody, Combine, i64),
 ) -> (Option<i64>, Run) {
+    run.joins_on_a_pool();
     let run = Arc::new(run);
     let start = || {
         let started = Arc::clone(&run);

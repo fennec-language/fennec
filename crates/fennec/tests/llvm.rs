@@ -9287,7 +9287,8 @@ fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result
 /// program and says each range, by its call and where it starts: four ranges receiving on a channel
 /// nobody sends to, from `main` and from a launched task; a range whose call of its own runs its
 /// ranges in it, there being no other worker to give them to; three ranges in a ring of channels;
-/// and a range waiting on one that failed or crashed first, which the join's line says.
+/// and a range waiting on one that failed or crashed first, which the join's line says: the lowest,
+/// when two have.
 #[test]
 fn a_deadlock_through_a_parallel_calls_ranges_says_each_range() -> std::io::Result<()> {
     if !ready() || !crate::executables::threads_runtime_built() {
@@ -9315,6 +9316,7 @@ fn a_deadlock_through_a_parallel_calls_ranges_says_each_range() -> std::io::Resu
         ("nested_call", "", format!("{joins}\n{}", receives(1..2, "main"))),
         ("ring", "made the ring\n", format!("{joins}\n{}", receives(0..3, "main"))),
         ("sibling_fails", "", format!("{joins}, whose range 1 failed\n{}", receives(0..1, "main"))),
+        ("two_fail", "", format!("{joins}, whose range 1 failed\n{}", receives(0..1, "main"))),
         (
             "sibling_crashes",
             "",
@@ -9330,7 +9332,8 @@ fn a_deadlock_through_a_parallel_calls_ranges_says_each_range() -> std::io::Resu
 /// A waiting `parallel` call's join is never taken for a deadlock while something can still end
 /// it: later ranges still queued that send to earlier ones waiting, from `main` and from a task;
 /// ranges waiting on a task that sends after a nap; a reduction whose ranges pass a token round; a
-/// task's call stopped while its ranges wait; and calls one after another, each a quick hand-off,
+/// task's call stopped while its ranges wait; ranges waiting when a task their caller launched
+/// crashes; and calls one after another, each a quick hand-off,
 /// the workers asleep as each call's first job is pushed. Napping before each call, each woken
 /// worker is held 20 ms before it says it's awake (`FENNEC_TEST_SLOW_WAKE_MS`, which only a debug
 /// build reads), so the check finds every worker asleep while the call's job is queued: its look
@@ -9352,6 +9355,14 @@ fn a_parallel_call_that_can_still_end_is_never_a_deadlock() -> std::io::Result<(
     for (name, printed) in cases {
         deadlock_fixture_runs_as(name, 5, (printed, "", 0))?;
     }
+    // A crash of a task main launched, while a call's ranges wait, cuts their waits short: the call
+    // ends, and the block's end says the crash.
+    let mut crashed = String::new();
+    for turn in 0..8 {
+        let _ = writeln!(crashed, "{turn} it crashed");
+    }
+    let said = "error: index 5 is out of range for length 2\n".repeat(8);
+    deadlock_fixture_runs_as("crash_under_join", 5, (&crashed, &said, 0))?;
     deadlock_fixture_runs_with("two_calls_napping", 5, &[("FENNEC_TEST_SLOW_WAKE_MS", "20")], ("42\n", "", 0))
 }
 

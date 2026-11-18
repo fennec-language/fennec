@@ -592,8 +592,9 @@ pub(in crate::embed) struct Latch {
     /// Whether waiting for it is a stuck wait for the deadlock check: a waiting `parallel` call's
     /// join, whose ranges may wait. A call whose body can't wait, and a server, wait uncounted.
     counted: AtomicBool,
-    /// What a join on it waits on, for its note.
-    joined: Arc<Joined>,
+    /// What a join on it waits on, for its note: made only for a waiting call's latch, so a call
+    /// whose body can't wait makes nothing for it.
+    joined: OnceLock<Arc<Joined>>,
 }
 
 /// What a waiting call's join waits on, for the deadlock check: whether every job has finished,
@@ -676,7 +677,9 @@ impl Latch {
                 finished.all = true;
                 // A join's note stops holding, and a counted waiter is uncounted, under the lock,
                 // before it's woken.
-                self.joined.done.store(true, Ordering::SeqCst);
+                if let Some(joined) = self.joined.get() {
+                    joined.done.store(true, Ordering::SeqCst);
+                }
                 if std::mem::take(&mut finished.waiter_counted) {
                     crate::embed::deadlock::stuck_ended();
                 }
@@ -705,12 +708,16 @@ impl Latch {
     /// Says whether waiting for it is a stuck wait: a waiting call's join.
     pub(super) fn counts_joins(&self, counted: bool) {
         self.counted.store(counted, Ordering::Relaxed);
+        if counted {
+            let _ = self.joined.get_or_init(Arc::default);
+        }
     }
 
     /// Notes that the range starting at `from` failed, crashing with `crash` or failing with a
     /// value, for a deadlock's report: the lowest such range, whose failure the call keeps.
     pub(super) fn range_failed(&self, from: usize, crash: Option<String>) {
-        let mut failed = self.joined.failed.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(joined) = self.joined.get() else { return };
+        let mut failed = joined.failed.lock().unwrap_or_else(PoisonError::into_inner);
         if failed.as_ref().is_none_or(|(at, _)| from < *at) {
             *failed = Some((from, crash));
         }
@@ -718,7 +725,8 @@ impl Latch {
 
     /// The note of a join on it.
     fn join_note(&self) -> crate::embed::deadlock::Note {
-        let joined: Arc<dyn crate::embed::deadlock::Awaited> = self.joined.clone();
+        let joined: Arc<dyn crate::embed::deadlock::Awaited> =
+            Arc::<Joined>::clone(self.joined.get_or_init(Arc::default));
         crate::embed::deadlock::Note::parked(joined, crate::embed::deadlock::Kind::Join)
     }
 

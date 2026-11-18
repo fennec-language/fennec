@@ -145,8 +145,9 @@ pub(crate) enum Who {
         at: usize,
         task: u64,
     },
-    /// Anything else: a server's round, or a range of a `parallel` call. Neither is in a report
-    /// yet: a worker serving isn't idle, and a call's caller counts as running while it waits.
+    /// Anything else: a server's round, or a range of a `parallel` call. A server's round is in no
+    /// report, as a worker serving isn't idle. A range is named by its call and where it starts,
+    /// from its note's `RangeName`.
     Other,
 }
 
@@ -233,6 +234,15 @@ impl CallName {
         Arc::new(range_here().map_or_else(|| CallName::By(Who::here()), CallName::InRange))
     }
 
+    /// Where its maker goes among a report's lines: for a call made in a range, that range's
+    /// call's maker.
+    fn maker(&self, notes: &[Note]) -> (u8, i64) {
+        match self {
+            CallName::By(who) => who.said(notes).0,
+            CallName::InRange(range) => range.call.maker(notes),
+        }
+    }
+
     fn said(&self, notes: &[Note]) -> String {
         match self {
             CallName::By(who) => format!("{}'s `parallel` call", who.said(notes).1),
@@ -293,10 +303,13 @@ impl Note {
         let (order, who) = if let Some(range) = &self.range {
             let call = range.call.said(notes);
             let who = format!("range {} of {call}", range.from);
-            ((3, 0, call, i64::try_from(range.from).unwrap_or(i64::MAX)), who)
+            // Calls in the order of who made them, as their lines are: `main`'s, then task 2's
+            // before task 10's.
+            let (rank, number) = range.call.maker(notes);
+            ((3, 0, (rank, number, call), i64::try_from(range.from).unwrap_or(i64::MAX)), who)
         } else {
             let ((rank, number), who) = self.who.said(notes);
-            ((rank, number, String::new(), 0), who)
+            ((rank, number, (0, 0, String::new()), 0), who)
         };
         let what = match &self.on {
             On::Channel(_) => match self.kind {
@@ -457,7 +470,7 @@ pub(crate) fn woke_idle(stuck: u64) {
 
 /// Where a stuck wait's line goes in a report: `main`, then tasks by number, then ranges by their
 /// call and where they start.
-type Order = (u8, i64, String, i64);
+type Order = (u8, i64, (u8, i64, String), i64);
 
 /// What a deadlock says: one line, then one for each stuck wait, in the order of who waits.
 fn said(notes: &[Note]) -> String {

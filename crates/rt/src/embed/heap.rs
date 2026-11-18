@@ -404,6 +404,11 @@ pub(super) struct Listing {
     scopes: usize,
 }
 
+/// How many of the blocks taken over at once go in the table's hash map, with no page made: a
+/// message's or a task's few. Past them a batch is many blocks lying close together, as a
+/// `parallel` call's results are, which pages hold in less room and find faster.
+const ADOPTED_HASHED: usize = 64;
+
 /// How many blocks a task lists as made between looks at whether to let the list go, and the
 /// fewest it lets go of. A list this long is 32 KB.
 pub(crate) const MADE_LISTED: usize = 4096;
@@ -949,7 +954,14 @@ impl Heap {
         }
     }
 
-    pub(crate) fn insert(&mut self, mut block: Box<[u64]>) -> i64 {
+    pub(crate) fn insert(&mut self, block: Box<[u64]>) -> i64 {
+        self.insert_made_by(block, false)
+    }
+
+    /// `insert`, for a block made here, or by another thread (`adopted`), whose block goes in
+    /// the table without making a page for it (`Table::insert_adopted`).
+    #[inline]
+    fn insert_made_by(&mut self, mut block: Box<[u64]>, adopted: bool) -> i64 {
         self.allocated(u64::try_from(block.len()).unwrap_or(0) * 8);
         let address = block.as_ptr().addr();
         if block.first().is_some_and(|count| *count >= IMMORTAL) {
@@ -965,7 +977,11 @@ impl Heap {
                 self.list_made(address);
             }
         }
-        self.blocks.insert(block);
+        if adopted {
+            self.blocks.insert_adopted(block);
+        } else {
+            self.blocks.insert(block);
+        }
         i64::try_from(address).unwrap_or(0)
     }
 
@@ -1159,9 +1175,11 @@ impl Heap {
 
     pub(crate) fn adopt_made(&mut self, blocks: impl IntoIterator<Item = Box<[u64]>>) {
         let counts = self.counts;
-        for mut block in blocks {
+        for (taken, mut block) in blocks.into_iter().enumerate() {
             mark_owner(&mut block, self.owner_bits);
-            self.insert(block);
+            // Many taken over at once lie close together, as a `parallel` call's results do: past
+            // the first few, they get pages as blocks made here do.
+            self.insert_made_by(block, taken < ADOPTED_HASHED);
         }
         self.counts = counts;
         self.publish_counts();
@@ -1169,9 +1187,13 @@ impl Heap {
 
     /// Takes over blocks another thread's heap handed over, as this thread's own.
     pub(crate) fn adopt_blocks(&mut self, blocks: Vec<Box<[u64]>>) {
-        for mut block in blocks {
+        for (taken, mut block) in blocks.into_iter().enumerate() {
             mark_owner(&mut block, self.owner_bits);
-            self.blocks.insert(block);
+            if taken < ADOPTED_HASHED {
+                self.blocks.insert_adopted(block);
+            } else {
+                self.blocks.insert(block);
+            }
         }
     }
 

@@ -25796,7 +25796,7 @@ fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> 
     let source = "def main(stdout: Stdout):\n    stdout.print(\"stored\")\n";
     std::fs::write(dir.join("main.fen"), source)?;
     let build = |args: &[&str]| -> std::io::Result<(String, Vec<u8>)> {
-        let output = crate::executables::fennec_command()
+        let output = crate::executables::fennec_command_with_empty_store()
             .args(args)
             .current_dir(&dir)
             .env("FENNEC_HOME", &home)
@@ -29702,7 +29702,7 @@ fn the_cache_is_used_where_no_file_can_be_made_in_the_temp_folder() -> std::io::
     let (path, out) =
         (program.to_string_lossy().into_owned(), dir.join("no_temp").to_string_lossy().into_owned());
     let build = || -> std::io::Result<String> {
-        let built = crate::executables::fennec_command()
+        let built = crate::executables::fennec_command_with_empty_store()
             .args(["build", "--llvm", &path, "-o", &out])
             .env("FENNEC_HOME", &dir)
             .env("TMPDIR", dir.join("not-there"))

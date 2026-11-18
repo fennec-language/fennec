@@ -13,9 +13,17 @@
 # just before each worktree's `target/` goes, which is first renamed, in one step, so a build that
 # starts a moment later finds no half-deleted folder: it builds from nothing.
 #
+# Left alone too, however long they've been idle, as `sweep-worktrees.sh` leaves them:
+#   - one whose name ends in `-keep`, `-base` or `-gate`: a lane's baseline or gate worktree,
+#     whose build it keeps on purpose, a measuring baseline above all;
+#   - one the app made for a session, named like `blissful-lederberg-d82a7e`: that session works
+#     in it.
+#
 #   sweep-builds.sh                    deletes them, and says how much it freed
 #   sweep-builds.sh --dry-run          says what it would delete, deleting nothing
 #   sweep-builds.sh --days N           files unused for N days rather than two
+#   sweep-builds.sh --hours N          files unused for N hours: every two hours, the lanes' sweep
+#                                      runs it with `--hours 2`
 #   sweep-builds.sh --worktrees DIR    the worktrees in DIR rather than this checkout's
 #
 # It stops at the first thing that fails.
@@ -23,12 +31,17 @@ set -euo pipefail
 
 dry_run=false
 days=2
+hours=""
 worktrees=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=true ;;
     --days)
       days="${2:?--days takes a number}"
+      shift
+      ;;
+    --hours)
+      hours="${2:?--hours takes a number}"
       shift
       ;;
     --worktrees)
@@ -48,6 +61,21 @@ case "$days" in
     exit 2
     ;;
 esac
+# How long nothing in a build was written, as it's said and in minutes, for `find`.
+idle="$days days"
+[ "$days" != 1 ] || idle="day"
+minutes=$((days * 24 * 60))
+if [ -n "$hours" ]; then
+  case "$hours" in
+    *[!0-9]* | 0)
+      echo "sweep-builds: --hours takes a whole number above 0, not $hours" >&2
+      exit 2
+      ;;
+  esac
+  idle="$hours hours"
+  [ "$hours" != 1 ] || idle="hour"
+  minutes=$((hours * 60))
+fi
 if [ -z "$worktrees" ]; then
   # The main checkout's, wherever this runs from: the common git folder is its `.git`.
   common="$(cd "$(dirname "$0")" && git rev-parse --path-format=absolute --git-common-dir)"
@@ -58,7 +86,6 @@ fi
   exit 1
 }
 worktrees="$(cd "$worktrees" && pwd -P)"
-minutes=$((days * 24 * 60))
 
 folders="$(mktemp)"
 commands="$(mktemp)"
@@ -108,13 +135,23 @@ for tree in "$worktrees"/*/; do
   tree="${tree%/}"
   [ -d "$tree/target" ] || continue
   name="$(basename "$tree")"
+  case "$name" in
+    *-keep | *-base | *-gate)
+      echo "$name: kept on purpose, so left alone"
+      continue
+      ;;
+  esac
+  if [[ "$name" =~ ^[a-z]+-[a-z]+-[0-9a-f]{6}$ ]]; then
+    echo "$name: a session's own, so left alone"
+    continue
+  fi
   if busy "$tree"; then
     echo "$name: skipped, something is running in it"
     continue
   fi
   # Anything written in the time given is a build that's still in use, and all of it stays.
   if [ -n "$(find "$tree/target" -type f -mmin "-$minutes" -print -quit)" ]; then
-    echo "$name: built in the last $days days, so left alone"
+    echo "$name: built in the last $idle, so left alone"
     continue
   fi
   find "$tree/target" -type f -print0 > "$listed"

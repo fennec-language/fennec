@@ -697,6 +697,91 @@ fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result
     )
 }
 
+/// A dict whose values are generators or closures builds and lets each go (#2099). Their blocks went
+/// into the runtime's calls as addresses where a word goes, so `opt` refused the program, written
+/// out or one value at a time. Each is put in, replaced, got, popped, looped over or called, left
+/// unstarted or part done, and the dict cleared. It prints what the reference evaluator prints, in
+/// entries and boxed, with nothing left.
+#[test]
+fn a_dict_of_generators_or_closures_builds_and_lets_each_go() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without("FENNEC_BOXED_DICT_VALUES", "dict_of_blocks", DICT_OF_BLOCKS, DICT_OF_BLOCKS_PRINTS)
+}
+
+const DICT_OF_BLOCKS: &str = r#"# A dict whose values are generators or closures: each is a block the dict owns. They're put in
+# written out and one at a time, replaced, got, popped, looped over or called, left unstarted or part
+# done, and the dict cleared, with nothing left at the end.
+
+def counting(limit: int) -> Iterator[int]:
+    for at in range(limit):
+        yield at
+
+def words(text: str) -> Iterator[str]:
+    for word in text.split(" "):
+        yield word
+
+def run_generators(stdout: Stdout):
+    mut held = {"a": counting(3), "b": counting(4)}
+    held["c"] = counting(5)
+    held["a"] = (each * 10 for each in counting(2))
+    stdout.print("held", len(held))
+    for name in ["a", "b", "z"]:
+        made = held.get(name) else counting(1)
+        stdout.print(name, sum(made))
+    popped = held.pop("c") else counting(0)
+    mut seen = 0
+    for each in popped:
+        seen += each
+        if each == 2:
+            break
+    stdout.print("popped", seen, len(held))
+    mut by_number: dict[int, Iterator[str]] = {}
+    for number in range(3):
+        by_number[number] = words(f"one two {number}")
+    for number, made in by_number.items():
+        stdout.print(number, list(made))
+    by_number.clear()
+    by_number[7] = words("never started")
+    stdout.print("left", len(by_number))
+
+def run_closures(stdout: Stdout):
+    base = 10
+    kept = [1, 2, 3]
+    doubled: (int) -> int = (at) => at * 2
+    shifted: (int) -> int = (at) => at + base
+    counted: (int) -> int = (at) => at + len(kept)
+    mut held = {"double": doubled, "shifted": shifted}
+    held["counted"] = counted
+    held["double"] = counted
+    for name, run in held.items():
+        stdout.print(name, run(5))
+    held.clear()
+    held["again"] = shifted
+    again = held["again"]
+    stdout.print("again", again(2), len(held))
+
+def main(stdout: Stdout):
+    run_generators(stdout)
+    run_closures(stdout)
+"#;
+
+const DICT_OF_BLOCKS_PRINTS: &str = r#"held 3
+a 10
+b 6
+z 0
+popped 3 2
+0 ["one", "two", "0"]
+1 ["one", "two", "1"]
+2 ["one", "two", "2"]
+left 1
+double 8
+shifted 15
+counted 8
+again 12 1
+"#;
+
 /// A slice of a text used as a dict's key is found and added with no string made for it only in a
 /// dict of one-word values. Which dicts hold their values in their entries is the layouts' to say:
 /// a tuple is held in an entry as a struct is, and a dict of tuples took the one-word way, which
@@ -13983,6 +14068,91 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A generator kept for later fails as what it loops over, held generators included, and its
+/// `?`s do. Kept in a list, it's lifted into a function of its own, which on main was lowered as
+/// one that can't fail, so its failure stopped the program (#2097's review). It passes that
+/// failure up, over held generators, over a named one and with a `?` inside, in both builds.
+/// `except` on a generic `def` given one handles only the `def`'s own failure.
+#[test]
+fn a_kept_generator_lifted_passes_up_what_it_fails_with() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("kept_generator_lifted", KEPT_GENERATOR_LIFTED, KEPT_GENERATOR_LIFTED_PRINTS)
+}
+
+const KEPT_GENERATOR_LIFTED: &str = r#"# A generator kept for later fails as what it loops over and its `?`s do, and kept in a list, so
+# it's a function of its own, it passes that failure up where it's asked for an item. `except` on
+# a generic `def`'s call given one handles only the `def`'s own failure.
+
+error Shut:
+    name: str
+
+error Bad:
+    why: str
+
+def first(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def shown(at: int) -> int fails Bad:
+    if at > 1:
+        fail Bad(why=f"at {at}")
+    return at
+
+def checked[T](value: T, text: str) -> T fails Bad:
+    if text == "":
+        fail Bad(why="empty")
+    return value
+
+def over_held(stdout: Stdout) fails Shut:
+    held = [first("a")?, first("b")?]
+    kept = [(sum(gen) for gen in held)]
+    stdout.print("made")
+    for total in kept[0]:
+        stdout.print("total", total)
+
+def over_named(stdout: Stdout) fails Shut:
+    named = first("c")?
+    kept = [(each * 10 for each in named)]
+    for total in kept[0]:
+        stdout.print("total", total)
+
+def with_try(stdout: Stdout) fails Bad:
+    kept = [(shown(at)? for at in range(3))]
+    for each in kept[0]:
+        stdout.print("shown", each)
+
+def through_def(stdout: Stdout, text: str) fails Shut:
+    kept = checked(first("d")?, text) except why:
+        stdout.print("checked failed", why)
+        return
+    stdout.print("sum", sum(kept))
+
+def main(stdout: Stdout):
+    over_held(stdout) except why:
+        stdout.print("failed", why)
+    over_named(stdout) except why:
+        stdout.print("failed", why)
+    with_try(stdout) except why:
+        stdout.print("failed", why)
+    through_def(stdout, "") except why:
+        stdout.print("failed", why)
+    through_def(stdout, "x") except why:
+        stdout.print("failed", why)
+"#;
+
+const KEPT_GENERATOR_LIFTED_PRINTS: &str = r#"made
+failed Shut(name="a")
+total 10
+failed Shut(name="c")
+shown 0
+shown 1
+failed Bad(why="at 2")
+checked failed Bad(why="empty")
+failed Shut(name="d")
+"#;
+
 /// A `sum`, `list`, `max`, `sorted`, `any` or comprehension of a generator that fails partway,
 /// inside a statement, passes the failure up before the rest of the statement runs (#2098). On main
 /// the generator, copied in, held its failure and the statement went on before failing: it printed
@@ -15281,7 +15451,8 @@ def main(stdout: Stdout):
 
 /// A generator held in a name, let go by its last owner, has nothing there to take its cleanup's
 /// failure: the task stops with it, saying so, as for a crash, where the loop over a call it's
-/// made for would fail.
+/// made for would fail. It's got with `?` and let go as its function ends. Got with `except`, as
+/// this program once did first, it's refused now (#2097): `except` on making one never runs.
 #[test]
 fn a_cleanup_failing_as_a_named_generator_is_let_go_stops_the_task() -> std::io::Result<()> {
     if !ready() {
@@ -15297,10 +15468,10 @@ fn a_cleanup_failing_as_a_named_generator_is_let_go_stops_the_task() -> std::io:
     let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(code, Some(1), "{err}");
-    assert_eq!(out, "after quiet\nclosing quiet\n");
+    assert_eq!(out, "after kept\nclosing kept\n");
     assert!(
         err.contains(
-            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"quiet\")"
+            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"kept\")"
         ),
         "{err}"
     );
@@ -15329,15 +15500,6 @@ def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
         yield 2
 
 
-def quiet(stdout: Stdout):
-    walk = held("quiet", stdout) except why:
-        stdout.print("opening failed", why)
-        stdout.print("after quiet")
-        return
-    for n in walk:
-        break
-    stdout.print("after quiet")
-
 def kept(stdout: Stdout) fails Shut:
     walk = held("kept", stdout)?
     for n in walk:
@@ -15345,7 +15507,6 @@ def kept(stdout: Stdout) fails Shut:
     stdout.print("after kept")
 
 def main(stdout: Stdout):
-    quiet(stdout)
     kept(stdout) except why:
         stdout.print("kept failed", why)
         return
@@ -25796,7 +25957,7 @@ fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> 
     let source = "def main(stdout: Stdout):\n    stdout.print(\"stored\")\n";
     std::fs::write(dir.join("main.fen"), source)?;
     let build = |args: &[&str]| -> std::io::Result<(String, Vec<u8>)> {
-        let output = crate::executables::fennec_command()
+        let output = crate::executables::fennec_command_with_empty_store()
             .args(args)
             .current_dir(&dir)
             .env("FENNEC_HOME", &home)
@@ -29702,7 +29863,7 @@ fn the_cache_is_used_where_no_file_can_be_made_in_the_temp_folder() -> std::io::
     let (path, out) =
         (program.to_string_lossy().into_owned(), dir.join("no_temp").to_string_lossy().into_owned());
     let build = || -> std::io::Result<String> {
-        let built = crate::executables::fennec_command()
+        let built = crate::executables::fennec_command_with_empty_store()
             .args(["build", "--llvm", &path, "-o", &out])
             .env("FENNEC_HOME", &dir)
             .env("TMPDIR", dir.join("not-there"))

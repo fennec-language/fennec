@@ -427,7 +427,9 @@ impl Emit<'_, '_, '_> {
                 }
                 self.line(&format!("{word} = ptrtoint ptr {value} to i64"));
             }
-            Kind::Maybe(_) => {
+            // A generator's or closure's block is owned as any block is, a closure's through what
+            // it captures.
+            Kind::Maybe(_) | Kind::Gen | Kind::Closure(..) => {
                 if retain {
                     self.retain_value(value, kind);
                 }

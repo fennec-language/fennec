@@ -369,6 +369,17 @@ impl State {
         })
     }
 
+    /// Whether a send of no time on `number`, stamped `sent`, finds room or not the same on every
+    /// run: nothing but those in `apart` could send or take now, and each take it could find room
+    /// by, and each message filling it, happened before it.
+    fn room_now_is_fixed(&self, number: i64, sent: &Clock, apart: &[usize]) -> bool {
+        let Some(chan) = self.channels.get(&number) else { return true };
+        let took_beside = chan.receivers.values().any(|(tried, took)| *took && !happened_before(tried, sent));
+        let full = chan.queue.len() >= chan.size;
+        let filled_beside = full && chan.queue.iter().any(|queued| !happened_before(&queued.clock, sent));
+        !took_beside && !filled_beside && !self.others_could_go(apart)
+    }
+
     /// Whether what a receive from `number`, a channel or a listener, could find now was there
     /// before `now` on every run: each message that could be the next one, or else the close.
     fn there_before(&self, number: i64, now: &Clock) -> bool {
@@ -1119,18 +1130,10 @@ impl Interp {
                     drop(orders);
                     return state.kept_for_every(number, &clock);
                 }
-                // A send of no time finds room or not by time unless nothing else could send or
-                // take now, each take it could find room by and each message filling it happened
-                // before it, and it isn't in a `parallel` round beside others.
-                if timeout == 0 {
-                    let took_beside =
-                        chan.receivers.values().any(|(tried, took)| *took && !happened_before(tried, &clock));
-                    let full = chan.queue.len() >= chan.size;
-                    let filled_beside =
-                        full && chan.queue.iter().any(|queued| !happened_before(&queued.clock, &clock));
-                    if beside_rounds || took_beside || filled_beside || state.others_could_go(&[me, sender]) {
-                        return unsupported("a send of no time, which finds room or not by time");
-                    }
+                // A send of no time in a `parallel` round beside others finds room or not by time.
+                if timeout == 0 && (beside_rounds || !state.room_now_is_fixed(number, &clock, &[me, sender]))
+                {
+                    return unsupported("a send of no time, which finds room or not by time");
                 }
                 let Some(chan) = state.channels.get_mut(&number) else { return Ok(Value::Int(1)) };
                 if chan.queue.len() < chan.size {
@@ -1249,6 +1252,64 @@ fn cut_short(state: &mut State, me: usize, who: usize) -> bool {
     true
 }
 
+/// Two tasks taking from the listener numbered `number` at once, as for a channel to one
+/// receiver, where neither had heard of the other's last take: which gets which hangs on time.
+/// Notes `receiver`'s try.
+fn two_at_once(state: &mut State, receiver: usize, number: i64) -> Run<()> {
+    let Some(listener) = state.listeners.get(&number) else { return Ok(()) };
+    let Some(chan) = state.channels.get(&listener.channel) else { return Ok(()) };
+    let now = state.actors.get(receiver).map(|actor| actor.clock.clone()).unwrap_or_default();
+    let takes = listener.at < chan.sent.len();
+    let races = listener.receivers.iter().any(|(other, (tried, took))| {
+        *other != receiver && (takes || *took) && !happened_before(tried, &now)
+    });
+    if races {
+        return unsupported(
+            "two tasks taking messages from one listener of a channel to every listener, which gets which hanging on time",
+        );
+    }
+    let took = listener.receivers.get(&receiver).is_some_and(|(_, took)| *took);
+    if let Some(listener) = state.listeners.get_mut(&number) {
+        listener.receivers.insert(receiver, (now, took));
+    }
+    Ok(())
+}
+
+/// Where the listener numbered `number` reads next. One whose next message has gone fails, as a
+/// crash does, or goes on from the oldest kept, as the runtime's does. It fell behind on every run
+/// only if each send that let what it missed go happened before this receive, by `receiver`.
+fn fallen_behind(state: &mut State, receiver: usize, number: i64) -> Run<usize> {
+    let Some(listener) = state.listeners.get(&number) else { return Ok(0) };
+    let (at, drop_oldest) = (listener.at, listener.drop_oldest);
+    let Some(chan) = state.channels.get(&listener.channel) else { return Ok(at) };
+    if at >= chan.first {
+        return Ok(at);
+    }
+    let now = state.actors.get(receiver).map(|actor| actor.clock.clone()).unwrap_or_default();
+    let missed_drops = chan.dropped.get(at..chan.first).unwrap_or_default();
+    if !missed_drops.iter().all(|dropped| happened_before(dropped, &now)) {
+        return unsupported(
+            "a listener of a channel to every listener found a message gone that it could have read first, by time",
+        );
+    }
+    if !drop_oldest {
+        let missed = chan.first - at;
+        return super::crash(
+            format!(
+                "this listener fell behind a channel to `.Every`, missing {missed} message{}: listen \
+                 with `when_behind=.DropOldest` to skip what it misses",
+                if missed == 1 { "" } else { "s" }
+            ),
+            Span::default(),
+        );
+    }
+    let first = chan.first;
+    if let Some(listener) = state.listeners.get_mut(&number) {
+        listener.at = first;
+    }
+    Ok(first)
+}
+
 /// Takes the next message from `number`, a channel or a listener, for `receiver`: `None` while
 /// there's none, `(None, 1)` once it's closed and empty. The taker's clock takes in the sender's.
 fn take_message(
@@ -1259,51 +1320,9 @@ fn take_message(
 ) -> Run<Option<(Value, i64)>> {
     let mut read_at = None;
     let taken = if let Some(listener) = state.listeners.get(&number) {
-        let (channel, mut at, drop_oldest) = (listener.channel, listener.at, listener.drop_oldest);
-        let Some(chan) = state.channels.get(&channel) else { return Ok(Some((Value::None, 1))) };
-        // Two at once, as for a channel to one receiver: which gets which hangs on time.
-        let now = state.actors.get(receiver).map(|actor| actor.clock.clone()).unwrap_or_default();
-        let takes = at < chan.sent.len();
-        let races = listener.receivers.iter().any(|(other, (tried, took))| {
-            *other != receiver && (takes || *took) && !happened_before(tried, &now)
-        });
-        if races {
-            return unsupported(
-                "two tasks taking messages from one listener of a channel to every listener, which gets which hanging on time",
-            );
-        }
-        let took = listener.receivers.get(&receiver).is_some_and(|(_, took)| *took);
-        if let Some(listener) = state.listeners.get_mut(&number) {
-            listener.receivers.insert(receiver, (now, took));
-        }
-        let Some(chan) = state.channels.get(&channel) else { return Ok(Some((Value::None, 1))) };
-        // A listener whose next message has gone fails, as a crash does, or goes on from the
-        // oldest kept, as the runtime's does. It fell behind on every run only if each send that
-        // let what it missed go happened before this receive.
-        if at < chan.first {
-            let now = state.actors.get(receiver).map(|actor| actor.clock.clone()).unwrap_or_default();
-            let missed_drops = chan.dropped.get(at..chan.first).unwrap_or_default();
-            if !missed_drops.iter().all(|dropped| happened_before(dropped, &now)) {
-                return unsupported(
-                    "a listener of a channel to every listener found a message gone that it could have read first, by time",
-                );
-            }
-            if !drop_oldest {
-                let missed = chan.first - at;
-                return super::crash(
-                    format!(
-                        "this listener fell behind a channel to `.Every`, missing {missed} message{}: listen \
-                         with `when_behind=.DropOldest` to skip what it misses",
-                        if missed == 1 { "" } else { "s" }
-                    ),
-                    Span::default(),
-                );
-            }
-            at = chan.first;
-            if let Some(listener) = state.listeners.get_mut(&number) {
-                listener.at = at;
-            }
-        }
+        let channel = listener.channel;
+        two_at_once(state, receiver, number)?;
+        let at = fallen_behind(state, receiver, number)?;
         let Some(chan) = state.channels.get(&channel) else { return Ok(Some((Value::None, 1))) };
         if at >= chan.sent.len() {
             return Ok(chan.closed.then_some((Value::None, 1)));

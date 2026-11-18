@@ -121,14 +121,6 @@ impl Handovers {
         }
     }
 
-    /// Every type in what's handed over.
-    pub(crate) fn types(&self) -> Vec<&Type> {
-        let handed = self.handed.values().flat_map(|calls| calls.values()).flat_map(|handed| &handed.values);
-        let mut all: Vec<&Type> = handed.filter_map(|value| value.ty.as_ref()).collect();
-        all.extend(self.arrows.values().flat_map(|arrows| arrows.values()).flat_map(|arrow| &arrow.params));
-        all
-    }
-
     /// The same, with every type in it settled, for a later round's check to carry over.
     pub(crate) fn settled(mut self, settle: &dyn Fn(&Type) -> Type) -> Handovers {
         for calls in self.handed.values_mut() {
@@ -238,7 +230,9 @@ impl FnCx<'_> {
     }
 
     fn note_values(&mut self, to: To, span: Span, values: Vec<Value>) {
-        if !self.report {
+        // A round's check of what lowering rewrote judges no handover: `refused` holds the
+        // program as written to its kits' lists, in the first check.
+        if !self.report || self.checker.again {
             return;
         }
         let calls = self.checker.handovers.handed.entry(self.key.clone()).or_default();
@@ -270,7 +264,8 @@ impl FnCx<'_> {
         body: &fennec_syntax::Expr,
         takes: &[Type],
     ) {
-        if !self.report {
+        // As for `note_values`: nothing reads it after the first check.
+        if !self.report || self.checker.again {
             return;
         }
         let mut reads = Vec::new();

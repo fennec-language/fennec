@@ -780,7 +780,8 @@ fn resolved_within(
         let declared = declarations(module);
         // The library's functions this program needs rewritten go through this round with its own.
         let std_in = std_rewritten_in(module, &checked);
-        let written = resolved_round(module, &checked);
+        let mut only_written = WrittenDefs::new();
+        let written = resolved_round(module, &checked, &mut only_written);
         std_rewritten_out(module);
         let again = match written {
             Round::Again => {
@@ -808,7 +809,7 @@ fn resolved_within(
             seen.clone_from(module);
         }
         let next = if let Some(shared_retyped) = still_declared(&declared, &declarations(module)) {
-            checker::Checker::carrying(module, &checked, shared_retyped)
+            checker::Checker::carrying(module, &checked, (shared_retyped, &only_written))
         } else {
             let mut next = checker::Checker::new(module);
             next.again = true;
@@ -1018,6 +1019,28 @@ fn differing_part(again: &Checked, carried: &Checked) -> String {
     }
 }
 
+/// Each function and method of a module, by its name and the span of its text.
+pub(crate) type WrittenDefs = BTreeMap<(String, u32, u32), fennec_syntax::FnDef>;
+
+/// Each function and method of `module` as it is: what a round left them once it wrote in what the
+/// check found, before rewriting any, so the round's check can carry over what the round before
+/// found for one that was only written into.
+fn written_defs(module: &Module) -> WrittenDefs {
+    let mut found = WrittenDefs::new();
+    let mut add = |def: &fennec_syntax::FnDef| {
+        found.insert((def.name.clone(), def.span.start, def.span.end), def.clone());
+    };
+    for item in &module.items {
+        match item {
+            Item::Function(def) => add(def),
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.methods.iter().for_each(&mut add),
+            Item::Extend(extension) => extension.methods.iter().for_each(&mut add),
+            _ => {}
+        }
+    }
+    found
+}
+
 /// What's said when writing in what the check found is still changing the program after every
 /// round it's given: a mistake in the compiler, naming the first function the last round changed.
 fn still_changing(before: &Module, after: &Module) -> Diagnostic {
@@ -1133,16 +1156,16 @@ fn library_functions() -> Vec<(String, fennec_syntax::FnDef)> {
 
 /// One round of writing in what the check found, saying whether anything was written that needs
 /// checking again.
-fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
+fn resolved_round(module: &mut Module, checked: &Checked, only_written: &mut WrittenDefs) -> Round {
     // What a round writes in more than once is noted where it went, with what's there already.
     lend_lowering::copies_from(module);
-    let round = written_in_round(module, checked);
+    let round = written_in_round(module, checked, only_written);
     lend_lowering::copies_into(module);
     round
 }
 
 /// What `resolved_round` writes in.
-fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
+fn written_in_round(module: &mut Module, checked: &Checked, only_written: &mut WrittenDefs) -> Round {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
     unqualified_cases(module, &checked.signatures);
@@ -1197,6 +1220,8 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
     }
     imports_for_std_calls(module, checked.std_calls.values());
     imports_for_cases(module, &checked.cases);
+    // What the check found is written in; what's rewritten below changes what's written.
+    *only_written = written_defs(module);
     let rewritten = sources_copied(module, checked) || widened_values(module, &checked.widened_values);
     if rewritten || routes::lower(module, &checked.routes) {
         return Round::Again;

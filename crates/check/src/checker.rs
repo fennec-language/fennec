@@ -172,6 +172,31 @@ impl Graph {
 }
 
 impl Tables {
+    /// Whether what a round writes in from these is only of the kinds a check of what's written
+    /// finds nothing more of, `method_calls` and `cases`, or finds again just as it was,
+    /// `generator_types`: then that check's tables are these, less what's spent (`spent`). A
+    /// function the round wrote any other kind into is checked again.
+    fn written_again_or_spent(&self) -> bool {
+        self.float_sums.is_empty()
+            && self.sized_sums.is_empty()
+            && self.defaults.is_empty()
+            && self.not_equals.is_empty()
+            && self.array_zeros.is_empty()
+            && self.optional_steps.is_empty()
+            && self.failing_steps.is_empty()
+            && self.std_names.is_empty()
+            && self.std_calls.is_empty()
+            && self.field_args.is_empty()
+            && self.named_patterns.is_empty()
+    }
+
+    /// These, less what a round wrote in that a check of what's written finds nothing more of.
+    fn spent(mut self) -> Tables {
+        self.method_calls.clear();
+        self.cases.clear();
+        self
+    }
+
     /// Every type in what's written, for whether one is still open.
     fn types(&self) -> Vec<&Type> {
         let mut all: Vec<&Type> = self.sources.values().map(|source| &source.gives).collect();
@@ -498,19 +523,31 @@ impl Checker {
         !self.carriable.is_empty()
     }
 
-    pub(crate) fn carrying(module: &Module, previous: &Checked, shared_retyped: bool) -> Checker {
+    pub(crate) fn carrying(
+        module: &Module,
+        previous: &Checked,
+        (shared_retyped, only_written): (bool, &crate::WrittenDefs),
+    ) -> Checker {
         let mut next = Checker::new(module);
         next.again = true;
         next.before.clone_from(&previous.signatures.functions);
-        let mut carried: BTreeSet<String> = previous
-            .defs
-            .iter()
-            .filter(|(key, entry)| {
-                self_same(&next.program.functions, key, entry)
-                    && previous.signatures.functions.contains_key(*key)
-            })
-            .map(|(key, _)| key.clone())
-            .collect();
+        let mut carried = BTreeSet::new();
+        // Those the round only wrote into what their check found, of the kinds a check of what's
+        // written finds again or nothing more of.
+        let mut written_into = BTreeSet::new();
+        for (key, entry) in &previous.defs {
+            if !previous.signatures.functions.contains_key(key) {
+                continue;
+            }
+            if self_same(&next.program.functions, key, entry) {
+                carried.insert(key.clone());
+            } else if only_written_into(&next.program.functions, key, entry, only_written)
+                && previous.tables_of.get(key).is_none_or(Tables::written_again_or_spent)
+            {
+                carried.insert(key.clone());
+                written_into.insert(key.clone());
+            }
+        }
         // Every function it called is still there, as what was a function before.
         carried.retain(|key| {
             previous.graph_of.get(key).is_none_or(|graph| {
@@ -531,6 +568,16 @@ impl Checker {
             {
                 nested.entry(outer.to_owned()).or_default().push(key.clone());
                 carried.insert(key.clone());
+            }
+        }
+        // A function written inside one the round wrote into is as the round before had it, so the
+        // one around it is checked again, with it.
+        for outer in &written_into {
+            if let Some(inside) = nested.remove(outer) {
+                carried.remove(outer);
+                for key in inside {
+                    carried.remove(&key);
+                }
             }
         }
         let mut locals: BTreeMap<String, Vec<(String, Type)>> = BTreeMap::new();
@@ -557,12 +604,10 @@ impl Checker {
             let signature = previous.signatures.functions.get(key);
             let body = previous.types.functions.get(key);
             let tables = previous.tables_of.get(key);
-            let graph = previous.graph_of.get(key);
             signature.is_some_and(|signature| {
                 shared(&signature.returns) || signature.params.iter().any(|param| shared(&param.ty))
             }) || body.is_some_and(|body| body.exprs.values().chain(body.names.values()).any(&shared))
                 || tables.is_some_and(|tables| tables.types().into_iter().any(&shared))
-                || graph.is_some_and(|graph| graph.handovers.types().into_iter().any(&shared))
                 || locals.get(key).is_some_and(|locals| locals.iter().any(|(_, ty)| shared(ty)))
         };
         let open: BTreeSet<String> = carried.iter().filter(|key| open(key)).cloned().collect();
@@ -573,8 +618,16 @@ impl Checker {
             let found = Carried {
                 signature: signature.clone(),
                 body: previous.types.functions.get(&key).cloned(),
-                tables: previous.tables_of.get(&key).cloned(),
-                graph: previous.graph_of.get(&key).cloned(),
+                tables: previous
+                    .tables_of
+                    .get(&key)
+                    .cloned()
+                    .map(|tables| if written_into.contains(&key) { tables.spent() } else { tables }),
+                // What it hands over is judged in the first check alone (`holds::refused`).
+                graph: previous
+                    .graph_of
+                    .get(&key)
+                    .map(|graph| Graph { handovers: crate::holds::Handovers::default(), ..graph.clone() }),
                 locals: locals.remove(&key).unwrap_or_default(),
                 entry: (!next.program.functions.contains_key(&key))
                     .then(|| previous.defs.get(&key).cloned())
@@ -1817,6 +1870,24 @@ fn lowering_calls(key: &str, entry: &FnEntry) -> bool {
 /// Whether `functions` holds `entry` under `key`, as it was.
 fn self_same(functions: &BTreeMap<String, FnEntry>, key: &str, entry: &FnEntry) -> bool {
     functions.get(key).is_some_and(|now| now == entry)
+}
+
+/// Whether the function `key`, `entry` to the round before, is now just what the round left it once
+/// it wrote in what the check found (`written`), before rewriting anything: only written into.
+fn only_written_into(
+    functions: &BTreeMap<String, FnEntry>,
+    key: &str,
+    entry: &FnEntry,
+    written: &crate::WrittenDefs,
+) -> bool {
+    let Some(now) = functions.get(key) else { return false };
+    let was: &FnDef = &entry.def;
+    written.get(&(was.name.clone(), was.span.start, was.span.end)).is_some_and(|after| *after == *now.def)
+        && now.owner == entry.owner
+        && now.prelude == entry.prelude
+        && now.inherited == entry.inherited
+        && now.extension == entry.extension
+        && now.nested == entry.nested
 }
 
 #[cfg(test)]

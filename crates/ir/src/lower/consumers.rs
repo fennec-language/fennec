@@ -349,7 +349,7 @@ impl Lowering<'_> {
         span: Span,
     ) -> Lowered<Option<crate::LocalId>> {
         let algorithm = if hash.starts_with("crypto.blake3") { "blake3" } else { "sha256" };
-        let (end, gives) = if hash.ends_with("_digest") {
+        let (end, hashed) = if hash.ends_with("_digest") {
             ("crypto._end_digest", Type::Bytes)
         } else {
             ("crypto._end", Type::Str)
@@ -365,14 +365,14 @@ impl Lowering<'_> {
         self.emit(start, span);
         let chunk = format!("\0chunk{}", span.start);
         let named = [chunk.clone()];
-        self.through_generator(&named, (generator, item), None, (span, chunks.span), |this| {
-            let given = this.lookup(&chunk).ok_or("a chunk being hashed has no name")?;
-            let args = vec![Operand::Local(handle), Operand::Local(given)];
+        self.through_generator(&named, (generator, item), (None, None), (span, chunks.span), |this| {
+            let piece = this.lookup(&chunk).ok_or("a chunk being hashed has no name")?;
+            let args = vec![Operand::Local(handle), Operand::Local(piece)];
             let add = InstKind::Builtin { dest: None, name: "crypto._add".to_owned(), args, changes: false };
             this.emit(add, span);
             Ok(())
         })?;
-        let dest = self.temporary(keep.cloned().unwrap_or(gives));
+        let dest = self.temporary(keep.cloned().unwrap_or(hashed));
         let ended = InstKind::Builtin {
             dest: Some(dest),
             name: end.to_owned(),

@@ -1126,7 +1126,7 @@ impl Lowering<'_> {
         };
         arg.name.is_none()
             && matches!(made.kind, ExprKind::Call { .. })
-            && matches!(self.type_at(arg.value.span), Some(Type::Iterator(_)))
+            && matches!(self.type_at(arg.value.span), Some(Type::Iterator(..)))
     }
 
     /// Runs a loop over what `over` says, owning `owned` too. Each is let go as the loop is left: by

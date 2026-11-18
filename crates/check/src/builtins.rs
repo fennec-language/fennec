@@ -442,7 +442,10 @@ impl FnCx<'_> {
         let path = *ty == Type::named("Fs");
         for ((actual, at), expected) in plain.iter().zip(&method.params) {
             let as_path = path && *expected == Type::Str && *actual == Type::named("Path");
-            let generated = name == "join" && *actual == Type::iterator(Type::Str);
+            // A generator of text, which can fail: `join` loops over it here, which passes its
+            // failure up.
+            let generated =
+                name == "join" && matches!(actual, Type::Iterator(item, _) if **item == Type::Str);
             if as_path || generated || self.checker.fits(expected, actual) {
                 continue;
             }

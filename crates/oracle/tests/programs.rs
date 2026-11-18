@@ -500,6 +500,7 @@ fn a_named_generator_s_failure_passes_up_as_its_own_into_a_union() {
     prints(GENERATOR_OVER_A_FAILING_ONE_UNION, "10\nShut(name=\"inner\")\n");
     prints(GENERATOR_THROUGH_A_GENERIC_UNION, "1\nShut(name=\"generic\")\n");
     prints(GENERATORS_KEPT_IN_A_LIST_UNION, "1\nShut(name=\"held\")\n");
+    prints(GENERATORS_JOINED_UNION, "n0, n1, n2\nShut(name=\"joined\")\n");
 }
 
 const NAMED_GENERATOR_LOOP_UNION: &str = r#"error Shut:
@@ -646,6 +647,31 @@ def run(stdout: Stdout) fails Shut | Wrapped:
     kept = same(other("generic")?)
     for each in kept:
         stdout.print(each)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const GENERATORS_JOINED_UNION: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+def other(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def shown(n: int) -> str fails Wrapped:
+    if n > 2:
+        fail Wrapped(why=f"n{n}")
+    return f"n{n}"
+
+def run(stdout: Stdout) fails Shut | Wrapped:
+    stdout.print(", ".join(shown(n)? for n in [0, 1, 2]))
+    joined = ", ".join(f"{each}" for each in other("joined")?)
+    stdout.print(joined)
 
 def main(stdout: Stdout):
     run(stdout) except why:

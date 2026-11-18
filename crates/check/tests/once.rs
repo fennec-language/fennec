@@ -73,6 +73,7 @@ fn a_generator_that_can_fail_is_looped_over_in_the_function_that_got_it() {
         "def f(stdout: Stdout) fails Shut | Wrapped:\n    kept = first(\"a\")?\n    for each in kept:\n        stdout.print(each)\n    stdout.print(second(\"b\")?)\n",
         "def f(stdout: Stdout) fails Shut:\n    kept = first(\"a\")?\n    stdout.print([each * 2 for each in kept])\n",
         "def f(stdout: Stdout) fails Shut:\n    kept = first(\"a\")?\n    stdout.print(list(kept))\n",
+        "def f(stdout: Stdout) fails Shut:\n    stdout.print(\", \".join(f\"{each}\" for each in first(\"a\")?))\n",
         // Given again one that fails the same way.
         "def f(stdout: Stdout) fails Shut:\n    mut kept = first(\"a\")?\n    kept = first(\"b\")?\n    stdout.print(sum(kept))\n",
         // Kept in a list here, or through a generic function, and looped over here.

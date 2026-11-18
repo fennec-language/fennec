@@ -781,6 +781,12 @@ impl<'a> Lowering<'a> {
         let then = self.new_block();
         self.finish(Terminator::Branch { cond: Operand::Local(failed), then, otherwise: exit });
         self.current = then;
+        // `enumerate`'s or `zip`'s generator over one its loop owns ends here, the failure left in
+        // that one for the loop to pass up, from its own type, so nothing here reads it.
+        if self.owner_passes_up && !matches!(self.returns, Type::Result(..)) {
+            self.finish(Terminator::Jump(exit));
+            return Ok(());
+        }
         // The slot holds the generator's own error, which its type says. One whose type says it
         // can't fail never gets here, so its slot isn't read as anything.
         let Some(own) = self.generator_error(generator) else {
@@ -789,12 +795,6 @@ impl<'a> Lowering<'a> {
             return Ok(());
         };
         let Type::Result(_, error) = self.returns.clone() else {
-            // `enumerate`'s or `zip`'s generator over one its loop owns ends here, the failure
-            // left in that one for the loop to pass up.
-            if self.owner_passes_up {
-                self.finish(Terminator::Jump(exit));
-                return Ok(());
-            }
             let message = "this function can't pass up a generator's failure".to_owned();
             self.finish(Terminator::Stop { message, span });
             return Ok(());

@@ -175,6 +175,38 @@ impl Type {
         }
     }
 
+    /// What each generator that can fail in a value of this type fails with, at any depth: the
+    /// value's own, and one in a list, a tuple, a dict, an optional, a generic type's copy, a
+    /// union's member, or what a generator gives.
+    #[must_use]
+    pub fn held_generator_failures(&self) -> Vec<&Type> {
+        let mut failures = Vec::new();
+        self.gather_generator_failures(&mut failures);
+        failures
+    }
+
+    fn gather_generator_failures<'t>(&'t self, failures: &mut Vec<&'t Type>) {
+        let held: Vec<&Type> = match self {
+            Type::Iterator(item, failure) => {
+                failures.extend(failure.as_deref());
+                vec![item]
+            }
+            Type::List(inner)
+            | Type::Buffer(inner)
+            | Type::Array(inner, _)
+            | Type::Set(inner)
+            | Type::Optional(inner)
+            | Type::Table(inner)
+            | Type::Result(inner, _) => vec![inner],
+            Type::Dict(key, value) => vec![key, value],
+            Type::Tuple(items) | Type::Generic(_, items) | Type::Union(items) => items.iter().collect(),
+            _ => Vec::new(),
+        };
+        for inner in held {
+            inner.gather_generator_failures(failures);
+        }
+    }
+
     pub(crate) fn optional(inner: Type) -> Type {
         match inner {
             Type::Optional(_) | Type::None | Type::Unknown => inner,

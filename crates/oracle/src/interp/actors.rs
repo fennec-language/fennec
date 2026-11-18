@@ -356,29 +356,53 @@ impl State {
     /// Whether any but those in `apart` can go on now, or is waiting with a timeout, which could end
     /// whenever it does.
     ///
-    /// For the channel numbered `of`, one that doesn't know it was made holds no end of it, nor
-    /// can come to: it counts only while it could come to know, through messages waiting on
-    /// channels it knows of, and those they hand it. An end reaches a task only by its launch or a
-    /// message, which both carry what their sender knew, or a `shared` value, which two tasks
+    /// For the channel numbered `of`, that's only while another task, going or not, holds an end
+    /// of it or could come to, since one going could wake one blocked that does. A task that
+    /// doesn't know the channel was made holds no end of it, nor can come to but through what it
+    /// could come to know, as `could_come_to_know` says. An end reaches a task only by its launch
+    /// or a message, which both carry what their sender knew, or a `shared` value, which two tasks
     /// can't both reach while one changes it. Taking from a channel takes an end of it too.
     fn others_could_go(&self, apart: &[usize], of: Option<i64>) -> bool {
-        let made = of.and_then(|number| self.channels.get(&number)).map(|chan| &chan.made);
-        (0..self.actors.len()).filter(|other| !apart.contains(other)).any(|other| {
-            let Some(found) = self.actors.get(other) else { return false };
-            let could_go = self.can_go(other)
-                || matches!(found.state, Doing::Waiting(_, true))
-                || self.behind_a_racing_send(other);
-            could_go && made.is_none_or(|made| happened_before(made, &self.could_come_to_know(other)))
-        })
+        let others: Vec<usize> = (0..self.actors.len()).filter(|other| !apart.contains(other)).collect();
+        let could_go = |other: usize| {
+            self.can_go(other)
+                || self.actors.get(other).is_some_and(|found| matches!(found.state, Doing::Waiting(_, true)))
+                || self.behind_a_racing_send(other)
+        };
+        let Some(made) = of.and_then(|number| self.channels.get(&number)).map(|chan| &chan.made) else {
+            return others.iter().any(|&other| could_go(other));
+        };
+        let holds = others.iter().any(|&other| {
+            self.actors.get(other).is_some_and(|found| !matches!(found.state, Doing::Ended))
+                && happened_before(made, &self.could_come_to_know(other))
+        });
+        holds && others.iter().any(|&other| could_go(other))
     }
 
-    /// What the thread numbered `actor` could come to know: what it knows, and the `parallel`
-    /// rounds it runs do, and then what each message waiting on a channel it knows of tells,
+    /// What the thread numbered `actor` could come to know: what it knows, what the `parallel`
+    /// rounds it runs know, and those of each thread its rounds were handed on to, which it takes
+    /// in at their call's end; and then what each message waiting on a channel it knows of tells,
     /// until that gives nothing more, as an end handed on through one channel can reach another.
     fn could_come_to_know(&self, actor: usize) -> Clock {
-        let mut known = self.actors.get(actor).map(|found| found.clock.clone()).unwrap_or_default();
+        let mut threads = vec![actor];
+        let mut more = true;
+        while more {
+            more = false;
+            for (at, found) in self.actors.iter().enumerate() {
+                if found.beside.is_some_and(|from| threads.contains(&from)) && !threads.contains(&at) {
+                    threads.push(at);
+                    more = true;
+                }
+            }
+        }
+        let mut known = Clock::new();
+        for thread in &threads {
+            if let Some(found) = self.actors.get(*thread) {
+                merge(&mut known, &found.clock);
+            }
+        }
         for (round, thread) in &self.thread_of {
-            if *thread == actor
+            if threads.contains(thread)
                 && let Some(found) = self.actors.get(*round)
             {
                 merge(&mut known, &found.clock);

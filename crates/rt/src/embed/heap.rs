@@ -829,8 +829,13 @@ impl Heap {
         let Some(mut block) = list.blocks.pop() else { return vec![0; words].into_boxed_slice() };
         list.room += 1;
         self.spare_words -= words;
-        // What's left after what's written is a few words, mostly, for plain stores.
-        zero(block.get_mut(written..).unwrap_or_default());
+        match block.get_mut(written..) {
+            // What's left after what's written is a few words, mostly, for plain stores.
+            Some(rest) => zero(rest),
+            // More said to be written than the block has: all of it is zeroed, so nothing a freed
+            // block held is ever given out.
+            None => zero(&mut block),
+        }
         block
     }
 

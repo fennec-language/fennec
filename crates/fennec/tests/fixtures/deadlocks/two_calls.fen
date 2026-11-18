@@ -1,0 +1,23 @@
+# Waiting calls from main one after another, 300 a run, each a quick hand-off between two ranges:
+# the first push of each call meets workers that have just gone to sleep. Never a deadlock.
+# (From Fable 5.2's review of the phase 2 design.)
+from std.concurrent import Channel, Closed, channel
+
+def part(at: int, pipe: Channel[int]) -> int:
+    if at == 0:
+        got = pipe.receive() else -1
+        return got
+    pipe.send(at + 6) except Closed():
+        return -100
+    return 0
+
+def pair(pipe: Channel[int]) -> int:
+    got = [part(at, pipe=pipe) for at in parallel(range(2))]
+    return sum(got)
+
+def main(stdout: Stdout):
+    mut total = 0
+    for turn in range(300):
+        with channel[int](size=1) as pipe:
+            total += pair(pipe)
+    stdout.print(total)

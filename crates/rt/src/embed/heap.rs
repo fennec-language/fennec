@@ -180,6 +180,7 @@ impl Spare {
     }
 
     /// How many it holds.
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.blocks.len()
     }

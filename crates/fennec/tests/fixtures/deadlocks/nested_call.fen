@@ -1,0 +1,25 @@
+# A range of a waiting `parallel` call makes a waiting call of its own, whose two ranges would each
+# receive on a channel nobody sends to. The outer call's other range has ended. A call made on a
+# worker runs its ranges there, one after another, so it's the outer range that waits.
+from std.concurrent import Channel, channel
+
+def takes(pipe: Channel[int]) -> int:
+    got = pipe.receive() else -1
+    return got
+
+def inner(pipe: Channel[int]) -> int:
+    got = [takes(pipe) for at in parallel(range(2))]
+    return sum(got)
+
+def outer(at: int, pipe: Channel[int]) -> int:
+    if at == 1:
+        return inner(pipe)
+    return at
+
+def all_parts(pipe: Channel[int]) -> int:
+    got = [outer(at, pipe=pipe) for at in parallel(range(2))]
+    return sum(got)
+
+def main(stdout: Stdout):
+    with channel[int](size=1) as pipe:
+        stdout.print(all_parts(pipe))

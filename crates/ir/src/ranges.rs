@@ -39,7 +39,7 @@ use fennec_check::Type;
 use fennec_syntax::{BinOp, UnaryOp};
 
 use crate::lengths::{called_other_ways, every};
-use crate::{Block, Function, InstKind, LocalId, Operand, Program, Terminator};
+use crate::{Block, Function, InstKind, LocalId, Operand, Program, StructDef, Terminator};
 
 /// How many times a fact grows before what's still moving in it is widened.
 const GROWTHS_BEFORE_WIDENING: usize = 4;
@@ -458,12 +458,42 @@ impl Ranges {
 
 /// What's worked out once about a whole program, before any round.
 struct Whole<'p> {
-    program: &'p Program,
     functions: HashMap<&'p str, &'p Function>,
     other_ways: HashSet<&'p str>,
     closures: HashMap<&'p str, usize>,
     outside: HashSet<String>,
     sets_every: HashMap<&'p str, Vec<bool>>,
+    /// The program's types by name, found once rather than searched for at each read and write.
+    named: Named<'p>,
+}
+
+/// The program's structs and errors by name, as searching them in order finds them.
+struct Named<'p> {
+    /// The first struct of each name that isn't a `shared` type.
+    plain: HashMap<&'p str, &'p StructDef>,
+    /// The names of the `shared` types.
+    shared: HashSet<&'p str>,
+    /// The fields of the first struct, or else error, of each name (`fields_of`).
+    fields: HashMap<&'p str, &'p [(String, Type)]>,
+}
+
+impl<'p> Named<'p> {
+    fn of(program: &'p Program) -> Self {
+        let mut plain = HashMap::new();
+        let mut shared = HashSet::new();
+        let mut fields = HashMap::new();
+        for def in &program.structs {
+            if def.shared {
+                shared.insert(def.name.as_str());
+            } else {
+                plain.entry(def.name.as_str()).or_insert(def);
+            }
+        }
+        for def in program.structs.iter().chain(&program.errors) {
+            fields.entry(def.name.as_str()).or_insert(def.fields.as_slice());
+        }
+        Named { plain, shared, fields }
+    }
 }
 
 impl<'p> Whole<'p> {
@@ -475,13 +505,13 @@ impl<'p> Whole<'p> {
         let outside = outside_structs(program, &other_ways, &closures);
         let sets_every =
             functions.iter().map(|(name, function)| (*name, sets_every_item(function))).collect();
-        Whole { program, functions, other_ways, closures, outside, sets_every }
+        let named = Named::of(program);
+        Whole { functions, other_ways, closures, outside, sets_every, named }
     }
 
     /// Nothing known across functions yet.
     fn world(&self) -> World<'_> {
         World {
-            program: self.program,
             functions: &self.functions,
             params: BTreeMap::new(),
             returns: BTreeMap::new(),
@@ -492,13 +522,13 @@ impl<'p> Whole<'p> {
             outside: &self.outside,
             fields: BTreeMap::new(),
             grew: BTreeMap::new(),
+            named: &self.named,
         }
     }
 }
 
 /// What's known across functions, round by round.
 struct World<'p> {
-    program: &'p Program,
     functions: &'p HashMap<&'p str, &'p Function>,
     /// What every call gives each parameter, by function.
     params: BTreeMap<String, Vec<Fact>>,
@@ -518,6 +548,7 @@ struct World<'p> {
     fields: BTreeMap<(String, usize), Fact>,
     /// How many times each fact across functions has grown, by what it's of, for widening.
     grew: BTreeMap<(String, usize, u8), usize>,
+    named: &'p Named<'p>,
 }
 
 /// What one round found, for the next.
@@ -596,7 +627,7 @@ impl World<'_> {
         if self.outside.contains(name) {
             return false;
         }
-        let Some(def) = self.program.structs.iter().find(|def| def.name == name && !def.shared) else {
+        let Some(def) = self.named.plain.get(name) else {
             return false;
         };
         def.fields.get(at).is_some_and(|(_, ty)| match ty {
@@ -613,10 +644,10 @@ impl World<'_> {
         let mut ty = ty.clone();
         for name in through {
             let Type::Named(owner) = &ty else { return None };
-            ty = fields_of(self.program, owner)?.iter().find(|(field, _)| field == name)?.1.clone();
+            ty = self.named.fields.get(owner.as_str())?.iter().find(|(field, _)| field == name)?.1.clone();
         }
         let Type::Named(owner) = &ty else { return None };
-        let at = fields_of(self.program, owner)?.iter().position(|(field, _)| field == last)?;
+        let at = self.named.fields.get(owner.as_str())?.iter().position(|(field, _)| field == last)?;
         Some((owner.clone(), at))
     }
 
@@ -812,19 +843,26 @@ impl<'w, 'p> Walk<'w, 'p> {
         }
         for from in self.comes_from.get(block).cloned().unwrap_or_default() {
             let Some(Some(ended)) = self.ends.get(from) else { continue };
-            let along = self.along(from, block, ended.clone());
-            state = Some(match state {
-                None => along,
-                Some(known) => self.joined(known, &along),
+            // What a block leaves reaches as it is along a way with no comparison on it, so it's
+            // read where it is rather than copied.
+            let compares =
+                self.function.blocks.get(from).is_some_and(|at| comparison_along(at, block).is_some());
+            state = Some(match (state, compares) {
+                (None, true) => self.along(from, block, ended.clone()),
+                (None, false) => ended.clone(),
+                (Some(known), true) => self.joined(known, &self.along(from, block, ended.clone())),
+                (Some(known), false) => self.joined(known, ended),
             });
         }
         // Nothing leads here yet, so nothing's known to reach it: it isn't walked this round.
         let mut state = state?;
         let let_go = self.let_go.get(block).cloned().unwrap_or_default();
         self.let_go_of(&let_go, &mut state);
-        let before = self.entries.get(block).cloned().flatten();
+        // What the last round had here, taken: this round's is put in its place below. Joining is
+        // the same either way round, so it's joined into this round's rather than copied.
+        let before = self.entries.get_mut(block).and_then(Option::take);
         if let Some(before) = &before {
-            state = self.joined(before.clone(), &state);
+            state = self.joined(state, before);
         }
         let before = before.unwrap_or_default();
         // A block where something has grown in a few rounds widens whatever grows there from then
@@ -998,7 +1036,7 @@ impl<'w, 'p> Walk<'w, 'p> {
     fn field_place(&self, object: &Operand, field: &str) -> Option<usize> {
         let Operand::Local(object) = object else { return None };
         let Type::Named(name) = &self.function.locals.get(object.0)?.ty else { return None };
-        fields_of(self.world.program, name)?.iter().position(|(name, _)| name == field)
+        self.world.named.fields.get(name.as_str())?.iter().position(|(name, _)| name == field)
     }
 
     /// A struct's fact with the field at `path` changed to also be `value`.
@@ -1094,7 +1132,7 @@ impl<'w, 'p> Walk<'w, 'p> {
         for (at, fact) in fields.iter().enumerate() {
             self.note_field(type_name, at, fact);
         }
-        let shared = self.world.program.structs.iter().any(|def| def.name == type_name && def.shared);
+        let shared = self.world.named.shared.contains(type_name);
         let made = if shared { Fact::Any } else { Fact::Struct(fields) };
         self.write(dest, &made, state)
     }
@@ -2162,5 +2200,32 @@ mod tests {
             }
         }
         assert!(programs >= 100, "only {programs} programs");
+    }
+
+    /// Scratch: writes what's found for every kernel, example and real program, to compare.
+    #[test]
+    fn scratch_dump_ranges() {
+        let Some(out) = std::env::var_os("RANGES_DUMP_DIR") else { return };
+        let out = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for folder in ["bench/kernels", "examples", "bench/realworld"] {
+            for entry in std::fs::read_dir(root.join(folder)).unwrap() {
+                let path = entry.unwrap().path();
+                if !path.extension().is_some_and(|extension| extension == "fen") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
+                let Ok(checked) = fennec_check::check_and_resolve(&mut module) else { continue };
+                let program = crate::lower(&module, &checked);
+                let name = format!(
+                    "{}-{}.txt",
+                    folder.replace('/', "_"),
+                    path.file_stem().unwrap().to_string_lossy()
+                );
+                std::fs::write(out.join(name), format!("{:#?}", Ranges::of(&program))).unwrap();
+            }
+        }
     }
 }

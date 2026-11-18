@@ -1301,12 +1301,41 @@ impl FnCx<'_> {
         if let ExprKind::Attr { object, .. } = &callee.kind {
             given.push(object.span);
         }
-        let given_a_function = given.into_iter().any(|span| {
+        let given_a_maker = given.into_iter().any(|span| {
             let ty = self.recorded(span).map_or(Type::Unknown, |ty| self.checker.settled(&ty));
-            mentions_a_function(&ty) || self.checker.holds_function_value(&ty, &mut Vec::new())
+            self.could_make_a_failing_generator(&ty)
         });
-        if given_a_function {
+        if given_a_maker {
             self.error(crate::messages::except_on_a_call_given_a_function(written));
+        }
+    }
+
+    /// Whether a value of this type, given to a call, could have made a generator that can fail
+    /// the call gives back: it is, or holds, a function whose result is or holds one, or a type
+    /// parameter, or a type not worked out yet. One that gives back only a plain value, like an
+    /// `(int) -> bool` rule, couldn't. A struct holding a function counts, its field not looked
+    /// into.
+    fn could_make_a_failing_generator(&mut self, ty: &Type) -> bool {
+        let ty = self.checker.settled(ty);
+        let could_be = |returns: &Type| {
+            !returns.held_generator_failures().is_empty() || returns.has_params() || !returns.is_known()
+        };
+        match &ty {
+            Type::Arrow(_, returns) => could_be(&self.checker.settled(returns)),
+            Type::Function(key) => self
+                .checker
+                .signature_found(key)
+                .is_none_or(|signature| signature.generator || could_be(&signature.returns)),
+            Type::Named(_) | Type::Generic(..) if self.checker.holds_function_value(&ty, &mut Vec::new()) => {
+                true
+            }
+            other => other
+                .children()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .iter()
+                .any(|child| self.could_make_a_failing_generator(child)),
         }
     }
 
@@ -1527,10 +1556,4 @@ fn swallows_failure(written: Span, inner: &Type) -> Diagnostic {
             a(inner)
         ))
         .with_hint("pass the failure up", end, "?")
-}
-
-/// Whether a type is, or holds where its parts are written, a function named as a value, which an
-/// arrow function's type doesn't cover.
-fn mentions_a_function(ty: &Type) -> bool {
-    matches!(ty, Type::Function(_)) || ty.children().into_iter().any(mentions_a_function)
 }

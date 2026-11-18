@@ -82,6 +82,8 @@ fn a_generator_that_can_fail_is_looped_over_in_the_function_that_got_it() {
         // `except` on a `def`'s call, generic or not: what it gives back holding one was made, and
         // counted, here.
         "error Bad:\n    why: str\n\ndef checked[T](value: T, text: str) -> T fails Bad:\n    if text == \"\":\n        fail Bad(why=\"empty\")\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    kept = checked(first(\"a\")?, \"x\") except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
+        // `except` on a `def`'s call given a function that makes no generator, as a rule (#2118).
+        "error Bad:\n    why: str\n\ndef checked[T](value: T, rule: (int) -> bool) -> T fails Bad:\n    if not rule(3):\n        fail Bad(why=\"no\")\n    return value\n\ndef f(stdout: Stdout) fails Shut:\n    kept = checked(first(\"a\")?, rule=(at) => at > 0) except why:\n        stdout.print(why)\n        return\n    stdout.print(sum(kept))\n",
         // A generator kept for later over held ones, which fails as they do, looped over here.
         "def f(stdout: Stdout) fails Shut:\n    held = [first(\"a\")?]\n    later = (sum(gen) for gen in held)\n    stdout.print(sum(later))\n",
         // A generator looping over one, which fails as it does.

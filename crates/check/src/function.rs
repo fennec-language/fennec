@@ -29,6 +29,9 @@ pub(crate) struct Binding {
     pub(crate) mut_at: Option<u32>,
     /// Whether it's a channel to `.Every` a `with` lends, which has no one next message to take.
     pub(crate) to_every: bool,
+    /// The function whose parameter it is, by key, when it's one: kept when a nested function
+    /// captures it, so the nested function calling it is a call of that function's parameter.
+    pub(crate) param_of: Option<String>,
 }
 
 /// Where a name came from, for explaining how to make it changeable.
@@ -42,6 +45,25 @@ pub(crate) enum Origin {
     Captured,
     /// A `with` block's name for a `shared` handle it locks.
     Locked,
+}
+
+/// What the checker knows at one point in a function, to come back to after a path through the
+/// code and to join where paths meet.
+#[derive(Clone)]
+pub(crate) struct Snapshot {
+    /// What every name in sight holds.
+    types: Vec<Type>,
+    /// Whether a source has passed its `lend` on the way here.
+    pub(crate) lent: Lending,
+}
+
+/// Whether a source has passed its `lend` on every way to somewhere in it that hasn't failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lending {
+    /// Some way there hasn't.
+    NotYet,
+    /// Every way there has.
+    Lent,
 }
 
 struct Scope {
@@ -72,6 +94,11 @@ pub(crate) struct FnCx<'c> {
     /// What a `with` source lends, from its `-> with T`, and how many `lend`s it has so far.
     pub(crate) lends: Option<Type>,
     pub(crate) lent: usize,
+    /// Whether every way through the source to here that hasn't failed has passed its `lend`,
+    /// kept with each path at a branch and joined where paths meet, as what names hold is.
+    pub(crate) lent_here: Lending,
+    /// Where a `lend` in a loop is, refused for that already.
+    pub(crate) lend_in_loop: Option<Span>,
     /// The spans of the values `with` blocks are taking now, where a source may be called.
     pub(crate) with_values: Vec<(u32, u32)>,
     /// The `match`es written as statements of their own, which may change what they're over
@@ -165,6 +192,8 @@ impl<'c> FnCx<'c> {
             generator: false,
             lends: None,
             lent: 0,
+            lent_here: Lending::NotYet,
+            lend_in_loop: None,
             with_values: Vec::new(),
             statement_matches: Vec::new(),
             routes_here: Vec::new(),
@@ -310,7 +339,7 @@ impl<'c> FnCx<'c> {
         cx.tail = if cx.generator || cx.lends.is_some() { None } else { cx.declared.clone() };
         let flow = cx.stmts(&def.body, cx.lends.is_none());
         if cx.lends.is_some() {
-            cx.source_finished(def);
+            cx.source_finished(def, &flow);
         }
         // A body that always leaves early has an unknown value, which fits any type.
         if cx.lends.is_some() {
@@ -705,6 +734,7 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn declare_as(&mut self, name: &str, ty: Type, is_mut: bool, origin: Origin, at: Span) {
+        let param_of = (origin == Origin::Param).then(|| self.key.clone());
         self.declare_with(
             Binding {
                 name: name.to_owned(),
@@ -714,6 +744,7 @@ impl<'c> FnCx<'c> {
                 origin,
                 mut_at: None,
                 to_every: false,
+                param_of,
             },
             at,
         );
@@ -734,6 +765,7 @@ impl<'c> FnCx<'c> {
             origin: Origin::Local,
             mut_at: Some(at.start),
             to_every: false,
+            param_of: None,
         };
         self.declare_with(binding, at);
     }
@@ -872,6 +904,21 @@ impl<'c> FnCx<'c> {
             .map(|binding| binding.origin)
     }
 
+    /// The function `name` is a parameter of, by key: this one's, or one around it that a nested
+    /// function captured it from.
+    pub(crate) fn param_owner(&self, name: &str) -> Option<String> {
+        let binding = self
+            .scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.bindings.iter().rev())
+            .find(|binding| binding.name == name)?;
+        match binding.origin {
+            Origin::Param | Origin::Captured => binding.param_of.clone(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn binding_mut(&mut self, name: &str) -> Option<&mut Binding> {
         self.scopes
             .iter_mut()
@@ -892,33 +939,44 @@ impl<'c> FnCx<'c> {
         self.scopes.iter().flat_map(|scope| scope.bindings.iter().cloned()).collect()
     }
 
-    /// What every name holds right now, to come back to after one path through the code.
-    pub(crate) fn snapshot(&self) -> Vec<Type> {
-        self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|b| b.ty.clone())).collect()
+    /// What every name holds right now, and whether a source has lent on the way here, to come
+    /// back to after one path through the code.
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        let types =
+            self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|b| b.ty.clone())).collect();
+        Snapshot { types, lent: self.lent_here }
     }
 
-    pub(crate) fn restore(&mut self, types: &[Type]) {
+    pub(crate) fn restore(&mut self, snapshot: &Snapshot) {
+        self.restore_types(&snapshot.types);
+        self.lent_here = snapshot.lent;
+    }
+
+    fn restore_types(&mut self, types: &[Type]) {
         let bindings = self.scopes.iter_mut().flat_map(|scope| scope.bindings.iter_mut());
         for (binding, ty) in bindings.zip(types) {
             binding.ty = ty.clone();
         }
     }
 
-    /// Where paths meet: each name holds what it held on any of them.
-    pub(crate) fn merge(&mut self, paths: &[Vec<Type>]) {
+    /// Where paths meet: each name holds what it held on any of them, and a source has lent only
+    /// if it did on every one.
+    pub(crate) fn merge(&mut self, paths: &[Snapshot]) {
         let Some((first, rest)) = paths.split_first() else { return };
         let declared: Vec<Type> =
             self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|b| b.declared.clone())).collect();
         let mut merged = Vec::new();
-        for (at, ty) in first.iter().enumerate() {
+        for (at, ty) in first.types.iter().enumerate() {
             let mut ty = ty.clone();
-            for other in rest.iter().filter_map(|path| path.get(at)) {
+            for other in rest.iter().filter_map(|path| path.types.get(at)) {
                 let fallback = declared.get(at).cloned().unwrap_or(Type::Unknown);
                 ty = self.checker.join(&ty, other).unwrap_or(fallback);
             }
             merged.push(ty);
         }
-        self.restore(&merged);
+        self.restore_types(&merged);
+        let lent = paths.iter().all(|path| path.lent == Lending::Lent);
+        self.lent_here = if lent { Lending::Lent } else { Lending::NotYet };
     }
 
     /// Starts following the field paths a condition checks for None, like `player.weapon`,

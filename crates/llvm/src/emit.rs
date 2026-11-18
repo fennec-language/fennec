@@ -690,6 +690,9 @@ impl<'p> Module<'_, 'p> {
             found_entries: Vec::new(),
             searched: HashMap::new(),
             alone_slots: HashSet::new(),
+            alone_by_block: HashMap::new(),
+            alone_in_block: HashSet::new(),
+            alone_before_loops: HashMap::new(),
             alone_dicts: HashSet::new(),
             alone_fields: Vec::new(),
             taken_items: HashMap::new(),
@@ -851,6 +854,12 @@ pub(crate) struct Emit<'e, 'w, 'p> {
     pub(crate) searched: HashMap<String, String>,
     /// Slots of `mut` parameters made alone on the way in, that nothing here can share since.
     alone_slots: HashSet<String>,
+    /// The slots made alone on the way into a loop the block being written is in (see
+    /// `AloneInLoop`), by block, and those of the block being written.
+    alone_by_block: HashMap<usize, HashSet<String>>,
+    alone_in_block: HashSet<String>,
+    /// The locals each block makes alone just before it goes into a loop.
+    alone_before_loops: HashMap<usize, Vec<LocalId>>,
     /// Slots of dicts nothing else can hold, so a put into one needs no check that it's alone.
     pub(crate) alone_dicts: HashSet<String>,
     /// Field paths from locals whose blocks are known alone here.
@@ -971,7 +980,27 @@ impl Emit<'_, '_, '_> {
 
     /// Whether a slot's block was made alone on the way in and can't have been shared since.
     pub(crate) fn alone_slots_contains(&self, place: &str) -> bool {
-        self.alone_slots.contains(place)
+        self.alone_slots.contains(place) || self.alone_in_block.contains(place)
+    }
+
+    /// Whether a slot's block was made alone on the way into a loop this block is in, which
+    /// gives it no other owner: a build that checks proofs checks it where it would have.
+    pub(crate) fn alone_in_loop(&self, place: &str) -> bool {
+        self.alone_in_block.contains(place)
+    }
+
+    /// Makes a local's list or `Table` alone on the way into a loop that changes it.
+    fn alone_for_loop(&mut self, local: LocalId) -> Result<(), String> {
+        let slot = self.slot(local);
+        match self.kind_of(local)? {
+            Kind::List(_) => {
+                self.check_alone(local);
+            }
+            _ => {
+                self.alone_at(&slot, "fennec_unshare");
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn kind_of(&self, local: LocalId) -> Result<&Kind, String> {
@@ -1133,6 +1162,18 @@ impl Emit<'_, '_, '_> {
                 self.alone_slots.insert(slot);
             }
         }
+        // Lists and `Table`s a loop changes and gives no other owner are made alone on the way
+        // in, once, and not checked again inside it. A function that asks a lock's log keeps
+        // every check: a marked block never reads as alone.
+        if !self.asks_the_log() {
+            for alone in &self.known.alone_in_loops {
+                let slots: Vec<String> = alone.locals.iter().map(|local| self.slot(*local)).collect();
+                for at in &alone.blocks {
+                    self.alone_by_block.entry(*at).or_default().extend(slots.iter().cloned());
+                }
+                self.alone_before_loops.entry(alone.entry).or_default().extend(alone.locals.iter().copied());
+            }
+        }
         // Every caller passes the flag clear, so saying so lets a check after an inlined call
         // that didn't fail go away. An assumption, as a store would be inlined into loops.
         if self.module.flagged(&function.name) {
@@ -1163,6 +1204,7 @@ impl Emit<'_, '_, '_> {
         for at in written_order(function) {
             let Some(block) = function.blocks.get(at) else { continue };
             self.start_block(&format!("bb{at}"));
+            self.alone_in_block = self.alone_by_block.get(&at).cloned().unwrap_or_default();
             self.holding_now = self.holding.coming_in(at);
             self.filling.clear();
             self.write_kept_lengths(at);
@@ -1250,6 +1292,9 @@ impl Emit<'_, '_, '_> {
             // where a task counts a turn.
             if self.ticks() && block.end.targets().iter().any(|next| next.0 <= at) {
                 self.tick();
+            }
+            for local in self.alone_before_loops.get(&at).cloned().unwrap_or_default() {
+                self.alone_for_loop(local)?;
             }
             self.terminator(&block.end)?;
         }

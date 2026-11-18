@@ -5711,6 +5711,38 @@ def main(stdout: Stdout):
     stdout.print(h)
 "#;
 
+/// Lists and `Table`s a loop changes are made alone once, on the way into the loop, when nothing in
+/// it can give them another owner, and not checked again inside it. Shared before the loop, copied
+/// in it, given to a closure in it, written anew in it, changed by `Id`, and held by a task in it:
+/// each prints what the reference evaluator prints, with nothing left, built either way and built
+/// checking proofs, which checks each value is still alone where the check was left out.
+#[test]
+fn a_value_a_loop_gives_no_owner_is_made_alone_once_on_the_way_in() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/alone_in_loops.fen");
+    let wanted = include_str!("fixtures/alone_in_loops.out");
+    prints_in_both_builds("alone_in_loops", source, wanted)?;
+    assert!(counts_of("alone_in_loops_counts", source)?.ends_with(" live 0"));
+    let dir = folder("alone_in_loops_proofs")?;
+    let (program, executable) = (dir.join("alone.fen"), dir.join("alone"));
+    std::fs::write(&program, source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_CHECK_PROOFS", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    Ok(())
+}
+
 /// A `for mut` item is taken out for the whole of the body, so what it holds changes in place.
 /// What's shared, and a body that reads the list, see what they should.
 #[test]

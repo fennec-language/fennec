@@ -13597,6 +13597,100 @@ def main(stdout: Stdout):
     Ok(())
 }
 
+/// A `sum`, `list`, `max`, `sorted`, `any` or comprehension of a generator that fails partway,
+/// inside a statement, passes the failure up before the rest of the statement runs (#2098). On main
+/// the generator, copied in, held its failure and the statement went on: it printed `the sum is 2`,
+/// and called what came after the consumer, before failing.
+#[test]
+fn a_consumer_of_a_failing_generator_fails_before_its_statement_goes_on() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("consumer_fails_first", CONSUMER_FAILS_FIRST, CONSUMER_FAILS_FIRST_PRINTS)
+}
+
+const CONSUMER_FAILS_FIRST: &str = r#"# A consumer of a generator that fails partway, inside a statement, passes the failure up before
+# the rest of the statement runs: nothing is printed with a partial value, and nothing written
+# after it in the statement is called. Each generator yields once, then fails.
+
+error Bad:
+    code: int
+
+struct Tally:
+    count: int
+
+def second(code: int) -> Iterator[int] fails Bad:
+    yield 2
+    fail Bad(code=code)
+
+def noisy(stdout: Stdout, said: str) -> int:
+    stdout.print("noisy", said)
+    return 1
+
+def pair(left: int, right: int) -> int:
+    return left + right
+
+def opened(stdout: Stdout) -> with Tally:
+    stdout.print("opening")
+    lend Tally(count=1) except:
+        stdout.print("cleaning up")
+    stdout.print("closing")
+
+def summed(stdout: Stdout) fails Bad:
+    stdout.print("the sum is", sum(second(41)?))
+
+def listed(stdout: Stdout) fails Bad:
+    stdout.print("the list is", list(second(42)?))
+
+def doubled(stdout: Stdout) fails Bad:
+    stdout.print("the doubles are", [each * 2 for each in second(43)?])
+
+def written_in(stdout: Stdout) fails Bad:
+    stdout.print("the sum is", sum(each for each in second(44)?))
+
+def in_a_list(stdout: Stdout) fails Bad:
+    shown = [sum(second(45)?), noisy(stdout, "in a list")]
+    stdout.print("listed", shown)
+
+def an_argument(stdout: Stdout) fails Bad:
+    stdout.print("called", pair(left=max(second(46)?), right=noisy(stdout, "an argument")))
+
+def formatted(stdout: Stdout) fails Bad:
+    stdout.print(f"formatted {any(each > 5 for each in second(47)?)}")
+
+def in_order(stdout: Stdout) fails Bad:
+    stdout.print("sorted", sorted(second(48)?), noisy(stdout, "after sorted"))
+
+def in_a_with(stdout: Stdout) fails Bad:
+    with opened(stdout) as tally:
+        stdout.print("in the block", sum(second(49)?) + tally.count)
+
+def returned(stdout: Stdout) -> int fails Bad:
+    with opened(stdout) as tally:
+        return sum(second(50)?) + tally.count
+
+def show(stdout: Stdout, run: (Stdout) -> nothing fails Bad):
+    run(stdout) except why:
+        stdout.print("failed", why)
+
+def main(stdout: Stdout):
+    show(stdout, summed)
+    show(stdout, listed)
+    show(stdout, doubled)
+    show(stdout, written_in)
+    show(stdout, in_a_list)
+    show(stdout, an_argument)
+    show(stdout, formatted)
+    show(stdout, in_order)
+    show(stdout, in_a_with)
+    got = returned(stdout) except why:
+        stdout.print("failed", why)
+        return
+    stdout.print("got", got)
+"#;
+
+const CONSUMER_FAILS_FIRST_PRINTS: &str = "failed Bad(code=41)\nfailed Bad(code=42)\nfailed Bad(code=43)\nfailed Bad(code=44)\nfailed Bad(code=45)\nfailed Bad(code=46)\nfailed Bad(code=47)\nfailed Bad(code=48)\nopening\ncleaning up\nfailed Bad(code=49)\nopening\ncleaning up\nfailed Bad(code=50)\n";
+
 #[test]
 fn generators_that_fail_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

@@ -221,6 +221,16 @@ impl FnCx<'_> {
         }
     }
 
+    /// Whether a parameter of type `ty` is a function's, or an optional one's, which is called once
+    /// it's narrowed: what's passed for either is followed to where it's called.
+    pub(crate) fn takes_function(&mut self, ty: &Type) -> bool {
+        match self.checker.settled(ty) {
+            Type::Arrow(..) => true,
+            Type::Optional(inner) => matches!(self.checker.settled(&inner), Type::Arrow(..)),
+            _ => false,
+        }
+    }
+
     /// What's passed for a function parameter of the function whose arguments are being matched.
     pub(crate) fn note_passed_function(&mut self, param: &str, value: &Expr) {
         let Some(callee) = self.calling.last().cloned().filter(|callee| !callee.is_empty()) else { return };
@@ -228,6 +238,8 @@ impl FnCx<'_> {
             return;
         }
         let given = match &value.kind {
+            // Nothing, for an optional one: there's no function to call.
+            ExprKind::None => return,
             ExprKind::Lambda { .. } => Given::Arrow((value.span.start, value.span.end), true),
             // A parameter of this function, or of one around it that a nested function captured.
             ExprKind::Name(name) if let Some(owner) = self.param_owner(name) => {

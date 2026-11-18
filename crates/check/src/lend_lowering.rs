@@ -2684,8 +2684,18 @@ mod tests {
         let mut module = fennec_syntax::parse(source).unwrap();
         let checked = crate::checker::Checker::new(&module).run(crate::checker::Scope::Everything).unwrap();
         let (launches, matches) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
-        assert!(super::lower(&mut module, &checked.sources, &launches, (&matches, &BTreeMap::new())));
-        assert!(!super::lower(&mut module, &checked.sources, &launches, (&matches, &BTreeMap::new())));
+        assert!(super::lower(
+            &mut module,
+            &checked.sources,
+            &launches,
+            (&matches, &std::collections::BTreeMap::new())
+        ));
+        assert!(!super::lower(
+            &mut module,
+            &checked.sources,
+            &launches,
+            (&matches, &std::collections::BTreeMap::new())
+        ));
     }
 
     /// A generic source's type parameter, written in as a type naming the caller's own, like a

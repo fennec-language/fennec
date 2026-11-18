@@ -1136,14 +1136,29 @@ fn replace_lend(body: &mut Vec<Stmt>, with_block: &mut LentAs<'_>) -> bool {
     false
 }
 
-/// Whether a failure inside this loop leaves as a failure, not held by the block and leaving the
-/// loop as a `break` would:
+/// Whether a failure inside this statement's body leaves as a failure, not held by the block and
+/// leaving the loop it runs in as a `break` would:
 /// - a `parallel` round's leaves where the loop ends, which isn't the block's to write;
 /// - a loop over a generator that can fail, `for x in made()?:` or `for x in made()? from Wrap(...)`,
-///   lets go of it as a failure leaves, noting a failure of the generator's own cleanup on that one.
+///   lets go of it as a failure leaves, noting a failure of the generator's own cleanup on that one;
+/// - a `lock` rolls back what its body changed as a failure leaves it.
 fn fails_unheld(stmt: &Stmt) -> bool {
-    let StmtKind::For { iter, .. } = &stmt.kind else { return false };
-    crate::parallel::parallel_items(iter).is_some() || matches!(iter.kind, ExprKind::Try { .. })
+    match &stmt.kind {
+        StmtKind::For { iter, .. } => {
+            crate::parallel::parallel_items(iter).is_some() || matches!(iter.kind, ExprKind::Try { .. })
+        }
+        StmtKind::With { lock, .. } => *lock,
+        _ => false,
+    }
+}
+
+/// `exits` in a body inside the block, where the block's failure isn't held when `unheld` says.
+fn exits_within(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool, unheld: bool) {
+    let failed = if unheld { caller.failed.take() } else { None };
+    exits(body, caller, in_loop);
+    if unheld {
+        caller.failed = failed;
+    }
 }
 
 /// The caller's block's `return`, `break` and `continue`, as setting `exit` and leaving the
@@ -1191,11 +1206,7 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
             StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
                 let before = caller.ways.returned.is_some();
                 let fails_before = caller.fails_made;
-                let failed = if unheld { caller.failed.take() } else { None };
-                exits(body, caller, true);
-                if unheld {
-                    caller.failed = failed;
-                }
+                exits_within(body, caller, true, unheld);
                 // A `return` or a failure inside it leaves this loop too.
                 let mut leaves = Vec::new();
                 if caller.ways.returned.is_some() && !before {
@@ -1218,7 +1229,7 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
                 None
             }
             StmtKind::With { body, .. } | StmtKind::OnFailure { body, .. } => {
-                exits(body, caller, in_loop);
+                exits_within(body, caller, in_loop, unheld);
                 None
             }
             _ => None,

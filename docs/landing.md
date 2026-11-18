@@ -53,6 +53,10 @@ steps by hand in one command: a failed merge or gate goes unnoticed that way, an
   running in, and that have nothing uncommitted. It keeps their branches. It never touches a
   `-keep`, `-base` or `-gate` worktree, or a session's own. Run it weekly, or with `--dry-run` to see
   what it would do.
+- **Every two hours on this Mac**, the tooling lane runs `.github/scripts/sweep-builds.sh --hours 2`,
+  which deletes the `target/` of each worktree that nothing has built in for two hours and nothing
+  is running in. It leaves the same worktrees alone as `sweep-worktrees.sh`. A gate that finds
+  under 40 GB free runs the same sweep before it builds.
 
 ## The Linux VM
 

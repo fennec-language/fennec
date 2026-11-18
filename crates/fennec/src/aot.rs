@@ -508,13 +508,15 @@ struct Stored {
 
 /// A build's root hash: one hash of everything its program depends on. That's each function's
 /// text and the entry's, as LLVM reads them, which hold everything from the program's sources and
-/// the standard library that it reaches; the build of `fennec`; the target and the CPU it's built
-/// for; whether it's a release build and a static one; every switch that changes what's built, as
-/// `fennec_llvm::output_switches` names them; and the runtime library linked in, by its
-/// size and when it was built, since hashing it whole would cost every run. See `docs/store.md`.
+/// the standard library that it reaches; the build of `fennec`; the version of LLVM that compiles
+/// them, so a program built before LLVM's tools changed isn't handed back after; the target and
+/// the CPU it's built for; whether it's a release build and a static one; every switch that
+/// changes what's built, as `fennec_llvm::output_switches` names them; and the runtime library
+/// linked in, by its size and when it was built, since hashing it whole would cost every run. See
+/// `docs/store.md`.
 fn root_hash(
     units: &[fennec_llvm::Unit],
-    entry: &str,
+    (entry, llvm): (&str, &str),
     runtime: Runtime,
     (release, statically): (bool, bool),
 ) -> (String, String, Vec<fennec_blake3::Hash>) {
@@ -526,7 +528,7 @@ fn root_hash(
     // Every switch that changes what's built, so a program built one way is never handed back for
     // another: the sanitizer, checked proofs and stripped facts.
     let target = format!(
-        "{}\n{}\n{}\n{}\n{release}\n{statically}\n{baseline}\n{}\n",
+        "{}\n{}\n{}\n{}\n{release}\n{statically}\n{baseline}\n{}\n{llvm}\n",
         env!("FENNEC_BUILD"),
         env!("CARGO_PKG_VERSION"),
         std::env::consts::ARCH,
@@ -898,8 +900,9 @@ fn compile_emitted(
         .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
         .map(fennec_build::Cache::new);
     // A build that's been made before is in the store whole, under its root hash.
+    let llvm = tools.version()?;
     let stored = cache.clone().map(|cache| {
-        let (root, functions, hashes) = root_hash(units, &entry, runtime, (release, statically));
+        let (root, functions, hashes) = root_hash(units, (&entry, &llvm), runtime, (release, statically));
         let program = cache.read(PROGRAMS, &root);
         Stored { cache, root, functions, hashes, program }
     });
@@ -1367,6 +1370,18 @@ fn stamp_of(path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A build's root hash changes with the version of LLVM that compiles its program, so a
+    /// program kept before LLVM's tools changed is never handed back after, and with nothing
+    /// else here: the same build with the same LLVM has the same root.
+    #[test]
+    fn a_root_hash_changes_with_the_llvm_that_compiles_it() {
+        let units = [fennec_llvm::Unit { function: "f".to_owned(), text: "define i64 @f() {}".to_owned() }];
+        let root =
+            |llvm: &str| super::root_hash(&units, ("entry", llvm), super::Runtime::Plain, (false, false)).0;
+        assert_eq!(root("LLVM version 21.1.0"), root("LLVM version 21.1.0"));
+        assert_ne!(root("LLVM version 21.1.0"), root("LLVM version 21.1.1"));
+    }
+
     /// A runtime library's stamp is read from among its bytes, and one with none, or with a
     /// marker that isn't followed by a build's hash, has no stamp.
     #[test]

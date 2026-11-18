@@ -27335,6 +27335,71 @@ fn an_item_copied_out_and_put_back_means_a_copy() -> std::io::Result<()> {
     Ok(())
 }
 
+/// An item read out of a `Table` by `Id`, changed and put back by the same `Id`, goes back where it
+/// was read, with no second lookup, and a build that checks proofs looks it up again and checks
+/// it's the same place. A call, a closure or a task given the `Table` in between, or the key read
+/// again after it moved, has the put-back look it up again, and each means what a copy put back
+/// means. It prints what the reference evaluator prints in every build, with nothing left. An
+/// `Id` that finds nothing still stops the program where the item is read, as it did, saying why.
+#[test]
+fn an_item_taken_by_id_goes_back_where_it_was_read_unless_something_reaches_the_table() -> std::io::Result<()>
+{
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let source = include_str!("fixtures/table_put_back_by_id.fen");
+    let wanted = include_str!("fixtures/table_put_back_by_id.out");
+    prints_in_both_builds("table_put_back_by_id", source, wanted)?;
+    assert!(counts_of("table_put_back_by_id_counts", source)?.ends_with(" live 0"));
+    let dir = folder("table_put_back_by_id_proofs")?;
+    let (program, executable) = (dir.join("put_back.fen"), dir.join("put_back"));
+    std::fs::write(&program, source)?;
+    let built = crate::executables::fennec_command()
+        .args(["build", "--llvm"])
+        .arg(&program)
+        .arg("-o")
+        .arg(&executable)
+        .env("FENNEC_HOME", &dir)
+        .env("FENNEC_CHECK_PROOFS", "1")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), wanted, "{}", String::from_utf8_lossy(&ran.stderr));
+    std::fs::remove_dir_all(&dir)?;
+    // A removed item's `Id`, and another `Table`'s, each stop the program at the read, on line 7.
+    for (name, made, why) in [
+        ("removed", "_ = units.remove(id)", "this Id refers to something that's been removed"),
+        (
+            "another",
+            "mut other = Table[Unit]()\n    id = other.add(Unit(health=1))",
+            "this Id is from another Table",
+        ),
+    ] {
+        let program = format!(
+            "from std.collections import Id, Table\n\nstruct Unit:\n    health: int\n\ndef hurt(ref units: Table[Unit], id: Id[Unit]):\n    mut unit = units[id]\n    unit.health -= 1\n    units[id] = unit\n    return\n\ndef main(stdout: Stdout):\n    mut units = Table[Unit]()\n    mut id = units.add(Unit(health=5))\n    {made}\n    hurt(ref units, id)\n    stdout.print(\"not reached\")\n"
+        );
+        for how in [&["--llvm"][..], &["--llvm", "--release"][..]] {
+            let dir = folder(&format!("table_put_back_{name}"))?;
+            let (at, executable) = (dir.join("stale.fen"), dir.join("stale"));
+            std::fs::write(&at, &program)?;
+            let built = fennec(
+                &["build"]
+                    .into_iter()
+                    .chain(how.iter().copied())
+                    .chain([at.to_str().unwrap_or_default(), "-o", executable.to_str().unwrap_or_default()])
+                    .collect::<Vec<_>>(),
+                &dir,
+            )?;
+            assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+            let (printed, said, code) = outcome(&Command::new(&executable).output_within()?);
+            std::fs::remove_dir_all(&dir)?;
+            assert_eq!((printed.as_str(), code), ("", Some(1)), "{name} {how:?}: {said}");
+            assert!(said.contains(why) && said.contains("stale.fen:7:"), "{name} {how:?}: {said}");
+        }
+    }
+    Ok(())
+}
+
 const COPIED_OUT_PUT_BACK: &str = r#"from std.collections import Id, Table
 from std.concurrent import Crashed
 

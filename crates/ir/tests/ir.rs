@@ -2862,6 +2862,33 @@ def first_big() -> int:
     assert_eq!(given_bools(&text).len(), 1, "{text}");
 }
 
+/// A consumer of a copied generator that always fails, inside a statement, leaves before the rest
+/// of the statement runs: nothing after it is lowered where it runs, so `run` prints nothing. On
+/// main the failure was held and the statement went on, printing a partial value (#2098).
+#[test]
+fn what_follows_a_copied_generator_that_always_fails_is_never_reached() {
+    let source = "error Bad:
+    code: int
+
+def second(n: int) -> Iterator[int] fails Bad:
+    yield 2
+    fail Bad(code=n)
+
+def run(stdout: Stdout) fails Bad:
+    stdout.print(\"the sum is\", sum(second(41)?))
+
+def listed(stdout: Stdout) fails Bad:
+    stdout.print(\"the list is\", [each * 2 for each in second(42)?])
+
+def written_in(stdout: Stdout) fails Bad:
+    stdout.print(\"the sum is\", sum(each for each in second(43)?))
+";
+    for function in ["run", "listed", "written_in"] {
+        let text = printed(source, function).unwrap();
+        assert!(!text.contains("Stdout.print"), "{text}");
+    }
+}
+
 #[test]
 fn a_loop_over_text_makes_no_list() {
     let source = "def spaces(text: str) -> int:

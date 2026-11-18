@@ -37,6 +37,7 @@ pub fn what_main_reaches(module: &Module) -> Module {
         std_rewritten: module.std_rewritten.clone(),
         holds: module.holds.clone(),
         files: module.files.clone(),
+        copied: module.copied.clone(),
     }
 }
 

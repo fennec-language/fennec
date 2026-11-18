@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 
 use fennec_syntax::{BinOp, Expr, ExprKind, Module, Span, Stmt, StmtKind};
 
-use crate::lend_lowering::{below_written, here, name, reserved, stmt, written_in};
+use crate::lend_lowering::{below_written, here, name, stmt, written_in};
 
 /// What a `with` source called on a union is written in with: the name it's called on, and each
 /// member's type, in the union's order.
@@ -51,8 +51,10 @@ fn stmts(body: &mut [Stmt], found: &BTreeMap<(u32, u32), Dispatch>) -> bool {
             // One written in already is narrowed: found again, it wasn't, and isn't written in twice.
             && !written_in(Span { start: at.0, end: at.1 })
             && let Some(dispatch) = found.get(&at)
+            // Left as it is when spans have run out, which the check after says it can't lower.
+            && let Some(copies) = dispatched(each, dispatch)
         {
-            *each = dispatched(each, dispatch);
+            *each = copies;
             wrote = true;
         }
     }
@@ -100,9 +102,10 @@ fn called(value: &Expr) -> Option<(u32, u32)> {
 
 /// `if path is First: with ... elif path is Second: with ... else: with ...`, each `with` a
 /// copy of `with_stmt` on spans of its own.
-fn dispatched(with_stmt: &Stmt, dispatch: &Dispatch) -> Stmt {
+fn dispatched(with_stmt: &Stmt, dispatch: &Dispatch) -> Option<Stmt> {
     let at = with_stmt.span;
-    let mut copies: Vec<Vec<Stmt>> = dispatch.members.iter().map(|_| vec![apart(with_stmt)]).collect();
+    let mut copies: Vec<Vec<Stmt>> =
+        dispatch.members.iter().map(|_| apart(with_stmt).map(|copy| vec![copy])).collect::<Option<_>>()?;
     let last = copies.pop().unwrap_or_default();
     let branches = dispatch
         .members
@@ -117,7 +120,7 @@ fn dispatched(with_stmt: &Stmt, dispatch: &Dispatch) -> Stmt {
             (Expr { kind: test, span: here(at) }, copy)
         })
         .collect();
-    stmt(StmtKind::If { branches, otherwise: Some(last) }, at)
+    Some(stmt(StmtKind::If { branches, otherwise: Some(last) }, at))
 }
 
 /// A name, or a path of fields from one, as an expression.
@@ -132,37 +135,12 @@ fn path_expr(path: &str, at: Span) -> Expr {
 }
 
 /// A copy of a statement on spans of its own, so what's found by a span in one copy, like the
-/// source a call is to, is never another's: the program's text keeps where each part is against
-/// the rest, and each span written in before gets a new one.
-fn apart(original: &Stmt) -> Stmt {
+/// source a call is to, is never another's, noted with the text it copies for what says where
+/// something in it is (`lend_lowering::copied_apart`). Nothing, when spans have run out.
+fn apart(original: &Stmt) -> Option<Stmt> {
     let mut copy = original.clone();
-    let body = std::slice::from_mut(&mut copy);
-    let (mut low, mut high) = (u32::MAX, 0);
-    fennec_syntax::visit::respan_stmts(body, &mut |span| {
-        if own(span) {
-            low = low.min(span.start);
-            high = high.max(span.end);
-        }
-        span
-    });
-    let base = if low > high { 0 } else { reserved(high - low + 1) };
-    let mut written: BTreeMap<(u32, u32), Span> = BTreeMap::new();
-    fennec_syntax::visit::respan_stmts(body, &mut |span| {
-        if own(span) {
-            Span { start: span.start - low + base, end: span.end - low + base }
-        } else if written_in(span) {
-            *written.entry((span.start, span.end)).or_insert_with(|| {
-                let at = reserved(0);
-                Span { start: at, end: at }
-            })
-        } else {
-            span
-        }
-    });
-    copy
-}
-
-/// Whether a span is the program's own text, rather than the standard library's or written in.
-fn own(span: Span) -> bool {
-    !span.in_prelude() && !written_in(span)
+    // Among what lowering writes, which says it's written in already, and isn't again.
+    let region = crate::lend_lowering::Region::Written;
+    crate::lend_lowering::copied_apart(region, &mut [std::slice::from_mut(&mut copy)])?;
+    Some(copy)
 }

@@ -383,6 +383,13 @@ impl Cache {
             return Ok(Cleanup { skipped: true, ..Cleanup::default() });
         };
         let entries = self.entries();
+        self.cleanup_entries(entries, cap)
+    }
+
+    /// Cleanup, from the entries as a walk of the cache found them. The walk can take seconds on a
+    /// big cache, and a build can find and mark an entry meanwhile, to link it next, so each
+    /// entry's time is looked at again just before it goes.
+    fn cleanup_entries(&self, entries: Vec<Entry>, cap: u64) -> std::io::Result<Cleanup> {
         let mut cleanup = Cleanup::default();
         let current = self.root.join(FOLDER);
         let mut last_used: HashMap<&Path, SystemTime> = HashMap::new();
@@ -409,6 +416,10 @@ impl Cache {
             for entry in kept.iter().filter(|entry| !entry.held()) {
                 if size <= goal {
                     break;
+                }
+                // Used since the walk saw it: a build found it, and may be about to link it.
+                if entry.used_since() {
+                    continue;
                 }
                 // The entry's file first, so no entry ever names a program that's gone.
                 if let Some(sum) = &entry.sum {
@@ -440,6 +451,18 @@ impl Cache {
 }
 
 impl Entry {
+    /// Whether the entry was used since the walk saw it, or is a second name for a program a run
+    /// started meanwhile: what a build that found it did, as it marked it as just used. One that's
+    /// gone already wasn't.
+    fn used_since(&self) -> bool {
+        let Ok(now) = std::fs::metadata(&self.path) else { return false };
+        #[cfg(unix)]
+        let links = std::os::unix::fs::MetadataExt::nlink(&now);
+        #[cfg(not(unix))]
+        let links = 1;
+        now.modified().is_ok_and(|time| time > self.used) || links > 1
+    }
+
     /// Whether the entry can't go yet: it was stored or used in the last [`KEPT_RECENT`], or a
     /// program it is has been put out where a run started it, as a second name for the same file.
     fn held(&self) -> bool {
@@ -741,6 +764,31 @@ mod tests {
         assert_eq!(cache.kept_object("llvm", "written"), None);
         assert_eq!(cache.read("llvm", "written").as_deref(), Some(&b"another object"[..]));
         assert_eq!(cache.kept_object("llvm", "gone"), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An object a build finds after cleanup's walk saw it stays, though the walk saw it unused
+    /// for long: the build marked it, to link it next. One nothing used since goes. A cleanup that
+    /// went by what its walk saw alone took objects from under a link, which failed for a file
+    /// that wasn't there.
+    #[test]
+    fn an_object_found_while_cleanup_walks_the_cache_stays() {
+        let dir = fennec_temp::Temp::at(
+            std::env::temp_dir().join(format!("fennec-cleanup-walk-{}", std::process::id())),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache = super::Cache::new(&dir.join("home"));
+        let found = cache.keep_object("llvm", "found", b"an object a build finds").unwrap().unwrap();
+        let old = cache.keep_object("llvm", "old", b"an object nothing uses").unwrap().unwrap();
+        let long_ago = std::time::SystemTime::now() - super::KEPT_RECENT - Duration::from_secs(600);
+        super::set_time(&found, long_ago).unwrap();
+        super::set_time(&old, long_ago).unwrap();
+        let walked = cache.entries();
+        assert_eq!(cache.kept_object("llvm", "found"), Some(found.clone()));
+        let cleanup = cache.cleanup_entries(walked, 0).unwrap();
+        assert!(found.exists(), "cleanup took an object a build found while it walked the cache");
+        assert!(!old.exists(), "an object nothing used stayed: {cleanup:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

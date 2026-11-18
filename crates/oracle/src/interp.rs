@@ -1000,19 +1000,101 @@ impl Interp {
             return self.for_parallel(names, call, body);
         }
         let over = self.eval(iter)?;
+        // A generator made for the loop is the loop's, as one `iter` makes is, and one made right
+        // inside `enumerate` or `zip` is too, and is let go when the loop is.
+        let made = !Interp::is_stream(&over) || made_for_loop(iter);
+        if wraps_unknown(iter) {
+            return unsupported("a loop over generators wrapping their failures in more than one way");
+        }
+        let wrap = loop_wrap(iter);
         let mut items = self.items_of(over, iter.span)?;
         let _ = span;
-        while let Some(item) = self.next_item(&mut items)? {
+        let mut left = Ok(());
+        loop {
+            let item = match self.next_item(&mut items) {
+                Ok(Some(item)) => item,
+                Ok(None) => break,
+                // One the loop owns failing partway through fails the loop, wrapped as its
+                // `? from Wrap(...)` says, and the others it owns are let go on its way out.
+                Err(Flow::Fail(error, failed_at)) if made && Interp::is_stream_items(&items) => {
+                    left = match wrap {
+                        Some(_) => self.wrapped(wrap, iter.span),
+                        None => Err(Flow::Fail(error, failed_at)),
+                    };
+                    break;
+                }
+                Err(other) => return Err(other),
+            };
             let mark = self.mark();
             let ran = self.bind_fresh(names, item).and_then(|()| self.stmts(body));
             self.restore(mark);
             match ran {
                 Ok(()) | Err(Flow::Continue) => {}
-                Err(Flow::Break) => break,
-                Err(other) => return Err(other),
+                Err(flow) => {
+                    left = Err(flow);
+                    break;
+                }
             }
         }
-        Ok(())
+        match left {
+            Err(Flow::Break) if !made => Ok(()),
+            left if made => self.let_go_of(&items, left, (&arg_wraps(iter), iter.span)),
+            left => left,
+        }
+    }
+
+    /// A failure passed up as the wrapper `wrap` makes, when there is one: `value? from Wrap(...)`
+    /// passes the failure up as `Wrap(...)`, made only then.
+    fn wrapped(&mut self, wrap: Option<&'static Expr>, at: Span) -> Run<()> {
+        match wrap {
+            Some(wrap) => {
+                let wrapper = self.eval(wrap)?;
+                Err(Flow::Fail(wrapper, at))
+            }
+            None => unsupported("a failure lost as it was wrapped"),
+        }
+    }
+
+    /// Leaving a loop, as `left` says, over generators made for it: each is let go there, the
+    /// last first, as compiled code does, running the cleanup of each `with` it's stopped in. A
+    /// cleanup's failure is noted on a failure leaving the loop, and otherwise is the loop's own,
+    /// in place of the `break` or `return`, wrapped as the loop's `? from Wrap(...)` says. A
+    /// generator held anywhere else too is let go when its last owner is, which isn't modelled here.
+    fn let_go_of(
+        &mut self,
+        items: &stream::Items,
+        left: Run<()>,
+        (wraps, at): (&[Option<&'static Expr>], Span),
+    ) -> Run<()> {
+        // A loop that ends as `zip`'s list runs out leaves its generator stopped at a `yield`, as
+        // `break` does.
+        let mut left = match left {
+            Ok(()) | Err(Flow::Break) => Ok(()),
+            Err(flow @ (Flow::Return(_) | Flow::Fail(..))) => Err(flow),
+            other => return other,
+        };
+        let stream::Items::Stream(stream) = items else { return left };
+        let mut failures = Vec::new();
+        stream::let_go_owned(&stream.source, &mut failures, 0);
+        for (index, failed) in failures {
+            let wrap = wraps.get(index).copied().flatten();
+            left = match (failed, left) {
+                (Flow::Fail(cleanup, _), Err(Flow::Fail(mut error, failed_at))) => {
+                    let Value::Instance(instance) = &mut error else {
+                        return unsupported("a failure that takes no notes, leaving a generator's loop");
+                    };
+                    let note = self.display(&cleanup)?;
+                    instance.notes.push(note);
+                    Err(Flow::Fail(error, failed_at))
+                }
+                (Flow::Fail(cleanup, failed_at), _) => match wrap {
+                    Some(_) => self.wrapped(wrap, at),
+                    None => Err(Flow::Fail(cleanup, failed_at)),
+                },
+                (other, _) => return Err(other),
+            };
+        }
+        left
     }
 
     /// `for ref item in items:`, `for at, ref item in enumerate(items):` and
@@ -1252,5 +1334,52 @@ fn plain_key(key: &Value) -> String {
         Value::Str(text) => crate::text::quoted(text),
         Value::Int(n) => n.to_string(),
         other => other.kind().to_owned(),
+    }
+}
+
+/// Whether a loop's generator is made for the loop: a call's, as `for x in counts()?:` makes one,
+/// and not one held in a name or a field, which something else may hold too.
+fn made_for_loop(iter: &Expr) -> bool {
+    let made = match &iter.kind {
+        ExprKind::Try { value, .. } => value,
+        _ => iter,
+    };
+    matches!(made.kind, ExprKind::Call { .. })
+}
+
+/// What a loop's generator fails through partway through the loop: the wrapper of its own
+/// `? from Wrap(...)`, or of the one `?` made right inside `enumerate` or `zip`.
+fn loop_wrap(iter: &'static Expr) -> Option<&'static Expr> {
+    arg_wraps(iter).into_iter().flatten().next()
+}
+
+/// Whether which of a loop's generators failed partway through decides how it's wrapped, and isn't
+/// known: two `?`s made inside `zip`, one wrapping.
+fn wraps_unknown(iter: &'static Expr) -> bool {
+    let wrapping = arg_wraps(iter).into_iter().flatten().count();
+    let tries = match &iter.kind {
+        ExprKind::Call { args, .. } => {
+            args.iter().filter(|arg| matches!(arg.value.kind, ExprKind::Try { .. })).count()
+        }
+        _ => 1,
+    };
+    wrapping > 1 || (wrapping == 1 && tries > 1)
+}
+
+/// The wrapper each generator a loop owns fails through when it's let go: its own
+/// `? from Wrap(...)`'s, or for `enumerate` and `zip`, each argument's, in order.
+fn arg_wraps(iter: &'static Expr) -> Vec<Option<&'static Expr>> {
+    let context = |value: &'static Expr| match &value.kind {
+        ExprKind::Try { context, .. } => context.as_deref(),
+        _ => None,
+    };
+    if matches!(iter.kind, ExprKind::Try { .. }) {
+        return vec![context(iter)];
+    }
+    match &iter.kind {
+        ExprKind::Call { callee, args } if matches!(&callee.kind, ExprKind::Name(name) if name == "enumerate" || name == "zip") => {
+            args.iter().map(|arg| context(&arg.value)).collect()
+        }
+        _ => Vec::new(),
     }
 }

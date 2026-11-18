@@ -155,7 +155,26 @@ fn lower_from(
     take_what_was_found(&mut program, &context);
     (program.structs, program.enums, program.errors) = (defs, enums, errors);
     crate::arrays::spill_big_arrays(&mut program);
+    at_the_text(&mut program, &module.copied);
     program
+}
+
+/// Each step's place, where it's in a copy of the program's text the checker wrote in, as the
+/// text it copies, so what goes wrong there says where it's written. Each copy was lowered with
+/// the types found for its own spans (#2056); nothing after this finds anything by span.
+fn at_the_text(program: &mut Program, copied: &[fennec_syntax::Copied]) {
+    if copied.is_empty() {
+        return;
+    }
+    let functions = program.functions.iter_mut().chain(&mut program.constants);
+    for block in functions.flat_map(|function| &mut function.blocks) {
+        for inst in &mut block.insts {
+            inst.span = inst.span.copied_from(copied);
+        }
+        if let Terminator::NoMatch { span, .. } | Terminator::Stop { span, .. } = &mut block.end {
+            *span = span.copied_from(copied);
+        }
+    }
 }
 
 /// The functions in `every` that `keep` picks.
@@ -364,7 +383,7 @@ impl Context<'_> {
             }
             Type::List(item)
             | Type::Buffer(item)
-            | Type::Iterator(item)
+            | Type::Iterator(item, _)
             | Type::Set(item)
             | Type::Optional(item)
             | Type::Table(item)
@@ -415,6 +434,9 @@ struct Lowering<'a> {
     loops: Vec<Loop>,
     /// The `for mut` loops being lowered, innermost last.
     leaving: Vec<places::Leaving>,
+    /// Whether this is `enumerate`'s or `zip`'s generator over one the loop it's made for owns
+    /// (`lists::Owned`): a failure of that one partway through ends this, and the loop passes it up.
+    owner_passes_up: bool,
     /// Whether what's being left is left by a failure, which a `lock ... as ref` block doesn't keep
     /// the changes of.
     failing_out: bool,
@@ -583,6 +605,7 @@ impl<'a> Lowering<'a> {
             blocks: vec![Open::default()],
             current: BlockId(0),
             scopes: vec![HashMap::new()],
+            owner_passes_up: false,
             loops: Vec::new(),
             leaving: Vec::new(),
             failing_out: false,
@@ -625,18 +648,20 @@ impl<'a> Lowering<'a> {
             }
             return Lowering::generator(instance, def, context, captures, &signature);
         }
+        let itself_named = itself.map(|_| def.name.as_str());
+        let (stmts, apart) = own_apart(def, body, (captures, itself_named), &signature.params)?;
         let mut lowering = Lowering::new(instance, context, body, signature.returns.clone());
         for (name, ty) in captures {
-            lowering.declare(name, ty.clone());
+            lowering.declare(&declared_as(name, &apart), ty.clone());
         }
         for param in &signature.params {
             if !context.holds(&param.ty) {
                 return Err(format!("`{}` is {}", param.name, param.ty));
             }
-            lowering.declare(&param.name, param.ty.clone());
+            lowering.declare(&declared_as(&param.name, &apart), param.ty.clone());
         }
         if let Some(ty) = itself {
-            lowering.bind_itself(key, &def.name, ty, captures.len(), def.span);
+            lowering.bind_itself(key, &declared_as(&def.name, &apart), ty, captures.len(), def.span);
         }
         // A failure that ends the program is shown, so a `Secret` in it has to stay hidden.
         if key == "main" {
@@ -648,7 +673,7 @@ impl<'a> Lowering<'a> {
             }
         }
         let plain = lowering.returns == Type::Unit;
-        lowering.stmts(&def.body, if plain { Tail::Drop } else { Tail::Return })?;
+        lowering.stmts(&stmts, if plain { Tail::Drop } else { Tail::Return })?;
         lowering.end_function(def.span)?;
         // A `shared` handle is never copied back: it's the same handle after the call.
         let mut_params = signature
@@ -985,7 +1010,10 @@ impl<'a> Lowering<'a> {
         if let Some(dest) = self.lookup(name) {
             return Ok(dest);
         }
-        let ty = self.body.name(target.span, name).ok_or_else(|| format!("`{name}` has no type"))?;
+        // A name given another apart from a `with` source's (`own_apart`) has its type by the
+        // name it was checked with.
+        let checked = fennec_syntax::sight::checked_as(name);
+        let ty = self.body.name(target.span, checked).ok_or_else(|| format!("`{name}` has no type"))?;
         let ty = self.concrete(ty);
         let held = self.held(&ty).ok_or_else(|| format!("`{name}` is {ty}"))?;
         Ok(self.declare(name, held))
@@ -1122,11 +1150,18 @@ impl<'a> Lowering<'a> {
         self.narrowed(Operand::Local(local), expr)
     }
 
+    /// Lowers an expression. One that always leaves partway, like a `sum` of a generator copied
+    /// in that always fails, ends its block: what's lowered after it goes in a block nothing
+    /// reaches, which goes, so none of it runs before the leaving does.
     fn expr(&mut self, expr: &Expr) -> Lowered<Operand> {
-        match builtin_as_method(expr) {
+        let lowered = match builtin_as_method(expr) {
             Some(method) => self.expr_as_written(&method),
             None => self.expr_as_written(expr),
+        };
+        if !self.is_open() {
+            self.current = self.new_block();
         }
+        lowered
     }
 
     /// Lowers an expression whose `len(x)` or `abs(x)`, if it is one, is already the method it calls.
@@ -1290,6 +1325,38 @@ fn describe(kind: &ExprKind) -> &'static str {
         ExprKind::Attr { .. } => "a field or method",
         _ => "something that isn't lowered yet",
     }
+}
+
+/// A function's body as it's lowered. Where it names a `with` source's own function, constant or
+/// module that something in sight there names too, those are given other names first
+/// (`sight::outer_apart`): its captures, its own name where a nested function names itself, and its
+/// parameters among them. The names given others come back with it.
+fn own_apart<'d>(
+    def: &'d FnDef,
+    body: &Body,
+    (captures, itself): (&[(String, Type)], Option<&str>),
+    params: &[fennec_check::ParamType],
+) -> Lowered<(std::borrow::Cow<'d, [Stmt]>, Vec<String>)> {
+    if !body.names_outer() {
+        return Ok((std::borrow::Cow::Borrowed(def.body.as_slice()), Vec::new()));
+    }
+    let names: Vec<String> = captures
+        .iter()
+        .map(|(name, _)| name.clone())
+        .chain(itself.map(str::to_owned))
+        .chain(params.iter().map(|param| param.name.clone()))
+        .collect();
+    let mut stmts = def.body.clone();
+    let apart = fennec_syntax::sight::outer_apart(&mut stmts, &names).map_err(|meant| {
+        format!("it writes in a `with` source's `{meant}` where another `{meant}` is in sight")
+    })?;
+    Ok((std::borrow::Cow::Owned(stmts), apart))
+}
+
+/// What a capture, parameter or nested function's own name is declared as: the name `own_apart`
+/// gave it, if any.
+fn declared_as(name: &str, apart: &[String]) -> String {
+    if apart.iter().any(|named| named == name) { fennec_syntax::sight::own(name) } else { name.to_owned() }
 }
 
 /// The blocks control can reach, in order, with their targets renumbered. A join that every

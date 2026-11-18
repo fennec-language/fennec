@@ -764,6 +764,62 @@ pub(crate) struct Listening {
     pub(crate) inboxes: Vec<bool>,
 }
 
+/// A `match` with `ref` on a `Named` that starts as `REF_STARTS`'s `start`, adding `REF_TEXTS`'s
+/// `text` to the text the case changes, written `way`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RefCasing {
+    pub(crate) id: usize,
+    pub(crate) way: RefWay,
+    pub(crate) start: usize,
+    pub(crate) text: usize,
+}
+
+/// How many `Named`s a `RefCased` can start from: a leaf, a pair of leaves, and a pair whose left
+/// side is a pair, as `source.rs` writes them and `eval.rs` makes them.
+pub(crate) const REF_STARTS: usize = 3;
+
+/// What a `RefCased` adds to the text its case changes.
+pub(crate) const REF_TEXTS: [&str; 3] = ["!", "hé🦊", ""];
+
+/// The ways a `RefCased` writes its `match`, each one the compiled program put back wrong or
+/// couldn't build until the checker put each `ref` case back by its fields' names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RefWay {
+    /// Three `match`es deep, each over the last one's `ref` name, with fields named and some left
+    /// out: the middle one's change wasn't put back.
+    Deep,
+    /// A whole new value given a `ref` name, the pattern naming its fields out of order and
+    /// leaving some out: it wasn't put back.
+    NewValue,
+    /// A `ref` name the function's parameter has too, that parameter the index of what the
+    /// `match` is over: it didn't build.
+    Shadowed,
+    /// A guard reading the `ref` names: it didn't build.
+    Guarded,
+    /// The index of what the `match` is over changed in the case, which still goes back where
+    /// it matched.
+    IndexMoved,
+    /// A `for ref` over the case's `ref` list changing its item, then a `?` failing in a `while`
+    /// condition: the item's change wasn't put back (#2025).
+    ForRefWhile,
+    /// The same, the `?` failing in a later `elif`.
+    ForRefElif,
+    /// The same, the `?` failing after an `and`.
+    ForRefAnd,
+}
+
+/// Every `RefWay`.
+pub(crate) const REF_WAYS: [RefWay; 8] = [
+    RefWay::Deep,
+    RefWay::NewValue,
+    RefWay::Shadowed,
+    RefWay::Guarded,
+    RefWay::IndexMoved,
+    RefWay::ForRefWhile,
+    RefWay::ForRefElif,
+    RefWay::ForRefAnd,
+];
+
 /// A name that another of the same name and type could capture, written `way`, with `n` the value
 /// it adds or lends.
 #[derive(Clone, Copy, Debug)]
@@ -1071,6 +1127,10 @@ pub(crate) enum Stmt {
     /// is `stop`, letting it go there. The source prints as it opens and closes, and its cleanup
     /// fails for an even `limit`, which fails the loop: that prints `shut`.
     Summed(Expr, Expr),
+    /// `through_shown(way, limit, stop, words)`: a loop over `enumerate` or `zip` of a generator
+    /// made right there (`ZipWay`). The generator lends from a source, summed until an item is
+    /// `stop` and let go there or when the list runs out, or fails partway, at `stop`.
+    ZipSummed(ZipSumming),
     /// An arrow function that fails, `() => capped(n, limit=limit)?`, its `?` passing its own
     /// failure up to what it's given to, as #1305 has it. `capped` fails with `n` when it's over
     /// `limit`.
@@ -1126,6 +1186,9 @@ pub(crate) enum Stmt {
     Shelved(Shelving),
     /// `listened{id}(stdout)`: listeners of a channel to every listener, some falling behind.
     Listened(Listening),
+    /// `ref_cased{id}(stdout)`: a `match` with `ref` written one of the ways the compiled program
+    /// once put back wrong, or couldn't build.
+    RefCased(RefCasing),
     /// `captured{id}(stdout)`: a name written where another of the same name and type is in
     /// sight, in a way the checker once renamed into the other.
     Captured(Capturing),
@@ -1255,4 +1318,39 @@ pub(crate) struct Program {
     /// Whether nothing in it launches a task or runs `parallel`, so its `Named` values can be
     /// native blocks.
     pub(crate) threadless: bool,
+}
+
+/// Where a generator made right there sits in a loop over `enumerate` or `zip`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ZipWay {
+    Enumerated,
+    First,
+    Second,
+}
+
+/// Every place a generator sits in `enumerate` or `zip`, for a test to write each.
+pub(crate) const ZIP_WAYS: [ZipWay; 3] = [ZipWay::Enumerated, ZipWay::First, ZipWay::Second];
+
+/// A loop over `enumerate` or `zip` of a generator made right there: the one lending from a
+/// source (`lent_counts`) or one failing partway (`failing_counts`), with a list of `words` items,
+/// `1` to `words`, beside it in `zip`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ZipSumming {
+    pub(crate) way: ZipWay,
+    pub(crate) failing: bool,
+    pub(crate) limit: i64,
+    pub(crate) stop: i64,
+    pub(crate) words: i64,
+}
+
+impl ZipSumming {
+    /// The number `through_shown` takes for this way.
+    pub(crate) fn number(&self) -> i64 {
+        let at = match self.way {
+            ZipWay::Enumerated => 0,
+            ZipWay::First => 1,
+            ZipWay::Second => 2,
+        };
+        if self.failing { at + 3 } else { at }
+    }
 }

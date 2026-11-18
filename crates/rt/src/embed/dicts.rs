@@ -464,15 +464,19 @@ fn hash_key(state: &State, key_word: Word, key: &[u64], how: Hashing) -> u64 {
             super::heap::element_of_block(state, block).is_some_and(|element| by_what_it_holds(&element))
         });
         if by_value {
-            let value = super::heap::read_block(state, first);
-            return match how {
-                Hashing::Fast => {
-                    finish(crate::pairs::hash_with(hash_keys().seed, crate::pairs::mixed, &value))
+            // Read into a tree, hashed and let go of with a call for each level it holds, which
+            // takes as much stack as the key is deep.
+            return super::heap::with_room_to_read(|| {
+                let value = super::heap::read_block(state, first);
+                match how {
+                    Hashing::Fast => {
+                        finish(crate::pairs::hash_with(hash_keys().seed, crate::pairs::mixed, &value))
+                    }
+                    Hashing::Strong => {
+                        crate::pairs::hash_with(0, |hash, word| strong_step(hash, word), &value) >> 1
+                    }
                 }
-                Hashing::Strong => {
-                    crate::pairs::hash_with(0, |hash, word| strong_step(hash, word), &value) >> 1
-                }
-            };
+            });
         }
         // Bytes go by their length and the words it takes up, as they're compared, not by any
         // room after them.
@@ -2077,6 +2081,11 @@ pub(super) fn children(state: &State, block: &[u64]) -> Vec<u64> {
 #[inline(never)]
 fn children_in_place(state: &State, block: &[u64], layout: Layout) -> Vec<u64> {
     let Some(element) = value_element(state, layout.value) else { return Vec::new() };
+    // Keys and values of kinds that hold no blocks, as numbers and structs of numbers are, leave
+    // nothing to look through.
+    if !layout.key.owned() && layout.key != Word::Text && !super::heap::holds_blocks(&element) {
+        return Vec::new();
+    }
     let slots = block.get(4).map_or(0, |mask| usize::try_from(*mask).unwrap_or(0) + 1);
     let used = block.get(3).and_then(|used| usize::try_from(*used).ok()).unwrap_or(0);
     let start = DICT_HEADER_WORDS + slots;

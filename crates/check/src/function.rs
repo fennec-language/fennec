@@ -29,6 +29,9 @@ pub(crate) struct Binding {
     pub(crate) mut_at: Option<u32>,
     /// Whether it's a channel to `.Every` a `with` lends, which has no one next message to take.
     pub(crate) to_every: bool,
+    /// The function whose parameter it is, by key, when it's one: kept when a nested function
+    /// captures it, so the nested function calling it is a call of that function's parameter.
+    pub(crate) param_of: Option<String>,
 }
 
 /// Where a name came from, for explaining how to make it changeable.
@@ -42,6 +45,25 @@ pub(crate) enum Origin {
     Captured,
     /// A `with` block's name for a `shared` handle it locks.
     Locked,
+}
+
+/// What the checker knows at one point in a function, to come back to after a path through the
+/// code and to join where paths meet.
+#[derive(Clone)]
+pub(crate) struct Snapshot {
+    /// What every name in sight holds.
+    types: Vec<Type>,
+    /// Whether a source has passed its `lend` on the way here.
+    pub(crate) lent: Lending,
+}
+
+/// Whether a source has passed its `lend` on every way to somewhere in it that hasn't failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lending {
+    /// Some way there hasn't.
+    NotYet,
+    /// Every way there has.
+    Lent,
 }
 
 struct Scope {
@@ -72,6 +94,11 @@ pub(crate) struct FnCx<'c> {
     /// What a `with` source lends, from its `-> with T`, and how many `lend`s it has so far.
     pub(crate) lends: Option<Type>,
     pub(crate) lent: usize,
+    /// Whether every way through the source to here that hasn't failed has passed its `lend`,
+    /// kept with each path at a branch and joined where paths meet, as what names hold is.
+    pub(crate) lent_here: Lending,
+    /// Where a `lend` in a loop is, refused for that already.
+    pub(crate) lend_in_loop: Option<Span>,
     /// The spans of the values `with` blocks are taking now, where a source may be called.
     pub(crate) with_values: Vec<(u32, u32)>,
     /// The `match`es written as statements of their own, which may change what they're over
@@ -118,6 +145,10 @@ pub(crate) struct FnCx<'c> {
     pub(crate) returned_errs: std::collections::HashMap<(u32, u32), Span>,
     /// How many generators kept for later this is inside.
     pub(crate) kept_generators: usize,
+    /// Each `?` a `for` loops over right there, as the loop's own `made()?` or an argument of its
+    /// `enumerate` or `zip`, by span. Only there does a generator that can fail go into
+    /// `enumerate` or `zip`, or a `? from` wrap what a generator fails with.
+    pub(crate) looped_here: Vec<Span>,
     /// The arrow functions being checked, innermost last, by span: what each waits on and calls
     /// is kept for wherever it's called.
     pub(crate) arrows_open: Vec<(u32, u32)>,
@@ -165,6 +196,8 @@ impl<'c> FnCx<'c> {
             generator: false,
             lends: None,
             lent: 0,
+            lent_here: Lending::NotYet,
+            lend_in_loop: None,
             with_values: Vec::new(),
             statement_matches: Vec::new(),
             routes_here: Vec::new(),
@@ -187,6 +220,7 @@ impl<'c> FnCx<'c> {
             int_divisions: std::collections::HashSet::new(),
             returned_errs: std::collections::HashMap::new(),
             kept_generators: 0,
+            looped_here: Vec::new(),
             arrows_open: Vec::new(),
             calling: Vec::new(),
             arrow_locals: std::collections::HashMap::new(),
@@ -227,6 +261,7 @@ impl<'c> FnCx<'c> {
         }
         let checker = &mut *self.checker;
         let body = checker.typed.entry(self.key.clone()).or_default();
+        body.names_outer = checker.names_outer.contains(&self.key);
         for (span, ty) in std::mem::take(&mut self.exprs) {
             body.exprs.insert((span.start, span.end), ty);
         }
@@ -235,6 +270,28 @@ impl<'c> FnCx<'c> {
             if let Some(body) = checker.typed.get_mut(&self.key) {
                 body.names.insert(((span.start, span.end), name), ty);
             }
+        }
+    }
+
+    /// Notes that this function names a `with` source's own function, constant or module, written
+    /// in where something in sight names it too (`sight::outer`): IR lowering gives its own names
+    /// apart first.
+    pub(crate) fn note_outer(&mut self) {
+        if !self.checker.names_outer.contains(&self.key) {
+            self.checker.names_outer.insert(self.key.clone());
+        }
+    }
+
+    /// A name read for what it stands for at the top level, a type or a special form: the name a
+    /// `with` source's own is written in as (`sight::outer`), noted, and whether it was one, which
+    /// nothing in sight takes.
+    pub(crate) fn meant<'n>(&mut self, written: &'n str) -> (&'n str, bool) {
+        match fennec_syntax::sight::outer(written) {
+            Some(meant) => {
+                self.note_outer();
+                (meant, true)
+            }
+            None => (written, false),
         }
     }
 
@@ -287,7 +344,7 @@ impl<'c> FnCx<'c> {
         cx.tail = if cx.generator || cx.lends.is_some() { None } else { cx.declared.clone() };
         let flow = cx.stmts(&def.body, cx.lends.is_none());
         if cx.lends.is_some() {
-            cx.source_finished(def);
+            cx.source_finished(def, &flow);
         }
         // A body that always leaves early has an unknown value, which fits any type.
         if cx.lends.is_some() {
@@ -322,7 +379,7 @@ impl<'c> FnCx<'c> {
             declared.clone()
         } else if cx.generator {
             let yields = cx.yields.clone();
-            Type::Iterator(Box::new(cx.joined(&yields, def.span, "yields")))
+            Type::iterator(cx.joined(&yields, def.span, "yields"))
         } else if values.is_empty() {
             // A body that never finishes, like `while True:` with no `break`, gives nothing.
             Type::Unit
@@ -370,7 +427,7 @@ impl<'c> FnCx<'c> {
 
     /// Joins what a function gives back from several places, reporting values that don't
     /// fit together.
-    fn joined(&mut self, types: &[Type], span: Span, verb: &str) -> Type {
+    pub(crate) fn joined(&mut self, types: &[Type], span: Span, verb: &str) -> Type {
         if let Some(joined) = self.checker.join_all(types) {
             return joined;
         }
@@ -576,7 +633,24 @@ impl<'c> FnCx<'c> {
             let ty = input.ty.as_ref().map_or(Type::Unknown, |ty| cx.resolve(ty));
             cx.declare(&input.name, ty, input.is_mut, input.span);
         }
+        // What it fails with is the compiler's to write, once it's worked it out (#2040).
+        if let Some(fails) = &test.fails {
+            if cx.checker.again {
+                cx.fails = Some(cx.resolve(fails));
+            } else {
+                let message = "a test can't say what it fails with";
+                cx.error(Diagnostic::new(message, fails.span).with_help("take the `fails` away"));
+            }
+        }
         cx.stmts(&test.body, false);
+        // What it fails with, worked out from its body as a function's is, for lowering to write:
+        // by its span, since a test and a bench may share a name.
+        let errors = cx.errors.clone();
+        if !errors.is_empty() {
+            let error = cx.joined(&errors, test.span, "fails with");
+            let error = cx.checker.settled(&error);
+            cx.checker.test_errors.insert((test.span.start, test.span.end), error);
+        }
         cx.finish(&[]);
         if test.inputs.is_empty() && test.capabilities.is_empty() {
             checker.record_test(key, &test.body);
@@ -682,6 +756,7 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn declare_as(&mut self, name: &str, ty: Type, is_mut: bool, origin: Origin, at: Span) {
+        let param_of = (origin == Origin::Param).then(|| self.key.clone());
         self.declare_with(
             Binding {
                 name: name.to_owned(),
@@ -691,6 +766,7 @@ impl<'c> FnCx<'c> {
                 origin,
                 mut_at: None,
                 to_every: false,
+                param_of,
             },
             at,
         );
@@ -711,6 +787,7 @@ impl<'c> FnCx<'c> {
             origin: Origin::Local,
             mut_at: Some(at.start),
             to_every: false,
+            param_of: None,
         };
         self.declare_with(binding, at);
     }
@@ -823,6 +900,19 @@ impl<'c> FnCx<'c> {
         None
     }
 
+    /// Whether `name` is from around the nested function, arrow function or generator kept for
+    /// later that this is in, rather than this function's own.
+    pub(crate) fn came_from_around(&self, name: &str) -> bool {
+        let mut crossed = false;
+        for scope in self.scopes.iter().rev() {
+            if let Some(binding) = scope.bindings.iter().rev().find(|binding| binding.name == name) {
+                return crossed || binding.origin == Origin::Captured;
+            }
+            crossed |= scope.barrier;
+        }
+        false
+    }
+
     /// The innermost name in sight that holds this type.
     pub(crate) fn name_holding(&self, ty: &Type) -> Option<String> {
         let mut bindings = self.scopes.iter().rev().flat_map(|scope| scope.bindings.iter().rev());
@@ -849,6 +939,21 @@ impl<'c> FnCx<'c> {
             .map(|binding| binding.origin)
     }
 
+    /// The function `name` is a parameter of, by key: this one's, or one around it that a nested
+    /// function captured it from.
+    pub(crate) fn param_owner(&self, name: &str) -> Option<String> {
+        let binding = self
+            .scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.bindings.iter().rev())
+            .find(|binding| binding.name == name)?;
+        match binding.origin {
+            Origin::Param | Origin::Captured => binding.param_of.clone(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn binding_mut(&mut self, name: &str) -> Option<&mut Binding> {
         self.scopes
             .iter_mut()
@@ -869,33 +974,44 @@ impl<'c> FnCx<'c> {
         self.scopes.iter().flat_map(|scope| scope.bindings.iter().cloned()).collect()
     }
 
-    /// What every name holds right now, to come back to after one path through the code.
-    pub(crate) fn snapshot(&self) -> Vec<Type> {
-        self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|b| b.ty.clone())).collect()
+    /// What every name holds right now, and whether a source has lent on the way here, to come
+    /// back to after one path through the code.
+    pub(crate) fn snapshot(&self) -> Snapshot {
+        let types =
+            self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|b| b.ty.clone())).collect();
+        Snapshot { types, lent: self.lent_here }
     }
 
-    pub(crate) fn restore(&mut self, types: &[Type]) {
+    pub(crate) fn restore(&mut self, snapshot: &Snapshot) {
+        self.restore_types(&snapshot.types);
+        self.lent_here = snapshot.lent;
+    }
+
+    fn restore_types(&mut self, types: &[Type]) {
         let bindings = self.scopes.iter_mut().flat_map(|scope| scope.bindings.iter_mut());
         for (binding, ty) in bindings.zip(types) {
             binding.ty = ty.clone();
         }
     }
 
-    /// Where paths meet: each name holds what it held on any of them.
-    pub(crate) fn merge(&mut self, paths: &[Vec<Type>]) {
+    /// Where paths meet: each name holds what it held on any of them, and a source has lent only
+    /// if it did on every one.
+    pub(crate) fn merge(&mut self, paths: &[Snapshot]) {
         let Some((first, rest)) = paths.split_first() else { return };
         let declared: Vec<Type> =
             self.scopes.iter().flat_map(|scope| scope.bindings.iter().map(|b| b.declared.clone())).collect();
         let mut merged = Vec::new();
-        for (at, ty) in first.iter().enumerate() {
+        for (at, ty) in first.types.iter().enumerate() {
             let mut ty = ty.clone();
-            for other in rest.iter().filter_map(|path| path.get(at)) {
+            for other in rest.iter().filter_map(|path| path.types.get(at)) {
                 let fallback = declared.get(at).cloned().unwrap_or(Type::Unknown);
                 ty = self.checker.join(&ty, other).unwrap_or(fallback);
             }
             merged.push(ty);
         }
-        self.restore(&merged);
+        self.restore_types(&merged);
+        let lent = paths.iter().all(|path| path.lent == Lending::Lent);
+        self.lent_here = if lent { Lending::Lent } else { Lending::NotYet };
     }
 
     /// Starts following the field paths a condition checks for None, like `player.weapon`,
@@ -1042,6 +1158,14 @@ impl<'c> FnCx<'c> {
         let written =
             fennec_syntax::TypeExpr { name: name.to_owned(), args: Vec::new(), optional: false, span };
         self.checker.program.resolve(&written).ok().filter(|ty| !matches!(ty, Type::Unknown))
+    }
+
+    /// The type a name after `is` stands for, as it's written, when it names one no local takes:
+    /// `Circle` in `s is Circle`. A `with` source's own, written into its caller where something
+    /// there names it too (`sight::outer`), is the type.
+    pub(crate) fn member_named<'n>(&mut self, written: &'n str, at: Span) -> Option<&'n str> {
+        let (member, outer) = self.meant(written);
+        ((outer || self.lookup(member).is_none()) && self.member_type(member, at).is_some()).then_some(member)
     }
 
     /// `s is Circle`: a bool, for a name or field holding a union with that member.

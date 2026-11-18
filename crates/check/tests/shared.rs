@@ -1,7 +1,7 @@
 //! `shared T`: a value many tasks reach, each inside a `lock`, which replaced `shared Name:`
 //! declarations and `with` on them.
 
-use crate::problems;
+use crate::{helps, problems};
 
 const ACCOUNT: &str =
     "struct Account:\n    total = 0\n\n    def add(ref self, amount: int):\n        self.total += amount\n\n";
@@ -210,6 +210,79 @@ fn locks_never_nest() {
     );
 }
 
+/// A nested function called inside a `lock` takes a lock only if it does, or something it calls
+/// does: one that takes none is fine, and one that takes another lock, itself or through a function
+/// it calls, is refused. The function it's written in takes what it takes where it calls it.
+/// Before, a nested function counted as the function around it, which took the lock, so every one
+/// called inside it was refused.
+#[test]
+fn a_nested_function_inside_a_lock_takes_only_what_it_takes() {
+    let empty: [&str; 0] = [];
+    let takes_none = "def main(stdout: Stdout):\n    shared log = list[int]()\n    lock log as ref lines:\n        \
+        lines.append(5)\n        def counted(other: list[int]) -> int:\n            return len(other)\n        \
+        stdout.print(counted([1, 2, 3]))\n        stdout.print(len(lines))\n";
+    assert_eq!(locking(takes_none), empty);
+    let takes_another = "def give(account: shared Account):\n    lock account as ref held:\n        held.add(1)\n\n\
+        def main(stdout: Stdout):\n    shared log = list[int]()\n    shared other = Account()\n    \
+        def poke():\n        lock other as ref held:\n            held.add(1)\n    \
+        def relayed():\n        give(other)\n    \
+        lock log as ref lines:\n        lines.append(5)\n        poke()\n        relayed()\n";
+    assert_eq!(
+        locking(takes_another),
+        [
+            "`poke` takes `other`'s lock while `lines` is locked @ poke()",
+            "`relayed` takes `account`'s lock while `lines` is locked @ relayed()",
+        ]
+    );
+    let around_it = "def outer(account: shared Account):\n    def poke():\n        lock account as ref held:\n            \
+        held.add(1)\n    poke()\n\n\
+        def main(stdout: Stdout):\n    shared log = list[int]()\n    shared a = Account()\n    \
+        lock log as ref lines:\n        lines.append(1)\n        outer(a)\n";
+    assert_eq!(locking(around_it), ["`outer` takes `account`'s lock while `lines` is locked @ outer(a)"]);
+}
+
+/// A nested function that calls a function value from around it, an arrow function or a
+/// parameter, counts for what the function around it waits on and locks, since that's where the
+/// value's own body is checked: called inside a lock, it's refused. One with nothing of the kind,
+/// as an interface's method of the same name, stays fine.
+#[test]
+fn a_nested_function_calling_a_captured_value_takes_what_it_takes() {
+    let empty: [&str; 0] = [];
+    let waits = "struct Scores:\n    total = 0\n\ndef nap(clock: Clock):\n    clock.sleep(1s)\n\n\
+        def serve(stdout: Stdout, clock: Clock):\n    shared scores = Scores()\n    resting = () => nap(clock)\n    \
+        def later():\n        resting()\n    lock scores as held:\n        later()\n        _ = held\n";
+    assert_eq!(locking(waits), ["`later` waits on `Clock.sleep` while `held` is locked @ later()"]);
+    let locks = "def read(account: shared Account) -> int:\n    lock account as now:\n        return now.total\n\n\
+        def serve(stdout: Stdout):\n    shared scores = Account()\n    shared others = Account()\n    \
+        peek = () => read(others)\n    def later() -> int:\n        return peek()\n    \
+        lock scores as ref held:\n        held.total = later()\n";
+    assert_eq!(locking(locks), ["`later` takes `scores`'s lock while `held` is locked @ later()"]);
+    let parameter = "def nap(clock: Clock):\n    clock.sleep(1s)\n\n\
+        def guarded(scores: shared Account, work: () -> nothing):\n    def step():\n        work()\n    \
+        lock scores as held:\n        step()\n        _ = held\n\n\
+        def serve(stdout: Stdout, clock: Clock):\n    shared scores = Account()\n    guarded(scores, () => nap(clock))\n";
+    // Both: the coarse one this test is for, and #2077's, which follows the parameter to what each
+    // caller passes for it.
+    assert_eq!(
+        locking(parameter),
+        [
+            "`step` takes `scores`'s lock while `held` is locked @ step()",
+            "`guarded` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ () => nap(clock)",
+        ]
+    );
+    let interface = "struct Scores:\n    total = 0\n\ninterface Counter:\n    def count(self) -> int\n\n\
+        struct Plain:\n    n = 0\n\n    def count(self) -> int:\n        return self.n\n\n\
+        def through[T: Counter](counter: T, scores: shared Scores) -> int:\n    lock scores as held:\n        \
+        return held.total + counter.count()\n\n\
+        def serve(stdout: Stdout, clock: Clock):\n    shared scores = Scores()\n    def count():\n        \
+        clock.sleep(1s)\n    count()\n    stdout.print(through(Plain(), scores))\n";
+    assert_eq!(locking(interface), empty);
+    let in_a_list = "struct Scores:\n    total = 0\n\ndef nap(clock: Clock):\n    clock.sleep(1s)\n\n\
+        def serve(stdout: Stdout, clock: Clock):\n    shared scores = Scores()\n    works = [() => nap(clock)]\n    \
+        def later():\n        for work in works:\n            work()\n    lock scores as held:\n        later()\n        _ = held\n";
+    assert_eq!(locking(in_a_list), ["`later` waits on `Clock.sleep` while `held` is locked @ later()"]);
+}
+
 const HOLDERS: &str = "struct Cell:
     count = 0
 
@@ -393,6 +466,94 @@ fn a_with_source_lends_once_to_a_with_block() {
             "def one() -> with int:\n    lend 1\n\ndef f(b: bool) -> int fails Oops:\n    with one() as n:\n        return n if b else risky()?\n"
         ),
         ["this `?` might not run, and in a source's block that isn't built yet"]
+    );
+}
+
+/// Every way through a source that doesn't fail reaches its `lend`, since its caller's block runs
+/// there: a source that could finish without lending would skip the block with nothing said, as
+/// `maybe` once did with `flag` false, printing what came after its caller's `with`. A way that
+/// fails is fine, since the caller's `with` fails with it.
+#[test]
+fn a_with_source_that_can_finish_without_lending_is_refused() {
+    let errors = "error Oops:\n    code: int\n\nenum Kind:\n    Lent\n    Failed\n\n";
+    let empty: [&str; 0] = [];
+    let unlent = |name: &str| {
+        format!(
+            "`{name}` can finish without lending: every way through a `with` source that doesn't fail reaches its `lend`"
+        )
+    };
+    let found = |body: &str| -> Vec<String> {
+        problems(&format!("{errors}{body}"))
+            .iter()
+            .map(|problem| problem.split(" @ ").next().unwrap_or_default().to_owned())
+            .collect()
+    };
+    let skipped = "def maybe(flag: bool) -> with int:\n    if flag:\n        lend 1\n\n\
+        def run(flag: bool, stdout: Stdout) fails Oops:\n    with maybe(flag) as n:\n        fail Oops(code=n)\n    stdout.print(\"skipped\")\n";
+    assert_eq!(found(skipped), [unlent("maybe")]);
+    assert_eq!(
+        helps(&format!("{errors}{skipped}")),
+        [
+            "on a way that shouldn't lend, `fail` with an error, so the caller's `with` fails rather than skipping its block"
+        ]
+    );
+    // An `elif` that neither lends nor fails is a way through too, and so is a `match` over an int
+    // that no case takes.
+    assert_eq!(
+        found(
+            "def picked(n: int) -> with int fails Oops:\n    if n > 0:\n        lend n\n    elif n < 0:\n        fail Oops(code=n)\n    elif n == 0:\n        pass\n    else:\n        fail Oops(code=1)\n"
+        ),
+        [unlent("picked")]
+    );
+    assert_eq!(
+        found(
+            "def cased(n: int) -> with int fails Oops:\n    match n:\n        case 1:\n            lend 1\n        case 2:\n            fail Oops(code=2)\n"
+        ),
+        [unlent("cased")]
+    );
+    // Every way that doesn't fail lends: the other branch fails, a `match` over an enum takes every
+    // case, the `lend` comes after an `if` that doesn't leave, or inside a `with` block, which runs
+    // once its source's call works. A `?` before the `lend` fails the way it's on.
+    assert_eq!(
+        found(
+            "def sure(flag: bool) -> with int fails Oops:\n    if flag:\n        lend 1\n    else:\n        fail Oops(code=0)\n"
+        ),
+        empty
+    );
+    assert_eq!(
+        found(
+            "def chosen(kind: Kind) -> with int fails Oops:\n    match kind:\n        case .Lent:\n            lend 1\n        case .Failed:\n            fail Oops(code=2)\n"
+        ),
+        empty
+    );
+    assert_eq!(
+        found("def after(flag: bool) -> with int:\n    mut n = 0\n    if flag:\n        n = 1\n    lend n\n"),
+        empty
+    );
+    assert_eq!(
+        found(
+            "def inner() -> with int:\n    lend 1\n\ndef outer() -> with int:\n    with inner() as n:\n        lend n + 1\n"
+        ),
+        empty
+    );
+    assert_eq!(
+        found(
+            "def checked(code: int) -> int fails Oops:\n    if code > 0: fail Oops(code=code)\n    return code\n\n\
+             def guarded(code: int) -> with int fails Oops:\n    n = checked(code)?\n    lend n\n"
+        ),
+        empty
+    );
+    // A way that never ends doesn't finish without lending.
+    assert_eq!(
+        found(
+            "def forever(flag: bool) -> with int:\n    if flag:\n        lend 1\n    else:\n        while True:\n            pass\n"
+        ),
+        empty
+    );
+    // A `lend` in each branch is still two `lend`s, refused as that alone.
+    assert_eq!(
+        found("def each(flag: bool) -> with int:\n    if flag:\n        lend 1\n    else:\n        lend 2\n"),
+        ["`each` lends twice, but a `with` source lends once"]
     );
 }
 
@@ -610,6 +771,63 @@ fn a_function_value_called_inside_a_lock_is_followed_to_what_it_holds() {
         [
             "what `work` holds can't be known here, so it can't be shown not to wait while `held` is locked @ work()"
         ]
+    );
+}
+
+/// A function parameter a nested function calls is called by the function around it: what each
+/// caller passes is checked as when that function calls it itself. `runs` calling `work` through
+/// its nested `step` once let `nap` sleep while `held` was locked, where `runs_plain`, calling it
+/// itself, was refused.
+#[test]
+fn a_parameter_a_nested_function_calls_is_followed_as_its_function_calls_it() {
+    let declared = "struct Account:\n    total = 0\n\n\
+        def nap(clock: Clock):\n    clock.sleep(1s)\n\n\
+        def quiet():\n    pass\n\n\
+        def runs(work: () -> nothing):\n    def step():\n        work()\n    step()\n\n\
+        def runs_plain(work: () -> nothing):\n    work()\n\n\
+        def deeper(work: () -> nothing):\n    def outer():\n        def inner():\n            work()\n        inner()\n    outer()\n\n\
+        def shadows(work: () -> nothing):\n    def step(work: () -> nothing):\n        work()\n    step(quiet)\n\n";
+    let found = |body: &str| -> Vec<String> {
+        problems(&format!(
+            "{declared}def main(stdout: Stdout, clock: Clock):\n    shared scores = Account()\n    resting = () => nap(clock)\n{body}"
+        ))
+    };
+    let empty: [&str; 0] = [];
+    assert_eq!(
+        found(
+            "    lock scores as held:\n        runs(resting)\n        stdout.print(held.total)\n    lock scores as again:\n        runs_plain(resting)\n        stdout.print(again.total)\n"
+        ),
+        [
+            "`runs` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ resting",
+            "`runs_plain` calls `work` while `again` is locked, and this waits on `Clock.sleep` @ resting"
+        ]
+    );
+    // However deep it's nested, and whoever's around it, it's the outer function's parameter.
+    assert_eq!(
+        found("    lock scores as held:\n        deeper(resting)\n        stdout.print(held.total)\n"),
+        ["`deeper` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ resting"]
+    );
+    // What waits on nothing is fine, and a nested function's own parameter of the same name isn't
+    // the outer one's.
+    assert_eq!(
+        found(
+            "    lock scores as held:\n        runs(quiet)\n        runs(() => stdout.print(1))\n        shadows(resting)\n        stdout.print(held.total)\n"
+        ),
+        empty
+    );
+    // The nested function called inside a lock its function takes calls the parameter inside it.
+    // Until #2011 is fixed, calling a nested function inside its own function's lock is also
+    // refused as taking that lock, so this looks for the parameter's refusal among them.
+    let inside = "struct Account:\n    total = 0\n\n\
+        def nap(clock: Clock):\n    clock.sleep(1s)\n\n\
+        def counted(scores: shared Account, work: () -> nothing):\n    def step():\n        work()\n    \
+        lock scores as held:\n        step()\n        _ = held\n\n\
+        def main(clock: Clock):\n    shared scores = Account()\n    counted(scores, () => nap(clock))\n";
+    let problems = problems(inside);
+    assert!(
+        problems.iter().any(|problem| problem
+            == "`counted` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ () => nap(clock)"),
+        "{problems:?}"
     );
 }
 

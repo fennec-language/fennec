@@ -35,7 +35,7 @@ pub fn type_depth(ty: &Type) -> usize {
         Type::List(item)
         | Type::Buffer(item)
         | Type::Array(item, _)
-        | Type::Iterator(item)
+        | Type::Iterator(item, _)
         | Type::Set(item)
         | Type::Optional(item)
         | Type::Table(item)

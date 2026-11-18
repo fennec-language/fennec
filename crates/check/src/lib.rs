@@ -597,20 +597,29 @@ pub fn check_to_run(module: &mut Module) -> Result<Signatures, Vec<Diagnostic>> 
 ///
 /// What the checker finds wrong with it.
 pub fn check_to_build(module: &mut Module) -> Result<Option<Signatures>, Vec<Diagnostic>> {
+    check_to_build_saying(module).map(|(signatures, as_left)| as_left.then_some(signatures))
+}
+
+/// `check_to_build`, giving back the signatures it found either way, with whether they're those
+/// `check_to_emit` would give the module as it's left: they are once the last check saw it as it's
+/// left, however much was written in before.
+///
+/// # Errors
+///
+/// What the checker finds wrong with it.
+pub fn check_to_build_saying(module: &mut Module) -> Result<(Signatures, bool), Vec<Diagnostic>> {
     library_parses()?;
     let names = own_types_apart(module);
     refuse_reserved(module)?;
     let checked = checker::Checker::new(module)
-        .run(checker::Scope::ReachedWithFields)
+        .run(checker::Scope::Building)
         .map_err(|problems| as_written(problems, &names))?;
     refuse_old_forms(module, &checked).map_err(|problems| as_written(problems, &names))?;
     // Resolving writes in what the check found, as a default left out of a call, which checking
     // the module again types as what's written there: the first check's types are only those of
     // a module it left as it was.
-    let checked_module = module.clone();
-    let (signatures, as_left) = resolved_saying(module, checked, checker::Scope::ReachedWithFields)?;
-    let reused = as_left && *module == checked_module;
-    Ok(reused.then_some(signatures))
+    let seen = module.clone();
+    resolved_saying(module, (checked, seen), checker::Scope::Building)
 }
 
 /// Like `check_to_run`, with every standard library type's fields typed too, so the module can
@@ -728,20 +737,20 @@ fn resolved(
     checked: Checked,
     scope: checker::Scope,
 ) -> Result<Signatures, Vec<Diagnostic>> {
-    resolved_saying(module, checked, scope).map(|(signatures, _)| signatures)
+    resolved_within(module, checked, scope, MOST_ROUNDS, None).map(|(signatures, _, _)| signatures)
 }
 
-/// Like `resolved`, saying too whether the signatures are those the first check found of the
-/// module as it's left: they aren't once anything was written in, which is checked again, or once
-/// stages kept in names were moved to where they're used. What's written in is checked again over
-/// `scope`, as much of the library as the first round checked: written-in code that reaches more
-/// of it reaches it in the round that checks it.
+/// Like `resolved`, saying too whether the signatures are of the module as it's left: whether the
+/// last check, of `checked` the module, saw it as it's left. What's written in is checked again
+/// over `scope`, as much of the library as the first round checked: written-in code that reaches
+/// more of it reaches it in the round that checks it.
 fn resolved_saying(
     module: &mut Module,
-    checked: Checked,
+    (checked, seen): (Checked, Module),
     scope: checker::Scope,
 ) -> Result<(Signatures, bool), Vec<Diagnostic>> {
-    resolved_within(module, checked, scope, MOST_ROUNDS).map(|(signatures, first, _)| (signatures, first))
+    resolved_within(module, checked, scope, MOST_ROUNDS, Some(seen))
+        .map(|(signatures, as_left, _)| (signatures, as_left))
 }
 
 /// The most rounds of writing in what a check found, and checking again, a program is given. This
@@ -751,12 +760,16 @@ fn resolved_saying(
 /// check that goes on round after round.
 const MOST_ROUNDS: usize = 64;
 
-/// `resolved_saying`, given at most `most` rounds, saying too how many it took.
+/// `resolved_saying`, given at most `most` rounds, saying too how many it took. `seen` is the
+/// module `checked` is of, when whether the signatures are of the module as it's left is wanted:
+/// they are when the last check saw it as it's left, however many rounds wrote in before that one.
+/// Without it, they're said to be only when nothing was written in.
 fn resolved_within(
     module: &mut Module,
     mut checked: Checked,
     scope: checker::Scope,
     most: usize,
+    mut seen: Option<Module>,
 ) -> Result<(Signatures, bool, usize), Vec<Diagnostic>> {
     let mut first = true;
     for round in 1.. {
@@ -777,16 +790,25 @@ fn resolved_within(
         };
         if !again {
             let moved = fennec_syntax::fuse::stored_stages(module);
-            return Ok((checked.into_signatures(), first && !moved, round));
+            // What every round does, and moving stages, can change the module after the last check.
+            let as_left = match &seen {
+                Some(seen) => seen == module,
+                None => first && !moved,
+            };
+            return Ok((checked.into_signatures(), as_left, round));
         }
         if let Some(before) = before {
             return Err(vec![still_changing(&before, module)]);
         }
         first = false;
+        if let Some(seen) = &mut seen {
+            seen.clone_from(module);
+        }
         let mut next = checker::Checker::new(module);
         next.again = true;
-        checked =
-            next.run(scope).map_err(|problems| problems.iter().map(not_checked_again).collect::<Vec<_>>())?;
+        checked = next.run(scope).map_err(|problems| {
+            problems.iter().map(|problem| not_checked_again(problem, &module.copied)).collect::<Vec<_>>()
+        })?;
     }
     unreachable!("the rounds go on until one returns")
 }
@@ -907,6 +929,15 @@ fn library_functions() -> Vec<(String, fennec_syntax::FnDef)> {
 /// One round of writing in what the check found, saying whether anything was written that needs
 /// checking again.
 fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
+    // What a round writes in more than once is noted where it went, with what's there already.
+    lend_lowering::copies_from(module);
+    let round = written_in_round(module, checked);
+    lend_lowering::copies_into(module);
+    round
+}
+
+/// What `resolved_round` writes in.
+fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
     unqualified_cases(module, &checked.signatures);
@@ -969,20 +1000,67 @@ fn resolved_round(module: &mut Module, checked: &Checked) -> Round {
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);
     let sources = cases_named(&checked.sources, &checked.cases);
-    let sources_written = lend_lowering::lower(module, &sources, &checked.launches, &checked.ref_matches);
-    let counted = enumerate_lowering::lower(module, &checked.ref_items);
-    let live = ref_lowering::lower(module, &checked.live_refs);
+    let test_fails = tests_failing(module, &checked.test_errors);
+    let sources_written =
+        lend_lowering::lower(module, &sources, &checked.launches, (&checked.ref_matches, &test_fails));
+    // A copy just written in has spans of its own: what the check found in a source's text is
+    // found in each copy too.
+    let (ref_items, live_refs) = (
+        lend_lowering::found_in_copies(&checked.ref_items),
+        lend_lowering::found_in_copies(&checked.live_refs),
+    );
+    let shared_values = lend_lowering::found_in_copies(&checked.shared_values);
+    let counted = enumerate_lowering::lower(module, &ref_items);
+    let live = ref_lowering::lower(module, &live_refs);
     let tuples = tuple_lowering::lower(module, &checked.saved_types);
-    if lock_lowering::lower(module, &checked.shared_values)
-        || sources_written
-        || counted
-        || live
-        || nested
-        || tuples
+    if lock_lowering::lower(module, &shared_values) || sources_written || counted || live || nested || tuples
     {
         return Round::Again;
     }
     Round::Done
+}
+
+/// What each test fails with, worked out from its body, by its span, as `errors` has it, written. One
+/// that can't fail isn't here.
+fn tests_failing(
+    module: &Module,
+    errors: &BTreeMap<(u32, u32), Type>,
+) -> BTreeMap<(u32, u32), fennec_syntax::TypeExpr> {
+    // The program's own types, which its files name. Any other is the standard library's, written
+    // where that library's code would name it, which needs no import.
+    let own: BTreeSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(def) | Item::Enum(def) | Item::Error(def) if !def.span.in_prelude() => {
+                Some(def.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut found = BTreeMap::new();
+    for item in &module.items {
+        let Item::Test(test) = item else { continue };
+        let at = (test.span.start, test.span.end);
+        if let Some(error) = errors.get(&at)
+            && let Some(mut written) = error.written(test.span)
+        {
+            library_named(&mut written, &own);
+            found.insert(at, written);
+        }
+    }
+    found
+}
+
+/// A written type with each type in it that isn't one of `own` given a span in the standard
+/// library's text, where its name needs no import.
+fn library_named(written: &mut fennec_syntax::TypeExpr, own: &BTreeSet<&str>) {
+    if written.name != "|" && !own.contains(written.name.as_str()) {
+        written.span = Span { start: Span::PRELUDE, end: Span::PRELUDE };
+    }
+    for arg in &mut written.args {
+        library_named(arg, own);
+    }
 }
 
 /// What the checker found an operator or builtin calls written in: `a != b` as `not (a == b)`
@@ -1102,11 +1180,11 @@ fn unqualified_cases(module: &mut Module, signatures: &Signatures) {
 }
 
 /// What a program rewritten by lowering doesn't check for: the compiler's mistake, not the
-/// program's, said as one.
-fn not_checked_again(problem: &Diagnostic) -> Diagnostic {
+/// program's, said as one, where the text is when it's in a copy written in (`copied`).
+fn not_checked_again(problem: &Diagnostic, copied: &[fennec_syntax::Copied]) -> Diagnostic {
     let message =
         format!("internal error: once rewritten for running, this doesn't check: {}", problem.message);
-    Diagnostic::new(message, problem.span)
+    Diagnostic::new(message, problem.span.copied_from(copied))
         .with_help("this is a mistake in the compiler, not in the program: please report it with the program")
 }
 
@@ -1166,6 +1244,8 @@ pub struct Checked {
     opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, which lowering writes in as a source.
     launches: BTreeMap<(u32, u32), launch::Launch>,
+    /// What each test or bench can fail with, worked out from its body, by its span.
+    test_errors: BTreeMap<(u32, u32), Type>,
     /// Each route written with a method, as `router.get(...)`, which lowering writes in as a call
     /// to `handle`.
     routes: BTreeMap<(u32, u32), routes::Route>,
@@ -1244,9 +1324,17 @@ impl Types {
 pub struct Body {
     pub(crate) exprs: BTreeMap<(u32, u32), Type>,
     pub(crate) names: BTreeMap<((u32, u32), String), Type>,
+    pub(crate) names_outer: bool,
 }
 
 impl Body {
+    /// Whether the function names a `with` source's own function, constant or module where it's
+    /// written in, with something in sight there named the same (`sight::outer`).
+    #[must_use]
+    pub fn names_outer(&self) -> bool {
+        self.names_outer
+    }
+
     /// The type of the expression at `span`.
     pub fn expr(&self, span: Span) -> Option<&Type> {
         self.exprs.get(&(span.start, span.end))
@@ -1315,6 +1403,44 @@ pub struct Enum {
 }
 
 impl Signatures {
+    /// These signatures, of a whole module, for the module cut down from it to what `main` reaches:
+    /// the entries of what was cut away, by their keys (`cut`), are let go. What's left is what
+    /// checking the cut module would find of the program's own, as `agree_within` holds a dev build
+    /// to, with at most library entries more that only what was cut reached.
+    #[must_use]
+    pub fn cut_to(mut self, cut: &BTreeSet<String>) -> Signatures {
+        self.functions.retain(|key, _| !cut.contains(key));
+        self.structs.retain(|key, _| !cut.contains(key));
+        self.enums.retain(|key, _| !cut.contains(key));
+        self.errors.retain(|key, _| !cut.contains(key));
+        self.types.functions.retain(|key, _| !cut.contains(key));
+        self.lock_verdicts.retain(|key, _| !cut.contains(key));
+        self.own_saving.retain(|key, _| !cut.contains(key));
+        self
+    }
+
+    /// Whether these signatures, of a module cut down to what `main` reaches, agree with `wider`,
+    /// those of the whole module the cut one came from: every function, type, local, verdict and
+    /// body here is there too and the same. `wider` may hold more: what was cut away, and the
+    /// library functions only that reached. What crosses between threads is worked out from every
+    /// function the program has, so `wider`'s may say more types cross, never fewer, which keeps
+    /// a count two threads can change where one would do.
+    #[must_use]
+    pub fn agree_within(&self, wider: &Signatures) -> bool {
+        fn within<V: PartialEq>(narrow: &BTreeMap<String, V>, wide: &BTreeMap<String, V>) -> bool {
+            narrow.iter().all(|(key, value)| wide.get(key) == Some(value))
+        }
+        within(&self.functions, &wider.functions)
+            && within(&self.structs, &wider.structs)
+            && within(&self.enums, &wider.enums)
+            && within(&self.errors, &wider.errors)
+            && within(&self.locals, &wider.locals)
+            && within(&self.types.functions, &wider.types.functions)
+            && within(&self.lock_verdicts, &wider.lock_verdicts)
+            && within(&self.own_saving, &wider.own_saving)
+            && self.crossing.within(&wider.crossing)
+    }
+
     /// What each function waits on or locks, itself or however many calls down, by its key, as
     /// a `lock` that calls it is judged: a function that does neither isn't there. An edit that
     /// changes one of these can break a `lock` anywhere that calls the function.
@@ -1507,7 +1633,7 @@ mod rounds {
                 continue;
             }
             let shown = path.display().to_string();
-            let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS);
+            let resolved = resolved_within(&mut module, checked, checker::Scope::Reached, MOST_ROUNDS, None);
             let rounds = match resolved {
                 Ok((_, _, rounds)) => rounds,
                 Err(problems) => panic!("{shown}: {problems:?}"),
@@ -1533,7 +1659,7 @@ mod rounds {
         library_parses().unwrap();
         let _ = own_types_apart(&mut module);
         let checked = checker::Checker::new(&module).run(checker::Scope::Reached).unwrap();
-        let problems = resolved_within(&mut module, checked, checker::Scope::Reached, 1).unwrap_err();
+        let problems = resolved_within(&mut module, checked, checker::Scope::Reached, 1, None).unwrap_err();
         let [problem] = problems.as_slice() else { panic!("{problems:?}") };
         assert!(
             problem

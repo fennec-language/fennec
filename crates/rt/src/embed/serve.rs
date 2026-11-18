@@ -43,6 +43,11 @@ const STACK: usize = 1024 * 1024;
 const RANGE_STACK: usize = 64 << 20;
 const RANGE_STACKS_KEPT: usize = 8;
 
+/// A launched task's stack. A server may launch one for each connection, and the kernel's tables
+/// for a range's 64 MB cost 16 KB of each, for room a task seldom uses. Native code in one can
+/// still nest about 150,000 calls of a small function, three quarters of this.
+const LAUNCHED_STACK: usize = 8 << 20;
+
 /// The most ranges of `parallel` calls a worker runs at once. Each has a stack of its own, and past
 /// a few thousand there's no room left for more, nor for the tasks they launch, which they wait for.
 /// Only ranges count: a launched task may live as long as the program, and a worker holding this
@@ -83,8 +88,9 @@ static BLOCKED_WAITS: AtomicU64 = AtomicU64::new(0);
 static WARNED: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
 
 thread_local! {
-    /// On an I/O worker, its poll's registry, for connections to register with.
-    static REGISTRY: RefCell<Option<Registry>> = const { RefCell::new(None) };
+    /// On an I/O worker, its poll's registry, for connections to register with, and keep, so a
+    /// task on another worker can tell its connection isn't its own.
+    static REGISTRY: RefCell<Option<Arc<Registry>>> = const { RefCell::new(None) };
     /// The token the next connection on this thread gets.
     static NEXT_TOKEN: Cell<usize> = const { Cell::new(0) };
     /// What the wait a task is about to park on waits for, when it gives up, and the note it
@@ -102,6 +108,12 @@ thread_local! {
     static SLICE: Cell<Option<Instant>> = const { Cell::new(None) };
     /// The task this worker is running, for a server it starts to know where it was started.
     static RESUMED: Cell<Option<TaskId>> = const { Cell::new(None) };
+    /// The servers each task on this worker serves, while it does: so a server it's a round of,
+    /// left, stops them, and cancels the round once they've ended (see `Io::leave`).
+    static SERVING: RefCell<HashMap<TaskId, Vec<Arc<Server>>>> = RefCell::new(HashMap::new());
+    /// The rounds on this worker kept, to cancel once their own servers have ended: each stays in
+    /// its wait until it's cancelled, whoever sees its server's end first.
+    static KEPT: RefCell<HashSet<TaskId>> = RefCell::new(HashSet::new());
     /// Whether, when it was, anything else on the worker wanted the thread: another task ready or
     /// waiting, or a server served.
     static OTHERS: Cell<bool> = const { Cell::new(false) };
@@ -187,30 +199,45 @@ enum Waited {
 
 /// A connection, read and written by its task, which parks while it would block.
 ///
-/// Tasks on its worker share it, one reading while another writes, so each part is borrowed only
-/// for one step, and never across a park.
+/// A `Connection` is `shared`, so tasks on any worker use it, one reading while another writes,
+/// a hub on another worker writing to each member's say (#2065). So each part is locked only for
+/// one step, and never across a park, and the stream's lock comes after the TLS session's.
 pub struct Conn {
-    stream: RefCell<TcpStream>,
+    stream: Mutex<TcpStream>,
     token: Token,
     /// Bytes read past the end of the last line.
-    ahead: RefCell<Vec<u8>>,
-    /// Whether it's registered with this thread's poll.
-    registered: bool,
+    ahead: Mutex<Vec<u8>>,
+    /// How many times bytes have been taken off the front of `ahead`: a reader that has looked
+    /// through part of it for a newline looks again from the start once another has taken some.
+    taken: AtomicU64,
+    /// The registry of the worker whose poll it's registered with, when it is. Only a task on that
+    /// worker parks on it: a wait on another thread blocks it, moving the socket off that poll and
+    /// back as a second wait there does.
+    home: Option<Arc<Registry>>,
     /// Whether a task is parked on it. The poll knows one task for each socket, so a second waits
     /// blocking its thread.
-    parked: Cell<bool>,
+    parked: AtomicBool,
+    /// Held by a wait that blocks its thread while it has the socket off its worker's poll, so two
+    /// such waits, on two threads, take turns at it.
+    blocking: Mutex<()>,
     /// Its TLS, when its server has some.
-    tls: RefCell<Option<Box<dyn ServerSession>>>,
+    tls: Mutex<Option<Box<dyn ServerSession>>>,
     /// Whether its server's draining, when its server stops when the program's asked to: a read
     /// with nothing of a next message in hand then ends, as at the end of what was sent.
     draining: Option<Arc<AtomicBool>>,
     /// Whether anything's been read since it last wrote: a read before anything has is waiting
     /// for a next message, not partway through one.
-    read_since_write: Cell<bool>,
+    read_since_write: AtomicBool,
     /// The label it prints as, given as its server took it.
     label: i64,
     /// When every read has to be done by, and how long that was, once `reads_within` is called.
-    reads_by: Cell<Option<(Instant, Duration)>>,
+    reads_by: Mutex<Option<(Instant, Duration)>>,
+}
+
+/// One of a connection's parts, locked for one step. Nothing panics while one is held, so a
+/// poisoned lock's part is as good as any.
+fn locked<T: ?Sized>(part: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    part.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// How long a connection has to finish its TLS handshake.
@@ -222,23 +249,36 @@ impl Conn {
         crate::stdlib::net::bound_send_buffer(&stream);
         let token = Token(NEXT_TOKEN.get());
         NEXT_TOKEN.set(token.0.wrapping_add(1) % CONNECTIONS);
-        let registered = REGISTRY.with_borrow(|registry| {
-            registry.as_ref().is_some_and(|registry| {
-                registry.register(&mut stream, token, Interest::READABLE | Interest::WRITABLE).is_ok()
-            })
+        let home = REGISTRY.with_borrow(|registry| {
+            registry
+                .as_ref()
+                .filter(|registry| {
+                    registry.register(&mut stream, token, Interest::READABLE | Interest::WRITABLE).is_ok()
+                })
+                .map(Arc::clone)
         });
         Conn {
-            stream: RefCell::new(stream),
+            stream: Mutex::new(stream),
             token,
-            ahead: RefCell::new(Vec::new()),
-            registered,
-            parked: Cell::new(false),
-            tls: RefCell::new(None),
+            ahead: Mutex::new(Vec::new()),
+            taken: AtomicU64::new(0),
+            home,
+            parked: AtomicBool::new(false),
+            blocking: Mutex::new(()),
+            tls: Mutex::new(None),
             draining: None,
-            read_since_write: Cell::new(false),
+            read_since_write: AtomicBool::new(false),
             label: 0,
-            reads_by: Cell::new(None),
+            reads_by: Mutex::new(None),
         }
+    }
+
+    /// Whether this thread is the worker whose poll it's registered with, where a task waiting on it
+    /// can park.
+    fn is_home(&self) -> bool {
+        self.home.as_ref().is_some_and(|home| {
+            REGISTRY.with_borrow(|here| here.as_ref().is_some_and(|here| Arc::ptr_eq(here, home)))
+        })
     }
 
     /// It, printing as `label`, which its server gave it as it took it.
@@ -267,7 +307,9 @@ impl Conn {
     /// since it last wrote, and its server's draining. While such a read waits, its server's drain
     /// wakes it, so it ends at once rather than when the other side next sends.
     fn wait_to_read(&self, until: Until, call: &'static str) -> Result<bool, Failure> {
-        let idle = self.draining.is_some() && !self.read_since_write.get() && self.ahead.borrow().is_empty();
+        let idle = self.draining.is_some()
+            && !self.read_since_write.load(Ordering::Relaxed)
+            && locked(&self.ahead).is_empty();
         if !idle {
             self.wait(self.read_interest(), until, call)?;
             return Ok(false);
@@ -287,7 +329,8 @@ impl Conn {
         let mut session = tls.session().map_err(|_| Failure::Closed)?;
         let until = Until::after(Some(HANDSHAKE_TIMEOUT));
         loop {
-            match session.handshake(&mut *self.stream.borrow_mut()) {
+            let shaken = session.handshake(&mut *locked(&self.stream));
+            match shaken {
                 Ok(_) => break,
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
                     let interest =
@@ -298,26 +341,28 @@ impl Conn {
                 Err(error) => return Err(Failure::of(&error)),
             }
         }
-        *self.tls.borrow_mut() = Some(session);
+        *locked(&self.tls) = Some(session);
         Ok(())
     }
 
     /// Up to `count` more bytes onto `bytes`, through TLS if it has any.
     fn fill(&self, bytes: &mut Vec<u8>, count: usize) -> std::io::Result<usize> {
-        let mut stream = self.stream.borrow_mut();
-        let filled = match &mut *self.tls.borrow_mut() {
+        // The TLS session's lock first, as a write takes them.
+        let mut tls = locked(&self.tls);
+        let mut stream = locked(&self.stream);
+        let filled = match &mut *tls {
             Some(session) => session.read_onto(&mut *stream, bytes, count),
             None => read_onto(&mut stream, bytes, count),
         };
         if filled.as_ref().is_ok_and(|read| *read > 0) {
-            self.read_since_write.set(true);
+            self.read_since_write.store(true, Ordering::Relaxed);
         }
         filled
     }
 
     /// What a read that would block is waiting for: TLS may have something to send first.
     fn read_interest(&self) -> Interest {
-        if self.tls.borrow().as_ref().is_some_and(|session| session.wants_write()) {
+        if locked(&self.tls).as_ref().is_some_and(|session| session.wants_write()) {
             Interest::WRITABLE
         } else {
             Interest::READABLE
@@ -326,13 +371,14 @@ impl Conn {
 
     /// Has every read from now on done within `after`, however long each is given.
     pub fn reads_within(&self, after: Duration) {
-        self.reads_by.set(Some((Instant::now() + after, after)));
+        *locked(&self.reads_by) = Some((Instant::now() + after, after));
     }
 
     /// How long a read given `timeout` waits: no longer than what's left before every read has to
     /// be done by.
     fn read_until(&self, timeout: Option<Duration>) -> Until {
-        match self.reads_by.get() {
+        let reads_by = *locked(&self.reads_by);
+        match reads_by {
             Some((by, whole)) if timeout.is_none_or(|timeout| Instant::now() + timeout > by) => {
                 Until { timeout: Some(whole), deadline: Some(by) }
             }
@@ -343,16 +389,18 @@ impl Conn {
     /// Up to `count` bytes, empty at the end.
     pub fn read(&self, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
         let until = self.read_until(timeout);
-        {
-            let mut ahead = self.ahead.borrow_mut();
+        loop {
+            // Held for the whole step, so another reader's bytes come before or after these, whole.
+            let mut ahead = locked(&self.ahead);
             if !ahead.is_empty() {
                 let taken = ahead.len().min(count);
+                self.taken.fetch_add(1, Ordering::Relaxed);
                 return Ok(ahead.drain(..taken).collect());
             }
-        }
-        loop {
             let mut bytes = Vec::new();
-            match self.fill(&mut bytes, count) {
+            let filled = self.fill(&mut bytes, count);
+            drop(ahead);
+            match filled {
                 Ok(_) => return Ok(bytes),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
                     if self.wait_to_read(until, "read")? {
@@ -375,25 +423,32 @@ impl Conn {
         let most = crate::stdlib::net::MOST_LINE_BYTES;
         let until = self.read_until(timeout);
         // Where in what's held the newline hasn't been looked for yet, so each byte is looked at
-        // once however slowly the line comes.
-        let mut looked = 0;
+        // once however slowly the line comes: unless another reader has taken some since, when
+        // what's held starts somewhere else.
+        let (mut looked, mut taken_then) = (0, self.taken.load(Ordering::Relaxed));
         loop {
-            let found = {
-                let ahead = self.ahead.borrow();
-                let from = looked.min(ahead.len());
-                looked = ahead.len();
-                ahead
-                    .get(from..)
-                    .unwrap_or_default()
-                    .iter()
-                    .position(|byte| *byte == b'\n')
-                    .map(|at| from + at)
-            };
-            if found.is_none() && self.ahead.borrow().len() > most {
+            // One lock for the whole step: finding the line and taking it, or reading more onto
+            // what's held. Two readers on two workers each get whole lines, each line once.
+            let mut ahead = locked(&self.ahead);
+            let taken_now = self.taken.load(Ordering::Relaxed);
+            if taken_now != taken_then {
+                (looked, taken_then) = (0, taken_now);
+            }
+            let from = looked.min(ahead.len());
+            looked = ahead.len();
+            let found = ahead
+                .get(from..)
+                .unwrap_or_default()
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|at| from + at);
+            if found.is_none() && ahead.len() > most {
                 return Err(Failure::Other(format!("a line was longer than {most} bytes")));
             }
             if let Some(end) = found {
-                let mut line: Vec<u8> = self.ahead.borrow_mut().drain(..=end).collect();
+                let mut line: Vec<u8> = ahead.drain(..=end).collect();
+                self.taken.fetch_add(1, Ordering::Relaxed);
+                drop(ahead);
                 if let Some(why) = crate::stdlib::net::line_refused(&line, crlf) {
                     return Err(Failure::Other(why));
                 }
@@ -403,14 +458,13 @@ impl Conn {
                 }
                 return Ok(Some(line));
             }
-            let mut ahead = self.ahead.take();
             let filled = self.fill(&mut ahead, READ_BYTES);
-            *self.ahead.borrow_mut() = ahead;
             match filled {
-                Ok(0) if self.ahead.borrow().is_empty() => return Ok(None),
+                Ok(0) if ahead.is_empty() => return Ok(None),
                 Ok(0) => {
                     // A last line with no `\n` loses a `\r` it ends with, as one with a `\n` does.
-                    let mut line = self.ahead.take();
+                    let mut line = std::mem::take(&mut *ahead);
+                    self.taken.fetch_add(1, Ordering::Relaxed);
                     if line.last() == Some(&b'\r') {
                         line.pop();
                     }
@@ -418,6 +472,7 @@ impl Conn {
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    drop(ahead);
                     if self.wait_to_read(until, "read_line")? {
                         return Ok(None);
                     }
@@ -432,11 +487,11 @@ impl Conn {
     /// other side still sends, for a while. Closing with what it sent unread would reset the
     /// connection, and the other side would lose what it hadn't read yet: the answer it was sent.
     pub fn linger(&self) {
-        let _ = self.stream.borrow().shutdown(std::net::Shutdown::Write);
+        let _ = locked(&self.stream).shutdown(std::net::Shutdown::Write);
         let until = Until::after(Some(LINGER));
         let mut sink = [0_u8; READ_BYTES];
         loop {
-            let read = self.stream.borrow_mut().read(&mut sink);
+            let read = locked(&self.stream).read(&mut sink);
             match read {
                 Ok(0) => return,
                 Ok(_) => {}
@@ -457,9 +512,16 @@ impl Conn {
         }
     }
 
+    /// Ends the connection both ways at once, for a task on another worker than its round's
+    /// closing it: lingering there would read, and throw away, what its round is reading. Its round
+    /// then reads the end, and its client is told nothing more is coming.
+    pub fn end(&self) {
+        let _ = locked(&self.stream).shutdown(std::net::Shutdown::Both);
+    }
+
     /// The other side's address.
     pub fn peer(&self) -> String {
-        self.stream.borrow().peer_addr().map(|peer| peer.to_string()).unwrap_or_default()
+        locked(&self.stream).peer_addr().map(|peer| peer.to_string()).unwrap_or_default()
     }
 
     /// Writes all of `data`.
@@ -471,12 +533,12 @@ impl Conn {
     pub fn write_within(&self, mut data: &[u8], timeout: Option<Duration>) -> Result<(), Failure> {
         crate::stdlib::net::wrote_to_a_connection();
         let until = Until::after(timeout);
-        self.read_since_write.set(false);
-        if self.tls.borrow().is_some() {
+        self.read_since_write.store(false, Ordering::Relaxed);
+        if locked(&self.tls).is_some() {
             return self.write_securely(data, until);
         }
         while !data.is_empty() {
-            let wrote = self.stream.borrow_mut().write(crate::stdlib::net::piece(data));
+            let wrote = locked(&self.stream).write(crate::stdlib::net::piece(data));
             match wrote {
                 Ok(0) => return Err(Failure::Closed),
                 Ok(written) => data = data.get(written..).unwrap_or_default(),
@@ -494,10 +556,10 @@ impl Conn {
     fn write_securely(&self, mut data: &[u8], until: Until) -> Result<(), Failure> {
         loop {
             let wrote = {
-                let mut tls = self.tls.borrow_mut();
+                let mut tls = locked(&self.tls);
                 let Some(session) = tls.as_mut() else { return Err(Failure::Closed) };
                 session
-                    .write_some(&mut *self.stream.borrow_mut(), data)
+                    .write_some(&mut *locked(&self.stream), data)
                     .map(|taken| (taken, session.wants_write()))
             };
             match wrote {
@@ -527,29 +589,29 @@ impl Conn {
         }
         // What a task has printed comes out before it waits, however long that is.
         super::write_kept_output();
-        let waited = if self.registered && !super::state_is_borrowed() && !self.parked.get() {
-            parking(interest, until.deadline, None);
-            self.parked.set(true);
-            let woken = fennec_parked::park(u64::try_from(self.token.0).unwrap_or(0));
-            self.parked.set(false);
-            match woken {
-                Some(Wake::Ready(TIMED_OUT)) => Waited::TimedOut,
-                // A round cancelled in its connection's wait fails as stopped, as at any other wait,
-                // so it goes no further: a `NetError` it could catch let it go on (#1950).
-                Some(Wake::Cancelled) => {
-                    if !super::failed() {
-                        fail_as_stopped();
+        let waited =
+            if self.is_home() && !super::state_is_borrowed() && !self.parked.swap(true, Ordering::Acquire) {
+                parking(interest, until.deadline, None);
+                let woken = fennec_parked::park(u64::try_from(self.token.0).unwrap_or(0));
+                self.parked.store(false, Ordering::Release);
+                match woken {
+                    Some(Wake::Ready(TIMED_OUT)) => Waited::TimedOut,
+                    // A round cancelled in its connection's wait fails as stopped, as at any other wait,
+                    // so it goes no further: a `NetError` it could catch let it go on (#1950).
+                    Some(Wake::Cancelled) => {
+                        if !super::failed() {
+                            fail_as_stopped();
+                        }
+                        Waited::Cancelled
                     }
-                    Waited::Cancelled
+                    // A stop cuts the wait short, as any other's, unless it's a cleanup's in its grace.
+                    Some(Wake::Ready(STOPPED)) if cut_short() => Waited::Cancelled,
+                    Some(Wake::Ready(_)) => Waited::Ready,
+                    None => self.block(interest, until, call)?,
                 }
-                // A stop cuts the wait short, as any other's, unless it's a cleanup's in its grace.
-                Some(Wake::Ready(STOPPED)) if cut_short() => Waited::Cancelled,
-                Some(Wake::Ready(_)) => Waited::Ready,
-                None => self.block(interest, until, call)?,
-            }
-        } else {
-            self.block(interest, until, call)?
-        };
+            } else {
+                self.block(interest, until, call)?
+            };
         match waited {
             Waited::Ready => Ok(()),
             Waited::TimedOut => Err(Failure::TimedOut(until.timeout.unwrap_or_default())),
@@ -565,36 +627,30 @@ impl Conn {
         warn_once(call);
         let mut poll = Poll::new().map_err(|error| Failure::of(&error))?;
         let token = Token(0);
-        if self.registered {
-            REGISTRY.with_borrow(|registry| {
-                registry.as_ref().map(|registry| registry.deregister(&mut *self.stream.borrow_mut()))
-            });
+        // One such wait at a time has the socket off its worker's poll, from whichever thread.
+        let _turn = locked(&self.blocking);
+        if let Some(home) = &self.home {
+            let _ = home.deregister(&mut *locked(&self.stream));
         }
-        poll.registry()
-            .register(&mut *self.stream.borrow_mut(), token, interest)
-            .map_err(|error| Failure::of(&error))?;
-        let mut events = Events::with_capacity(1);
-        let polled = poll.poll(&mut events, timeout);
-        let _ = poll.registry().deregister(&mut *self.stream.borrow_mut());
-        if self.registered {
+        let registered = poll.registry().register(&mut *locked(&self.stream), token, interest);
+        let polled = registered.and_then(|()| {
+            let mut events = Events::with_capacity(1);
+            poll.poll(&mut events, timeout).map(|()| events.is_empty())
+        });
+        let _ = poll.registry().deregister(&mut *locked(&self.stream));
+        if let Some(home) = &self.home {
             let both = Interest::READABLE | Interest::WRITABLE;
-            REGISTRY.with_borrow(|registry| {
-                registry
-                    .as_ref()
-                    .map(|registry| registry.register(&mut *self.stream.borrow_mut(), self.token, both))
-            });
+            let _ = home.register(&mut *locked(&self.stream), self.token, both);
         }
-        polled.map_err(|error| Failure::of(&error))?;
-        Ok(if events.is_empty() && timeout.is_some() { Waited::TimedOut } else { Waited::Ready })
+        let quiet = polled.map_err(|error| Failure::of(&error))?;
+        Ok(if quiet && timeout.is_some() { Waited::TimedOut } else { Waited::Ready })
     }
 }
 
 impl Drop for Conn {
     fn drop(&mut self) {
-        if self.registered {
-            REGISTRY.with_borrow(|registry| {
-                registry.as_ref().map(|registry| registry.deregister(self.stream.get_mut()))
-            });
+        if let Some(home) = &self.home {
+            let _ = home.deregister(self.stream.get_mut().unwrap_or_else(PoisonError::into_inner));
         }
     }
 }
@@ -674,8 +730,6 @@ struct Server {
     /// how long its rounds then have to finish.
     stop: Option<Duration>,
     draining: Arc<AtomicBool>,
-    /// The worker and the task on it that serves it, when a task does: a round, say.
-    served_by: Option<(usize, TaskId)>,
 }
 
 /// A recorded round, replayed: what it runs with the handle of its connection.
@@ -701,6 +755,9 @@ struct Here {
     /// Whether a round's `break` has stopped it taking connections, for it to be left once the
     /// rounds running finish.
     draining: bool,
+    /// Whether it's being left, with rounds that serve servers of their own still to cancel once
+    /// those have ended.
+    leaving: bool,
 }
 
 /// What a pool worker serves: its poll, its tasks, which task waits on which connection, and the
@@ -737,12 +794,15 @@ pub(in crate::embed) struct Io {
     /// tasks take turns on the thread, so one's can't be left where another's truncating would
     /// cut them off, and an ended task's go with it.
     temporaries: HashMap<TaskId, super::Temporaries>,
+    /// How many servers here are being left, with rounds kept: while none are, which is nearly
+    /// always, resuming a task looks for no round to cancel.
+    leaving: usize,
 }
 
 impl Io {
     /// A worker's, on its own thread, with the poll its waker was made with.
     pub(in crate::embed) fn new(poll: Poll, workers: &'static Pool, at: usize) -> Io {
-        REGISTRY.set(poll.registry().try_clone().ok());
+        REGISTRY.set(poll.registry().try_clone().ok().map(Arc::new));
         Io {
             poll,
             events: Events::with_capacity(1024),
@@ -761,6 +821,7 @@ impl Io {
             deferred_tasks: VecDeque::new(),
             accounts: HashMap::new(),
             temporaries: HashMap::new(),
+            leaving: 0,
         }
     }
 
@@ -800,7 +861,8 @@ impl Io {
         // The task runs it from its first resume, so it's kept here until then in case it can't.
         let run = Rc::new(Cell::new(Some(run)));
         let held = Rc::clone(&run);
-        let Ok(task) = self.ranges.spawn(move || held.take().map_or(0, |run| run())) else {
+        let stack = if accounts.is_range_s() { RANGE_STACK } else { LAUNCHED_STACK };
+        let Ok(task) = self.ranges.spawn_with_stack(stack, move || held.take().map_or(0, |run| run())) else {
             // A task that was never made never took its work, so it's still here.
             return match run.take() {
                 Some(run) => Err(Deferred { run, accounts: Box::new(accounts), started }),
@@ -924,32 +986,51 @@ impl Io {
             return;
         }
         let id = server.id;
-        let here =
-            Here { server, listener, tasks: HashSet::new(), served: Served::default(), draining: false };
+        let here = Here {
+            server,
+            listener,
+            tasks: HashSet::new(),
+            served: Served::default(),
+            draining: false,
+            leaving: false,
+        };
         self.servers.insert(id, here);
     }
 
     /// Leaves a server: its tasks here are cancelled, each told, ending and closing its
     /// connection, and what this worker served goes into the server's total.
     fn leave(&mut self, id: u64) {
-        // A server one of its rounds here serves is left here first, as it would be when the round
-        // ends it. Cancelled, the round stops that server and waits for every worker to leave it,
-        // and this one couldn't take the mail that has it leave while it runs the round: the round,
-        // and the program, never ended (#1950).
-        let Some(rounds) = self.servers.get(&id).map(|here| here.tasks.clone()) else { return };
-        let mut inner: Vec<u64> = self
-            .servers
-            .iter()
-            .filter(|(_, other)| {
-                other.server.served_by.is_some_and(|(at, task)| at == self.at && rounds.contains(&task))
-            })
-            .map(|(inner, _)| *inner)
-            .collect();
-        inner.sort_unstable();
-        for inner in inner {
-            self.leave(inner);
+        // A round that serves a server of its own isn't cancelled yet: that server's stopped, and
+        // the round is cancelled once it's ended (`cut_round_once_its_server_has`). Cancelled
+        // first, the round waited here, holding this worker, for every worker to leave its server,
+        // which this one, and any whose round waited for this one's, couldn't (#2004).
+        let Some(here) = self.servers.get_mut(&id) else { return };
+        let mut serving: Vec<TaskId> = here.tasks.iter().copied().filter(|task| serves(*task)).collect();
+        if !serving.is_empty() {
+            serving.sort_unstable();
+            if !here.leaving {
+                here.leaving = true;
+                self.leaving += 1;
+            }
+            KEPT.with_borrow_mut(|kept| kept.extend(serving.iter().copied()));
+            if let Some(listener) = &mut here.listener {
+                let _ = self.poll.registry().deregister(listener);
+            }
+            let others: Vec<TaskId> =
+                here.tasks.iter().copied().filter(|task| !serving.contains(task)).collect();
+            for task in &serving {
+                let servers = SERVING.with_borrow(|serving| serving.get(task).cloned().unwrap_or_default());
+                for server in servers {
+                    Stopper { server, pool: self.pool }.stop();
+                }
+            }
+            self.cut_rounds(id, others);
+            return;
         }
         let Some(mut here) = self.servers.remove(&id) else { return };
+        if here.leaving {
+            self.leaving -= 1;
+        }
         let left: Vec<usize> = self
             .waiting
             .iter()
@@ -987,6 +1068,61 @@ impl Io {
         here.server.left.finished();
     }
 
+    /// Cancels `tasks`, rounds of the server `id` here, in the order they started, so their
+    /// cleanups run the same way each time. Each ends quietly, however it ended.
+    fn cut_rounds(&mut self, id: u64, mut tasks: Vec<TaskId>) {
+        tasks.sort_unstable();
+        let left: Vec<usize> = self
+            .waiting
+            .iter()
+            .filter(|(_, (task, ..))| tasks.contains(task))
+            .map(|(token, _)| *token)
+            .collect();
+        for token in left {
+            self.unwait(token);
+        }
+        self.ready.retain(|(task, _)| !tasks.contains(task));
+        for task in tasks {
+            if let Some(here) = self.servers.get_mut(&id) {
+                here.tasks.remove(&task);
+            }
+            self.owners.remove(&task);
+            let _ = self.with_own_temporaries(task, |io| io.scheduler.cancel(task));
+            KEPT.with_borrow_mut(|kept| kept.remove(&task));
+            self.temporaries.remove(&task);
+            super::clear_failure();
+        }
+    }
+
+    /// A round of a server being left, which served a server of its own, is cancelled once that
+    /// server has ended, and the server it's a round of is left once its last such round is: gives
+    /// back whether it was.
+    fn cut_round_once_its_server_has(&mut self, task: TaskId) -> bool {
+        let Some(&id) = self.owners.get(&task) else { return false };
+        let leaving = self.servers.get(&id).is_some_and(|here| here.leaving);
+        if !leaving || serves(task) {
+            return false;
+        }
+        self.cut_rounds(id, vec![task]);
+        if self.servers.get(&id).is_some_and(|here| here.tasks.is_empty()) {
+            self.leave(id);
+        }
+        true
+    }
+
+    /// For a test: a pause before resuming a round of a server being left, on the pool that
+    /// `PAUSE_BEFORE_KEPT` names, as if the thread were taken away between this worker's look at
+    /// whether the round's own server has ended and the round's.
+    #[cfg(test)]
+    fn pause_for_a_test(&self, task: TaskId) {
+        let this_pool = std::ptr::from_ref(self.pool).addr();
+        if PAUSE_BEFORE_KEPT.load(Ordering::Acquire) == this_pool
+            && self.owners.get(&task).is_some_and(|id| self.servers.get(id).is_some_and(|here| here.leaving))
+        {
+            std::thread::sleep(Duration::from_micros(300));
+        }
+    }
+
     /// Makes a task for a connection of the server `id`, ready to start, printing as `label`.
     fn take(&mut self, stream: TcpStream, id: u64, label: i64) {
         // Each write goes out at once. A response is its head and then its body, two writes, and
@@ -995,6 +1131,10 @@ impl Io {
         // connection only answers more slowly.
         let _ = stream.set_nodelay(true);
         let Some(here) = self.servers.get_mut(&id) else { return };
+        // A server being left takes no more rounds: dropping the stream closes it.
+        if here.leaving {
+            return;
+        }
         let handler = Arc::clone(&here.server.handler);
         let tls = here.server.tls.clone();
         let draining = here.server.stop.map(|_| Arc::clone(&here.server.draining));
@@ -1065,6 +1205,11 @@ impl Io {
         }
         for _ in 0..self.ready.len() {
             let Some((task, wake)) = self.ready.pop_front() else { break };
+            if self.leaving > 0 && self.cut_round_once_its_server_has(task) {
+                continue;
+            }
+            #[cfg(test)]
+            self.pause_for_a_test(task);
             self.slice_starts();
             if self.accounts.contains_key(&task) {
                 self.resume_range(task, wake);
@@ -1211,6 +1356,7 @@ impl Io {
     /// Notes that a task ended, failed or not, giving back the server it served a round of. A
     /// server that's draining is left once its last round here has ended.
     fn ended(&mut self, task: TaskId, failed: bool) -> Option<u64> {
+        KEPT.with_borrow_mut(|kept| kept.remove(&task));
         let id = self.owners.remove(&task)?;
         let here = self.servers.get_mut(&id)?;
         here.tasks.remove(&task);
@@ -1221,7 +1367,7 @@ impl Io {
         {
             Stopper { server: Arc::clone(&here.server), pool: self.pool }.stop();
         }
-        if here.draining && here.tasks.is_empty() {
+        if (here.draining || here.leaving) && here.tasks.is_empty() {
             self.leave(id);
         }
         Some(id)
@@ -2016,7 +2162,6 @@ pub(super) fn serve(
         tls,
         stop,
         draining: Arc::new(AtomicBool::new(false)),
-        served_by: served_by(),
     });
     // The worker that accepts joins last, so every other worker has joined before it hands one
     // a connection: each worker takes what it's given in turn.
@@ -2033,7 +2178,7 @@ pub(super) fn serve(
         crate::signals::on_stop(Box::new(move || stopping.drain_for(grace)))
     });
     let stopping = Stopper { server: Arc::clone(&server), pool };
-    wait_for_every_worker(&server.left, || stopping.stop());
+    served_here(&server, || stopping.stop());
     if let Some(listening) = listening {
         crate::signals::forget(listening);
     }
@@ -2041,10 +2186,44 @@ pub(super) fn serve(
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
-/// The worker and the task on it that's starting a server here, when a task is.
-fn served_by() -> Option<(usize, TaskId)> {
-    let (_, at) = super::parallel::here()?;
-    Some((at, RESUMED.get()?))
+/// For a test: the pool whose workers pause before resuming a kept round (`Io::pause_for_a_test`).
+#[cfg(test)]
+static PAUSE_BEFORE_KEPT: AtomicUsize = AtomicUsize::new(0);
+
+/// Waits for the server to end, as `wait_for_every_worker` does, with it noted meanwhile as one the
+/// task running here serves, when a task on a worker is: so leaving a server that task is a round
+/// of stops this one first, and cancels the round only once it's ended.
+fn served_here(server: &Arc<Server>, stop: impl Fn()) {
+    let task = RESUMED.get().filter(|_| super::parallel::here().is_some());
+    if let Some(task) = task {
+        SERVING.with_borrow_mut(|serving| serving.entry(task).or_default().push(Arc::clone(server)));
+    }
+    wait_for_every_worker(&server.left, stop);
+    // A round its worker kept is cancelled by that worker, once it sees this server has ended. The
+    // round can see that first, when another worker was the last to leave between its worker's
+    // look and its own: it waits for the cancel, rather than go on uncancelled (#2004).
+    if let Some(task) = task {
+        while KEPT.with_borrow(|kept| kept.contains(&task)) && !fennec_parked::is_cancelled() {
+            let _ = park_on_token(next_token(), Some(Instant::now() + SERVER_END_LOOKS), false, None);
+        }
+    }
+    if let Some(task) = task {
+        SERVING.with_borrow_mut(|serving| {
+            if let Some(servers) = serving.get_mut(&task) {
+                servers.retain(|other| !Arc::ptr_eq(other, server));
+                if servers.is_empty() {
+                    serving.remove(&task);
+                }
+            }
+        });
+    }
+}
+
+/// Whether `task` serves a server of its own on this worker that hasn't ended.
+fn serves(task: TaskId) -> bool {
+    SERVING.with_borrow(|serving| {
+        serving.get(&task).is_some_and(|servers| servers.iter().any(|server| !server.left.is_done()))
+    })
 }
 
 /// Replays a recorded server: its `rounds` recorded rounds run on `pool`'s workers as `serve` runs
@@ -2071,7 +2250,6 @@ pub(super) fn serve_replayed(
         tls: None,
         stop: None,
         draining: Arc::new(AtomicBool::new(false)),
-        served_by: served_by(),
     });
     for at in 0..workers {
         let joining = Arc::clone(&server);
@@ -2087,7 +2265,7 @@ pub(super) fn serve_replayed(
     }
     // A task parks, as a live server's does, so its worker runs the rounds it was given (#1832).
     let stopping = Stopper { server: Arc::clone(&server), pool };
-    wait_for_every_worker(&server.left, || stopping.stop());
+    served_here(&server, || stopping.stop());
     server.lent.lock().unwrap_or_else(PoisonError::into_inner).take();
     std::mem::take(&mut *server.total.lock().unwrap_or_else(PoisonError::into_inner))
 }

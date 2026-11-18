@@ -1,0 +1,37 @@
+# Two rounds each serve a server of their own when the serving task's block ends and stops it,
+# which cancels both. At 2 threads or more the two rounds run on different workers.
+# Each round waited for the other's worker to leave its server, for good (#2004). From Fable 5.2's
+# review of #1993.
+from std.concurrent import Crashed
+from std.net import NetError, Request, Response, Server
+
+def inner_answered(request: Request) -> Response:
+    return Response(status=200, body=f"inner {request.path}".encode())
+
+def nested(net: Net) fails NetError:
+    with net.listen(0)? as inner:
+        inner.serve((asked) => inner_answered(asked))
+
+def answered(request: Request, net: Net, stdout: Stdout) -> Response:
+    if request.path == "/slow":
+        stdout.print("a slow one began")
+        nested(net) except why:
+            stdout.print("a slow one's server failed", f"{why}")
+        stdout.print("a slow one never said")
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, net: Net, stdout: Stdout):
+    server.serve((request) => answered(request, net=net, stdout=stdout))
+    stdout.print("the server never said")
+
+def main(net: Net, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as first:
+            first.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+            with net.connect("127.0.0.1", port)? as second:
+                second.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+                with launch(() => serving(server, net=net, stdout=stdout), stop_after=200ms)?:
+                    got = net.get(f"http://127.0.0.1:{port}/one")?
+                    stdout.print(got.text())
+    stdout.print("the server is over")

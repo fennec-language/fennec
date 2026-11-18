@@ -194,7 +194,8 @@ fn no_plus(item: &Type, span: Span) -> Diagnostic {
 
 /// Whether a sum's items come from `parallel(...)`, as such or through a comprehension over it.
 fn over_parallel(items: &fennec_syntax::Expr) -> bool {
-    let called = |expr: &fennec_syntax::Expr| matches!(&expr.kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Name(name) if name == "parallel"));
+    // A `with` source's `parallel`, written into its caller as its own (`sight::outer`), is too.
+    let called = |expr: &fennec_syntax::Expr| matches!(&expr.kind, ExprKind::Call { callee, .. } if matches!(&callee.kind, ExprKind::Name(name) if fennec_syntax::sight::outer(name).unwrap_or(name) == "parallel"));
     match &items.kind {
         ExprKind::Comprehension { iter, .. } => called(iter),
         _ => called(items),

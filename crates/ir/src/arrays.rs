@@ -78,7 +78,9 @@ impl Sizes {
             Type::List(item) => Type::List(inner(item)),
             Type::Buffer(item) => Type::Buffer(inner(item)),
             Type::Set(item) => Type::Set(inner(item)),
-            Type::Iterator(item) => Type::Iterator(inner(item)),
+            Type::Iterator(item, failure) => {
+                Type::Iterator(inner(item), failure.as_ref().map(|failure| inner(failure)))
+            }
             Type::Optional(item) => Type::Optional(inner(item)),
             Type::Id(item) => Type::Id(inner(item)),
             Type::Table(item) => Type::Table(inner(item)),

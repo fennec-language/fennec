@@ -302,9 +302,9 @@ impl FnCx<'_> {
             // the function that made it, and counts its failure, may loop over it: not one around
             // it, from a name that is one or that holds one in a list, a tuple or a struct.
             let settled = self.checker.settled(&ty);
-            if !settled.held_generator_failures().is_empty() && self.came_from_around(name) {
-                let holds = settled.generator_failure().is_none();
-                self.error(crate::messages::failing_generator_inside(name, holds, span));
+            let maybe = !settled.is_known() || !settled.held_generator_failures().is_empty();
+            if maybe && self.came_from_around(name) {
+                self.no_failing_generator_here(name, &ty, span, false);
             }
             return ty;
         }
@@ -1268,12 +1268,13 @@ impl FnCx<'_> {
 
     /// `except` on a call whose value is, or holds, a generator that can fail. That generator's
     /// failure is counted only where a `?` takes it out, so `except` leaves it with nowhere to go,
-    /// unless what's called is a `def`, which gives back only what its caller made and counted.
-    /// A generator function's call runs none of its body, so its `except` would never run; an
-    /// arrow function's `?` counted the generator as its own failure, not this function's.
+    /// unless what's called is a `def` given no function, which gives back only what its caller
+    /// made and counted. A generator function's call runs none of its body, so its `except` would
+    /// never run; an arrow function's `?` counted the generator as its own failure, not this
+    /// function's, and so may a function a `def` is given and calls.
     fn except_on_failing_generator(&mut self, value: &Expr) {
         let written = value.span;
-        let ExprKind::Call { callee, .. } = &value.kind else {
+        let ExprKind::Call { callee, args } = &value.kind else {
             self.error(crate::messages::except_on_a_generator(written));
             return;
         };
@@ -1291,9 +1292,21 @@ impl FnCx<'_> {
                 .and_then(|owner| self.checker.program.method(&owner, name).map(|(_, entry)| entry)),
             _ => None,
         };
-        let plain_def = def.is_some_and(|entry| !fennec_syntax::fuse::has_yield(&entry.def.body));
+        let plain_def = def.is_some_and(|entry| !crate::effects::of_body(&entry.def.body).yields);
         if !plain_def {
             self.error(crate::messages::except_on_a_generator(written));
+            return;
+        }
+        let mut given: Vec<Span> = args.iter().map(|arg| arg.value.span).collect();
+        if let ExprKind::Attr { object, .. } = &callee.kind {
+            given.push(object.span);
+        }
+        let given_a_function = given.into_iter().any(|span| {
+            let ty = self.recorded(span).map_or(Type::Unknown, |ty| self.checker.settled(&ty));
+            mentions_a_function(&ty) || self.checker.holds_function_value(&ty, &mut Vec::new())
+        });
+        if given_a_function {
+            self.error(crate::messages::except_on_a_call_given_a_function(written));
         }
     }
 
@@ -1315,11 +1328,7 @@ impl FnCx<'_> {
             }
             // One given a generator that can fail, or a value holding one, would loop over it
             // where its failure can't pass up: the arrow is a function of its own.
-            let settled = self.checker.settled(&ty);
-            if !settled.held_generator_failures().is_empty() {
-                let holds = settled.generator_failure().is_none();
-                self.error(crate::messages::failing_generator_inside(param, holds, span));
-            }
+            self.no_failing_generator_here(param, &ty, span, true);
             self.declare(param, ty.clone(), true, span);
             known.push(ty);
         }
@@ -1518,4 +1527,10 @@ fn swallows_failure(written: Span, inner: &Type) -> Diagnostic {
             a(inner)
         ))
         .with_hint("pass the failure up", end, "?")
+}
+
+/// Whether a type is, or holds where its parts are written, a function named as a value, which an
+/// arrow function's type doesn't cover.
+fn mentions_a_function(ty: &Type) -> bool {
+    matches!(ty, Type::Function(_)) || ty.children().into_iter().any(mentions_a_function)
 }

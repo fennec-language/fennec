@@ -123,6 +123,10 @@ pub(crate) struct FnCx<'c> {
     pub(crate) pending_bounds: Vec<(Type, Vec<String>, Span)>,
     /// Calls to `sum` whose items weren't worked out when they were checked.
     pub(crate) pending_sums: Vec<crate::sum::SumCall>,
+    /// Names read where a generator that can fail can't go, whose types weren't worked out yet
+    /// when they were read: each name, its type, where, and whether it's an arrow's own
+    /// parameter. They're looked at again once the function's types are.
+    pub(crate) pending_generators: Vec<(String, Type, Span, bool)>,
     /// Every expression's type and every declared name's, as they're found.
     exprs: Vec<(Span, Type)>,
     pub(crate) names: Vec<(Span, String, Type)>,
@@ -211,6 +215,7 @@ impl<'c> FnCx<'c> {
             generics: Vec::new(),
             pending_bounds: Vec::new(),
             pending_sums: Vec::new(),
+            pending_generators: Vec::new(),
             reported: 0,
             exprs: Vec::new(),
             names: Vec::new(),
@@ -245,6 +250,7 @@ impl<'c> FnCx<'c> {
     pub(crate) fn finish(mut self, extra: &[Type]) {
         self.check_pending_bounds();
         self.check_pending_sums();
+        self.check_pending_generators();
         // An expression looked at twice, like an argument peeked at first, keeps the type
         // it got last.
         let exprs: std::collections::BTreeMap<(u32, u32), Type> =
@@ -747,6 +753,30 @@ impl<'c> FnCx<'c> {
         }
     }
 
+    /// A name read where a generator that can fail can't go, as one from around a nested
+    /// function, an arrow function, a generator kept for later or a `parallel` body, or an arrow's
+    /// own parameter: refused when its type is or holds one. A type not worked out yet is looked at
+    /// again once the function's types are.
+    pub(crate) fn no_failing_generator_here(&mut self, name: &str, ty: &Type, span: Span, param: bool) {
+        let settled = self.checker.settled(ty);
+        if !settled.held_generator_failures().is_empty() {
+            self.error(failing_generator_reached(name, &settled, span, param));
+        } else if !settled.is_known() {
+            self.pending_generators.push((name.to_owned(), ty.clone(), span, param));
+        }
+    }
+
+    /// The names `no_failing_generator_here` couldn't tell about as they were read, now that the
+    /// function's types are worked out.
+    fn check_pending_generators(&mut self) {
+        for (name, ty, span, param) in std::mem::take(&mut self.pending_generators) {
+            let settled = self.checker.settled(&ty);
+            if !settled.held_generator_failures().is_empty() {
+                self.error(failing_generator_reached(&name, &settled, span, param));
+            }
+        }
+    }
+
     /// The items of a `parallel` loop or comprehension over `iter`, when it's one: `parallel(xs)`
     /// written as the standard library's, and not a name of the program's own.
     pub(crate) fn parallel_over<'e>(&self, iter: &'e Expr) -> Option<&'e Expr> {
@@ -1234,5 +1264,16 @@ impl<'c> FnCx<'c> {
                 binding.ty = narrowed;
             }
         }
+    }
+}
+
+/// The refusal of a name that is or holds a generator that can fail, read where its failure can't
+/// pass up: from around, or as an arrow's own parameter.
+fn failing_generator_reached(name: &str, ty: &Type, span: Span, param: bool) -> Diagnostic {
+    let holds = ty.generator_failure().is_none();
+    if param {
+        crate::messages::failing_generator_given_to_arrow(name, holds, span)
+    } else {
+        crate::messages::failing_generator_inside(name, holds, span)
     }
 }

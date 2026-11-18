@@ -186,6 +186,24 @@ pub(crate) fn failing_generator_inside(name: &str, holds: bool, span: Span) -> D
     Diagnostic::new(message, span).with_help(FAILING_GENERATOR_HELP)
 }
 
+/// An arrow function's own parameter given a generator that can fail, or a value holding one: the
+/// arrow is a function of its own, so looping over it there can't pass its failure up.
+pub(crate) fn failing_generator_given_to_arrow(name: &str, holds: bool, span: Span) -> Diagnostic {
+    let what = if holds { "a value holding a generator that can fail" } else { "a generator that can fail" };
+    let message = format!(
+        "this arrow function's `{name}` is given {what}, and its failure can't pass up from inside the arrow"
+    );
+    Diagnostic::new(message, span).with_help(FAILING_GENERATOR_HELP)
+}
+
+/// `except` on a `def`'s call given a function: the function can make a generator that can fail,
+/// which the call gives back with its failure counted nowhere here.
+pub(crate) fn except_on_a_call_given_a_function(span: Span) -> Diagnostic {
+    let message = "this gives back a generator that can fail, which a function it was given may have made, and `except` on it leaves that generator's failure nowhere to go";
+    Diagnostic::new(message, span)
+        .with_help("write `?`: then this function passes the generator's failure up where it's looped over")
+}
+
 /// `parallel` over items that hold a generator that can fail: each item goes to another task,
 /// where its failure can't pass up as it says.
 pub(crate) fn failing_generator_in_parallel(span: Span) -> Diagnostic {

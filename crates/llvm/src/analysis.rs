@@ -4252,80 +4252,144 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
     let every = || program.functions.iter().chain(&program.constants);
     let functions: HashMap<&str, &Function> =
         every().map(|function| (function.name.as_str(), function)).collect();
-    let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
-    let kept = parameters_kept(&functions);
-    let keeps = |callee: &str, at: usize| {
-        kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
-    };
-    let params = param_ranges(program, &changes, &keeps);
-    // Without layouts, which a program that builds always has, any dict that isn't of plain words
-    // may hold its values in its entries.
-    let layouts = crate::layouts_of(program).ok();
-    let in_entries = |dict: &Type| match &layouts {
-        Some(layouts) => matches!(
-            crate::kinds::Kind::of(layouts, dict),
-            Ok(crate::kinds::Kind::Dict(_, fennec_rt::embed::dicts::Word::InPlace(_)))
-        ),
-        None => fennec_layout::dict_values_in_place(),
-    };
-    let analyses: HashMap<&str, Analysis> = every()
-        .map(|function| {
-            let given = params.get(function.name.as_str()).map_or(&[][..], Vec::as_slice);
-            (function.name.as_str(), analyze(function, &changes, &keeps, given, &in_entries))
-        })
-        .collect();
-    let mut generators = HashMap::new();
-    for def in &program.generators {
-        generators.insert(def.name.as_str(), def);
-        generators.insert(def.resume.as_str(), def);
-        if let Some(abandon) = &def.abandon {
-            generators.insert(abandon.as_str(), def);
+    // What needs only the program is worked out on threads of its own beside the rest, each giving
+    // what it would on its own. A panic in one is the build's, as it would be on this thread.
+    let whole = std::thread::scope(|scope| {
+        let signs = scope.spawn(|| crate::signs::non_negative(program));
+        let builders = scope.spawn(|| crate::builders::builders(program, &functions));
+        let tasks = scope.spawn(|| crate::ticks::tasks(program, &functions));
+        let layouts = scope.spawn(|| crate::layouts_of(program).ok());
+        let changes = |callee: &str| functions.get(callee).map_or_else(Vec::new, |f| f.mut_params.clone());
+        let kept = parameters_kept(&functions);
+        let keeps = |callee: &str, at: usize| {
+            kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
+        };
+        let params = param_ranges(program, &changes, &keeps);
+        let held = in_entries_of(program, joined(layouts).as_ref());
+        // Without layouts, which a program that builds always has, any dict that isn't of plain
+        // words may hold its values in its entries.
+        let in_entries = |dict: &Type| {
+            held.iter()
+                .find(|(ty, _)| *ty == dict)
+                .map_or_else(fennec_layout::dict_values_in_place, |(_, held)| *held)
+        };
+        let analyses = analyzed(program, (&changes, &keeps), &params, &in_entries);
+        let mut generators = HashMap::new();
+        for def in &program.generators {
+            generators.insert(def.name.as_str(), def);
+            generators.insert(def.resume.as_str(), def);
+            if let Some(abandon) = &def.abandon {
+                generators.insert(abandon.as_str(), def);
+            }
+        }
+        // A generator's functions are called through its block, so all the same way: with the flag.
+        let mut can_fail: HashSet<&str> = every()
+            .filter(|function| {
+                analyses.get(function.name.as_str()).is_none_or(|known| fails_itself(function, known))
+            })
+            .map(|function| function.name.as_str())
+            .collect();
+        for def in &program.generators {
+            can_fail.insert(def.resume.as_str());
+            can_fail.extend(def.abandon.as_deref());
+        }
+        let (settles, lengths) = std::thread::scope(|inner| {
+            let lengths = inner.spawn(|| summarized(&functions, &analyses, Tracked::Lengths));
+            (summarized(&functions, &analyses, Tracked::Owners), joined(lengths))
+        });
+        let under_locks = crate::rollback::changing_under_locks(&functions);
+        let needs = needed(program, &functions, &analyses, &under_locks);
+        let constants = every()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.insts)
+            .filter_map(|inst| match &inst.kind {
+                InstKind::Constant { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let on_workers = crate::parallel::run_on_workers(program);
+        Whole {
+            // Put in below, once no thread borrows them.
+            functions: HashMap::new(),
+            analyses,
+            can_fail,
+            generators,
+            settles,
+            lengths,
+            builders: joined(builders),
+            non_negative: joined(signs),
+            needs,
+            under_locks,
+            constants,
+            on_workers,
+            cells: crate::parallel::has_cells(program),
+            tasks: joined(tasks),
+            runtime_closures: crate::closures::runtime_holds_closures(program),
+            tested: program.functions.iter().any(|function| crate::emit::is_test(&function.name)),
+        }
+    });
+    Whole { functions, ..whole }
+}
+
+/// What a thread of [`whole`]'s gave, or its panic, carried on in this thread.
+fn joined<T>(thread: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    thread.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// Whether each `dict[str, _]` a function of the program has a local of holds its values in its
+/// entries, as `layouts` lay it out, asked here before the analyses run on threads: asking the
+/// layouts may number a kind of block, which only one thread can do. `None` without layouts.
+fn in_entries_of<'p>(
+    program: &'p Program,
+    layouts: Option<&fennec_layout::Layouts>,
+) -> Vec<(&'p Type, bool)> {
+    let Some(layouts) = layouts else { return Vec::new() };
+    let mut held: Vec<(&Type, bool)> = Vec::new();
+    let locals = program.functions.iter().chain(&program.constants).flat_map(|function| &function.locals);
+    for local in locals {
+        let keyed_by_text = matches!(&local.ty, Type::Dict(key, _) if **key == Type::Str);
+        if keyed_by_text && !held.iter().any(|(ty, _)| **ty == local.ty) {
+            let in_place = matches!(
+                crate::kinds::Kind::of(layouts, &local.ty),
+                Ok(crate::kinds::Kind::Dict(_, fennec_rt::embed::dicts::Word::InPlace(_)))
+            );
+            held.push((&local.ty, in_place));
         }
     }
-    // A generator's functions are called through its block, so all the same way: with the flag.
-    let mut can_fail: HashSet<&str> = every()
-        .filter(|function| {
-            analyses.get(function.name.as_str()).is_none_or(|known| fails_itself(function, known))
-        })
-        .map(|function| function.name.as_str())
-        .collect();
-    for def in &program.generators {
-        can_fail.insert(def.resume.as_str());
-        can_fail.extend(def.abandon.as_deref());
-    }
-    let settles = summarized(&functions, &analyses, Tracked::Owners);
-    let lengths = summarized(&functions, &analyses, Tracked::Lengths);
-    let under_locks = crate::rollback::changing_under_locks(&functions);
-    let needs = needed(program, &functions, &analyses, &under_locks);
-    let builders = crate::builders::builders(program, &functions);
-    let constants = every()
-        .flat_map(|function| &function.blocks)
-        .flat_map(|block| &block.insts)
-        .filter_map(|inst| match &inst.kind {
-            InstKind::Constant { name, .. } => Some(name.as_str()),
-            _ => None,
-        })
-        .collect();
-    let on_workers = crate::parallel::run_on_workers(program);
-    let tasks = crate::ticks::tasks(program, &functions);
-    Whole {
-        functions,
-        analyses,
-        can_fail,
-        generators,
-        settles,
-        lengths,
-        builders,
-        non_negative: crate::signs::non_negative(program),
-        needs,
-        under_locks,
-        constants,
-        on_workers,
-        cells: crate::parallel::has_cells(program),
-        tasks,
-        runtime_closures: crate::closures::runtime_holds_closures(program),
-        tested: program.functions.iter().any(|function| crate::emit::is_test(&function.name)),
-    }
+    held
+}
+
+/// Every function's [`analyze`], on as many threads as a build compiles with: each depends only
+/// on its function and what it's given here, so the order they run in changes nothing.
+fn analyzed<'p>(
+    program: &'p Program,
+    (changes, keeps): (&(dyn Fn(&str) -> Vec<usize> + Sync), &(dyn Fn(&str, usize) -> bool + Sync)),
+    params: &HashMap<&str, Vec<Range>>,
+    in_entries: &(dyn Fn(&Type) -> bool + Sync),
+) -> HashMap<&'p str, Analysis> {
+    let all: Vec<&Function> = program.functions.iter().chain(&program.constants).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = crate::build::workers().min(all.len()).max(1);
+    std::thread::scope(|scope| {
+        let parts: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(function) = all.get(at) else { break };
+                        let given = params.get(function.name.as_str()).map_or(&[][..], Vec::as_slice);
+                        mine.push((
+                            function.name.as_str(),
+                            analyze(function, changes, keeps, given, in_entries),
+                        ));
+                    }
+                    mine
+                })
+            })
+            .collect();
+        parts.into_iter().flat_map(joined).collect()
+    })
 }
 
 #[cfg(all(test, not(windows)))]

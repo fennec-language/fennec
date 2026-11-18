@@ -81,6 +81,23 @@ thread_local! {
     /// itself, which is `LAUNCHER`.
     static CALLER_S_LAUNCHER: std::cell::RefCell<Option<Arc<Launcher>>> =
         const { std::cell::RefCell::new(None) };
+    /// For a range of a `parallel` call whose body may wait, how a deadlock's report names it, as
+    /// "range 3 of main's `parallel` call". Set as the range starts, and swapped with its task's
+    /// accounts as it parks and resumes.
+    static RANGE_NAME: std::cell::RefCell<Option<super::deadlock::RangeName>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The name of the range of a waiting `parallel` call running here, if one is (see `RANGE_NAME`).
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn range_named() -> Option<super::deadlock::RangeName> {
+    RANGE_NAME.with_borrow(Clone::clone)
+}
+
+/// Names the range running here `name`, giving back the name before, to put back as it ends.
+#[cfg(any(test, feature = "threads"))]
+pub(super) fn name_range(name: Option<super::deadlock::RangeName>) -> Option<super::deadlock::RangeName> {
+    RANGE_NAME.replace(name)
 }
 
 /// The number the next wait said to a launcher gets.
@@ -501,6 +518,8 @@ pub(crate) struct Accounts {
     range_of_task: bool,
     /// For a range of a call on the pool, what its caller waits in as the code that launched tasks.
     caller_s_launcher: Option<Arc<Launcher>>,
+    /// For a range of a waiting call, how a deadlock's report names it (see `RANGE_NAME`).
+    range_name: Option<super::deadlock::RangeName>,
 }
 
 /// Whose accounts they are: a launched task's, or those of a range of a `parallel` call whose body
@@ -596,6 +615,7 @@ pub(crate) fn swap_accounts(accounts: &mut Accounts) {
         accounts.range_of_task = RANGE_OF_TASK.replace(accounts.range_of_task);
         CALLER_S_LAUNCHER
             .with_borrow_mut(|launcher| std::mem::swap(launcher, &mut accounts.caller_s_launcher));
+        RANGE_NAME.with_borrow_mut(|name| std::mem::swap(name, &mut accounts.range_name));
         crate::replay::swap(&mut accounts.replay);
         if !same {
             state.heap.texts.get_mut().clear();

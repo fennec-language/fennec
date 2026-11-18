@@ -1,0 +1,33 @@
+# A waiting call from main whose ranges each receive what a launched task sends only after a nap,
+# 20 calls a run: while it naps, main is in its join and every range in its receive. Never a
+# deadlock. (From Fable 5.2's review of the phase 2 design.)
+from std.concurrent import Channel, Closed, Crashed, channel
+
+def takes(pipe: Channel[int]) -> int:
+    got = pipe.receive() else -1
+    return got
+
+def all_take(pipe: Channel[int]) -> int:
+    got = [takes(pipe) for at in parallel(range(6))]
+    return sum(got)
+
+def sends_late(pipe: Channel[int], clock: Clock):
+    clock.sleep(3ms)
+    for at in range(6):
+        pipe.send(at) except Closed():
+            return
+    return
+
+def once(clock: Clock) -> int fails Crashed:
+    mut total = 0
+    with channel[int](size=1) as pipe:
+        with launch(() => sends_late(pipe, clock=clock))?:
+            total = all_take(pipe)
+    return total
+
+def main(stdout: Stdout, clock: Clock) fails Crashed:
+    mut total = 0
+    for turn in range(20):
+        got = once(clock)?
+        total += got + turn
+    stdout.print(total)

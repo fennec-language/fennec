@@ -1,0 +1,17 @@
+# The same from a launched task, whose join parks, with main waiting at the block's end.
+# (From Fable 5.2's review of the phase 2 design.)
+from std.concurrent import Channel, Crashed, channel
+
+def takes(pipe: Channel[int]) -> int:
+    got = pipe.receive() else -1
+    return got
+
+def all_take(pipe: Channel[int]) -> int:
+    got = [takes(pipe) for at in parallel(range(4))]
+    return sum(got)
+
+def main(stdout: Stdout) fails Crashed:
+    with channel[int](size=1) as pipe:
+        with launch(() => all_take(pipe))?:
+            pass
+    stdout.print("ended")

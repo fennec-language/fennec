@@ -3,14 +3,16 @@
 //!
 //! A false report would stop a program that could still move, so the counts here only say when to
 //! look, and [`look`] is the proof. The counts are the contexts that run the program's code, and
-//! how many of them are in a stuck wait: a channel's send or receive, or a block's end, with no time
-//! limit. A check fires only when every context is stuck, every worker has gone to sleep with
-//! nothing but stuck waits, the notes they left number the contexts and each still holds, the
-//! blocking threads are idle, and nothing changed while it looked. A count gone wrong costs a late or
-//! missed report, never a stopped program.
+//! how many of them are in a stuck wait: a channel's send or receive, a block's end, or the join of
+//! a `parallel` call whose ranges can wait, with no time limit. A check fires only when every
+//! context is stuck, every worker has gone to sleep with nothing but stuck waits and no job queued,
+//! the notes they left number the contexts and each still holds, the blocking threads are idle, and
+//! nothing changed while it looked. A count gone wrong costs a late or missed report, never a
+//! stopped program.
 //!
-//! The design, with the review it was built to: `deadlock-detection-design-2026-11-16-runtime.md`
-//! in the lanes' notes.
+//! The designs, with the reviews they were built to, in the lanes' notes:
+//! `deadlock-detection-design-2026-11-16-runtime.md`, and for `parallel` joins
+//! `deadlock-phase2-design-2026-11-18-runtime.md`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -107,6 +109,9 @@ pub(crate) enum Kind {
     /// The end of a `with launch` block, for its task.
     #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are launched"))]
     BlockEnd,
+    /// The join of a `parallel` call whose body may wait, for its ranges.
+    #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only the pool runs ranges"))]
+    Join,
 }
 
 /// What a stuck wait waits on: a channel, or a launched task.
@@ -140,8 +145,9 @@ pub(crate) enum Who {
         at: usize,
         task: u64,
     },
-    /// Anything else: a server's round, or a range of a `parallel` call. Neither is in a report
-    /// yet: a worker serving isn't idle, and a call's caller counts as running while it waits.
+    /// Anything else: a server's round, or a range of a `parallel` call. A server's round is in no
+    /// report, as a worker serving isn't idle. A range is named by its call and where it starts,
+    /// from its note's `RangeName`.
     Other,
 }
 
@@ -189,25 +195,81 @@ enum On {
     Awaited(Arc<dyn Awaited>),
 }
 
-/// What a stuck wait leaves for the check: who waits, on what, for which.
+/// What a stuck wait leaves for the check: who waits, on what, for which, and, for a range of a
+/// waiting `parallel` call, how the report names it.
 #[derive(Clone)]
 pub(crate) struct Note {
     who: Who,
     on: On,
     kind: Kind,
+    range: Option<RangeName>,
+}
+
+/// A range of a waiting `parallel` call, as a report names it: "range 3 of main's `parallel` call",
+/// by its call and the item it starts at.
+#[derive(Clone)]
+pub(crate) struct RangeName {
+    pub(crate) call: Arc<CallName>,
+    pub(crate) from: usize,
+}
+
+impl RangeName {
+    fn said(&self, notes: &[Note]) -> String {
+        format!("range {} of {}", self.from, self.call.said(notes))
+    }
+}
+
+/// A waiting `parallel` call, as a report names it, by who made it: "main's `parallel` call", or
+/// "the `parallel` call in range 3 of task 1's `parallel` call". It's said when the report is, as
+/// a task's number may be found only from the notes then: a task's launcher that has come to its
+/// block's end no longer has it among the tasks to be waited for.
+pub(crate) enum CallName {
+    By(Who),
+    InRange(RangeName),
+}
+
+impl CallName {
+    /// The call that the code running here makes.
+    pub(crate) fn here() -> Arc<CallName> {
+        Arc::new(range_here().map_or_else(|| CallName::By(Who::here()), CallName::InRange))
+    }
+
+    /// Where its maker goes among a report's lines: for a call made in a range, that range's
+    /// call's maker.
+    fn maker(&self, notes: &[Note]) -> (u8, i64) {
+        match self {
+            CallName::By(who) => who.said(notes).0,
+            CallName::InRange(range) => range.call.maker(notes),
+        }
+    }
+
+    fn said(&self, notes: &[Note]) -> String {
+        match self {
+            CallName::By(who) => format!("{}'s `parallel` call", who.said(notes).1),
+            CallName::InRange(range) => format!("the `parallel` call in {}", range.said(notes)),
+        }
+    }
+}
+
+/// The name of the range running here, if it's a range of a waiting `parallel` call.
+fn range_here() -> Option<RangeName> {
+    #[cfg(any(test, feature = "threads"))]
+    return super::threads::range_named();
+    #[cfg(not(any(test, feature = "threads")))]
+    None
 }
 
 impl Note {
     /// The note of a parked wait of `kind` on the channel numbered `channel`, whose worker says who
     /// it is as the task parks (`parked_by`): nothing's looked up or shared on the way to a park.
     pub(crate) fn on_channel(channel: i64, kind: Kind) -> Note {
-        Note { who: Who::Other, on: On::Channel(channel), kind }
+        Note { who: Who::Other, on: On::Channel(channel), kind, range: range_here() }
     }
 
     /// The note of a parked wait of `kind` on `on`, as `on_channel`'s.
     #[cfg_attr(not(any(test, feature = "threads")), expect(dead_code, reason = "only tasks are launched"))]
     pub(crate) fn parked(on: Arc<dyn Awaited>, kind: Kind) -> Note {
-        Note { who: Who::Other, on: On::Awaited(on), kind }
+        Note { who: Who::Other, on: On::Awaited(on), kind, range: range_here() }
     }
 
     /// The same note, of a wait that blocks this thread, by whoever's running here.
@@ -235,12 +297,26 @@ impl Note {
         }
     }
 
-    fn said(&self, notes: &[Note]) -> ((u8, i64), String) {
-        let (order, who) = self.who.said(notes);
+    fn said(&self, notes: &[Note]) -> (Order, String) {
+        // A range is named by its call and where it starts, and comes after `main` and the tasks,
+        // with the other ranges of its call, by where it starts.
+        let (order, who) = if let Some(range) = &self.range {
+            let call = range.call.said(notes);
+            let who = format!("range {} of {call}", range.from);
+            // Calls in the order of who made them, as their lines are: `main`'s, then task 2's
+            // before task 10's.
+            let (rank, number) = range.call.maker(notes);
+            ((3, 0, (rank, number, call), i64::try_from(range.from).unwrap_or(i64::MAX)), who)
+        } else {
+            let ((rank, number), who) = self.who.said(notes);
+            ((rank, number, (0, 0, String::new()), 0), who)
+        };
         let what = match &self.on {
             On::Channel(_) => match self.kind {
                 Kind::Send => "to send on a channel that's full".to_owned(),
-                Kind::Receive | Kind::BlockEnd => "to receive on a channel that's empty".to_owned(),
+                Kind::Receive | Kind::BlockEnd | Kind::Join => {
+                    "to receive on a channel that's empty".to_owned()
+                }
             },
             On::Awaited(on) => on.said(self.kind),
         };
@@ -302,6 +378,14 @@ pub(crate) fn thread_waits(note: Note, crash_wakes: bool) -> bool {
     };
     THREAD_SLOT.with(|slot| *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(note));
     stuck_began().all_stuck()
+}
+
+/// This thread's note goes, for a stuck wait whose waker already uncounted it: a join the last job
+/// of its call woke.
+#[cfg(any(test, feature = "threads"))]
+pub(crate) fn thread_unnoted() {
+    let taken = THREAD_SLOT.with(|slot| slot.lock().unwrap_or_else(PoisonError::into_inner).take());
+    drop(taken);
 }
 
 /// This thread's stuck wait has ended, or is about to: its note goes, and it's uncounted.
@@ -384,9 +468,13 @@ pub(crate) fn woke_idle(stuck: u64) {
     COUNTS.fetch_add(ONE_GENERATION.wrapping_sub(stuck.wrapping_mul(ONE_STUCK)), Ordering::SeqCst);
 }
 
+/// Where a stuck wait's line goes in a report: `main`, then tasks by number, then ranges by their
+/// call and where they start.
+type Order = (u8, i64, (u8, i64, String), i64);
+
 /// What a deadlock says: one line, then one for each stuck wait, in the order of who waits.
 fn said(notes: &[Note]) -> String {
-    let mut lines: Vec<((u8, i64), String)> = notes.iter().map(|note| note.said(notes)).collect();
+    let mut lines: Vec<(Order, String)> = notes.iter().map(|note| note.said(notes)).collect();
     lines.sort();
     let mut text =
         "error: a deadlock: every task is waiting for another, and nothing can wake them\n".to_owned();
@@ -419,6 +507,14 @@ fn proven(before: Counts) -> Option<Vec<Note>> {
     // most often says so, and without a lock.
     #[cfg(any(test, feature = "threads"))]
     if pools.iter().any(|pool| pool.has_mail()) {
+        return None;
+    }
+    // A job queued is the program still moving: a waiting `parallel` call's, which nothing counts
+    // until a worker takes it, while its caller's join is counted as stuck. A worker takes one only
+    // once its slot says it's awake, so the slots and this look, first and last, see every job of
+    // a call that hasn't become a range yet (phase 2 design, §3).
+    #[cfg(any(test, feature = "threads"))]
+    if pools.iter().any(|pool| pool.has_jobs()) {
         return None;
     }
     #[cfg_attr(not(any(test, feature = "threads")), expect(unused_mut, reason = "only workers add notes"))]
@@ -479,6 +575,11 @@ fn proven(before: Counts) -> Option<Vec<Note>> {
     // threads found idle, any such wake is in a worker's mail by now.
     #[cfg(any(test, feature = "threads"))]
     if pools.iter().any(|pool| pool.has_mail()) {
+        return None;
+    }
+    // The queues again, last.
+    #[cfg(any(test, feature = "threads"))]
+    if pools.iter().any(|pool| pool.has_jobs()) {
         return None;
     }
     (counts() == before).then_some(notes)

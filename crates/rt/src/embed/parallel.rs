@@ -153,6 +153,9 @@ struct Run {
     reduced: Mutex<Option<i64>>,
     /// Whether its body may wait, so each range on the pool runs as a parked task.
     waiting: bool,
+    /// For a call whose body may wait, how a deadlock's report names it, as "main's `parallel`
+    /// call", for naming its join and its ranges.
+    named: Option<Arc<super::deadlock::CallName>>,
 }
 
 /// Which of a call's ranges a failure kept from starting (see `Run::skipped`), or a stop (see
@@ -309,6 +312,7 @@ impl Run {
             done: Latch::one(),
             reduced: Mutex::new(None),
             waiting: false,
+            named: None,
         }
     }
 
@@ -319,12 +323,30 @@ impl Run {
         self
     }
 
+    /// For a call about to go to a pool: when its body can wait, its join is a stuck wait for the
+    /// deadlock check, and its ranges are named in a report. It's done here, and not in `waiting`,
+    /// which every call goes through: a call whose body can't wait can't be part of a deadlock, and
+    /// one that runs where it's made has no join, so neither pays for one.
+    fn joins_on_a_pool(&mut self) {
+        if self.waiting {
+            self.done.counts_joins(true);
+            self.named = Some(super::deadlock::CallName::here());
+        }
+    }
+
+    /// For a range of a waiting call, starting at `from`, how a deadlock's report names it.
+    fn range_named(&self, from: usize) -> Option<super::deadlock::RangeName> {
+        self.named.as_ref().map(|call| super::deadlock::RangeName { call: Arc::clone(call), from })
+    }
+
     /// The same call, made by the launched task told to stop with `stop`, for the pool: its
     /// ranges read `lent`, the copy of what they capture that the task made for them.
     fn of_task(mut self, stop: Arc<AtomicU8>, lent: Arc<super::table::Table>) -> Run {
         self.caller = None;
         self.calling = self.calling.of_task(stop);
         self.lent = RwLock::new(Some(lent));
+        // A task's call always goes to its worker's pool.
+        self.joins_on_a_pool();
         self
     }
 
@@ -389,6 +411,15 @@ impl Run {
         };
         super::set_failed(0);
         let Some(found) = found else { return };
+        // A waiting call's failure is said in a deadlock's report, should a sibling of this range
+        // wait on it for good: said here, on the thread whose runtime holds it.
+        if self.waiting {
+            let crash = match &found {
+                Failure::Crash(diagnostic) => Some(diagnostic.message.clone()),
+                Failure::Value(_) => None,
+            };
+            self.done.range_failed(from, crash);
+        }
         let mut kept = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
         let beaten = if kept.as_ref().is_none_or(|(at, _)| from < *at) {
             kept.replace((from, found)).map(|(_, beaten)| beaten)
@@ -559,7 +590,9 @@ impl Run {
             // A body that may wait runs as a parked task, which ends the range when it's done.
             let run = Arc::clone(self);
             pool::as_task(move || {
+                let before = pool::name_range(run.range_named(from));
                 run.leaf_on((from, to), leaf);
+                pool::name_range(before);
                 run.done.finished();
                 0
             });
@@ -601,7 +634,9 @@ impl Run {
         if self.waiting {
             let run = Arc::clone(self);
             pool::as_task(move || {
+                let before = pool::name_range(run.range_named(from));
                 let partial = run.reduce((from, to), steps);
+                pool::name_range(before);
                 run.reduced_up(up, partial, steps);
                 0
             });
@@ -726,7 +761,8 @@ fn run_each(run: Run, length: usize, words: usize, leaf: Leaf, weight: Weight) -
 }
 
 /// A loop's or a comprehension's ranges run on `pool`, with the call's ranges to finish.
-fn each_on_pool(run: Run, pool: &'static Pool, length: usize, leaf: Leaf) -> Run {
+fn each_on_pool(mut run: Run, pool: &'static Pool, length: usize, leaf: Leaf) -> Run {
+    run.joins_on_a_pool();
     let run = Arc::new(run);
     pool::install(&run, || run.each_on_start(pool, length, leaf), &run.done);
     alone(run)
@@ -749,11 +785,12 @@ fn alone(mut run: Arc<Run>) -> Run {
 /// A reduction's ranges run on `pool`, combined in the tree `reduce` uses: what they come to,
 /// with the call's ranges to finish.
 fn reduce_on_pool(
-    run: Run,
+    mut run: Run,
     pool: &'static Pool,
     length: usize,
     steps: (ReduceBody, Combine, i64),
 ) -> (Option<i64>, Run) {
+    run.joins_on_a_pool();
     let run = Arc::new(run);
     let start = || {
         let started = Arc::clone(&run);
@@ -1123,6 +1160,12 @@ mod pool {
 
         #[expect(clippy::unused_self, reason = "it stands in for the threads build's latch")]
         pub(super) fn finished(&self) {}
+
+        #[expect(clippy::unused_self, reason = "it stands in for the threads build's latch")]
+        pub(super) fn counts_joins(&self, _counted: bool) {}
+
+        #[expect(clippy::unused_self, reason = "it stands in for the threads build's latch")]
+        pub(super) fn range_failed(&self, _from: usize, _crash: Option<String>) {}
     }
 
     /// Without threads, there's no pool: `for_call` never gives one.
@@ -1148,6 +1191,13 @@ mod pool {
     }
 
     /// Without threads, a range runs where it's made.
+    /// Without threads no range is named: there's no pool to run one.
+    pub(super) fn name_range(
+        _name: Option<crate::embed::deadlock::RangeName>,
+    ) -> Option<crate::embed::deadlock::RangeName> {
+        None
+    }
+
     pub(super) fn as_task(range: impl FnOnce() -> i64 + 'static) {
         let _ = range();
     }

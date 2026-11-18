@@ -342,18 +342,22 @@ jobs:
   # here, and every LLVM test, the examples' output among them, has to pass. A merge group leaves
   # it out, as it does the other Mac.
   #
-  # The LLVM tests run in two halves, by name: those starting with an "a" and the rest. On
-  # 2026-11-17 they took 21 to 29 minutes in one job, 33% apart on the same commit, and the
-  # runtimes and the tests 9 to 12 more to build, so 4 of 20 runs on main ran out of 40 minutes.
-  # The "a" tests were 315 of 571 and about half the time.
+  # The LLVM tests run in three parts, by the first letter of their names: "a", "b" to "p", and
+  # the rest. On 2026-11-17 they took 21 to 29 minutes in one job, 33% apart on the same commit,
+  # and the runtimes and the tests 9 to 12 more to build, so 4 of 20 runs on main ran out of 40
+  # minutes. Split in two halves, "a" and the rest, the rest grew to 17 to 23 minutes of tests on
+  # 2026-11-18 and ran out of 40 minutes on a slow runner while still passing; "a" took 8 to 12.
+  # By when each test finished in those runs, "b" to "p" take 9 to 14 minutes, and the rest, with
+  # the long `tuples_` tests, 7 to 11, so a slow runner's 2 to set up, 3 to 13 to build the
+  # runtimes and 2 to 6 to build the tests leave each part a few minutes inside the limit.
   x86-mac:
-    name: Native code on x86-64 macOS (${{ matrix.half }})
+    name: Native code on x86-64 macOS (${{ matrix.part }})
     needs: changes
     if: needs.changes.outputs.docs_only != 'true' && github.event_name != 'merge_group'
     strategy:
       fail-fast: false
       matrix:
-        half: ['llvm::a', 'the rest']
+        part: ['llvm::a', 'llvm::b to p', 'the rest']
     runs-on: macos-15-intel
     timeout-minutes: 40
     env:
@@ -378,17 +382,28 @@ jobs:
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
             cp "$dir/debug/libfennec_runtime.a" "target/debug/lib$name.a"
           done
-      # A name filter runs every test whose name holds it, so the halves are those holding
-      # `llvm::a`, and every other `llvm::` test.
-      - name: Run its half of the LLVM tests
+      # A name filter runs every test whose name holds any of them, and `--skip` leaves out every
+      # test whose name holds it, so the parts are: those holding `llvm::a`; those holding
+      # `llvm::b` to `llvm::p`; and every other `llvm::` test, so a test whose name starts with any
+      # other letter, or none, still runs in one of them.
+      - name: Run its part of the LLVM tests
         env:
-          HALF: ${{ matrix.half }}
+          PART: ${{ matrix.part }}
         run: |
-          if [ "$HALF" = 'llvm::a' ]; then
-            cargo test --locked -p fennec --test fennec 'llvm::a'
-          else
-            cargo test --locked -p fennec --test fennec 'llvm::' -- --skip 'llvm::a'
-          fi
+          middle=(b c d e f g h i j k l m n o p)
+          skips=(--skip 'llvm::a')
+          for letter in "${middle[@]}"; do
+            skips+=(--skip "llvm::$letter")
+          done
+          case "$PART" in
+            'llvm::a') cargo test --locked -p fennec --test fennec 'llvm::a' ;;
+            'llvm::b to p') cargo test --locked -p fennec --test fennec -- "${middle[@]/#/llvm::}" --skip 'llvm::a' ;;
+            'the rest') cargo test --locked -p fennec --test fennec 'llvm::' -- "${skips[@]}" ;;
+            *)
+              echo "there's no part $PART of the LLVM tests"
+              exit 1
+              ;;
+          esac
 
   # `std.postgres` against a real server, which only Linux runners can host.
   postgres:
@@ -1212,10 +1227,10 @@ jobs:
               [ "$job" = parked-sanitizers ] && [ "$PARKED_CHANGED" != true ] && continue
             fi
             # `test` has one result for its whole matrix, so each OS's job is looked at, and so is
-            # the Intel Mac's.
+            # each part of the Intel Mac's.
             case "$job" in
               test) jobs='(^|/ )Test \\(' ;;
-              x86-mac) jobs='(^|/ )Native code on x86-64 macOS$' ;;
+              x86-mac) jobs='(^|/ )Native code on x86-64 macOS \\(' ;;
               *) jobs='' ;;
             esac
             if [ -n "$jobs" ] && [ "$result" != skipped ]; then
@@ -1228,7 +1243,7 @@ jobs:
               while IFS='|' read -r name conclusion runner steps; do
                 looked_at=1
                 [ "$conclusion" = success ] && continue
-                if [ "$EVENT" = pull_request ] && [[ "$name" =~ (macos-latest(, llvm::)?\)|macOS)$ ]] \
+                if [ "$EVENT" = pull_request ] && [[ "$name" =~ (macos-latest, [^\)]*\)|x86-64 macOS \([^\)]*\))$ ]] \
                   && [ "$conclusion" = cancelled ] && [ -z "$runner" ] && [ "$steps" = 0 ]; then
                   echo "::warning::$name never got a runner, so it doesn't count; the push to main runs it again"
                   continue

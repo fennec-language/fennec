@@ -852,13 +852,17 @@ mod tests {
         start(Tables::default(), crate::Inputs::default());
         free_many(400_000, 7);
         with(|state| {
-            let sevens = state.heap.spare.get(7).map_or(0, |spare| spare.len()) * 7;
+            let sevens = state.heap.spare.get(7).map_or(0, super::super::Spare::len) * 7;
             assert!(sevens <= super::super::SPARE_SIZE_WORDS, "{sevens} words of one size");
             assert!(sevens > super::super::SPARE_SIZE_WORDS - 7, "it kept less than its share");
         });
         free_many(1_000, 4);
         with(|state| {
-            assert_eq!(state.heap.spare.get(4).map_or(0, |spare| spare.len()), 1_000, "room for the next");
+            assert_eq!(
+                state.heap.spare.get(4).map_or(0, super::super::Spare::len),
+                1_000,
+                "room for the next"
+            );
         });
         finish();
     }
@@ -869,7 +873,8 @@ mod tests {
     #[test]
     fn what_a_heap_keeps_and_never_reuses_goes_back_to_the_allocator() {
         start(Tables::default(), crate::Inputs::default());
-        let kept = |words: usize| with(|state| state.heap.spare.get(words).map_or(0, |spare| spare.len()));
+        let kept =
+            |words: usize| with(|state| state.heap.spare.get(words).map_or(0, super::super::Spare::len));
         // Nines, as a thread that frees what others made keeps, never asked for again.
         free_many(1_000, 9);
         assert_eq!(kept(9), 1_000);

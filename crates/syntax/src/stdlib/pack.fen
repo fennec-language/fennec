@@ -374,9 +374,11 @@ export struct PackWriter:
     _optional = False
     _some_at = 0
 
-    ## The bytes written, at their exact size, which is all anything but this writer sees of them.
+    ## The bytes written, which is all anything but this writer sees of them. They're the builder
+    ## itself, not copied to their exact size: the room past their length goes with them, and is
+    ## let go when they are. Nothing uses a writer after this.
     def _done(self) -> bytes:
-        return self._out[0:len(self._out)]
+        return self._out
 
     ## The header: `FPK2` and the shape's number, then the layout. With no layout, as when the
     ## kit's `pack.lock` has it, it's `FPK1` and the number alone, as before layouts.

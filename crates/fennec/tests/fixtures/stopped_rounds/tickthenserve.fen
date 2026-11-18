@@ -1,0 +1,53 @@
+# A round is counting, with no wait, when the serving task's block ends and stops it, which
+# cancels the round where it made way for others. It goes on, as it's in no wait, and then serves
+# a server of its own.
+# The round, already cancelled, made a server and waited for its own worker to leave it, for good
+# (#2004). From Fable 5.2's review of #1993.
+from std.concurrent import Crashed
+from std.net import Connection, NetError, Request, Response, Server
+
+def inner_answered(request: Request) -> Response:
+    return Response(status=200, body=f"inner {request.path}".encode())
+
+def nested(net: Net) fails NetError:
+    with net.listen(0)? as inner:
+        inner.serve((asked) => inner_answered(asked))
+
+# Counts for most of a second, making way for others at each tick.
+def counted(clock: Clock) -> int:
+    began = clock.now()
+    mut total = 0
+    while (clock.now() - began).nanos < 800_000_000:
+        for turn in range(200_000):
+            total = (total + turn * turn) % 1_000_003
+    return total
+
+def answered(conn: Connection, net: Net, clock: Clock, stdout: Stdout):
+    line = conn.read_line() except why:
+        stdout.print("a round's read failed", f"{why}")
+        return
+    asked = line else ""
+    if asked == "/slow":
+        stdout.print("the slow one began")
+        total = counted(clock)
+        nested(net) except why:
+            stdout.print("the slow one's server failed", f"{why}")
+        stdout.print("the slow one never said", total >= 0)
+    conn.write(f"hello {asked}\n") except why:
+        stdout.print("a round's write failed", f"{why}")
+
+def serving(server: Server, net: Net, clock: Clock, stdout: Stdout):
+    for conn in parallel(server):
+        answered(conn, net=net, clock=clock, stdout=stdout)
+    stdout.print("the server never said")
+
+def main(net: Net, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    with net.listen(0)? as server:
+        port = server.port
+        with net.connect("127.0.0.1", port)? as slow:
+            slow.write("/slow\n")?
+            with launch(() => serving(server, net=net, clock=clock, stdout=stdout), stop_after=200ms)?:
+                with net.connect("127.0.0.1", port)? as asking:
+                    asking.write("/one\n")?
+                    stdout.print(asking.read_line()? else "nothing")
+    stdout.print("the server is over")

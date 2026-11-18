@@ -599,14 +599,23 @@ impl Lowering<'_> {
                 body,
             );
         }
+        if let Some((made, owned)) = self.made_inside(iter)? {
+            return self.owning(&owned, Over { names, iter: &made, back }, span, body);
+        }
         let ty = self.type_at(iter.span).ok_or("what it loops over has no type")?;
         if let Type::Table(item) = &ty {
             return self.through_slots(names, (iter, (**item).clone()), back.as_ref(), span, body);
         }
         let value = self.expr(iter)?;
-        if let Type::Iterator(item) = &ty {
+        if let Type::Iterator(item, _) = &ty {
             let known = known_generator(iter, &|key| self.context.generators.contains_key(key));
-            return self.through_generator(names, (value, (**item).clone()), known, (span, iter.span), body);
+            // `for x in made()? from Wrap(...)`: what the generator fails with is wrapped too.
+            let wrap = match &iter.kind {
+                ExprKind::Try { context, .. } => context.as_deref(),
+                _ => None,
+            };
+            let item = (**item).clone();
+            return self.through_generator(names, (value, item), (known, wrap), (span, iter.span), body);
         }
         if ty == Type::Str && back.is_none() {
             return self.through_text(names, value, span, body);
@@ -623,12 +632,12 @@ impl Lowering<'_> {
                 let Some((function, found)) = found else {
                     return Err(format!("it has a `for` loop over {name}"));
                 };
-                if let Type::Iterator(item) = &found.returns {
+                if let Type::Iterator(item, _) = &found.returns {
                     let generated = self.temporary(found.returns.clone());
                     let kind = InstKind::Call { dest: Some(generated), function, args: vec![value] };
                     self.emit(kind, span);
                     let source = (Operand::Local(generated), (**item).clone());
-                    return self.through_generator(names, source, None, (span, iter.span), body);
+                    return self.through_generator(names, source, (None, None), (span, iter.span), body);
                 }
                 let Type::List(item) = found.returns else {
                     return Err(format!("it has a `for` loop over {name}"));
@@ -1042,3 +1051,128 @@ fn names_a_field(expr: &Expr) -> bool {
         _ => false,
     }
 }
+
+/// A generator a loop owns besides the one it goes over: one `enumerate` or `zip` reads, made
+/// right there. It's let go as the loop is, as `for x in made()?:` lets go of its own.
+pub(super) struct Owned {
+    generator: Operand,
+    known: Option<String>,
+    wrap: Option<Expr>,
+}
+
+impl Lowering<'_> {
+    /// `enumerate(made()?)` or `zip(made()?, ...)`, each generator made right there in it lowered
+    /// first and named apart, as what the loop goes over then, with the generators it owns. Each
+    /// argument before the last owned one is lowered first too, in order, so they run as written.
+    /// Nothing for anything else, a program's own `enumerate` or `zip` among it.
+    fn made_inside(&mut self, iter: &Expr) -> Lowered<Option<(Expr, Vec<Owned>)>> {
+        let ExprKind::Call { callee, args } = &iter.kind else { return Ok(None) };
+        let ExprKind::Name(called) = &callee.kind else { return Ok(None) };
+        if !matches!(called.as_str(), "enumerate" | "zip")
+            || self.lookup(called).is_some()
+            || self.own_function(called)
+        {
+            return Ok(None);
+        }
+        let owned_at: Vec<usize> =
+            args.iter().enumerate().filter(|(_, arg)| self.made_here(arg)).map(|(at, _)| at).collect();
+        let Some(&last) = owned_at.last() else { return Ok(None) };
+        let mut made = iter.clone();
+        let ExprKind::Call { args, .. } = &mut made.kind else { return Ok(None) };
+        let mut owned = Vec::new();
+        for (at, arg) in args.iter_mut().enumerate().take(last + 1) {
+            let wrap = match &arg.value.kind {
+                ExprKind::Try { context, .. } if owned_at.contains(&at) => context.as_deref().cloned(),
+                _ => None,
+            };
+            let known = owned_at.contains(&at).then(|| {
+                let call = match &arg.value.kind {
+                    ExprKind::Try { value, .. } => value.as_ref(),
+                    _ => &arg.value,
+                };
+                known_generator(call, &|key| self.context.generators.contains_key(key))
+            });
+            let value = self.expr(&arg.value)?;
+            let held = match value {
+                Operand::Local(held) => held,
+                other => {
+                    let ty = self.type_at(arg.value.span).ok_or("an argument has no type")?;
+                    let held = self.temporary(ty);
+                    self.emit(InstKind::Copy { dest: held, value: other }, arg.value.span);
+                    held
+                }
+            };
+            // Named so nothing a program writes names it, and read through that name where it was:
+            // an owned generator's name says so, for `enumerate`'s or `zip`'s generator over it.
+            let mark = if known.is_some() { OWNED } else { "\0arg" };
+            let name = format!("{mark}{}", arg.value.span.start);
+            if let Some(scope) = self.scopes.last_mut() {
+                scope.insert(name.clone(), held);
+            }
+            arg.value = Expr { kind: ExprKind::Name(name), span: arg.value.span };
+            if let Some(known) = known {
+                owned.push(Owned { generator: Operand::Local(held), known, wrap });
+            }
+        }
+        Ok(Some((made, owned)))
+    }
+
+    /// Whether an argument to `enumerate` or `zip` is a generator made right there: a call giving
+    /// one, or a `?` taken out of one.
+    fn made_here(&self, arg: &fennec_syntax::Arg) -> bool {
+        let made = match &arg.value.kind {
+            ExprKind::Try { value, .. } => value.as_ref(),
+            _ => &arg.value,
+        };
+        arg.name.is_none()
+            && matches!(made.kind, ExprKind::Call { .. })
+            && matches!(self.type_at(arg.value.span), Some(Type::Iterator(..)))
+    }
+
+    /// Runs a loop over what `over` says, owning `owned` too. Each is let go as the loop is left: by
+    /// a failure or `return` with what's left then, and otherwise once the loop's done, the last
+    /// first, a failure of its own passing up first. Each is left on what's to be left until it's
+    /// let go, so a failure letting one go lets go of those before it.
+    fn owning<F>(&mut self, owned: &[Owned], over: Over<'_>, span: Span, body: F) -> Lowered<()>
+    where
+        F: FnOnce(&mut Self) -> Lowered<()>,
+    {
+        let entered = self.leaving.len();
+        for each in owned {
+            let wrap = each.wrap.clone().map(Box::new);
+            self.leaving.push(Leaving::Generator {
+                generator: each.generator.clone(),
+                known: each.known.clone(),
+                wrap,
+            });
+        }
+        let ran = self.looping(over, span, body);
+        if ran.is_err() || !self.is_open() {
+            self.leaving.truncate(entered);
+            return ran;
+        }
+        // One that failed partway through, which ends the loop, passes its failure up first, with
+        // every one still to be let go, so a failure of another's cleanup is noted on it.
+        for each in owned {
+            let after = self.new_block();
+            self.pass_up_failure(&each.generator, after, span, each.wrap.as_ref())?;
+            self.current = after;
+        }
+        for (at, each) in owned.iter().enumerate().rev() {
+            self.leaving.truncate(entered + at);
+            self.let_go_now(&each.generator, (each.known.clone(), each.wrap.as_ref()), span)?;
+            self.release_generator(&each.generator, span);
+        }
+        self.leaving.truncate(entered);
+        Ok(())
+    }
+}
+
+/// Whether what `enumerate` or `zip` reads is a generator the loop it's made for owns, which
+/// `made_inside` names apart.
+pub(super) fn owned_name(read: &Expr) -> bool {
+    matches!(&read.kind, ExprKind::Name(name) if name.starts_with(OWNED))
+}
+
+/// What starts the name `made_inside` gives a generator the loop owns.
+const OWNED: &str = "\0owned";

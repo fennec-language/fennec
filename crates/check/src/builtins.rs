@@ -442,7 +442,10 @@ impl FnCx<'_> {
         let path = *ty == Type::named("Fs");
         for ((actual, at), expected) in plain.iter().zip(&method.params) {
             let as_path = path && *expected == Type::Str && *actual == Type::named("Path");
-            let generated = name == "join" && *actual == Type::Iterator(Box::new(Type::Str));
+            // A generator of text, which can fail: `join` loops over it here, which passes its
+            // failure up.
+            let generated =
+                name == "join" && matches!(actual, Type::Iterator(item, _) if **item == Type::Str);
             if as_path || generated || self.checker.fits(expected, actual) {
                 continue;
             }
@@ -837,6 +840,26 @@ impl FnCx<'_> {
         }
     }
 
+    /// Whether a generator that can fail goes into `enumerate` or `zip` anywhere but right in a
+    /// `for` loop's own, as `for at, item in enumerate(made()?)`, reporting each that does. Only
+    /// there does the loop own the generator and pass its failure up.
+    fn failing_unlooped(&mut self, name: &str, plain: &[(Type, Span)]) -> bool {
+        let mut found = false;
+        for (ty, at) in plain {
+            if self.checker.settled(ty).generator_failure().is_some() && !self.looped_here.contains(at) {
+                let message = format!(
+                    "a generator that can fail goes into `{name}` only as `made()?` written right in a `for` loop's own `{name}`"
+                );
+                let help = format!(
+                    "write `for ... in {name}(made()?, ...):` there, or keep its items with `list(...)` first"
+                );
+                self.error(Diagnostic::new(message, *at).with_help(help));
+                found = true;
+            }
+        }
+        found
+    }
+
     /// The builtins that work on the items of a collection.
     fn collection_builtin(&mut self, name: &str, plain: &[(Type, Span)], span: Span) -> Type {
         let types: Vec<Type> = plain.iter().map(|(ty, _)| ty.clone()).collect();
@@ -872,10 +895,11 @@ impl FnCx<'_> {
             }
             "sorted" | "list" | "reversed" => Type::list(items(self)),
             "set" => Type::Set(Box::new(items(self))),
+            "enumerate" | "zip" if self.failing_unlooped(name, plain) => Type::Unknown,
             "enumerate" => {
                 let pairs = Type::Tuple(vec![Type::Int, items(self)]);
-                if plain.iter().any(|(ty, _)| matches!(ty, Type::Iterator(_))) {
-                    Type::Iterator(Box::new(pairs))
+                if plain.iter().any(|(ty, _)| matches!(ty, Type::Iterator(..))) {
+                    Type::iterator(pairs)
                 } else {
                     Type::list(pairs)
                 }
@@ -884,8 +908,8 @@ impl FnCx<'_> {
                 let first = items(self);
                 let second = plain.get(1).map_or(Type::Unknown, |(ty, at)| self.item_type(ty, *at));
                 let pairs = Type::Tuple(vec![first, second]);
-                if plain.iter().any(|(ty, _)| matches!(ty, Type::Iterator(_))) {
-                    Type::Iterator(Box::new(pairs))
+                if plain.iter().any(|(ty, _)| matches!(ty, Type::Iterator(..))) {
+                    Type::iterator(pairs)
                 } else {
                     Type::list(pairs)
                 }
@@ -989,7 +1013,7 @@ fn peek_item(ty: &Type) -> Type {
         Type::List(item)
         | Type::Buffer(item)
         | Type::Set(item)
-        | Type::Iterator(item)
+        | Type::Iterator(item, _)
         | Type::Table(item)
         | Type::Dict(item, _) => item.as_ref().clone(),
         Type::Tuple(items) if items.windows(2).all(|pair| pair.first() == pair.last()) => {

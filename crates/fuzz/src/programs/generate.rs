@@ -20,9 +20,14 @@ use super::ast::{
     TYPES, Turn, Turning, Ty, Via, Writing,
 };
 use super::ast::{
-    CAPTURE_WAYS, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS,
-    ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
+    CAPTURE_WAYS, Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_STARTS,
+    REF_TEXTS, REF_WAYS, RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping,
+    Waking, Yielding, ZIP_WAYS, ZipSumming, ZipWay,
 };
+
+/// Whether random programs loop over `enumerate` or `zip` of a generator made right there, lending
+/// from a source or failing partway (`ZipSumming`): the loop owns it since #2041.
+const ZIP_GENERATORS: bool = true;
 
 /// Whether a crash runs a `lend x except:` cleanup holding a line like `kept = capped(code)?`.
 /// It does since #1333; turned off, only a block that fails is given `guarded_noted`'s cleanup.
@@ -75,14 +80,25 @@ const EVERY_LISTENER: bool = true;
 /// #1812 fixed it; the seed `review_1785_lookup_swapped` is a program that failed before.
 const LOOKUPS_SWAPPED: bool = true;
 
+/// Whether random programs write a `match` with `ref` each way the compiled program put back wrong
+/// or couldn't build (`RefWay`): three `match`es deep, a whole new value through a pattern naming
+/// its fields out of order, a `ref` name a parameter has too, a guard reading a `ref` name, the
+/// index of what's matched changed in the case, and a `for ref` in the case whose item's change a
+/// `?` failing in a `while` condition, a later `elif` or after an `and` lost (#2025). The oracle
+/// found them, held to the compiled program. On since #2017 put each case back by its fields'
+/// names, and #2038 wrote a `for ref` item back before its case.
+const REF_CASES: bool = true;
+
 /// Whether random programs write a name where another of the same name and type is in sight, each
 /// way the checker renamed by text rather than by what the name means where it's written
 /// (`CaptureWay`): a nested function's parameter under `with ... as` that name, a loop's, a
 /// case's, a nested function's or an arrow's name under `lock ... as ref` that name, and a `with`
 /// source calling a function its caller has a same-typed parameter named as (#1997). The checker
 /// lane's sweep found them, each a silent wrong answer, or a refusal or crash where none is due.
-/// Off until its fixes land, and on with them.
-const NAME_CAPTURE: bool = false;
+/// On since #2024 made every rewrite change only the uses in its sight, and `SourceCall` since #2051
+/// kept a source's own function its own. `LockDef` isn't written yet: the checker refuses it as
+/// taking the lock until #2011, which is lock order, not capture.
+const NAME_CAPTURE: bool = true;
 
 /// Whether random programs crash inside a `ref self` method, or a change by hand, on part of a
 /// list or dict: under a `shared` value's lock, which has to undo the whole lock, or held by the
@@ -658,6 +674,7 @@ impl Writer<'_> {
             26 if ALIASING && self.choice(4) == 0 => self.aliasing(body),
             26 if LOOKUPS_SWAPPED && self.choice(4) == 0 => self.swaps(body),
             26 if PART_CRASHES && !self.threadless && self.choice(4) == 0 => self.shelves(body),
+            26 if REF_CASES && self.choice(4) == 0 => self.ref_cases(body),
             26 if NAME_CAPTURE && self.choice(4) == 0 => self.captures(body),
             26 => self.change_counts(body),
             // The guarded shapes are tried first, as they were before the shapes after them, so
@@ -684,6 +701,16 @@ impl Writer<'_> {
                 let by = self.int(1);
                 let by = self.bounded(by);
                 body.push(Stmt::TableRound { table, ids, xs, removed, read, by });
+            }
+            28 if ZIP_GENERATORS && self.choice(3) == 0 => {
+                // A generator made right inside `enumerate` or `zip`, let go partway, run out, or
+                // failing partway.
+                let way = ZIP_WAYS.get(self.choice(ZIP_WAYS.len())).copied().unwrap_or(ZipWay::First);
+                let failing = self.choice(2) == 0;
+                let limit = i64::from(self.byte() % 6);
+                let stop = i64::from(self.byte() % if failing { 7 } else { 10 });
+                let words = i64::from(self.byte() % 6);
+                body.push(Stmt::ZipSummed(ZipSumming { way, failing, limit, stop, words }));
             }
             28 if self.choice(2) == 0 => self.arrows_or_floats(body),
             28 => {
@@ -1092,11 +1119,24 @@ impl Writer<'_> {
 
     /// A lookup kept while the struct whose dict it searched is set to another, then a store at
     /// the same key.
+    /// A `match` with `ref` written one of the ways the compiled program once got wrong.
+    fn ref_cases(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let way = REF_WAYS.get(self.choice(REF_WAYS.len())).copied().unwrap_or(RefWay::Deep);
+        let start = self.choice(REF_STARTS);
+        let text = self.choice(REF_TEXTS.len());
+        body.push(Stmt::RefCased(RefCasing { id, way, start, text }));
+    }
+
     /// A name written where another of its name and type is in sight, one of `CAPTURE_WAYS`.
     fn captures(&mut self, body: &mut Vec<Stmt>) {
         self.made += 1;
         let id = self.made;
-        let way = CAPTURE_WAYS.get(self.choice(CAPTURE_WAYS.len())).copied().unwrap_or(CaptureWay::WithDef);
+        // `LockDef` waits for #2011.
+        let ways: Vec<CaptureWay> =
+            CAPTURE_WAYS.into_iter().filter(|way| *way != CaptureWay::LockDef).collect();
+        let way = ways.get(self.choice(ways.len())).copied().unwrap_or(CaptureWay::WithDef);
         let n = i64::from(self.byte() % 20);
         body.push(Stmt::Captured(Capturing { id, way, n }));
     }

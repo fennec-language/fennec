@@ -970,7 +970,7 @@ impl Layouts {
             }
             Type::Bytes if self.native_buffers => Ty::Bytes,
             // A generator or a closure: a block whose own shape says what it keeps.
-            Type::Iterator(_) | Type::Arrow(..) if self.native_buffers => Ty::Gen,
+            Type::Iterator(..) | Type::Arrow(..) if self.native_buffers => Ty::Gen,
             // `None` itself, as a tuple can hold: an optional that's never anything else.
             Type::None if self.native_buffers => Ty::Maybe(Block::Bytes),
             Type::Named(name) => match (Cap::named(name), self.id(name)) {
@@ -1123,7 +1123,7 @@ fn boxed_field_ty(layouts: &Layouts, reserved: &HashMap<String, u32>, ty: &Type)
             Cap::named(name).map_or(Ty::Obj, Ty::Cap)
         }
         Type::Bytes if layouts.native_buffers => Ty::Bytes,
-        Type::Iterator(_) | Type::Arrow(..) if layouts.native_buffers => Ty::Gen,
+        Type::Iterator(..) | Type::Arrow(..) if layouts.native_buffers => Ty::Gen,
         Type::None if layouts.native_buffers => Ty::Maybe(Block::Bytes),
         Type::Named(name) => match (reserved.get(name), layouts.id(name)) {
             (Some(id), _) => Ty::Boxed(*id),
@@ -1261,7 +1261,7 @@ fn natively_held(ty: &Type, defined: &BTreeMap<&str, &Written>, boxed: &BTreeSet
         | Type::Bytes
         | Type::None
         | Type::Unit
-        | Type::Iterator(_)
+        | Type::Iterator(..)
         | Type::Arrow(..) => true,
         Type::Named(name) => Cap::named(name).is_some() || defined.contains_key(name.as_str()),
         Type::List(item) | Type::Buffer(item) | Type::Optional(item) => natively_held(item, defined, boxed),
@@ -1313,10 +1313,14 @@ fn named_inside(ty: &Type, found: &mut dyn FnMut(&str)) {
         | Type::Buffer(inner)
         | Type::Set(inner)
         | Type::Optional(inner)
-        | Type::Iterator(inner)
+        | Type::Iterator(inner, None)
         | Type::Id(inner)
         | Type::Table(inner)
         | Type::Array(inner, _) => named_inside(inner, found),
+        Type::Iterator(inner, Some(failure)) => {
+            named_inside(inner, found);
+            named_inside(failure, found);
+        }
         Type::Dict(a, b) | Type::Result(a, b) => {
             named_inside(a, found);
             named_inside(b, found);

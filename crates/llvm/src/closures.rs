@@ -137,10 +137,11 @@ fn inside(ty: &Type) -> Vec<&Type> {
         | Type::Buffer(inner)
         | Type::Array(inner, _)
         | Type::Set(inner)
-        | Type::Iterator(inner)
+        | Type::Iterator(inner, None)
         | Type::Optional(inner)
         | Type::Id(inner)
         | Type::Table(inner) => vec![inner],
+        Type::Iterator(inner, Some(failure)) => vec![inner, failure],
         Type::Dict(key, value) | Type::Result(key, value) => vec![key, value],
         Type::Tuple(items) | Type::Generic(_, items) | Type::Union(items) => items.iter().collect(),
         _ => Vec::new(),

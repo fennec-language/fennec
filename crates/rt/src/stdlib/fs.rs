@@ -24,11 +24,19 @@ enum OpenFile {
 }
 
 /// Where a file being written is, and where it goes when its block ends: by path, or, for an `Fs`
-/// narrowed with `only`, by name beneath the handle of the folder it's narrowed to, so nothing
-/// swapped in on the way can send it outside.
+/// narrowed with `only`, by name in the folder it's in, held by a handle opened beneath the folder
+/// it's narrowed to, so nothing swapped in on the way can send it outside.
 enum Written {
-    Path { temporary: PathBuf, target: PathBuf },
-    Beneath { folder: Arc<cap_std::fs::Dir>, temporary: PathBuf, target: PathBuf },
+    Path {
+        temporary: PathBuf,
+        target: PathBuf,
+    },
+    /// `temporary` and `target` are names in `folder`, the folder the file is in.
+    Beneath {
+        folder: Arc<cap_std::fs::Dir>,
+        temporary: PathBuf,
+        target: PathBuf,
+    },
 }
 
 impl Written {
@@ -666,18 +674,18 @@ pub(crate) fn beneath_with<D: Databases>(
     if let Some(refused) = holding_nul(paths) {
         return Ok(refused);
     }
-    let folder = match cap_std::fs::Dir::open_ambient_dir(folder, cap_std::ambient_authority()) {
+    let folder = match open_narrowed(folder) {
         Ok(folder) => Arc::new(folder),
-        Err(err) => return Ok(io_failed(&Fail::from(err))),
+        Err(fail) => return Ok(io_failed(&fail)),
     };
     let io = Fail::from;
     let at = relative.to_path_buf();
     Ok(match (method, paths) {
         ("exists", [Value::Str(_)]) => {
-            done(blocking(move || folder.try_exists(&at).map_err(io)), Value::Bool)
+            done(blocking(move || exists_beneath(&folder, &at).map_err(io)), Value::Bool)
         }
         ("read_text" | "read_bytes", [Value::Str(_)]) => read_whole(method == "read_text", move || {
-            folder.read(&at).map_err(|err| read_failure(err, || is_folder_beneath(&folder, &at)))
+            read_beneath(&folder, &at).map_err(|err| read_failure(err, || is_folder_beneath(&folder, &at)))
         }),
         ("write_text" | "write_bytes", [Value::Str(_), data @ (Value::Str(_) | Value::Bytes(_))]) => {
             let data = bytes_of(data).to_vec();
@@ -708,9 +716,7 @@ pub(crate) fn beneath_with<D: Databases>(
             done(blocking(move || remove_beneath(&folder, &at).map_err(io)), |()| Value::Unit)
         }
         ("metadata", [Value::Str(_)]) => {
-            let found = blocking(move || {
-                folder.metadata(&at).map(|found| (found.len(), found.is_file(), found.is_dir())).map_err(io)
-            });
+            let found = blocking(move || metadata_beneath(&folder, &at).map_err(io));
             done(found, |(size, is_file, is_dir)| {
                 Value::made(
                     "Metadata",
@@ -725,9 +731,7 @@ pub(crate) fn beneath_with<D: Databases>(
         ("_create", [Value::Str(_), Value::Bool(durable)]) => create_beneath(folder, at, *durable),
         ("_open", [Value::Str(_)]) => {
             let opened = move || {
-                let file = folder
-                    .open(&at)
-                    .map(cap_std::fs::File::into_std)
+                let file = open_beneath(&folder, &at)
                     .map_err(|err| read_failure(err, || is_folder_beneath(&folder, &at)))?;
                 not_a_folder(file)
             };
@@ -742,46 +746,388 @@ pub(crate) fn beneath_with<D: Databases>(
     })
 }
 
-/// Where writing to `at` beneath `folder` really puts a file: what a link there points at, when
-/// that's beneath the folder too, so the link stays a link. One pointing out is refused.
-fn through_links_beneath(folder: &cap_std::fs::Dir, at: &Path) -> std::io::Result<PathBuf> {
-    match folder.symlink_metadata(at) {
-        Ok(found) if found.file_type().is_symlink() => folder.canonicalize(at),
-        _ => Ok(at.to_path_buf()),
+/// Whether there's anything at `at` beneath `folder`, in one call where it can be (`one_call`).
+fn exists_beneath(folder: &cap_std::fs::Dir, at: &Path) -> std::io::Result<bool> {
+    match one_call::look(folder, at) {
+        Some(Ok(_)) => Ok(true),
+        Some(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Some(Err(err)) => Err(err),
+        None => folder.try_exists(at),
     }
 }
 
-/// [`replaceable`], beneath `folder`.
-fn replaceable_beneath(folder: &cap_std::fs::Dir, target: &Path) -> bool {
-    folder.metadata(target).map_or(true, |found| found.is_file())
+/// The bytes of the file at `at` beneath `folder`, opened in one call where it can be.
+fn read_beneath(folder: &cap_std::fs::Dir, at: &Path) -> std::io::Result<Vec<u8>> {
+    match one_call::open(folder, at) {
+        Some(opened) => opened.and_then(|mut file| {
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).map(|_| data)
+        }),
+        None => folder.read(at),
+    }
 }
 
-/// [`new_beside`], beneath `folder`: a new file beside `target`, with `target`'s permissions.
-fn new_beside_beneath(folder: &cap_std::fs::Dir, target: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
-    let replaced = folder.metadata(target).ok();
-    let mut options = cap_std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    if replaced.is_some() {
-        use cap_std::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+/// The size of what's at `at` beneath `folder`, and whether it's a file or a folder, looked at in
+/// one call where it can be.
+fn metadata_beneath(folder: &cap_std::fs::Dir, at: &Path) -> std::io::Result<(u64, bool, bool)> {
+    match one_call::look(folder, at) {
+        Some(found) => found.map(|found| (found.size, found.is_file, found.is_dir)),
+        None => folder.metadata(at).map(|found| (found.len(), found.is_file(), found.is_dir())),
     }
-    let mut last = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
-    for _ in 0..32 {
-        let temporary = temporary_beside(target);
-        match folder.open_with(&temporary, &options) {
-            Ok(file) => {
-                let file = file.into_std();
-                if let Some(replaced) = &replaced {
-                    permissions_like(&file, replaced)?;
+}
+
+/// The file at `at` beneath `folder`, opened to read in one call where it can be.
+fn open_beneath(folder: &cap_std::fs::Dir, at: &Path) -> std::io::Result<std::fs::File> {
+    one_call::open(folder, at).unwrap_or_else(|| folder.open(at).map(cap_std::fs::File::into_std))
+}
+
+/// One system call beneath a narrowed `Fs`'s folder, on macOS, in place of cap-std's walk of a path a
+/// folder at a time, which there costs an `openat` and a `close` a folder.
+///
+/// - The kernel's `O_RESOLVE_BENEATH` refuses a lookup that leaves the folder's handle, and
+///   `O_NOFOLLOW_ANY` one that meets a link anywhere on the path.
+/// - Only both together, on a path with no `..`, keep a lookup beneath: `O_RESOLVE_BENEATH` alone
+///   was raced out through a link to `..` while a folder was moved out mid-lookup (Fable 5.2's
+///   review of the design, finding 1). With no link followed and no `..` written, nothing can send
+///   a lookup up.
+/// - A path that meets a link takes cap-std's walk, which follows a link only while it stays
+///   beneath, so links answer as they did. So do a path the kernel finds too long for one call, and
+///   a name starting `..`, as a resource fork's `..namedfork` does, which the walk refuses.
+/// - Neither `libc` nor `rustix` names the beneath flags for Apple yet, so their values are the
+///   SDK's. Both flags are probed once a process before they're trusted, for `openat` and `fstatat`
+///   alike: a system that ignored them would follow the links and `..` they refuse.
+#[cfg(target_os = "macos")]
+mod one_call {
+    use std::io;
+    use std::path::{Component, Path};
+    use std::sync::OnceLock;
+
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+    use rustix::io::Errno;
+
+    /// `O_RESOLVE_BENEATH`, `AT_RESOLVE_BENEATH` and `AT_SYMLINK_NOFOLLOW_ANY`, from the macOS
+    /// SDK's `sys/fcntl.h`.
+    const O_RESOLVE_BENEATH: u32 = 0x1000;
+    const AT_RESOLVE_BENEATH: u32 = 0x2000;
+    const AT_SYMLINK_NOFOLLOW_ANY: u32 = 0x0800;
+    /// `ENOTCAPABLE`: a lookup that would have left the folder.
+    const ENOTCAPABLE: i32 = 107;
+
+    #[cfg(test)]
+    thread_local! {
+        /// For tests: every call on this thread takes the walk, to compare its answers.
+        pub(in crate::stdlib::fs) static WALK_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// What a found file is, as `metadata` says it.
+    pub(super) struct Found {
+        pub(super) size: u64,
+        pub(super) is_file: bool,
+        pub(super) is_dir: bool,
+    }
+
+    /// `at` opened beneath `folder` to read, in one call, or `None` to take the walk.
+    pub(super) fn open(folder: &cap_std::fs::Dir, at: &Path) -> Option<io::Result<std::fs::File>> {
+        if !plain(at) || !holds() {
+            return None;
+        }
+        answered(rustix::fs::openat(folder, at, beneath(OFlags::empty()), Mode::empty()))
+            .map(|opened| opened.map(std::fs::File::from))
+    }
+
+    /// The folder at `at` beneath `folder`, opened in one call, or `None` to take the walk.
+    pub(super) fn open_folder(folder: &cap_std::fs::Dir, at: &Path) -> Option<io::Result<cap_std::fs::Dir>> {
+        if !plain(at) || !holds() {
+            return None;
+        }
+        answered(rustix::fs::openat(folder, at, beneath(OFlags::DIRECTORY), Mode::empty()))
+            .map(|opened| opened.map(|opened| cap_std::fs::Dir::from_std_file(std::fs::File::from(opened))))
+    }
+
+    /// What's at `at` beneath `folder`, looked at in one call, or `None` to take the walk, as for a
+    /// link at the end, which this call describes where the walk follows it.
+    pub(super) fn look(folder: &cap_std::fs::Dir, at: &Path) -> Option<io::Result<Found>> {
+        if !plain(at) || !holds() {
+            return None;
+        }
+        let flags = AtFlags::from_bits_retain(AT_RESOLVE_BENEATH | AT_SYMLINK_NOFOLLOW_ANY);
+        match answered(rustix::fs::statat(folder, at, flags))? {
+            Ok(stat) => {
+                let kind = FileType::from_raw_mode(stat.st_mode);
+                if kind == FileType::Symlink {
+                    return None;
                 }
-                return Ok((file, temporary));
+                let size = u64::try_from(stat.st_size).unwrap_or(0);
+                Some(Ok(Found {
+                    size,
+                    is_file: kind == FileType::RegularFile,
+                    is_dir: kind == FileType::Directory,
+                }))
             }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last = err,
-            Err(err) => return Err(err),
+            Err(err) => Some(Err(err)),
         }
     }
-    Err(last)
+
+    /// The flags for opening beneath a folder, to read, following no link.
+    fn beneath(more: OFlags) -> OFlags {
+        OFlags::RDONLY
+            | OFlags::CLOEXEC
+            | OFlags::NOFOLLOW_ANY
+            | OFlags::from_bits_retain(O_RESOLVE_BENEATH)
+            | more
+    }
+
+    /// Whether `at` can be looked up in one call: names only, none starting `..`, so neither `..`
+    /// itself nor a resource fork's `..namedfork`.
+    fn plain(at: &Path) -> bool {
+        !at.as_os_str().is_empty()
+            && at.components().all(|part| match part {
+                Component::Normal(name) => !name.as_encoded_bytes().starts_with(b".."),
+                _ => false,
+            })
+    }
+
+    /// What one call came to: `None` to take the walk, for a link on the way or a path too long for
+    /// one call, and otherwise what the walk would give. A plain path can't lead out, so a kernel
+    /// saying one did leaves it to the walk to say so in its own words.
+    fn answered<T>(result: rustix::io::Result<T>) -> Option<io::Result<T>> {
+        match result {
+            Ok(found) => Some(Ok(found)),
+            Err(err)
+                if err == Errno::LOOP || err == Errno::NAMETOOLONG || err.raw_os_error() == ENOTCAPABLE =>
+            {
+                None
+            }
+            Err(err) => Some(Err(err.into())),
+        }
+    }
+
+    /// Whether the kernel honours both flags, for `openat` and `fstatat`: probed once a process,
+    /// opening two folders to look from and making nothing.
+    fn holds() -> bool {
+        static HOLDS: OnceLock<bool> = OnceLock::new();
+        #[cfg(test)]
+        if WALK_ONLY.get() {
+            return false;
+        }
+        *HOLDS.get_or_init(probe)
+    }
+
+    /// `..` beneath `/usr` has to be refused as leaving it, and `/etc`, a link on every Mac, as a
+    /// link: by `openat` and by `fstatat`. Anything else, an older system that doesn't know the
+    /// flags included, and every call takes the walk.
+    fn probe() -> bool {
+        let folder = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let (Ok(usr), Ok(root)) =
+            (rustix::fs::open("/usr", folder, Mode::empty()), rustix::fs::open("/", folder, Mode::empty()))
+        else {
+            return false;
+        };
+        let left = |err: Option<Errno>| err.is_some_and(|err| err.raw_os_error() == ENOTCAPABLE);
+        let up_opened = left(
+            rustix::fs::openat(
+                &usr,
+                "..",
+                folder | OFlags::from_bits_retain(O_RESOLVE_BENEATH),
+                Mode::empty(),
+            )
+            .err(),
+        );
+        let up_looked =
+            left(rustix::fs::statat(&usr, "..", AtFlags::from_bits_retain(AT_RESOLVE_BENEATH)).err());
+        let link_opened = rustix::fs::openat(&root, "etc", folder | OFlags::NOFOLLOW_ANY, Mode::empty())
+            .err()
+            == Some(Errno::LOOP);
+        let link_looked =
+            rustix::fs::statat(&root, "etc/hosts", AtFlags::from_bits_retain(AT_SYMLINK_NOFOLLOW_ANY)).err()
+                == Some(Errno::LOOP);
+        up_opened && up_looked && link_opened && link_looked
+    }
+}
+
+/// For tests: every narrowed `Fs` call on this thread takes cap-std's walk, or goes back to one call
+/// where it can.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn walk_only(only: bool) {
+    one_call::WALK_ONLY.set(only);
+}
+
+/// Elsewhere, every call takes cap-std's walk: Linux's cap-std already opens beneath in one
+/// `openat2`, and Windows has no such call.
+#[cfg(not(target_os = "macos"))]
+mod one_call {
+    use std::io;
+    use std::path::Path;
+
+    pub(super) struct Found {
+        pub(super) size: u64,
+        pub(super) is_file: bool,
+        pub(super) is_dir: bool,
+    }
+
+    pub(super) fn open(_: &cap_std::fs::Dir, _: &Path) -> Option<io::Result<std::fs::File>> {
+        None
+    }
+
+    pub(super) fn open_folder(_: &cap_std::fs::Dir, _: &Path) -> Option<io::Result<cap_std::fs::Dir>> {
+        None
+    }
+
+    pub(super) fn look(_: &cap_std::fs::Dir, _: &Path) -> Option<io::Result<Found>> {
+        None
+    }
+}
+
+/// The folder a narrowed `Fs` keeps as `kept` (see `limits::folder_parts`), opened: the folder it
+/// was narrowed to from the whole `Fs`, by its path, and for one narrowed again since, the path
+/// beneath that, a folder at a time, following no link. A folder on that path swapped for a link
+/// since the `Fs` was narrowed is refused, wherever the link points. Only the holder of the whole
+/// `Fs` chose the first folder's path, so that one is opened as its path is now.
+fn open_narrowed(kept: &str) -> Result<cap_std::fs::Dir, Fail> {
+    let (_, outer, below) = crate::limits::folder_parts(kept);
+    let outer = cap_std::fs::Dir::open_ambient_dir(outer, cap_std::ambient_authority())?;
+    // The way down in one call where it can be: it follows no link either. Anything that call
+    // can't answer, a link on the way included, goes a folder at a time, which says which.
+    if let Some(Ok(here)) = below.and_then(|below| one_call::open_folder(&outer, Path::new(below))) {
+        return Ok(here);
+    }
+    let mut here = outer.into_std_file();
+    for name in below.into_iter().flat_map(|below| below.split('/')).filter(|name| !name.is_empty()) {
+        here = match cap_primitives::fs::open_dir_nofollow(&here, Path::new(name)) {
+            Ok(next) => next,
+            Err(err) => {
+                let found = cap_std::fs::Dir::from_std_file(here).symlink_metadata(name);
+                if found.is_ok_and(|found| found.file_type().is_symlink()) {
+                    let whole = crate::limits::whole_folder(kept);
+                    return Err(Fail::permission_denied(format!(
+                        "a folder on the way to `{whole}` is a link now, and this Fs follows no link to its folder"
+                    )));
+                }
+                return Err(Fail::from(err));
+            }
+        };
+    }
+    Ok(cap_std::fs::Dir::from_std_file(here))
+}
+
+/// The real path of `rest`, a path beneath the folder a narrowed `Fs` keeps as `kept`, found from
+/// that folder's handle, as `open_narrowed` opens it: a link on the way is followed only while it
+/// stays beneath the folder, and what isn't there yet is kept as written. Its names are joined by
+/// `/` on every system, each kept whole. `None` when the folder can't be opened, the path leads out
+/// of it, or a name on it isn't UTF-8, which `only` then reaches nothing for.
+pub(crate) fn real_beneath(kept: &str, rest: &Path) -> Option<String> {
+    let folder = open_narrowed(kept).ok()?;
+    let mut found = rest;
+    let mut missing = Vec::new();
+    let real = loop {
+        if found.as_os_str().is_empty() {
+            break PathBuf::new();
+        }
+        match folder.canonicalize(found) {
+            Ok(real) => break real,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(found.file_name()?);
+                found = found.parent()?;
+            }
+            Err(_) => return None,
+        }
+    };
+    let mut names = Vec::new();
+    for part in real.components() {
+        match part {
+            std::path::Component::Normal(name) => names.push(name.to_str()?),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    for name in missing.into_iter().rev() {
+        names.push(name.to_str()?);
+    }
+    Some(names.join("/"))
+}
+
+/// Where writing to `at` beneath `folder` puts a file, for each step of writing it to be done by
+/// name in the folder it's in.
+struct WrittenAt {
+    /// The folder the file is in, opened beneath `folder` once, or `folder` itself.
+    here: Arc<cap_std::fs::Dir>,
+    /// The file's name in `here`.
+    name: PathBuf,
+    /// Its path from `folder`, for a message.
+    target: PathBuf,
+    /// What's there now, if anything can be found.
+    found: Option<cap_std::fs::Metadata>,
+}
+
+/// Where writing to `at` beneath `folder` puts a file: what a link there points at, when that's
+/// beneath the folder too, so the link stays a link. One pointing out is refused.
+///
+/// The folder the file is in is found once, and every step of writing it, looking at what's there,
+/// making a file beside it and renaming that into its place, is then done by name in that folder.
+/// Each step found the folder from `folder` again before, opening every folder on the way, which
+/// on macOS is a system call each. One folder for every step also keeps them together: a folder on
+/// the way swapped partway can't split a write between two folders.
+fn written_at(folder: &Arc<cap_std::fs::Dir>, at: &Path) -> std::io::Result<WrittenAt> {
+    let mut place = in_its_folder(folder, at)?;
+    let found = place.here.symlink_metadata(&place.name);
+    if found.as_ref().is_ok_and(|found| found.file_type().is_symlink()) {
+        let target = folder.canonicalize(at)?;
+        place = in_its_folder(folder, &target)?;
+        place.found = place.here.metadata(&place.name).ok();
+        return Ok(place);
+    }
+    place.found = found.ok();
+    Ok(place)
+}
+
+/// The folder `target`, a path beneath `folder`, is in, opened beneath it, with the name `target`
+/// has there, and nothing yet found there. A path with no name of its own, as `.`, is left whole,
+/// in `folder`.
+fn in_its_folder(folder: &Arc<cap_std::fs::Dir>, target: &Path) -> std::io::Result<WrittenAt> {
+    let parent = target.parent().filter(|parent| !parent.as_os_str().is_empty());
+    let (here, name) = match (target.file_name(), parent) {
+        (Some(name), Some(parent)) => {
+            let here = one_call::open_folder(folder, parent).unwrap_or_else(|| folder.open_dir(parent))?;
+            (Arc::new(here), PathBuf::from(name))
+        }
+        (Some(name), None) => (Arc::clone(folder), PathBuf::from(name)),
+        (None, _) => (Arc::clone(folder), target.to_path_buf()),
+    };
+    Ok(WrittenAt { here, name, target: target.to_path_buf(), found: None })
+}
+
+impl WrittenAt {
+    /// [`replaceable`]: whether what's there can be replaced by renaming another file over it.
+    fn replaceable(&self) -> bool {
+        self.found.as_ref().is_none_or(cap_std::fs::Metadata::is_file)
+    }
+
+    /// [`new_beside`], in the file's folder: a new file beside it, with its permissions.
+    fn new_beside(&self) -> std::io::Result<(std::fs::File, PathBuf)> {
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if self.found.is_some() {
+            use cap_std::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut last = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+        for _ in 0..32 {
+            let temporary = temporary_beside(&self.name);
+            match self.here.open_with(&temporary, &options) {
+                Ok(file) => {
+                    let file = file.into_std();
+                    if let Some(replaced) = &self.found {
+                        permissions_like(&file, replaced)?;
+                    }
+                    return Ok((file, temporary));
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last = err,
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last)
+    }
 }
 
 /// Gives `file` the permissions of the file it's to replace.
@@ -801,21 +1147,22 @@ fn permissions_like(file: &std::fs::File, replaced: &cap_std::fs::Metadata) -> s
 }
 
 /// [`write_whole`], beneath `folder`.
-fn write_whole_beneath(folder: &cap_std::fs::Dir, at: &Path, data: &[u8]) -> std::io::Result<()> {
-    let target = through_links_beneath(folder, at)?;
-    if !replaceable_beneath(folder, &target) {
-        return folder.write(&target, data);
+fn write_whole_beneath(folder: &Arc<cap_std::fs::Dir>, at: &Path, data: &[u8]) -> std::io::Result<()> {
+    let place = written_at(folder, at)?;
+    let (here, name) = (&place.here, &place.name);
+    if !place.replaceable() {
+        return here.write(name, data);
     }
-    let (mut file, temporary) = match new_beside_beneath(folder, &target) {
+    let (mut file, temporary) = match place.new_beside() {
         Ok(made) => made,
         Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-            return folder.write(&target, data);
+            return here.write(name, data);
         }
         Err(err) => return Err(err),
     };
-    let done = file.write_all(data).and_then(|()| folder.rename(&temporary, folder, &target));
+    let done = file.write_all(data).and_then(|()| here.rename(&temporary, here, name));
     if done.is_err() {
-        let _ = folder.remove_file(&temporary);
+        let _ = here.remove_file(&temporary);
     }
     done
 }
@@ -824,12 +1171,15 @@ fn write_whole_beneath(folder: &cap_std::fs::Dir, at: &Path, data: &[u8]) -> std
 /// beneath the folder when its block ends.
 fn create_beneath(folder: Arc<cap_std::fs::Dir>, at: PathBuf, durable: bool) -> Value {
     let made = blocking(move || {
-        let target = through_links_beneath(&folder, &at).map_err(Fail::from)?;
-        if !replaceable_beneath(&folder, &target) {
-            return Err(Fail::from(format!("`{}` isn't a file that can be replaced", target.display())));
+        let place = written_at(&folder, &at).map_err(Fail::from)?;
+        if !place.replaceable() {
+            return Err(Fail::from(format!(
+                "`{}` isn't a file that can be replaced",
+                place.target.display()
+            )));
         }
-        let (file, temporary) = new_beside_beneath(&folder, &target).map_err(Fail::from)?;
-        Ok((file, Written::Beneath { folder, temporary, target }))
+        let (file, temporary) = place.new_beside().map_err(Fail::from)?;
+        Ok((file, Written::Beneath { folder: place.here, temporary, target: place.name }))
     });
     match made {
         Ok((file, at)) => {

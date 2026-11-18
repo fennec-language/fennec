@@ -237,8 +237,9 @@ mod tests {
 
     /// The least share of random programs, in percent, the oracle has to run. It refuses the rest,
     /// and a refusal skips the target's comparison with it without a word. It goes up as what it
-    /// refuses comes to be modeled, and never down.
-    const ORACLE_RUNS_AT_LEAST: usize = 50;
+    /// refuses comes to be modeled, and never down: it runs 62 of the 64 since it let go of a
+    /// loop's own generator, refusing only a channel to every listener sent past what it keeps.
+    const ORACLE_RUNS_AT_LEAST: usize = 96;
 
     /// The oracle runs at least `ORACLE_RUNS_AT_LEAST` percent of random programs, or holding the
     /// builds to it says little. What it refused, by why, is in the message.
@@ -577,9 +578,7 @@ mod tests {
                 let lines: Vec<&str> = source.lines().collect();
                 for (at, line) in lines.iter().enumerate() {
                     let trimmed = line.trim_start();
-                    let Some((_, gives)) =
-                        trimmed.strip_prefix("def ").and_then(|def| def.rsplit_once(") -> "))
-                    else {
+                    let Some(gives) = trimmed.strip_prefix("def ").and_then(def_gives) else {
                         continue;
                     };
                     if gives.starts_with("with ") || gives.starts_with("Iterator") {
@@ -608,6 +607,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// What a `def` line says its function gives, written after the parenthesis that closes its
+    /// parameters, so a parameter's own `() -> int` isn't taken for it.
+    fn def_gives(def: &str) -> Option<&str> {
+        let mut depth = 0_usize;
+        for (at, written) in def.char_indices() {
+            match written {
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return def.get(at + 1..)?.strip_prefix(" -> ");
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Programs are written only in the forms locked on 2026-11-11: no failure is handled with
@@ -793,8 +811,9 @@ mod tests {
     /// Every way of writing a name another of its name and type could capture (`CaptureWay`)
     /// checks, and the evaluator prints what the oracle prints: each name means what it does where
     /// it's written. `LockDef` is left out while the checker refuses a nested function's
-    /// parameter named as a lock's name, as taking the lock, which its name-capture fix ends; it
-    /// joins the rest then.
+    /// parameter named as a lock's name, as taking the lock: that's #2011, lock order treating a
+    /// nested function as its outermost one, not name capture. It joins the rest once #2011 is
+    /// fixed.
     #[test]
     fn the_name_capture_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
         use super::ast::{CAPTURE_WAYS, CaptureWay, Capturing, Program, Stmt};
@@ -804,6 +823,65 @@ mod tests {
             for n in [0, 7, 19] {
                 id += 1;
                 body.push(Stmt::Captured(Capturing { id, way, n }));
+            }
+        }
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
+    /// Every loop over `enumerate` or `zip` of a generator made right there (`ZipSumming`), the one
+    /// lending from a source and the one failing partway, let go partway, run out, or failing,
+    /// checks, and the evaluator prints what the oracle prints.
+    #[test]
+    fn the_zip_generator_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, Stmt, ZIP_WAYS, ZipSumming};
+        let mut body = Vec::new();
+        for way in ZIP_WAYS {
+            for failing in [false, true] {
+                for (limit, stop, words) in [(0, 0, 0), (3, 4, 2), (3, 9, 5), (4, 1, 0), (2, 0, 3), (5, 5, 1)]
+                {
+                    body.push(Stmt::ZipSummed(ZipSumming { way, failing, limit, stop, words }));
+                }
+            }
+        }
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
+    /// Every way of writing a `match` with `ref` the compiled program once got wrong (`RefWay`),
+    /// from every start and with every text, checks, and the evaluator prints what the oracle
+    /// prints: each `ref` name's change put back into the field it names.
+    #[test]
+    fn the_ref_case_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, REF_STARTS, REF_TEXTS, REF_WAYS, RefCasing, Stmt};
+        let mut body = Vec::new();
+        let mut id = 0;
+        for way in REF_WAYS {
+            for start in 0..REF_STARTS {
+                for text in 0..REF_TEXTS.len() {
+                    id += 1;
+                    body.push(Stmt::RefCased(RefCasing { id, way, start, text }));
+                }
             }
         }
         let program = Program { body, threadless: true };

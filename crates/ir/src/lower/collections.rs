@@ -187,7 +187,7 @@ impl Lowering<'_> {
         // What collects a generator written in place has the generator's span, and what collects
         // a type with an `iter` of its own has the span of that type's value.
         let ty = match self.ty(expr)? {
-            Type::Iterator(item) => Type::List(item),
+            Type::Iterator(item, _) => Type::List(item),
             ty => self.own_iter_items(&ty).map_or(ty, |item| Type::List(Box::new(item))),
         };
         let dest = self.temporary(ty);

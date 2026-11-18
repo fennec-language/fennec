@@ -6,12 +6,20 @@ use fennec_syntax::{Diagnostic, Expr, ExprKind, Stmt, StmtKind};
 use crate::builtins;
 use crate::function::FnCx;
 
-/// What a loop goes over when it's `parallel(xs)`: `xs`.
+/// What a loop goes over when it's `parallel(xs)`: `xs`. A `with` source's `parallel`, written
+/// into its caller as its own (`sight::outer`), is one too.
 pub(crate) fn parallel_items(iter: &Expr) -> Option<&Expr> {
     let ExprKind::Call { callee, args } = &iter.kind else { return None };
     let ExprKind::Name(name) = &callee.kind else { return None };
     let first = args.first().filter(|arg| arg.name.is_none() && !arg.is_mut)?;
-    (name == "parallel").then_some(&first.value)
+    (fennec_syntax::sight::outer(name).unwrap_or(name) == "parallel").then_some(&first.value)
+}
+
+/// Whether a call names what it calls as a `with` source's own, written into its caller where
+/// something there names it too (`sight::outer`), which nothing in sight takes.
+pub(crate) fn called_as_outer(call: &Expr) -> bool {
+    matches!(&call.kind, ExprKind::Call { callee, .. }
+        if matches!(&callee.kind, ExprKind::Name(name) if fennec_syntax::sight::outer(name).is_some()))
 }
 
 impl FnCx<'_> {

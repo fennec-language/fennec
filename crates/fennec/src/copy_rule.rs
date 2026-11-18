@@ -131,11 +131,22 @@ fn copies_made(
 
 /// Each of the program's own calls whose positional arguments are easy to get backwards.
 fn positional_arguments(module: &Module, sources: &Sources) -> Vec<Diagnostic> {
-    fennec_lint::positional_arguments(module, sources)
+    let found: Vec<Diagnostic> = fennec_lint::positional_arguments(module, sources)
         .into_iter()
         .filter(|lint| !lint.diagnostic.span.in_prelude())
         .map(|lint| Diagnostic { message: lint.message().to_owned(), ..lint.diagnostic })
-        .collect()
+        .collect();
+    let (copied, mut kept): (Vec<Diagnostic>, Vec<Diagnostic>) =
+        found.into_iter().partition(|problem| problem.span.copied_from(&module.copied) != problem.span);
+    // A call in a copy the compiler wrote in is said where its text is, once, and with no fix:
+    // a fix is worked out from the text at the copy's own spans, which have none.
+    for problem in copied {
+        let problem = Diagnostic { fixes: Vec::new(), hint: None, ..problem }.copied_from(&module.copied);
+        if !kept.iter().any(|known| known.span == problem.span && known.message == problem.message) {
+            kept.push(problem);
+        }
+    }
+    kept
 }
 
 /// Where a function says it's `@hot`, if it does.
@@ -187,6 +198,18 @@ pub(crate) fn check_rules(
     let signatures = fennec_check::check_to_run(module)?;
     let copies = implicit_copies(module, &signatures, sources);
     if copies.is_empty() { Ok(signatures) } else { Err(copies) }
+}
+
+/// Like `check_rules`, as a build checks: with the library's types' fields typed too, as lowering
+/// them wants, giving back what it found when that's what checking the module as it's left would
+/// find, so the build needn't check it again.
+pub(crate) fn check_rules_to_build(
+    module: &mut Module,
+    sources: &Sources,
+) -> Result<Option<fennec_check::Signatures>, Vec<Diagnostic>> {
+    let (signatures, as_left) = fennec_check::check_to_build_saying(module)?;
+    let copies = implicit_copies(module, &signatures, sources);
+    if copies.is_empty() { Ok(as_left.then_some(signatures)) } else { Err(copies) }
 }
 
 /// The steps a constant may take to be worked out while compiling. One that takes more is

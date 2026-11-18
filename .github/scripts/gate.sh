@@ -16,6 +16,17 @@
 set -u
 root="$(git rev-parse --show-toplevel)" || exit 1
 cd "$root" || exit 1
+# How much the disk it builds on has free, said loudly first when it's under 40 GB, and again by
+# its summary: a gate builds 7 to 13 GB in its worktree, and a build that runs out of room part way
+# leaves broken objects behind, as one lane's did with 12 GB free on 2026-11-17. It still runs.
+# GATE_LEAST_FREE_GB sets the mark.
+least_free=${GATE_LEAST_FREE_GB:-40}
+free_gb=$(df -Pk "$root" 2> /dev/null | awk 'NR == 2 { print int($4 / 1048576) }')
+low_disk=''
+if [[ $free_gb =~ ^[0-9]+$ ]] && [ "$free_gb" -lt "$least_free" ]; then
+  low_disk="WARNING: only $free_gb GB free on the disk this builds on, under $least_free GB: a build that runs out part way leaves broken objects. Free some first: remove the worktrees of merged pull requests, their target folders first."
+  printf '\n%s\n%s\n%s\n\n' '!!!!!!!!' "$low_disk" '!!!!!!!!' >&2
+fi
 logs="$(mktemp -d)"
 # Its logs, and the programs and Fennec folder it makes, go however it ends: what a failed step
 # printed is shown before then.
@@ -421,6 +432,7 @@ fi
 # A line for every step, and the verdict: every step ran, and failed on nothing main isn't known
 # to fail.
 echo
+[ -z "$low_disk" ] || echo "$low_disk"
 echo "the gate's steps:"
 passed=1
 for outcome in "${outcomes[@]}"; do

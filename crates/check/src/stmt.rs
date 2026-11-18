@@ -635,8 +635,10 @@ impl FnCx<'_> {
             if !self.checker.holds_function_value(&ty, &mut Vec::new()) {
                 continue;
             }
-            let param =
-                self.param_owner(name).filter(|_| matches!(self.checker.settled(&ty), Type::Arrow(..)));
+            // By the type it's declared with: an optional one narrowed here, as inside `if work is
+            // not None:`, is still one no caller's value is followed for.
+            let declared = self.declared_type(name).map(|declared| self.checker.settled(&declared));
+            let param = self.param_owner(name).filter(|_| matches!(declared, Some(Type::Arrow(..))));
             if let Some(owner) = param {
                 self.checker.values.note_captured_param(key, owner, name);
             } else if let Some(arrow) = self.local_arrow(name) {

@@ -457,6 +457,24 @@ fn a_nested_function_is_refused_through_an_arrow_or_a_name_declared_again() {
     }
 }
 
+/// The third pass: a captured arrow function that hands a parameter on. (Its other program, an
+/// optional function parameter narrowed before the nested function, can't be written yet:
+/// `(() -> nothing)?` is an optional tuple. `captured_values` reads a parameter's declared type
+/// all the same, so narrowing never makes one followed.)
+#[test]
+fn a_nested_function_is_refused_through_an_arrow_handing_a_parameter_on() {
+    // A captured arrow function that hands `work` on to one that calls it, the nested function
+    // reading it called inside the lock, or passed by name inside it.
+    for called in ["later()", "run(later)"] {
+        let program = format!(
+            "{NAP}{RUN}def guarded(scores: shared Account, work: () -> nothing):\n    go = () => run(work)\n    \
+             def later():\n        go()\n    lock scores as held:\n        {called}\n        _ = held\n\n\
+             {GUARDED_MAIN}"
+        );
+        assert_eq!(refused_in_a_lock(&program), WAITS, "{called}");
+    }
+}
+
 const HOLDERS: &str = "struct Cell:
     count = 0
 

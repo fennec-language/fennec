@@ -807,8 +807,8 @@ fn resolved_within(
         if let Some(seen) = &mut seen {
             seen.clone_from(module);
         }
-        let next = if still_declared(&declared, &declarations(module)) {
-            checker::Checker::carrying(module, &checked)
+        let next = if let Some(shared_retyped) = still_declared(&declared, &declarations(module)) {
+            checker::Checker::carrying(module, &checked, shared_retyped)
         } else {
             let mut next = checker::Checker::new(module);
             next.again = true;
@@ -847,21 +847,32 @@ fn declarations(module: &Module) -> Vec<Item> {
 }
 
 /// Whether everything `before` declares is still declared, as it was and in the same order, with
-/// only imports added: what a round of rewriting may do while a check carries over what the round
-/// before found. A type added can change what a function written as it was means, as the struct
-/// lock lowering writes in for `shared Account` does.
-fn still_declared(before: &[Item], after: &[Item]) -> bool {
+/// only imports added, or the structs lock lowering writes in for `shared` types: what a round of
+/// rewriting may do while a check carries over what the round before found. `None` when it did
+/// more, since a type added can change what a function written as it was means. Otherwise whether
+/// a `shared` type's struct was added, which changes what each written `shared T` means.
+fn still_declared(before: &[Item], after: &[Item]) -> Option<bool> {
+    let shared = fennec_syntax::shared_declaration("");
+    let mut retyped = false;
+    let mut added = |item: &Item| match item {
+        Item::Import(_) => true,
+        Item::Struct(def) if def.name.starts_with(&shared) => {
+            retyped = true;
+            true
+        }
+        _ => false,
+    };
     let mut after = after.iter();
     for item in before {
         loop {
             match after.next() {
                 Some(now) if now == item => break,
-                Some(Item::Import(_)) => {}
-                _ => return false,
+                Some(now) if added(now) => {}
+                _ => return None,
             }
         }
     }
-    after.all(|added| matches!(added, Item::Import(_)))
+    after.all(&mut added).then_some(retyped)
 }
 
 /// `text` with each open type variable's number taken out: `Var(12)` as `Var(_)`.

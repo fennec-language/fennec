@@ -498,7 +498,7 @@ impl Checker {
         !self.carriable.is_empty()
     }
 
-    pub(crate) fn carrying(module: &Module, previous: &Checked) -> Checker {
+    pub(crate) fn carrying(module: &Module, previous: &Checked, shared_retyped: bool) -> Checker {
         let mut next = Checker::new(module);
         next.again = true;
         next.before.clone_from(&previous.signatures.functions);
@@ -544,17 +544,26 @@ impl Checker {
         }
         // One whose check left a type variable open, as a generic library method's can, is
         // checked again: an open variable means nothing to another check, which has its own.
+        // Once a `shared` type's struct is written in, a written `shared T` means it, so a function
+        // whose types mention a `shared` type is checked again too.
+        let shared = |ty: &Type| {
+            ty.has_var()
+                || (shared_retyped
+                    && ty.any_part(
+                        &|part| matches!(part, Type::Generic(name, _) if name == crate::lock::SHARED),
+                    ))
+        };
         let open = |key: &String| {
             let signature = previous.signatures.functions.get(key);
             let body = previous.types.functions.get(key);
             let tables = previous.tables_of.get(key);
             let graph = previous.graph_of.get(key);
             signature.is_some_and(|signature| {
-                signature.returns.has_var() || signature.params.iter().any(|param| param.ty.has_var())
-            }) || body.is_some_and(|body| body.exprs.values().chain(body.names.values()).any(Type::has_var))
-                || tables.is_some_and(|tables| tables.types().into_iter().any(Type::has_var))
-                || graph.is_some_and(|graph| graph.handovers.types().into_iter().any(Type::has_var))
-                || locals.get(key).is_some_and(|locals| locals.iter().any(|(_, ty)| ty.has_var()))
+                shared(&signature.returns) || signature.params.iter().any(|param| shared(&param.ty))
+            }) || body.is_some_and(|body| body.exprs.values().chain(body.names.values()).any(&shared))
+                || tables.is_some_and(|tables| tables.types().into_iter().any(&shared))
+                || graph.is_some_and(|graph| graph.handovers.types().into_iter().any(&shared))
+                || locals.get(key).is_some_and(|locals| locals.iter().any(|(_, ty)| shared(ty)))
         };
         let open: BTreeSet<String> = carried.iter().filter(|key| open(key)).cloned().collect();
         // What's inside one that's checked again is checked again with it.

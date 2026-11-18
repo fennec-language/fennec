@@ -761,9 +761,19 @@ impl Checker {
                 _ => None,
             })
             .collect();
+        // Only what calls the changed function itself: one written inside a function this round
+        // changed is new with it, and what calls that outer function calls its signature, which is
+        // looked at on its own.
         for key in changed {
-            let callers = self.outer_callers(self.outermost_of(&key));
-            self.revisit.extend(callers.into_iter().filter(|caller| self.carried.contains(caller)));
+            let callers: Vec<String> = self
+                .own_callers
+                .get(&key)
+                .into_iter()
+                .flatten()
+                .map(|caller| self.outermost_of(caller).to_owned())
+                .filter(|caller| self.carried.contains(caller))
+                .collect();
+            self.revisit.extend(callers);
         }
     }
 
@@ -1149,6 +1159,7 @@ impl Checker {
             prelude,
             inherited,
             extension: Vec::new(),
+            nested: true,
         };
         self.program.functions.insert(key.to_owned(), entry);
         self.check_with(key, captured);
@@ -1378,11 +1389,12 @@ impl Checker {
     }
 
     /// `outermost`, as the part of `key` it is, so nothing is made: the outer function's key is
-    /// always the start of a nested one's.
+    /// always the start of a nested one's. A library module's function, `json.dumps`, is its own
+    /// outermost: `json` is the module's name, not a function around it.
     pub(crate) fn outermost_of<'k>(&self, key: &'k str) -> &'k str {
         let mut key = key;
         while let Some(entry) = self.program.functions.get(key)
-            && entry.owner.is_none()
+            && entry.nested
             && let Some((outer, _)) = key.rsplit_once('.')
         {
             key = outer;
@@ -1820,5 +1832,25 @@ mod tests {
             .map(|problem| problem.message)
             .collect();
         assert_eq!(problems, ["`Duration` doesn't exist"]);
+    }
+
+    /// A library module's function, keyed under the module's name, is its own outermost, so
+    /// what calls it is found when it's checked again. A function written inside another is
+    /// that other's.
+    #[test]
+    fn a_module_function_is_its_own_outermost_and_a_nested_one_is_its_outers() {
+        let program = fennec_syntax::parse("def main():\n    pass\n").unwrap();
+        let mut checker = super::Checker::new(&program);
+        let (key, entry) = checker
+            .program
+            .functions
+            .iter()
+            .find(|(key, entry)| entry.owner.is_none() && key.contains('.'))
+            .map(|(key, entry)| (key.clone(), entry.clone()))
+            .unwrap();
+        assert_eq!(checker.outermost_of(&key), key);
+        let inner = super::FnEntry { nested: true, ..entry };
+        checker.program.functions.insert("main.inner".to_owned(), inner);
+        assert_eq!(checker.outermost_of("main.inner"), "main");
     }
 }

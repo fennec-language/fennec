@@ -80,6 +80,10 @@ mio = { version = "=1.2.4", default-features = false, features = ["net", "os-ext
 # and which can't be written without `unsafe`. cap-std is the Bytecode Alliance's safe API for it,
 # on rustix, as Wasmtime uses.
 cap-std = { version = "=4.0.3", default-features = false }
+# cap-std's own base, already built under it: its `open_dir_nofollow`, which cap-std's `Dir` doesn't
+# offer, opens one folder of an `Fs` narrowed again at a time without following a link, so a link
+# swapped in for that folder later is refused (see `fs::open_narrowed`).
+cap-primitives = { version = "=4.0.3", default-features = false }
 # Every float function, `sin` through `**`, is computed by this one pure-Rust library on every
 # platform, so a program prints the same bits on arm64, x86-64, Windows and WebAssembly: each
 # platform's own C library rounds some results differently in the last bit, and replays and

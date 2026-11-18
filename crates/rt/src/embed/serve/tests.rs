@@ -116,7 +116,7 @@ fn goodbye(stream: &mut std::net::TcpStream, reader: &mut impl std::io::Read) {
 #[test]
 fn a_taken_connection_sends_each_write_at_once() {
     let says_if_it_waits: Handler = Arc::new(|conn: Conn| {
-        let at_once = conn.stream.borrow().nodelay().unwrap_or(false);
+        let at_once = super::locked(&conn.stream).nodelay().unwrap_or(false);
         i64::from(conn.write(if at_once { b"at once\n" } else { b"waits\n" }).is_err())
     });
     run(1, &says_if_it_waits, |address| {
@@ -1182,4 +1182,121 @@ fn waits_that_time_out_together_wake_by_deadline_then_in_the_order_they_parked()
     let wanted: Vec<usize> =
         (0..64).filter(|token| token % 4 == 1).chain((0..64).filter(|token| token % 4 == 0)).collect();
     assert_eq!(woken, wanted);
+}
+
+/// What `count` threads reading lines from one connection at once got between them, of `lines`
+/// numbered lines a client sent: how many weren't a whole line, how many were never read, how many
+/// were read twice, and how many threads panicked.
+fn read_by(count: usize, lines: usize) -> (usize, usize, usize, usize) {
+    use std::fmt::Write as _;
+    let (listener, address) = listener();
+    let client = std::thread::spawn(move || {
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        let all = (0..lines).fold(String::new(), |mut all, n| {
+            let _ = writeln!(all, "L {n} pppppppppppppppp");
+            all
+        });
+        stream.write_all(all.as_bytes()).unwrap();
+    });
+    let stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(_) => std::thread::yield_now(),
+        }
+    };
+    let conn = Arc::new(Conn::new(stream));
+    let readers: Vec<_> = (0..count)
+        .map(|_| {
+            let conn = Arc::clone(&conn);
+            std::thread::spawn(move || {
+                let mut got = Vec::new();
+                while let Ok(Some(line)) = conn.read_line(Some(Duration::from_secs(20))) {
+                    got.push(line);
+                }
+                got
+            })
+        })
+        .collect();
+    client.join().unwrap();
+    let mut seen = vec![0_u32; lines];
+    let (mut torn, mut panicked) = (0, 0);
+    for reader in readers {
+        let Ok(got) = reader.join() else {
+            panicked += 1;
+            continue;
+        };
+        for line in got {
+            let text = String::from_utf8_lossy(&line).into_owned();
+            let mut parts = text.split(' ');
+            let number = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+                (Some("L"), Some(number), Some("pppppppppppppppp"), None) => number.parse::<usize>().ok(),
+                _ => None,
+            };
+            match number.and_then(|number| seen.get_mut(number)) {
+                Some(times) => *times += 1,
+                None => torn += 1,
+            }
+        }
+    }
+    let missing = seen.iter().filter(|times| **times == 0).count();
+    let twice = seen.iter().filter(|times| **times > 1).count();
+    (torn, missing, twice, panicked)
+}
+
+/// Two threads read lines from one connection at once, as two tasks on two workers may: every line
+/// is read once, whole, by one of them. With the read-ahead locked for each piece of a read rather
+/// than for the whole of it, lines were lost and torn, and a reader panicked (Fable 5.2's review
+/// of #2081: 0 of 5 rounds right).
+#[test]
+fn two_threads_reading_one_connection_get_every_line_once_whole() {
+    let mut wrong = Vec::new();
+    for round in 0..5 {
+        let (torn, missing, twice, panicked) = read_by(2, 200_000);
+        if (torn, missing, twice, panicked) != (0, 0, 0, 0) {
+            wrong.push((round, torn, missing, twice, panicked));
+        }
+    }
+    assert!(wrong.is_empty(), "(round, torn, missing, twice, panicked): {wrong:?}");
+}
+
+/// Two threads each write 20,000 lines of 60 bytes to one connection, each line one `write` that
+/// goes out in one piece: every line arrives whole.
+#[test]
+fn two_threads_writing_short_lines_to_one_connection_keep_each_whole() {
+    use std::io::Read as _;
+    let (listener, address) = listener();
+    let client = std::thread::spawn(move || {
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        let mut all = Vec::new();
+        stream.read_to_end(&mut all).unwrap();
+        all
+    });
+    let stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(_) => std::thread::yield_now(),
+        }
+    };
+    let conn = Arc::new(Conn::new(stream));
+    let writers: Vec<_> = b"ab"
+        .iter()
+        .copied()
+        .map(|letter| {
+            let conn = Arc::clone(&conn);
+            std::thread::spawn(move || {
+                let mut message = vec![letter; 59];
+                message.push(b'\n');
+                (0..20_000).filter(|_| conn.write(&message).is_ok()).count()
+            })
+        })
+        .collect();
+    let wrote: Vec<usize> = writers.into_iter().map(|writer| writer.join().unwrap_or(0)).collect();
+    conn.end();
+    let all = client.join().unwrap();
+    let lines: Vec<&[u8]> = all.split(|byte| *byte == b'\n').filter(|line| !line.is_empty()).collect();
+    let cut = lines
+        .iter()
+        .filter(|line| line.len() != 59 || line.iter().any(|byte| Some(byte) != line.first()))
+        .count();
+    assert_eq!((wrote, lines.len(), cut), (vec![20_000, 20_000], 40_000, 0));
 }

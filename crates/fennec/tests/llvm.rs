@@ -12279,6 +12279,24 @@ fn fast_text_hash(text: &str) -> u64 {
     fast_hash(u64::try_from(text.len()).unwrap_or(0), &words)
 }
 
+/// New int keys go into a dict as compiled code adds them itself, while it's alone and has room,
+/// and through the runtime when it must grow, when another owner holds it, and through `ref`:
+/// into dicts that hold their values in their entries, values holding blocks among them, and dicts
+/// of ints. Every key is found again, the order they went in is kept, a copy taken partway keeps
+/// only what it had, and nothing's left, in entries and boxed, in a dev build and with `--release`.
+#[test]
+fn int_keys_added_natively_are_found_in_order() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_word_keys_added",
+        include_str!("fixtures/dict_word_keys_added.fen"),
+        include_str!("fixtures/dict_word_keys_added.out"),
+    )
+}
+
 /// New struct keys go into a dict as compiled code adds them itself, while it has room, and through
 /// the runtime when it must grow, when another owner holds it, and when the value holds a block:
 /// every key is found again, the order they went in is kept, and a copy taken partway keeps only
@@ -13862,6 +13880,556 @@ fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Resul
     );
     Ok(())
 }
+
+/// A loop's generator wraps what it fails with in the loop's `? from Wrap(...)`, as a call's
+/// failure is wrapped, when it passes up from the loop: a cleanup failing as a `break` lets it go.
+/// A generator made right inside `enumerate` or `zip` is the loop's too, let go as the loop is,
+/// its cleanup's failure noted on one leaving or passing up, and one failing partway through
+/// passes its failure up. Two made inside `zip` are both let go, the last first, the second's
+/// failure noted on the first's, and what `zip` reads runs in the order written. Each holds
+/// inside a `with` block. Before, the first stopped the build ("gives Shut where Oops | Wrapped
+/// goes"), and the second ended the program, its generator let go by its last owner (#2041).
+#[test]
+fn a_loop_wraps_its_generator_s_failure_and_owns_one_made_inside_enumerate_or_zip() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "p1_wrapped",
+        GENERATOR_WRAPPED,
+        "closing wrapped\nOops(code=91) [\"Shut(name=\\\"wrapped\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "p2_enumerated",
+        GENERATOR_ENUMERATED,
+        "closing enumerated\nOops(code=91) [\"Shut(name=\\\"enumerated\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "p3_wrapped_in_with",
+        GENERATOR_WRAPPED_IN_WITH,
+        "closing wrapped\nfailed outer\nOops(code=91) [\"Shut(name=\\\"wrapped\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "p4_enumerated_in_with",
+        GENERATOR_ENUMERATED_IN_WITH,
+        "closing enumerated\nfailed outer\nOops(code=91) [\"Shut(name=\\\"enumerated\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "p5_wrap_break",
+        GENERATOR_WRAPPED_BREAK,
+        "closing broken\nbroken Wrapped(why=\"the break\")\n",
+    )?;
+    prints_in_both_builds("p6_zip", GENERATOR_ZIPPED, "closing zipped\nzipped Shut(name=\"zipped\") []\n")?;
+    prints_in_both_builds(
+        "r1_zip_two",
+        GENERATORS_ZIPPED_BOTH,
+        "closing second\nclosing first\nShut(name=\"second\") [\"Shut(name=\\\"first\\\")\"]\n",
+    )?;
+    prints_in_both_builds("r2_order", GENERATOR_ZIPPED_IN_ORDER, "first\nsecond\nfirst second\n")?;
+    prints_in_both_builds(
+        "r3_order_in_with",
+        GENERATOR_ZIPPED_IN_ORDER_IN_WITH,
+        "first\nchecked second\nsecond\nfirst second\nclosed outer\n",
+    )?;
+    prints_in_both_builds(
+        "r5_zip_second_fails",
+        GENERATOR_ZIPPED_SECOND_FAILS,
+        "a 1\nfailed Shut(name=\"mid\")\n",
+    )?;
+    prints_in_both_builds(
+        "r6_zip_first_fails",
+        GENERATOR_ZIPPED_FIRST_FAILS,
+        "a 1\nfailed Shut(name=\"mid\")\n",
+    )?;
+    prints_in_both_builds(
+        "r7_enumerate_fails",
+        GENERATOR_ENUMERATED_FAILS,
+        "0 1\nfailed Shut(name=\"mid\")\n",
+    )?;
+    prints_in_both_builds(
+        "s2_first_fails_second_parked",
+        GENERATOR_ZIPPED_FIRST_FAILS_SECOND_PARKED,
+        "1 1\nclosing second\nShut(name=\"first\") [\"Shut(name=\\\"second\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "s3_from_in_with",
+        GENERATOR_ENUMERATED_WRAPPED_IN_WITH,
+        "closing enumerated\nfailed outer\nOops(code=91) [\"Shut(name=\\\"enumerated\\\")\"]\n",
+    )?;
+    Ok(())
+}
+
+const GENERATORS_ZIPPED_BOTH: &str = r#"error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def zipped(stdout: Stdout) -> int fails Shut:
+    for left, right in zip(held_stuck("first", stdout)?, held_stuck("second", stdout)?):
+        break
+    return 0
+
+def main(stdout: Stdout):
+    got = zipped(stdout) except why:
+        stdout.print(why, why.notes())
+        return
+    stdout.print(got)
+"#;
+
+const GENERATOR_ZIPPED_IN_ORDER: &str = r#"def noisy(word: str, stdout: Stdout) -> list[str]:
+    stdout.print(word)
+    return [word]
+
+def counted(words: list[str]) -> Iterator[str]:
+    for word in words:
+        yield word
+
+def main(stdout: Stdout):
+    for first, second in zip(noisy("first", stdout), counted(noisy("second", stdout))):
+        stdout.print(first, second)
+"#;
+
+const GENERATOR_ZIPPED_IN_ORDER_IN_WITH: &str = r#"error Oops:
+    code: int
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    lend Door(name=name) except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def noisy(word: str, stdout: Stdout) -> list[str]:
+    stdout.print(word)
+    return [word]
+
+def checked(word: str, stdout: Stdout) -> str fails Oops:
+    stdout.print("checked", word)
+    if word == "":
+        fail Oops(code=1)
+    return word
+
+def run(stdout: Stdout) fails Oops:
+    with opened("outer", stdout) as door:
+        for first, second in zip(noisy("first", stdout), noisy(checked("second", stdout)?, stdout)):
+            stdout.print(first, second)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why)
+"#;
+
+const GENERATOR_ZIPPED_SECOND_FAILS: &str = r#"error Shut:
+    name: str
+
+def breaking(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut:
+    for word, step in zip(["a", "b", "c"], breaking("mid")?):
+        stdout.print(word, step)
+    stdout.print("after")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+"#;
+
+const GENERATOR_ZIPPED_FIRST_FAILS: &str = r#"error Shut:
+    name: str
+
+def breaking(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut:
+    for step, word in zip(breaking("mid")?, ["a", "b", "c"]):
+        stdout.print(word, step)
+    stdout.print("after")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+"#;
+
+const GENERATOR_ENUMERATED_FAILS: &str = r#"error Shut:
+    name: str
+
+def breaking(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut:
+    for word, step in enumerate(breaking("mid")?):
+        stdout.print(word, step)
+    stdout.print("after")
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print("failed", why)
+"#;
+
+const GENERATOR_ZIPPED_FIRST_FAILS_SECOND_PARKED: &str = r#"error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def breaking(name: str) -> Iterator[int] fails Shut:
+    yield 1
+    fail Shut(name=name)
+
+def run(stdout: Stdout) fails Shut:
+    for step, other in zip(breaking("first")?, held_stuck("second", stdout)?):
+        stdout.print(step, other)
+
+def main(stdout: Stdout):
+    run(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_ENUMERATED_WRAPPED_IN_WITH: &str = r#"error Oops:
+    code: int
+
+error Wrapped:
+    why: str
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def enumerated(stdout: Stdout) fails Oops | Wrapped:
+    with opened("outer", stdout) as door:
+        for at, step in enumerate(held_stuck("enumerated", stdout)? from Wrapped(why="the loop")):
+            fail Oops(code=90 + step + at)
+
+def main(stdout: Stdout):
+    enumerated(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_WRAPPED: &str = r#"error Oops:
+    code: int
+
+error Wrapped:
+    why: str
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def wrapped(stdout: Stdout) fails Oops | Wrapped:
+    for step in held_stuck("wrapped", stdout)? from Wrapped(why="the loop"):
+        fail Oops(code=90 + step)
+
+def main(stdout: Stdout):
+    wrapped(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_ENUMERATED: &str = r#"error Oops:
+    code: int
+
+error Wrapped:
+    why: str
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def enumerated(stdout: Stdout) fails Oops | Shut:
+    for at, step in enumerate(held_stuck("enumerated", stdout)?):
+        fail Oops(code=90 + step + at)
+
+def main(stdout: Stdout):
+    enumerated(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_WRAPPED_IN_WITH: &str = r#"error Oops:
+    code: int
+
+error Wrapped:
+    why: str
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def wrapped(stdout: Stdout) fails Oops | Wrapped:
+    with opened("outer", stdout) as door:
+        for step in held_stuck("wrapped", stdout)? from Wrapped(why="the loop"):
+            fail Oops(code=90 + step)
+
+def main(stdout: Stdout):
+    wrapped(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_ENUMERATED_IN_WITH: &str = r#"error Oops:
+    code: int
+
+error Wrapped:
+    why: str
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def enumerated(stdout: Stdout) fails Oops | Shut:
+    with opened("outer", stdout) as door:
+        for at, step in enumerate(held_stuck("enumerated", stdout)?):
+            fail Oops(code=90 + step + at)
+
+def main(stdout: Stdout):
+    enumerated(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_WRAPPED_BREAK: &str = r#"error Shut:
+    name: str
+
+error Wrapped:
+    why: str
+
+struct Door:
+    name: str
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def broken(stdout: Stdout) -> int fails Wrapped:
+    for step in held_stuck("broken", stdout)? from Wrapped(why="the break"):
+        if step == 1:
+            break
+    return 1
+
+def main(stdout: Stdout):
+    got = broken(stdout) except why:
+        stdout.print("broken", why)
+        return
+    stdout.print("broken gave", got)
+"#;
+
+const GENERATOR_ZIPPED: &str = r#"error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def zipped(stdout: Stdout) -> int fails Shut:
+    mut total = 0
+    for step, word in zip(held_stuck("zipped", stdout)?, ["a", "b", "c"]):
+        total += step + len(word)
+        if step == 1:
+            break
+    return total
+
+def main(stdout: Stdout):
+    got = zipped(stdout) except why:
+        stdout.print("zipped", why, why.notes())
+        return
+    stdout.print("zipped gave", got)
+"#;
 
 /// A loop over a generator that can fail, `for x in made()?:`, inside a `with` block or a `ref`
 /// case owns the generator, as it does anywhere: a failure leaving the block lets go of it before
@@ -19709,6 +20277,153 @@ def main(net: Net, stdout: Stdout) fails NetError:
     drop(server);
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(back, "pong\n", "the ping wasn't answered while the other round computed: {read:?}");
+    Ok(())
+}
+
+/// A chat hub, launched from `main`, writing each line a round hands it to every member's
+/// connection itself, on whichever worker it runs. It counts the writes that went out.
+pub(crate) const HUB_WRITES_TO_EVERY_MEMBER: &str = r#"from std.concurrent import Closed, Crashed, Inbox, Sender
+from std.net import Connection, NetError
+
+## How many lines the hub's writes delivered.
+struct Count:
+    n = 0
+
+    def add(ref self):
+        self.n += 1
+
+## What the hub hears from the rounds.
+enum Note:
+    Joined(conn: Connection)
+    Said(line: str)
+
+## The hub writes to every member's connection itself, on whichever worker it runs, which is most
+## often not the worker serving that connection.
+def hub(inbox: Inbox[Note], delivered: shared Count) fails NetError:
+    mut members = list[Connection]()
+    for note in inbox:
+        match note:
+            case .Joined(conn):
+                members.append(conn)
+                conn.write("JOINED\n")?
+            case .Said(line):
+                for member in members:
+                    member.write(line)?
+                    lock delivered as ref count:
+                        count.add()
+    return
+
+## A round: it joins, then hands the hub each line its client sends, until the client hangs up.
+def attend(conn: Connection, to_hub: Sender[Note]) fails NetError | Closed:
+    to_hub.send(.Joined(conn=conn))?
+    for line in conn.lines()?:
+        to_hub.send(.Said(line=f"{line}\n"))?
+    return
+
+def main(net: Net, stdout: Stdout, stderr: Stderr) fails NetError | Crashed | IoError:
+    shared delivered = Count()
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        with launch((inbox) => hub(inbox, delivered)?, inbox_size=256)? as to_hub:
+            for conn in parallel(server):
+                first = conn.read_line()? else ""
+                if first == "stop":
+                    break
+                attend(conn, to_hub) except why:
+                    stderr.write_line(f"{conn}: {why}")?
+    lock delivered as held:
+        stdout.print(held.n, "delivered")
+    return
+"#;
+
+/// Joins `members` clients to `HUB_WRITES_TO_EVERY_MEMBER`'s server at `port`, has each say a
+/// line, and checks every member hears every line, then hangs them all up and says stop.
+pub(crate) fn every_member_hears_every_line(port: u16, members: usize, threads: &str) -> std::io::Result<()> {
+    use std::io::{BufRead as _, Write as _};
+    let mut joined = Vec::new();
+    for n in 0..members {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+        (&stream).write_all(format!("JOIN {n}\n").as_bytes())?;
+        let mut reader = std::io::BufReader::new(stream.try_clone()?);
+        let mut first = String::new();
+        reader.read_line(&mut first)?;
+        assert_eq!(first, "JOINED\n", "member {n} joining, on {threads} threads");
+        joined.push((stream, reader));
+    }
+    for (n, (stream, _)) in joined.iter().enumerate() {
+        (&*stream).write_all(format!("line from {n}\n").as_bytes())?;
+    }
+    let mut wanted: Vec<String> = (0..members).map(|m| format!("line from {m}\n")).collect();
+    wanted.sort();
+    for (n, (_, reader)) in joined.iter_mut().enumerate() {
+        let mut heard = Vec::new();
+        for _ in 0..members {
+            let mut line = String::new();
+            reader.read_line(&mut line)?;
+            heard.push(line);
+        }
+        heard.sort();
+        assert_eq!(heard, wanted, "what member {n} heard, on {threads} threads");
+    }
+    drop(joined);
+    let mut stop = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stop.write_all(b"stop\n")?;
+    Ok(())
+}
+
+/// A hub writes to every member's connection, at 2, 4 and 16 threads, so mostly to connections
+/// served on other workers than its own: every member hears every line, and every write goes out.
+/// A `Connection` is `shared`, and before, a write from another worker than its round's was
+/// refused, so only the members on the hub's worker heard (#2065).
+#[test]
+fn a_hub_on_another_worker_writes_to_every_members_connection() -> std::io::Result<()> {
+    const MEMBERS: usize = 6;
+    use std::io::{BufRead as _, Read as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("hub-writes")?;
+    let program = dir.join("hub.fen");
+    std::fs::write(&program, HUB_WRITES_TO_EVERY_MEMBER)?;
+    let executable = dir.join("hub");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", &dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    for threads in ["2", "4", "16"] {
+        for _ in 0..2 {
+            let mut server = Running(
+                Command::new(&executable)
+                    .env("FENNEC_THREADS", threads)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()?,
+            );
+            let mut printed = std::io::BufReader::new(server.0.stdout.take().expect("its output"));
+            let mut port = String::new();
+            printed.read_line(&mut port)?;
+            every_member_hears_every_line(port.trim().parse().unwrap_or(0), MEMBERS, threads)?;
+            let mut rest = String::new();
+            printed.read_to_string(&mut rest)?;
+            let mut said = String::new();
+            server.0.stderr.take().expect("its errors").read_to_string(&mut said)?;
+            let status = server.0.wait()?;
+            assert_eq!(rest, format!("{} delivered\n", MEMBERS * MEMBERS), "on {threads} threads: {said}");
+            assert!(status.success(), "on {threads} threads: {said}");
+        }
+    }
+    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
 

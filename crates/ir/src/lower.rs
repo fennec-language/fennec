@@ -434,6 +434,9 @@ struct Lowering<'a> {
     loops: Vec<Loop>,
     /// The `for mut` loops being lowered, innermost last.
     leaving: Vec<places::Leaving>,
+    /// Whether this is `enumerate`'s or `zip`'s generator over one the loop it's made for owns
+    /// (`lists::Owned`): a failure of that one partway through ends this, and the loop passes it up.
+    owner_passes_up: bool,
     /// Whether what's being left is left by a failure, which a `lock ... as ref` block doesn't keep
     /// the changes of.
     failing_out: bool,
@@ -602,6 +605,7 @@ impl<'a> Lowering<'a> {
             blocks: vec![Open::default()],
             current: BlockId(0),
             scopes: vec![HashMap::new()],
+            owner_passes_up: false,
             loops: Vec::new(),
             leaving: Vec::new(),
             failing_out: false,

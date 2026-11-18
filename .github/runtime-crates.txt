@@ -6,6 +6,7 @@
 # to no advisory of any kind, where the rest of the workspace has only vulnerabilities fail.
 #
 # crate | what the runtime uses it for
+cap-primitives | an `fs` narrowed again going down to its folder one folder at a time, following no link (cap-std's own base, already under it)
 cap-std | `fs` narrowed to a folder, with no way out of it
 corosensei | a parked task's own stack (through fennec-parked)
 crossbeam-deque | `parallel`'s work-stealing pool

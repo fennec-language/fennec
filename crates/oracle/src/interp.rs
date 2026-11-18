@@ -1055,7 +1055,7 @@ impl Interp {
         }
     }
 
-    /// Leaving a loop early, as `left` says, over generators made for it: each is let go there, the
+    /// Leaving a loop, as `left` says, over generators made for it: each is let go there, the
     /// last first, as compiled code does, running the cleanup of each `with` it's stopped in. A
     /// cleanup's failure is noted on a failure leaving the loop, and otherwise is the loop's own,
     /// in place of the `break` or `return`, wrapped as the loop's `? from Wrap(...)` says. A
@@ -1066,8 +1066,10 @@ impl Interp {
         left: Run<()>,
         (wraps, at): (&[Option<&'static Expr>], Span),
     ) -> Run<()> {
+        // A loop that ends as `zip`'s list runs out leaves its generator stopped at a `yield`, as
+        // `break` does.
         let mut left = match left {
-            Err(Flow::Break) => Ok(()),
+            Ok(()) | Err(Flow::Break) => Ok(()),
             Err(flow @ (Flow::Return(_) | Flow::Fail(..))) => Err(flow),
             other => return other,
         };

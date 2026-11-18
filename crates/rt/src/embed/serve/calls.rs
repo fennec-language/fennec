@@ -52,7 +52,11 @@ fn conn_of(handle: i64) -> Option<Arc<Conn>> {
     if let Some(here) = CONNS.with_borrow(|conns| conns.get(&handle).cloned()) {
         return Some(here);
     }
-    SERVED_CONNS.lock().unwrap_or_else(PoisonError::into_inner).get(&handle).and_then(std::sync::Weak::upgrade)
+    SERVED_CONNS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&handle)
+        .and_then(std::sync::Weak::upgrade)
 }
 
 /// The number the next connection served gets. There's one count for the whole process, so a

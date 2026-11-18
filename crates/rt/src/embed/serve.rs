@@ -541,7 +541,9 @@ impl Conn {
             let wrote = {
                 let mut tls = locked(&self.tls);
                 let Some(session) = tls.as_mut() else { return Err(Failure::Closed) };
-                session.write_some(&mut *locked(&self.stream), data).map(|taken| (taken, session.wants_write()))
+                session
+                    .write_some(&mut *locked(&self.stream), data)
+                    .map(|taken| (taken, session.wants_write()))
             };
             match wrote {
                 Ok((taken, wants_write)) => {
@@ -570,28 +572,29 @@ impl Conn {
         }
         // What a task has printed comes out before it waits, however long that is.
         super::write_kept_output();
-        let waited = if self.is_home() && !super::state_is_borrowed() && !self.parked.swap(true, Ordering::Acquire) {
-            parking(interest, until.deadline, None);
-            let woken = fennec_parked::park(u64::try_from(self.token.0).unwrap_or(0));
-            self.parked.store(false, Ordering::Release);
-            match woken {
-                Some(Wake::Ready(TIMED_OUT)) => Waited::TimedOut,
-                // A round cancelled in its connection's wait fails as stopped, as at any other wait,
-                // so it goes no further: a `NetError` it could catch let it go on (#1950).
-                Some(Wake::Cancelled) => {
-                    if !super::failed() {
-                        fail_as_stopped();
+        let waited =
+            if self.is_home() && !super::state_is_borrowed() && !self.parked.swap(true, Ordering::Acquire) {
+                parking(interest, until.deadline, None);
+                let woken = fennec_parked::park(u64::try_from(self.token.0).unwrap_or(0));
+                self.parked.store(false, Ordering::Release);
+                match woken {
+                    Some(Wake::Ready(TIMED_OUT)) => Waited::TimedOut,
+                    // A round cancelled in its connection's wait fails as stopped, as at any other wait,
+                    // so it goes no further: a `NetError` it could catch let it go on (#1950).
+                    Some(Wake::Cancelled) => {
+                        if !super::failed() {
+                            fail_as_stopped();
+                        }
+                        Waited::Cancelled
                     }
-                    Waited::Cancelled
+                    // A stop cuts the wait short, as any other's, unless it's a cleanup's in its grace.
+                    Some(Wake::Ready(STOPPED)) if cut_short() => Waited::Cancelled,
+                    Some(Wake::Ready(_)) => Waited::Ready,
+                    None => self.block(interest, until, call)?,
                 }
-                // A stop cuts the wait short, as any other's, unless it's a cleanup's in its grace.
-                Some(Wake::Ready(STOPPED)) if cut_short() => Waited::Cancelled,
-                Some(Wake::Ready(_)) => Waited::Ready,
-                None => self.block(interest, until, call)?,
-            }
-        } else {
-            self.block(interest, until, call)?
-        };
+            } else {
+                self.block(interest, until, call)?
+            };
         match waited {
             Waited::Ready => Ok(()),
             Waited::TimedOut => Err(Failure::TimedOut(until.timeout.unwrap_or_default())),

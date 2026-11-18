@@ -4,6 +4,7 @@
 //! finding one is a few array reads with no hashing.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::hash::BuildHasherDefault;
 
 use super::heap::AddressHasher;
@@ -244,6 +245,14 @@ impl Table {
             self.insert_short(address, block);
             return;
         }
+        // A block taken over may be in the hash map at this address, under a page made since. Every
+        // block passes here, so only audited and test builds look.
+        if (cfg!(test) || cfg!(feature = "audit"))
+            && !self.short.is_empty()
+            && self.short.contains_key(&address)
+        {
+            two_owners(address);
+        }
         match place_mut(&mut self.regions, address) {
             Some(slot) => {
                 if slot.is_some() {
@@ -260,11 +269,38 @@ impl Table {
     #[cold]
     #[inline(never)]
     fn insert_short(&mut self, address: usize, block: Box<[u64]>) {
-        if self.short.contains_key(&address) {
-            two_owners(address);
+        // Found once, through its entry.
+        match self.short.entry(address) {
+            Entry::Occupied(_) => two_owners(address),
+            Entry::Vacant(place) => {
+                place.insert(block);
+            }
         }
-        self.short.insert(address, block);
         self.len += 1;
+    }
+
+    /// `insert`, for a block another thread made, as a message's is: placed when its page is
+    /// made, and otherwise in the hash map, as its page would cover that thread's memory, mostly
+    /// that thread's own blocks. Each thread a server's messages reached made a page there for
+    /// each, and kept it while any block on it lived: about 22 KB of a chat server's 113 KB a
+    /// connection, at 4 threads.
+    pub(super) fn insert_adopted(&mut self, block: Box<[u64]>) {
+        let address = at(&block);
+        if block.len() < PLACED_WORDS || self.hashed {
+            self.insert_short(address, block);
+            return;
+        }
+        match place_mut(&mut self.regions, address) {
+            Some(slot) => {
+                // One taken over before its page was made is in the hash map, not the place.
+                if slot.is_some() || (!self.short.is_empty() && self.short.contains_key(&address)) {
+                    two_owners(address);
+                }
+                self.len += 1;
+                *slot = Some(block);
+            }
+            None => self.insert_short(address, block),
+        }
     }
 
     /// `insert`, for a block on a page with no block yet.
@@ -335,7 +371,9 @@ impl Table {
     #[cold]
     #[inline(never)]
     fn release_short(&mut self, address: usize) -> Released {
-        let Some(block) = self.short.get_mut(&address) else { return Released::Missing };
+        // Found once, through its entry, whether it's held or taken out.
+        let Entry::Occupied(mut entry) = self.short.entry(address) else { return Released::Missing };
+        let block = entry.get_mut();
         let Some(&count) = block.first() else { return Released::Missing };
         if count > 1 {
             if !super::heap::uncounted(block)
@@ -346,7 +384,7 @@ impl Table {
             return Released::Held;
         }
         self.len -= 1;
-        self.short.remove(&address).map_or(Released::Missing, Released::Gone)
+        Released::Gone(entry.remove())
     }
 
     /// Says which block the heap's keeping a place in, or 0 for none.
@@ -459,6 +497,139 @@ mod tests {
         }
         assert_eq!(table.len(), 0);
         assert!(table.pages() < 200, "{} pages kept for no blocks", table.pages());
+    }
+
+    /// A block another thread made makes no page: it's placed when its page is made, and otherwise
+    /// kept in the hash map. Either way it's found, released and taken out as any other is.
+    #[test]
+    fn a_block_another_thread_made_makes_no_page() {
+        let mut table = Table::default();
+        // 64 KB each, so each starts on a page of its own.
+        let adopted: Vec<Box<[u64]>> = (0..4).map(|_| vec![1; 1 << 13].into()).collect();
+        let addresses: Vec<usize> = adopted.iter().map(|block| at(block)).collect();
+        for block in adopted {
+            table.insert_adopted(block);
+        }
+        assert_eq!(table.pages(), 0, "no page is made for blocks another thread made");
+        assert_eq!(table.len(), 4);
+        // One made here makes its page, and a block adopted onto that page is placed there.
+        let here: Box<[u64]> = vec![2; 1 << 13].into();
+        let (here_at, here_len) = (at(&here), here.len());
+        table.insert(here);
+        assert_eq!(table.pages(), 1);
+        for address in &addresses {
+            assert_eq!(table.get(*address).map(<[u64]>::len), Some(1 << 13));
+            assert!(matches!(table.release_one(*address), Released::Gone(_)));
+            assert!(table.get(*address).is_none());
+        }
+        assert_eq!(table.get(here_at).map(<[u64]>::len), Some(here_len));
+        let beside: Box<[u64]> = vec![3; 2].into();
+        let beside_at = at(&beside);
+        let page_of = |address: usize| address >> PAGE_BITS;
+        if page_of(beside_at) == page_of(here_at) {
+            table.insert_adopted(beside);
+            assert_eq!(table.pages(), 1, "a block adopted onto a page that's made is placed there");
+            assert!(table.remove(beside_at).is_some());
+        }
+        assert!(table.remove(here_at).is_some());
+        assert_eq!(table.len(), 0);
+    }
+
+    /// three blocks on one 64 KB page. The first is adopted before the page is made,
+    /// so it's in the hash map. The second is made here, which makes the page over the first one's
+    /// address. The third is adopted after, onto the page. Each is then found, changed, counted
+    /// down and taken out by its own address, and none by another's.
+    #[test]
+    fn a_page_made_over_a_hashed_block_leaves_every_block_found() {
+        let page_of = |address: usize| address >> PAGE_BITS;
+        // Small blocks made one after another: many share a page.
+        let mut blocks: Vec<Box<[u64]>> = (0..4000_u64).map(|n| vec![2, n, n + 1].into()).collect();
+        blocks.sort_by_key(|block| at(block));
+        let mut same: Vec<Box<[u64]>> = Vec::new();
+        while same.len() < 3 {
+            let block = blocks.pop().expect("three blocks on one page");
+            if same.first().is_some_and(|first| page_of(at(first)) != page_of(at(&block))) {
+                same.clear();
+            }
+            same.push(block);
+        }
+        let (third, second, first) = (same.pop().unwrap(), same.pop().unwrap(), same.pop().unwrap());
+        let (first_at, second_at, third_at) = (at(&first), at(&second), at(&third));
+        let (first_n, second_n, third_n) = (first[1], second[1], third[1]);
+        let mut table = Table::default();
+        table.insert_adopted(first);
+        assert_eq!((table.pages(), table.short.len(), table.len()), (0, 1, 1));
+        table.insert(second);
+        assert_eq!((table.pages(), table.short.len(), table.len()), (1, 1, 2));
+        table.insert_adopted(third);
+        assert_eq!((table.pages(), table.short.len(), table.len()), (1, 1, 3), "onto the page that's made");
+        for (address, n) in [(first_at, first_n), (second_at, second_n), (third_at, third_n)] {
+            assert_eq!(table.get(address).map(|block| block[1]), Some(n));
+            assert_eq!(table.get(address + 8), None);
+            assert_eq!(table.get_mut(address).map(|block| block[1]), Some(n));
+            assert!(table.take_if(address, |_| false).is_none());
+        }
+        assert_eq!(table.all().count(), 3);
+        assert_eq!(table.freeable(), 3);
+        assert_eq!(table.sizes().0.get(&3), Some(&3));
+        // Each has two owners: the first release holds it, the second takes it out.
+        for address in [first_at, second_at, third_at] {
+            assert!(matches!(table.release_one(address), Released::Held));
+            assert_eq!(table.get(address).map(|block| block[0]), Some(1));
+        }
+        assert!(matches!(table.release_one(first_at), Released::Gone(_)));
+        assert!(matches!(table.release_one(first_at), Released::Missing));
+        assert_eq!((table.short.len(), table.len()), (0, 2));
+        assert!(
+            table.get(first_at).is_none() && table.get(second_at).is_some() && table.get(third_at).is_some()
+        );
+        assert!(table.take_if(third_at, |_| true).is_some());
+        assert!(table.remove(second_at).is_some());
+        assert_eq!(table.len(), 0);
+        assert_eq!(table.into_blocks().count(), 0);
+    }
+
+    /// pages are given back while hashed blocks have addresses on them, and the
+    /// hashed blocks are still found after, and after their pages are made again.
+    #[test]
+    fn hashed_blocks_outlive_pages_given_back_under_them() {
+        let mut table = Table::default();
+        let mut hashed = Vec::new();
+        // The blocks made here and taken out, kept to the end, so each round's land elsewhere.
+        let mut kept: Vec<Box<[u64]>> = Vec::new();
+        for round in 0..6_u64 {
+            // Small blocks, so several share each page: every other one is adopted, all of those
+            // first, with no page made. The rest are made here after, which makes pages over the
+            // adopted ones' addresses.
+            let blocks: Vec<Box<[u64]>> = (0..40_000_u64).map(|n| vec![1, round, n].into()).collect();
+            let mut here = Vec::new();
+            let mut made_here = Vec::new();
+            for (n, block) in blocks.into_iter().enumerate() {
+                if n % 2 == 0 {
+                    hashed.push((at(&block), block[1], block[2]));
+                    table.insert_adopted(block);
+                } else {
+                    made_here.push(block);
+                }
+            }
+            for block in made_here {
+                here.push(at(&block));
+                table.insert(block);
+            }
+            // The blocks made here go, leaving their pages empty, to be given back as more are made.
+            let gone: Vec<Box<[u64]>> = here.iter().filter_map(|address| table.remove(*address)).collect();
+            assert_eq!(gone.len(), here.len());
+            for (address, round, n) in &hashed {
+                assert_eq!(table.get(*address).map(|block| (block[1], block[2])), Some((*round, *n)));
+            }
+            kept.extend(gone);
+        }
+        assert_eq!(table.len(), hashed.len());
+        assert_eq!(table.all().count(), hashed.len());
+        for (address, ..) in &hashed {
+            assert!(matches!(table.release_one(*address), Released::Gone(_)));
+        }
+        assert_eq!((table.len(), table.short.len()), (0, 0));
     }
 
     /// A block that's never freed is counted apart from the live ones, by its count or its owner:

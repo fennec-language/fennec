@@ -527,6 +527,20 @@ def named_depth(named: Named) -> int:
                 return depth
     return depth
 
+enum Held:
+    Leaf(name: str)
+    Pair(left: Held, right: Held, label: str, tags: list[str])
+
+def held_digest(held: Held) -> str:
+    match held:
+        case .Leaf(name):
+            return \"h(\" + name + \")\"
+        case .Pair(left, right, label, tags):
+            mut text = \"q(\" + label
+            for tag in tags:
+                text += \",\" + tag
+            return text + \" \" + held_digest(left) + \" \" + held_digest(right) + \")\"
+
 def ward(name: str, stdout: Stdout) -> with str:
     stdout.print(\"open\", name)
     lend name except:
@@ -855,29 +869,32 @@ fn shelved_written(shelving: &Shelving) -> String {
 }
 
 /// `listened{id}`, the function a `Listened` calls, after the functions it uses.
-/// The `Named` a `RefCased` starts from, as `REF_STARTS` counts them.
-fn ref_start_written(start: usize) -> &'static str {
+/// The value a `RefCased` starts from, of type `ty` (`Named` or `Held`), as `REF_STARTS` counts
+/// them.
+fn ref_start_written(start: usize, ty: &str) -> String {
     match start {
-        0 => "Named.Leaf(name=\"a\")",
-        1 => "Named.Pair(left=.Leaf(name=\"a\"), right=.Leaf(name=\"b\"), label=\"x\", tags=[])",
-        _ => {
-            "Named.Pair(left=.Pair(left=.Leaf(name=\"a\"), right=.Leaf(name=\"b\"), label=\"in\", tags=[]), \
+        0 => format!("{ty}.Leaf(name=\"a\")"),
+        1 => format!("{ty}.Pair(left=.Leaf(name=\"a\"), right=.Leaf(name=\"b\"), label=\"x\", tags=[])"),
+        _ => format!(
+            "{ty}.Pair(left=.Pair(left=.Leaf(name=\"a\"), right=.Leaf(name=\"b\"), label=\"in\", tags=[]), \
              right=.Leaf(name=\"c\"), label=\"out\", tags=[\"t\"])"
-        }
+        ),
     }
 }
 
 /// `ref_cased{id}`, the function a `RefCased` calls, and for `Shadowed`, `ref_shadowed{id}`, whose
 /// parameter `at` is the index of what its `match` is over and the `ref` name of each case too.
+/// The two ways that hold their value in a list hold a `Held`, `Named`'s twin: a type held in a
+/// list isn't made of native blocks, and `Named` has to be wherever there are no other threads.
 fn ref_cased_written(casing: &RefCasing) -> String {
     let RefCasing { id, way, start, text } = *casing;
-    let start = ref_start_written(start);
+    let start = ref_start_written(start, if way.holds_in_a_list() { "Held" } else { "Named" });
     let text = REF_TEXTS.get(text).copied().unwrap_or_default();
     let mut out = String::new();
     if way == RefWay::Shadowed {
         let _ = write!(
             out,
-            "def ref_shadowed{id}(ref row: list[Named], at: int):\n    match row[at]:\n        \
+            "def ref_shadowed{id}(ref row: list[Held], at: int):\n    match row[at]:\n        \
              case .Pair(_, _, ref at, _):\n            at += \"{text}\"\n        \
              case .Leaf(ref at):\n            at += \"{text}\"\n\n"
         );
@@ -932,9 +949,9 @@ fn ref_cased_written(casing: &RefCasing) -> String {
             "stdout.print(named_digest(named))".to_owned(),
         ],
         RefWay::Shadowed => vec![
-            format!("mut row = [{start}, Named.Leaf(name=\"z\")]"),
+            format!("mut row = [{start}, Held.Leaf(name=\"z\")]"),
             format!("ref_shadowed{id}(ref row, 0)"),
-            "stdout.print(named_digest(row[0]), named_digest(row[1]))".to_owned(),
+            "stdout.print(held_digest(row[0]), held_digest(row[1]))".to_owned(),
         ],
         RefWay::Guarded => vec![
             format!("mut named = {start}"),
@@ -949,7 +966,7 @@ fn ref_cased_written(casing: &RefCasing) -> String {
             "stdout.print(named_digest(named))".to_owned(),
         ],
         RefWay::IndexMoved => vec![
-            format!("mut row = [{start}, Named.Leaf(name=\"z\")]"),
+            format!("mut row = [{start}, Held.Leaf(name=\"z\")]"),
             "mut at = 0".to_owned(),
             "match row[at]:".to_owned(),
             "    case .Pair(_, _, ref label, _):".to_owned(),
@@ -958,7 +975,7 @@ fn ref_cased_written(casing: &RefCasing) -> String {
             "    case .Leaf(ref name):".to_owned(),
             "        at += 1".to_owned(),
             format!("        name += \"{text}\""),
-            "stdout.print(named_digest(row[0]), named_digest(row[1]), at)".to_owned(),
+            "stdout.print(held_digest(row[0]), held_digest(row[1]), at)".to_owned(),
         ],
         RefWay::ForRefWhile | RefWay::ForRefElif | RefWay::ForRefAnd => vec![
             format!("mut named = {start}"),

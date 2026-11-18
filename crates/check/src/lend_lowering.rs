@@ -72,6 +72,7 @@ pub(crate) fn lower(
         fails: Vec::new(),
         instead: None,
         binds: Vec::new(),
+        tails: BTreeSet::new(),
     };
     for item in &mut module.items {
         match item {
@@ -204,6 +205,9 @@ struct Lowering<'s> {
     /// The names each function being walked binds anywhere, its parameters among them, innermost
     /// last: a source written in there calls a function of its own by one of these through a mark.
     binds: Vec<BTreeSet<String>>,
+    /// The `with`s that are the last line of a function giving back a value, by span, through
+    /// `if`s and `match`es: one whose block always fails says so where it's written in.
+    tails: BTreeSet<(u32, u32)>,
 }
 
 thread_local! {
@@ -643,6 +647,12 @@ impl Lowering<'_> {
         self.binds.push(fennec_syntax::sight::bound_in(&def.body, &params));
         if def.ret.is_some() {
             self.tail_returned(&mut def.body);
+            // A source and a generator give back no last value, so a `with` ending one needs no
+            // ending that says it always leaves.
+            let source = def.ret.as_ref().is_some_and(|ret| ret.name == crate::lend::WITH);
+            if !source && !fennec_syntax::fuse::has_yield(&def.body) {
+                tail_withs(&def.body, &mut self.tails);
+            }
         }
         self.stmts(&mut def.body);
         self.binds.pop();
@@ -944,6 +954,10 @@ impl Lowering<'_> {
         body.push(put_back);
         if always && ways.returned == Some(true) {
             body.extend(returned_always(&returned, at));
+        } else if always && ways.failed && ways.returned.is_none() && !ways.broke && !ways.continued {
+            // A matched case's body always runs, so one that always fails always leaves by
+            // failing, through the put-back.
+            body.extend(failed_always(&failed, at));
         } else {
             body.extend(taken_again(ways, &exit, &returned, at));
         }
@@ -1049,12 +1063,34 @@ impl Lowering<'_> {
         let ways = caller.ways;
         written.extend(self.ways_kept(ways, (&exit, &returned, &failed), at)?);
         written.extend(body);
-        if always_returns && ways.returned == Some(true) && !ways.broke && !ways.continued {
-            written.extend(returned_always(&returned, at));
-        } else {
-            written.extend(taken_again(ways, &exit, &returned, at));
-        }
+        written.extend(self.ending((always_returns, ways), (&exit, &returned, &failed), at));
         Some(written)
+    }
+
+    /// What's written after a source's body: the block's way out taken again. A block that always
+    /// returns gives back what it returned, which says to the check that the body always leaves.
+    /// So does one that always fails, where the `with` is a value-giving function's last line, the
+    /// one place the check needs it. Nothing reaches it, as a source reaches its `lend` on every way
+    /// that doesn't fail (#2066).
+    fn ending(
+        &self,
+        (always_returns, ways): (bool, Ways),
+        (exit, returned, failed): (&str, &str, &str),
+        at: Span,
+    ) -> Vec<Stmt> {
+        let only = !ways.broke && !ways.continued;
+        if always_returns && ways.returned == Some(true) && only {
+            returned_always(returned, at)
+        } else if always_returns
+            && ways.failed
+            && ways.returned.is_none()
+            && only
+            && self.tails.contains(&(at.start, at.end))
+        {
+            failed_always(failed, at)
+        } else {
+            taken_again(ways, exit, returned, at)
+        }
     }
 }
 
@@ -1340,6 +1376,38 @@ fn returned_always(returned: &str, at: Span) -> Vec<Stmt> {
         span: here(at),
     };
     vec![stmt(StmtKind::Assert(given), at), stmt(StmtKind::Return(Some(name(returned, at))), at)]
+}
+
+/// The spans of the `with`s that are `body`'s last line, through an `if` with an `else`, a
+/// `match`'s cases, and a `with`'s own block.
+fn tail_withs(body: &[Stmt], tails: &mut BTreeSet<(u32, u32)>) {
+    let Some(last) = body.last() else { return };
+    match &last.kind {
+        StmtKind::With { body: block, lock: false, .. } => {
+            tails.insert((last.span.start, last.span.end));
+            tail_withs(block, tails);
+        }
+        StmtKind::If { branches, otherwise: Some(otherwise) } => {
+            for (_, branch) in branches {
+                tail_withs(branch, tails);
+            }
+            tail_withs(otherwise, tails);
+        }
+        StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
+            for arm in arms {
+                tail_withs(&arm.body, tails);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// What's written after a source's body whose block always fails: `assert failed is not None`,
+/// which narrows it, and `fail failed`. The failure left where the block did, through the source's
+/// cleanup, so nothing reaches this; it says to the check that the body always leaves, as the
+/// block did.
+fn failed_always(failed: &str, at: Span) -> Vec<Stmt> {
+    vec![stmt(StmtKind::Assert(is_held(failed, at)), at), stmt(StmtKind::Fail(name(failed, at)), at)]
 }
 
 /// Whether every way through a block leaves it by `return` or `fail`.

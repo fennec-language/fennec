@@ -200,6 +200,18 @@ pub(crate) fn check_rules(
     if copies.is_empty() { Ok(signatures) } else { Err(copies) }
 }
 
+/// Like `check_rules`, as a build checks: with the library's types' fields typed too, as lowering
+/// them wants, giving back what it found when that's what checking the module as it's left would
+/// find, so the build needn't check it again.
+pub(crate) fn check_rules_to_build(
+    module: &mut Module,
+    sources: &Sources,
+) -> Result<Option<fennec_check::Signatures>, Vec<Diagnostic>> {
+    let (signatures, as_left) = fennec_check::check_to_build_saying(module)?;
+    let copies = implicit_copies(module, &signatures, sources);
+    if copies.is_empty() { Ok(as_left.then_some(signatures)) } else { Err(copies) }
+}
+
 /// The steps a constant may take to be worked out while compiling. One that takes more is
 /// worked out when the program starts, with a hint.
 const CONSTANT_STEPS: u64 = 1_000_000;

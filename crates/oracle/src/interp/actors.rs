@@ -38,8 +38,9 @@
 //! A wait given a timeout times out only when nothing else can go on: whatever could still answer
 //! it is taken to answer in time, however short its time. Only a wait of no time, `0ms`, is read
 //! as looking once, as the runtime's does. It's refused unless what it finds is the same on every
-//! run: nothing else could still send, take or close, a task waiting for room behind a send beside
-//! its own counting as one that could; what it finds was there before it; and it isn't in a
+//! run: nothing else holding an end of its channel could still send, take or close, a task waiting
+//! for room behind a send beside its own counting as one that could, and a task that doesn't know
+//! the channel was made holding none; what it finds was there before it; and it isn't in a
 //! `parallel` round beside others, which could use any channel, one the round made included. A
 //! listener of a channel to every listener read by two tasks at once is refused as one channel's
 //! receivers are.
@@ -261,6 +262,8 @@ struct Chan {
     dropped: Vec<Clock>,
     /// The clock of the close, once it's closed.
     closed_at: Option<Clock>,
+    /// Its maker's clock as it made it: a task that doesn't know of that holds no end of it.
+    made: Clock,
     /// Who's tried to take a message from it, each with what it knew when it last tried, or once
     /// it had taken one, and whether it ever has.
     receivers: BTreeMap<usize, (Clock, bool)>,
@@ -349,11 +352,33 @@ impl State {
 
     /// Whether any but those in `apart` can go on now, or is waiting with a timeout, which could end
     /// whenever it does.
-    fn others_could_go(&self, apart: &[usize]) -> bool {
+    ///
+    /// For the channel numbered `of`, one that doesn't know it was made holds no end of it: it
+    /// counts only while it could take a message, on another channel it knows of, that does know,
+    /// and could hand it one. An end reaches a task only by its launch or a message, which both
+    /// carry what their sender knew, or a `shared` value, which two tasks can't both reach while
+    /// one changes it. Taking from a channel takes an end of it too.
+    fn others_could_go(&self, apart: &[usize], of: Option<i64>) -> bool {
+        let made = of.and_then(|number| self.channels.get(&number)).map(|chan| &chan.made);
         (0..self.actors.len()).filter(|other| !apart.contains(other)).any(|other| {
-            self.can_go(other)
-                || self.actors.get(other).is_some_and(|found| matches!(found.state, Doing::Waiting(_, true)))
-                || self.behind_a_racing_send(other)
+            let Some(found) = self.actors.get(other) else { return false };
+            let could_go = self.can_go(other)
+                || matches!(found.state, Doing::Waiting(_, true))
+                || self.behind_a_racing_send(other);
+            let knows = made.is_none_or(|made| happened_before(made, &found.clock));
+            could_go && (knows || made.is_some_and(|made| self.could_be_handed(&found.clock, made, of)))
+        })
+    }
+
+    /// Whether one whose clock is `clock` could take a message, on a channel it knows was made and
+    /// other than `apart_from`, that knows of what's stamped `made`.
+    fn could_be_handed(&self, clock: &Clock, made: &Clock, apart_from: Option<i64>) -> bool {
+        self.channels.iter().any(|(number, chan)| {
+            let every = chan.sent.get(chan.first..).unwrap_or_default();
+            let mut waiting = chan.queue.iter().chain(&chan.waiting_sends).chain(every);
+            Some(*number) != apart_from
+                && happened_before(&chan.made, clock)
+                && waiting.any(|sent| happened_before(made, &sent.clock))
         })
     }
 
@@ -381,7 +406,7 @@ impl State {
         let took_beside = chan.receivers.values().any(|(tried, took)| *took && !happened_before(tried, sent));
         let full = chan.queue.len() >= chan.size;
         let filled_beside = full && chan.queue.iter().any(|queued| !happened_before(&queued.clock, sent));
-        !took_beside && !filled_beside && !self.others_could_go(apart)
+        !took_beside && !filled_beside && !self.others_could_go(apart, Some(number))
     }
 
     /// Whether what a receive from `number`, a channel or a listener, could find now was there
@@ -914,11 +939,19 @@ impl Interp {
     }
 
     /// A new channel of `size`, to every listener when `every`, by its number.
-    fn new_channel(&self, size: usize, every: bool) -> Run<i64> {
+    fn new_channel(&mut self, size: usize, every: bool) -> Run<i64> {
         if size == 0 {
             return unsupported("a channel of no size");
         }
-        let mut state = self.sched_state()?;
+        let mut state = lock_state(&self.shared)?;
+        let maker = who(&mut self.rounds_as, self.actor, &mut state)?;
+        let made = match state.actors.get_mut(maker) {
+            Some(actor) => {
+                tick(&mut actor.clock, maker);
+                actor.clock.clone()
+            }
+            None => return unsupported("a task was lost"),
+        };
         let number = state.next_number;
         state.next_number += 1;
         let chan = Chan {
@@ -930,6 +963,7 @@ impl Interp {
             first: 0,
             dropped: Vec::new(),
             closed_at: None,
+            made,
             receivers: BTreeMap::new(),
             waiting_sends: Vec::new(),
             left: false,
@@ -1172,7 +1206,11 @@ impl Interp {
         }
         let now = state.actors.get(receiver).map(|actor| actor.clock.clone()).unwrap_or_default();
         // Another `parallel` round runs beside it, which could send first or not.
-        if beside_rounds || state.others_could_go(&[me, receiver]) || !state.there_before(number, &now) {
+        let channel = state.listeners.get(&number).map_or(number, |listener| listener.channel);
+        if beside_rounds
+            || state.others_could_go(&[me, receiver], Some(channel))
+            || !state.there_before(number, &now)
+        {
             return unsupported("a receive of no time, which finds a message or not by time");
         }
         Ok(take_message(&mut state, receiver, number, &mut orders)?.unwrap_or((Value::None, 2)))

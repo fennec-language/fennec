@@ -852,17 +852,13 @@ mod tests {
         start(Tables::default(), crate::Inputs::default());
         free_many(400_000, 7);
         with(|state| {
-            let sevens = state.heap.spare.get(7).map_or(0, |spare| spare.blocks.len()) * 7;
+            let sevens = state.heap.spare.get(7).map_or(0, |spare| spare.len()) * 7;
             assert!(sevens <= super::super::SPARE_SIZE_WORDS, "{sevens} words of one size");
             assert!(sevens > super::super::SPARE_SIZE_WORDS - 7, "it kept less than its share");
         });
         free_many(1_000, 4);
         with(|state| {
-            assert_eq!(
-                state.heap.spare.get(4).map_or(0, |spare| spare.blocks.len()),
-                1_000,
-                "room for the next"
-            );
+            assert_eq!(state.heap.spare.get(4).map_or(0, |spare| spare.len()), 1_000, "room for the next");
         });
         finish();
     }
@@ -873,13 +869,12 @@ mod tests {
     #[test]
     fn what_a_heap_keeps_and_never_reuses_goes_back_to_the_allocator() {
         start(Tables::default(), crate::Inputs::default());
-        let kept =
-            |words: usize| with(|state| state.heap.spare.get(words).map_or(0, |spare| spare.blocks.len()));
+        let kept = |words: usize| with(|state| state.heap.spare.get(words).map_or(0, |spare| spare.len()));
         // Nines, as a thread that frees what others made keeps, never asked for again.
         free_many(1_000, 9);
         assert_eq!(kept(9), 1_000);
-        // Fours made and freed in turns, a heap's worth of words at a time, three times over: a look
-        // comes with each heap's worth, and the second gives the nines back.
+        // Fours made and freed in turns, most of them made new as only a share is kept: a look
+        // comes with each heap's worth of words made new, and the second gives the nines back.
         let turns = super::super::SPARE_TOTAL_WORDS / (4 * 100_000) + 1;
         for _ in 0..3 * turns {
             free_many(100_000, 4);
@@ -888,7 +883,7 @@ mod tests {
         assert_eq!(kept(4) * 4, super::super::SPARE_SIZE_WORDS, "the fours it reuses stay kept");
         with(|state| {
             let left: usize =
-                state.heap.spare.iter().enumerate().map(|(size, spare)| size * spare.blocks.len()).sum();
+                state.heap.spare.iter().enumerate().map(|(size, spare)| size * spare.len()).sum();
             assert_eq!(left, state.heap.spare_words);
             assert_eq!(
                 state.heap.spare.get(9).map_or(0, |spare| spare.blocks.capacity()),
@@ -928,7 +923,7 @@ mod tests {
             free_many(400_000, words);
             with(|state| {
                 let kept: usize =
-                    state.heap.spare.iter().enumerate().map(|(size, spare)| size * spare.blocks.len()).sum();
+                    state.heap.spare.iter().enumerate().map(|(size, spare)| size * spare.len()).sum();
                 assert_eq!(kept, state.heap.spare_words);
                 assert!(kept <= super::super::SPARE_TOTAL_WORDS, "{kept} words kept");
                 assert!(kept > 0, "nothing's kept for reuse");

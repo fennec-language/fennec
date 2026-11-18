@@ -78,9 +78,9 @@ pub(crate) struct Heap {
     spare: Vec<Spare>,
     /// How many words `spare`'s blocks hold.
     spare_words: usize,
-    /// How many words of freed blocks have come to be kept since `spare` was last looked through
-    /// for blocks nothing has taken (`give_back_unused`).
-    recycled: usize,
+    /// How many words of blocks it's had to make new, not finding one kept, since it last gave
+    /// back what was kept and unused (`give_back_unused`).
+    made_new: usize,
     /// How many of the blocks live for the whole run.
     statics: usize,
     /// How many blocks left outside tasks this thread has counted already, as a worker that
@@ -160,13 +160,29 @@ pub(crate) struct Heap {
     freed: Freed,
 }
 
-/// Freed blocks of one size kept for reuse, the last freed on top, and the fewest there have been
-/// since the heap last looked: those below that many have sat there all that time, taken by
-/// nothing, and go back to the allocator at the next look.
+/// Freed blocks of one size kept for reuse: those freed since the heap last gave back what was
+/// unused, the last freed on top, taken first, and those it kept then, taken only when there are
+/// no others. What's still among those at the next look has sat there all that time, taken by
+/// nothing, and goes back to the allocator. Reuse and freeing cost no more for it.
 #[derive(Default)]
 pub(super) struct Spare {
-    pub(super) blocks: Vec<Box<[u64]>>,
-    fewest: usize,
+    blocks: Vec<Box<[u64]>>,
+    kept: Vec<Box<[u64]>>,
+}
+
+impl Spare {
+    #[inline]
+    fn take(&mut self) -> Option<Box<[u64]>> {
+        match self.blocks.pop() {
+            Some(block) => Some(block),
+            None => self.kept.pop(),
+        }
+    }
+
+    /// How many it holds.
+    pub(super) fn len(&self) -> usize {
+        self.blocks.len() + self.kept.len()
+    }
 }
 
 /// Where a heap puts the blocks it frees.
@@ -816,12 +832,7 @@ impl Heap {
     /// A block of `words` words whose first `written` the caller writes straight away: those of a
     /// freed one reused are left as they were, and the rest are zero.
     pub(super) fn fresh_written(&mut self, words: usize, written: usize) -> Box<[u64]> {
-        let reused = self.spare.get_mut(words).and_then(|spare| {
-            let block = spare.blocks.pop()?;
-            spare.fewest = spare.fewest.min(spare.blocks.len());
-            Some(block)
-        });
-        match reused {
+        match self.spare.get_mut(words).and_then(Spare::take) {
             Some(mut block) => {
                 self.spare_words -= block.len();
                 match block.get_mut(written..) {
@@ -831,8 +842,25 @@ impl Heap {
                 }
                 block
             }
-            None => vec![0; words].into_boxed_slice(),
+            None => self.made_new(words),
         }
+    }
+
+    /// A zeroed block of `words` words from the allocator, none being kept. Once as many words
+    /// have been made new as the heap keeps at most, what it's kept and not reused since it last
+    /// looked goes back (`give_back_unused`).
+    ///
+    /// A heap frees blocks of sizes it seldom makes, as a thread does that frees what other
+    /// threads made, and kept for good they filled its share a size at a time over hours of
+    /// serving, scattered through allocator and table pages that then couldn't be given back. Its
+    /// looks are counted in words made new rather than in time, so a run's are the same every time,
+    /// and on the way to the allocator, which costs far more, rather than on every block's reuse.
+    fn made_new(&mut self, words: usize) -> Box<[u64]> {
+        self.made_new += words;
+        if self.made_new >= SPARE_TOTAL_WORDS {
+            self.give_back_unused();
+        }
+        vec![0; words].into_boxed_slice()
     }
 
     /// Says where blocks freed from now on go, giving back where they went before. They should go
@@ -848,29 +876,19 @@ impl Heap {
     }
 
     /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
-    /// rare enough to give back.
-    ///
-    /// Once as many words have come to be kept as the heap keeps at most, it gives back what's
-    /// sat unused since it last did (`give_back_unused`). A heap frees blocks of sizes it seldom
-    /// makes, as a thread does that frees what other threads made, and kept for good they filled
-    /// its share a size at a time over hours of serving, scattered through allocator and table
-    /// pages that then couldn't be given back.
+    /// rare enough to give back. What's kept and then not reused goes back in time (`made_new`).
     pub(super) fn recycle(&mut self, block: Box<[u64]>) {
         // Under AddressSanitizer every freed block is given back, for it to watch.
         if cfg!(feature = "sanitize") || self.freed == Freed::GivenBack {
             return;
         }
-        let words = block.len();
-        self.recycled += words;
-        if self.recycled >= SPARE_TOTAL_WORDS {
-            self.give_back_unused();
-        }
-        if self.spare_words + words > SPARE_TOTAL_WORDS {
+        if self.spare_words + block.len() > SPARE_TOTAL_WORDS {
             return;
         }
+        let words = block.len();
         match self.spare.get_mut(words) {
             // Each size gets a share, so one nothing reuses, like most strings', can't take all of it.
-            Some(spare) if (spare.blocks.len() + 1) * words > SPARE_SIZE_WORDS => {}
+            Some(spare) if (spare.len() + 1) * words > SPARE_SIZE_WORDS => {}
             Some(spare) => {
                 spare.blocks.push(block);
                 self.spare_words += words;
@@ -879,25 +897,22 @@ impl Heap {
         }
     }
 
-    /// Gives back to the allocator each kept block that nothing has taken since the last look, the
-    /// oldest of its size: below the fewest its size has had. What was freed since stays, for
-    /// the next look to judge, so a program that frees a lot at once and then makes as much again
-    /// still finds it kept.
+    /// Gives back to the allocator each block kept at the last look that nothing has taken since,
+    /// and keeps those freed since, for the next look to judge: so a program that frees a lot at
+    /// once and then makes as much again still finds it kept.
     #[cold]
     #[inline(never)]
     fn give_back_unused(&mut self) {
         for spare in &mut self.spare {
-            let unused = spare.fewest.min(spare.blocks.len());
-            if unused > 0 {
-                self.spare_words -= spare.blocks.drain(..unused).map(|block| block.len()).sum::<usize>();
-                // Its list, too, when it's mostly room: a short block's list takes as much again.
-                if spare.blocks.capacity() > 2 * spare.blocks.len() {
-                    spare.blocks.shrink_to_fit();
-                }
+            self.spare_words -= spare.kept.drain(..).map(|block| block.len()).sum::<usize>();
+            std::mem::swap(&mut spare.blocks, &mut spare.kept);
+            // The list for what's freed next keeps no more room than what's kept now needed: a
+            // short block's list takes as much again as its blocks.
+            if spare.blocks.capacity() > spare.kept.len() {
+                spare.blocks.shrink_to(spare.kept.len());
             }
-            spare.fewest = spare.blocks.len();
         }
-        self.recycled = 0;
+        self.made_new = 0;
     }
 
     /// `recycle`, for the first block of its size.

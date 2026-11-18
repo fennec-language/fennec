@@ -1317,6 +1317,134 @@ fn a_loop_lets_go_of_its_generator_as_it_is_left() {
     );
 }
 
+/// A consumer of a generator that fails partway, inside a statement, passes the failure up before
+/// the rest of the statement runs, as compiled code now does (#2098). The output is what the
+/// compiled program printed.
+#[test]
+fn a_consumer_of_a_failing_generator_fails_before_its_statement_goes_on() {
+    prints(
+        CONSUMER_FAILS_FIRST,
+        "failed Bad(code=41)\nfailed Bad(code=42)\nfailed Bad(code=43)\nfailed Bad(code=44)\nfailed Bad(code=45)\nfailed Bad(code=46)\nfailed Bad(code=47)\nfailed Bad(code=48)\nopening\ncleaning up\nfailed Bad(code=49)\nfailed Bad(code=51)\nfailed Bad(code=52)\ncounted 0\nfailed Bad(code=53)\nlocked 0\nfailed Bad(code=54)\nopening\ncleaning up\nfailed Bad(code=50)\n",
+    );
+}
+
+const CONSUMER_FAILS_FIRST: &str = "
+        # A consumer of a generator that fails partway, inside a statement, passes the failure up before
+        # the rest of the statement runs: nothing is printed with a partial value, nothing written after
+        # it in the statement is called, nothing is yielded or written to a field, and `max` never sees an
+        # empty list. Each generator yields once, or never, then fails.
+
+        error Bad:
+            code: int
+
+        struct Tally:
+            count: int
+
+        def second(code: int) -> Iterator[int] fails Bad:
+            yield 2
+            fail Bad(code=code)
+
+        def nothing_then(code: int) -> Iterator[int] fails Bad:
+            for each in range(0):
+                yield each
+            fail Bad(code=code)
+
+        def totals(code: int) -> Iterator[int] fails Bad:
+            yield sum(second(code)?)
+            yield 7
+
+        def noisy(stdout: Stdout, said: str) -> int:
+            stdout.print('noisy', said)
+            return 1
+
+        def pair(left: int, right: int) -> int:
+            return left + right
+
+        def opened(stdout: Stdout) -> with Tally:
+            stdout.print('opening')
+            lend Tally(count=1) except:
+                stdout.print('cleaning up')
+            stdout.print('closing')
+
+        def summed(stdout: Stdout) fails Bad:
+            stdout.print('the sum is', sum(second(41)?))
+
+        def listed(stdout: Stdout) fails Bad:
+            stdout.print('the list is', list(second(42)?))
+
+        def doubled(stdout: Stdout) fails Bad:
+            stdout.print('the doubles are', [each * 2 for each in second(43)?])
+
+        def written_in(stdout: Stdout) fails Bad:
+            stdout.print('the sum is', sum(each for each in second(44)?))
+
+        def in_a_list(stdout: Stdout) fails Bad:
+            shown = [sum(second(45)?), noisy(stdout, 'in a list')]
+            stdout.print('listed', shown)
+
+        def an_argument(stdout: Stdout) fails Bad:
+            stdout.print('called', pair(left=max(second(46)?), right=noisy(stdout, 'an argument')))
+
+        def formatted(stdout: Stdout) fails Bad:
+            stdout.print(f'formatted {any(each > 5 for each in second(47)?)}')
+
+        def in_order(stdout: Stdout) fails Bad:
+            stdout.print('sorted', sorted(second(48)?), noisy(stdout, 'after sorted'))
+
+        def in_a_with(stdout: Stdout) fails Bad:
+            with opened(stdout) as tally:
+                stdout.print('in the block', sum(second(49)?) + tally.count)
+
+        def returned(stdout: Stdout) -> int fails Bad:
+            with opened(stdout) as tally:
+                return sum(second(50)?) + tally.count
+
+        def yielded(stdout: Stdout) fails Bad:
+            made = totals(51)?
+            for total in made:
+                stdout.print('total', total)
+
+        def counted(ref tally: Tally) fails Bad:
+            tally.count = sum(second(52)?)
+
+        def locked(tally: shared Tally) fails Bad:
+            lock tally as ref held:
+                held.count = sum(second(53)?)
+
+        def biggest(stdout: Stdout) fails Bad:
+            stdout.print('the max is', max(nothing_then(54)?))
+
+        def show(stdout: Stdout, run: (Stdout) -> nothing fails Bad):
+            run(stdout) except why:
+                stdout.print('failed', why)
+
+        def main(stdout: Stdout):
+            show(stdout, summed)
+            show(stdout, listed)
+            show(stdout, doubled)
+            show(stdout, written_in)
+            show(stdout, in_a_list)
+            show(stdout, an_argument)
+            show(stdout, formatted)
+            show(stdout, in_order)
+            show(stdout, in_a_with)
+            show(stdout, yielded)
+            mut tally = Tally(count=0)
+            counted(ref tally) except why:
+                stdout.print('failed', why)
+            stdout.print('counted', tally.count)
+            shared kept = Tally(count=0)
+            locked(kept) except why:
+                stdout.print('failed', why)
+            lock kept as held:
+                stdout.print('locked', held.count)
+            show(stdout, biggest)
+            got = returned(stdout) except why:
+                stdout.print('failed', why)
+                return
+            stdout.print('got', got)
+        ";
+
 const LOOP_LETS_GO: &str = "
         error Shut:
             code: int

@@ -1150,11 +1150,18 @@ impl<'a> Lowering<'a> {
         self.narrowed(Operand::Local(local), expr)
     }
 
+    /// Lowers an expression. One that always leaves partway, like a `sum` of a generator copied
+    /// in that always fails, ends its block: what's lowered after it goes in a block nothing
+    /// reaches, which goes, so none of it runs before the leaving does.
     fn expr(&mut self, expr: &Expr) -> Lowered<Operand> {
-        match builtin_as_method(expr) {
+        let lowered = match builtin_as_method(expr) {
             Some(method) => self.expr_as_written(&method),
             None => self.expr_as_written(expr),
+        };
+        if !self.is_open() {
+            self.current = self.new_block();
         }
+        lowered
     }
 
     /// Lowers an expression whose `len(x)` or `abs(x)`, if it is one, is already the method it calls.

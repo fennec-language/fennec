@@ -9295,11 +9295,13 @@ fn a_deadlock_through_a_parallel_calls_ranges_says_each_range() -> std::io::Resu
     }
     let error = "error: a deadlock: every task is waiting for another, and nothing can wake them\n";
     let receives = |ranges: std::ops::Range<u32>, call: &str| -> String {
-        ranges
-            .map(|range| {
-                format!("  range {range} of {call}'s `parallel` call is waiting to receive on a channel that's empty\n")
-            })
-            .collect()
+        ranges.fold(String::new(), |mut lines, range| {
+            let _ = writeln!(
+                lines,
+                "  range {range} of {call}'s `parallel` call is waiting to receive on a channel that's empty"
+            );
+            lines
+        })
     };
     let joins = "  main is waiting for the ranges of its `parallel` call";
     let in_task = format!(
@@ -9339,19 +9341,18 @@ fn a_parallel_call_that_can_still_end_is_never_a_deadlock() -> std::io::Result<(
         return Ok(());
     }
     let refused = "Refused(why=\"leaving this way stops the task\")\n".repeat(5);
-    let cases: [(&str, &str, &[(&str, &str)]); 7] = [
-        ("queued", "4600\n", &[]),
-        ("task_queued", "4600\n", &[]),
-        ("late_sender", "490\n", &[]),
-        ("reduce_waiting", "24600\n", &[]),
-        ("stopped_partway", &refused, &[]),
-        ("two_calls", "2100\n", &[]),
-        ("two_calls_napping", "42\n", &[("FENNEC_TEST_SLOW_WAKE_MS", "20")]),
+    let cases = [
+        ("queued", "4600\n"),
+        ("task_queued", "4600\n"),
+        ("late_sender", "490\n"),
+        ("reduce_waiting", "24600\n"),
+        ("stopped_partway", &refused),
+        ("two_calls", "2100\n"),
     ];
-    for (name, printed, env) in cases {
-        deadlock_fixture_runs_with(name, 5, env, (printed, "", 0))?;
+    for (name, printed) in cases {
+        deadlock_fixture_runs_as(name, 5, (printed, "", 0))?;
     }
-    Ok(())
+    deadlock_fixture_runs_with("two_calls_napping", 5, &[("FENNEC_TEST_SLOW_WAKE_MS", "20")], ("42\n", "", 0))
 }
 
 /// A wait that something can still end is never taken for a deadlock: a receive with a time limit;

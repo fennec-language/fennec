@@ -979,7 +979,9 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);
     let sources = cases_named(&checked.sources, &checked.cases);
-    let sources_written = lend_lowering::lower(module, &sources, &checked.launches, &checked.ref_matches);
+    let test_fails = tests_failing(module, &checked.signatures);
+    let sources_written =
+        lend_lowering::lower(module, &sources, &checked.launches, (&checked.ref_matches, &test_fails));
     // A copy just written in has spans of its own: what the check found in a source's text is
     // found in each copy too.
     let (ref_items, live_refs) = (
@@ -995,6 +997,32 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
         return Round::Again;
     }
     Round::Done
+}
+
+/// What each function `fennec test` makes of a test fails with, worked out from its body, by its
+/// name: `test:` and its number, and a property test's `_body` after it. One that can't fail isn't
+/// here.
+fn tests_failing(module: &Module, signatures: &Signatures) -> BTreeMap<String, fennec_syntax::TypeExpr> {
+    let is_test = |name: &str| {
+        name.strip_prefix("test:").is_some_and(|rest| {
+            let number = rest.strip_suffix("_body").unwrap_or(rest);
+            !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+        })
+    };
+    let mut found = BTreeMap::new();
+    for item in &module.items {
+        let Item::Function(def) = item else { continue };
+        if !is_test(&def.name) || def.fails.is_some() {
+            continue;
+        }
+        if let Some(signature) = signatures.get(&def.name)
+            && let Type::Result(_, error) = &signature.returns
+            && let Some(written) = error.written(def.span)
+        {
+            found.insert(def.name.clone(), written);
+        }
+    }
+    found
 }
 
 /// What the checker found an operator or builtin calls written in: `a != b` as `not (a == b)`

@@ -41,7 +41,7 @@ pub(crate) fn lower(
     module: &mut Module,
     sources: &BTreeMap<(u32, u32), Source>,
     launches: &BTreeMap<(u32, u32), crate::launch::Launch>,
-    ref_matches: &BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>,
+    (ref_matches, test_fails): (&BTreeMap<(u32, u32), Vec<Option<Vec<String>>>>, &BTreeMap<String, TypeExpr>),
 ) -> bool {
     if sources.is_empty() && launches.is_empty() && ref_matches.is_empty() {
         return false;
@@ -76,7 +76,18 @@ pub(crate) fn lower(
     };
     for item in &mut module.items {
         match item {
-            Item::Function(def) => lowering.function(def),
+            Item::Function(def) => {
+                // The function `fennec test` makes of a test says what it fails with, worked out
+                // from its body, so it holds a failure leaving a `with` block as a function does:
+                // the source's cleanup runs once, after what's inside the block is left (#2040).
+                if def.fails.is_none()
+                    && holds_with(&def.body)
+                    && let Some(fails) = test_fails.get(&def.name)
+                {
+                    def.fails = Some(fails.clone());
+                }
+                lowering.function(def);
+            }
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => {
                 def.methods.iter_mut().for_each(|def| lowering.function(def));
             }

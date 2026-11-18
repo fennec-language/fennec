@@ -719,6 +719,13 @@ pub(super) fn uncounted(block: &[u64]) -> bool {
 /// through allocator and table pages that then can't be given back.
 const SPARE_TOTAL_WORDS: usize = 1 << 20;
 
+/// How many words of blocks a heap frees between its looks for kept blocks nothing has taken since
+/// the last (`give_back_unused`): 32 MB, four times what it keeps at most. A block left that long
+/// is one of a size the heap seldom makes. A look every 8 MB gave back more that programs went on
+/// to make again, as a stack's floor sat untouched through each look: 0.8% more instructions for
+/// `api_handler`, 1.2% for `chat_server`.
+const LOOK_AFTER_WORDS: usize = 4 * SPARE_TOTAL_WORDS;
+
 /// How many words of freed blocks of any one size a heap keeps: 1 MB.
 const SPARE_SIZE_WORDS: usize = 1 << 17;
 
@@ -861,8 +868,8 @@ impl Heap {
     /// Keeps a freed block for reuse, when it's small: big ones, like a long list's, are
     /// rare enough to give back.
     ///
-    /// Once as many words have been freed as the heap keeps at most, what it's kept and not reused
-    /// since it last looked goes back (`give_back_unused`). A heap frees blocks of sizes it seldom
+    /// Once `LOOK_AFTER_WORDS` have been freed, what it's kept and not reused since it last looked
+    /// goes back (`give_back_unused`). A heap frees blocks of sizes it seldom
     /// makes, as a thread does that frees what other threads made, and kept for good they filled
     /// its share a size at a time over hours of serving, scattered through allocator and table
     /// pages that then couldn't be given back. Its looks are counted in words freed rather than in
@@ -876,7 +883,7 @@ impl Heap {
         }
         let words = block.len();
         self.freed_since += words;
-        if self.freed_since >= SPARE_TOTAL_WORDS {
+        if self.freed_since >= LOOK_AFTER_WORDS {
             self.give_back_unused();
         }
         if self.spare_words + words > SPARE_TOTAL_WORDS {
@@ -902,10 +909,12 @@ impl Heap {
         for spare in &mut self.spare {
             self.spare_words -= spare.kept.drain(..).map(|block| block.len()).sum::<usize>();
             std::mem::swap(&mut spare.blocks, &mut spare.kept);
-            // The list for what's freed next keeps no more room than what's kept now needed: a
-            // short block's list takes as much again as its blocks.
-            if spare.blocks.capacity() > spare.kept.len() {
-                spare.blocks.shrink_to(spare.kept.len());
+            // A size nothing's freed since goes back whole, lists and all: a short block's list
+            // takes as much again as its blocks. One in use keeps its lists' room, as making it
+            // again for every look cost more than the blocks it gave back.
+            if spare.kept.is_empty() {
+                spare.blocks = Vec::new();
+                spare.kept = Vec::new();
             }
         }
         self.freed_since = 0;

@@ -878,9 +878,9 @@ mod tests {
         // Nines, as a thread that frees what others made keeps, never asked for again.
         free_many(1_000, 9);
         assert_eq!(kept(9), 1_000);
-        // Fours made and freed in turns, a heap's worth of words at a time, three times over: a look
-        // comes with each heap's worth freed, and the second gives the nines back.
-        let turns = super::super::SPARE_TOTAL_WORDS / (4 * 100_000) + 1;
+        // Fours made and freed in turns, enough for three looks: one comes with each
+        // `LOOK_AFTER_WORDS` freed, and the second gives the nines back.
+        let turns = super::super::LOOK_AFTER_WORDS / (4 * 100_000) + 1;
         for _ in 0..3 * turns {
             free_many(100_000, 4);
         }

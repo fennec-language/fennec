@@ -35,6 +35,13 @@ impl<T> Clone for Held<T> {
     }
 }
 
+/// Two are the same when what they hold is.
+impl<T: PartialEq> PartialEq for Held<T> {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
 impl<T> std::ops::Deref for Held<T> {
     type Target = T;
 
@@ -106,7 +113,7 @@ pub(crate) struct ConstEntry {
     pub(crate) prelude: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FnEntry {
     pub(crate) def: Held<FnDef>,
     /// The type a method belongs to.

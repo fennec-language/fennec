@@ -105,7 +105,6 @@ tables! {
 /// whom each function calls, and kept by function for a later round to carry over.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Graph {
-    callers: BTreeMap<String, BTreeSet<String>>,
     own_callers: BTreeMap<String, BTreeSet<String>>,
     waits: BTreeMap<String, String>,
     takes_locks: BTreeMap<String, String>,
@@ -118,7 +117,6 @@ impl Checker {
     /// What's followed as it is, leaving it empty for a function's check to add to.
     fn take_graph(&mut self) -> Graph {
         Graph {
-            callers: std::mem::take(&mut self.callers),
             own_callers: std::mem::take(&mut self.own_callers),
             waits: std::mem::take(&mut self.waits),
             takes_locks: std::mem::take(&mut self.takes_locks),
@@ -130,7 +128,6 @@ impl Checker {
 
     /// Puts back what `take_graph` took.
     fn put_graph(&mut self, graph: Graph) {
-        self.callers = graph.callers;
         self.own_callers = graph.own_callers;
         self.waits = graph.waits;
         self.takes_locks = graph.takes_locks;
@@ -141,9 +138,28 @@ impl Checker {
 
     /// Adds what one function's check found.
     fn add_graph(&mut self, graph: &Graph) {
-        for (callee, callers) in &graph.callers {
-            self.callers.entry(callee.clone()).or_default().extend(callers.iter().cloned());
+        let mut all = self.take_graph();
+        all.add(graph);
+        self.put_graph(all);
+    }
+
+    /// What a function's check found, `graph`, goes into what's followed once the outermost
+    /// check it's inside is done: one checked inside another's, as a callee is when it's first
+    /// called, isn't part of that other's own.
+    fn found_graph(&mut self, graph: &Graph) {
+        if self.checking.is_empty() {
+            self.add_graph(graph);
+            let inside = std::mem::take(&mut self.inner_graph);
+            self.add_graph(&inside);
+        } else {
+            self.inner_graph.add(graph);
         }
+    }
+}
+
+impl Graph {
+    /// Adds what another function's check found.
+    fn add(&mut self, graph: &Graph) {
         for (callee, callers) in &graph.own_callers {
             self.own_callers.entry(callee.clone()).or_default().extend(callers.iter().cloned());
         }
@@ -153,6 +169,38 @@ impl Checker {
         self.values.add(&graph.values);
         self.handovers.add(&graph.handovers);
     }
+}
+
+impl Tables {
+    /// Every type in what's written, for whether one is still open.
+    fn types(&self) -> Vec<&Type> {
+        let mut all: Vec<&Type> = self.sources.values().map(|source| &source.gives).collect();
+        all.extend(
+            self.generic_calls
+                .values()
+                .chain(self.generic_method_calls.values())
+                .flat_map(|call| &call.types),
+        );
+        all.extend(self.launches.values().flat_map(crate::launch::Launch::types));
+        all.extend(self.routes.values().flat_map(|route| route.takes.iter().map(|(_, ty)| ty)));
+        all.extend(self.shared_values.values());
+        all.extend(self.format_params.iter().map(|(_, ty, _, _)| ty));
+        all.extend(&self.saved_types);
+        all
+    }
+}
+
+/// What the round before's check found for one function, to carry over.
+struct Carried {
+    signature: Signature,
+    body: Option<Body>,
+    tables: Option<Tables>,
+    graph: Option<Graph>,
+    locals: Vec<(String, Type)>,
+    /// For a function written inside another, its entry, which goes in when that one's carried.
+    entry: Option<FnEntry>,
+    /// The functions written inside it, carried with it.
+    nested: Vec<String>,
 }
 
 pub(crate) struct Checker {
@@ -293,6 +341,17 @@ pub(crate) struct Checker {
     tables_merged: bool,
     /// What each function's check added to what's followed across functions, by its key.
     graph_of: BTreeMap<String, Graph>,
+    /// The functions carried over from the round before, which aren't checked again unless a
+    /// function they call gives back or fails with something else now.
+    carried: BTreeSet<String>,
+    /// What the round before found for each function this round left as it was, carried over
+    /// when it's first asked for, as it would be checked then: a library function only once
+    /// something reaches it.
+    carriable: BTreeMap<String, Carried>,
+    /// What checks inside another function's found, for what's followed once that one is done.
+    inner_graph: Graph,
+    /// Every function's signature as the round before's check had it.
+    before: BTreeMap<String, Signature>,
     /// What's followed through function values: which function parameters are called, what's
     /// passed for them, and what each arrow function waits on.
     pub(crate) values: crate::waits::Values,
@@ -414,6 +473,10 @@ impl Checker {
             tables_of: BTreeMap::new(),
             tables_merged: false,
             graph_of: BTreeMap::new(),
+            carried: BTreeSet::new(),
+            carriable: BTreeMap::new(),
+            inner_graph: Graph::default(),
+            before: BTreeMap::new(),
             values: crate::waits::Values::default(),
             handovers: crate::holds::Handovers::default(),
             holds: module.holds.clone(),
@@ -421,6 +484,134 @@ impl Checker {
             crossing: crate::Crossing::default(),
             diagnostics,
         }
+    }
+
+    /// A check of a module a round of rewriting left, as the round before's check, `previous`,
+    /// saw it but for what the round wrote in, which only adds to what the module declares.
+    /// What `previous` found for each function the round left as it was is carried over, with the
+    /// functions written inside it: what it gives back and fails with, its typed body and locals,
+    /// what it wrote in the tables and what it adds to what's followed across functions. One that
+    /// calls a function that's gone is checked again, and so are the callers of each function
+    /// checked again that gives back or fails with something else now (`run`).
+    /// Whether anything can be carried over from the round before.
+    pub(crate) fn carries_any(&self) -> bool {
+        !self.carriable.is_empty()
+    }
+
+    pub(crate) fn carrying(module: &Module, previous: &Checked) -> Checker {
+        let mut next = Checker::new(module);
+        next.again = true;
+        next.before.clone_from(&previous.signatures.functions);
+        let mut carried: BTreeSet<String> = previous
+            .defs
+            .iter()
+            .filter(|(key, entry)| {
+                self_same(&next.program.functions, key, entry)
+                    && previous.signatures.functions.contains_key(*key)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        // Every function it called is still there, as what was a function before.
+        carried.retain(|key| {
+            previous.graph_of.get(key).is_none_or(|graph| {
+                graph.own_callers.keys().all(|callee| {
+                    !previous.defs.contains_key(callee) || next.program.functions.contains_key(callee)
+                })
+            })
+        });
+        // A function written inside one carried over goes with it: its key sorts after the one
+        // it's in, so what's inside that goes too.
+        let mut nested: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for key in previous.defs.keys() {
+            if next.program.functions.contains_key(key) || !previous.signatures.functions.contains_key(key) {
+                continue;
+            }
+            if let Some((outer, _)) = key.rsplit_once('.')
+                && carried.contains(outer)
+            {
+                nested.entry(outer.to_owned()).or_default().push(key.clone());
+                carried.insert(key.clone());
+            }
+        }
+        let mut locals: BTreeMap<String, Vec<(String, Type)>> = BTreeMap::new();
+        for (local, ty) in &previous.signatures.locals {
+            // A local's name has no `/`, but a function's key can: `Path./` is a method.
+            if let Some((key, _)) = local.rsplit_once('/')
+                && carried.contains(key)
+            {
+                locals.entry(key.to_owned()).or_default().push((local.clone(), ty.clone()));
+            }
+        }
+        // One whose check left a type variable open, as a generic library method's can, is
+        // checked again: an open variable means nothing to another check, which has its own.
+        let open = |key: &String| {
+            let signature = previous.signatures.functions.get(key);
+            let body = previous.types.functions.get(key);
+            let tables = previous.tables_of.get(key);
+            let graph = previous.graph_of.get(key);
+            signature.is_some_and(|signature| {
+                signature.returns.has_var() || signature.params.iter().any(|param| param.ty.has_var())
+            }) || body.is_some_and(|body| body.exprs.values().chain(body.names.values()).any(Type::has_var))
+                || tables.is_some_and(|tables| tables.types().into_iter().any(Type::has_var))
+                || graph.is_some_and(|graph| graph.handovers.types().into_iter().any(Type::has_var))
+                || locals.get(key).is_some_and(|locals| locals.iter().any(|(_, ty)| ty.has_var()))
+        };
+        let open: BTreeSet<String> = carried.iter().filter(|key| open(key)).cloned().collect();
+        // What's inside one that's checked again is checked again with it.
+        carried.retain(|key| !open.iter().any(|outer| key == outer || key.starts_with(&format!("{outer}."))));
+        for key in carried {
+            let Some(signature) = previous.signatures.functions.get(&key) else { continue };
+            let found = Carried {
+                signature: signature.clone(),
+                body: previous.types.functions.get(&key).cloned(),
+                tables: previous.tables_of.get(&key).cloned(),
+                graph: previous.graph_of.get(&key).cloned(),
+                locals: locals.remove(&key).unwrap_or_default(),
+                entry: (!next.program.functions.contains_key(&key))
+                    .then(|| previous.defs.get(&key).cloned())
+                    .flatten(),
+                nested: nested.remove(&key).unwrap_or_default(),
+            };
+            next.carriable.insert(key, found);
+        }
+        next
+    }
+
+    /// Carries over what the round before found for `key`, and for the functions written inside
+    /// it, if this round left it as it was: whether it did.
+    fn carry(&mut self, key: &str) -> bool {
+        let Some(found) = self.carriable.remove(key) else { return false };
+        if let Some(entry) = found.entry {
+            self.program.functions.insert(key.to_owned(), entry);
+        }
+        self.states.insert(key.to_owned(), State::Done(found.signature));
+        if let Some(body) = found.body {
+            self.typed.insert(key.to_owned(), body);
+        }
+        if let Some(tables) = found.tables {
+            if self.tables_merged {
+                self.add_tables(&tables);
+            }
+            self.tables_of.insert(key.to_owned(), tables);
+        }
+        // What its check asked for, by key, is reached as checking it would reach it.
+        let mut called = Vec::new();
+        if let Some(graph) = found.graph {
+            called.extend(graph.own_callers.keys().cloned());
+            self.found_graph(&graph);
+            self.graph_of.insert(key.to_owned(), graph);
+        }
+        self.locals.extend(found.locals);
+        self.carried.insert(key.to_owned());
+        for inner in found.nested {
+            self.carry(&inner);
+        }
+        for callee in called {
+            if !self.states.contains_key(&callee) {
+                self.check_function(&callee);
+            }
+        }
+        true
     }
 
     /// Checks everything, or for `Scope::Reached`, the program's own code and just the
@@ -443,6 +634,7 @@ impl Checker {
         if matches!(scope, Scope::ReachedWithFields | Scope::Building) {
             self.check_implicit_methods();
         }
+        self.recheck_callers_of_changed();
         self.revisit_cycles();
         // Every function's check is done but those reached later, from a test or a constant, so
         // what each wrote goes into the tables the rest reads.
@@ -542,6 +734,28 @@ impl Checker {
                 Some((owner, writer))
             })
             .collect()
+    }
+
+    /// Marks for checking again each function carried over that calls one checked again whose
+    /// signature isn't what it was: `revisit_cycles` checks those, and their callers in turn.
+    fn recheck_callers_of_changed(&mut self) {
+        if self.carried.is_empty() {
+            return;
+        }
+        let changed: Vec<String> = self
+            .states
+            .iter()
+            .filter_map(|(key, state)| match state {
+                State::Done(signature) if !self.carried.contains(key) => {
+                    self.before.get(key).is_none_or(|was| was != signature).then(|| key.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for key in changed {
+            let callers = self.outer_callers(self.outermost_of(&key));
+            self.revisit.extend(callers.into_iter().filter(|caller| self.carried.contains(caller)));
+        }
     }
 
     /// A function's tables with every type in them settled, so a later round's check, which has
@@ -665,6 +879,7 @@ impl Checker {
             holds: self.worked_out,
             tables_of,
             graph_of,
+            defs: self.program.functions.clone(),
         }
     }
 
@@ -889,6 +1104,9 @@ impl Checker {
     }
 
     fn check_function(&mut self, key: &str) {
+        if self.carry(key) {
+            return;
+        }
         // A function of the program's own has nothing around it to hand up to.
         let handed = self.generators_handed_up.len();
         self.check_with(key, Vec::new());
@@ -961,7 +1179,7 @@ impl Checker {
         self.tables_of.insert(key.to_owned(), own);
         let found = self.take_graph();
         self.put_graph(followed);
-        self.add_graph(&found);
+        self.found_graph(&found);
         self.graph_of.insert(key.to_owned(), found);
         // No arrow means it gives back nothing. One that gives back a value anyway has to
         // write its type, and until it does, callers see the value so they aren't reported
@@ -1582,4 +1800,9 @@ mod tests {
             .collect();
         assert_eq!(problems, ["`Duration` doesn't exist"]);
     }
+}
+
+/// Whether `functions` holds `entry` under `key`, as it was.
+fn self_same(functions: &BTreeMap<String, FnEntry>, key: &str, entry: &FnEntry) -> bool {
+    functions.get(key).is_some_and(|now| now == entry)
 }

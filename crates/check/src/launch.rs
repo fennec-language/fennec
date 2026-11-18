@@ -28,6 +28,11 @@ pub(crate) struct Launch {
 }
 
 impl Launch {
+    /// Each type it holds.
+    pub(crate) fn types(&self) -> Vec<&Type> {
+        self.message.iter().chain(std::iter::once(&self.value)).chain(self.error.iter()).collect()
+    }
+
     /// Each type it holds, settled once the check is done.
     pub(crate) fn settled(&self, settle: &dyn Fn(&Type) -> Type) -> Launch {
         Launch {

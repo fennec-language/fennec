@@ -775,6 +775,9 @@ fn resolved_within(
     for round in 1.. {
         // Only the last round's changes are looked at, to name what didn't stop changing.
         let before = (round >= most).then(|| module.clone());
+        // What the module declares as the check saw it, besides its functions: while a round
+        // only adds to it, what's found for a function the round leaves as it was carries over.
+        let declared = declarations(module);
         // The library's functions this program needs rewritten go through this round with its own.
         let std_in = std_rewritten_in(module, &checked);
         let written = resolved_round(module, &checked);
@@ -804,13 +807,185 @@ fn resolved_within(
         if let Some(seen) = &mut seen {
             seen.clone_from(module);
         }
-        let mut next = checker::Checker::new(module);
-        next.again = true;
+        let next = if still_declared(&declared, &declarations(module)) {
+            checker::Checker::carrying(module, &checked)
+        } else {
+            let mut next = checker::Checker::new(module);
+            next.again = true;
+            next
+        };
+        let carries = next.carries_any();
         checked = next.run(scope).map_err(|problems| {
             problems.iter().map(|problem| not_checked_again(problem, &module.copied)).collect::<Vec<_>>()
         })?;
+        if cfg!(debug_assertions) && carries {
+            same_as_checked_again(module, scope, &checked);
+        }
     }
     unreachable!("the rounds go on until one returns")
+}
+
+/// What a module declares besides its functions and tests: its types and extensions without
+/// their methods, which are functions, and its interfaces, aliases, constants and imports.
+fn declarations(module: &Module) -> Vec<Item> {
+    use fennec_syntax::{Extension, TypeDef};
+    let without = |def: &TypeDef| TypeDef { methods: Vec::new(), ..def.clone() };
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(_) | Item::Test(_) => None,
+            Item::Struct(def) => Some(Item::Struct(without(def))),
+            Item::Enum(def) => Some(Item::Enum(without(def))),
+            Item::Error(def) => Some(Item::Error(without(def))),
+            Item::Extend(extension) => {
+                Some(Item::Extend(Extension { methods: Vec::new(), ..extension.clone() }))
+            }
+            other => Some(other.clone()),
+        })
+        .collect()
+}
+
+/// Whether everything `before` declares is still declared, as it was and in the same order, with
+/// only more added: what a round of rewriting may do while a check carries over what the round
+/// before found.
+fn still_declared(before: &[Item], after: &[Item]) -> bool {
+    let mut after = after.iter();
+    before.iter().all(|item| after.any(|now| now == item))
+}
+
+/// `text` with each open type variable's number taken out: `Var(12)` as `Var(_)`.
+fn without_var_numbers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("Var(") {
+        let (before, after) = rest.split_at(at + "Var(".len());
+        out.push_str(before);
+        let digits = after.len() - after.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 {
+            out.push('_');
+        }
+        rest = after.get(digits..).unwrap_or_default();
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The first of what a check found to write in that two checks disagree on, by its name.
+fn differing_table(one: &Checked, other: &Checked) -> &'static str {
+    macro_rules! first {
+        ($($field:ident),* $(,)?) => {
+            $(if one.$field != other.$field {
+                return stringify!($field);
+            })*
+        };
+    }
+    first!(
+        cases,
+        float_sums,
+        sized_sums,
+        defaults,
+        generator_types,
+        not_equals,
+        method_calls,
+        array_zeros,
+        optional_steps,
+        failing_steps,
+        std_names,
+        std_calls,
+        field_args,
+        named_patterns,
+        shared_values,
+        sources,
+        widened_values,
+        generic_sources,
+        generic_calls,
+        union_sources,
+        opened_apart,
+        launches,
+        test_errors,
+        routes,
+        ref_matches,
+        live_refs,
+        ref_items,
+        native_formats,
+        native_json_bodies,
+        saved_types,
+        holds,
+    );
+    "something else"
+}
+
+/// In a dev build, that a round which carried over what the round before found agrees with
+/// checking all of the module again: its signatures, typed bodies and what it found to write in.
+/// It's the compiler's mistake if they don't.
+fn same_as_checked_again(module: &Module, scope: checker::Scope, carried: &Checked) {
+    let mut again = checker::Checker::new(module);
+    again.again = true;
+    let Ok(again) = again.run(scope) else {
+        panic!(
+            "a round that carried over what the round before found passed, but checking it all again doesn't"
+        )
+    };
+    let comparable = |mut checked: Checked| {
+        checked.tables_of.clear();
+        checked.graph_of.clear();
+        checked.defs.clear();
+        checked
+    };
+    let (again, carried) = (comparable(again), comparable(carried.clone()));
+    // A type variable left open is numbered by the check that made it, so two checks that
+    // agree on everything else can number theirs apart.
+    if again != carried
+        && without_var_numbers(&format!("{again:?}")) != without_var_numbers(&format!("{carried:?}"))
+    {
+        let differs = again
+            .signatures
+            .functions
+            .iter()
+            .find(|(key, signature)| carried.signatures.functions.get(*key) != Some(*signature));
+        let missing =
+            carried.signatures.functions.keys().find(|key| !again.signatures.functions.contains_key(*key));
+        let part = if let Some((key, signature)) = differs {
+            format!(
+                "what `{key}` gives back and fails with: {signature:?} against {:?}",
+                carried.signatures.functions.get(key)
+            )
+        } else if let Some(key) = missing {
+            format!("`{key}`, which checking it all again doesn't have")
+        } else if again.signatures.crossing != carried.signatures.crossing {
+            let shown = |crossing: &Crossing| {
+                crossing.types().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+            };
+            format!(
+                "what crosses between threads: {} against {}",
+                shown(&again.signatures.crossing),
+                shown(&carried.signatures.crossing)
+            )
+        } else if again.signatures != carried.signatures {
+            let (one, other) = (&again.signatures, &carried.signatures);
+            let part =
+                if one.structs != other.structs || one.enums != other.enums || one.errors != other.errors {
+                    "the types"
+                } else if one.locals != other.locals {
+                    "the locals"
+                } else if one.lock_verdicts != other.lock_verdicts {
+                    "the lock verdicts"
+                } else if one.own_saving != other.own_saving {
+                    "how types save themselves"
+                } else {
+                    "the typed bodies the signatures hold"
+                };
+            format!("the rest of the signatures: {part}")
+        } else if again.types != carried.types {
+            "the typed bodies".to_owned()
+        } else {
+            format!("what it found to write in, in `{}`", differing_table(&again, &carried))
+        };
+        panic!(
+            "a round that carried over what the round before found disagrees with checking it all again, in {part}: a mistake in the compiler"
+        );
+    }
 }
 
 /// What's said when writing in what the check found is still changing the program after every
@@ -1216,6 +1391,9 @@ pub struct Checked {
     tables_of: BTreeMap<String, checker::Tables>,
     /// What each function's check added to what's followed across functions, by its key, settled.
     graph_of: BTreeMap<String, checker::Graph>,
+    /// Every function the check knew, by its key, as it was: what a later round compares its own
+    /// with, to carry over what was found for those left as they were.
+    defs: BTreeMap<String, program::FnEntry>,
     /// The enum the expected type chose for each leading-dot case more than one enum has.
     cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.

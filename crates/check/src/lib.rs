@@ -780,7 +780,7 @@ fn resolved_within(
         let declared = declarations(module);
         // The library's functions this program needs rewritten go through this round with its own.
         let std_in = std_rewritten_in(module, &checked);
-        let mut only_written = WrittenDefs::new();
+        let mut only_written = Written::default();
         let written = resolved_round(module, &checked, &mut only_written);
         std_rewritten_out(module);
         let again = match written {
@@ -1019,25 +1019,34 @@ fn differing_part(again: &Checked, carried: &Checked) -> String {
     }
 }
 
-/// Each function and method of a module, by its name and the span of its text.
-pub(crate) type WrittenDefs = BTreeMap<(String, u32, u32), fennec_syntax::FnDef>;
+/// Each function, method and test of a module, by its name and the span of its text.
+#[derive(Default)]
+pub(crate) struct Written {
+    pub(crate) defs: BTreeMap<(String, u32, u32), fennec_syntax::FnDef>,
+    pub(crate) tests: BTreeMap<(String, u32, u32), fennec_syntax::TestDef>,
+}
 
-/// Each function and method of `module` as it is: what a round left them once it wrote in what the
-/// check found, before rewriting any, so the round's check can carry over what the round before
-/// found for one that was only written into.
-fn written_defs(module: &Module) -> WrittenDefs {
-    let mut found = WrittenDefs::new();
+/// Each function, method and test of `module` as it is: what a round left them once it wrote in
+/// what the check found, before rewriting any, so the round's check can carry over what the round
+/// before found for one that was only written into.
+fn written(module: &Module) -> Written {
+    let mut found = Written::default();
+    let mut defs = std::mem::take(&mut found.defs);
     let mut add = |def: &fennec_syntax::FnDef| {
-        found.insert((def.name.clone(), def.span.start, def.span.end), def.clone());
+        defs.insert((def.name.clone(), def.span.start, def.span.end), def.clone());
     };
     for item in &module.items {
         match item {
             Item::Function(def) => add(def),
             Item::Struct(def) | Item::Enum(def) | Item::Error(def) => def.methods.iter().for_each(&mut add),
             Item::Extend(extension) => extension.methods.iter().for_each(&mut add),
+            Item::Test(test) => {
+                found.tests.insert((test.name.clone(), test.span.start, test.span.end), test.clone());
+            }
             _ => {}
         }
     }
+    found.defs = defs;
     found
 }
 
@@ -1156,7 +1165,7 @@ fn library_functions() -> Vec<(String, fennec_syntax::FnDef)> {
 
 /// One round of writing in what the check found, saying whether anything was written that needs
 /// checking again.
-fn resolved_round(module: &mut Module, checked: &Checked, only_written: &mut WrittenDefs) -> Round {
+fn resolved_round(module: &mut Module, checked: &Checked, only_written: &mut Written) -> Round {
     // What a round writes in more than once is noted where it went, with what's there already.
     lend_lowering::copies_from(module);
     let round = written_in_round(module, checked, only_written);
@@ -1165,7 +1174,7 @@ fn resolved_round(module: &mut Module, checked: &Checked, only_written: &mut Wri
 }
 
 /// What `resolved_round` writes in.
-fn written_in_round(module: &mut Module, checked: &Checked, only_written: &mut WrittenDefs) -> Round {
+fn written_in_round(module: &mut Module, checked: &Checked, only_written: &mut Written) -> Round {
     fennec_syntax::visit::type_fields_from_defaults(module);
     named::put_in_order(module, &checked.named_patterns);
     unqualified_cases(module, &checked.signatures);
@@ -1221,7 +1230,7 @@ fn written_in_round(module: &mut Module, checked: &Checked, only_written: &mut W
     imports_for_std_calls(module, checked.std_calls.values());
     imports_for_cases(module, &checked.cases);
     // What the check found is written in; what's rewritten below changes what's written.
-    *only_written = written_defs(module);
+    *only_written = written(module);
     let rewritten = sources_copied(module, checked) || widened_values(module, &checked.widened_values);
     if rewritten || routes::lower(module, &checked.routes) {
         return Round::Again;
@@ -1449,6 +1458,9 @@ pub struct Checked {
     /// Every function the check knew, by its key, as it was: what a later round compares its own
     /// with, to carry over what was found for those left as they were.
     defs: BTreeMap<String, program::FnEntry>,
+    /// Every test the check knew, by its key, as it was, for the same: those whose name another
+    /// shares aren't here, since their key is both's.
+    tests: BTreeMap<String, fennec_syntax::TestDef>,
     /// The enum the expected type chose for each leading-dot case more than one enum has.
     cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.

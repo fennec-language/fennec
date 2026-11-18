@@ -1,0 +1,51 @@
+# A round's handler hashes passwords inside a lock, which holds its worker, when the serving
+# task's block ends and stops it. The worker can't take the stop until the round next waits, and
+# that's in serving a server of its own, which it began after the stop was sent.
+# The round waited for its own worker to leave a server it hadn't joined yet, for good (#2004).
+# From Fable 5.2's review of #1993.
+from std.concurrent import Crashed
+from std.crypto import Secret, hash_password
+from std.net import NetError, Request, Response, Server
+
+struct Tally:
+    seen: int
+
+def inner_answered(request: Request) -> Response:
+    return Response(status=200, body=f"inner {request.path}".encode())
+
+def nested(net: Net) fails NetError:
+    with net.listen(0)? as inner:
+        inner.serve((asked) => inner_answered(asked))
+
+def hashed(tally: shared Tally, entropy: Entropy):
+    lock tally as ref held:
+        for turn in range(8):
+            held.seen += len(hash_password(Secret.of(f"password {turn}"), entropy))
+
+def answered(request: Request, tally: shared Tally, net: Net, entropy: Entropy, clock: Clock, stdout: Stdout) -> Response:
+    if request.path == "/slow":
+        stdout.print("the slow one began")
+        clock.sleep(100ms)
+        hashed(tally, entropy=entropy)
+        nested(net) except why:
+            stdout.print("the slow one's server failed", f"{why}")
+        stdout.print("the slow one never said")
+    return Response(status=200, body=f"hello {request.path}".encode())
+
+def serving(server: Server, tally: shared Tally, net: Net, entropy: Entropy, clock: Clock, stdout: Stdout):
+    server.serve((request) => answered(request, tally=tally, net=net, entropy=entropy, clock=clock, stdout=stdout))
+    stdout.print("the server never said")
+
+def main(net: Net, entropy: Entropy, clock: Clock, stdout: Stdout) fails NetError | Crashed:
+    shared tally = Tally(seen=0)
+    with net.listen(0)? as server:
+        port = server.port
+        # The first connection goes to the first worker, so the slow one's round runs on the second,
+        # away from the task serving.
+        with net.connect("127.0.0.1", port)? as quick, net.connect("127.0.0.1", port)? as slow:
+            quick.write("GET /quick HTTP/1.1\r\nhost: here\r\n\r\n")?
+            slow.write("GET /slow HTTP/1.1\r\nhost: here\r\n\r\n")?
+            with launch(() => serving(server, tally=tally, net=net, entropy=entropy, clock=clock, stdout=stdout), stop_after=200ms)?:
+                got = net.get(f"http://127.0.0.1:{port}/one")?
+                stdout.print(got.text())
+    stdout.print("the server is over")

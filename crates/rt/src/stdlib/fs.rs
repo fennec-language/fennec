@@ -756,7 +756,7 @@ pub(crate) fn beneath_with<D: Databases>(
 /// since the `Fs` was narrowed is refused, wherever the link points. Only the holder of the whole
 /// `Fs` chose the first folder's path, so that one is opened as its path is now.
 fn open_narrowed(kept: &str) -> Result<cap_std::fs::Dir, Fail> {
-    let (outer, below) = crate::limits::folder_parts(kept);
+    let (_, outer, below) = crate::limits::folder_parts(kept);
     let mut here = cap_std::fs::Dir::open_ambient_dir(outer, cap_std::ambient_authority())?.into_std_file();
     for name in below.into_iter().flat_map(|below| below.split('/')).filter(|name| !name.is_empty()) {
         here = match cap_primitives::fs::open_dir_nofollow(&here, Path::new(name)) {
@@ -774,6 +774,42 @@ fn open_narrowed(kept: &str) -> Result<cap_std::fs::Dir, Fail> {
         };
     }
     Ok(cap_std::fs::Dir::from_std_file(here))
+}
+
+/// The real path of `rest`, a path beneath the folder a narrowed `Fs` keeps as `kept`, found from
+/// that folder's handle, as `open_narrowed` opens it: a link on the way is followed only while it
+/// stays beneath the folder, and what isn't there yet is kept as written. Its names are joined by
+/// `/` on every system, each kept whole. `None` when the folder can't be opened, the path leads out
+/// of it, or a name on it isn't UTF-8, which `only` then reaches nothing for.
+pub(crate) fn real_beneath(kept: &str, rest: &Path) -> Option<String> {
+    let folder = open_narrowed(kept).ok()?;
+    let mut found = rest;
+    let mut missing = Vec::new();
+    let real = loop {
+        if found.as_os_str().is_empty() {
+            break PathBuf::new();
+        }
+        match folder.canonicalize(found) {
+            Ok(real) => break real,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(found.file_name()?);
+                found = found.parent()?;
+            }
+            Err(_) => return None,
+        }
+    };
+    let mut names = Vec::new();
+    for part in real.components() {
+        match part {
+            std::path::Component::Normal(name) => names.push(name.to_str()?),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    for name in missing.into_iter().rev() {
+        names.push(name.to_str()?);
+    }
+    Some(names.join("/"))
 }
 
 /// Where writing to `at` beneath `folder` puts a file, for each step of writing it to be done by

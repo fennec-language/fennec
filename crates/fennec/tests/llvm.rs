@@ -16516,6 +16516,207 @@ fn a_loop_over_a_variables_field_leaves_it_alone_for_the_next_change() -> std::i
     Ok(())
 }
 
+/// What the next test builds: loops over lists from a place, `for x in items[k:]`.
+const LOOP_FROM: &str = r#"struct Lines:
+    items: list[str]
+
+    ## The items after the first, joined, read through a field.
+    def rest(self) -> str:
+        mut joined = ""
+        for item in self.items[1:]:
+            joined += item
+        return joined
+
+## A list made for the loop, which nothing else holds.
+def made(count: int) -> list[str]:
+    padding = "x" * 30
+    return [f"made-{at}-{padding}" for at in range(count)]
+
+def main(stdout: Stdout):
+    mut lines = ["a", "bb", "ccc", "dddd"]
+    mut seen = list[str]()
+    for line in lines[1:]:
+        seen.append(line)
+    for line in lines[0:]:
+        seen.append(line)
+    for line in lines[:]:
+        seen.append(line)
+    stdout.print(seen)
+    # Past the end, and from the end, which the slice works out.
+    mut after = 0
+    for _ in lines[4:]:
+        after += 1
+    for _ in lines[9:]:
+        after += 1
+    mut ends = list[str]()
+    for line in lines[-2:]:
+        ends.append(line)
+    stdout.print(after, ends)
+    # The loop goes through the list as it was, whatever its body does to it.
+    mut rounds = 0
+    for line in lines[1:]:
+        lines.append(line + "!")
+        rounds += 1
+    stdout.print(rounds, lines)
+    # Leaving early and going round again.
+    mut kept = list[str]()
+    for line in lines[1:]:
+        if line == "ccc": continue
+        if line == "bb!": break
+        kept.append(line)
+    stdout.print(kept)
+    # Unpacked items, a list a call made, a field, and loops inside loops.
+    pairs = [(1, "one"), (2, "two"), (3, "three")]
+    mut total = 0
+    for number, name in pairs[1:]:
+        total += number * len(name)
+    mut sizes = 0
+    for item in made(5)[2:]:
+        sizes += len(item)
+    held = Lines(items=["skip", "kept ", "and kept"])
+    grid = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+    mut corner = 0
+    for row in grid[1:]:
+        for value in row[1:]:
+            corner += value
+    stdout.print(total, sizes, held.rest(), corner)
+    # Long items, each a block of its own.
+    stem = "y" * 40
+    long = [f"{stem}-{at}" for at in range(6)]
+    mut longest = 0
+    for item in long[3:]:
+        longest = max(longest, len(item))
+    empty = list[str]()
+    for item in empty[1:]:
+        longest += len(item)
+    stdout.print(longest)
+    return
+"#;
+
+/// A loop over a list from a place written as a number, `for x in items[k:]`, goes through the
+/// list's own items from there, with no list made for the slice: past the end there's nothing,
+/// and from the end, `[-2:]`, the slice is made as before. The loop sees the list as it was,
+/// whatever its body does to it, leaving early or going round again; over a list a call made,
+/// a field, tuples it unpacks, a list in a list, and items that are blocks, with nothing left.
+/// It makes 15 fewer blocks than with a slice for each loop.
+#[test]
+fn a_loop_over_a_list_from_a_place_makes_no_slice() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by("loop_from", LOOP_FROM)?,
+        "[\"bb\", \"ccc\", \"dddd\", \"a\", \"bb\", \"ccc\", \"dddd\", \"a\", \"bb\", \"ccc\", \"dddd\"]\n0 [\"ccc\", \"dddd\"]\n3 [\"a\", \"bb\", \"ccc\", \"dddd\", \"bb!\", \"ccc!\", \"dddd!\"]\n[\"bb\", \"dddd\"]\n21 111 kept and kept 28\n42\n"
+    );
+    let counts = counts_of("loop_from_counts", LOOP_FROM)?;
+    assert!(counts.contains(" allocations 32 ") && counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
+/// What the next test builds: loops over a text's parts, `for part in text.split(separator)`.
+const LOOP_SPLIT: &str = r#"struct Log:
+    text: str
+
+    ## The lines that have a word in them, counted through a field.
+    def busy(self) -> int:
+        mut count = 0
+        for line in self.text.split("\n"):
+            if line != "":
+                count += 1
+        return count
+
+## Each part between brackets, so empty ones show.
+def shown(text: str, separator: str) -> str:
+    mut out = ""
+    for part in text.split(separator):
+        out += f"[{part}]"
+    return out
+
+## A text made for the loop, which nothing else holds.
+def made(count: int) -> str:
+    padding = "z" * 30
+    return ",".join([f"{at}-{padding}" for at in range(count)])
+
+def main(stdout: Stdout):
+    # Empty parts at either end and between, a separator not there, and an empty text.
+    stdout.print(
+        shown("a,b,,c", separator=","),
+        shown("a,b,", separator=","),
+        shown(",a", separator=","),
+    )
+    stdout.print(shown("abc", separator=","), shown("", separator=","), shown(",", separator=","))
+    # Separators of two bytes, of more than eight, and ones that overlap themselves.
+    stdout.print(
+        shown("x::y::::z", separator="::"),
+        shown("aaaa", separator="aa"),
+        shown("aaaaa", separator="aa"),
+    )
+    long = "<--separator-->"
+    stdout.print(
+        shown(f"one{long}two{long}{long}three", separator=long),
+        shown("<--separator", separator=long),
+    )
+    # Text that isn't ASCII, split on it and around it.
+    stdout.print(
+        shown("é,ü,ß", separator=","),
+        shown("aébéc", separator="é"),
+        shown("日本語の日本", separator="日本"),
+    )
+    # Parts long enough to be blocks of their own, from a text a call made.
+    mut sizes = 0
+    mut parts = 0
+    for item in made(500).split(","):
+        sizes += len(item)
+        parts += 1
+    stdout.print(parts, sizes)
+    # Loops inside loops, leaving early and going round again, from a name and a field.
+    text = "GET /a 200\nPOST /b 500\n\nGET /c 404\nPUT /d 200"
+    mut words = 0
+    mut seen = list[str]()
+    for line in text.split("\n"):
+        if line == "": continue
+        if line.startswith("PUT"): break
+        for word in line.split(" "):
+            words += 1
+            seen.append(word)
+    held = Log(text=text)
+    stdout.print(words, seen, held.busy())
+    # The loop goes through the text as it was, whatever its body does to the name.
+    mut grown = "a-b-c"
+    mut rounds = 0
+    for part in grown.split("-"):
+        grown = grown + "-" + part
+        rounds += 1
+    stdout.print(rounds, grown)
+    # A separator from a name.
+    separator = ";"
+    mut total = 0
+    for number in "1;22;333".split(separator):
+        total += len(number)
+    stdout.print(total)
+    return
+"#;
+
+/// A loop over a text's parts, `for part in text.split(separator)`, takes them a part at a time
+/// with no list of them all: empty parts at either end and between, a separator that isn't
+/// there, an empty text, separators of two bytes and of more than eight, ones that overlap
+/// themselves, text that isn't ASCII, parts that are blocks of their own from a text a call
+/// made, loops inside loops leaving early and going round again, a field, a text its own loop
+/// changes, and a separator from a name. It prints what `split`'s list gives, with nothing left.
+#[test]
+fn a_loop_over_a_split_makes_no_list() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(
+        printed_by("loop_split", LOOP_SPLIT)?,
+        "[a][b][][c] [a][b][] [][a]\n[abc] [] [][]\n[x][y][][z] [][][] [][][a]\n[one][two][][three] [<--separator]\n[é][ü][ß] [a][b][c] [][語の][]\n500 16890\n9 [\"GET\", \"/a\", \"200\", \"POST\", \"/b\", \"500\", \"GET\", \"/c\", \"404\"] 4\n3 a-b-c-a-b-c\n6\n"
+    );
+    let counts = counts_of("loop_split_counts", LOOP_SPLIT)?;
+    assert!(counts.contains(" allocations 1022 ") && counts.ends_with(" live 0"), "{counts}");
+    Ok(())
+}
+
 /// What a borrowed field can't outlast: the variable written while the loop runs, given away
 /// before it's done, or the list grown from inside the loop. Each still says what it did.
 #[test]
@@ -18039,7 +18240,12 @@ fn writes_in_little_memory(name: &str, megabytes: usize, most: u64) -> std::io::
         String::from_utf8_lossy(&ran.stderr)
     );
     assert!(!partial, "the file written beside big.txt was left behind");
-    if let Some(peak) = measured(peak) {
+    // What the program holds, which a sanitizer's own share is no part of: AddressSanitizer adds
+    // about 20 MB to every run, and keeps back what's freed to catch a use after it, so under it
+    // the bound measured the sanitizer. The builds without one hold every program to it.
+    if let Some(peak) = measured(peak)
+        && std::env::var_os("FENNEC_SANITIZE").is_none()
+    {
         assert!(peak < most, "writing {megabytes} MB held {} MB", peak / (1024 * 1024));
     }
     Ok(())

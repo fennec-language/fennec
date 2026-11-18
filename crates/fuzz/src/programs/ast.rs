@@ -820,6 +820,13 @@ pub(crate) const REF_WAYS: [RefWay; 8] = [
     RefWay::ForRefAnd,
 ];
 
+impl RefWay {
+    /// Whether it holds what it matches in a list, which it then does as a `Held`, not a `Named`.
+    pub(crate) fn holds_in_a_list(self) -> bool {
+        matches!(self, RefWay::Shadowed | RefWay::IndexMoved)
+    }
+}
+
 /// A name that another of the same name and type could capture, written `way`, with `n` the value
 /// it adds or lends.
 #[derive(Clone, Copy, Debug)]

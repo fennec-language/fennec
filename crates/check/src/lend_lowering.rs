@@ -44,7 +44,7 @@ pub(crate) fn lower(
     module: &mut Module,
     sources: &BTreeMap<(u32, u32), Source>,
     launches: &BTreeMap<(u32, u32), crate::launch::Launch>,
-    (ref_matches, test_fails): (&RefMatches, &BTreeMap<String, TypeExpr>),
+    (ref_matches, test_fails): (&RefMatches, &BTreeMap<(u32, u32), TypeExpr>),
 ) -> bool {
     if sources.is_empty() && launches.is_empty() && ref_matches.is_empty() {
         return false;
@@ -90,7 +90,7 @@ pub(crate) fn lower(
                 // after what's inside the block is left (#2040).
                 if test.fails.is_none()
                     && holds_with(&test.body)
-                    && let Some(fails) = test_fails.get(&test.name)
+                    && let Some(fails) = test_fails.get(&(test.span.start, test.span.end))
                 {
                     test.fails = Some(fails.clone());
                 }

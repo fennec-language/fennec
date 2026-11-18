@@ -1891,9 +1891,11 @@ fn a_with_source_s_types_and_special_forms_mean_its_own_where_it_s_written_in() 
     prints_in_both_builds("source_fields", SOURCE_FIELDS, "[\"depth\", \"name\"] 3\n")
 }
 
-/// In a `test`, where nothing holds a failure for the source's cleanup to run once after the block,
-/// the cleanup is written in before the failure, inside a loop that names the caller's `log` again:
-/// it still reads the caller's. Before, the build stopped with an internal error.
+/// A source's cleanup reads the caller's `log` where a loop inside the block names `log` again. In a
+/// `test`, which holds the block's failure since #2040, the cleanup runs once after the block. In a
+/// `main` that doesn't say what it fails with, where nothing holds the failure, the cleanup is
+/// written in before the failure, inside the loop, and still reads the caller's. Before, the build
+/// stopped with an internal error.
 #[test]
 fn a_with_source_s_cleanup_written_in_a_test_reads_the_caller_s_names() -> std::io::Result<()> {
     if !ready() {
@@ -1909,13 +1911,22 @@ fn a_with_source_s_cleanup_written_in_a_test_reads_the_caller_s_names() -> std::
     // The cleanup's `assert` holds, so the test fails with what the block failed with.
     assert!(said.contains("the test failed with Bad()"), "{said}");
     assert!(said.contains("0 passed, 1 failed"), "{said}");
+    // The same block in a `main`, where the cleanup is written in before the failure.
+    let dir = folder("source_cleanup_in_main")?;
+    let program = dir.join("source_cleanup_in_main.fen");
+    std::fs::write(&program, SOURCE_CLEANUP_IN_MAIN)?;
+    let ran = fennec(&["run", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    let said = format!("{}{}", String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+    assert!(said.contains("`main` failed: Bad()") && !said.contains("assertion failed"), "{said}");
     Ok(())
 }
 
 /// A test holds a failure leaving a `with` block as a function does, so the source's cleanup runs
 /// once, after what's inside the block is left: a `for ref` loop's item is written back first, a
 /// generator the block loops over is let go first, and one failing partway through still runs it.
-/// Before, the cleanup was written in before each failure, inside the loop, or not at all (#2040).
+/// A test sharing its name with a bench holds its own failure. Before, the cleanup was written in
+/// before each failure, inside the loop, or not at all (#2040).
 #[test]
 fn a_test_holds_a_source_s_failure_as_a_function_does() -> std::io::Result<()> {
     if !ready() {
@@ -1926,6 +1937,11 @@ fn a_test_holds_a_source_s_failure_as_a_function_does() -> std::io::Result<()> {
             "test_holds_a_ref_item",
             TEST_HOLDS_A_REF_ITEM,
             &["the test failed with Oops(code=11)", "0 passed, 1 failed"][..],
+        ),
+        (
+            "test_and_bench_share_a_name",
+            TEST_AND_BENCH_SHARE_A_NAME,
+            &["the test failed with Oops(code=1)", "0 passed, 1 failed"][..],
         ),
         (
             "test_holds_generators",
@@ -1950,6 +1966,33 @@ fn a_test_holds_a_source_s_failure_as_a_function_does() -> std::io::Result<()> {
     }
     Ok(())
 }
+
+const TEST_AND_BENCH_SHARE_A_NAME: &str = r#"error Oops:
+    code: int
+
+error Other:
+    why: str
+
+def tallied(ref xs: list[int]) -> with int:
+    lend 1 except:
+        xs.append(0)
+
+def flaky(n: int) -> int fails Other:
+    if n < 0:
+        fail Other(why="negative")
+    return n
+
+def main(stdout: Stdout):
+    stdout.print("main")
+
+test "x"():
+    mut xs = [1]
+    with tallied(ref xs) as got:
+        fail Oops(code=got)
+
+bench "x":
+    assert flaky(1)? == 1
+"#;
 
 const TEST_HOLDS_A_REF_ITEM: &str = r#"error Oops:
     code: int
@@ -2298,6 +2341,26 @@ def counted(fields: int, Inner: int, stdout: Stdout):
 def main(stdout: Stdout):
     counted(fields=1, Inner=2, stdout=stdout)
 ";
+
+const SOURCE_CLEANUP_IN_MAIN: &str = r#"error Bad:
+    pass
+
+def risky(n: int) -> int fails Bad:
+    if n < 0:
+        fail Bad()
+    return n
+
+def opened(ref log: list[str]) -> with int:
+    lend 1 except:
+        assert log == list[str]()
+        log.append("cleaned")
+
+def main(stdout: Stdout):
+    mut log = list[str]()
+    with opened(ref log) as got:
+        for log in [["a loop's"]]:
+            _ = risky(-got)?
+"#;
 
 const SOURCE_CLEANUP_IN_A_TEST: &str = r#"error Bad:
     pass

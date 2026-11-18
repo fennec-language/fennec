@@ -106,6 +106,9 @@ pub(crate) struct Checker {
     pub(crate) opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, by the call's span, which lowering writes in as a source.
     pub(crate) launches: BTreeMap<(u32, u32), crate::launch::Launch>,
+    /// What each test or bench can fail with, worked out from its body, by its span: two may share
+    /// a name (#2040).
+    pub(crate) test_errors: BTreeMap<(u32, u32), Type>,
     /// Each route written with a method, as `router.get(...)`, by the call's span, which lowering
     /// writes in as a call to `handle`.
     pub(crate) routes: BTreeMap<(u32, u32), crate::routes::Route>,
@@ -250,6 +253,7 @@ impl Checker {
             union_sources: BTreeMap::new(),
             opened_apart: BTreeSet::new(),
             launches: BTreeMap::new(),
+            test_errors: BTreeMap::new(),
             routes: BTreeMap::new(),
             ref_matches: BTreeMap::new(),
             live_refs: BTreeMap::new(),
@@ -437,6 +441,7 @@ impl Checker {
         Checked {
             signatures,
             types,
+            test_errors: self.test_errors,
             cases: self.cases,
             float_sums: self.float_sums,
             sized_sums: self.sized_sums,
@@ -519,11 +524,11 @@ impl Checker {
 
     /// A test with no inputs has a signature like a function's, under its key in the typed
     /// tree, so a compiler can treat it as one. It gives back nothing, or an error.
-    pub(crate) fn record_test(&mut self, key: String, body: &[Stmt], error: Option<Type>) {
+    pub(crate) fn record_test(&mut self, key: String, body: &[Stmt]) {
         let effects = effects::of_body(body);
         let signature = Signature {
             params: Vec::new(),
-            returns: error.map_or(Type::Unit, |error| Type::result(Type::Unit, error)),
+            returns: Type::Unit,
             can_fail: effects.fails,
             generator: effects.yields,
             generics: Vec::new(),

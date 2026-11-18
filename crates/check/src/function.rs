@@ -638,11 +638,18 @@ impl<'c> FnCx<'c> {
             }
         }
         cx.stmts(&test.body, false);
-        // What it fails with, worked out from its body as a function's is, for lowering to write.
+        // What it fails with, worked out from its body as a function's is, for lowering to write:
+        // by its span, since a test and a bench may share a name.
         let errors = cx.errors.clone();
-        let error = (!errors.is_empty()).then(|| cx.joined(&errors, test.span, "fails with"));
+        if !errors.is_empty() {
+            let error = cx.joined(&errors, test.span, "fails with");
+            let error = cx.checker.settled(&error);
+            cx.checker.test_errors.insert((test.span.start, test.span.end), error);
+        }
         cx.finish(&[]);
-        checker.record_test(key, &test.body, error);
+        if test.inputs.is_empty() && test.capabilities.is_empty() {
+            checker.record_test(key, &test.body);
+        }
     }
 
     /// Checks a type's field defaults against their types, and its `where` rules.

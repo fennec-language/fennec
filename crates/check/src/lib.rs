@@ -979,7 +979,7 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
     // again, so the signatures and types given back are those of what runs.
     let nested = lend_lowering::nest(module, &checked.opened_apart);
     let sources = cases_named(&checked.sources, &checked.cases);
-    let test_fails = tests_failing(module, &checked.signatures);
+    let test_fails = tests_failing(module, &checked.test_errors);
     let sources_written =
         lend_lowering::lower(module, &sources, &checked.launches, (&checked.ref_matches, &test_fails));
     // A copy just written in has spans of its own: what the check found in a source's text is
@@ -999,8 +999,12 @@ fn written_in_round(module: &mut Module, checked: &Checked) -> Round {
     Round::Done
 }
 
-/// What each test fails with, worked out from its body, by its name. One that can't fail isn't here.
-fn tests_failing(module: &Module, signatures: &Signatures) -> BTreeMap<String, fennec_syntax::TypeExpr> {
+/// What each test fails with, worked out from its body, by its span, as `errors` has it, written. One
+/// that can't fail isn't here.
+fn tests_failing(
+    module: &Module,
+    errors: &BTreeMap<(u32, u32), Type>,
+) -> BTreeMap<(u32, u32), fennec_syntax::TypeExpr> {
     // The program's own types, which its files name. Any other is the standard library's, written
     // where that library's code would name it, which needs no import.
     let own: BTreeSet<&str> = module
@@ -1016,12 +1020,12 @@ fn tests_failing(module: &Module, signatures: &Signatures) -> BTreeMap<String, f
     let mut found = BTreeMap::new();
     for item in &module.items {
         let Item::Test(test) = item else { continue };
-        if let Some(signature) = signatures.get(&program::test_key(&test.name))
-            && let Type::Result(_, error) = &signature.returns
+        let at = (test.span.start, test.span.end);
+        if let Some(error) = errors.get(&at)
             && let Some(mut written) = error.written(test.span)
         {
             library_named(&mut written, &own);
-            found.insert(test.name.clone(), written);
+            found.insert(at, written);
         }
     }
     found
@@ -1219,6 +1223,8 @@ pub struct Checked {
     opened_apart: BTreeSet<(u32, u32)>,
     /// Each `with launch(...)`, which lowering writes in as a source.
     launches: BTreeMap<(u32, u32), launch::Launch>,
+    /// What each test or bench can fail with, worked out from its body, by its span.
+    test_errors: BTreeMap<(u32, u32), Type>,
     /// Each route written with a method, as `router.get(...)`, which lowering writes in as a call
     /// to `handle`.
     routes: BTreeMap<(u32, u32), routes::Route>,

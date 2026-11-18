@@ -847,11 +847,21 @@ fn declarations(module: &Module) -> Vec<Item> {
 }
 
 /// Whether everything `before` declares is still declared, as it was and in the same order, with
-/// only more added: what a round of rewriting may do while a check carries over what the round
-/// before found.
+/// only imports added: what a round of rewriting may do while a check carries over what the round
+/// before found. A type added can change what a function written as it was means, as the struct
+/// lock lowering writes in for `shared Account` does.
 fn still_declared(before: &[Item], after: &[Item]) -> bool {
     let mut after = after.iter();
-    before.iter().all(|item| after.any(|now| now == item))
+    for item in before {
+        loop {
+            match after.next() {
+                Some(now) if now == item => break,
+                Some(Item::Import(_)) => {}
+                _ => return false,
+            }
+        }
+    }
+    after.all(|added| matches!(added, Item::Import(_)))
 }
 
 /// `text` with each open type variable's number taken out: `Var(12)` as `Var(_)`.

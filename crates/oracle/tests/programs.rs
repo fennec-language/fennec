@@ -3059,7 +3059,9 @@ const READ_THEN_SENT_AFTER_A_TIMEOUT: &str = "
 /// a task's or a `parallel` round's. A round's wait of no time beside other rounds is refused on a
 /// channel it made itself too, since its ends are plain values another round can be sent.
 /// A task that doesn't know a channel was made holds no end of it, so std's `pool` runs; but one
-/// whose `parallel` round took an end, or that could take one handed on through two channels, does.
+/// whose `parallel` round took an end, on its thread or one it handed rounds to, or that could take
+/// one handed on through two channels, does, and a task that knows nothing of it but could wake
+/// one blocked that holds an end counts too.
 #[test]
 fn a_wait_of_no_time_or_a_listener_read_by_two_tasks_is_refused_where_it_hangs_on_time() {
     prints(WAITS_OF_NO_TIME, "got 5\nagain -1\nfull\n");
@@ -3086,6 +3088,14 @@ fn a_wait_of_no_time_or_a_listener_read_by_two_tasks_is_refused_where_it_hangs_o
         ),
         (
             RECEIVE_OF_NO_TIME_ON_AN_END_HANDED_TWICE,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            RECEIVE_OF_NO_TIME_WHILE_A_HOLDER_COULD_BE_WOKEN,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            RECEIVE_OF_NO_TIME_ON_AN_END_A_HANDED_ROUND_TOOK,
             "a receive of no time, which finds a message or not by time",
         ),
         (
@@ -3167,6 +3177,64 @@ const ONE_LISTENER_TWO_READERS: &str = "
                         hits.send(1)?
                         hits.send(2)?
                 stdout.print('a', first.receive() else -1, 'b', second.receive() else -1)
+        ";
+
+const RECEIVE_OF_NO_TIME_WHILE_A_HOLDER_COULD_BE_WOKEN: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def holder(pipe: Inbox[Sender[int]], ack: Sender[int], wake: Inbox[int], done: Sender[int]) fails Closed:
+            out = pipe.receive() else return
+            ack.send(0)?
+            _ = wake.receive() else -1
+            out.send(7)?
+            done.send(0)?
+
+        def waker(quiet: Inbox[int], wake: Sender[int]) fails Closed:
+            _ = quiet.receive_within(1ns) except Timeout(): -1
+            wake.send(0)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[Sender[int]](size=1) as pipe, channel[int](size=1) as ack, channel[int](size=1) as wake:
+                with channel[int](size=1) as quiet, channel[int](size=1) as done:
+                    with launch(() => waker(quiet.inbox(), wake=wake.sender())?)?:
+                        with launch(() => holder(pipe.inbox(), ack=ack.sender(), wake=wake.inbox(), done=done.sender())?)?:
+                            with channel[int](size=1) as box:
+                                pipe.send(box.sender())?
+                                _ = ack.receive() else -1
+                                got = box.receive_within(0ms) except Timeout(): -1
+                                stdout.print('got', got)
+                                _ = done.receive() else -1
+        ";
+
+const RECEIVE_OF_NO_TIME_ON_AN_END_A_HANDED_ROUND_TOOK: &str = "
+        from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout, channel
+
+        def take(pipe: Inbox[Sender[int]], ack: Sender[int], go: Inbox[int], at: int) -> list[Sender[int]] fails Closed:
+            if at == 0:
+                _ = go.receive() else -1
+                return []
+            out = pipe.receive() else return []
+            ack.send(0)?
+            return [out]
+
+        def worker(pipe: Inbox[Sender[int]], ack: Sender[int], go: Inbox[int], done: Sender[int]) fails Closed:
+            taken = [take(pipe, ack=ack, go=go, at=at)? for at in parallel(range(2))]
+            for outs in taken:
+                for out in outs:
+                    out.send(7)?
+            done.send(0)?
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[Sender[int]](size=1) as pipe, channel[int](size=1) as ack, channel[int](size=1) as go:
+                with channel[int](size=1) as done:
+                    go.send(0)?
+                    with launch(() => worker(pipe.inbox(), ack=ack.sender(), go=go.inbox(), done=done.sender())?)?:
+                        with channel[int](size=1) as box:
+                            pipe.send(box.sender())?
+                            _ = ack.receive() else -1
+                            got = box.receive_within(0ms) except Timeout(): -1
+                            stdout.print('got', got)
+                            _ = done.receive() else -1
         ";
 
 const RECEIVE_OF_NO_TIME_ON_AN_END_A_ROUND_TOOK: &str = "

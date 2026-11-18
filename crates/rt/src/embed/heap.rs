@@ -719,6 +719,12 @@ pub(super) fn uncounted(block: &[u64]) -> bool {
 /// through allocator and table pages that then can't be given back.
 const SPARE_TOTAL_WORDS: usize = 1 << 20;
 
+/// How many words of blocks a heap makes new between its looks for kept blocks nothing has taken
+/// (`give_back_unused`): 32 MB, four times what it keeps at most. A block kept that long unused is
+/// one of a size the heap seldom makes, and a shorter wait gave back more that a program then
+/// made again: 0.3% more instructions for an API server at 8 MB.
+const LOOK_AFTER_WORDS: usize = 4 * SPARE_TOTAL_WORDS;
+
 /// How many words of freed blocks of any one size a heap keeps: 1 MB.
 const SPARE_SIZE_WORDS: usize = 1 << 17;
 
@@ -846,9 +852,9 @@ impl Heap {
         }
     }
 
-    /// A zeroed block of `words` words from the allocator, none being kept. Once as many words
-    /// have been made new as the heap keeps at most, what it's kept and not reused since it last
-    /// looked goes back (`give_back_unused`).
+    /// A zeroed block of `words` words from the allocator, none being kept. Once `LOOK_AFTER_WORDS`
+    /// have been made new, what it's kept and not reused since it last looked goes back
+    /// (`give_back_unused`).
     ///
     /// A heap frees blocks of sizes it seldom makes, as a thread does that frees what other
     /// threads made, and kept for good they filled its share a size at a time over hours of
@@ -857,7 +863,7 @@ impl Heap {
     /// and on the way to the allocator, which costs far more, rather than on every block's reuse.
     fn made_new(&mut self, words: usize) -> Box<[u64]> {
         self.made_new += words;
-        if self.made_new >= SPARE_TOTAL_WORDS {
+        if self.made_new >= LOOK_AFTER_WORDS {
             self.give_back_unused();
         }
         vec![0; words].into_boxed_slice()

@@ -226,7 +226,9 @@ impl Lowering<'_> {
         lowered
     }
 
-    /// A call to a closure. Its arguments are positional, since its type has no names.
+    /// A call to a closure. A closure's type has no names, but a nested function's call may name
+    /// its arguments, as `scaled(5, by=3)`: each runs in the order it's written and lands in the
+    /// parameter it names, by the nested function's signature.
     pub(super) fn call_closure(
         &mut self,
         callee: &Expr,
@@ -238,20 +240,59 @@ impl Lowering<'_> {
         let Type::Arrow(params, _) = ty else {
             return Err("it calls something other than a function".to_owned());
         };
+        let slots = self.closure_slots(callee, args, params.len())?;
         let closure = self.expr(callee)?;
         let mut reads = super::order::Reads::default();
-        for (arg, param) in args.iter().zip(params) {
-            if arg.name.is_some() || arg.is_mut {
-                return Err("its call to a closure has a named or `mut` argument".to_owned());
+        for (arg, at) in args.iter().zip(&slots) {
+            // A nested function with a `mut` parameter isn't lowered, and a closure's type takes
+            // none, so nothing passes one here.
+            if arg.is_mut {
+                return Err("its call to a closure passes an argument with `mut`".to_owned());
             }
+            let param = params.get(*at).ok_or("an argument to a closure matches no parameter")?;
             let value = self.expr_where(&arg.value, param)?;
             let value = self.coerce(value, param, arg.value.span)?;
             reads.add(self, value);
         }
-        let values = reads.finish(self, span);
+        let read = reads.finish(self, span);
+        let mut values: Vec<Option<Operand>> = vec![None; params.len()];
+        for (at, value) in slots.into_iter().zip(read) {
+            if let Some(slot) = values.get_mut(at) {
+                *slot = Some(value);
+            }
+        }
+        let values = values
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or("its call to a closure leaves a parameter without a value")?;
         let dest = keep.filter(|ty| *ty != Type::Unit).map(|ty| self.temporary(ty));
         self.emit(InstKind::CallClosure { dest, closure, args: values }, span);
         Ok(dest)
+    }
+
+    /// The parameter each of a closure call's arguments lands in: in order, or, for one that names
+    /// it, the nested function's parameter of that name, which the checker typed the callee as.
+    fn closure_slots(&self, callee: &Expr, args: &[Arg], count: usize) -> Lowered<Vec<usize>> {
+        if args.iter().all(|arg| arg.name.is_none()) {
+            return Ok((0..args.len()).collect());
+        }
+        let Some(Type::Function(key)) = self.type_at(callee.span) else {
+            return Err("its call to a closure names an argument, and it isn't a nested function".to_owned());
+        };
+        let signature = self.context.signatures.get(&key).ok_or("a nested function has no signature")?;
+        let names: Vec<&str> = signature.params.iter().map(|param| param.name.as_str()).collect();
+        if names.len() != count {
+            return Err("a nested function takes other parameters than its closure".to_owned());
+        }
+        args.iter()
+            .enumerate()
+            .map(|(position, arg)| match &arg.name {
+                Some(name) => names.iter().position(|param| param == name).ok_or_else(|| {
+                    format!("its call to a closure names `{name}`, which it has no parameter for")
+                }),
+                None => Ok(position),
+            })
+            .collect()
     }
 
     /// The finished function, and those lifted out of it. `params` counts its leading

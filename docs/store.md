@@ -25,6 +25,14 @@ This page is the store's format, so that the launcher and a shared cache can rea
   llvm-version            which version of LLVM they are
 ```
 
+Beside `fennec` is the toolchain's own store, `fennec-store/`, laid out as a home's `cache/` is. It
+holds what depends only on that build of Fennec and the libraries beside it: the standard library's
+parse, and which build each runtime library is from. Every home reads it when its own cache hasn't
+got an entry, so an empty home, as each test's and each CI job's is, doesn't parse the standard
+library or read a runtime library through again. What a command works out is kept in both. A store
+that can't be written, as in a folder only the system writes, is only read. `FENNEC_TOOLCHAIN_STORE`
+names another folder, and set empty turns it off.
+
 An entry is a file. Its kind is the folder it's in, and its name is a hash. Each build keeps entries
 of its own, so two builds never read each other's, even of one version: a key that left out something
 the compiler does would otherwise bring back what an older compiler made.

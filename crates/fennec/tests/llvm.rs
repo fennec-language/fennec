@@ -28526,6 +28526,101 @@ def main(stdout: Stdout):
     )
 }
 
+/// What the next test builds: std's `Heap` checked against a sorted list.
+const HEAP_ORDER: &str = r#"from std.collections import Heap
+
+struct Job:
+    cost: int
+    name: str
+
+    def <(self, other: Job) -> bool:
+        if self.cost != other.cost: return self.cost < other.cost
+        return self.name < other.name
+
+## The next state of a small generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+def main(stdout: Stdout):
+    mut seed = 7
+    mut wrong = 0
+    mut popped = 0
+    # Pushes and pops mixed, against a sorted list doing the same, at every size up to 60.
+    for size in range(60):
+        mut heap = Heap[int]()
+        mut model = list[int]()
+        for _ in range(size * 3):
+            seed = next(seed)
+            if seed % 3 == 0:
+                got = heap.pop() else -1
+                expected = model.pop(0) if len(model) > 0 else -1
+                if got != expected:
+                    wrong += 1
+                popped += 1
+            else:
+                item = seed // 65_536 % 50
+                heap.push(item)
+                model.append(item)
+                model = sorted(model)
+            if len(heap) != len(model):
+                wrong += 1
+        # What's left comes out in order.
+        while len(model) > 0:
+            if (heap.pop() else -1) != model.pop(0):
+                wrong += 1
+        if heap.pop() is not None:
+            wrong += 1
+    # A heap made from a list gives it back sorted.
+    mut items = list[int]()
+    for _ in range(301):
+        seed = next(seed)
+        items.append(seed // 65_536 % 1000 - 500)
+    mut made = Heap.of(items)
+    mut drained = list[int]()
+    while True:
+        item = made.pop() else break
+        drained.append(item)
+    stdout.print(wrong, popped, drained == sorted(items), (made.peek() else 0))
+    # Structs with a `<` of their own, and tuples, many of them equal in their first field.
+    mut jobs = Heap[Job]()
+    mut pairs = Heap[(int, str)]()
+    for number in range(200):
+        seed = next(seed)
+        cost = seed // 65_536 % 10
+        jobs.push(Job(cost=cost, name=f"j{number}"))
+        pairs.push((cost, f"p{number}"))
+    mut names = list[str]()
+    mut last = Job(cost=-1, name="")
+    mut ordered = True
+    while True:
+        job = jobs.pop() else break
+        if job < last:
+            ordered = False
+        last = job
+        names.append(job.name)
+    mut first = (-1, "")
+    while True:
+        pair = pairs.pop() else break
+        if pair < first:
+            ordered = False
+        first = pair
+    stdout.print(len(names), ordered, names[0], names[199])
+    return
+"#;
+
+/// std's `Heap` gives its items back smallest first: pushes and pops mixed at every size up to
+/// 60 against a sorted list doing the same, a heap made from a list, and structs with a `<` of
+/// their own and tuples, many of them equal in their first field. Everything's let go.
+#[test]
+fn a_heap_gives_its_items_back_smallest_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(printed_by("heap_order", HEAP_ORDER)?, "0 1768 True 0\n200 True j1 j93\n");
+    assert!(counts_of("heap_order_counts", HEAP_ORDER)?.ends_with(" live 0"));
+    Ok(())
+}
+
 #[test]
 fn std_pieces_the_proof_program_uses_match_what_was_pinned() -> std::io::Result<()> {
     if !ready() {

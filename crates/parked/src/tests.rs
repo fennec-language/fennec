@@ -403,6 +403,26 @@ fn a_task_asked_for_a_smaller_stack_gets_one_and_leaves_it_for_a_task_its_size()
     assert_eq!(scheduler.spare_stacks(), 2);
 }
 
+#[test]
+fn deep_work_in_a_task_runs_on_the_thread_s_deep_stack_and_comes_back() {
+    const DEEP: usize = STACK * 4;
+    // With no task running, it runs here.
+    assert_eq!(super::on_deep_stack(DEEP, || super::stack_size()), None);
+    let mut scheduler = Scheduler::new(STACK);
+    let task = scheduler
+        .spawn(|| {
+            let own = own_size();
+            let (deep, inner) = super::on_deep_stack(DEEP, || {
+                // Asked again while on it, it runs where it is, on the deep stack.
+                (own_size(), super::on_deep_stack(DEEP, own_size))
+            });
+            let back = own_size();
+            i64::from(deep >= i64::try_from(DEEP).unwrap() && inner == deep && back == own && own < deep)
+        })
+        .unwrap();
+    assert_eq!(scheduler.resume(task, Wake::Ready(0)), Step::Done(1));
+}
+
 /// Thousands of short tasks one after another, as a worker running ranges makes them, on stacks as
 /// big as a range's: with reuse, a stack is made only once.
 #[test]

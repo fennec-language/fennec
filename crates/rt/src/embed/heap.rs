@@ -586,6 +586,21 @@ thread_local! {
 #[cfg(any(test, feature = "threads"))]
 const TASK_STACK_KEPT: usize = 64 << 10;
 
+/// How big a stack a parked task reads a value into a tree on, when it hashes one by what it holds:
+/// as big as a worker's, since a task's own is small.
+#[cfg(any(test, feature = "threads"))]
+const DEEP_READ_STACK: usize = 64 << 20;
+
+/// Runs `work`, which reads a value into a tree and is done with it, with as much stack as a
+/// worker has: in a parked task, on its thread's deep stack, since a task's own is small, and
+/// anywhere else, here.
+pub(super) fn with_room_to_read<R>(work: impl FnOnce() -> R) -> R {
+    #[cfg(any(test, feature = "threads"))]
+    return fennec_parked::on_deep_stack(DEEP_READ_STACK, work);
+    #[cfg(not(any(test, feature = "threads")))]
+    work()
+}
+
 /// Says how low on this thread's stack the runtime may still read a value into a tree: for the
 /// program's own thread and each worker, some way below where native code may go. A parked task's
 /// stack says for itself.

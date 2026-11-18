@@ -14,7 +14,7 @@
 //! runs to its end. Dropping a scheduler cancels its tasks that way. A panic in a task stops
 //! the process, in every build, as `panic=abort` does in release builds.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use corosensei::stack::{DefaultStack, Stack as _};
@@ -29,6 +29,9 @@ pub type TaskId = u64;
 thread_local! {
     /// The number the next task made on this thread gets.
     static NEXT: Cell<TaskId> = const { Cell::new(1) };
+    /// This thread's stack for deep work, while nothing runs on it: made the first time it's
+    /// wanted, and kept for the next.
+    static DEEP: RefCell<Option<DefaultStack>> = const { RefCell::new(None) };
 }
 
 /// What a parked task waits for, as a number its scheduler's owner gives meaning to, such as
@@ -93,6 +96,29 @@ pub fn stack_low() -> Option<usize> {
 /// How big the running task's stack is. With no task running on this thread, `None`.
 pub fn stack_size() -> Option<usize> {
     current::stack_size()
+}
+
+/// Runs `work` on a stack of at least `bytes` that this thread keeps for deep work, when a task is
+/// running here: a task's own stack may be small. While `work` runs, `stack_low` and `stack_size`
+/// say where that stack is, so what checks how far its stack has grown checks that one. With no
+/// task running, with the deep stack already in use, or with none to be had, `work` runs here.
+/// `work` mustn't park: that stops the process.
+pub fn on_deep_stack<R>(bytes: usize, work: impl FnOnce() -> R) -> R {
+    if current::stack_low().is_none() {
+        return work();
+    }
+    let kept = DEEP.with_borrow_mut(Option::take);
+    let mut stack = match kept {
+        Some(stack) if stack.base().get() - stack.limit().get() >= bytes => stack,
+        _ => match DefaultStack::new(bytes) {
+            Ok(stack) => stack,
+            Err(_) => return work(),
+        },
+    };
+    let bounds = current::Bounds { low: stack.limit().get(), high: stack.base().get() };
+    let result = corosensei::on_stack(&mut stack, || current::with_stack(bounds, work));
+    DEEP.with_borrow_mut(|deep| *deep = Some(stack));
+    result
 }
 
 struct Task {

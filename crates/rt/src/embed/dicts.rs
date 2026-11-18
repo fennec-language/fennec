@@ -464,15 +464,19 @@ fn hash_key(state: &State, key_word: Word, key: &[u64], how: Hashing) -> u64 {
             super::heap::element_of_block(state, block).is_some_and(|element| by_what_it_holds(&element))
         });
         if by_value {
-            let value = super::heap::read_block(state, first);
-            return match how {
-                Hashing::Fast => {
-                    finish(crate::pairs::hash_with(hash_keys().seed, crate::pairs::mixed, &value))
+            // Read into a tree, hashed and let go of with a call for each level it holds, which
+            // takes as much stack as the key is deep.
+            return super::heap::with_room_to_read(|| {
+                let value = super::heap::read_block(state, first);
+                match how {
+                    Hashing::Fast => {
+                        finish(crate::pairs::hash_with(hash_keys().seed, crate::pairs::mixed, &value))
+                    }
+                    Hashing::Strong => {
+                        crate::pairs::hash_with(0, |hash, word| strong_step(hash, word), &value) >> 1
+                    }
                 }
-                Hashing::Strong => {
-                    crate::pairs::hash_with(0, |hash, word| strong_step(hash, word), &value) >> 1
-                }
-            };
+            });
         }
         // Bytes go by their length and the words it takes up, as they're compared, not by any
         // room after them.

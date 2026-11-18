@@ -4891,6 +4891,29 @@ def main(stdout: Stdout):
         Ok(())
     }
 
+    /// A new int key goes into a dict of ints that's alone and has room by compiled code itself,
+    /// and the runtime adds it otherwise.
+    #[test]
+    fn a_new_int_key_is_added_natively() -> Result<(), String> {
+        let source = "def main(stdout: Stdout):\n    mut seen: dict[int, int] = {}\n    for i in range(10):\n        seen[i * 7] = i\n    stdout.print(len(seen))\n";
+        let text = text_of(source, "main")?;
+        assert!(text.contains("call i1 @fen_add_plain("), "{text}");
+        assert!(text.contains("call ptr @fennec_dict_set("), "{text}");
+        Ok(())
+    }
+
+    /// A new int key goes into a dict that holds its values in its entries by compiled code too:
+    /// the add writes the slot, hash and key and gives back where the value's two words go, and
+    /// the runtime's add, with the value through its buffer, is what's left when it can't.
+    #[test]
+    fn a_new_int_key_with_its_value_in_the_entry_is_added_natively() -> Result<(), String> {
+        let source = "struct Visit:\n    cost: int\n    came_from: int\n\ndef main(stdout: Stdout):\n    mut seen = dict[int, Visit]()\n    for i in range(10):\n        seen[i * 7] = Visit(cost=i, came_from=i - 1)\n    stdout.print(len(seen))\n";
+        let text = text_of(source, "main")?;
+        assert!(text.contains("call ptr @fen_add_entry_e4("), "{text}");
+        assert!(text.contains("call ptr @fennec_dict_set_words("), "{text}");
+        Ok(())
+    }
+
     /// A case with no fields is one block made the first time and kept in a global: put there
     /// with release and read with acquire, so another thread that sees it sees its count and tag.
     #[test]

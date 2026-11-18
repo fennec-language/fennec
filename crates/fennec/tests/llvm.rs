@@ -11746,6 +11746,24 @@ fn fast_text_hash(text: &str) -> u64 {
     fast_hash(u64::try_from(text.len()).unwrap_or(0), &words)
 }
 
+/// New int keys go into a dict as compiled code adds them itself, while it's alone and has room,
+/// and through the runtime when it must grow, when another owner holds it, and through `ref`:
+/// into dicts that hold their values in their entries, values holding blocks among them, and dicts
+/// of ints. Every key is found again, the order they went in is kept, a copy taken partway keeps
+/// only what it had, and nothing's left, in entries and boxed, in a dev build and with `--release`.
+#[test]
+fn int_keys_added_natively_are_found_in_order() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without(
+        "FENNEC_BOXED_DICT_VALUES",
+        "dict_word_keys_added",
+        include_str!("fixtures/dict_word_keys_added.fen"),
+        include_str!("fixtures/dict_word_keys_added.out"),
+    )
+}
+
 /// New struct keys go into a dict as compiled code adds them itself, while it has room, and through
 /// the runtime when it must grow, when another owner holds it, and when the value holds a block:
 /// every key is found again, the order they went in is kept, and a copy taken partway keeps only

@@ -118,20 +118,9 @@ impl FnCx<'_> {
                     return self.construct_builtin(type_name, Some(index), args, span);
                 }
                 if let ExprKind::Name(name) = &object.kind
-                    && self.lookup(name).is_none()
-                    && self.names_function(name)
+                    && let Some(returns) = self.call_named_with_types((name, object.span), index, args, span)
                 {
-                    let types = self.types_in(index);
-                    self.record(object.span, &Type::Function(name.clone()));
-                    return self.call_with_types(name, name, (args, &types), span);
-                }
-                if let ExprKind::Name(name) = &object.kind
-                    && self.lookup(name).is_none()
-                    && let Some(function) = self.std_function(name, object.span)
-                {
-                    let types = self.types_in(index);
-                    self.record(object.span, &Type::Function(function.clone()));
-                    return self.call_with_types(&function, name, (args, &types), span);
+                    return returns;
                 }
                 if let Some(returns) = self.called_with_types((object, index), callee.span, args, span) {
                     return returns;
@@ -180,8 +169,43 @@ impl FnCx<'_> {
         returns
     }
 
+    /// `f[int](...)`, where `f` is a function of the program's or one imported from std, and no
+    /// local. A `with` source's own, written into its caller where something there names it too
+    /// (`sight::outer`), is the top-level one.
+    fn call_named_with_types(
+        &mut self,
+        (written, at): (&str, Span),
+        index: &Expr,
+        args: &[Arg],
+        span: Span,
+    ) -> Option<Type> {
+        let meant = fennec_syntax::sight::outer(written);
+        if meant.is_some() {
+            self.note_outer();
+        } else if self.lookup(written).is_some() {
+            return None;
+        }
+        let name = meant.unwrap_or(written);
+        if self.names_function(name) {
+            let types = self.types_in(index);
+            self.record(at, &Type::Function(name.to_owned()));
+            return Some(self.call_with_types(name, name, (args, &types), span));
+        }
+        let function = self.std_function(name, at)?;
+        let types = self.types_in(index);
+        self.record(at, &Type::Function(function.clone()));
+        Some(self.call_with_types(&function, name, (args, &types), span))
+    }
+
     /// A call to a name that isn't a local: a function, a type or a builtin.
     fn call_by_name(&mut self, name: &str, callee: &Expr, args: &[Arg], span: Span) -> Option<Type> {
+        // A `with` source's own function, written into its caller where something there names it
+        // too, is the top-level one.
+        let meant = fennec_syntax::sight::outer(name);
+        if meant.is_some() {
+            self.note_outer();
+        }
+        let name = meant.unwrap_or(name);
         if let Some(refused) = self.test_only_function(name, span) {
             self.error(refused);
         }

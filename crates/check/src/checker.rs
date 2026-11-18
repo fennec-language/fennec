@@ -68,6 +68,9 @@ pub(crate) struct Checker {
     pub(crate) failing_steps: BTreeSet<(u32, u32)>,
     /// What each name for a standard library function written in Fennec means.
     pub(crate) std_names: BTreeMap<(u32, u32), String>,
+    /// The functions that name a `with` source's own function, constant or module where it's
+    /// written in, with something in sight there named the same (`sight::outer`).
+    pub(crate) names_outer: BTreeSet<String>,
     /// The calls a standard library function written in Fennec makes instead, by the call's
     /// span, like `crypto.blake3(chunks)` of many chunks.
     pub(crate) std_calls: BTreeMap<(u32, u32), String>,
@@ -233,6 +236,7 @@ impl Checker {
             optional_steps: BTreeSet::new(),
             failing_steps: BTreeSet::new(),
             std_names: BTreeMap::new(),
+            names_outer: BTreeSet::new(),
             std_calls: BTreeMap::new(),
             field_args: BTreeMap::new(),
             named_patterns: BTreeMap::new(),

@@ -366,6 +366,35 @@ pub(crate) fn fennec_command() -> Command {
     Command::new(env!("CARGO_BIN_EXE_fennec"))
 }
 
+/// Cargo, to build a runtime library from inside a test as it's built outside one. `cargo test`
+/// gives a test the variables it gives the package it builds, `CARGO_MANIFEST_DIR` among them, and
+/// a crate whose code reads one is built again whenever its value changes. Inherited, it had
+/// `ring` and all that's built on it, `rustls` and the runtime among them, built again by every
+/// test run, for the plain, threads and audited runtimes in turn, and the test binary built again
+/// by the `cargo test` after it: on CI, two to three minutes that every test starting first waited.
+fn cargo() -> Command {
+    const SET_FOR_A_PACKAGE: [&str; 7] = [
+        "CARGO_MANIFEST_DIR",
+        "CARGO_MANIFEST_PATH",
+        "CARGO_CRATE_NAME",
+        "CARGO_BIN_NAME",
+        "CARGO_TARGET_TMPDIR",
+        "CARGO_PRIMARY_PACKAGE",
+        "OUT_DIR",
+    ];
+    let mut cargo = Command::new(env!("CARGO"));
+    for (key, _) in std::env::vars_os() {
+        let Some(key) = key.to_str() else { continue };
+        if SET_FOR_A_PACKAGE.contains(&key)
+            || key.starts_with("CARGO_PKG_")
+            || key.starts_with("CARGO_BIN_EXE_")
+        {
+            cargo.env_remove(key);
+        }
+    }
+    cargo
+}
+
 /// The runtime library executables link against, which `fennec build` expects next to
 /// itself. `cargo test` doesn't build it, so this does, once a run: `fennec` refuses one from
 /// other source. Only once, because even when it's
@@ -375,7 +404,7 @@ pub(crate) fn runtime_built() -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
     *BUILT.get_or_init(|| {
         let profile = if cfg!(debug_assertions) { None } else { Some("--release") };
-        let mut build = Command::new(env!("CARGO"));
+        let mut build = cargo();
         build.args(["build", "--quiet", "-p", "fennec-runtime"]).args(profile);
         // Coverage builds `fennec` in a target folder of its own, so the library goes there too.
         if under_coverage()
@@ -426,7 +455,8 @@ pub(crate) fn threads_runtime_built() -> bool {
 
 /// Builds both runtime libraries with the heap audit in them, next to `fennec`, as
 /// `libfennec_runtime_audit.a` and `libfennec_runtime_threads_audit.a`: what a program built under
-/// `FENNEC_AUDIT=1` links. Each is built in the folder the gate builds it in.
+/// `FENNEC_AUDIT=1` links. Each is built in the folder the gate and CI build it in before the
+/// tests, so here it's found built.
 pub(crate) fn audited_runtimes_built() -> bool {
     static BUILT: OnceLock<bool> = OnceLock::new();
     *BUILT.get_or_init(|| {
@@ -441,7 +471,7 @@ fn runtime_variant_built(features: &str, folder: &str, name: &str) -> bool {
     let Some(beside) = Path::new(env!("CARGO_BIN_EXE_fennec")).parent() else { return false };
     let Some(own) = beside.parent().map(|target| target.join(folder)) else { return false };
     let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
-    let mut cargo = Command::new(env!("CARGO"));
+    let mut cargo = cargo();
     cargo
         .args(["build", "--quiet", "-p", "fennec-runtime", "--features", features, "--target-dir"])
         .arg(&own)

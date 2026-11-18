@@ -793,8 +793,9 @@ mod tests {
     /// Every way of writing a name another of its name and type could capture (`CaptureWay`)
     /// checks, and the evaluator prints what the oracle prints: each name means what it does where
     /// it's written. `LockDef` is left out while the checker refuses a nested function's
-    /// parameter named as a lock's name, as taking the lock, which its name-capture fix ends; it
-    /// joins the rest then.
+    /// parameter named as a lock's name, as taking the lock: that's #2011, lock order treating a
+    /// nested function as its outermost one, not name capture. It joins the rest once #2011 is
+    /// fixed.
     #[test]
     fn the_name_capture_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
         use super::ast::{CAPTURE_WAYS, CaptureWay, Capturing, Program, Stmt};
@@ -804,6 +805,36 @@ mod tests {
             for n in [0, 7, 19] {
                 id += 1;
                 body.push(Stmt::Captured(Capturing { id, way, n }));
+            }
+        }
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
+    /// Every way of writing a `match` with `ref` the compiled program once got wrong (`RefWay`),
+    /// from every start and with every text, checks, and the evaluator prints what the oracle
+    /// prints: each `ref` name's change put back into the field it names.
+    #[test]
+    fn the_ref_case_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, REF_STARTS, REF_TEXTS, REF_WAYS, RefCasing, Stmt};
+        let mut body = Vec::new();
+        let mut id = 0;
+        for way in REF_WAYS {
+            for start in 0..REF_STARTS {
+                for text in 0..REF_TEXTS.len() {
+                    id += 1;
+                    body.push(Stmt::RefCased(RefCasing { id, way, start, text }));
+                }
             }
         }
         let program = Program { body, threadless: true };

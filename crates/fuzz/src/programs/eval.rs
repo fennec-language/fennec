@@ -19,8 +19,8 @@ use super::ast::{
     TABLE, Turn, Turning, Writing, XS, YS, alias_name, starting,
 };
 use super::ast::{
-    Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, SWAP_KEYS, ShelfPlace, Shelving,
-    SwapField, Swapping, Waking, Yielding,
+    Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
+    SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding,
 };
 use super::source::LONG_PIECE;
 
@@ -1640,6 +1640,7 @@ impl Machine {
             Stmt::Swapped(swapping) => self.swapped(swapping),
             Stmt::Shelved(shelving) => self.shelved(shelving),
             Stmt::Listened(listening) => self.listened(listening),
+            Stmt::RefCased(casing) => self.ref_cased(*casing),
             Stmt::Captured(capturing) => self.captured(*capturing),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
@@ -2099,6 +2100,85 @@ impl Machine {
 
     /// What `listened{id}` prints: what the loop dropping the oldest heard, the last `size` sent,
     /// then each inbox's messages, or `behind` for one that fell behind.
+    /// A `match` with `ref` put back where it matched, however it's written, as the language
+    /// says: each `ref` name's change goes into the field it names, three `match`es deep
+    /// included, and a whole new value too.
+    fn ref_cased(&mut self, casing: RefCasing) {
+        let RefCasing { way, start, text, .. } = casing;
+        let text = REF_TEXTS.get(text).copied().unwrap_or_default();
+        let leaf = |name: &str| Named::Leaf(name.to_owned());
+        let mut named = match start {
+            0 => leaf("a"),
+            1 => Named::Pair(Box::new(leaf("a")), Box::new(leaf("b")), "x".to_owned(), Vec::new()),
+            _ => Named::Pair(
+                Box::new(Named::Pair(Box::new(leaf("a")), Box::new(leaf("b")), "in".to_owned(), Vec::new())),
+                Box::new(leaf("c")),
+                "out".to_owned(),
+                vec!["t".to_owned()],
+            ),
+        };
+        let digest = |named: &Named| {
+            let mut out = String::new();
+            named.digest(&mut out);
+            out
+        };
+        match way {
+            RefWay::Deep => {
+                match &mut named {
+                    Named::Leaf(name) => name.push_str(text),
+                    Named::Pair(left, ..) => match left.as_mut() {
+                        Named::Leaf(name) => name.push_str(text),
+                        Named::Pair(inner, ..) => {
+                            if let Named::Leaf(name) = inner.as_mut() {
+                                name.push_str(text);
+                            }
+                        }
+                    },
+                }
+                let _ = writeln!(self.out, "{}", digest(&named));
+            }
+            RefWay::NewValue => {
+                match &mut named {
+                    Named::Leaf(name) => text.clone_into(name),
+                    Named::Pair(left, ..) => **left = leaf(text),
+                }
+                let _ = writeln!(self.out, "{}", digest(&named));
+            }
+            RefWay::Shadowed | RefWay::IndexMoved => {
+                match &mut named {
+                    Named::Leaf(name) | Named::Pair(_, _, name, _) => name.push_str(text),
+                }
+                let moved = if way == RefWay::IndexMoved { " 1" } else { "" };
+                let _ = writeln!(self.out, "{} {}{moved}", digest(&named), digest(&leaf("z")));
+            }
+            RefWay::ForRefWhile | RefWay::ForRefElif | RefWay::ForRefAnd => {
+                // The first tag grows, and the `?` after it fails with its length, which the
+                // case puts back with the change.
+                match &mut named {
+                    Named::Leaf(name) => name.push_str(text),
+                    Named::Pair(_, _, _, tags) => {
+                        if let Some(tag) = tags.first_mut() {
+                            tag.push_str(text);
+                            let _ = writeln!(self.out, "refused {}", tag.chars().count());
+                        }
+                    }
+                }
+                let _ = writeln!(self.out, "{}", digest(&named));
+            }
+            RefWay::Guarded => {
+                match &mut named {
+                    Named::Pair(_, _, label, tags) if label.chars().count() < 3 => {
+                        label.push_str(text);
+                        tags.push(label.clone());
+                    }
+                    Named::Leaf(name) if !name.is_empty() => name.push_str(text),
+                    _ => {}
+                }
+                let _ = writeln!(self.out, "{}", digest(&named));
+            }
+        }
+    }
+
     /// Each name meaning what it does where it's written: the nested function's, the loop's, the
     /// case's or the arrow's own parameter or name, and the function the source calls, not the
     /// caller's parameter of that name.

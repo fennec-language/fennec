@@ -71,6 +71,7 @@ pub(crate) fn lower(
         failing: Vec::new(),
         fails: Vec::new(),
         instead: None,
+        binds: Vec::new(),
         tails: BTreeSet::new(),
     };
     for item in &mut module.items {
@@ -83,7 +84,11 @@ pub(crate) fn lower(
             Item::Test(test) => {
                 lowering.returns.push(None);
                 lowering.fails.push(None);
+                let given: Vec<String> =
+                    test.capabilities.iter().chain(&test.inputs).map(|param| param.name.clone()).collect();
+                lowering.binds.push(fennec_syntax::sight::bound_in(&test.body, &given));
                 lowering.stmts(&mut test.body);
+                lowering.binds.pop();
                 lowering.fails.pop();
                 lowering.returns.pop();
             }
@@ -197,6 +202,9 @@ struct Lowering<'s> {
     fails: Vec<Option<TypeExpr>>,
     /// What the source being written in does in place of failing, for `with src else fail E:`.
     instead: Option<Expr>,
+    /// The names each function being walked binds anywhere, its parameters among them, innermost
+    /// last: a source written in there calls a function of its own by one of these through a mark.
+    binds: Vec<BTreeSet<String>>,
     /// The `with`s that are the last line of a function giving back a value, by span, through
     /// `if`s and `match`es: one whose block always fails says so where it's written in.
     tails: BTreeSet<(u32, u32)>,
@@ -335,11 +343,14 @@ impl Lowering<'_> {
         self.returns.push(def.ret.clone());
         self.failing.push(def.fails.is_some());
         self.fails.push(def.fails.clone());
+        let params: Vec<String> = def.params.iter().map(|param| param.name.clone()).collect();
+        self.binds.push(fennec_syntax::sight::bound_in(&def.body, &params));
         if def.ret.is_some() {
             self.tail_returned(&mut def.body);
             tail_withs(&def.body, &mut self.tails);
         }
         self.stmts(&mut def.body);
+        self.binds.pop();
         self.fails.pop();
         self.failing.pop();
         self.returns.pop();
@@ -676,7 +687,7 @@ impl Lowering<'_> {
         let def = source.def.as_ref();
         let (mut written, renamed) = bound(def, callee, args, source.method, &hidden)?;
         let mut body = def.body.clone();
-        hidden_in_source(&mut body, &renamed, &hidden);
+        hidden_in_source(&mut body, &renamed, &hidden, &self.binds);
         if let Some(task) = &source.task {
             task.written_in(&mut body, &hidden)?;
         }
@@ -710,6 +721,9 @@ impl Lowering<'_> {
             // starts and unmarked wherever the block ends or fails, before any cleanup runs.
             let crash = on_crash(otherwise, at);
             let unmarked = unmarked_first(crash.as_ref(), otherwise);
+            if self.held_failure().is_none() {
+                cleanup_reads_kept(&mut block, &unmarked, at);
+            }
             let funneled = self.ready_failures(&mut block, &unmarked);
             caller.ways = Ways::default();
             caller.failed = funneled.then_some(failed.as_str());
@@ -742,22 +756,34 @@ impl Lowering<'_> {
         let ways = caller.ways;
         written.extend(self.ways_kept(ways, (&exit, &returned, &failed), at)?);
         written.extend(body);
-        if always_returns && ways.returned == Some(true) && !ways.broke && !ways.continued {
-            written.extend(returned_always(&returned, at));
+        written.extend(self.ending((always_returns, ways), (&exit, &returned, &failed), at));
+        Some(written)
+    }
+
+    /// What's written after a source's body: the block's way out taken again. A block that always
+    /// returns gives back what it returned, which says to the check that the body always leaves.
+    /// So does one that always fails, where the `with` is a value-giving function's last line,
+    /// which needs it: elsewhere, a source that doesn't reach its `lend` skips the block, and the
+    /// code after the `with` runs then.
+    fn ending(
+        &self,
+        (always_returns, ways): (bool, Ways),
+        (exit, returned, failed): (&str, &str, &str),
+        at: Span,
+    ) -> Vec<Stmt> {
+        let only = !ways.broke && !ways.continued;
+        if always_returns && ways.returned == Some(true) && only {
+            returned_always(returned, at)
         } else if always_returns
             && ways.failed
             && ways.returned.is_none()
-            && !ways.broke
-            && !ways.continued
+            && only
             && self.tails.contains(&(at.start, at.end))
         {
-            // Only where the `with` is a value-giving function's last line, which needs it: a source
-            // that doesn't reach its `lend` skips the block, and code after the `with` runs then.
-            written.extend(failed_always(&failed, at));
+            failed_always(failed, at)
         } else {
-            written.extend(taken_again(ways, &exit, &returned, at));
+            taken_again(ways, exit, returned, at)
         }
-        Some(written)
     }
 }
 
@@ -972,17 +998,33 @@ fn bound(
 /// function, keeps its meaning. An arrow function's, a comprehension's and a nested function's
 /// parameters can't have the block in their sight and keep their names, unless they're a name of
 /// the caller's a parameter's uses are written as, which they'd take for their own.
-fn hidden_in_source(body: &mut [Stmt], renamed: &[(String, String)], hidden: &dyn Fn(&str) -> String) {
+///
+/// A name the body reads from outside, a function or constant of the program's, that the caller
+/// binds anywhere (`binds`) is written as meaning the source's (`sight::as_outer`), so nothing in
+/// sight where it's written in takes it.
+fn hidden_in_source(
+    body: &mut [Stmt],
+    renamed: &[(String, String)],
+    hidden: &dyn Fn(&str) -> String,
+    binds: &[BTreeSet<String>],
+) {
     let outside: Vec<(String, Option<String>)> =
         renamed.iter().map(|(param, written)| (param.clone(), Some(written.clone()))).collect();
     let callers: Vec<&String> =
         renamed.iter().map(|(_, written)| written).filter(|written| !written.contains("__")).collect();
-    fennec_syntax::sight::hide_bound(body, &outside, &|binder, name| match binder {
-        Binder::Parameter | Binder::Arrow | Binder::Comprehension => {
-            callers.iter().any(|caller| *caller == name).then(|| hidden(name))
-        }
-        _ => Some(hidden(name)),
-    });
+    // A function or constant the source names, which something the caller binds would name there.
+    let taken = |name: &str| binds.iter().any(|bound| bound.contains(name));
+    fennec_syntax::sight::hide_bound_and_free(
+        body,
+        &outside,
+        &|binder, name| match binder {
+            Binder::Parameter | Binder::Arrow | Binder::Comprehension => {
+                callers.iter().any(|caller| *caller == name).then(|| hidden(name))
+            }
+            _ => Some(hidden(name)),
+        },
+        &|name, _| taken(name).then(|| fennec_syntax::sight::as_outer(name)),
+    );
 }
 
 /// The caller's block's way out, taken again once the source's cleanup has run.
@@ -1157,6 +1199,16 @@ fn replace_lend(body: &mut Vec<Stmt>, with_block: &mut LentAs<'_>) -> bool {
     false
 }
 
+/// Whether a failure inside this loop leaves as a failure, not held by the block and leaving the
+/// loop as a `break` would:
+/// - a `parallel` round's leaves where the loop ends, which isn't the block's to write;
+/// - a loop over a generator that can fail, `for x in made()?:` or `for x in made()? from Wrap(...)`,
+///   lets go of it as a failure leaves, noting a failure of the generator's own cleanup on that one.
+fn fails_unheld(stmt: &Stmt) -> bool {
+    let StmtKind::For { iter, .. } = &stmt.kind else { return false };
+    crate::parallel::parallel_items(iter).is_some() || matches!(iter.kind, ExprKind::Try { .. })
+}
+
 /// The caller's block's `return`, `break` and `continue`, as setting `exit` and leaving the
 /// loop it runs in. One inside a loop of the block's own leaves that loop, and then the block's.
 fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
@@ -1170,7 +1222,7 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
         // A loop's condition and what it goes through are its own, as its body is: a `break` there
         // is the loop's, not the block's.
         let own_loop = in_loop || matches!(stmt.kind, StmtKind::While { .. } | StmtKind::For { .. });
-        let round = matches!(&stmt.kind, StmtKind::For { iter, .. } if crate::parallel::parallel_items(iter).is_some());
+        let unheld = fails_unheld(stmt);
         for value in stmt_exprs(stmt) {
             outer_cases(value, &mut |cases| exits(cases, caller, own_loop));
         }
@@ -1202,10 +1254,9 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
             StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
                 let before = caller.ways.returned.is_some();
                 let fails_before = caller.fails_made;
-                // A round's failure leaves where the loop ends: it isn't the block's to write.
-                let failed = if round { caller.failed.take() } else { None };
+                let failed = if unheld { caller.failed.take() } else { None };
                 exits(body, caller, true);
-                if round {
+                if unheld {
                     caller.failed = failed;
                 }
                 // A `return` or a failure inside it leaves this loop too.
@@ -1435,6 +1486,17 @@ fn hoist_tries(held: &mut Stmt, otherwise: &[Stmt], before: &mut Vec<Stmt>, made
     }
     let span = held.span;
     match &mut held.kind {
+        // A loop over a generator that can fail, `for x in made()?:`, owns the generator: it lets
+        // go of it when it's left, before the cleanup runs, with a failure of the generator's own
+        // cleanup noted on the one leaving. Where the block holds its failure (`otherwise` is
+        // empty), it has an `OnFailure` its failures reach as any from inside a call do, so only
+        // the `?`s inside what it's of come out, and the loop's stays. Where the cleanup is written
+        // in before each failure, as in a `test`, nothing else would run it on the call's failure.
+        StmtKind::For { iter: Expr { kind: ExprKind::Try { value: inner, context: None }, .. }, .. }
+            if otherwise.is_empty() =>
+        {
+            hoist_inside(inner, otherwise, before, made, span);
+        }
         StmtKind::Expr(value)
         | StmtKind::Fail(value)
         | StmtKind::Yield(value)
@@ -1869,6 +1931,29 @@ fn given_as(block: &mut Vec<Stmt>, (split, names): (bool, &[WithName]), held: &s
         });
         fennec_syntax::sight::rename_in_sight(block, held, place);
     }
+}
+
+/// Where no failure is held to run the source's cleanup once after the block, as in a `test`, the
+/// cleanup is written in before each failure inside the block, under what the block binds there.
+/// So what the block binds of a name the cleanup reads is hidden first, with the uses in its sight,
+/// and the cleanup reads what the name means at the `with`: a name of the caller's that a `ref`
+/// parameter's uses are written as.
+fn cleanup_reads_kept(block: &mut [Stmt], cleanup: &[Stmt], at: Span) {
+    let mut read = BTreeSet::new();
+    fennec_syntax::visit::in_stmts(&mut cleanup.to_vec(), &mut |expr| {
+        if let ExprKind::Name(name) = &expr.kind {
+            read.insert(name.clone());
+        }
+    });
+    // Each is in sight at the `with`, so assigning it in the block changes it there: only what binds
+    // it again is hidden. A nested function's and an arrow's parameters keep theirs: the cleanup is
+    // never written inside either, and a nested function's are named by calls.
+    let outside: Vec<(String, Option<String>)> = read.iter().map(|name| (name.clone(), None)).collect();
+    let inner = format!("kept{}", at.start);
+    fennec_syntax::sight::hide_bound(block, &outside, &|binder, name| {
+        let surrounds = !matches!(binder, Binder::Parameter | Binder::Arrow);
+        (surrounds && read.contains(name)).then(|| format!("{name}__{inner}"))
+    });
 }
 
 /// A cleanup that unmarks what a crash runs before it runs, when there's one.

@@ -280,7 +280,16 @@ impl FnCx<'_> {
     }
 
     fn name(&mut self, name: &str, span: Span) -> Type {
-        if let Some((ty, _)) = self.lookup(name) {
+        // A `with` source's own function or constant, written into its caller where something
+        // there names it too, is the top-level one.
+        let (name, outer) = match fennec_syntax::sight::outer(name) {
+            Some(meant) => (meant, true),
+            None => (name, false),
+        };
+        if outer {
+            self.note_outer();
+        }
+        if !outer && let Some((ty, _)) = self.lookup(name) {
             return ty;
         }
         if self.names_function(name) {
@@ -329,10 +338,18 @@ impl FnCx<'_> {
     /// function like `json.loads`, or a type like `Path`. A name the module doesn't have is
     /// reported here.
     pub(crate) fn module_member(&mut self, object: &Expr, name: &str, span: Span) -> Option<Member> {
-        let alias = fennec_syntax::dotted(object)?;
-        if self.lookup(alias.split('.').next().unwrap_or_default()).is_some() {
-            return None;
-        }
+        let written = fennec_syntax::dotted(object)?;
+        let first = written.split('.').next().unwrap_or_default();
+        // A module a `with` source names, written into its caller where something there names it
+        // too, is the module.
+        let alias = match fennec_syntax::sight::outer(first) {
+            Some(meant) => {
+                self.note_outer();
+                written.replacen(first, meant, 1)
+            }
+            None if self.lookup(first).is_some() => return None,
+            None => written.clone(),
+        };
         let modules = self.checker.program.modules_at(span);
         let Some(&module) = modules.get(&alias) else {
             // `std.toml` after `import std.json`, which binds `std` but not `std.toml`.

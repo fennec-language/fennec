@@ -4989,7 +4989,7 @@ fn the_daemon_keeps_the_cache_under_its_cap() {
     std::fs::write(&old, vec![0_u8; 10_000]).unwrap();
     // Used before what's always kept, an entry stored or used in the last twenty minutes.
     aged(&old, fennec_build::KEPT_RECENT.as_secs() + 3_600).unwrap();
-    crate::executables::fennec_command()
+    crate::executables::fennec_command_with_empty_store()
         .args(["dev", "changes"])
         .current_dir(&kit)
         .env("FENNEC_HOME", &home)
@@ -5021,6 +5021,72 @@ fn aged(path: &Path, seconds: u64) -> std::io::Result<()> {
     std::fs::File::options().write(true).open(path)?.set_modified(used)
 }
 
+/// An empty home reads the standard library's parse and the runtime library's stamp from the
+/// toolchain's store, which depend only on this build of Fennec and the library, and keeps
+/// neither itself: the first home to work them out keeps them there for every home after. With the
+/// store turned off, a home works both out again, as every empty home once did.
+#[test]
+fn an_empty_home_reads_std_and_the_runtimes_stamp_from_the_toolchains_store() -> std::io::Result<()> {
+    use crate::executables::Within as _;
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec_toolchain_store_{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let program = dir.join("hello.fen");
+    std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n    return\n")?;
+    let store = dir.join("store");
+    let run = |home: &str, store: &Path| {
+        crate::executables::fennec_command()
+            .args(["run", "--no-test"])
+            .arg(&program)
+            .env("FENNEC_HOME", dir.join(home))
+            .env("FENNEC_TOOLCHAIN_STORE", store)
+            .env("FENNEC_NO_DAEMON", "1")
+            .env_remove("FENNEC_NO_CACHE")
+            .output_within()
+    };
+    // How many entries of `kind` a home's cache, or the store, holds, in every build's folder.
+    let entries = |root: &Path, kind: &str| -> usize {
+        std::fs::read_dir(root.join("cache"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|build| std::fs::read_dir(build.path().join(kind)).ok())
+            .map(|found| {
+                found
+                    .flatten()
+                    .filter(|entry| entry.path().extension().is_none_or(|ext| ext != "sum"))
+                    .count()
+            })
+            .sum()
+    };
+    let first = run("first", &store)?;
+    assert_eq!(text(&first.stdout), "hello\n", "{}", text(&first.stderr));
+    assert_eq!(
+        (entries(&store, "prelude"), entries(&store, "runtime-stamps")),
+        (1, 1),
+        "the first home fills the store"
+    );
+    let second = run("second", &store)?;
+    assert_eq!(text(&second.stdout), "hello\n", "{}", text(&second.stderr));
+    let second_home = dir.join("second");
+    assert_eq!(
+        (entries(&second_home, "prelude"), entries(&second_home, "runtime-stamps")),
+        (0, 0),
+        "an empty home reads both from the store"
+    );
+    // Turned off, a home does both itself.
+    let off = run("off", Path::new(""))?;
+    assert_eq!(text(&off.stdout), "hello\n", "{}", text(&off.stderr));
+    let off_home = dir.join("off");
+    assert_eq!((entries(&off_home, "prelude"), entries(&off_home, "runtime-stamps")), (1, 1));
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 /// A cache that can't be written costs only work done again: the command does what it was asked,
 /// and says, once, that the cache couldn't keep what it made, rather than nothing at all.
 #[test]
@@ -5039,7 +5105,7 @@ fn a_cache_that_cant_be_written_is_said_once_and_the_command_goes_on() -> std::i
     let program = dir.join("hello.fen");
     std::fs::write(&program, "def main(stdout: Stdout):\n    stdout.print(\"hello\")\n    return\n")?;
     std::fs::set_permissions(home.join("cache"), std::fs::Permissions::from_mode(0o555))?;
-    let ran = crate::executables::fennec_command()
+    let ran = crate::executables::fennec_command_with_empty_store()
         .arg("run")
         .arg(&program)
         .env("FENNEC_HOME", &home)
@@ -5067,7 +5133,7 @@ fn a_command_cleans_the_cache_hourly_with_no_daemon() {
     std::fs::write(&mark, "").unwrap();
     aged(&mark, 2 * 60 * 60).unwrap();
     let fennec = |args: &[&str]| {
-        crate::executables::fennec_command()
+        crate::executables::fennec_command_with_empty_store()
             .args(args)
             .current_dir(&kit)
             .env("FENNEC_HOME", &home)
@@ -5807,7 +5873,7 @@ fn a_program_linked_from_the_caches_objects_is_the_one_built_without_it() -> std
         )
     };
     let build = |out: &str, cached: bool| {
-        let mut command = crate::executables::fennec_command();
+        let mut command = crate::executables::fennec_command_with_empty_store();
         command.args(["build", "edited.fen", "-o", out]).current_dir(&dir);
         if cached {
             command.env("FENNEC_HOME", dir.join("home")).env_remove("FENNEC_NO_CACHE");
@@ -5861,7 +5927,7 @@ fn a_kept_object_gone_before_the_link_is_compiled_again() -> std::io::Result<()>
         )
     };
     let build = |out: &str, cached: bool, lose: bool| {
-        let mut command = crate::executables::fennec_command();
+        let mut command = crate::executables::fennec_command_with_empty_store();
         command.args(["build", "edited.fen", "-o", out]).current_dir(&dir);
         if cached {
             command.env("FENNEC_HOME", dir.join("home")).env_remove("FENNEC_NO_CACHE");

@@ -28,6 +28,7 @@ mod run;
 mod rust_strings;
 mod test;
 mod test_inputs;
+mod toolchain;
 mod trace;
 mod upkeep;
 mod verdict;

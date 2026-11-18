@@ -3120,14 +3120,13 @@ fn a_loop_polling_with_waits_of_no_time_beside_a_waiting_task_runs() {
 }
 
 const POLLING_WITH_NO_TIME: &str = "
-        from std.concurrent import Channel, Closed, Crashed, Inbox, Sender, Timeout, channel
+        from std.concurrent import Closed, Crashed, Inbox, Sender, Timeout, channel
 
         def waiting(quiet: Inbox[int], done: Sender[int]) fails Closed:
             _ = quiet.receive_within(10s) except Timeout(): -1
             done.send(0)?
 
         def main(stdout: Stdout) fails Closed | Crashed:
-            mut kept: list[Channel[int]] = []
             with channel[int](size=1) as quiet, channel[int](size=1) as done:
                 with launch(() => waiting(quiet.inbox(), done=done.sender())?)?:
                     with channel[int](size=4) as box:

@@ -169,6 +169,11 @@ pub(crate) struct FnCx<'c> {
     /// The functions whose arguments are being matched, innermost last, for what's passed for a
     /// function parameter.
     pub(crate) calling: Vec<String>,
+    /// The name, by span, being read where a function value read is followed or can't call it:
+    /// a call's callee, an argument for a function parameter, or one side of an `is None` test.
+    /// A function parameter read anywhere else counts as called right there (see
+    /// `note_function_read`).
+    pub(crate) direct_read: Option<(u32, u32)>,
     /// How many arrow functions and comprehensions this is inside, which `else` can't leave.
     pub(crate) value_functions: usize,
     /// How many loops this is inside, which `break` and `continue` need.
@@ -235,6 +240,7 @@ impl<'c> FnCx<'c> {
             looped_here: Vec::new(),
             arrows_open: Vec::new(),
             calling: Vec::new(),
+            direct_read: None,
             value_functions: 0,
             loops: 0,
             arrows: 0,
@@ -1040,12 +1046,19 @@ impl<'c> FnCx<'c> {
 
     /// Keeps the function value a name that isn't `mut` is declared with on the name's binding:
     /// an arrow function, `name = () => ...` (see `local_arrow`), or a function parameter,
-    /// `name = work` (see `param_key`).
+    /// `name = work`, or an optional one unwrapped, `name = work else return` or `name = work?`
+    /// (see `param_key`).
     pub(crate) fn keep_function_value(&mut self, target: &Expr, value: &Expr) {
         let ExprKind::Name(name) = &target.kind else { return };
         let arrow =
             matches!(value.kind, ExprKind::Lambda { .. }).then_some((value.span.start, value.span.end));
-        let alias = match &value.kind {
+        // An `else` that leaves gives nothing, so the name holds the parameter's own function.
+        let held = match &value.kind {
+            ExprKind::Else { value: unwrapped, default, except: false } if default.leaves() => unwrapped,
+            ExprKind::Try { value: unwrapped, context: None } => unwrapped,
+            _ => value,
+        };
+        let alias = match &held.kind {
             ExprKind::Name(read) if read != name => self.param_key(read),
             _ => None,
         };

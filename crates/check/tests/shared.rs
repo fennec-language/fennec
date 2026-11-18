@@ -481,6 +481,41 @@ fn an_optional_function_parameter_is_followed_once_narrowed() {
     assert_eq!(locking(&guarded(captured, "None")), empty);
 }
 
+/// The checker lane's review of #2139: a function parameter read any way but a call, an argument
+/// for a function parameter, or an `is None` test counts as called right there. Unwrapped into
+/// another name, kept in a list, returned or handed to an interface's method, what each caller
+/// passes is judged where it's passed: one that waits is refused inside a lock, and one that
+/// doesn't is let through.
+#[test]
+fn a_function_parameter_read_any_other_way_counts_as_called() {
+    let empty: [&str; 0] = [];
+    let in_the_lock = |helper: &str, passed: &str, call: &str| {
+        format!(
+            "{NAP}type Job = () -> nothing\n\n{helper}\ndef main(clock: Clock, stdout: Stdout):\n    \
+             shared scores = Account()\n    rest = {passed}\n    shelf = Shelf()\n    \
+             lock scores as held:\n        {call}\n        _ = held\n\n\
+             interface Keeper:\n    def keep(self, job: Job)\n\n\
+             struct Shelf:\n    count = 0\n\n    def keep(self, job: Job):\n        pass\n"
+        )
+    };
+    let waits = ["`guarded` calls `work` while `held` is locked, and this waits on `Clock.sleep` @ rest"];
+    for (helper, call) in [
+        // Given to another name, then called through it: a plain one, and, the review's program,
+        // an optional one unwrapped.
+        ("def guarded(work: Job):\n    job = work\n    job()\n", "guarded(rest)"),
+        ("def guarded(work: Job?):\n    job = work else return\n    job()\n", "guarded(rest)"),
+        ("def guarded(work: Job) -> list[Job]:\n    return [work]\n", "_ = guarded(rest)"),
+        ("def guarded(work: Job) -> Job:\n    return work\n", "_ = guarded(rest)"),
+        ("def guarded[T: Keeper](keeper: T, work: Job):\n    keeper.keep(work)\n", "guarded(shelf, rest)"),
+    ] {
+        assert_eq!(refused_in_a_lock(&in_the_lock(helper, "() => nap(clock)", call)), waits, "{helper}");
+        assert_eq!(locking(&in_the_lock(helper, "() => stdout.print(1)", call)), empty, "{helper}");
+    }
+    // Asking whether there's a function calls none.
+    let tested = "def guarded(work: Job?) -> bool:\n    return work is not None\n";
+    assert_eq!(locking(&in_the_lock(tested, "() => nap(clock)", "_ = guarded(rest)")), empty);
+}
+
 /// #2113: what a function value does reaches a lock however it's held where it's called. Each
 /// program waits inside a lock, so each is refused.
 #[test]

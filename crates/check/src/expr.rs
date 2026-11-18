@@ -91,7 +91,18 @@ impl FnCx<'_> {
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Binary { op, lhs, rhs } => {
+                // `work is None` reads only whether there's a function, so it calls none.
+                let tested = match (op, &lhs.kind, &rhs.kind) {
+                    (BinOp::Is | BinOp::IsNot, ExprKind::Name(_), ExprKind::None) => Some(lhs.span),
+                    (BinOp::Is | BinOp::IsNot, ExprKind::None, ExprKind::Name(_)) => Some(rhs.span),
+                    _ => None,
+                };
+                let outer = self.direct_read;
+                if let Some(tested) = tested {
+                    self.direct_read = Some((tested.start, tested.end));
+                }
                 let (left, right) = self.operands(lhs, rhs);
+                self.direct_read = outer;
                 self.binary(*op, &left, &right, span, (lhs.span, rhs.span))
             }
             ExprKind::Cond { then, cond, otherwise } => self.cond_value((then, cond, otherwise), None, span),
@@ -298,6 +309,7 @@ impl FnCx<'_> {
             self.note_outer();
         }
         if !outer && let Some((ty, _)) = self.lookup(name) {
+            self.note_function_read(name, span);
             // A generator that can fail passes its failure up from where it's looped over, so only
             // the function that made it, and counts its failure, may loop over it: not one around
             // it, from a name that is one or that holds one in a list, a tuple or a struct.

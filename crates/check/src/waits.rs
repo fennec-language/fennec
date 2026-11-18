@@ -169,6 +169,33 @@ impl FnCx<'_> {
         }
     }
 
+    /// A function parameter, of a function's type or an optional one, read where the read isn't
+    /// followed (see `direct_read`): kept in a list or a field, returned, unwrapped into another
+    /// name, matched, or passed where what's passed isn't followed. Wherever it's called from
+    /// then, it counts as called right here, with the lock held here, as a nested function's read
+    /// of one does (see `captured_values`). An alias of one, `job = work`, is the parameter.
+    pub(crate) fn note_function_read(&mut self, name: &str, span: Span) {
+        if self.direct_read == Some((span.start, span.end)) {
+            return;
+        }
+        let Some((owner, param)) = self.param_key(name) else { return };
+        if !self.declared_type(name).is_some_and(|ty| self.takes_function(&ty)) {
+            return;
+        }
+        // In an arrow function, as a call there is, it's something the arrow may call that can't
+        // be followed.
+        if !self.arrows_open.is_empty() {
+            for arrow in &self.arrows_open {
+                self.checker.values.calls.entry(*arrow).or_default().insert(None);
+            }
+            return;
+        }
+        if owner != self.key {
+            self.checker.values.through.push((self.key.clone(), (owner.clone(), param.clone())));
+        }
+        self.checker.values.called.push((owner, param, self.lock.clone()));
+    }
+
     /// A call through a function value, as `work()` with `work: () -> nothing`. A parameter is
     /// followed to what each caller passes for it; anything else can't be known, so inside a
     /// lock it's refused.

@@ -29,6 +29,9 @@ pub(crate) struct Binding {
     pub(crate) mut_at: Option<u32>,
     /// Whether it's a channel to `.Every` a `with` lends, which has no one next message to take.
     pub(crate) to_every: bool,
+    /// The function whose parameter it is, by key, when it's one: kept when a nested function
+    /// captures it, so the nested function calling it is a call of that function's parameter.
+    pub(crate) param_of: Option<String>,
 }
 
 /// Where a name came from, for explaining how to make it changeable.
@@ -705,6 +708,7 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn declare_as(&mut self, name: &str, ty: Type, is_mut: bool, origin: Origin, at: Span) {
+        let param_of = (origin == Origin::Param).then(|| self.key.clone());
         self.declare_with(
             Binding {
                 name: name.to_owned(),
@@ -714,6 +718,7 @@ impl<'c> FnCx<'c> {
                 origin,
                 mut_at: None,
                 to_every: false,
+                param_of,
             },
             at,
         );
@@ -734,6 +739,7 @@ impl<'c> FnCx<'c> {
             origin: Origin::Local,
             mut_at: Some(at.start),
             to_every: false,
+            param_of: None,
         };
         self.declare_with(binding, at);
     }
@@ -870,6 +876,21 @@ impl<'c> FnCx<'c> {
             .flat_map(|scope| scope.bindings.iter().rev())
             .find(|binding| binding.name == name)
             .map(|binding| binding.origin)
+    }
+
+    /// The function `name` is a parameter of, by key: this one's, or one around it that a nested
+    /// function captured it from.
+    pub(crate) fn param_owner(&self, name: &str) -> Option<String> {
+        let binding = self
+            .scopes
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.bindings.iter().rev())
+            .find(|binding| binding.name == name)?;
+        match binding.origin {
+            Origin::Param | Origin::Captured => binding.param_of.clone(),
+            _ => None,
+        }
     }
 
     pub(crate) fn binding_mut(&mut self, name: &str) -> Option<&mut Binding> {

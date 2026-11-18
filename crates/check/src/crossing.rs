@@ -107,9 +107,10 @@ pub(crate) fn crossing(checker: &mut Checker) -> Crossing {
 /// hands nothing to another task in this program.
 fn reached(checker: &Checker) -> BTreeSet<String> {
     let mut called: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for (callee, callers) in &checker.callers {
+    for (callee, callers) in &checker.own_callers {
+        let outer = checker.outermost_of(callee);
         for caller in callers {
-            called.entry(caller.as_str()).or_default().push(callee.as_str());
+            called.entry(checker.outermost_of(caller)).or_default().push(outer);
         }
     }
     let mut queue: Vec<String> = checker

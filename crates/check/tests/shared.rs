@@ -457,6 +457,30 @@ fn a_nested_function_is_refused_through_an_arrow_or_a_name_declared_again() {
     }
 }
 
+/// An optional function parameter is followed as a function parameter is, once it's narrowed:
+/// called inside a lock, what each caller passes for it is judged there, and `None` is nothing to
+/// judge. So is one a nested function captures and calls, narrowed first. It's written through an
+/// alias, as `(() -> nothing)?` can't be written yet (#2132).
+#[test]
+fn an_optional_function_parameter_is_followed_once_narrowed() {
+    let empty: [&str; 0] = [];
+    let guarded = |body: &str, passed: &str| {
+        format!(
+            "{NAP}type Job = () -> nothing\n\ndef guarded(scores: shared Account, work: Job?):\n    \
+             if work is not None:\n{body}\n\
+             def main(clock: Clock, stdout: Stdout):\n    shared scores = Account()\n    guarded(scores, {passed})\n"
+        )
+    };
+    let in_the_lock = "        lock scores as held:\n            work()\n            _ = held\n";
+    assert_eq!(refused_in_a_lock(&guarded(in_the_lock, "() => nap(clock)")), WAITS);
+    assert_eq!(locking(&guarded(in_the_lock, "None")), empty);
+    assert_eq!(locking(&guarded(in_the_lock, "() => stdout.print(1)")), empty);
+    let captured = "        def step():\n            work()\n        lock scores as held:\n            step()\n            \
+                    _ = held\n";
+    assert_eq!(refused_in_a_lock(&guarded(captured, "() => nap(clock)")), WAITS);
+    assert_eq!(locking(&guarded(captured, "None")), empty);
+}
+
 /// The third pass: a captured arrow function that hands a parameter on. (Its other program, an
 /// optional function parameter narrowed before the nested function, can't be written yet:
 /// `(() -> nothing)?` is an optional tuple. `captured_values` reads a parameter's declared type

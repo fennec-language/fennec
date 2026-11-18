@@ -74,7 +74,7 @@ impl<'p> Emit<'_, '_, 'p> {
     ) -> Result<(), String> {
         let def = self.module.generator(generator).ok_or("no such generator")?;
         // A closure outside the runtime's table can't be in a block of its.
-        if !self.module.whole.runtime_closures && def.slots.iter().any(|ty| matches!(ty, Type::Arrow(..))) {
+        if !self.module.reads.runtime_closures() && def.slots.iter().any(|ty| matches!(ty, Type::Arrow(..))) {
             return Err("it keeps a closure in a generator, which this backend doesn't take yet".to_owned());
         }
         let id = self.module.layouts.id(&def.name).ok_or("a generator with no layout")?;

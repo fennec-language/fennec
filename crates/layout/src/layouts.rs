@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use fennec_check::{Signatures, Type};
 use fennec_syntax::{Expr, TypeDef, TypeExpr};
 
+use crate::named::Asked;
 use crate::{Block, Cap, ListItem, Ty, Word};
 
 /// The size of every field that isn't a nested struct: an int, a float, or a bool.
@@ -72,6 +73,9 @@ pub struct Layouts {
     /// is the number a dict's value word names one by here. The runtime's tables give each the
     /// kind of item that many after the types laid out through lists (see `Registry::numbered`).
     dict_values: std::cell::RefCell<Vec<u32>>,
+    /// What's been asked for a number since [`Self::note_asked`], each the first time, in order,
+    /// while that's being noted.
+    noting: std::cell::RefCell<Option<Vec<AskedNow>>>,
     /// The structs with no words at all: no fields, or only fields that are such structs. A dict
     /// keeps a value of one in a block, as before, since an entry has nowhere to hold it.
     wordless: BTreeSet<String>,
@@ -80,6 +84,13 @@ pub struct Layouts {
     decided: Option<BTreeSet<String>>,
     /// Why these layouts can't be built from, when they can't: a bug in deciding them.
     problem: Option<String>,
+}
+
+/// What was asked for a number, as these layouts number it, until it's taken by names.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AskedNow {
+    Block(Ty),
+    DictValue(u32),
 }
 
 /// What a backend holds in place, where others hold the address of a block.
@@ -781,8 +792,21 @@ impl Layouts {
         self.block_number(item).map(ListItem::Block)
     }
 
+    /// The number a kind of block has already, if it has one: never a new one, and not noted.
+    pub(crate) fn block_found(&self, item: Ty) -> Option<u32> {
+        let at = self.blocks.borrow().iter().position(|known| *known == item)?;
+        u32::try_from(at).ok()
+    }
+
+    /// The number a plain type a dict holds in its entries has already, if it has one.
+    pub(crate) fn dict_value_found(&self, id: u32) -> Option<u32> {
+        let at = self.dict_values.borrow().iter().position(|known| *known == id)?;
+        u32::try_from(at).ok()
+    }
+
     /// The number of a kind of block, which a list's items and a dict's values go by.
-    fn block_number(&self, item: Ty) -> Option<u32> {
+    pub(crate) fn block_number(&self, item: Ty) -> Option<u32> {
+        self.noted(AskedNow::Block(item));
         let mut blocks = self.blocks.borrow_mut();
         let at = blocks.iter().position(|known| *known == item).unwrap_or_else(|| {
             blocks.push(item);
@@ -814,13 +838,90 @@ impl Layouts {
     /// order such types were first asked for. It's asked for while types are still being laid
     /// out, so it can't lean on how many are laid out through lists; the runtime's number for it
     /// is worked out from this one once they all are (`dict_value_for_runtime`).
-    fn dict_value_number(&self, id: u32) -> Option<u32> {
+    pub(crate) fn dict_value_number(&self, id: u32) -> Option<u32> {
+        self.noted(AskedNow::DictValue(id));
         let mut values = self.dict_values.borrow_mut();
         let at = values.iter().position(|known| *known == id).unwrap_or_else(|| {
             values.push(id);
             values.len() - 1
         });
         u32::try_from(at).ok()
+    }
+
+    /// Everything these layouts say, as text that's the same whenever they are, for a build to
+    /// tell whether they changed: every layout, by number, with its fields' names, kinds and
+    /// places, each enum's cases, and every number given so far. A field's default isn't in it:
+    /// native code never reads one, since lowering writes it out where a value is made.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        use std::fmt::Write as _;
+        let Layouts {
+            by_name,
+            all,
+            owners,
+            one_word_optionals,
+            native_buffers,
+            in_place,
+            blocks,
+            through_lists,
+            dict_values,
+            noting: _,
+            wordless,
+            decided,
+            problem,
+        } = self;
+        let InPlace { text_headers, counted_fields, results } = in_place;
+        let mut out =
+            format!("{one_word_optionals} {native_buffers} {text_headers} {counted_fields} {results}\n");
+        let fields = |out: &mut String, fields: &[Field]| {
+            for Field { name, ty, offset, default: _ } in fields {
+                let _ = write!(out, " {name}:{ty:?}@{offset}");
+            }
+        };
+        for (id, Layout { name, fields: own, size, cases, boxed, cell }) in all.iter().enumerate() {
+            let _ = write!(out, "{id} {name} {size} {boxed} {cell}");
+            fields(&mut out, own);
+            for Case { name, fields: case } in cases.iter().flatten() {
+                let _ = write!(out, " | {name}");
+                fields(&mut out, case);
+            }
+            out.push('\n');
+        }
+        let by_name: BTreeMap<&String, &u32> = by_name.iter().collect();
+        let owners: BTreeMap<&String, &Vec<String>> = owners.iter().collect();
+        let _ = writeln!(out, "{by_name:?}\n{owners:?}\n{:?}\n{through_lists:?}", blocks.borrow());
+        let _ = writeln!(out, "{:?}\n{wordless:?}\n{decided:?}\n{problem:?}", dict_values.borrow());
+        out
+    }
+
+    /// Notes what's asked for a number from now on: each kind of block and each plain type a dict
+    /// holds in its entries, the first time, in order, until [`Self::asked`] takes it. A unit kept
+    /// to be used again keeps what it asked, for a build using it to ask again (see `named`).
+    pub fn note_asked(&self) {
+        *self.noting.borrow_mut() = Some(Vec::new());
+    }
+
+    /// What was asked for a number since [`Self::note_asked`], by names, and stops noting. `None`
+    /// if nothing was being noted, or if something asked for has no name.
+    #[must_use]
+    pub fn asked(&self) -> Option<Vec<Asked>> {
+        let noted = self.noting.borrow_mut().take()?;
+        noted
+            .into_iter()
+            .map(|asked| match asked {
+                AskedNow::Block(ty) => self.named(ty).map(Asked::Block),
+                AskedNow::DictValue(id) => self.get(id).map(|layout| Asked::DictValue(layout.name.clone())),
+            })
+            .collect()
+    }
+
+    /// Notes that `asked` was asked for, while that's being noted, unless it was already.
+    fn noted(&self, asked: AskedNow) {
+        if let Some(noted) = self.noting.borrow_mut().as_mut()
+            && !noted.contains(&asked)
+        {
+            noted.push(asked);
+        }
     }
 
     /// The plain type a dict holds in its entries under this number.

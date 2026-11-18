@@ -139,7 +139,7 @@ impl Emit<'_, '_, '_> {
     /// every name in a program with tests built into it: a test's capabilities are fakes, which
     /// only that export asks. `fennec run` builds a program's tests into it, so it's one of those.
     fn entry_for(&self, name: &str, every: &'static str) -> &'static str {
-        if self.module.whole.tested {
+        if self.module.reads.tested() {
             return every;
         }
         fennec_rt::module_entry(name).unwrap_or(every)

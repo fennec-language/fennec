@@ -1231,6 +1231,66 @@ fn a_source_lends_to_the_block_and_finishes_after_it() {
     );
 }
 
+/// A `with` source written in twice in one function, its union parameter given a different member
+/// each time, both ways round, and a source written into another written in twice: the oracle
+/// prints what the compiled program prints since #2056.
+#[test]
+fn a_source_used_twice_reads_each_union_member_it_is_given() {
+    prints(
+        "
+        struct Door:
+            name: str
+
+        struct Gate:
+            width: int
+
+        def narrowed(thing: Door | Gate) -> with str:
+            mut said = 'gate'
+            if thing is Door:
+                said = thing.name
+            lend said
+
+        def door_first() -> str:
+            mut seen = ''
+            with narrowed(Door(name='front')) as got:
+                seen = got
+            with narrowed(Gate(width=2)) as got:
+                seen = seen + ' ' + got
+            return seen
+
+        def gate_first() -> str:
+            mut seen = ''
+            with narrowed(Gate(width=2)) as got:
+                seen = got
+            with narrowed(Door(name='front')) as got:
+                seen = seen + ' ' + got
+            return seen
+
+        def twice(first: Door | Gate, second: Door | Gate) -> with str:
+            mut seen = ''
+            with narrowed(first) as got:
+                seen = got
+            with narrowed(second) as got:
+                seen = seen + ' ' + got
+            lend seen
+
+        def nested() -> str:
+            mut seen = ''
+            with twice(Gate(width=1), Door(name='front')) as got:
+                seen = got
+            with twice(Door(name='back'), Gate(width=2)) as got:
+                seen = seen + ' | ' + got
+            return seen
+
+        def main(stdout: Stdout):
+            stdout.print(door_first())
+            stdout.print(gate_first())
+            stdout.print(nested())
+        ",
+        "front gate\ngate front\ngate front | back gate\n",
+    );
+}
+
 /// An error carries notes: `add_note` adds one and `notes()` reads them, and printing it shows
 /// none. A cleanup that fails for a failed block has its failure noted on the block's, as it
 /// prints, when it's a `fail` or a line whose whole value is a `?`, and the rest of the cleanup is

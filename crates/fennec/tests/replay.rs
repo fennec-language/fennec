@@ -41,7 +41,9 @@ fn outcome(ran: &Output) -> Outcome {
 /// outcomes.
 fn recorded_and_replayed(program: &Path, input: &[u8], log: &Path) -> std::io::Result<(Outcome, Outcome)> {
     let mut record = fennec_command();
-    record.args(["run", "--record", &log.to_string_lossy()]);
+    // Without the program's tests first: a replay never runs them, nothing they do is recorded,
+    // and `unchanged_tests` runs every example's.
+    record.args(["run", "--no-test", "--record", &log.to_string_lossy()]);
     record.arg(program).arg("given").current_dir(program.parent().unwrap_or(Path::new(".")));
     let recorded = record.output_given(input, DEADLINE)?;
     // With nothing on standard input, so what it read can only come from the recording.
@@ -86,6 +88,37 @@ fn a_run_using_the_clock_and_random_numbers_replays_identically() -> std::io::Re
     // Another run draws other numbers at another time: the replay's are the recording's.
     let again = outcome(&fennec_command().args(["run"]).arg(&program).arg("given").output_within()?);
     assert_ne!(again.0, recorded.0, "a fresh run printed the same");
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// `fennec run --no-test --record` records as `--no-test` runs, without the program's tests first,
+/// which a replay never runs either: a program whose test fails is recorded and replays the same,
+/// where `--record` alone stops at the failing test and records nothing that ran.
+#[test]
+fn a_recording_without_the_tests_first_replays_as_it_ran() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("untested")?;
+    let program = dir.join("untested.fen");
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    stdout.print(\"ran\")\n    return\n\ntest \"one is two\":\n    assert 1 == 2\n",
+    )?;
+    let log = dir.join("untested.log");
+    let tested =
+        fennec_command().args(["run", "--record", &log.to_string_lossy()]).arg(&program).output_within()?;
+    assert!(!tested.status.success() && !outcome(&tested).0.contains("ran"), "{}", outcome(&tested).1);
+    let recorded = outcome(
+        &fennec_command()
+            .args(["run", "--no-test", "--record", &log.to_string_lossy()])
+            .arg(&program)
+            .output_within()?,
+    );
+    assert_eq!((recorded.0.as_str(), recorded.2), ("ran\n", Some(0)), "{}", recorded.1);
+    let replayed = outcome(&fennec_command().args(["replay", &log.to_string_lossy()]).output_within()?);
+    assert_eq!(without_build_hints(replayed), without_build_hints(recorded));
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

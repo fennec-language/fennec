@@ -16,6 +16,10 @@ pub struct Module {
     /// Each file the program is made of, its own and its kits', by the span its text covers, in
     /// order. What a file imports is its own. None for a module parsed from one text.
     pub files: Vec<Span>,
+    /// Where each copy of the program's text written in more than once was moved to, as a source's
+    /// body is at each `with`, in order of where it was moved. Whatever says where something in a
+    /// copy is says where its text is (`Span::copied_from`).
+    pub copied: Vec<crate::Copied>,
 }
 
 /// The capabilities a dependency can be handed, by their type in code: the program's ways to reach

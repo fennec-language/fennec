@@ -441,9 +441,8 @@ pub fn name_enum(case: &mut Expr, owner: &str) {
 pub fn add_defaults(call: &mut Expr, defaults: &[(String, Expr)]) {
     if let ExprKind::Call { args, .. } = &mut call.kind {
         for (name, default) in defaults {
-            // A source of the program's own, written in where it's used, keeps its text's places,
-            // so a default found for the copy is found for the text it came from too, which has
-            // it already.
+            // A call may have it already: one in a source's body, written in where it's used, is
+            // given it in the source and in each copy, which each have spans of their own.
             if args.iter().any(|arg| arg.name.as_deref() == Some(name.as_str())) {
                 continue;
             }

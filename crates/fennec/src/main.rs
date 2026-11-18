@@ -137,11 +137,7 @@ fn main() -> ExitCode {
     match words.as_slice() {
         ["cache", "clean"] => upkeep::clean(false),
         ["cache", "clean", "--quiet"] => upkeep::clean(true),
-        ["run"] => run(run::Engine::Native, ".", &[]),
-        ["run", "--no-test"] => run(run::Engine::Untested, ".", &[]),
-        ["run", "--no-test", path, arguments @ ..] => run(run::Engine::Untested, path, arguments),
-        ["run", "--record", log, rest @ ..] => record(log, rest),
-        ["run", path, arguments @ ..] => run(run::Engine::Native, path, arguments),
+        ["run", rest @ ..] => run_command(rest),
         ["replay", log] => replay(log),
         ["build", "--release"] => built::build(".", None, true),
         ["build", "--release", "-o", output] => built::build(".", Some(output), true),
@@ -241,10 +237,23 @@ fn run(engine: run::Engine, path: &str, arguments: &[&str]) -> ExitCode {
     big_stack(move || run::run(&path, engine, &arguments))
 }
 
+/// `fennec run ...`, by what follows `run`.
+fn run_command(words: &[&str]) -> ExitCode {
+    match words {
+        [] => run(run::Engine::Native, ".", &[]),
+        ["--no-test", "--record", log, rest @ ..] => record(log, rest, run::Engine::Untested),
+        ["--no-test"] => run(run::Engine::Untested, ".", &[]),
+        ["--no-test", path, arguments @ ..] => run(run::Engine::Untested, path, arguments),
+        ["--record", log, rest @ ..] => record(log, rest, run::Engine::Native),
+        [path, arguments @ ..] => run(run::Engine::Native, path, arguments),
+    }
+}
+
 /// `fennec run --record log ...`: runs the program as `fennec run ...` does, logging every outside
 /// input it takes into `log`, with what it was run with, for `fennec replay` (see
-/// `fennec_rt::replay`).
-fn record(log: &str, rest: &[&str]) -> ExitCode {
+/// `fennec_rt::replay`). `fennec run --no-test --record log ...` runs it as `--no-test` does,
+/// without its tests first, which a replay never runs either.
+fn record(log: &str, rest: &[&str], engine: run::Engine) -> ExitCode {
     let (path, arguments) = match rest {
         [path, arguments @ ..] => {
             ((*path).to_owned(), arguments.iter().map(|arg| (*arg).to_owned()).collect())
@@ -259,9 +268,7 @@ fn record(log: &str, rest: &[&str]) -> ExitCode {
         eprintln!("error: couldn't start the recording at {}: {err}", log.display());
         return ExitCode::FAILURE;
     }
-    big_stack(move || {
-        run::run_logged(&path, run::Engine::Native, &arguments, Some(&run::Logged::Recording(log)))
-    })
+    big_stack(move || run::run_logged(&path, engine, &arguments, Some(&run::Logged::Recording(log))))
 }
 
 /// `fennec replay log`: runs the program `fennec run --record` recorded into `log` again, with what

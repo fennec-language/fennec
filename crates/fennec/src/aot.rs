@@ -167,6 +167,7 @@ pub(crate) fn build_kept(
     match executable_checked(&program, &output, release, checked) {
         Ok(built) => {
             said_built(&output, &built);
+            said_packed(&program.sources);
             Ok((program, built))
         }
         Err(message) => {
@@ -174,6 +175,24 @@ pub(crate) fn build_kept(
             Err(ExitCode::FAILURE)
         }
     }
+}
+
+/// What a build says when a program has more files than there are slots for, so the spans of
+/// those past them move when an earlier one's length changes, and what's kept from one build to
+/// the next can't be kept for them (#2114).
+fn said_packed(sources: &fennec_syntax::Sources) {
+    if let Some(note) = packed_note(sources) {
+        eprintln!("{note}");
+    }
+}
+
+/// The note `said_packed` gives, when there is one.
+fn packed_note(sources: &fennec_syntax::Sources) -> Option<String> {
+    let slotted = sources.packed_past()?;
+    let packed = sources.files().count().saturating_sub(slotted);
+    Some(format!(
+        "note: the first {slotted} files each start at a slot of their own, and the {packed} after them are packed one after another, so a change to one moves the spans of those after it, and a build keeps nothing for them from the last (#2114)"
+    ))
 }
 
 /// What a build says it made.
@@ -1505,5 +1524,26 @@ mod tests {
         assert!(named.len() > 32_767, "a file this size wouldn't fit on a command line");
         assert_eq!(super::response_file(&[], &work), None);
         std::fs::remove_dir_all(&work).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod packed {
+    /// A build of a program with more files than there are slots says so, naming how many have
+    /// a slot and how many are packed; one with fewer says nothing.
+    #[test]
+    fn a_build_says_when_files_are_packed_past_the_slots() {
+        let mut sources = fennec_syntax::Sources::new();
+        for at in 0..1536 {
+            sources.add(format!("f{at}.fen"), "x\n");
+        }
+        assert_eq!(super::packed_note(&sources), None);
+        sources.add("over.fen", "x\n");
+        sources.add("after.fen", "x\n");
+        let note = super::packed_note(&sources).unwrap_or_default();
+        assert!(
+            note.contains("the first 1536 files each start at a slot of their own, and the 2 after them"),
+            "{note}"
+        );
     }
 }

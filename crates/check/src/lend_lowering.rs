@@ -242,6 +242,8 @@ thread_local! {
     /// The next span for a copy of the program's text that stays the program's, counting down
     /// from just below the spans lowering writes, and the lowest it can be, past the program's text.
     static PROGRAM_COPIES: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((WRITTEN_FROM - 1, 0)) };
+    /// Whether a copy among the program's text found no room this round.
+    static PROGRAM_COPIES_RAN_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A span a copy moved, as its start and end, and where to.
@@ -261,6 +263,7 @@ pub(crate) fn copies_from(module: &mut Module) {
     // Statements end past their last expression, as a `pass` does, but never this far.
     let floor = text_end.saturating_add(1 << 20);
     PROGRAM_COPIES.with(|next| next.set((top.saturating_sub(1), floor)));
+    PROGRAM_COPIES_RAN_OUT.with(|ran_out| ran_out.set(false));
     COPIED.with(|held| *held.borrow_mut() = copied);
     MOVED.with(|moved| moved.borrow_mut().clear());
 }
@@ -303,11 +306,21 @@ fn reserved_in(region: Region, length: u32) -> Option<u32> {
         Region::Written => Some(reserved(length)),
         Region::Program => PROGRAM_COPIES.with(|next| {
             let (top, floor) = next.get();
-            let low = top.checked_sub(length).filter(|low| *low > floor)?;
+            let Some(low) = top.checked_sub(length).filter(|low| *low > floor) else {
+                PROGRAM_COPIES_RAN_OUT.with(|ran_out| ran_out.set(true));
+                return None;
+            };
             next.set((low - 1, floor));
             Some(low)
         }),
     }
+}
+
+/// Whether a copy among the program's text found no room this round: the program's own text,
+/// each file in a slot of its own, left too little below what the compiler writes in. What was
+/// written in then can't be told apart where it must be, so the round refuses the program.
+pub(crate) fn program_copies_ran_out() -> bool {
+    PROGRAM_COPIES_RAN_OUT.with(std::cell::Cell::get)
 }
 
 /// Gives `module` the copies written in so far, in order of where each went.
@@ -2096,7 +2109,7 @@ fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
 /// A `lend`'s `else:` written in once more, as before each way the block fails, on spans of its
 /// own, so what's found by span in one copy, which may be checked where another isn't, as in a
 /// crash's function, is never another's (#2056). As it is only when spans have run out, which
-/// takes more than a program has.
+/// refuses the program at the end of the round (`program_copies_ran_out`).
 fn cleanup_copy(cleanup: &[Stmt]) -> Vec<Stmt> {
     let mut copy = cleanup.to_vec();
     match copied_apart(Region::Program, &mut [&mut copy]) {

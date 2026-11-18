@@ -530,15 +530,31 @@ const HIGH_BITS: u64 = LOW_BITS << 7;
 /// Where `part`, of one to eight bytes, first is in `whole`, in bytes, with nothing copied: a word
 /// at a time to where `part`'s first byte is, then whether the rest follows. It takes one look per
 /// place, so it's linear whatever the strings hold.
-fn word_in_place((whole, length): (&[u64], usize), part: u64, size: usize) -> Option<usize> {
+fn word_in_place(whole: (&[u64], usize), part: u64, size: usize) -> Option<usize> {
+    word_in_place_from(whole, part, size, 0)
+}
+
+/// [`word_in_place`] from byte `from` on: the bytes before it in its word are passed over. A
+/// byte that's `first` always has its top bit set below, so turning off the ones before `from`
+/// can't hide one after it.
+fn word_in_place_from(
+    (whole, length): (&[u64], usize),
+    part: u64,
+    size: usize,
+    from: usize,
+) -> Option<usize> {
     let mask = if size >= WORD_BYTES { u64::MAX } else { (1 << (size * 8)) - 1 };
     let (part, first) = (part & mask, part & 0xff);
-    for (at, word) in whole.iter().enumerate() {
+    let skipped = from / WORD_BYTES;
+    for (at, word) in whole.iter().enumerate().skip(skipped) {
         let word = u64::from_le(*word);
         let others = word ^ (first * LOW_BITS);
         // Each byte that's `first` has its top bit set here, along with perhaps some byte above
         // one that is, which the look below turns down.
         let mut places = others.wrapping_sub(LOW_BITS) & !others & HIGH_BITS;
+        if at == skipped {
+            places &= u64::MAX << ((from % WORD_BYTES) * 8);
+        }
         while places != 0 {
             let byte = usize::try_from(places.trailing_zeros() / 8).unwrap_or(0);
             if at * 8 + byte + size > length {
@@ -1093,6 +1109,38 @@ pub(super) fn find_in(whole: (&[u64], usize), (part, size): (&[u64], usize)) -> 
     READ.set(text);
     READ_PART.set(looked);
     at
+}
+
+/// Where `part` next is in `whole` from byte `from` on, in bytes, or `None`, with nothing
+/// copied: its first eight bytes are looked for as [`word_in_place_from`] does, then the rest
+/// compared eight at a time. For a loop over a `split`, which looks again from past each one.
+pub(super) fn place_from(
+    whole: (&[u64], usize),
+    (part, size): (&[u64], usize),
+    from: usize,
+) -> Option<usize> {
+    if size == 0 || from > whole.1 {
+        return None;
+    }
+    let head = part.first().map_or(0, |word| u64::from_le(*word));
+    let mut start = from;
+    while let Some(at) = word_in_place_from(whole, head, size.min(WORD_BYTES), start) {
+        if at + size > whole.1 {
+            return None;
+        }
+        let rest_same = (WORD_BYTES..size).step_by(WORD_BYTES).all(|offset| {
+            let count = (size - offset).min(WORD_BYTES);
+            let mask = if count >= WORD_BYTES { u64::MAX } else { (1 << (count * 8)) - 1 };
+            (super::text::eight_bytes_at(whole.0, at + offset) ^ super::text::eight_bytes_at(part, offset))
+                & mask
+                == 0
+        });
+        if rest_same {
+            return Some(at);
+        }
+        start = at + 1;
+    }
+    None
 }
 
 /// Copies `length` bytes, packed in `words`, into `bytes` a word at a time.

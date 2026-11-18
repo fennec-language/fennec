@@ -192,7 +192,7 @@ fn allocator() -> (&'static str, &'static str) {
 impl crate::emit::Emit<'_, '_, '_> {
     /// Whether values of layout `id` are native blocks.
     pub(crate) fn is_native(&self, id: u32) -> bool {
-        self.module.shared.native.contains(&id)
+        self.module.reads.native().contains(&id)
     }
 
     /// A new native block for layout `id`, owned once, its fields zero. A block that can't be
@@ -218,7 +218,7 @@ impl crate::emit::Emit<'_, '_, '_> {
         // by the allocator's call to clear it.
         self.line(&format!("store [{} x i64] zeroinitializer, ptr {made}", bytes / 8));
         self.count_native(bytes);
-        if self.module.shared.native_blocks == crate::NativeBlocks::Watched {
+        if self.module.native_blocks() == crate::NativeBlocks::Watched {
             self.declare("declare void @fennec_native_made(ptr) nounwind");
             self.line(&format!("call void @fennec_native_made(ptr {made})"));
         }
@@ -266,7 +266,7 @@ impl crate::emit::Emit<'_, '_, '_> {
     /// when the program has native blocks, one that frees those itself and gives the rest to it.
     pub(crate) fn free_function(&mut self) -> Result<&'static str, String> {
         self.declare("declare void @fennec_free(ptr) nounwind");
-        let native: Vec<u32> = self.module.shared.native.iter().copied().collect();
+        let native: Vec<u32> = self.module.reads.native().iter().copied().collect();
         if native.is_empty() {
             return Ok("@fennec_free");
         }
@@ -276,7 +276,7 @@ impl crate::emit::Emit<'_, '_, '_> {
         for (at, id) in native.iter().enumerate() {
             let name = self.layout_of(*id)?.name.clone();
             let symbol = format!("h_{name}");
-            self.module.shared.shapes.insert(symbol.clone(), *id);
+            self.module.add_shape(&symbol, *id);
             self.declare(&format!("@\"{symbol}\" = external dso_local global i64"));
             self.define_drop(*id, &name)?;
             let next = at + 1;
@@ -305,7 +305,7 @@ impl crate::emit::Emit<'_, '_, '_> {
         self.declare(free);
         let free_call = if free.contains("@free") { "@free" } else { "@mi_free" };
         // A build that watches native blocks tells the runtime each one's gone.
-        let watched = self.module.shared.native_blocks == crate::NativeBlocks::Watched;
+        let watched = self.module.native_blocks() == crate::NativeBlocks::Watched;
         if watched {
             self.declare("declare void @fennec_native_freed(ptr) nounwind");
         }

@@ -157,6 +157,10 @@ pub const NEVER_FAIL: &[&str] = &[
     // Says TLS is wanted before a request, which only sets the three functions that put TLS over a
     // connection, each once.
     "fennec_use_tls",
+    // Where the next separator starts from a byte, in a text and a separator given as headers
+    // and only read: under `with`, which sets no flag, with nothing to refuse, as a place past
+    // the text's end gives its length.
+    "fennec_str_split_at_header",
 ];
 
 /// Which export takes which names, and the function that looks one up: in `fennec-rt`, where the
@@ -447,6 +451,7 @@ export! {
     fennec_text_contains(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::contains(a0, a1, a2, a3, a4, a5);
     fennec_str_append_header(a0: i64, a1: u64, a2: u64, a3: u64) -> i64 => text::append_header(a0, a1, a2, a3);
     fennec_str_find_header(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 => text::find_header(a0, a1, a2, a3, a4, a5);
+    fennec_str_split_at_header(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: i64) -> i64 => text::split_at_header(a0, a1, a2, a3, a4, a5, a6);
     fennec_text_starts_with(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::starts_with(a0, a1, a2, a3, a4, a5);
     fennec_text_ends_with(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i8 => text::ends_with(a0, a1, a2, a3, a4, a5);
     fennec_text_of(a0: i64) -> text::Text => text::of(a0);

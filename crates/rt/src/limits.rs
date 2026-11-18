@@ -1159,6 +1159,123 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// On macOS a narrowed `Fs` looks a plain path up in one call, and gives what cap-std's walk
+    /// gives, for every path the walk answers: links in, out, absolute and up, a folder, a missing
+    /// file, a resource fork, and a path too long for one call.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_path_looked_up_in_one_call_answers_as_the_walk_does() {
+        let base = scratch("one-call");
+        let (folder, outside) = (format!("{base}/box"), format!("{base}/outside"));
+        // Ten folders of 120 characters: a path past the 1,023 bytes one call takes, made a folder at
+        // a time, as no whole path that long can be.
+        let names: Vec<String> = (0..10).map(|n| n.to_string().repeat(120)).collect();
+        let long = names.iter().fold(String::new(), |long, name| long + "/" + name);
+        std::fs::create_dir_all(format!("{folder}/a/b")).unwrap();
+        let mut deeper =
+            cap_std::fs::Dir::open_ambient_dir(format!("{folder}/a"), cap_std::ambient_authority()).unwrap();
+        for name in &names {
+            deeper.create_dir(name).unwrap();
+            deeper = deeper.open_dir(name).unwrap();
+        }
+        deeper.write("f.txt", "long").unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(format!("{folder}/a/b/f.txt"), "in").unwrap();
+        std::fs::write(format!("{outside}/secret.txt"), "OUTSIDE").unwrap();
+        let link =
+            |target: &str, at: &str| std::os::unix::fs::symlink(target, format!("{folder}/{at}")).unwrap();
+        link("b/f.txt", "a/rel_in");
+        link("../../outside/secret.txt", "a/rel_out");
+        link(&format!("{folder}/a/b/f.txt"), "a/abs_in");
+        link("..", "a/up");
+        link("b", "a/folder_link");
+        let fs = fs_in(&folder);
+        let paths = [
+            "a/b/f.txt".to_owned(),
+            "a/rel_in".to_owned(),
+            "a/rel_out".to_owned(),
+            "a/abs_in".to_owned(),
+            "a/up/a/b/f.txt".to_owned(),
+            "a/folder_link/f.txt".to_owned(),
+            "a/b".to_owned(),
+            "a/none.txt".to_owned(),
+            "a/b/f.txt/inside".to_owned(),
+            "a/b/f.txt/..namedfork/rsrc".to_owned(),
+            format!("a{long}/f.txt"),
+        ];
+        for path in &paths {
+            let at = Value::str(&format!("{folder}/{path}"));
+            for method in ["exists", "read_text", "read_bytes", "metadata"] {
+                let one_call = call(&fs, method, std::slice::from_ref(&at));
+                crate::stdlib::fs::walk_only(true);
+                let walked = call(&fs, method, std::slice::from_ref(&at));
+                crate::stdlib::fs::walk_only(false);
+                assert_eq!(format!("{one_call:?}"), format!("{walked:?}"), "`{method}` of `{path}`");
+            }
+        }
+        // A file written through one call is read back through the walk, and the other way round.
+        for (writer, reader) in [(false, true), (true, false)] {
+            let at = Value::str(&format!("{folder}/a/b/written.txt"));
+            crate::stdlib::fs::walk_only(writer);
+            ok(call(&fs, "write_text", &[at.clone(), Value::str(&format!("{writer}"))]));
+            crate::stdlib::fs::walk_only(reader);
+            assert_eq!(ok(call(&fs, "read_text", &[at])), Value::str(&format!("{writer}")));
+            crate::stdlib::fs::walk_only(false);
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The race that the kernel's beneath flag alone loses (Fable 5.2's review of the one-call
+    /// design, finding 1): another thread moves a folder holding a link to `..` out of a narrowed
+    /// `Fs`'s folder, and back, while the `Fs` reads through that link. A path with a link on it is
+    /// never looked up in one call, and the walk goes back up to the folder it came down through, so
+    /// no read reaches the folder it was moved into.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_moved_out_mid_lookup_never_leads_a_read_through_a_link_up_out() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let base = scratch("moved-up");
+        let (folder, away) = (format!("{base}/box"), format!("{base}/outside/x"));
+        std::fs::create_dir_all(format!("{folder}/a/deep/in")).unwrap();
+        std::fs::create_dir_all(&away).unwrap();
+        std::fs::write(format!("{folder}/a/secret.txt"), "INSIDE").unwrap();
+        std::fs::write(format!("{folder}/a/deep/in/f.txt"), "DEEP").unwrap();
+        std::fs::write(format!("{away}/secret.txt"), "OUTSIDE").unwrap();
+        std::os::unix::fs::symlink("..", format!("{folder}/a/deep/up")).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let moving = {
+            let stop = Arc::clone(&stop);
+            let (deep, moved) = (format!("{folder}/a/deep"), format!("{away}/deep"));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::fs::rename(&deep, &moved);
+                    let _ = std::fs::rename(&moved, &deep);
+                }
+            })
+        };
+        let fs = fs_in(&folder);
+        let through = Value::str(&format!("{folder}/a/deep/up/secret.txt"));
+        let plain = Value::str(&format!("{folder}/a/deep/in/f.txt"));
+        let (mut read, mut refused) = (0, 0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until {
+            for (at, inside) in [(&through, "INSIDE"), (&plain, "DEEP")] {
+                match call(&fs, "read_text", std::slice::from_ref(at)) {
+                    Value::Ok(text) => {
+                        assert_eq!(*text, Value::str(inside), "a read through a link up reached outside");
+                        read += 1;
+                    }
+                    _ => refused += 1,
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        moving.join().unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(read > 0 && refused > 0, "{read} read, {refused} refused: the move never raced the reads");
+    }
+
     /// `.` and `..` are worked out, so a path can't climb out of a folder by naming its parent.
     #[test]
     fn a_path_is_made_plain() {

@@ -12492,6 +12492,57 @@ def main(stdout: Stdout):
     )
 }
 
+/// A nested function called with an argument named, as `scaled(5, by=3)`, or with a default left
+/// out, takes each where it names: the arguments run in the order they're written, and land in
+/// their parameters. So does one a `with` source calls where it's written in. Before, a closure call
+/// that named an argument wasn't lowered. The oracle prints the same, debug and release.
+#[test]
+fn a_nested_function_s_arguments_land_where_they_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("nested_named_arguments", NESTED_NAMED_ARGUMENTS, "15 10 24\n[4, 6]\n15\n")?;
+    // A nested function named as a `with` source's function, given a name apart where the source is
+    // written in, still takes its named argument.
+    prints_in_both_builds("nested_named_apart", NESTED_NAMED_APART, "521\n")
+}
+
+const NESTED_NAMED_APART: &str = r"def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def counted() -> int:
+    def total(by=1) -> int:
+        return 7 * by
+    with opened() as got:
+        return got * 100 + total(by=3)
+
+def main(stdout: Stdout):
+    stdout.print(counted())
+";
+
+const NESTED_NAMED_ARGUMENTS: &str = r"def noted(value: int, ref log: list[int]) -> int:
+    log.append(value)
+    return value
+
+def opened() -> with int:
+    def scaled(value: int, by=2) -> int:
+        return value * by
+    lend scaled(5, by=3)
+
+def main(stdout: Stdout):
+    def scaled(value: int, by=2) -> int:
+        return value * by
+    mut log = list[int]()
+    reversed = scaled(by=noted(4, ref log), value=noted(6, ref log))
+    stdout.print(scaled(5, by=3), scaled(5), reversed)
+    stdout.print(log)
+    with opened() as got:
+        stdout.print(got)
+";
+
 /// A closure that captures a struct holding blocks lets go of them when it's let go of: an arrow
 /// reading a struct's list, and the `else:` a `with` source's crash runs, which captures a `ref`
 /// argument. Each round left the struct's blocks behind.

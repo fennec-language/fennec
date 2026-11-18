@@ -922,6 +922,18 @@ fn a_task_stopped_in_one_of_its_pieces_of_work_replays_as_it_ran() -> std::io::R
     )
 }
 
+/// Two rounds on two workers, each serving a server of its own when their server is stopped,
+/// replay as they ran: each is cancelled once its own server has ended, which the run never got to
+/// (#2004).
+#[test]
+fn two_rounds_serving_servers_of_their_own_replay_as_they_ran() -> std::io::Result<()> {
+    replays_as_it_ran(
+        "two-own-servers",
+        "two rounds serving servers of their own",
+        include_str!("fixtures/stopped_rounds/twoserving.fen"),
+    )
+}
+
 /// `source`, recorded at 1 and 4 threads, replays as it ran twice at 1, 4 and 16, with nothing said
 /// on its standard error.
 fn replays_as_it_ran(folder_name: &str, name: &str, source: &str) -> std::io::Result<()> {

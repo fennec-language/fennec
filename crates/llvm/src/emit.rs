@@ -11,8 +11,11 @@ use fennec_syntax::{BinOp, Span, UnaryOp};
 
 use crate::analysis::{Analysis, callees, visit, whole};
 use crate::holding::{Holding, filled, holding, step};
+use crate::index::{Record, Using};
+use crate::keys::Key;
 use crate::kinds::{Kind, struct_definitions};
 use crate::reads::Reads;
+use crate::reads::What;
 use crate::share::{Added, Kept, Place, Share, place};
 use crate::uniqueness::{Callees, FieldPath, Tracked, coming_in, unsettled, written_order};
 use crate::{CheckKind, CheckLeft, Shared};
@@ -235,7 +238,37 @@ const NEGATIVE_SQRT: i64 = 5;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Unit {
     pub function: String,
+    /// Its module's text, or nothing for a unit a build used again without writing it.
     pub text: String,
+    /// The hash of its text, which names its object.
+    pub hash: fennec_blake3::Hash,
+    /// Whether it's too big to optimize, so it's compiled as written (see `huge_functions`).
+    pub huge: bool,
+}
+
+impl Unit {
+    /// A unit just written, with its text.
+    #[must_use]
+    pub fn written(function: String, text: String) -> Unit {
+        let hash = fennec_blake3::hash(text.as_bytes());
+        let huge = crate::build::is_huge(&text);
+        Unit { function, text, hash, huge }
+    }
+}
+
+/// What a dev build gives emission to use the units it kept last time again, without writing
+/// them (edit builds, stage 1), and what it gets back to keep for next time.
+pub struct Reuse<'r> {
+    /// The bytes of the index the last build of this program kept, if there's one.
+    pub kept: Option<Vec<u8>>,
+    /// Whether the object a unit's text names is in the cache. A unit whose object is gone is
+    /// written again, so it can be compiled.
+    pub has_object: &'r dyn Fn(&fennec_blake3::Hash) -> bool,
+    /// Whether every unit used again is written anyway, into what's thrown away, and checked to
+    /// come out the same: `FENNEC_CACHE_AUDIT=1`.
+    pub audit: bool,
+    /// The index to keep for the next build, once emission has made it.
+    pub keep: Option<Vec<u8>>,
 }
 
 /// What can't be emitted yet says so, by function.
@@ -302,7 +335,23 @@ pub(crate) fn emit_with(
     shared: Shared,
 ) -> Result<(Vec<Unit>, Shared, Layouts), String> {
     // A dev build of `fennec` keeps what each unit read and shares, to check it's all it shares.
-    let (units, shared, layouts, _) = emit_keeping(program, cpu, shared, cfg!(debug_assertions))?;
+    let (units, shared, layouts, _) = emit_keeping(program, cpu, shared, (cfg!(debug_assertions), None))?;
+    Ok((units, shared, layouts))
+}
+
+/// `emit_for`, using again each unit `reuse` kept last time whose function and every read it
+/// made are as they were, and filling in what to keep for next time.
+///
+/// # Errors
+/// What can't be emitted yet, as [`emit_for`] says it; and a unit kept last time that can't be
+/// added again as it was kept, which is a bug.
+pub fn emit_reusing(
+    program: &Program,
+    cpu: Cpu,
+    reuse: &mut Reuse<'_>,
+) -> Result<(Vec<Unit>, Shared, Layouts), String> {
+    let (units, shared, layouts, _) =
+        emit_keeping(program, cpu, Shared::default(), (cfg!(debug_assertions), Some(reuse)))?;
     Ok((units, shared, layouts))
 }
 
@@ -313,8 +362,10 @@ pub(crate) fn emit_keeping(
     program: &Program,
     cpu: Cpu,
     mut shared: Shared,
-    keeping: bool,
+    (checking, reuse): (bool, Option<&mut Reuse<'_>>),
 ) -> Result<(Vec<Unit>, Shared, Layouts, Vec<Kept>), String> {
+    // A build that uses units again keeps what each one read and shares, for the next build.
+    let keeping = checking || reuse.is_some();
     let header = crate::header()?;
     let attributes = attributes(cpu);
     if PROOFS_CHECKED.load(std::sync::atomic::Ordering::Relaxed) {
@@ -352,16 +403,67 @@ pub(crate) fn emit_keeping(
     // What units read of these is noted, so they're kept apart from what units write while
     // they're written, and put in `shared` after, for the entry.
     let reads = Reads::new(&everything, &native, (&waiting, !waiting_closures.is_empty()), keeping);
+    let build = build_key(&shared, (header, &attributes), (threads, &reads), &layouts);
+    let mut using = reuse.map(|reuse| Using::new(reuse, build, &reads, &layouts));
+    let functions: HashMap<&str, &Function> = program
+        .functions
+        .iter()
+        .chain(&program.constants)
+        .map(|function| (function.name.as_str(), function))
+        .collect();
+    let anchor_of = |name: &str| functions.get(name).map(|function| crate::share::anchor(function));
     // Every function it can't take yet is named, not just the first.
     let mut refused = Vec::new();
     let mut kept = Vec::new();
+    // Each written unit's IR key, by its place in `units`, for the index.
+    let mut written = Vec::new();
     for function in program.functions.iter().chain(&program.constants) {
+        let ir = using.as_ref().map(|_| crate::keys::ir_key(function));
+        if let (Some(using), Some(ir)) = (&mut using, ir)
+            && let Some(record) = using.usable(&function.name, &ir)
+        {
+            if using.audit {
+                let kept_reads = using.reads_of(&record);
+                let unit_in = (&reads, threads, kept_reads.as_slice());
+                audit_unit(function, &record, unit_in, &layouts, &shared, (header, &attributes))?;
+            }
+            // Asked again, then added into a `Shared` of its own, which goes into what units
+            // share only once all of it is added. A unit kept with what can't be asked or added
+            // again as it was is written instead, as if it hadn't been kept, rather than failing
+            // this build and every one after it.
+            let share = Share { added: Some(record.share.clone()) };
+            let mut wrote = crate::share::settings_of(&shared);
+            let added = layouts
+                .ask_again(&record.asked)
+                .and_then(|()| share.add_to(&mut wrote, &layouts, &anchor_of));
+            if added.is_some() {
+                crate::share::merge(&mut shared, &wrote);
+                units.push(Unit {
+                    function: function.name.clone(),
+                    text: String::new(),
+                    hash: fennec_blake3::Hash(record.text),
+                    huge: record.huge,
+                });
+                if checking {
+                    kept.push(Kept {
+                        function: function.name.clone(),
+                        reads: using.reads_of(&record),
+                        share,
+                        asked: Some(record.asked.clone()),
+                        wrote,
+                    });
+                }
+                using.keep(record);
+                continue;
+            }
+        }
         if keeping {
             layouts.note_asked();
         }
-        // A build keeping units writes each into a `Shared` of its own, then adds that to what
-        // units share, so the audit checks what each kept against exactly what it wrote.
-        let mut wrote = keeping.then(|| crate::share::settings_of(&shared));
+        // A build that checks what units keep writes each into a `Shared` of its own, then adds
+        // that to what units share, so the audit checks what each kept against exactly what it
+        // wrote.
+        let mut wrote = checking.then(|| crate::share::settings_of(&shared));
         let made = unit(
             function,
             (&reads, threads),
@@ -373,11 +475,17 @@ pub(crate) fn emit_keeping(
         let asked = layouts.asked();
         match made {
             Ok((text, share)) => {
-                units.push(Unit { function: function.name.clone(), text });
-                if let Some(wrote) = wrote {
-                    crate::share::merge(&mut shared, &wrote);
-                    let reads = read.into_iter().map(|(what, name)| (what, name.into_owned())).collect();
-                    kept.push(Kept { function: function.name.clone(), reads, share, asked, wrote });
+                units.push(Unit::written(function.name.clone(), text));
+                if keeping {
+                    let reads: Vec<(What, String)> =
+                        read.into_iter().map(|(what, name)| (what, name.into_owned())).collect();
+                    if let (Some(ir), Some(_)) = (ir, &using) {
+                        written.push((units.len() - 1, ir, reads.clone(), share.clone(), asked.clone()));
+                    }
+                    if let Some(wrote) = wrote {
+                        crate::share::merge(&mut shared, &wrote);
+                        kept.push(Kept { function: function.name.clone(), reads, share, asked, wrote });
+                    }
                 }
             }
             Err(why) => refused.push(format!("`{}`: {why}", function.name)),
@@ -386,12 +494,9 @@ pub(crate) fn emit_keeping(
     if !refused.is_empty() {
         return Err(refused.join("\n"));
     }
-    if keeping {
+    if checking {
         crate::share::audit(program, &layouts, &kept)?;
     }
-    shared.native = native;
-    shared.waiting_closures = waiting_closures;
-    shared.waiting = waiting;
     for own in &program.own_texts {
         let (id, boxed) = match Kind::of(&layouts, &own.ty)? {
             Kind::Struct(id) | Kind::Enum(id) => (id, false),
@@ -404,11 +509,82 @@ pub(crate) fn emit_keeping(
         shared.own_texts.push((symbol, own.function.clone(), boxed));
     }
     if shared.facts == crate::Facts::Stripped {
-        for unit in &mut units {
-            unit.text = crate::facts::stripped(&unit.text);
+        for unit in units.iter_mut().filter(|unit| !unit.text.is_empty()) {
+            *unit = Unit::written(std::mem::take(&mut unit.function), crate::facts::stripped(&unit.text));
         }
     }
+    if let Some(mut using) = using {
+        // A written unit is kept with its text's hash as it's compiled, after facts are stripped.
+        for (at, ir, unit_reads, share, asked) in written {
+            let Some(unit) = units.get(at) else { continue };
+            using.keep_written(unit, ir, &unit_reads, share, asked);
+        }
+        using.finish();
+    }
+    shared.native = native;
+    shared.waiting_closures = waiting_closures;
+    shared.waiting = waiting;
     Ok((units, shared, layouts, kept))
+}
+
+/// The settings every unit of a build is written with, and the layouts it's written against:
+/// a kept unit is used again only by a build with the same. Everything here is the same for
+/// every unit, so it's one key for the build rather than a read each unit notes.
+fn build_key(
+    shared: &Shared,
+    (header, attributes): (&str, &str),
+    (threads, reads): (bool, &Reads<'_, '_>),
+    layouts: &Layouts,
+) -> Key {
+    let Shared { traced, tracing_costs, noting_checks, proofs, facts, native_blocks, .. } = shared;
+    let settings = format!(
+        "{header}\n{attributes}\n{}\n{traced} {tracing_costs} {noting_checks} {proofs:?} {facts:?} {native_blocks:?}\n{threads} {} {} {}\n",
+        crate::output_switches(),
+        reads.cells(),
+        reads.runtime_closures(),
+        reads.tested()
+    );
+    crate::keys::key_of("fennec unit build 2026-11-17", &(settings, layouts.fingerprint()))
+}
+
+/// Writes a unit a build is using again, into what's then thrown away, and checks it comes out as
+/// it was kept: its text, what it shares, every kind it asks the layouts for, in order, and every
+/// read it makes of the whole program. `FENNEC_CACHE_AUDIT=1` has every unit used again checked.
+fn audit_unit<'p>(
+    function: &'p Function,
+    record: &Record,
+    (reads, threads, kept_reads): (&Reads<'_, 'p>, bool, &[(What, String)]),
+    layouts: &Layouts,
+    shared: &Shared,
+    (header, attributes): (&str, &str),
+) -> Result<(), String> {
+    layouts.ask_again(&record.asked).ok_or("asking again failed")?;
+    let mut scratch = crate::share::settings_of(shared);
+    layouts.note_asked();
+    let made = unit(function, (reads, threads), layouts, &mut scratch, (header, attributes));
+    let read: BTreeSet<(What, String)> =
+        reads.take().into_iter().map(|(what, name)| (what, name.into_owned())).collect();
+    let asked = layouts.asked();
+    let (text, share) = made?;
+    let text = if shared.facts == crate::Facts::Stripped { crate::facts::stripped(&text) } else { text };
+    let name = &function.name;
+    if *fennec_blake3::hash(text.as_bytes()).as_bytes() != record.text {
+        return Err(format!("the audit wrote `{name}` again and its text isn't the one kept"));
+    }
+    if share.added.as_ref() != Some(&record.share) {
+        return Err(format!("the audit wrote `{name}` again and what it shares isn't what was kept"));
+    }
+    // Every kind, in the order it was first asked for, whether something before had numbered it
+    // or not: a kind the kept asking leaves out could be one it later can't find.
+    if asked.as_ref() != Some(&record.asked) {
+        return Err(format!(
+            "the audit wrote `{name}` again and it asked for other kinds than it kept, or in another order"
+        ));
+    }
+    if read != kept_reads.iter().cloned().collect::<BTreeSet<_>>() {
+        return Err(format!("the audit wrote `{name}` again and it read other things than it kept"));
+    }
+    Ok(())
 }
 
 /// Whether a function only hands its work on: one block, a few instructions, and one call, to
@@ -5158,7 +5334,7 @@ def main(stdout: Stdout):
     /// units keeps it.
     fn kept_of(source: &str) -> Result<(Vec<Kept>, Program), String> {
         let program = lowered(source)?;
-        let (_, _, _, kept) = emit_keeping(&program, Cpu::Usual, Shared::default(), true)?;
+        let (_, _, _, kept) = emit_keeping(&program, Cpu::Usual, Shared::default(), (true, None))?;
         Ok((kept, program))
     }
 
@@ -5273,7 +5449,7 @@ def main(stdout: Stdout):
             let unit = if unit.function == "helper" { kept_helper } else { unit };
             layouts.ask_again(unit.asked.as_deref().ok_or("unnamed")?).ok_or("didn't ask again")?;
         }
-        let (_, _, written, _) = emit_keeping(&program, Cpu::Usual, Shared::default(), true)?;
+        let (_, _, written, _) = emit_keeping(&program, Cpu::Usual, Shared::default(), (true, None))?;
         assert_eq!(layouts.fingerprint(), written.fingerprint());
         Ok(())
     }

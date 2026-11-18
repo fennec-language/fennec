@@ -5914,6 +5914,10 @@ fn a_program_linked_from_the_caches_objects_is_the_one_built_without_it() -> std
 /// another command runs can take it, is compiled again from its function's text, so the build
 /// still makes the program a build without the cache makes. `FENNEC_LOSE_KEPT_OBJECTS=1` takes
 /// every kept object just before the link. The next build, finding them gone, compiles them again.
+///
+/// The edit changes `scaled` alone, so the build uses `label` and `main` again without writing
+/// them, and they have no text to compile again from: that build is made again writing every
+/// function, and says so.
 #[test]
 fn a_kept_object_gone_before_the_link_is_compiled_again() -> std::io::Result<()> {
     use crate::executables::Within as _;
@@ -5951,6 +5955,11 @@ fn a_kept_object_gone_before_the_link_is_compiled_again() -> std::io::Result<()>
         "a build whose kept objects went before the link failed: {}",
         text(&lost.stderr)
     );
+    assert!(
+        text(&lost.stderr).contains("so it wrote every function again"),
+        "the build used no unit again, or didn't say it wrote them again: {}",
+        text(&lost.stderr)
+    );
     let uncached = build("uncached", false, false)?;
     assert!(uncached.status.success(), "{}", text(&uncached.stderr));
     assert!(
@@ -5978,6 +5987,14 @@ struct Spot:
 
 struct Named:
     name: str? = None
+
+enum Twig:
+    Leaf
+    Node(left: Twig, right: Twig)
+
+enum Bush:
+    Bare
+    Branch(inner: Bush, weight: int)
 
 LIMIT = 40
 
@@ -6008,7 +6025,39 @@ def summed() -> int:
         total += tiny(step)
     return total
 
-def main(stdout: Stdout):
+def shelves() -> int:
+    spots = [Spot(across=1)]
+    places = {"home": Spot(down=2)}
+    nested = [[1, 2], [3]]
+    return len(spots) + len(places) + len(nested)
+
+def twigs(depth: int) -> Twig:
+    if depth == 0: return .Leaf
+    return .Node(left=twigs(depth - 1), right=twigs(depth - 1))
+
+def leaves(twig: Twig) -> int:
+    match twig:
+        case .Leaf:
+            return 1
+        case .Node(left, right):
+            return leaves(left) + leaves(right)
+
+def bushes(depth: int) -> Bush:
+    if depth == 0: return .Bare
+    return .Branch(inner=bushes(depth - 1), weight=depth)
+
+def weights(bush: Bush) -> int:
+    match bush:
+        case .Bare:
+            return 0
+        case .Branch(inner, weight):
+            return weight + weights(inner)
+
+def kept(fs: Fs, path: str) fails IoError:
+    with fs.create(path)? as file:
+        file.write_line("kept")?
+
+def main(stdout: Stdout, fs: Fs):
     items = [3, 5, 7, 9]
     stdout.print(picked(items, 2))
     stdout.print(summed())
@@ -6017,6 +6066,10 @@ def main(stdout: Stdout):
     stdout.print(len(pair_of(first=1, second=2)), pair_of(first="a", second="b")[0])
     stdout.print(moved(Spot(across=1, down=2), steps=3).across)
     stdout.print(Named(name="spot").name else "none")
+    stdout.print(shelves(), leaves(twigs(2)), weights(bushes(3)))
+    if len(items) > 100:
+        kept(fs, "never.txt") except why:
+            stdout.print(why)
     return
 "#;
 
@@ -6068,6 +6121,26 @@ const EDITS: &[(&str, &[(&str, &str)])] = &[
             ),
         ],
     ),
+    (
+        "a function std's text is lent into, written above another that has some",
+        &[
+            (
+                "def picked(",
+                "def kept_first(fs: Fs, path: str) fails IoError:\n    with fs.create(path)? as file:\n        file.write_line(\"first\")?\n\ndef picked(",
+            ),
+            (
+                "    items = [3, 5, 7, 9]\n",
+                "    items = [3, 5, 7, 9]\n    if len(items) > 200:\n        kept_first(fs, \"never.txt\") except why:\n            stdout.print(why)\n",
+            ),
+        ],
+    ),
+    (
+        "two types that hold themselves, swapped",
+        &[(
+            "enum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n\nenum Bush:\n    Bare\n    Branch(inner: Bush, weight: int)\n",
+            "enum Bush:\n    Bare\n    Branch(inner: Bush, weight: int)\n\nenum Twig:\n    Leaf\n    Node(left: Twig, right: Twig)\n",
+        )],
+    ),
 ];
 
 /// A build of `edited.fen` in `dir` for [`an_edit_build_makes_what_a_build_without_the_cache_makes`]:
@@ -6099,6 +6172,15 @@ fn edit_build(dir: &Path, name: &str, cached: bool, boxed: bool) -> std::io::Res
     Ok((output, linked, std::fs::read(dir.join(name))?))
 }
 
+/// How many functions' text a build wrote, of how many, as it says when it used others again.
+fn written_of(output: &Output) -> Option<(usize, usize)> {
+    let said = text(&output.stdout);
+    let (_, rest) = said.split_once("(wrote ")?;
+    let (counts, _) = rest.split_once(')')?;
+    let (written, total) = counts.split_once(" of ")?;
+    Some((written.parse().ok()?, total.parse().ok()?))
+}
+
 /// How many functions a build compiled, of how many, as it says.
 fn compiled_of(output: &Output) -> Option<(usize, usize)> {
     let said = text(&output.stdout);
@@ -6110,7 +6192,7 @@ fn compiled_of(output: &Output) -> Option<(usize, usize)> {
 
 /// What a dev build makes after an edit, from the cache the builds before it filled, is what a
 /// build with no cache at all makes: every object it links and the program, byte for byte. Each
-/// of the twelve edits changes what some function's object is made from in a way of its own (see
+/// of the edits changes what some function's object is made from in a way of its own (see
 /// [`EDITS`]), and a switch that lays types out another way goes on, then off again. So whatever
 /// a build reuses, it can never be an object made from anything but what it would make now.
 #[test]
@@ -6145,6 +6227,11 @@ fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result
         let cached = edit_build(&dir, &step, true, false)?;
         same(what, &step, &cached, &edit_build(&dir, &format!("{step}-whole"), false, false)?);
         reused.push((*what, compiled_of(&cached.0)));
+        if at == 0 {
+            // A body's edit writes that function's text again, and uses the rest as kept.
+            let written = written_of(&cached.0);
+            assert!(written.is_some_and(|(written, total)| written > 0 && written < total), "{written:?}");
+        }
     }
     // Every edit compiles again only some of the functions, and an edit to a body at least one.
     let all_again: Vec<_> =
@@ -6167,6 +6254,47 @@ fn an_edit_build_makes_what_a_build_without_the_cache_makes() -> std::io::Result
     std::fs::write(dir.join("edited.fen"), EDITED_BASE.replace("LIMIT = 40", "LIMIT = 42"))?;
     let last = (edit_build(&dir, "last", true, false)?, edit_build(&dir, "last-whole", false, false)?);
     same("types in place again", "last", &last.0, &last.1);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// With `FENNEC_CACHE_AUDIT=1`, a build writes each unit it uses again anyway, into what's thrown
+/// away, and fails if it doesn't come out as kept: its text, what it shares, every kind it asks
+/// the layouts for, in order, and every read it makes. So each of these edit builds, one for
+/// every kind of edit, checks every unit it uses again. The first three edits use some again.
+#[test]
+fn an_edit_build_audited_writes_each_unit_it_uses_again_the_same() -> std::io::Result<()> {
+    if !crate::llvm::ready() {
+        return Ok(());
+    }
+    let dir = scratch("edit-audited")?;
+    let audited = |name: &str| {
+        let mut command = crate::executables::fennec_command();
+        command
+            .args(["build", "edited.fen", "-o", name])
+            .current_dir(&dir)
+            .env("FENNEC_HOME", dir.join("home"))
+            .env("FENNEC_CACHE_AUDIT", "1")
+            .env_remove("FENNEC_NO_CACHE");
+        command.output()
+    };
+    let mut wrote = Vec::new();
+    for (at, (what, changes)) in
+        [("the first build", &[][..])].into_iter().chain(EDITS.iter().copied()).enumerate()
+    {
+        let mut edited = EDITED_BASE.to_owned();
+        for (from, to) in changes {
+            edited = edited.replace(from, to);
+        }
+        std::fs::write(dir.join("edited.fen"), &edited)?;
+        let built = audited(&format!("audited{at}"))?;
+        assert!(built.status.success(), "{what}: {}", text(&built.stderr));
+        wrote.push((what, written_of(&built)));
+    }
+    assert!(
+        wrote.iter().skip(1).take(3).all(|(_, written)| written.is_some()),
+        "edits that used nothing again: {wrote:?}"
+    );
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }

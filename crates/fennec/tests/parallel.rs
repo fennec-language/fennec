@@ -227,6 +227,53 @@ fn ranges_run_on_the_runtime_s_workers_each_with_its_own_stack_limit_and_failure
     Ok(())
 }
 
+/// A launched task that nests calls as deep as its argument says, on a stack smaller than a
+/// worker's: 100,000 deep it ends as asked, and a billion deep it's too deep, which crashes it
+/// alone.
+const TASK_TOO_DEEP: &str = "\
+from std.concurrent import Crashed
+
+def depth(n: int) -> int:
+    if n == 0:
+        return 0
+    return 1 + depth(n - 1)
+
+def reach(n: int, stdout: Stdout):
+    stdout.print(f\"the task reached {depth(n)}\")
+
+def in_a_task(n: int, stdout: Stdout) fails Crashed:
+    with launch(() => reach(n, stdout)):
+        pass
+    return
+
+def main(stdout: Stdout):
+    for n in [100_000, 1_000_000_000]:
+        in_a_task(n, stdout) except Crashed():
+            stdout.print(\"the task crashed\")
+    stdout.print(\"after\")
+";
+
+#[test]
+fn a_launched_task_nests_100_000_calls_and_one_too_deep_crashes_only_it() -> std::io::Result<()> {
+    if !ready() || !threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = fennec_temp::Temp::at(
+        std::env::temp_dir().join(format!("fennec-task-too-deep-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&dir)?;
+    let deep = build_on_threads(&dir, TASK_TOO_DEEP, "deep")?;
+    let ran = Command::new(&deep).env("FENNEC_THREADS", "2").output_within()?;
+    let (stdout, stderr, code) = ran_in(&dir, &ran);
+    std::fs::remove_dir_all(&dir)?;
+    // Too deep in a task is a failure at the call, not a crash of the process.
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout, "the task reached 100000\nthe task crashed\nafter\n");
+    // A failure in a task doesn't yet say where it happened, as one in a range does: #2045.
+    assert_eq!(stderr, "error: calls nested too deeply\n");
+    Ok(())
+}
+
 /// A function `parallel` programs share with one that doesn't use it.
 const SHARED: &str = "\
 def half(n: int) -> int:

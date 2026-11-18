@@ -4,7 +4,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use super::{Awaited, Counts, Kind, Note, ONE_CONTEXT, ONE_GENERATION, ONE_STUCK, ThreadNote, Who, said};
+use super::{
+    Awaited, CallName, Counts, Kind, Note, ONE_CONTEXT, ONE_GENERATION, ONE_STUCK, RangeName, ThreadNote,
+    Who, said,
+};
 
 /// The counts read back as they were packed, and a second uncount, borrowing from the contexts'
 /// field, never reads as every context stuck.
@@ -71,6 +74,42 @@ fn a_report_says_who_waits_for_what_and_a_note_asks_what_it_waits_on() {
     assert!(notes.iter().all(Note::holds));
     told.holds.store(false, Ordering::SeqCst);
     assert!(!notes.iter().any(Note::holds), "what it waits on changed");
+}
+
+/// A range of a waiting `parallel` call is named by its call and where it starts, and comes after
+/// `main` and the tasks: one call's ranges together, range 2 before range 10. A task's call is named
+/// by the task's number as the report finds it, from the notes too, since a launcher come to its
+/// block's end no longer has its task among those to be waited for. A call made in a range is
+/// named by that range.
+#[test]
+fn a_report_names_each_range_by_its_call_and_where_it_starts() {
+    let on: Arc<dyn Awaited> = Arc::new(Told { holds: AtomicBool::new(true), task: None });
+    let stop = Arc::new(AtomicU8::new(0));
+    let block_end: Arc<dyn Awaited> =
+        Arc::new(Told { holds: AtomicBool::new(true), task: Some((Arc::clone(&stop), 3)) });
+    let mains = Arc::new(CallName::By(Who::Main));
+    let tasks = Arc::new(CallName::By(Who::Task(stop)));
+    let nested = Arc::new(CallName::InRange(RangeName { call: Arc::clone(&mains), from: 4 }));
+    let range = |call: &Arc<CallName>, from| Note {
+        range: Some(RangeName { call: Arc::clone(call), from }),
+        ..Note::parked(Arc::clone(&on), Kind::Receive)
+    };
+    let notes = [
+        range(&mains, 10),
+        range(&nested, 1),
+        range(&tasks, 0),
+        range(&mains, 2),
+        Note { who: Who::Main, ..Note::parked(block_end, Kind::BlockEnd) },
+    ];
+    assert_eq!(
+        said(&notes),
+        "error: a deadlock: every task is waiting for another, and nothing can wake them\n  \
+         main is waiting for BlockEnd\n  \
+         range 2 of main's `parallel` call is waiting for Receive\n  \
+         range 10 of main's `parallel` call is waiting for Receive\n  \
+         range 0 of task 3's `parallel` call is waiting for Receive\n  \
+         range 1 of the `parallel` call in range 4 of main's `parallel` call is waiting for Receive\n"
+    );
 }
 
 /// A channel wait that blocks its thread holds only while no task its code launched has a crash

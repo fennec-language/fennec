@@ -9120,9 +9120,15 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
 
 /// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4 and 16
 /// threads, wanting what it prints, what it says and its exit code every time.
-fn deadlock_fixture_runs_as(
+fn deadlock_fixture_runs_as(name: &str, runs: usize, wanted: (&str, &str, i32)) -> std::io::Result<()> {
+    deadlock_fixture_runs_with(name, runs, &[], wanted)
+}
+
+/// `deadlock_fixture_runs_as`, with `env` set for each run.
+fn deadlock_fixture_runs_with(
     name: &str,
     runs: usize,
+    env: &[(&str, &str)],
     (out, err, code): (&str, &str, i32),
 ) -> std::io::Result<()> {
     let dir = folder(&format!("deadlocks-{name}"))?;
@@ -9137,7 +9143,10 @@ fn deadlock_fixture_runs_as(
     assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
     for threads in ["1", "4", "16"] {
         for _ in 0..runs {
-            let ran = Command::new(&executable).env("FENNEC_THREADS", threads).output_within()?;
+            let ran = Command::new(&executable)
+                .env("FENNEC_THREADS", threads)
+                .envs(env.iter().copied())
+                .output_within()?;
             let said = (String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
             assert_eq!(
                 (said.0.as_ref(), said.1.as_ref(), ran.status.code()),
@@ -9185,6 +9194,77 @@ fn a_deadlock_stops_the_program_and_says_who_waits_for_what() -> std::io::Result
     ];
     for (name, printed, lines) in cases {
         deadlock_fixture_runs_as(name, 1, (printed, &format!("{error}{lines}"), 1))?;
+    }
+    Ok(())
+}
+
+/// A waiting `parallel` call's join is a stuck wait too, so a deadlock through its ranges stops the
+/// program and says each range, by its call and where it starts: four ranges receiving on a channel
+/// nobody sends to, from `main` and from a launched task; a range whose call of its own runs its
+/// ranges in it, there being no other worker to give them to; three ranges in a ring of channels;
+/// and a range waiting on one that failed or crashed first, which the join's line says.
+#[test]
+fn a_deadlock_through_a_parallel_calls_ranges_says_each_range() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let error = "error: a deadlock: every task is waiting for another, and nothing can wake them\n";
+    let receives = |ranges: std::ops::Range<u32>, call: &str| -> String {
+        ranges
+            .map(|range| {
+                format!("  range {range} of {call}'s `parallel` call is waiting to receive on a channel that's empty\n")
+            })
+            .collect()
+    };
+    let joins = "  main is waiting for the ranges of its `parallel` call";
+    let in_task = format!(
+        "  main is waiting at the end of a `with launch` block, for task 1\n  \
+         task 1 is waiting for the ranges of its `parallel` call\n{}",
+        receives(0..4, "task 1")
+    );
+    let cases = [
+        ("stuck_ranges", "", format!("{joins}\n{}", receives(0..4, "main"))),
+        ("stuck_ranges_in_task", "", in_task),
+        ("nested_call", "", format!("{joins}\n{}", receives(1..2, "main"))),
+        ("ring", "made the ring\n", format!("{joins}\n{}", receives(0..3, "main"))),
+        ("sibling_fails", "", format!("{joins}, whose range 1 failed\n{}", receives(0..1, "main"))),
+        (
+            "sibling_crashes",
+            "",
+            format!("{joins}, whose range 1 crashed: division by zero\n{}", receives(0..1, "main")),
+        ),
+    ];
+    for (name, printed, lines) in cases {
+        deadlock_fixture_runs_as(name, 1, (printed, &format!("{error}{lines}"), 1))?;
+    }
+    Ok(())
+}
+
+/// A waiting `parallel` call's join is never taken for a deadlock while something can still end
+/// it: later ranges still queued that send to earlier ones waiting, from `main` and from a task;
+/// ranges waiting on a task that sends after a nap; a reduction whose ranges pass a token round; a
+/// task's call stopped while its ranges wait; and calls one after another, each a quick hand-off,
+/// the workers asleep as each call's first job is pushed. Napping before each call, each woken
+/// worker is held 20 ms before it says it's awake (`FENNEC_TEST_SLOW_WAKE_MS`, which only a debug
+/// build reads), so the check finds every worker asleep while the call's job is queued: its look
+/// at the queues is what keeps it from a report then. (From Fable 5.2's review of the design.)
+#[test]
+fn a_parallel_call_that_can_still_end_is_never_a_deadlock() -> std::io::Result<()> {
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let refused = "Refused(why=\"leaving this way stops the task\")\n".repeat(5);
+    let cases: [(&str, &str, &[(&str, &str)]); 7] = [
+        ("queued", "4600\n", &[]),
+        ("task_queued", "4600\n", &[]),
+        ("late_sender", "490\n", &[]),
+        ("reduce_waiting", "24600\n", &[]),
+        ("stopped_partway", &refused, &[]),
+        ("two_calls", "2100\n", &[]),
+        ("two_calls_napping", "42\n", &[("FENNEC_TEST_SLOW_WAKE_MS", "20")]),
+    ];
+    for (name, printed, env) in cases {
+        deadlock_fixture_runs_with(name, 5, env, (printed, "", 0))?;
     }
     Ok(())
 }

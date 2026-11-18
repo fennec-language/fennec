@@ -103,16 +103,6 @@ fn extent(state: &State, list: i64) -> Option<(usize, usize)> {
     Some((length, element.words()))
 }
 
-/// How a deadlock's report names a `parallel` call made by `who`, as `here_named` names it: "main's
-/// `parallel` call", or "the `parallel` call in range 3 of main's `parallel` call" in a range.
-fn called_by(who: &str) -> String {
-    if who.starts_with("range ") {
-        format!("the `parallel` call in {who}")
-    } else {
-        format!("{who}'s `parallel` call")
-    }
-}
-
 /// One `parallel` call's ranges: where they stop, and the lowest failure.
 struct Run {
     chunk: usize,
@@ -165,7 +155,7 @@ struct Run {
     waiting: bool,
     /// For a call whose body may wait, how a deadlock's report names it, as "main's `parallel`
     /// call", for naming its join and its ranges.
-    named: Option<Arc<str>>,
+    named: Option<Arc<super::deadlock::CallName>>,
 }
 
 /// Which of a call's ranges a failure kept from starting (see `Run::skipped`), or a stop (see
@@ -334,14 +324,14 @@ impl Run {
         // wait can't be part of a deadlock, and costs it nothing.
         self.done.counts_joins(waiting);
         if waiting {
-            self.named = Some(Arc::from(called_by(&super::deadlock::here_named())));
+            self.named = Some(super::deadlock::CallName::here());
         }
         self
     }
 
     /// For a range of a waiting call, starting at `from`, how a deadlock's report names it.
-    fn range_named(&self, from: usize) -> Option<Arc<super::deadlock::RangeName>> {
-        self.named.as_ref().map(|call| Arc::new(super::deadlock::RangeName { call: Arc::clone(call), from }))
+    fn range_named(&self, from: usize) -> Option<super::deadlock::RangeName> {
+        self.named.as_ref().map(|call| super::deadlock::RangeName { call: Arc::clone(call), from })
     }
 
     /// The same call, made by the launched task told to stop with `stop`, for the pool: its
@@ -417,13 +407,11 @@ impl Run {
         // A waiting call's failure is said in a deadlock's report, should a sibling of this range
         // wait on it for good: said here, on the thread whose runtime holds it.
         if self.waiting {
-            let said = match &found {
-                Failure::Crash(diagnostic) => diagnostic.message.clone(),
-                Failure::Value(value) => {
-                    with(|state| crate::format::display(&super::heap::read_block(state, *value)))
-                }
+            let crash = match &found {
+                Failure::Crash(diagnostic) => Some(diagnostic.message.clone()),
+                Failure::Value(_) => None,
             };
-            self.done.range_failed(from, said);
+            self.done.range_failed(from, crash);
         }
         let mut kept = self.failure.lock().unwrap_or_else(PoisonError::into_inner);
         let beaten = if kept.as_ref().is_none_or(|(at, _)| from < *at) {
@@ -1168,7 +1156,7 @@ mod pool {
         pub(super) fn counts_joins(&self, _counted: bool) {}
 
         #[expect(clippy::unused_self, reason = "it stands in for the threads build's latch")]
-        pub(super) fn range_failed(&self, _from: usize, _failure: String) {}
+        pub(super) fn range_failed(&self, _from: usize, _crash: Option<String>) {}
     }
 
     /// Without threads, there's no pool: `for_call` never gives one.
@@ -1196,8 +1184,8 @@ mod pool {
     /// Without threads, a range runs where it's made.
     /// Without threads no range is named: there's no pool to run one.
     pub(super) fn name_range(
-        _name: Option<std::sync::Arc<crate::embed::deadlock::RangeName>>,
-    ) -> Option<std::sync::Arc<crate::embed::deadlock::RangeName>> {
+        _name: Option<crate::embed::deadlock::RangeName>,
+    ) -> Option<crate::embed::deadlock::RangeName> {
         None
     }
 

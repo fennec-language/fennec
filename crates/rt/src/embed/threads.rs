@@ -84,21 +84,19 @@ thread_local! {
     /// For a range of a `parallel` call whose body may wait, how a deadlock's report names it, as
     /// "range 3 of main's `parallel` call". Set as the range starts, and swapped with its task's
     /// accounts as it parks and resumes.
-    static RANGE_NAME: std::cell::RefCell<Option<Arc<super::deadlock::RangeName>>> =
+    static RANGE_NAME: std::cell::RefCell<Option<super::deadlock::RangeName>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// The name of the range of a waiting `parallel` call running here, if one is (see `RANGE_NAME`).
 #[cfg(any(test, feature = "threads"))]
-pub(super) fn range_named() -> Option<Arc<super::deadlock::RangeName>> {
+pub(super) fn range_named() -> Option<super::deadlock::RangeName> {
     RANGE_NAME.with_borrow(Clone::clone)
 }
 
 /// Names the range running here `name`, giving back the name before, to put back as it ends.
 #[cfg(any(test, feature = "threads"))]
-pub(super) fn name_range(
-    name: Option<Arc<super::deadlock::RangeName>>,
-) -> Option<Arc<super::deadlock::RangeName>> {
+pub(super) fn name_range(name: Option<super::deadlock::RangeName>) -> Option<super::deadlock::RangeName> {
     RANGE_NAME.replace(name)
 }
 
@@ -521,7 +519,7 @@ pub(crate) struct Accounts {
     /// For a range of a call on the pool, what its caller waits in as the code that launched tasks.
     caller_s_launcher: Option<Arc<Launcher>>,
     /// For a range of a waiting call, how a deadlock's report names it (see `RANGE_NAME`).
-    range_name: Option<Arc<super::deadlock::RangeName>>,
+    range_name: Option<super::deadlock::RangeName>,
 }
 
 /// Whose accounts they are: a launched task's, or those of a range of a `parallel` call whose body

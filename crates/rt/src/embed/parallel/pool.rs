@@ -597,11 +597,12 @@ pub(in crate::embed) struct Latch {
 }
 
 /// What a waiting call's join waits on, for the deadlock check: whether every job has finished,
-/// set with `all` under the latch's lock, and the failure a range failed with first, if one has.
+/// set with `all` under the latch's lock, and the lowest range that failed, if one has, with its
+/// crash's message if it crashed.
 #[derive(Default)]
 pub(in crate::embed) struct Joined {
     done: AtomicBool,
-    failed: Mutex<Option<(usize, String)>>,
+    failed: Mutex<Option<(usize, Option<String>)>>,
 }
 
 impl crate::embed::deadlock::Awaited for Joined {
@@ -611,13 +612,15 @@ impl crate::embed::deadlock::Awaited for Joined {
 
     /// A range that failed keeps later ones from starting and wakes nothing, so a sibling waiting
     /// on it waits on, and the call can't end: the report says the failure the call holds, which it
-    /// would have said at its end (Fable 5.2's review of the design, finding 1).
+    /// would have passed up at its end (Fable 5.2's review of the design, finding 1). A crash is
+    /// said with its message; a failure's value is generated code's, which the runtime can't read.
     fn said(&self, _kind: crate::embed::deadlock::Kind) -> String {
         let failed = self.failed.lock().unwrap_or_else(PoisonError::into_inner);
         match &*failed {
-            Some((from, failure)) => {
-                format!("for the ranges of its `parallel` call, whose range {from} failed first: {failure}")
+            Some((from, Some(crash))) => {
+                format!("for the ranges of its `parallel` call, whose range {from} crashed: {crash}")
             }
+            Some((from, None)) => format!("for the ranges of its `parallel` call, whose range {from} failed"),
             None => "for the ranges of its `parallel` call".to_owned(),
         }
     }
@@ -704,10 +707,13 @@ impl Latch {
         self.counted.store(counted, Ordering::Relaxed);
     }
 
-    /// Notes that the range starting at `from` failed, said as `failure`, for a deadlock's report:
-    /// the first one only.
-    pub(super) fn range_failed(&self, from: usize, failure: String) {
-        self.joined.failed.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert((from, failure));
+    /// Notes that the range starting at `from` failed, crashing with `crash` or failing with a
+    /// value, for a deadlock's report: the lowest such range, whose failure the call keeps.
+    pub(super) fn range_failed(&self, from: usize, crash: Option<String>) {
+        let mut failed = self.joined.failed.lock().unwrap_or_else(PoisonError::into_inner);
+        if failed.as_ref().is_none_or(|(at, _)| from < *at) {
+            *failed = Some((from, crash));
+        }
     }
 
     /// The note of a join on it.
@@ -821,8 +827,8 @@ pub(super) fn window(words: usize) -> usize {
 /// Names the range of a waiting call running here `name`, for a deadlock's report, giving back the
 /// name before, to put back as it ends.
 pub(super) fn name_range(
-    name: Option<Arc<crate::embed::deadlock::RangeName>>,
-) -> Option<Arc<crate::embed::deadlock::RangeName>> {
+    name: Option<crate::embed::deadlock::RangeName>,
+) -> Option<crate::embed::deadlock::RangeName> {
     super::super::threads::name_range(name)
 }
 

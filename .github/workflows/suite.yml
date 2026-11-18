@@ -160,7 +160,10 @@ jobs:
           print("\nEach is the overflow-checked Rust twin's best time, or instruction count, over Fennec's on the same machine: "
                 "100 is level with Rust, and higher is faster. Each side runs ten times, taking turns, and the spread in brackets "
                 "is how far a median run was from the best. Instructions are counted by Valgrind on Linux, where they don't depend "
-                "on how busy the machine is. x86-64 Linux beside Arm Linux is a change of architecture alone, and Arm Linux beside "
+                "on how busy the machine is. On x86-64 the instructions column reads low for a program that zeroes or copies big blocks, as Fennec's "
+                "lists and byte builders do when they grow: glibc does that with `rep stosb` and `rep movsb`, and Valgrind counts "
+                "each byte of those as an instruction, where Arm's stores of 64 bytes count once. Arm Linux's instructions are the "
+                "ones to compare. x86-64 Linux beside Arm Linux is a change of architecture alone, and Arm Linux beside "
                 "Arm macOS a change of OS alone. Every kernel is in the table below.\n")
           EIGHT
       - name: One table for every machine

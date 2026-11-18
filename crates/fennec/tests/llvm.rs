@@ -1847,6 +1847,380 @@ def main(stdout: Stdout):
         stdout.print(len(lines))
 ";
 
+/// A function, constant or module a `with` source names is its own wherever it's written in, though
+/// the caller has a name of its own the same: a loop's, a parameter's, a case's, a local's, a nested
+/// function's parameter or the nested function itself, of the same type or not. So is one its
+/// `except` and its cleanup name, one it names with type arguments, and one imported by name.
+/// Before, the caller's took it: a wrong answer where the types fit, and otherwise an internal
+/// error.
+#[test]
+fn a_with_source_s_own_names_mean_its_own_where_it_s_written_in() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("source_names_by_binders", SOURCE_NAMES_BY_BINDERS, "13 5 5 5 5\n")?;
+    prints_in_both_builds("source_names_in_cleanups", SOURCE_NAMES_IN_CLEANUPS, "9\nBad()\n[\"cleaned\"]\n")?;
+    prints_in_both_builds("source_names_imported", SOURCE_NAMES_IMPORTED, "4 5 5 6\n")?;
+    // The coverage lane's random-program shape, which printed `7 7`.
+    prints_in_both_builds("source_names_called", SOURCE_NAMES_CALLED, "5 7\n")?;
+    // A method and a generator write it in as a function does.
+    prints_in_both_builds("source_names_by_callers", SOURCE_NAMES_BY_CALLERS, "15\n5\n7\n")?;
+    // A nested function named as the source's function, in sight of the `with`.
+    prints_in_both_builds("source_names_by_a_nested_function", SOURCE_NAMES_BY_A_NESTED_FUNCTION, "5\n")?;
+    // A function named only where it's written in, and by a loop after it, is still built.
+    prints_in_both_builds("source_names_reached", SOURCE_NAMES_REACHED, "5\ntick\ntick\n")?;
+    // The block may still assign the caller's name a `ref` parameter's uses are written as, which
+    // the source's cleanup reads.
+    prints_in_both_builds(
+        "source_cleanup_reads_what_the_block_assigns",
+        SOURCE_CLEANUP_READS_ASSIGNED,
+        "10\n",
+    )
+}
+
+/// A type a `with` source names as a type, and the `parallel` and `fields` it calls, are its own
+/// wherever it's written in, though the caller names something the same: a static method, a
+/// generic type's constructor, an enum's case, `is` and what it narrows, a `for ref` over
+/// `parallel`, and a loop over `fields`. Before, the build stopped with an internal error (#2039).
+#[test]
+fn a_with_source_s_types_and_special_forms_mean_its_own_where_it_s_written_in() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("source_type_names", SOURCE_TYPE_NAMES, "made 1\nfront\n5\n7\n16\n")?;
+    prints_in_both_builds("source_fields", SOURCE_FIELDS, "[\"depth\", \"name\"] 3\n")
+}
+
+/// In a `test`, where nothing holds a failure for the source's cleanup to run once after the block,
+/// the cleanup is written in before the failure, inside a loop that names the caller's `log` again:
+/// it still reads the caller's. Before, the build stopped with an internal error.
+#[test]
+fn a_with_source_s_cleanup_written_in_a_test_reads_the_caller_s_names() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("source_cleanup_in_a_test")?;
+    let program = dir.join("source_cleanup_in_a_test.fen");
+    std::fs::write(&program, SOURCE_CLEANUP_IN_A_TEST)?;
+    let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    let said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    // The cleanup's `assert` holds, so the test fails with what the block failed with.
+    assert!(said.contains("the test failed with Bad()"), "{said}");
+    assert!(said.contains("0 passed, 1 failed"), "{said}");
+    Ok(())
+}
+
+const SOURCE_NAMES_BY_BINDERS: &str = r"enum Kind:
+    Slider(total: int)
+    Empty
+
+def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def by_loop() -> int:
+    mut seen = 0
+    for total in [1, 2]:
+        with opened() as added:
+            seen += total + added
+    return seen
+
+def by_parameter(total: () -> int) -> int:
+    mut seen = 0
+    with opened() as added:
+        seen = added
+    return seen + total() * 0
+
+def by_case(kind: Kind) -> int:
+    match kind:
+        case .Slider(total):
+            with opened() as added:
+                return added + total * 0
+        case _:
+            return 0
+
+def by_local() -> int:
+    total = () => 7
+    with opened() as added:
+        return added + total() * 0
+
+def by_nested() -> int:
+    def inner(total: () -> int) -> int:
+        with opened() as added:
+            return added + total() * 0
+    return inner(() => 7)
+
+def main(stdout: Stdout):
+    stdout.print(by_loop(), by_parameter(() => 7), by_case(.Slider(total=3)), by_local(), by_nested())
+";
+
+const SOURCE_NAMES_IN_CLEANUPS: &str = r#"error Bad:
+    pass
+
+def risky(n: int) -> int fails Bad:
+    if n < 0:
+        fail Bad()
+    return n
+
+def fallback() -> int:
+    return 9
+
+def label() -> str:
+    return "cleaned"
+
+def opened() -> with int:
+    got = risky(-1) except why:
+        fallback() + len(f"{why}") * 0
+    lend got
+
+def guarded(ref log: list[str]) -> with int:
+    lend 1 except:
+        log.append(label())
+
+def counted(fallback: () -> int) -> int:
+    with opened() as got:
+        return got + fallback() * 0
+
+def run(ref log: list[str], label: () -> str) fails Bad:
+    with guarded(ref log) as got:
+        _ = risky(-got)?
+    log.append(label())
+
+def main(stdout: Stdout):
+    stdout.print(counted(() => 1))
+    mut log = list[str]()
+    run(ref log, () => "wrong") except why:
+        stdout.print(why)
+    stdout.print(log)
+"#;
+
+const SOURCE_NAMES_IMPORTED: &str = r"from std import math
+from std.math import sqrt
+
+LIMIT = 5
+
+def first[T](items: list[T]) -> T:
+    return items[0]
+
+def by_module() -> with int:
+    lend int(math.sqrt(16.0))
+
+def by_import() -> with int:
+    lend int(sqrt(25.0))
+
+def by_constant() -> with int:
+    lend LIMIT
+
+def by_generic() -> with int:
+    lend first[int]([6, 7])
+
+def modules(math: int) -> int:
+    with by_module() as got:
+        return got + math * 0
+
+def imports(sqrt: (float) -> float) -> int:
+    with by_import() as got:
+        return got + int(sqrt(1.0)) * 0
+
+def constants(LIMIT: int) -> int:
+    with by_constant() as got:
+        return got + LIMIT * 0
+
+def generics(first: (list[int]) -> int) -> int:
+    with by_generic() as got:
+        return got + first([1]) * 0
+
+def main(stdout: Stdout):
+    stdout.print(modules(1), imports((x) => x), constants(9), generics((xs) => xs[0] + 100))
+";
+
+const SOURCE_NAMES_CALLED: &str = r"def total6() -> int:
+    return 5
+
+def counted6() -> with int:
+    lend total6()
+
+def capturing6(total6: () -> int, stdout: Stdout):
+    with counted6() as got:
+        stdout.print(got, total6())
+
+def main(stdout: Stdout):
+    capturing6(() => 5 + 2, stdout)
+";
+
+const SOURCE_NAMES_BY_CALLERS: &str = r"struct Counter:
+    base: int
+
+    def counted(self, total: () -> int) -> int:
+        with opened() as got:
+            return got + self.base + total() * 0
+
+def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def made(total: () -> int) -> Iterator[int]:
+    with opened() as got:
+        yield got
+        yield total()
+
+def main(stdout: Stdout):
+    stdout.print(Counter(base=10).counted(() => 7))
+    for each in made(() => 7):
+        stdout.print(each)
+";
+
+const SOURCE_NAMES_BY_A_NESTED_FUNCTION: &str = r"def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def counted() -> int:
+    def total() -> int:
+        return 7
+    with opened() as got:
+        return got + total() * 0
+
+def main(stdout: Stdout):
+    stdout.print(counted())
+";
+
+const SOURCE_NAMES_REACHED: &str = r#"def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def main(stdout: Stdout):
+    with opened() as got:
+        stdout.print(got)
+    for total in range(2):
+        stdout.print("tick")
+"#;
+
+const SOURCE_CLEANUP_READS_ASSIGNED: &str = r"def tallied(ref total: int) -> with int:
+    lend 5 except:
+        total = -1
+
+def main(stdout: Stdout):
+    mut total = 3
+    with tallied(ref total) as got:
+        total = got * 2
+    stdout.print(total)
+";
+
+const SOURCE_TYPE_NAMES: &str = r#"enum Kind:
+    Slider(total: int)
+    Empty
+
+struct Door:
+    name: str
+
+    def made() -> Door:
+        return Door(name="made")
+
+struct Gate:
+    width: int
+
+struct Box[T]:
+    item: T
+
+def door() -> Door:
+    return Door(name="front")
+
+def made() -> with str:
+    lend Door.made().name
+
+def narrowed(thing: Door | Gate) -> with str:
+    mut said = "gate"
+    if thing is Door:
+        said = thing.name
+    lend said
+
+def boxed() -> with int:
+    held = Box[int](item=3)
+    lend held.item
+
+def cased() -> with int:
+    kind = Kind.Slider(total=4)
+    mut seen = 0
+    match kind:
+        case .Slider(total):
+            seen = total
+        case _:
+            seen = 0
+    lend seen
+
+def doubled(items: list[int]) -> with int:
+    mut kept = items
+    for ref item in parallel(kept):
+        item *= 2
+    lend sum(kept)
+
+def counted(Door: int, Box: int, Kind: int, parallel: int, stdout: Stdout):
+    with made() as got:
+        stdout.print(got, Door)
+    with narrowed(door()) as got:
+        stdout.print(got)
+    with boxed() as got:
+        stdout.print(got + Box)
+    with cased() as got:
+        stdout.print(got + Kind)
+    with doubled([1, 2, 3]) as got:
+        stdout.print(got + parallel)
+
+def main(stdout: Stdout):
+    counted(Door=1, Box=2, Kind=3, parallel=4, stdout=stdout)
+"#;
+
+const SOURCE_FIELDS: &str = r"struct Inner:
+    depth: int
+    name: str
+
+def named() -> with list[str]:
+    mut found = list[str]()
+    for field in fields(Inner):
+        found.append(field.name)
+    lend found
+
+def counted(fields: int, Inner: int, stdout: Stdout):
+    with named() as got:
+        stdout.print(got, fields + Inner)
+
+def main(stdout: Stdout):
+    counted(fields=1, Inner=2, stdout=stdout)
+";
+
+const SOURCE_CLEANUP_IN_A_TEST: &str = r#"error Bad:
+    pass
+
+def risky(n: int) -> int fails Bad:
+    if n < 0:
+        fail Bad()
+    return n
+
+def opened(ref log: list[str]) -> with int:
+    lend 1 except:
+        assert log == list[str]()
+        log.append("cleaned")
+
+def main(stdout: Stdout):
+    stdout.print("main")
+
+test "a cleanup written in before a failure reads the caller's log"():
+    mut log = list[str]()
+    with opened(ref log) as got:
+        for log in [["a loop's"]]:
+            _ = risky(-got)?
+"#;
+
 /// A name a `with` gives, named again inside its block by a nested function's parameter or by a
 /// loop inside a case, is that one there, of the same type: not what the source lends. So is a
 /// name a source's own nested function's parameter has, where the source has a local of that
@@ -5585,6 +5959,225 @@ def main(stdout: Stdout):
         "5\n7\nKind.Slider(value=100) Named.Pair(left=Named.Leaf(name=\"inner\"), name=\"outer\")\n",
     )
 }
+
+/// A failure that leaves a `ref` case from deep inside a `for ref` loop in it writes the loop's item
+/// back before the case is put back, so what the loop changed is kept: at a `?` in a `while`'s
+/// condition, in a later `elif`'s, after `and` or `or`, and in a `parallel` loop's round. Loops
+/// inside loops write back the innermost first.
+#[test]
+fn a_for_ref_item_is_written_back_before_its_ref_case_on_a_failure_from_deep_inside() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "for_ref_in_ref_case_failed_deep",
+        FOR_REF_FAILED_DEEP,
+        "11\n21\n31\n41\n51\n61\n\
+         Bag.Full(counts=[11, 2]) Bag.Full(counts=[21, 2]) Bag.Full(counts=[31, 2]) \
+         Bag.Full(counts=[41, 2]) Bag.Full(counts=[51, 2])\n\
+         Grid.Rows(rows=[[61, 2], [3]])\n",
+    )
+}
+
+const FOR_REF_FAILED_DEEP: &str = r"error Oops:
+    code: int
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+enum Grid:
+    Rows(rows: list[list[int]])
+    Blank
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def by_while(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 10
+                while small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_elif(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 20
+                if count < 0:
+                    pass
+                elif small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_and(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 30
+                if count > 0 and small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_or(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 40
+                if count < 0 or small(count)?:
+                    pass
+        case _:
+            pass
+
+def by_round(ref bag: Bag) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 50
+                for each in parallel([count]):
+                    _ = small(each)?
+        case _:
+            pass
+
+def nested(ref grid: Grid) fails Oops:
+    match grid:
+        case .Rows(ref rows):
+            for ref row in rows:
+                for ref cell in row:
+                    cell += 60
+                    while small(cell)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut first = Bag.Full(counts=[1, 2])
+    by_while(ref first) except why:
+        stdout.print(why.code)
+    mut second = Bag.Full(counts=[1, 2])
+    by_elif(ref second) except why:
+        stdout.print(why.code)
+    mut third = Bag.Full(counts=[1, 2])
+    by_and(ref third) except why:
+        stdout.print(why.code)
+    mut fourth = Bag.Full(counts=[1, 2])
+    by_or(ref fourth) except why:
+        stdout.print(why.code)
+    mut fifth = Bag.Full(counts=[1, 2])
+    by_round(ref fifth) except why:
+        stdout.print(why.code)
+    mut grid = Grid.Rows(rows=[[1, 2], [3]])
+    nested(ref grid) except why:
+        stdout.print(why.code)
+    stdout.print(first, second, third, fourth, fifth)
+    stdout.print(grid)
+";
+
+/// What a failure from deep inside a `ref` case leaves inside it is left once, the last first, and
+/// before the case is put back: a lock's changes are rolled back and it's given back, a generator's
+/// source is closed, and the `for ref` loop around them writes its item back.
+#[test]
+fn a_failure_leaves_what_s_inside_a_ref_case_once_before_putting_it_back() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "lock_in_ref_case_failed_deep",
+        LOCK_IN_REF_CASE,
+        "71\n[]\nBag.Full(counts=[71, 2])\n",
+    )?;
+    prints_in_both_builds(
+        "generator_in_ref_case_failed_deep",
+        GENERATOR_IN_REF_CASE,
+        "closed inner\nOops(code=82)\nBag.Full(counts=[82, 2])\n",
+    )
+}
+
+const LOCK_IN_REF_CASE: &str = r"error Oops:
+    code: int
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def by_lock(ref bag: Bag, seen: shared list[int]) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                count += 70
+                lock seen as ref held:
+                    held.append(count)
+                    while small(count)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    shared seen = list[int]()
+    mut bag = Bag.Full(counts=[1, 2])
+    by_lock(ref bag, seen) except why:
+        stdout.print(why.code)
+    lock seen as now:
+        stdout.print(now)
+    stdout.print(bag)
+";
+
+const GENERATOR_IN_REF_CASE: &str = r#"error Oops:
+    code: int
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+struct Door:
+    name: str
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int]:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def let_go(ref bag: Bag, stdout: Stdout) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                for step in held("inner", stdout):
+                    count += 80 + step
+                    while small(count)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut bag = Bag.Full(counts=[1, 2])
+    let_go(ref bag, stdout) except why:
+        stdout.print(why)
+    stdout.print(bag)
+"#;
 
 /// `for key, ref value in x.items()` changes each value of a dict, or item of a `Table`, where it
 /// is, natively, with its key or its `Id`, and a `continue` leaves the rest of that one as it was.
@@ -11994,6 +12587,57 @@ def main(stdout: Stdout):
     )
 }
 
+/// A nested function called with an argument named, as `scaled(5, by=3)`, or with a default left
+/// out, takes each where it names: the arguments run in the order they're written, and land in
+/// their parameters. So does one a `with` source calls where it's written in. Before, a closure call
+/// that named an argument wasn't lowered. The oracle prints the same, debug and release.
+#[test]
+fn a_nested_function_s_arguments_land_where_they_name() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds("nested_named_arguments", NESTED_NAMED_ARGUMENTS, "15 10 24\n[4, 6]\n15\n")?;
+    // A nested function named as a `with` source's function, given a name apart where the source is
+    // written in, still takes its named argument.
+    prints_in_both_builds("nested_named_apart", NESTED_NAMED_APART, "521\n")
+}
+
+const NESTED_NAMED_APART: &str = r"def total() -> int:
+    return 5
+
+def opened() -> with int:
+    lend total()
+
+def counted() -> int:
+    def total(by=1) -> int:
+        return 7 * by
+    with opened() as got:
+        return got * 100 + total(by=3)
+
+def main(stdout: Stdout):
+    stdout.print(counted())
+";
+
+const NESTED_NAMED_ARGUMENTS: &str = r"def noted(value: int, ref log: list[int]) -> int:
+    log.append(value)
+    return value
+
+def opened() -> with int:
+    def scaled(value: int, by=2) -> int:
+        return value * by
+    lend scaled(5, by=3)
+
+def main(stdout: Stdout):
+    def scaled(value: int, by=2) -> int:
+        return value * by
+    mut log = list[int]()
+    reversed = scaled(by=noted(4, ref log), value=noted(6, ref log))
+    stdout.print(scaled(5, by=3), scaled(5), reversed)
+    stdout.print(log)
+    with opened() as got:
+        stdout.print(got)
+";
+
 /// A closure that captures a struct holding blocks lets go of them when it's let go of: an arrow
 /// reading a struct's list, and the `else:` a `with` source's crash runs, which captures a `ref`
 /// argument. Each round left the struct's blocks behind.
@@ -12685,6 +13329,210 @@ fn a_cleanup_failing_as_a_generator_is_let_go_fails_the_loop() -> std::io::Resul
     );
     Ok(())
 }
+
+/// A loop over a generator that can fail, `for x in made()?:`, inside a `with` block or a `ref`
+/// case owns the generator, as it does anywhere: a failure leaving the block lets go of it before
+/// the block's cleanup runs, and a failure of the generator's own cleanup is a note on the one
+/// leaving. Before, the checker held the generator in a name: it closed after the block's cleanup,
+/// and its cleanup's failure ended the program.
+#[test]
+fn a_generator_loop_inside_a_with_is_let_go_before_the_with_s_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "generator_loop_in_a_with",
+        GENERATOR_LOOP_IN_A_WITH,
+        "closed inner\nfailed outer\nOops(code=91) []\n\
+         closing noted\nfailed outer\nOops(code=91) [\"Shut(name=\\\"noted\\\")\"]\n\
+         closing tried\nfailed outer\nOops(code=94) [\"Shut(name=\\\"tried\\\")\"]\n",
+    )?;
+    prints_in_both_builds(
+        "generator_loop_in_a_ref_case",
+        GENERATOR_LOOP_IN_A_REF_CASE,
+        "closed let go\nOops(code=82)\nclosing noted\nOops(code=92) [\"Shut(name=\\\"noted\\\")\"]\n\
+         Bag.Full(counts=[82, 2]) Bag.Full(counts=[92, 2])\n",
+    )
+}
+
+/// In a `test`, which holds no failure, a `with` block's cleanup is written in before each failure
+/// in it: so a loop whose list fails to load, `for row in load_rows()?:`, still runs the cleanup,
+/// whose `assert` says it ran. The loop keeps its `?` only where the block holds its failure.
+#[test]
+fn a_loop_whose_list_fails_to_load_in_a_test_runs_the_with_s_cleanup() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    let dir = folder("loop_fails_to_load_in_a_test")?;
+    let program = dir.join("loop_fails_to_load_in_a_test.fen");
+    std::fs::write(&program, LOOP_FAILS_TO_LOAD_IN_A_TEST)?;
+    let tested = fennec(&["test", &program.to_string_lossy()], &dir)?;
+    std::fs::remove_dir_all(&dir)?;
+    let said =
+        format!("{}{}", String::from_utf8_lossy(&tested.stdout), String::from_utf8_lossy(&tested.stderr));
+    assert!(said.contains("the left side is \"outer\" and the right side is \"the cleanup ran\""), "{said}");
+    assert!(said.contains("0 passed, 1 failed"), "{said}");
+    Ok(())
+}
+
+const LOOP_FAILS_TO_LOAD_IN_A_TEST: &str = r#"error Bad:
+    pass
+
+struct Door:
+    name: str
+
+def opened(name: str) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        assert name == "the cleanup ran"
+
+def load_rows(n: int) -> list[int] fails Bad:
+    if n < 0:
+        fail Bad()
+    return [n]
+
+def main(stdout: Stdout):
+    stdout.print("main")
+
+test "a loop whose list fails to load runs the cleanup"():
+    with opened("outer") as door:
+        for row in load_rows(-1)?:
+            assert row == 0
+"#;
+
+const GENERATOR_LOOP_IN_A_WITH: &str = r#"error Oops:
+    code: int
+
+error Shut:
+    name: str
+
+struct Door:
+    name: str
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def kept(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    if name == "":
+        fail Shut(name=name)
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def risky(code: int) -> int fails Oops:
+    if code > 5:
+        fail Oops(code=code)
+    return code
+
+def ordered(stdout: Stdout) fails Oops | Shut:
+    with opened("outer", stdout) as door:
+        for step in kept("inner", stdout)?:
+            fail Oops(code=90 + step)
+
+def noted(stdout: Stdout) fails Oops | Shut:
+    with opened("outer", stdout) as door:
+        for step in held_stuck("noted", stdout)?:
+            fail Oops(code=90 + step)
+
+def noted_by_try(stdout: Stdout) fails Oops | Shut:
+    with opened("outer", stdout) as door:
+        for step in held_stuck("tried", stdout)?:
+            _ = risky(93 + step)?
+
+def main(stdout: Stdout):
+    ordered(stdout) except why:
+        stdout.print(why, why.notes())
+    noted(stdout) except why:
+        stdout.print(why, why.notes())
+    noted_by_try(stdout) except why:
+        stdout.print(why, why.notes())
+"#;
+
+const GENERATOR_LOOP_IN_A_REF_CASE: &str = r#"error Oops:
+    code: int
+
+error Shut:
+    name: str
+
+enum Bag:
+    Full(counts: list[int])
+    Empty
+
+struct Door:
+    name: str
+
+def small(count: int) -> bool fails Oops:
+    if count > 5:
+        fail Oops(code=count)
+    return count < 0
+
+def opened(name: str, stdout: Stdout) -> with Door:
+    door = Door(name=name)
+    lend door except:
+        stdout.print("failed", name)
+    stdout.print("closed", name)
+
+def held(name: str, stdout: Stdout) -> Iterator[int]:
+    with opened(name, stdout) as door:
+        yield 1
+        yield 2
+
+def stuck(name: str, stdout: Stdout) -> with Door fails Shut:
+    door = Door(name=name)
+    lend door
+    stdout.print("closing", name)
+    fail Shut(name=name)
+
+def held_stuck(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
+    with stuck(name, stdout)? as door:
+        yield 1
+        yield 2
+
+def let_go(ref bag: Bag, stdout: Stdout) fails Oops:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                for step in held("let go", stdout):
+                    count += 80 + step
+                    while small(count)?:
+                        pass
+        case _:
+            pass
+
+def noted(ref bag: Bag, stdout: Stdout) fails Oops | Shut:
+    match bag:
+        case .Full(ref counts):
+            for ref count in counts:
+                for step in held_stuck("noted", stdout)?:
+                    count += 90 + step
+                    while small(count)?:
+                        pass
+        case _:
+            pass
+
+def main(stdout: Stdout):
+    mut first = Bag.Full(counts=[1, 2])
+    let_go(ref first, stdout) except why:
+        stdout.print(why)
+    mut second = Bag.Full(counts=[1, 2])
+    noted(ref second, stdout) except why:
+        stdout.print(why, why.notes())
+    stdout.print(first, second)
+"#;
 
 /// A failure already leaving through a loop whose generator's cleanup fails too is the one that
 /// leaves, carrying the cleanup's as a note, as a `with` block's failing `else:` does.
@@ -18329,6 +19177,176 @@ def main(net: Net, stdout: Stdout) fails NetError:
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(back, "pong\n", "the ping wasn't answered while the other round computed: {read:?}");
     Ok(())
+}
+
+/// On one thread, a handler only computing, given to `serve` by name or kept in a `Router`, still
+/// lets another request be answered: it reaches its round as a value, not by a call, and once never
+/// counted its loops' turns, so it held the thread until it finished.
+#[test]
+fn a_handler_only_computing_lets_the_others_answer() -> std::io::Result<()> {
+    use std::io::Write as _;
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let churn = "def churn(turns: int) -> int:
+    mut x = 1
+    mut n = 0
+    while n < turns:
+        x = (x * 31 + 7) % 1000003
+        n += 1
+    return x
+";
+    let by_name = format!(
+        r#"from std.net import NetError, Request, Response
+
+{churn}
+def answered(request: Request) -> Response:
+    if request.path == "/spin":
+        return Response(status=200, body=f"spun {{churn(1_000_000_000_000)}}".encode())
+    return Response(status=200, body="pong".encode())
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(answered)
+"#
+    );
+    let routed = format!(
+        r#"from std.net import NetError, Response, Router
+
+{churn}
+def main(net: Net, stdout: Stdout) fails NetError:
+    mut router = Router()
+    router.handle("GET /spin", (request, found) => Response(status=200, body=f"spun {{churn(1_000_000_000_000)}}".encode()))
+    router.handle("GET /ping", (request, found) => Response(status=200, body="pong".encode()))
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(router)
+"#
+    );
+    for (name, source) in [("by-name", by_name), ("routed", routed)] {
+        let dir = folder(&format!("ticking-handlers-{name}"))?;
+        let (server, port) = served_on_one_thread(&dir, &source)?;
+        let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        spinning.write_all(b"GET /spin HTTP/1.1\r\nhost: here\r\n\r\n")?;
+        let (reply, read) = asked_meanwhile(port, "/ping");
+        drop(spinning);
+        drop(server);
+        std::fs::remove_dir_all(&dir)?;
+        assert!(
+            reply.starts_with("HTTP/1.1 200") && reply.ends_with("pong"),
+            "{name}: the ping wasn't answered while the other handler computed: {read:?} {reply:?}"
+        );
+    }
+    Ok(())
+}
+
+/// On one thread, a handler that makes way in the middle of a `parallel` range it runs itself, while
+/// another request comes and is answered, still finishes the range with the right values: the ping
+/// is answered first, and the range's answer comes after, whole.
+#[test]
+fn a_handler_making_way_mid_range_finishes_it_right() -> std::io::Result<()> {
+    use std::io::{Read as _, Write as _};
+    if !ready() || !crate::executables::threads_runtime_built() {
+        return Ok(());
+    }
+    let dir = folder("ticking-mid-range")?;
+    // `xored(n)` is every number below `n` xored together: for 2,000,000,001 that's 2,000,000,000.
+    // The handler calls it itself too, so it ticks inside the range's turns.
+    let source = r#"from std.net import NetError, Request, Response
+
+def xored(turns: int) -> int:
+    mut x = 0
+    mut n = 0
+    while n < turns:
+        x = x ^ n
+        n += 1
+    return x
+
+def answered(request: Request) -> Response:
+    if request.path == "/spin":
+        values = [xored(turns) for turns in parallel([2_000_000_001, 2_000_000_001])]
+        return Response(status=200, body=f"spun {values} {xored(1)}".encode())
+    return Response(status=200, body="pong".encode())
+
+def main(net: Net, stdout: Stdout) fails NetError:
+    with net.listen(0)? as server:
+        stdout.print(server.port)
+        server.serve(answered)
+"#;
+    let (server, port) = served_on_one_thread(&dir, source)?;
+    let mut spinning = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    spinning.write_all(b"GET /spin HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n")?;
+    let (reply, read) = asked_meanwhile(port, "/ping");
+    // Nothing of the range's answer yet: the ping didn't wait for it.
+    spinning.set_nonblocking(true)?;
+    let mut first = [0_u8; 1];
+    let early = spinning.peek(&mut first);
+    spinning.set_nonblocking(false)?;
+    spinning.set_read_timeout(Some(crate::executables::WALL_DEADLINE))?;
+    let mut spun = String::new();
+    let finished = spinning.read_to_string(&mut spun);
+    drop(server);
+    std::fs::remove_dir_all(&dir)?;
+    assert!(reply.ends_with("pong"), "the ping wasn't answered: {read:?} {reply:?}");
+    assert!(
+        early.as_ref().is_err_and(|err| err.kind() == std::io::ErrorKind::WouldBlock),
+        "the range had answered before the ping: {early:?}"
+    );
+    assert!(spun.ends_with("spun [2000000000, 2000000000] 0"), "{finished:?} {spun:?}");
+    Ok(())
+}
+
+/// `source` written to `dir`, built release with the threads runtime, and started on one thread:
+/// the running server, and the port it printed first.
+fn served_on_one_thread(dir: &Path, source: &str) -> std::io::Result<(Running, u16)> {
+    use std::io::BufRead as _;
+    let program = dir.join("served.fen");
+    std::fs::write(&program, source)?;
+    let executable = dir.join("served");
+    let mut command = crate::executables::fennec_command();
+    command.args([
+        "build",
+        "--llvm",
+        "--release",
+        &program.to_string_lossy(),
+        "-o",
+        &executable.to_string_lossy(),
+    ]);
+    let built = command
+        .env("FENNEC_HOME", dir)
+        .env_remove("FENNEC_THREADS_RUNTIME")
+        .output_before(FENNEC_DEADLINE)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let mut server = Running(
+        Command::new(&executable)
+            .env("FENNEC_THREADS", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    let output = server.0.stdout.take().ok_or_else(|| std::io::Error::other("the server has no output"))?;
+    let mut printed = std::io::BufReader::new(output);
+    let mut port = String::new();
+    printed.read_line(&mut port)?;
+    Ok((server, port.trim().parse().unwrap_or(0)))
+}
+
+/// A request to `path` on `port`, sent once the request already sent has had time to be read
+/// and its handler to start: its answer, read within a minute, or why it wasn't.
+fn asked_meanwhile(port: u16, path: &str) -> (String, std::io::Result<usize>) {
+    use std::io::{Read as _, Write as _};
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let mut reply = String::new();
+    let read = std::net::TcpStream::connect(("127.0.0.1", port)).and_then(|mut asked| {
+        // A minute tells a handler that makes way from one that never ends.
+        asked.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+        asked.write_all(
+            format!("GET {path} HTTP/1.1\r\nhost: here\r\nconnection: close\r\n\r\n").as_bytes(),
+        )?;
+        asked.read_to_string(&mut reply)
+    });
+    (reply, read)
 }
 
 /// A program's resident memory in KB: `ps` gives it on Unix, and `tasklist` on Windows, as

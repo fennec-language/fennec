@@ -166,12 +166,20 @@ jobs:
       # `fennec`, so it's built first and the tests take the path users get.
       - name: Build the runtime library
         shell: bash
+        env:
+          PART: ${{ matrix.part }}
         run: |
           cargo build --locked -p fennec-runtime
           # The runtime with threads, on its own so Cargo doesn't give the plain one its features
           # too. `fennec build` takes it whenever it's there, so it's built fresh here: one a cache
           # kept from another commit can't read this commit's programs.
-          for features in threads; do
+          variants=(threads)
+          # And the two with the heap audit in them, which tests of a program built for an audit
+          # link, as the gate builds them. A test builds whichever isn't there, but in the middle
+          # of the run, with every other test wanting the machine, so the first to start waited
+          # minutes. The `others` part has no such test.
+          if [ "$PART" != others ]; then variants+=(audit 'threads,audit'); fi
+          for features in "${variants[@]}"; do
             dir="target/$(echo "$features" | tr , -)"
             name="fennec_runtime_$(echo "$features" | tr , _)"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
@@ -362,7 +370,9 @@ jobs:
       - name: Build the runtime libraries
         run: |
           cargo build --locked -p fennec-runtime
-          for features in threads; do
+          # With the two audited ones, which tests of a program built for an audit link, so none
+          # builds them in the middle of the run (see the test job).
+          for features in threads audit threads,audit; do
             dir="target/$(echo "$features" | tr , -)"
             name="fennec_runtime_$(echo "$features" | tr , _)"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"
@@ -788,7 +798,9 @@ jobs:
       - name: Build the runtime libraries
         run: |
           cargo build --locked -p fennec-runtime
-          for features in threads; do
+          # With the two audited ones, which tests of a program built for an audit link, so none
+          # builds them in the middle of the run (see the test job).
+          for features in threads audit threads,audit; do
             dir="target/$(echo "$features" | tr , -)"
             name="fennec_runtime_$(echo "$features" | tr , _)"
             cargo build --locked -p fennec-runtime --features "$features" --target-dir "$dir"

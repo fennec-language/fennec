@@ -141,10 +141,24 @@ impl Interp {
                 }
                 Ok(())
             }
-            Err(Flow::Fail(error, at_span)) => {
-                match self.block(otherwise) {
+            // The cleanup runs for the failed block. A failure out of it is noted on the block's,
+            // or takes its place, as the statement it came from says (`Interp::cleanup_failed_at`).
+            Err(Flow::Fail(mut error, at_span)) => {
+                let outer = self.cleanup.replace(super::Cleanup { frame: self.cur, replaces: None });
+                let cleaned = self.block(otherwise);
+                let how = std::mem::replace(&mut self.cleanup, outer);
+                match cleaned {
                     Err(Flow::Crash(message, crashed)) => return Err(Flow::Crash(message, crashed)),
                     Err(Flow::Unsupported(why)) => return Err(Flow::Unsupported(why)),
+                    Err(Flow::Fail(failed, failed_at)) => {
+                        if how.and_then(|how| how.replaces) == Some(true) {
+                            return Err(Flow::Fail(failed, failed_at));
+                        }
+                        let note = self.display(&failed)?;
+                        if let Value::Instance(instance) = &mut error {
+                            instance.notes.push(note);
+                        }
+                    }
                     _ => {}
                 }
                 Err(Flow::Fail(error, at_span))

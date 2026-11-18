@@ -1244,9 +1244,17 @@ impl Types {
 pub struct Body {
     pub(crate) exprs: BTreeMap<(u32, u32), Type>,
     pub(crate) names: BTreeMap<((u32, u32), String), Type>,
+    pub(crate) names_outer: bool,
 }
 
 impl Body {
+    /// Whether the function names a `with` source's own function, constant or module where it's
+    /// written in, with something in sight there named the same (`sight::outer`).
+    #[must_use]
+    pub fn names_outer(&self) -> bool {
+        self.names_outer
+    }
+
     /// The type of the expression at `span`.
     pub fn expr(&self, span: Span) -> Option<&Type> {
         self.exprs.get(&(span.start, span.end))

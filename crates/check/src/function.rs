@@ -227,6 +227,7 @@ impl<'c> FnCx<'c> {
         }
         let checker = &mut *self.checker;
         let body = checker.typed.entry(self.key.clone()).or_default();
+        body.names_outer = checker.names_outer.contains(&self.key);
         for (span, ty) in std::mem::take(&mut self.exprs) {
             body.exprs.insert((span.start, span.end), ty);
         }
@@ -235,6 +236,28 @@ impl<'c> FnCx<'c> {
             if let Some(body) = checker.typed.get_mut(&self.key) {
                 body.names.insert(((span.start, span.end), name), ty);
             }
+        }
+    }
+
+    /// Notes that this function names a `with` source's own function, constant or module, written
+    /// in where something in sight names it too (`sight::outer`): IR lowering gives its own names
+    /// apart first.
+    pub(crate) fn note_outer(&mut self) {
+        if !self.checker.names_outer.contains(&self.key) {
+            self.checker.names_outer.insert(self.key.clone());
+        }
+    }
+
+    /// A name read for what it stands for at the top level, a type or a special form: the name a
+    /// `with` source's own is written in as (`sight::outer`), noted, and whether it was one, which
+    /// nothing in sight takes.
+    pub(crate) fn meant<'n>(&mut self, written: &'n str) -> (&'n str, bool) {
+        match fennec_syntax::sight::outer(written) {
+            Some(meant) => {
+                self.note_outer();
+                (meant, true)
+            }
+            None => (written, false),
         }
     }
 
@@ -1042,6 +1065,14 @@ impl<'c> FnCx<'c> {
         let written =
             fennec_syntax::TypeExpr { name: name.to_owned(), args: Vec::new(), optional: false, span };
         self.checker.program.resolve(&written).ok().filter(|ty| !matches!(ty, Type::Unknown))
+    }
+
+    /// The type a name after `is` stands for, as it's written, when it names one no local takes:
+    /// `Circle` in `s is Circle`. A `with` source's own, written into its caller where something
+    /// there names it too (`sight::outer`), is the type.
+    pub(crate) fn member_named<'n>(&mut self, written: &'n str, at: Span) -> Option<&'n str> {
+        let (member, outer) = self.meant(written);
+        ((outer || self.lookup(member).is_none()) && self.member_type(member, at).is_some()).then_some(member)
     }
 
     /// `s is Circle`: a bool, for a name or field holding a union with that member.

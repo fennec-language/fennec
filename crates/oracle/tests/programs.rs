@@ -232,6 +232,132 @@ fn a_ref_case_is_put_back_where_it_matched_however_it_s_written() {
     );
 }
 
+/// A `ref` case is put back with its own names, past names inside its body that a `ref` name has
+/// too, a loop's, a nested function's parameter or a `with`'s, and from an `except` block. This is
+/// the checker lane's program, and what the compiled program prints with its fix.
+#[test]
+fn a_ref_case_is_put_back_past_names_inside_it() {
+    prints(
+        "
+        enum Kind:
+            Slider(value: int)
+            Empty
+
+        error Oops:
+            code: int
+
+        def opened() -> with int:
+            value = 5
+            lend value
+
+        def risky(flag: bool) -> int fails Oops:
+            if flag: fail Oops(code=1)
+            return 0
+
+        def main(stdout: Stdout):
+            mut looped = Kind.Slider(value=1)
+            mut seen = 0
+            mode = 0
+            match looped:
+                case .Slider(ref value):
+                    match mode:
+                        case 0:
+                            for value in [10, 20]:
+                                seen += value
+                        case _:
+                            pass
+                    value += 1
+                case _:
+                    pass
+            mut nested = Kind.Slider(value=1)
+            match nested:
+                case .Slider(ref value):
+                    def bumped(value: int) -> int:
+                        return value + 100
+                    value = bumped(5)
+                case _:
+                    pass
+            mut lent = Kind.Slider(value=1)
+            match lent:
+                case .Slider(ref value):
+                    with opened() as added:
+                        value += added
+                case _:
+                    pass
+            mut handled = Kind.Slider(value=1)
+            caught = risky(True) except why:
+                match handled:
+                    case .Slider(ref value):
+                        value += 7
+                    case _:
+                        pass
+                why.code
+            stdout.print(looped, seen, nested, lent, handled, caught)
+        ",
+        "Kind.Slider(value=2) 30 Kind.Slider(value=105) Kind.Slider(value=6) Kind.Slider(value=8) 1\n",
+    );
+}
+
+/// A failure leaving a `ref` case from a `?` in a `while` condition or after `and` puts it back
+/// with its own names, not a loop's or an inner case's. This is the checker lane's program, and
+/// what the compiled program prints with its fix.
+#[test]
+fn a_ref_case_left_by_a_failure_is_put_back_with_its_own_names() {
+    prints(
+        "
+        error Oops:
+            code: int
+
+        enum Kind:
+            Slider(value: int)
+            Empty
+
+        enum Named:
+            Leaf(name: str)
+            Pair(left: Named, name: str)
+
+        def small(count: int) -> bool fails Oops:
+            if count > 1:
+                fail Oops(code=count)
+            return count < 1
+
+        def bump(ref kind: Kind) fails Oops:
+            match kind:
+                case .Slider(ref value):
+                    value = 100
+                    for value in [5]:
+                        while small(value)?:
+                            pass
+                case _:
+                    pass
+
+        def renamed(ref named: Named, deep: bool) fails Oops:
+            match named:
+                case .Pair(ref left, ref name):
+                    name = 'outer'
+                    match left:
+                        case .Leaf(ref name):
+                            name = 'inner'
+                            if deep and small(7)?:
+                                pass
+                        case _:
+                            pass
+                case _:
+                    pass
+
+        def main(stdout: Stdout):
+            mut kind = Kind.Slider(value=0)
+            bump(ref kind) except why:
+                stdout.print(why.code)
+            mut named = Named.Pair(left=.Leaf(name='a'), name='b')
+            renamed(ref named, deep=True) except why:
+                stdout.print(why.code)
+            stdout.print(kind, named)
+        ",
+        "5\n7\nKind.Slider(value=100) Named.Pair(left=Named.Leaf(name=\"inner\"), name=\"outer\")\n",
+    );
+}
+
 /// A copy changed after it was made from another, or after it was sent to a task, changes alone,
 /// at every level: a list, a list of lists, tuples in a list, a set, a dict of lists, a struct and
 /// a struct of structs, lists and dicts. So do an argument, a `for ref` loop's list and what an
@@ -389,6 +515,79 @@ fn a_generator_and_its_reader_take_turns() {
     );
 }
 
+/// A type a `with` source names as a type, and the `parallel` it calls, are its own, though its
+/// caller names something the same: the oracle prints what the compiled program prints since #2039.
+#[test]
+fn a_with_source_s_type_names_are_its_own_though_the_caller_names_them() {
+    prints(
+        "
+        enum Kind:
+            Slider(total: int)
+            Empty
+
+        struct Door:
+            name: str
+
+            def made() -> Door:
+                return Door(name='made')
+
+        struct Gate:
+            width: int
+
+        struct Box[T]:
+            item: T
+
+        def door() -> Door:
+            return Door(name='front')
+
+        def made() -> with str:
+            lend Door.made().name
+
+        def narrowed(thing: Door | Gate) -> with str:
+            mut said = 'gate'
+            if thing is Door:
+                said = thing.name
+            lend said
+
+        def boxed() -> with int:
+            held = Box[int](item=3)
+            lend held.item
+
+        def cased() -> with int:
+            kind = Kind.Slider(total=4)
+            mut seen = 0
+            match kind:
+                case .Slider(total):
+                    seen = total
+                case _:
+                    seen = 0
+            lend seen
+
+        def doubled(items: list[int]) -> with int:
+            mut kept = items
+            for ref item in parallel(kept):
+                item *= 2
+            lend sum(kept)
+
+        def counted(Door: int, Box: int, Kind: int, parallel: int, stdout: Stdout):
+            with made() as got:
+                stdout.print(got, Door)
+            with narrowed(door()) as got:
+                stdout.print(got)
+            with boxed() as got:
+                stdout.print(got + Box)
+            with cased() as got:
+                stdout.print(got + Kind)
+            with doubled([1, 2, 3]) as got:
+                stdout.print(got + parallel)
+
+        def main(stdout: Stdout):
+            counted(Door=1, Box=2, Kind=3, parallel=4, stdout=stdout)
+        ",
+        "made 1\nfront\n5\n7\n16\n",
+    );
+}
+
 #[test]
 fn a_source_lends_to_the_block_and_finishes_after_it() {
     prints(
@@ -415,6 +614,111 @@ fn a_source_lends_to_the_block_and_finishes_after_it() {
         ",
         "2 [\"open ana\", \"ANA\", \"close ana\", \"open bo\", \"close bo\"]\n",
     );
+}
+
+/// An error carries notes: `add_note` adds one and `notes()` reads them, and printing it shows
+/// none. A cleanup that fails for a failed block has its failure noted on the block's, as it
+/// prints, when it's a `fail` or a line whose whole value is a `?`, and the rest of the cleanup is
+/// skipped; a `?` deeper in a line takes the block's place instead, as `docs/language.md` says.
+/// The oracle kept the block's failure every time, and gave `deep 3` where the compiled program
+/// gives `deep 503`. What it prints is what the compiled program printed.
+#[test]
+fn an_error_carries_notes_and_a_failing_cleanup_notes_or_replaces_it() {
+    prints(
+        "
+        error Refused:
+            code: int
+
+        struct Tally:
+            count: int
+
+        def guarded(code: int, stdout: Stdout) -> with Tally fails Refused:
+            stdout.print('guard', code)
+            lend Tally(count=code) except:
+                stdout.print('unguard', code)
+                if code % 3 == 0:
+                    fail Refused(code=code + 1000)
+                stdout.print('unguarded', code)
+            stdout.print('released', code)
+
+        def run(code: int, refuse: bool, stdout: Stdout) -> int fails Refused:
+            with guarded(code, stdout)? as tally:
+                if refuse:
+                    fail Refused(code=tally.count)
+                return tally.count
+
+        def shown(code: int, refuse: bool, stdout: Stdout) -> str:
+            value = run(code, refuse=refuse, stdout=stdout) except why:
+                return f'refused {why.code} {why.notes()}'
+            return str(value)
+
+        def main(stdout: Stdout):
+            stdout.print(shown(3, refuse=True, stdout=stdout))
+            stdout.print(shown(4, refuse=True, stdout=stdout))
+            stdout.print(shown(3, refuse=False, stdout=stdout))
+            mut failure = Refused(code=9)
+            failure.add_note('first')
+            failure.add_note('second')
+            stdout.print(failure.notes(), failure)
+        ",
+        "guard 3\nunguard 3\nrefused 3 [\"Refused(code=1003)\"]\nguard 4\nunguard 4\nunguarded 4\nrefused 4 []\n\
+         guard 3\nreleased 3\n3\n[\"first\", \"second\"] Refused(code=9)\n",
+    );
+    prints(
+        "
+        error Refused:
+            code: int
+
+        struct Tally:
+            count: int
+
+        def capped(code: int) -> int fails Refused:
+            if code > 2:
+                fail Refused(code=code + 500)
+            return code
+
+        def plain(code: int, stdout: Stdout) -> with Tally fails Refused:
+            lend Tally(count=code) except:
+                kept = capped(code)?
+                stdout.print('kept', kept)
+
+        def deep(code: int, stdout: Stdout) -> with Tally fails Refused:
+            lend Tally(count=code) except:
+                stdout.print('deep', capped(code)?)
+
+        def run_plain(code: int, stdout: Stdout) -> int fails Refused:
+            with plain(code, stdout)? as tally:
+                if tally.count > 0:
+                    fail Refused(code=tally.count)
+                return 0
+
+        def run_deep(code: int, stdout: Stdout) -> int fails Refused:
+            with deep(code, stdout)? as tally:
+                if tally.count > 0:
+                    fail Refused(code=tally.count)
+                return 0
+
+        def main(stdout: Stdout):
+            first = run_plain(3, stdout) except why:
+                stdout.print('plain', why.code)
+                0
+            second = run_deep(3, stdout) except why:
+                stdout.print('deep', why.code)
+                0
+            stdout.print(first, second)
+        ",
+        "plain 3\ndeep 503\n0 0\n",
+    );
+}
+
+/// Notes added to an error kept in a `shared` value, under its lock, are the error's own, as the
+/// compiled program printed them (`workers/notes_kept_under_a_lock.fen`).
+#[test]
+fn notes_kept_under_a_lock_are_the_errors_own() {
+    let (printed, ended) =
+        ran(include_str!("../../fennec/tests/fixtures/workers/notes_kept_under_a_lock.fen"));
+    assert_eq!(ended, Ended::Exited(0), "{printed}");
+    assert_eq!(printed, include_str!("../../fennec/tests/fixtures/workers/notes_kept_under_a_lock.out"));
 }
 
 #[test]

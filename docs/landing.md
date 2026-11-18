@@ -29,6 +29,13 @@ It does the three steps below in order, and stops at the first that fails, with 
 3. It pushes your branch, checks that origin has this very commit, and opens the pull request to
    `main`. The coordinator merges it.
 
+The pull request's text starts with how it was gated: the commit, when, and every step that passed.
+To gate a pull request again that's already open, run the same command with `REGATE=1` in front
+(`GH=true` does the same). It opens no other pull request. With none open for the branch, it stops
+before the gate. Once pushed, it puts the new line first in the text on GitHub, in place of the old
+one, and keeps the rest as it is there, edits and all. If the text can't be changed, it fails and
+says what to put there by hand.
+
 Say in the text that the gate passed, and what you measured. Don't open a pull request by joining these
 steps by hand in one command: a failed merge or gate goes unnoticed that way, and has more than once.
 

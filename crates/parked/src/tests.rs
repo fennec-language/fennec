@@ -376,6 +376,57 @@ fn a_task_that_ends_leaves_its_stack_for_the_next_and_only_so_many_are_kept() {
     assert_eq!(scheduler.spare_stacks(), 2);
 }
 
+/// How big the stack of the task running this is, from inside it.
+fn own_size() -> i64 {
+    i64::try_from(super::stack_size().unwrap()).unwrap()
+}
+
+#[test]
+fn a_task_asked_for_a_smaller_stack_gets_one_and_leaves_it_for_a_task_its_size() {
+    const SMALL: usize = STACK / 4;
+    let mut scheduler = Scheduler::keeping(STACK, 1);
+    let big = scheduler.spawn(own_size).unwrap();
+    let small = scheduler.spawn_with_stack(SMALL, own_size).unwrap();
+    let Step::Done(big_size) = scheduler.resume(big, Wake::Ready(0)) else { panic!("it ended") };
+    let Step::Done(small_size) = scheduler.resume(small, Wake::Ready(0)) else { panic!("it ended") };
+    assert!(
+        usize::try_from(small_size).unwrap() >= SMALL && small_size < big_size,
+        "{small_size} {big_size}"
+    );
+    // Each size keeps its own, and a task gets one of the size it asks for.
+    assert_eq!(scheduler.spare_stacks(), 2);
+    let again = scheduler.spawn_with_stack(SMALL, own_size).unwrap();
+    assert_eq!(scheduler.spare_stacks(), 1);
+    assert_eq!(scheduler.resume(again, Wake::Ready(0)), Step::Done(small_size));
+    let other = scheduler.spawn(own_size).unwrap();
+    assert_eq!(scheduler.resume(other, Wake::Ready(0)), Step::Done(big_size));
+    assert_eq!(scheduler.spare_stacks(), 2);
+}
+
+#[test]
+fn deep_work_in_a_task_runs_on_the_thread_s_deep_stack_and_comes_back() {
+    const DEEP: usize = STACK * 4;
+    // With no task running, it runs here.
+    assert_eq!(super::on_deep_stack(DEEP, super::stack_size), None);
+    let mut scheduler = Scheduler::new(STACK);
+    let task = scheduler
+        .spawn(|| {
+            let own = own_size();
+            let (deep, inner) = super::on_deep_stack(DEEP, || {
+                // Asked again while on it, it runs where it is, on the deep stack.
+                (own_size(), super::on_deep_stack(DEEP, own_size))
+            });
+            let back = own_size();
+            i64::from(deep >= i64::try_from(DEEP).unwrap() && inner == deep && back == own && own < deep)
+        })
+        .unwrap();
+    assert_eq!(scheduler.resume(task, Wake::Ready(0)), Step::Done(1));
+    // A task whose own stack is big enough does it on its own.
+    let big = scheduler.spawn_with_stack(DEEP * 2, || super::on_deep_stack(DEEP, own_size)).unwrap();
+    let Step::Done(size) = scheduler.resume(big, Wake::Ready(0)) else { panic!("it ended") };
+    assert!(size >= i64::try_from(DEEP * 2).unwrap(), "{size}");
+}
+
 /// Thousands of short tasks one after another, as a worker running ranges makes them, on stacks as
 /// big as a range's: with reuse, a stack is made only once.
 #[test]

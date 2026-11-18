@@ -1,0 +1,231 @@
+//! What a unit's text is made from beyond its own body. Every read writing a unit makes of what
+//! the whole program's analysis worked out goes through [`Reads`], which notes it, so a build can
+//! use the unit again when everything it read is as it was (edit builds, stage 1). The fields
+//! behind it are private, so a read that isn't noted doesn't compile.
+
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use fennec_ir::{Function, GeneratorDef};
+
+use crate::analysis::{Analysis, Whole};
+use crate::uniqueness::{Callees, FieldPath, Summaries, Unsettled};
+
+/// What a read was of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum What {
+    /// A function's IR.
+    Function,
+    Analysis,
+    CanFail,
+    Generator,
+    Settles,
+    Lengths,
+    Builders,
+    Needs,
+    UnderLocks,
+    Constant,
+    OnWorkers,
+    Task,
+    NonNegative,
+    /// Whether a function may wait (see `waits`).
+    Waiting,
+    /// Every function that gives a constant's value, as `main` works the kept ones out.
+    Constants,
+    /// The boxed types whose blocks generated code makes and frees itself.
+    Native,
+    /// Whether any closure the program makes may wait.
+    WaitingClosures,
+}
+
+/// One read: of what, and by which name. A name that isn't there is a read too, of nothing.
+pub(crate) type Read<'p> = (What, Cow<'p, str>);
+
+/// What the program's analysis worked out, read through a unit's notes, and what of `Shared` was
+/// worked out before any unit was written: which types are native, and what may wait.
+pub(crate) struct Reads<'w, 'p> {
+    whole: &'w Whole<'p>,
+    native: &'w BTreeSet<u32>,
+    waiting: &'w BTreeSet<String>,
+    waiting_closures: bool,
+    /// Whether reads are noted: only when the build keeps what each unit read.
+    noting: bool,
+    noted: RefCell<BTreeSet<Read<'p>>>,
+}
+
+impl<'w, 'p> Reads<'w, 'p> {
+    pub(crate) fn new(
+        whole: &'w Whole<'p>,
+        native: &'w BTreeSet<u32>,
+        (waiting, waiting_closures): (&'w BTreeSet<String>, bool),
+        noting: bool,
+    ) -> Self {
+        Reads { whole, native, waiting, waiting_closures, noting, noted: RefCell::new(BTreeSet::new()) }
+    }
+
+    /// Whether reads are noted, and units keep what they share.
+    pub(crate) fn noting(&self) -> bool {
+        self.noting
+    }
+
+    /// Everything read so far, and starts again with nothing.
+    pub(crate) fn take(&self) -> BTreeSet<Read<'p>> {
+        std::mem::take(&mut *self.noted.borrow_mut())
+    }
+
+    fn note(&self, what: What, name: Cow<'p, str>) {
+        if self.noting {
+            self.noted.borrow_mut().insert((what, name));
+        }
+    }
+
+    /// Notes a read of `name` in a table the program's names key: by the key's own text when
+    /// it's there, and by a copy of `name` when it isn't.
+    fn note_found(&self, what: What, key: Option<&'p str>, name: &str) {
+        if self.noting {
+            self.note(what, key.map_or_else(|| Cow::Owned(name.to_owned()), Cow::Borrowed));
+        }
+    }
+
+    /// Notes whether `name` is in `set`.
+    fn note_member(&self, what: What, set: &HashSet<&'p str>, name: &str) -> bool {
+        let key = set.get(name).copied();
+        self.note_found(what, key, name);
+        key.is_some()
+    }
+
+    /// A function's IR, by its name.
+    pub(crate) fn function(&self, name: &str) -> Option<&'p Function> {
+        let found = self.whole.functions.get_key_value(name);
+        self.note_found(What::Function, found.map(|(key, _)| *key), name);
+        found.map(|(_, function)| *function)
+    }
+
+    pub(crate) fn analysis(&self, name: &str) -> Option<&'w Analysis> {
+        entry(self, What::Analysis, &self.whole.analyses, name)
+    }
+
+    pub(crate) fn can_fail(&self, name: &str) -> bool {
+        self.note_member(What::CanFail, &self.whole.can_fail, name)
+    }
+
+    /// A generator, by its name or the name of one of its functions.
+    pub(crate) fn generator(&self, name: &str) -> Option<&'p GeneratorDef> {
+        entry(self, What::Generator, &self.whole.generators, name).copied()
+    }
+
+    pub(crate) fn builders(&self, name: &str) -> Option<&'w HashSet<usize>> {
+        entry(self, What::Builders, &self.whole.builders, name)
+    }
+
+    pub(crate) fn needs(&self, name: &str) -> Option<&'w Vec<FieldPath>> {
+        entry(self, What::Needs, &self.whole.needs, name)
+    }
+
+    pub(crate) fn under_locks(&self, name: &str) -> bool {
+        self.note_member(What::UnderLocks, &self.whole.under_locks, name)
+    }
+
+    pub(crate) fn constant(&self, name: &str) -> bool {
+        self.note_member(What::Constant, &self.whole.constants, name)
+    }
+
+    /// Every function that gives a constant's value, in their names' order.
+    pub(crate) fn constants(&self) -> Vec<&'p str> {
+        self.note(What::Constants, Cow::Borrowed(""));
+        let mut constants: Vec<&'p str> = self.whole.constants.iter().copied().collect();
+        constants.sort_unstable();
+        constants
+    }
+
+    pub(crate) fn on_workers(&self, name: &str) -> bool {
+        self.note_member(What::OnWorkers, &self.whole.on_workers, name)
+    }
+
+    pub(crate) fn task(&self, name: &str) -> bool {
+        self.note_member(What::Task, &self.whole.tasks, name)
+    }
+
+    /// The places in a function proven not negative (see `signs`).
+    pub(crate) fn non_negative(&self, name: &str) -> Option<&'w HashSet<(usize, usize)>> {
+        if self.noting {
+            self.note(What::NonNegative, Cow::Owned(name.to_owned()));
+        }
+        self.whole.non_negative.get(name)
+    }
+
+    /// Whether a function may wait.
+    pub(crate) fn waiting(&self, name: &str) -> bool {
+        if self.noting {
+            self.note(What::Waiting, Cow::Owned(name.to_owned()));
+        }
+        self.waiting.contains(name)
+    }
+
+    pub(crate) fn waiting_closures(&self) -> bool {
+        self.note(What::WaitingClosures, Cow::Borrowed(""));
+        self.waiting_closures
+    }
+
+    /// The layouts of the types whose blocks generated code makes and frees itself, in their
+    /// numbers' order, which is how a unit walks them.
+    pub(crate) fn native(&self) -> &'w BTreeSet<u32> {
+        self.note(What::Native, Cow::Borrowed(""));
+        self.native
+    }
+
+    /// What each function may give another owner, or replace, under each parameter, read
+    /// through these notes.
+    pub(crate) fn settles(&'w self) -> Noted<'w, 'p> {
+        Noted { reads: self, what: What::Settles, summaries: &self.whole.settles }
+    }
+
+    /// What each function may shorten, or replace, under each parameter, read through these
+    /// notes.
+    pub(crate) fn lengths(&'w self) -> Noted<'w, 'p> {
+        Noted { reads: self, what: What::Lengths, summaries: &self.whole.lengths }
+    }
+
+    /// Whether the program has any `shared` type. It's part of every unit's settings.
+    pub(crate) fn cells(&self) -> bool {
+        self.whole.cells
+    }
+
+    /// Whether the program's closures are blocks in the runtime's table. It's part of every
+    /// unit's settings.
+    pub(crate) fn runtime_closures(&self) -> bool {
+        self.whole.runtime_closures
+    }
+
+    /// Whether the program has tests built into it. It's part of every unit's settings.
+    pub(crate) fn tested(&self) -> bool {
+        self.whole.tested
+    }
+}
+
+/// Looks `name` up in `table`, noting the read: by the key's own text when it's there, and by a
+/// copy of `name` when it isn't.
+fn entry<'w, 'p, V>(
+    reads: &Reads<'w, 'p>,
+    what: What,
+    table: &'w HashMap<&'p str, V>,
+    name: &str,
+) -> Option<&'w V> {
+    let found = table.get_key_value(name);
+    reads.note_found(what, found.map(|(key, _)| *key), name);
+    found.map(|(_, value)| value)
+}
+
+/// A table of summaries, each read of it noted.
+pub(crate) struct Noted<'w, 'p> {
+    reads: &'w Reads<'w, 'p>,
+    what: What,
+    summaries: &'w Summaries<'p>,
+}
+
+impl Callees for Noted<'_, '_> {
+    fn summary(&self, name: &str) -> Option<&[Vec<Unsettled>]> {
+        entry(self.reads, self.what, self.summaries, name).map(Vec::as_slice)
+    }
+}

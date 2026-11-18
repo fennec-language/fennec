@@ -1251,6 +1251,13 @@ impl Heap {
         self.blocks.pages()
     }
 
+    /// Its worker is going to sleep with nothing to do: its table looks for empty pages to give
+    /// back sooner than a busy one does (`Table::look_while_idle`).
+    #[cfg(any(test, feature = "threads"))]
+    pub(crate) fn idle(&mut self) {
+        self.blocks.look_while_idle();
+    }
+
     /// How many words of freed blocks it's keeping for reuse.
     #[cfg(any(test, feature = "threads"))]
     pub(crate) fn spare_words(&self) -> usize {

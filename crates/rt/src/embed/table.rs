@@ -20,14 +20,19 @@ const PLACES: usize = 1 << (PAGE_BITS - PLACE_BITS);
 /// How many pages a table makes before it first looks for empty ones to give back. After that
 /// it looks once it's made as many as it kept the last time, so looking costs a page's worth
 /// of reading for each page made, and a table holds at most about twice the pages its blocks
-/// are on, or this many more than it kept, whichever is more.
+/// are on.
+const PAGES_BEFORE_LOOKING: usize = 64;
+
+/// The same, for a worker going to sleep with nothing to do (`look_while_idle`).
 ///
-/// It was 64. A server's tables make pages slowly once it's warm, as its blocks wander through
-/// the allocator's memory, so a table's first look came half an hour into a soak, and each heap
-/// held up to 4 MB of empty 64 KB pages until then: `web_backend`'s memory rose for 25 minutes, past
-/// the soak's warm-up, and held at that high-water mark. A look reads only the pages made
-/// (`made_pages`), so looking sooner costs no more for each page made.
-const PAGES_BEFORE_LOOKING: usize = 8;
+/// A server's tables make pages slowly once it's warm, as its blocks wander through the
+/// allocator's memory, so with 64 a table's first look came half an hour into a soak, and each
+/// heap held up to 4 MB of empty 64 KB pages until then: `web_backend`'s memory rose for 25
+/// minutes, past the soak's warm-up, and held at that high-water mark. A worker that's idle has
+/// time to look sooner. A busy one keeps 64, which some programs reuse: `pathfind`, never idle,
+/// ran 6.7% more instructions with 8 for every table, making pages again that it had given back.
+#[cfg(any(test, feature = "threads"))]
+const PAGES_BEFORE_LOOKING_IDLE: usize = 8;
 
 /// The shortest block, in words, that has a page's place to itself.
 const PLACED_WORDS: usize = 2;
@@ -343,6 +348,16 @@ impl Table {
         }
     }
 
+    /// Looks for empty pages to give back, as `insert_in_new_page` does, for a worker going to sleep
+    /// with nothing to do: once it's made a few pages, not 64. Each look still costs about a page's
+    /// reading for each page made since the last.
+    #[cfg(any(test, feature = "threads"))]
+    pub(super) fn look_while_idle(&mut self) {
+        if self.made >= self.kept.max(PAGES_BEFORE_LOOKING_IDLE) {
+            self.give_back_empty_pages();
+        }
+    }
+
     /// Lets go of every page with no block on it, reading only the pages it has.
     #[cold]
     #[inline(never)]
@@ -493,11 +508,11 @@ mod tests {
         assert!(table.take_if(placed_at, |_| true).is_none(), "a block's taken once");
     }
 
-    /// A table of few blocks holds few empty pages: it looks for them once it's made a few, so a
-    /// server's tables, making pages slowly as their blocks wander, give them back within
-    /// minutes rather than the half hour 64 took.
+    /// A table of few blocks, looked at as its worker goes idle, holds few empty pages: it looks for
+    /// them once it's made a few, so a server's tables, making pages slowly as their blocks wander,
+    /// give them back within minutes rather than the half hour 64 took.
     #[test]
-    fn a_table_of_few_blocks_holds_few_empty_pages() {
+    fn a_table_of_few_blocks_holds_few_empty_pages_when_looked_at_idle() {
         let mut table = Table::default();
         // Kept outside the table, so each block lands where no earlier one did.
         let mut elsewhere = Vec::new();
@@ -509,7 +524,12 @@ mod tests {
             let address = at(&block);
             table.insert(block);
             elsewhere.extend(table.remove(address));
-            assert!(table.pages() <= 2 + PAGES_BEFORE_LOOKING, "{} pages kept for one block", table.pages());
+            table.look_while_idle();
+            assert!(
+                table.pages() <= 2 + PAGES_BEFORE_LOOKING_IDLE,
+                "{} pages kept for one block",
+                table.pages()
+            );
         }
         assert_eq!(table.len(), 1);
     }

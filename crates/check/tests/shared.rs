@@ -269,6 +269,10 @@ fn a_nested_function_calling_a_captured_value_takes_what_it_takes() {
         def serve(stdout: Stdout, clock: Clock):\n    shared scores = Scores()\n    def count():\n        \
         clock.sleep(1s)\n    count()\n    stdout.print(through(Plain(), scores))\n";
     assert_eq!(locking(interface), empty);
+    let in_a_list = "struct Scores:\n    total = 0\n\ndef nap(clock: Clock):\n    clock.sleep(1s)\n\n\
+        def serve(stdout: Stdout, clock: Clock):\n    shared scores = Scores()\n    works = [() => nap(clock)]\n    \
+        def later():\n        for work in works:\n            work()\n    lock scores as held:\n        later()\n        _ = held\n";
+    assert_eq!(locking(in_a_list), ["`later` waits on `Clock.sleep` while `held` is locked @ later()"]);
 }
 
 const HOLDERS: &str = "struct Cell:

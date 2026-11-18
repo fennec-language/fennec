@@ -114,22 +114,44 @@ export struct Heap[T: Ordered]:
     def len(self) -> int:
         return len(self.items)
 
+    ## Adds `item`. Bigger parents move down into the hole it leaves, and it's written once,
+    ## where it stops.
     def push(ref self, item: T):
         self.items.append(item)
         mut at = len(self.items) - 1
         while at > 0:
             parent = (at - 1) // 2
-            if not self.items[at] < self.items[parent]: break
-            self.swap(at, parent)
+            if not item < self.items[parent]: break
+            self.items[at] = self.items[parent]
             at = parent
+        self.items[at] = item
 
     ## Removes the smallest item and gives it back, or None when the heap is empty.
     def pop(ref self) -> T?:
         last = self.items.pop() else return None
-        if len(self.items) == 0: return last
+        end = len(self.items)
+        if end == 0: return last
         smallest = self.items[0]
-        self.items[0] = last
-        self.sift_down(0)
+        # The hole the smallest leaves goes down to a leaf, the smaller child moving up into it
+        # each time: one comparison a level, where sifting `last` down from the top takes two.
+        # `last` came from the bottom, so it seldom goes far back up from there.
+        mut at = 0
+        mut child = 1
+        while child + 1 < end:
+            if self.items[child + 1] < self.items[child]:
+                child += 1
+            self.items[at] = self.items[child]
+            at = child
+            child = 2 * at + 1
+        if child == end - 1:
+            self.items[at] = self.items[child]
+            at = child
+        while at > 0:
+            parent = (at - 1) // 2
+            if not last < self.items[parent]: break
+            self.items[at] = self.items[parent]
+            at = parent
+        self.items[at] = last
         return smallest
 
     ## The smallest item, or None when the heap is empty.

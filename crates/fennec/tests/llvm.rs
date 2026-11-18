@@ -24496,6 +24496,87 @@ fn pack_streams_write_each_layout_once() -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the next test builds: what `dumps` gives, compared, sliced, looked for, loaded and added
+/// to beside the same bytes in a block of their own size.
+const PACK_ROOM: &str = r#"from std import pack
+
+struct Point:
+    x: int
+    y: int
+    name: str
+
+## The same bytes in a block of their own size.
+def exact(data: bytes) -> bytes:
+    mut items = list[int]()
+    for at in range(len(data)):
+        items.append(data[at])
+    return bytes(items)
+
+def main(stdout: Stdout):
+    mut kept = list[bytes]()
+    mut unequal = 0
+    for number in range(40):
+        point = Point(x=number, y=-number * 1000, name="p" * (number % 7))
+        data = pack.dumps(point)
+        same = exact(data)
+        # Equal to the same bytes in a block of their own size, either way round, and to slices of
+        # itself.
+        if (
+            data != same
+            or same != data
+            or data[0:len(data)] != data
+            or data[1:len(data)] != same[1:len(same)]
+        ):
+            unequal += 1
+        kept.append(data)
+    # Each is found among them all by the same bytes in a block of their own size, and only where
+    # it is.
+    mut found = 0
+    mut loaded = 0
+    for number, data in enumerate(kept):
+        same = exact(data)
+        for other, held in enumerate(kept):
+            if held == same:
+                found += 1 if other == number else 1000
+        point = pack.loads[Point](data) except ParseError():
+            continue
+        if point.x == number and len(point.name) == number % 7:
+            loaded += 1
+    # Different values stay different.
+    mut different = 0
+    for number in range(1, len(kept)):
+        if kept[number] != kept[number - 1]:
+            different += 1
+    # Added to, each part is where it was.
+    joined = kept[3] + kept[4]
+    split = len(kept[3])
+    whole = joined[0:split] == kept[3] and joined[split:len(joined)] == kept[4]
+    stdout.print(
+        len(kept),
+        unequal,
+        found,
+        loaded,
+        different,
+        len(joined) == split + len(kept[4]),
+        whole,
+    )
+    return
+"#;
+
+/// What `dumps` gives keeps its builder's room past its length rather than being copied to its
+/// exact size, and nothing reads that room: it's equal to the same bytes in a block of their own
+/// size, either way round and in slices, found by them among others, loaded and added to as
+/// before, and let go with the rest.
+#[test]
+fn packed_bytes_with_room_past_their_length_act_as_any_bytes() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(printed_by("pack_room", PACK_ROOM)?, "40 0 40 40 39 True True\n");
+    assert!(counts_of("pack_room_counts", PACK_ROOM)?.ends_with(" live 0"));
+    Ok(())
+}
+
 /// What the next test builds: a few bytes that ask for millions of values made from nothing.
 const PACK_BOMB: &str = r#"from std import pack
 
@@ -28524,6 +28605,101 @@ def main(stdout: Stdout):
     stdout.print(outer_value, outer_value2)
 "#,
     )
+}
+
+/// What the next test builds: std's `Heap` checked against a sorted list.
+const HEAP_ORDER: &str = r#"from std.collections import Heap
+
+struct Job:
+    cost: int
+    name: str
+
+    def <(self, other: Job) -> bool:
+        if self.cost != other.cost: return self.cost < other.cost
+        return self.name < other.name
+
+## The next state of a small generator, the same on every machine.
+def next(seed: int) -> int:
+    return (seed * 1_103_515_245 + 12_345) % 2_147_483_648
+
+def main(stdout: Stdout):
+    mut seed = 7
+    mut wrong = 0
+    mut popped = 0
+    # Pushes and pops mixed, against a sorted list doing the same, at every size up to 60.
+    for size in range(60):
+        mut heap = Heap[int]()
+        mut model = list[int]()
+        for _ in range(size * 3):
+            seed = next(seed)
+            if seed % 3 == 0:
+                got = heap.pop() else -1
+                expected = model.pop(0) if len(model) > 0 else -1
+                if got != expected:
+                    wrong += 1
+                popped += 1
+            else:
+                item = seed // 65_536 % 50
+                heap.push(item)
+                model.append(item)
+                model = sorted(model)
+            if len(heap) != len(model):
+                wrong += 1
+        # What's left comes out in order.
+        while len(model) > 0:
+            if (heap.pop() else -1) != model.pop(0):
+                wrong += 1
+        if heap.pop() is not None:
+            wrong += 1
+    # A heap made from a list gives it back sorted.
+    mut items = list[int]()
+    for _ in range(301):
+        seed = next(seed)
+        items.append(seed // 65_536 % 1000 - 500)
+    mut made = Heap.of(items)
+    mut drained = list[int]()
+    while True:
+        item = made.pop() else break
+        drained.append(item)
+    stdout.print(wrong, popped, drained == sorted(items), (made.peek() else 0))
+    # Structs with a `<` of their own, and tuples, many of them equal in their first field.
+    mut jobs = Heap[Job]()
+    mut pairs = Heap[(int, str)]()
+    for number in range(200):
+        seed = next(seed)
+        cost = seed // 65_536 % 10
+        jobs.push(Job(cost=cost, name=f"j{number}"))
+        pairs.push((cost, f"p{number}"))
+    mut names = list[str]()
+    mut last = Job(cost=-1, name="")
+    mut ordered = True
+    while True:
+        job = jobs.pop() else break
+        if job < last:
+            ordered = False
+        last = job
+        names.append(job.name)
+    mut first = (-1, "")
+    while True:
+        pair = pairs.pop() else break
+        if pair < first:
+            ordered = False
+        first = pair
+    stdout.print(len(names), ordered, names[0], names[199])
+    return
+"#;
+
+/// std's `Heap` gives its items back smallest first: pushes and pops mixed at every size up to
+/// 60 against a sorted list doing the same, a heap made from a list, and structs with a `<` of
+/// their own and tuples, many of them equal in their first field. Everything's let go.
+#[test]
+fn a_heap_gives_its_items_back_smallest_first() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    assert_eq!(printed_by("heap_order", HEAP_ORDER)?, "0 1768 True 0\n200 True j1 j93\n");
+    assert!(counts_of("heap_order_counts", HEAP_ORDER)?.ends_with(" live 0"));
+    Ok(())
 }
 
 #[test]

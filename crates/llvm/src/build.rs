@@ -296,7 +296,10 @@ impl Tools {
 
     /// What makes one version of the tools differ from another, for cache keys: remembered
     /// beside `llc`'s size and time, so it's only asked again when `llc` changes.
-    fn version(&self) -> Result<String, String> {
+    ///
+    /// # Errors
+    /// When `llc` can't be run to ask.
+    pub fn version(&self) -> Result<String, String> {
         let stamp = std::fs::metadata(&self.llc)
             .ok()
             .map(|meta| format!("{} {:?}", meta.len(), meta.modified().ok()));

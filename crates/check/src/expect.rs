@@ -356,7 +356,7 @@ impl FnCx<'_> {
     }
 
     /// The type a bare name means, not one reached through a module, which a dot leaves out too.
-    fn type_named_by<'e>(&self, object: &'e Expr) -> Option<&'e str> {
+    fn type_named_by<'e>(&mut self, object: &'e Expr) -> Option<&'e str> {
         self.as_type_name(object).filter(|_| matches!(object.kind, ExprKind::Name(_)))
     }
 

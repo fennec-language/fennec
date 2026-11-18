@@ -10322,7 +10322,7 @@ fn a_source_written_in_twice_gives_each_copy_its_own_union_member() -> std::io::
 }
 
 /// A `with` source that declares a `shared` value and takes its `lock` is written in with both,
-/// once or twice in one function: what's lowered later in the round a copy is written in finds the
+/// once or twice in one function, and so is one with a `for ref` loop or a loop over `items()`: what's lowered later in the round a copy is written in finds the
 /// copy's `shared` value at its own spans. Before the copies' spans were kept apart, the copy's
 /// `lock` was lowered and its `shared` value wasn't.
 #[test]
@@ -10330,8 +10330,43 @@ fn a_source_holding_a_shared_value_is_written_in_with_its_lock() -> std::io::Res
     if !ready() {
         return Ok(());
     }
-    prints_in_both_builds("source_shared_lock", SOURCE_SHARED_LOCK, "1\n1 1\n")
+    prints_in_both_builds("source_shared_lock", SOURCE_SHARED_LOCK, "1\n1 1\n")?;
+    // A `for ref` and a `for key, ref value in x.items()` in a source written in twice, which are
+    // lowered in the round each copy is written in, at its own spans.
+    prints_in_both_builds(
+        "source_ref_items",
+        SOURCE_REF_ITEMS,
+        "2 [2, 4]\n1 [10]\n2 {\"a\": 2, \"bb\": 4}\n1 {\"ccc\": 3}\n",
+    )
 }
+
+const SOURCE_REF_ITEMS: &str = r#"def doubled(ref items: list[int]) -> with int:
+    for ref item in items:
+        item *= 2
+    lend len(items)
+
+def bumped(ref counts: dict[str, int]) -> with int:
+    for key, ref value in counts.items():
+        value += len(key)
+    lend len(counts)
+
+def run(stdout: Stdout):
+    mut items = [1, 2]
+    mut more = [5]
+    with doubled(ref items) as got:
+        stdout.print(got, items)
+    with doubled(ref more) as got:
+        stdout.print(got, more)
+    mut counts = {"a": 1, "bb": 2}
+    mut others = {"ccc": 0}
+    with bumped(ref counts) as got:
+        stdout.print(got, counts)
+    with bumped(ref others) as got:
+        stdout.print(got, others)
+
+def main(stdout: Stdout):
+    run(stdout)
+"#;
 
 const SOURCE_SHARED_LOCK: &str = r"struct Tally:
     count: int
@@ -10360,8 +10395,9 @@ def main(stdout: Stdout):
 
 /// What goes wrong in a copy of the program's text written in more than once says where its text
 /// is, in a dev and a release build: an `assert` in a source's second copy, one in a `with` block
-/// written in for each member of a union, and one in a generic function's copy for its second type.
-/// Before, the last two pointed past the end of the file.
+/// written in for each member of a union, one in a generic function's copy for its second type, and
+/// one in a source's `except:` cleanup, which is written in for each way the block fails. Before,
+/// the union's and the generic's pointed past the end of the file.
 #[test]
 fn a_failure_in_a_copy_written_in_says_where_its_text_is() -> std::io::Result<()> {
     if !ready() {
@@ -10371,6 +10407,7 @@ fn a_failure_in_a_copy_written_in_says_where_its_text_is() -> std::io::Result<()
         ("copy_assert_source", COPY_ASSERT_SOURCE, "", ":11:12"),
         ("copy_assert_union", COPY_ASSERT_UNION, "lite\n", ":15:16"),
         ("copy_assert_generic", COPY_ASSERT_GENERIC, "front\n", ":18:16"),
+        ("copy_assert_cleanup", COPY_ASSERT_CLEANUP, "1\n", ":6:16"),
     ] {
         let dir = folder(name)?;
         let program = dir.join(format!("{name}.fen"));
@@ -10448,6 +10485,31 @@ def main(stdout: Stdout):
     stdout.print(gate_first())
     stdout.print(nested())
 "#;
+
+const COPY_ASSERT_CLEANUP: &str = r"error Oops:
+    code: int
+
+def guarded(code: int) -> with int:
+    lend code except:
+        assert code < 3
+
+def risky(code: int) -> int fails Oops:
+    if code > 1:
+        fail Oops(code=code)
+    return code
+
+def run(code: int) -> int fails Oops:
+    with guarded(code) as got:
+        if got == 5:
+            fail Oops(code=got)
+        kept = risky(got)?
+        return kept
+    return 0
+
+def main(stdout: Stdout):
+    stdout.print(run(1)?)
+    stdout.print(run(5)?)
+";
 
 const COPY_ASSERT_SOURCE: &str = r#"struct Door:
     name: str

@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use fennec_syntax::sight::Binder;
 use fennec_syntax::{
-    Expr, ExprKind, FnDef, Item, MatchArm, Module, Pattern, Span, Stmt, StmtKind, TypeExpr, WithName,
+    Copied, Expr, ExprKind, FnDef, Item, MatchArm, Module, Pattern, Span, Stmt, StmtKind, TypeExpr, WithName,
 };
 
 /// A source a `with` uses: its definition, and whether it's a method, called on a value.
@@ -60,7 +60,7 @@ pub(crate) fn lower(
             made = made.max(made_in(name));
         }
     });
-    NEXT.with(|next| next.set(written_low - 1));
+    NEXT.with(|next| next.set(below_copies(written_low) - 1));
     COPIES.with(|copies| copies.set(lowest));
     let mut lowering = Lowering {
         sources,
@@ -72,6 +72,7 @@ pub(crate) fn lower(
         fails: Vec::new(),
         instead: None,
         binds: Vec::new(),
+        tails: BTreeSet::new(),
     };
     for item in &mut module.items {
         match item {
@@ -204,6 +205,9 @@ struct Lowering<'s> {
     /// The names each function being walked binds anywhere, its parameters among them, innermost
     /// last: a source written in there calls a function of its own by one of these through a mark.
     binds: Vec<BTreeSet<String>>,
+    /// The `with`s that are the last line of a function giving back a value, by span, through
+    /// `if`s and `match`es: one whose block always fails says so where it's written in.
+    tails: BTreeSet<(u32, u32)>,
 }
 
 thread_local! {
@@ -213,6 +217,298 @@ thread_local! {
     /// Where the next copy of a generic source's text goes, counting down from the top: still
     /// the standard library's, so it keeps its own privacy, but past where its text reaches.
     static COPIES: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+    /// Where each copy of the program's text written in so far went, as `Module::copied` holds it,
+    /// so a copy of text inside an earlier copy is noted with the text too.
+    static COPIED: std::cell::RefCell<Vec<Copied>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Each span a copy written in this round moved, and where to, in the order they moved: what
+    /// the check found at the text is found at the copy too, for what's lowered later in the round.
+    static MOVED: std::cell::RefCell<Vec<Move>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Copies just made, noted in `COPIED` once it's no longer being read.
+    static PENDING: std::cell::RefCell<Vec<Copied>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The next span for a copy of the program's text that stays the program's, counting down
+    /// from just below the spans lowering writes, and the lowest it can be, past the program's text.
+    static PROGRAM_COPIES: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((WRITTEN_FROM - 1, 0)) };
+}
+
+/// A span a copy moved, as its start and end, and where to.
+type Move = ((u32, u32), (u32, u32));
+
+/// Starts a round's writing in with the copies `module` holds, the next copy that stays the
+/// program's text below every one of them, and above all of the program's own text.
+pub(crate) fn copies_from(module: &mut Module) {
+    let copied = module.copied.clone();
+    let top = copied.iter().map(|copy| copy.at).filter(|at| *at < WRITTEN_FROM).min().unwrap_or(WRITTEN_FROM);
+    let mut text_end = module.files.iter().map(|file| file.end).max().unwrap_or(0);
+    fennec_syntax::visit::exprs_mut(module, &mut |expr| {
+        if expr.span.end < top {
+            text_end = text_end.max(expr.span.end);
+        }
+    });
+    // Statements end past their last expression, as a `pass` does, but never this far.
+    let floor = text_end.saturating_add(1 << 20);
+    PROGRAM_COPIES.with(|next| next.set((top.saturating_sub(1), floor)));
+    COPIED.with(|held| *held.borrow_mut() = copied);
+    MOVED.with(|moved| moved.borrow_mut().clear());
+}
+
+/// What a check found by span, found too at each span a copy written in this round moved its
+/// text's to, so a lowering later in the round reads a copy as it would the text it copies: a
+/// `shared` value a source declares is lowered in each copy with its `lock`s.
+pub(crate) fn found_in_copies<V: Clone>(
+    found: &BTreeMap<(u32, u32), V>,
+) -> std::borrow::Cow<'_, BTreeMap<(u32, u32), V>> {
+    MOVED.with(|moved| {
+        let moved = moved.borrow();
+        if found.is_empty() || moved.is_empty() {
+            return std::borrow::Cow::Borrowed(found);
+        }
+        let mut all = found.clone();
+        for (from, to) in moved.iter() {
+            if let Some(value) = all.get(from).cloned() {
+                all.insert(*to, value);
+            }
+        }
+        std::borrow::Cow::Owned(all)
+    })
+}
+
+/// Where a copy goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Region {
+    /// Among the program's text, which every check of whether something is the program's own reads
+    /// as its own: a source's body written in where it's used.
+    Program,
+    /// Among what lowering writes in.
+    Written,
+}
+
+/// Reserves `length` spans in a row in `region` past the last, giving the lowest. Nothing, when
+/// the program's have run out.
+fn reserved_in(region: Region, length: u32) -> Option<u32> {
+    match region {
+        Region::Written => Some(reserved(length)),
+        Region::Program => PROGRAM_COPIES.with(|next| {
+            let (top, floor) = next.get();
+            let low = top.checked_sub(length).filter(|low| *low > floor)?;
+            next.set((low - 1, floor));
+            Some(low)
+        }),
+    }
+}
+
+/// Gives `module` the copies written in so far, in order of where each went.
+pub(crate) fn copies_into(module: &mut Module) {
+    let mut copied = COPIED.with(|copied| std::mem::take(&mut *copied.borrow_mut()));
+    copied.sort_by_key(|copy| copy.at);
+    module.copied = copied;
+}
+
+/// The program's own text a copy keeps together: spans no further apart than this are one
+/// stretch, moved as one, so a statement's spans keep where each is against the next.
+const STRETCH_GAP: u32 = 256;
+
+/// What a span in a copy is, for how it moves.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// The standard library's, which `moved_apart` moves.
+    Std,
+    /// The program's own text.
+    Own,
+    /// In the earlier copy at this place in `COPIED`.
+    Copy(usize),
+    /// Something lowering wrote in, which points at no text.
+    Written,
+}
+
+/// Gives a copy of some statements written in spans of its own, so what's found by span in it, as
+/// a type the checker found there, is never another copy's. The program's own text moves in
+/// stretches, each keeping where its parts are against each other, as does each earlier copy
+/// inside it, and each is noted with the text it copies (`Module::copied`), so what says where
+/// something is still points at the program's text. Each span lowering wrote in gets a new one. The
+/// standard library's are `moved_apart`'s. Nothing, when the spans lowering writes in have run out.
+pub(crate) fn copied_apart(region: Region, parts: &mut [&mut [Stmt]]) -> Option<()> {
+    copied_apart_by(region, &mut |moved| {
+        for part in parts.iter_mut() {
+            every_span(part, moved);
+        }
+    })
+}
+
+/// A copy of a function's parameters and body on spans of its own, as `copied_apart` gives them.
+/// The function's own span stays, which says whose it is.
+pub(crate) fn copied_def_apart(region: Region, def: &mut FnDef) -> Option<()> {
+    copied_apart_by(region, &mut |moved| {
+        for param in &mut def.params {
+            param.span = moved(param.span);
+            if let Some(ty) = &mut param.ty {
+                type_spans(ty, moved);
+            }
+        }
+        for ty in def.ret.iter_mut().chain(def.fails.as_mut()) {
+            type_spans(ty, moved);
+        }
+        every_span(&mut def.body, moved);
+    })
+}
+
+/// What changes every span of something through what it's handed.
+type Spans<'s> = dyn FnMut(&mut dyn FnMut(Span) -> Span) + 's;
+
+/// `copied_apart` for whatever `spans` changes every span of, through what it's handed: it's
+/// handed something that leaves each as it is first, then what moves each.
+fn copied_apart_by(region: Region, spans: &mut Spans<'_>) -> Option<()> {
+    let made = COPIED.with(|copied| copied_apart_from(region, spans, &copied.borrow()));
+    // Each kept where it goes among the others, in order of where it went.
+    let pending = PENDING.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+    COPIED.with(|copied| {
+        let mut copied = copied.borrow_mut();
+        for copy in pending {
+            let at = copied.partition_point(|known| known.at < copy.at);
+            copied.insert(at, copy);
+        }
+    });
+    made
+}
+
+/// `copied_apart_by`, with the copies made so far, in order of where each went.
+fn copied_apart_from(region: Region, spans: &mut Spans<'_>, copied: &[Copied]) -> Option<()> {
+    let kind = |span: Span| {
+        if span.in_prelude() {
+            return Kind::Std;
+        }
+        let after = copied.partition_point(|copy| copy.at <= span.start);
+        match after.checked_sub(1).and_then(|at| copied.get(at).map(|copy| (at, copy))) {
+            Some((at, copy)) if span.start - copy.at < copy.len => Kind::Copy(at),
+            _ if written_in(span) => Kind::Written,
+            _ => Kind::Own,
+        }
+    };
+    let mut own: Vec<(u32, u32)> = Vec::new();
+    let mut earlier: BTreeSet<usize> = BTreeSet::new();
+    spans(&mut |span| {
+        match kind(span) {
+            Kind::Own => own.push((span.start, span.end.max(span.start))),
+            Kind::Copy(at) => {
+                earlier.insert(at);
+            }
+            Kind::Std | Kind::Written => {}
+        }
+        span
+    });
+    let Moved { made, own: moved_own, earlier: moved_earlier } =
+        moved(region, &stretched(own), &earlier, copied)?;
+    let shifted = |span: Span, from: u32, to: u32| Span {
+        start: span.start - from + to,
+        end: span.end.max(span.start) - from + to,
+    };
+    let mut written: BTreeMap<(u32, u32), Span> = BTreeMap::new();
+    let mut moves: Vec<Move> = Vec::new();
+    spans(&mut |span| {
+        let to = match kind(span) {
+            Kind::Own => {
+                let after = moved_own.partition_point(|(start, ..)| *start <= span.start);
+                after
+                    .checked_sub(1)
+                    .and_then(|at| moved_own.get(at))
+                    .map_or(span, |&(start, _, at)| shifted(span, start, at))
+            }
+            Kind::Copy(index) => match (copied.get(index), moved_earlier.get(&index)) {
+                (Some(copy), Some(&at)) => shifted(span, copy.at, at),
+                _ => span,
+            },
+            Kind::Written => *written.entry((span.start, span.end)).or_insert_with(|| {
+                let at = reserved(0);
+                Span { start: at, end: at }
+            }),
+            Kind::Std => span,
+        };
+        if to != span {
+            moves.push(((span.start, span.end), (to.start, to.end)));
+        }
+        to
+    });
+    MOVED.with(|moved| moved.borrow_mut().extend(moves));
+    PENDING.with(|pending| pending.borrow_mut().extend(made));
+    Some(())
+}
+
+/// The program's text a copy holds, as each of its spans' first and last, in stretches, each from
+/// its first span to its last.
+fn stretched(mut own: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    own.sort_unstable();
+    let mut stretches: Vec<(u32, u32)> = Vec::new();
+    for (start, end) in own {
+        match stretches.last_mut() {
+            Some((_, last)) if start <= last.saturating_add(STRETCH_GAP) => *last = (*last).max(end),
+            _ => stretches.push((start, end)),
+        }
+    }
+    stretches
+}
+
+/// Where what a copy holds goes: each copy made, noted with the text it copies; each stretch of
+/// the program's text, as its first span, its last, and where it goes; and where each earlier copy
+/// inside it goes, by its place in the copies so far.
+struct Moved {
+    made: Vec<Copied>,
+    own: Vec<(u32, u32, u32)>,
+    earlier: BTreeMap<usize, u32>,
+}
+
+/// Where `stretches` of the program's text and the `earlier` copies inside a copy go, in `region`.
+/// They're moved in one run, in the order they're in now, so what's before something else still
+/// is. Nothing, when spans have run out.
+fn moved(
+    region: Region,
+    stretches: &[(u32, u32)],
+    earlier: &BTreeSet<usize>,
+    copied: &[Copied],
+) -> Option<Moved> {
+    // Each as its first span, its last, and the text its first span copies.
+    let mut moving: Vec<(u32, u32, u32, Option<usize>)> =
+        stretches.iter().map(|&(start, end)| (start, end, start, None)).collect();
+    for &index in earlier {
+        let Some(copy) = copied.get(index) else { continue };
+        moving.push((copy.at, copy.at + copy.len.saturating_sub(1), copy.from, Some(index)));
+    }
+    moving.sort_unstable();
+    let needed: u64 = moving.iter().map(|(start, end, ..)| u64::from(end - start) + 1).sum();
+    if region == Region::Written {
+        let left = NEXT.with(std::cell::Cell::get).saturating_sub(WRITTEN_FROM);
+        if needed >= u64::from(left) {
+            return None;
+        }
+    }
+    let mut next = match needed.checked_sub(1) {
+        Some(last) => reserved_in(region, u32::try_from(last).ok()?)?,
+        None => 0,
+    };
+    let mut laid = Moved { made: Vec::new(), own: Vec::new(), earlier: BTreeMap::new() };
+    for (start, end, from, earlier) in moving {
+        laid.made.push(Copied { at: next, len: end - start + 1, from });
+        match earlier {
+            Some(index) => {
+                laid.earlier.insert(index, next);
+            }
+            None => laid.own.push((start, end, next)),
+        }
+        next += end - start + 1;
+    }
+    Some(laid)
+}
+
+/// Changes every span in some statements through `moved`, the types they write among them.
+fn every_span(body: &mut [Stmt], moved: &mut dyn FnMut(Span) -> Span) {
+    fennec_syntax::visit::written_types_in(body, &mut |ty| type_spans(ty, moved));
+    fennec_syntax::visit::respan_stmts(body, moved);
+}
+
+/// Changes the span of a written type, and of each type in it, through `moved`.
+fn type_spans(ty: &mut TypeExpr, moved: &mut dyn FnMut(Span) -> Span) {
+    ty.span = moved(ty.span);
+    for arg in &mut ty.args {
+        type_spans(arg, moved);
+    }
 }
 
 /// Where copies of std text go: far past the end of the standard library's own text.
@@ -256,7 +552,15 @@ pub(crate) fn below_written(module: &mut Module) {
             written_low = written_low.min(expr.span.start);
         }
     });
-    NEXT.with(|next| next.set(next.get().min(written_low - 1)));
+    NEXT.with(|next| next.set(next.get().min(below_copies(written_low) - 1)));
+}
+
+/// `low`, or the first span of a copy among what lowering writes that's lower, which takes spans
+/// no expression in it may: a statement's, or those between the stretches it keeps together.
+fn below_copies(low: u32) -> u32 {
+    COPIED.with(|copied| {
+        copied.borrow().iter().map(|copy| copy.at).filter(|at| *at >= WRITTEN_FROM).fold(low, u32::min)
+    })
 }
 
 /// Reserves `length` spans in a row for text written in, giving the lowest.
@@ -343,6 +647,12 @@ impl Lowering<'_> {
         self.binds.push(fennec_syntax::sight::bound_in(&def.body, &params));
         if def.ret.is_some() {
             self.tail_returned(&mut def.body);
+            // A source and a generator give back no last value, so a `with` ending one needs no
+            // ending that says it always leaves.
+            let source = def.ret.as_ref().is_some_and(|ret| ret.name == crate::lend::WITH);
+            if !source && !fennec_syntax::fuse::has_yield(&def.body) {
+                tail_withs(&def.body, &mut self.tails);
+            }
         }
         self.stmts(&mut def.body);
         self.binds.pop();
@@ -644,6 +954,10 @@ impl Lowering<'_> {
         body.push(put_back);
         if always && ways.returned == Some(true) {
             body.extend(returned_always(&returned, at));
+        } else if always && ways.failed && ways.returned.is_none() && !ways.broke && !ways.continued {
+            // A matched case's body always runs, so one that always fails always leaves by
+            // failing, through the put-back.
+            body.extend(failed_always(&failed, at));
         } else {
             body.extend(taken_again(ways, &exit, &returned, at));
         }
@@ -687,9 +1001,11 @@ impl Lowering<'_> {
         }
         typed_for_call(source, &mut written, &mut body)?;
         // Types are found by span, and each call gives the body types of its own, as `None` for a
-        // parameter one call leaves out and another gives, so each written-in copy of a source's
-        // text gets spans of its own.
+        // parameter one call leaves out and another gives, or a member of a union a parameter is
+        // narrowed to, so each written-in copy of a source's text gets spans of its own: the
+        // standard library's and the program's (#2056).
         moved_apart(&mut written, &mut body);
+        copied_apart(Region::Program, &mut [&mut written, &mut body])?;
         // The caller's name for what's lent: the source's own name for it, when it lends one,
         // so the block's changes are what the source's cleanup sees, or else a name of its own,
         // apart from the source's hidden ones.
@@ -747,12 +1063,34 @@ impl Lowering<'_> {
         let ways = caller.ways;
         written.extend(self.ways_kept(ways, (&exit, &returned, &failed), at)?);
         written.extend(body);
-        if always_returns && ways.returned == Some(true) && !ways.broke && !ways.continued {
-            written.extend(returned_always(&returned, at));
-        } else {
-            written.extend(taken_again(ways, &exit, &returned, at));
-        }
+        written.extend(self.ending((always_returns, ways), (&exit, &returned, &failed), at));
         Some(written)
+    }
+
+    /// What's written after a source's body: the block's way out taken again. A block that always
+    /// returns gives back what it returned, which says to the check that the body always leaves.
+    /// So does one that always fails, where the `with` is a value-giving function's last line, the
+    /// one place the check needs it. Nothing reaches it, as a source reaches its `lend` on every way
+    /// that doesn't fail (#2066).
+    fn ending(
+        &self,
+        (always_returns, ways): (bool, Ways),
+        (exit, returned, failed): (&str, &str, &str),
+        at: Span,
+    ) -> Vec<Stmt> {
+        let only = !ways.broke && !ways.continued;
+        if always_returns && ways.returned == Some(true) && only {
+            returned_always(returned, at)
+        } else if always_returns
+            && ways.failed
+            && ways.returned.is_none()
+            && only
+            && self.tails.contains(&(at.start, at.end))
+        {
+            failed_always(failed, at)
+        } else {
+            taken_again(ways, exit, returned, at)
+        }
     }
 }
 
@@ -1040,6 +1378,38 @@ fn returned_always(returned: &str, at: Span) -> Vec<Stmt> {
     vec![stmt(StmtKind::Assert(given), at), stmt(StmtKind::Return(Some(name(returned, at))), at)]
 }
 
+/// The spans of the `with`s that are `body`'s last line, through an `if` with an `else`, a
+/// `match`'s cases, and a `with`'s own block.
+fn tail_withs(body: &[Stmt], tails: &mut BTreeSet<(u32, u32)>) {
+    let Some(last) = body.last() else { return };
+    match &last.kind {
+        StmtKind::With { body: block, lock: false, .. } => {
+            tails.insert((last.span.start, last.span.end));
+            tail_withs(block, tails);
+        }
+        StmtKind::If { branches, otherwise: Some(otherwise) } => {
+            for (_, branch) in branches {
+                tail_withs(branch, tails);
+            }
+            tail_withs(otherwise, tails);
+        }
+        StmtKind::Expr(Expr { kind: ExprKind::Match { arms, .. }, .. }) => {
+            for arm in arms {
+                tail_withs(&arm.body, tails);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// What's written after a source's body whose block always fails: `assert failed is not None`,
+/// which narrows it, and `fail failed`. The failure left where the block did, through the source's
+/// cleanup, so nothing reaches this; it says to the check that the body always leaves, as the
+/// block did.
+fn failed_always(failed: &str, at: Span) -> Vec<Stmt> {
+    vec![stmt(StmtKind::Assert(is_held(failed, at)), at), stmt(StmtKind::Fail(name(failed, at)), at)]
+}
+
 /// Whether every way through a block leaves it by `return` or `fail`.
 fn always_returns(block: &[Stmt]) -> bool {
     let Some(last) = block.last() else { return false };
@@ -1136,14 +1506,31 @@ fn replace_lend(body: &mut Vec<Stmt>, with_block: &mut LentAs<'_>) -> bool {
     false
 }
 
-/// Whether a failure inside this loop leaves as a failure, not held by the block and leaving the
-/// loop as a `break` would:
+/// Whether a failure inside this statement's body leaves as a failure, not held by the block and
+/// leaving the loop it runs in as a `break` would:
 /// - a `parallel` round's leaves where the loop ends, which isn't the block's to write;
 /// - a loop over a generator that can fail, `for x in made()?:` or `for x in made()? from Wrap(...)`,
-///   lets go of it as a failure leaves, noting a failure of the generator's own cleanup on that one.
+///   lets go of it as a failure leaves, noting a failure of the generator's own cleanup on that one;
+/// - a `lock` rolls back what its body changed as a failure leaves it.
 fn fails_unheld(stmt: &Stmt) -> bool {
-    let StmtKind::For { iter, .. } = &stmt.kind else { return false };
-    crate::parallel::parallel_items(iter).is_some() || matches!(iter.kind, ExprKind::Try { .. })
+    match &stmt.kind {
+        StmtKind::For { iter, .. } => {
+            crate::parallel::parallel_items(iter).is_some() || matches!(iter.kind, ExprKind::Try { .. })
+        }
+        // As it's written, or as `lock_lowering` wrote it in an earlier round, as a `ref` case in a
+        // source's body is lowered once the source is written in.
+        StmtKind::With { lock, names, .. } => *lock || crate::lock::lowered(names),
+        _ => false,
+    }
+}
+
+/// `exits` in a body inside the block, where the block's failure isn't held when `unheld` says.
+fn exits_within(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool, unheld: bool) {
+    let failed = if unheld { caller.failed.take() } else { None };
+    exits(body, caller, in_loop);
+    if unheld {
+        caller.failed = failed;
+    }
 }
 
 /// The caller's block's `return`, `break` and `continue`, as setting `exit` and leaving the
@@ -1191,11 +1578,7 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
             StmtKind::While { body, .. } | StmtKind::For { body, .. } => {
                 let before = caller.ways.returned.is_some();
                 let fails_before = caller.fails_made;
-                let failed = if unheld { caller.failed.take() } else { None };
-                exits(body, caller, true);
-                if unheld {
-                    caller.failed = failed;
-                }
+                exits_within(body, caller, true, unheld);
                 // A `return` or a failure inside it leaves this loop too.
                 let mut leaves = Vec::new();
                 if caller.ways.returned.is_some() && !before {
@@ -1218,7 +1601,7 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
                 None
             }
             StmtKind::With { body, .. } | StmtKind::OnFailure { body, .. } => {
-                exits(body, caller, in_loop);
+                exits_within(body, caller, in_loop, unheld);
                 None
             }
             _ => None,
@@ -1238,7 +1621,8 @@ fn exits(body: &mut Vec<Stmt>, caller: &mut Caller<'_>, in_loop: bool) {
 /// function written inside.
 fn holds_with(body: &[Stmt]) -> bool {
     body.iter().any(|each| match &each.kind {
-        StmtKind::With { lock: false, .. } => true,
+        // A `lock` `lock_lowering` wrote in is never written in again: it waits on nothing.
+        StmtKind::With { lock: false, names, .. } if !crate::lock::lowered(names) => true,
         StmtKind::With { body, .. }
         | StmtKind::While { body, .. }
         | StmtKind::For { body, .. }
@@ -1365,7 +1749,7 @@ fn fail_through(body: &mut Vec<Stmt>, otherwise: &[Stmt]) {
                 before.extend(failing);
             }
             StmtKind::Fail(_) => {
-                before.extend(otherwise.iter().cloned());
+                before.extend(cleanup_copy(otherwise));
             }
             StmtKind::If { branches, otherwise: rest } => {
                 for (_, body) in branches {
@@ -1613,12 +1997,12 @@ fn failed_arm(otherwise: &[Stmt], span: Span) -> MatchArm {
 /// cleanup is skipped, so the block's own failure is the one that passes up.
 fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
     if !otherwise.iter().any(cleanup_fails) {
-        let mut failed = otherwise.to_vec();
+        let mut failed = cleanup_copy(otherwise);
         failed.push(stmt(StmtKind::Fail(error), span));
         return failed;
     }
     let held = format!("failed__noted{}", here(span).start);
-    let mut cleanup = noted(otherwise, &held, span);
+    let mut cleanup = noted(&cleanup_copy(otherwise), &held, span);
     cleanup.push(stmt(StmtKind::Break, span));
     let always = Expr { kind: ExprKind::Bool(true), span: here(span) };
     vec![
@@ -1626,6 +2010,18 @@ fn failing_with(error: Expr, otherwise: &[Stmt], span: Span) -> Vec<Stmt> {
         stmt(StmtKind::While { cond: always, body: cleanup }, span),
         stmt(StmtKind::Fail(name(&held, span)), span),
     ]
+}
+
+/// A `lend`'s `else:` written in once more, as before each way the block fails, on spans of its
+/// own, so what's found by span in one copy, which may be checked where another isn't, as in a
+/// crash's function, is never another's (#2056). As it is only when spans have run out, which
+/// takes more than a program has.
+fn cleanup_copy(cleanup: &[Stmt]) -> Vec<Stmt> {
+    let mut copy = cleanup.to_vec();
+    match copied_apart(Region::Program, &mut [&mut copy]) {
+        Some(()) => copy,
+        None => cleanup.to_vec(),
+    }
 }
 
 /// `if failed is not None:` the `lend`'s `else:`, then failing with what's held, which a block's
@@ -2024,7 +2420,7 @@ fn as_written(cleanup: &[Stmt], held: &str, at: Span) -> Vec<Stmt> {
         ret: None,
         arrow: None,
         fails: None,
-        body: cleanup.to_vec(),
+        body: cleanup_copy(cleanup),
         annotations: Vec::new(),
         span: here(at),
     };

@@ -326,14 +326,8 @@ pub extern "C" fn of(address: i64) -> Text {
         if length > INLINE_BYTES {
             return Text { words: [at, u64::try_from(length).unwrap_or(0), 0] };
         }
-        let bytes: Vec<u8> = block
-            .get(TEXT_HEADER_WORDS..)
-            .unwrap_or_default()
-            .iter()
-            .flat_map(|word| word.to_le_bytes())
-            .take(length)
-            .collect();
-        let words = inline(&bytes);
+        // Packed from the block's own words, with nothing made to hold them on the way.
+        let words = inline_from_words(block.get(TEXT_HEADER_WORDS..).unwrap_or_default(), 0, length);
         release(state, at);
         Text { words }
     })
@@ -570,6 +564,130 @@ mod tests {
 
     fn live() -> usize {
         with(|state| state.heap.live())
+    }
+
+    /// A string's block of 23 bytes or fewer comes back inline, every byte in its place, and the
+    /// block is let go of. A longer one comes back as the block itself.
+    #[test]
+    fn a_string_s_text_comes_back_inline_whenever_it_fits() {
+        begin();
+        let before = live();
+        let alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+        for length in 0..=32 {
+            let text = alphabet.get(..length).unwrap_or_default();
+            let address = with(|state| Some(heap::text_address(state, text))).unwrap();
+            let words = super::of(address).words;
+            if length <= super::INLINE_BYTES {
+                assert_eq!(words, super::inline(text.as_bytes()), "{length} bytes");
+                assert_eq!(live(), before, "{length} bytes left their block");
+            } else {
+                assert_eq!(block_of(&words), u64::try_from(address).ok(), "{length} bytes");
+                assert_eq!(text_of(words), text);
+            }
+        }
+        finish();
+    }
+
+    /// What `text::of` did before it packed from a block's words: a copy of the bytes, and
+    /// `inline` of the copy.
+    fn packed_from_a_copy(words: &[u64], length: usize) -> [u64; 3] {
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).take(length).collect();
+        super::inline(&bytes)
+    }
+
+    /// Packing straight from a block's words gives the header a copy of its bytes gave, for every
+    /// length from 0 to 23 and any bytes at all, those past the text's end among them, whenever the
+    /// words hold the length asked for, as a string's block always does.
+    #[test]
+    fn packing_from_words_matches_a_copy_for_any_bytes() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            seed ^ (seed >> 29)
+        };
+        for round in 0..20_000 {
+            let count = round % 6;
+            let words: Vec<u64> = (0..count)
+                .map(|_| match round % 4 {
+                    0 => u64::MAX,
+                    1 => 0x8080_8080_8080_8080,
+                    _ => next(),
+                })
+                .collect();
+            for length in 0..=super::INLINE_BYTES {
+                if words.len() * 8 >= length {
+                    let (new, old) =
+                        (super::inline_from_words(&words, 0, length), packed_from_a_copy(&words, length));
+                    assert_eq!(new, old, "{length} bytes of {words:x?}");
+                    // The tag is the length, in byte 23, and every byte past the text is zero.
+                    let bytes: Vec<u8> = new.iter().flat_map(|word| word.to_le_bytes()).collect();
+                    assert_eq!(bytes[23], INLINE | u8::try_from(length).unwrap());
+                    assert!(bytes[length..23].iter().all(|byte| *byte == 0));
+                }
+            }
+        }
+    }
+
+    /// Text that isn't ASCII, at every length in bytes a prefix of it has up to 32,
+    /// with characters of 2, 3 and 4 bytes lying across the words' edges and ending at byte 23.
+    #[test]
+    fn text_that_isnt_ascii_comes_back_inline_byte_for_byte() {
+        begin();
+        let before = live();
+        let sources = [
+            "aé€😀bé€😀cé€😀dé€😀",
+            "😀😀😀😀😀€é",
+            "ééééééééééééééééé",
+            "€€€€€€€€€€€",
+            "日本語のテキストです、はい",
+            "\u{7f}\u{80}\u{7ff}\u{800}\u{ffff}\u{10000}\u{10ffff}\u{0}ab",
+        ];
+        for source in sources {
+            let ends: Vec<usize> = source.char_indices().map(|(at, _)| at).chain([source.len()]).collect();
+            for end in ends.into_iter().filter(|end| *end <= 32) {
+                let text = source.get(..end).unwrap();
+                let address = with(|state| Some(heap::text_address(state, text))).unwrap();
+                let words = super::of(address).words;
+                if text.len() <= super::INLINE_BYTES {
+                    assert_eq!(words, super::inline(text.as_bytes()), "{text:?}");
+                    assert_eq!(inline_bytes(&words).as_deref(), Some(text.as_bytes()), "{text:?}");
+                    // A one-character ASCII string's block lives for the whole run.
+                    assert_eq!(live(), before, "{text:?} left its block");
+                    assert_eq!(text_of(words), text);
+                } else {
+                    assert_eq!(block_of(&words), u64::try_from(address).ok(), "{text:?}");
+                    assert_eq!(text_of(words), text);
+                    heap::free(address);
+                }
+            }
+        }
+        finish();
+    }
+
+    /// A block with room past its text, and bytes left in that room and past the
+    /// text's end in its last word, as a string cut short where it is could leave: none of them
+    /// gets into the header.
+    #[test]
+    fn bytes_past_a_text_s_end_never_reach_its_header() {
+        begin();
+        let before = live();
+        let text = "abcdefghijklmnopqrstuvw";
+        for length in 0..=super::INLINE_BYTES {
+            let wanted = text.get(..length).unwrap();
+            // Four words of room, every byte past the text set.
+            let mut bytes = wanted.as_bytes().to_vec();
+            bytes.resize(32, 0xAB);
+            let packed = bytes.chunks(8).map(|word| u64::from_le_bytes(word.try_into().unwrap()));
+            let number = |n: usize| u64::try_from(n).unwrap();
+            let shape = with(|state| Some(state.tables.str_shape)).unwrap();
+            let block: Vec<u64> =
+                [1, shape, number(length), number(length), 32, 0].into_iter().chain(packed).collect();
+            let address = with(|state| Some(state.heap.insert(block.into_boxed_slice()))).unwrap();
+            let words = super::of(address).words;
+            assert_eq!(words, super::inline(wanted.as_bytes()), "{length} bytes");
+            assert_eq!(live(), before, "{length} bytes left their block");
+        }
+        finish();
     }
 
     /// An int's text, as a header or as a string's block, is what Rust writes for it, at both ends

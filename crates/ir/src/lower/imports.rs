@@ -21,6 +21,9 @@ pub(super) struct Imports {
 #[derive(Default)]
 pub(super) struct ByFile {
     files: Vec<Span>,
+    /// Where each copy of the program's text written in went: code in one sees the imports of the
+    /// file its text is in.
+    copied: Vec<fennec_syntax::Copied>,
     each: Vec<Imports>,
     written: Imports,
 }
@@ -29,7 +32,7 @@ impl ByFile {
     /// The imports code at `span` sees: its own file's, then what lowering imported, under names
     /// no file can write.
     fn at(&self, span: Span) -> impl Iterator<Item = &Imports> {
-        let own = match fennec_check::place(&self.files, span) {
+        let own = match fennec_check::place(&self.files, span.copied_from(&self.copied)) {
             fennec_check::Place::File(at) => self.each.get(at),
             fennec_check::Place::Std | fennec_check::Place::Written => None,
         };
@@ -38,7 +41,8 @@ impl ByFile {
 }
 
 pub(super) fn written(module: &Module) -> ByFile {
-    let mut by_file = ByFile { files: module.files.clone(), ..ByFile::default() };
+    let mut by_file =
+        ByFile { files: module.files.clone(), copied: module.copied.clone(), ..ByFile::default() };
     for item in &module.items {
         let Item::Import(import) = item else { continue };
         let imports = match fennec_check::import_place(&module.files, import.span) {

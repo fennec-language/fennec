@@ -86,6 +86,23 @@ impl Diagnostic {
         }
     }
 
+    /// This diagnostic where its text is, when it points into a copy of the program's text the
+    /// compiler wrote in (`Module::copied`): its place, its other place, and each fix's.
+    #[must_use]
+    pub fn copied_from(mut self, copied: &[crate::Copied]) -> Self {
+        if copied.is_empty() {
+            return self;
+        }
+        self.span = self.span.copied_from(copied);
+        if let Some(elsewhere) = &mut self.elsewhere {
+            elsewhere.0 = elsewhere.0.copied_from(copied);
+        }
+        for edit in self.fixes.iter_mut().chain(self.hint.iter_mut().flat_map(|hint| hint.edits.iter_mut())) {
+            edit.span = edit.span.copied_from(copied);
+        }
+        self
+    }
+
     #[must_use]
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(with_kits_dotted(help.into()));

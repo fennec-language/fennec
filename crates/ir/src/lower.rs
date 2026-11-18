@@ -155,7 +155,26 @@ fn lower_from(
     take_what_was_found(&mut program, &context);
     (program.structs, program.enums, program.errors) = (defs, enums, errors);
     crate::arrays::spill_big_arrays(&mut program);
+    at_the_text(&mut program, &module.copied);
     program
+}
+
+/// Each step's place, where it's in a copy of the program's text the checker wrote in, as the
+/// text it copies, so what goes wrong there says where it's written. Each copy was lowered with
+/// the types found for its own spans (#2056); nothing after this finds anything by span.
+fn at_the_text(program: &mut Program, copied: &[fennec_syntax::Copied]) {
+    if copied.is_empty() {
+        return;
+    }
+    let functions = program.functions.iter_mut().chain(&mut program.constants);
+    for block in functions.flat_map(|function| &mut function.blocks) {
+        for inst in &mut block.insts {
+            inst.span = inst.span.copied_from(copied);
+        }
+        if let Terminator::NoMatch { span, .. } | Terminator::Stop { span, .. } = &mut block.end {
+            *span = span.copied_from(copied);
+        }
+    }
 }
 
 /// The functions in `every` that `keep` picks.

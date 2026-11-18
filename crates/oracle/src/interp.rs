@@ -1000,19 +1000,69 @@ impl Interp {
             return self.for_parallel(names, call, body);
         }
         let over = self.eval(iter)?;
+        // A generator made for the loop is the loop's, as one `iter` makes is, and is let go when
+        // the loop is.
+        let made = !Interp::is_stream(&over) || made_for_loop(iter);
+        if Interp::is_stream(&over) && matches!(&iter.kind, ExprKind::Try { context: Some(_), .. }) {
+            return unsupported("a loop over a generator wrapping its failure with `from`");
+        }
         let mut items = self.items_of(over, iter.span)?;
         let _ = span;
+        let mut left = Ok(());
         while let Some(item) = self.next_item(&mut items)? {
             let mark = self.mark();
             let ran = self.bind_fresh(names, item).and_then(|()| self.stmts(body));
             self.restore(mark);
             match ran {
                 Ok(()) | Err(Flow::Continue) => {}
-                Err(Flow::Break) => break,
-                Err(other) => return Err(other),
+                Err(flow) => {
+                    left = Err(flow);
+                    break;
+                }
             }
         }
-        Ok(())
+        match left {
+            Err(Flow::Break) if !made => Ok(()),
+            left if made => self.let_go_of(&items, left),
+            left => left,
+        }
+    }
+
+    /// Leaving a loop early, as `left` says, over a generator made for it: the generator is let go
+    /// there, as compiled code does, running the cleanup of each `with` it's stopped in. A cleanup's
+    /// failure is noted on a failure leaving the loop, and otherwise is the loop's own, in place
+    /// of the `break` or `return`. A generator held anywhere else too is let go when its last
+    /// owner is, which isn't modelled here.
+    fn let_go_of(&mut self, items: &stream::Items, left: Run<()>) -> Run<()> {
+        let left = match left {
+            Err(Flow::Break) => Ok(()),
+            Err(flow @ (Flow::Return(_) | Flow::Fail(..))) => Err(flow),
+            other => return other,
+        };
+        let stream::Items::Stream(stream) = items else { return left };
+        if Arc::strong_count(&stream.source) > 1 {
+            return left;
+        }
+        let Ok(mut source) = stream.source.lock() else { return unsupported("a generator was lost") };
+        let Some(failed) = (match &mut *source {
+            stream::Source::Gen(link) => link.let_go(),
+            _ => None,
+        }) else {
+            return left;
+        };
+        drop(source);
+        match (failed, left) {
+            (Flow::Fail(cleanup, _), Err(Flow::Fail(mut error, at))) => {
+                let Value::Instance(instance) = &mut error else {
+                    return unsupported("a failure that takes no notes, leaving a generator's loop");
+                };
+                let note = self.display(&cleanup)?;
+                instance.notes.push(note);
+                Err(Flow::Fail(error, at))
+            }
+            (Flow::Fail(cleanup, at), _) => Err(Flow::Fail(cleanup, at)),
+            (other, _) => Err(other),
+        }
     }
 
     /// `for ref item in items:`, `for at, ref item in enumerate(items):` and
@@ -1253,4 +1303,14 @@ fn plain_key(key: &Value) -> String {
         Value::Int(n) => n.to_string(),
         other => other.kind().to_owned(),
     }
+}
+
+/// Whether a loop's generator is made for the loop: a call's, as `for x in counts()?:` makes one,
+/// and not one held in a name or a field, which something else may hold too.
+fn made_for_loop(iter: &Expr) -> bool {
+    let made = match &iter.kind {
+        ExprKind::Try { value, context: None } => value,
+        _ => iter,
+    };
+    matches!(made.kind, ExprKind::Call { .. })
 }

@@ -1021,7 +1021,11 @@ impl Interp {
                 }
             }
         }
-        if made { self.let_go_of(&items, left) } else { left }
+        match left {
+            Err(Flow::Break) if !made => Ok(()),
+            left if made => self.let_go_of(&items, left),
+            left => left,
+        }
     }
 
     /// Leaving a loop early, as `left` says, over a generator made for it: the generator is let go

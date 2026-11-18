@@ -149,7 +149,9 @@ impl GenLink {
         match self.items.recv() {
             Ok(Msg::End | Msg::Stopped(Flow::Return(_))) => None,
             Ok(Msg::Stopped(flow)) => Some(flow),
-            Ok(Msg::Item(_)) => Some(Flow::Unsupported("a generator gave an item as it was let go".to_owned())),
+            Ok(Msg::Item(_)) => {
+                Some(Flow::Unsupported("a generator gave an item as it was let go".to_owned()))
+            }
             Err(_) => Some(Flow::Unsupported("a generator's thread stopped".to_owned())),
         }
     }
@@ -393,7 +395,14 @@ impl Interp {
             return unsupported("a generator's thread couldn't start");
         };
         let made = self.shared.rounds_started.load(std::sync::atomic::Ordering::SeqCst);
-        Ok(GenLink { resume: Some(resume), items: read, done: false, started: false, thread: Some(thread), made })
+        Ok(GenLink {
+            resume: Some(resume),
+            items: read,
+            done: false,
+            started: false,
+            thread: Some(thread),
+            made,
+        })
     }
 
     /// In a generator: hands its reader an item, then waits to be asked for the next.

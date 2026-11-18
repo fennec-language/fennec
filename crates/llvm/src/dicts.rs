@@ -752,9 +752,9 @@ impl Emit<'_, '_, '_> {
         let entry = self.found_in(&dict, found, |emit| emit.find(&dict, (key_word, value_word), &key));
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
-        // A short new key held inline, or a plain key compared by its words, for values holding
-        // no block, goes straight in.
-        let words_key = matches!(key_word, Word::Plain(id) if !self.key_by_value(id));
+        // A short new key held inline, a plain key compared by its words, or an int, for values
+        // holding no block, goes straight in.
+        let words_key = word_key(key_word) || matches!(key_word, Word::Plain(id) if !self.key_by_value(id));
         let absent = if (key_word == Word::Text || words_key) && plain_value(value_word) {
             self.label("absent")
         } else {
@@ -882,8 +882,9 @@ impl Emit<'_, '_, '_> {
     /// `dict[key] = value` for a dict that holds its values in the entry, with the key and where
     /// the value's words are already worked out. In a dict nothing else holds, a key that's there
     /// has the new value written over the old one where it is: what the new one holds gains an
-    /// owner, what the old one held loses one, and nothing's made. Anything else is the runtime's:
-    /// the value's words go in its buffer, with an owner of each block they hold.
+    /// owner, what the old one held loses one, and nothing's made. An int key that isn't there
+    /// is added where it goes, when there's room. Anything else is the runtime's: the value's
+    /// words go in its buffer, with an owner of each block they hold.
     fn dict_store_in_entry(
         &mut self,
         place: &str,
@@ -912,7 +913,25 @@ impl Emit<'_, '_, '_> {
         let entry = self.found_in(&dict, found, |emit| emit.find(&dict, (key_word, value_word), key));
         let missing = self.temp();
         self.line(&format!("{missing} = icmp eq ptr {entry}, null"));
-        self.line(&format!("br i1 {missing}, label %{slow}, label %{change}"));
+        let absent = if word_key(key_word) { self.label("absent") } else { slow.clone() };
+        self.line(&format!("br i1 {missing}, label %{absent}, label %{change}"));
+        if absent != slow {
+            // An int key that isn't there goes straight in when the dict has room: the slot and
+            // the entry's hash and key are written as the runtime writes them, then the value's
+            // words, with an owner of each block they hold. Growing, and a key too far from its
+            // slot, are the runtime's, given the same key.
+            self.start_block(&absent);
+            let add = self.add_entry_helper(self.stride(key_word, value_word));
+            let hash = self.hash(key_word, key);
+            let (value_to, placed, write) = (self.temp(), self.temp(), self.label("write_new"));
+            self.line(&format!("{value_to} = call ptr @{add}(ptr {dict}, i64 {hash}, i64 {key})"));
+            self.line(&format!("{placed} = icmp ne ptr {value_to}, null"));
+            self.line(&format!("br i1 {placed}, label %{write}, label %{slow}"));
+            self.start_block(&write);
+            self.retain_inline(&value_kind, held);
+            self.store_field(&value_kind, held, &value_to, "");
+            self.line(&format!("br label %{done}"));
+        }
         self.start_block(&change);
         let value_at = self.temp();
         self.line(&format!(
@@ -1489,73 +1508,25 @@ no:
     }
 
     /// Defines `@fen_add_plain(dict, hash, key, value)`, which adds a key that isn't there, the
-    /// address of a plain struct's block compared by its words, to a dict that's alone, hashed
-    /// the fast way and with room, and says whether it did. Anything else, it leaves alone for
-    /// the runtime: a dict to grow, or a key too far from its slot, which the runtime answers by
-    /// hashing the dict the strong way.
+    /// address of a plain struct's block compared by its words, or an int, to a dict that's
+    /// alone, hashed the fast way and with room, and says whether it did. Anything else, it
+    /// leaves alone for the runtime: a dict to grow, or a key too far from its slot, which the
+    /// runtime answers by hashing the dict the strong way.
     fn add_plain_key_helper(&mut self) -> String {
-        let header = header_bytes();
         let name = "fen_add_plain";
-        self.module.add_helper(
-            name,
-            format!(
-                "define internal i1 @{name}(ptr %d, i64 %hash, i64 %key, i64 %value) #0 {{
-entry:
-  %how_at = getelementptr inbounds i8, ptr %d, i64 {HOW_HASHED}
-  %how = load i64, ptr %how_at
-  %is_fast = icmp eq i64 %how, 0
-  br i1 %is_fast, label %room, label %no
-room:
-  %used_at = getelementptr inbounds i8, ptr %d, i64 {USED}
-  %used = load i64, ptr %used_at
-  %mask_at = getelementptr inbounds i8, ptr %d, i64 {MASK}
-  %mask = load i64, ptr %mask_at
-  %count = add i64 %mask, 1
-  %quarter = lshr i64 %count, 2
-  %holds = sub i64 %count, %quarter
-  %fits = icmp ult i64 %used, %holds
-  br i1 %fits, label %add, label %no
-add:
-  %slots = getelementptr inbounds i8, ptr %d, i64 {header}
-  %first = and i64 %hash, %mask
-  br label %probe
-probe:
-  %at = phi i64 [ %first, %add ], [ %after, %taken ]
-  %slot = getelementptr inbounds i64, ptr %slots, i64 %at
-  %held = load i64, ptr %slot
-  %empty = icmp eq i64 %held, 0
-  br i1 %empty, label %place, label %taken
-taken:
-  %stepped = add i64 %at, 1
-  %after = and i64 %stepped, %mask
-  %gone = sub i64 %after, %first
-  %distance = and i64 %gone, %mask
-  %too_far = icmp ugt i64 %distance, {LONGEST_PROBE}
-  br i1 %too_far, label %no, label %probe
-place:
-  %number = add i64 %used, 1
-  store i64 %number, ptr %slot
-  %entries = getelementptr inbounds i64, ptr %slots, i64 %count
-  %added = getelementptr inbounds [{ENTRY_WORDS} x i64], ptr %entries, i64 %used
-  store i64 %hash, ptr %added
-  %key_to = getelementptr inbounds i64, ptr %added, i64 1
-  store i64 %key, ptr %key_to
-  %value_to = getelementptr inbounds i64, ptr %added, i64 2
-  store i64 %value, ptr %value_to
-  %keys_at = getelementptr inbounds i8, ptr %d, i64 {KEYS}
-  %keys = load i64, ptr %keys_at
-  %more_keys = add i64 %keys, 1
-  store i64 %more_keys, ptr %keys_at
-  store i64 %number, ptr %used_at
-  ret i1 true
-no:
-  ret i1 false
-}}
-
-"
-            ),
-        );
+        self.module.add_helper(name, add_key_text(name, ENTRY_WORDS, true));
         name.to_owned()
+    }
+
+    /// Defines `@fen_add_entry_e<width>(dict, hash, key)`, which adds an int key that isn't there
+    /// to a dict that holds its values in entries `width` words wide, as `@fen_add_plain` adds
+    /// one: the slot, and the entry's hash and key, are written, and it gives back where the
+    /// entry's value goes, for the caller to write. Null when it adds nothing, leaving the dict
+    /// to the runtime.
+    fn add_entry_helper(&mut self, width: usize) -> String {
+        let name = format!("fen_add_entry_e{width}");
+        self.module.add_helper(&name, add_key_text(&name, width, false));
+        name
     }
 
     /// Defines `@fen_find_short_<from>(dict, bytes, length)`: the entry of a key of 23 bytes or
@@ -2492,6 +2463,90 @@ fn word_ty(word: Word) -> Ty {
 /// Whether a dict's values are words that hold no block, so adding one owns nothing.
 fn plain_value(word: Word) -> bool {
     matches!(word, Word::Int | Word::Float | Word::Bool | Word::Nothing | Word::U64 | Word::F32)
+}
+
+/// Whether a key is an int, held as its own word: no block is made for it, so a native add that
+/// can't add hands the runtime the same word.
+fn word_key(word: Word) -> bool {
+    word == Word::Int
+}
+
+/// The text of a native add of a key that isn't there, to a dict whose entries are `width` words
+/// wide (see `Emit::add_plain_key_helper`). The slot takes the entry's number, the entry its
+/// hash and key, and the dict counts one key and one entry more, as the runtime's `set_words`
+/// does in an empty slot. With `value`, it takes the entry's one-word value too and says whether
+/// it added; without, it gives back where the value goes, or null.
+fn add_key_text(name: &str, width: usize, value: bool) -> String {
+    let header = header_bytes();
+    let (signature, written, added, refused) = if value {
+        (
+            format!("define internal i1 @{name}(ptr %d, i64 %hash, i64 %key, i64 %value) #0 {{"),
+            "  %value_to = getelementptr inbounds i64, ptr %added, i64 2\n  store i64 %value, ptr %value_to\n",
+            "  ret i1 true",
+            "  ret i1 false",
+        )
+    } else {
+        (
+            format!("define internal ptr @{name}(ptr %d, i64 %hash, i64 %key) #0 {{"),
+            "",
+            "  %value_to = getelementptr inbounds i64, ptr %added, i64 2\n  ret ptr %value_to",
+            "  ret ptr null",
+        )
+    };
+    format!(
+        "{signature}
+entry:
+  %how_at = getelementptr inbounds i8, ptr %d, i64 {HOW_HASHED}
+  %how = load i64, ptr %how_at
+  %is_fast = icmp eq i64 %how, 0
+  br i1 %is_fast, label %room, label %no
+room:
+  %used_at = getelementptr inbounds i8, ptr %d, i64 {USED}
+  %used = load i64, ptr %used_at
+  %mask_at = getelementptr inbounds i8, ptr %d, i64 {MASK}
+  %mask = load i64, ptr %mask_at
+  %count = add i64 %mask, 1
+  %quarter = lshr i64 %count, 2
+  %holds = sub i64 %count, %quarter
+  %fits = icmp ult i64 %used, %holds
+  br i1 %fits, label %add, label %no
+add:
+  %slots = getelementptr inbounds i8, ptr %d, i64 {header}
+  %first = and i64 %hash, %mask
+  br label %probe
+probe:
+  %at = phi i64 [ %first, %add ], [ %after, %taken ]
+  %slot = getelementptr inbounds i64, ptr %slots, i64 %at
+  %held = load i64, ptr %slot
+  %empty = icmp eq i64 %held, 0
+  br i1 %empty, label %place, label %taken
+taken:
+  %stepped = add i64 %at, 1
+  %after = and i64 %stepped, %mask
+  %gone = sub i64 %after, %first
+  %distance = and i64 %gone, %mask
+  %too_far = icmp ugt i64 %distance, {LONGEST_PROBE}
+  br i1 %too_far, label %no, label %probe
+place:
+  %number = add i64 %used, 1
+  store i64 %number, ptr %slot
+  %entries = getelementptr inbounds i64, ptr %slots, i64 %count
+  %added = getelementptr inbounds [{width} x i64], ptr %entries, i64 %used
+  store i64 %hash, ptr %added
+  %key_to = getelementptr inbounds i64, ptr %added, i64 1
+  store i64 %key, ptr %key_to
+{written}  %keys_at = getelementptr inbounds i8, ptr %d, i64 {KEYS}
+  %keys = load i64, ptr %keys_at
+  %more_keys = add i64 %keys, 1
+  store i64 %more_keys, ptr %keys_at
+  store i64 %number, ptr %used_at
+{added}
+no:
+{refused}
+}}
+
+"
+    )
 }
 
 /// A slice of a header held inline, found in a block of its own (see

@@ -160,28 +160,26 @@ pub(crate) struct Heap {
     freed: Freed,
 }
 
-/// Freed blocks of one size kept for reuse: those freed since the heap last gave back what was
-/// unused, the last freed on top, taken first, and those it kept then, taken only when there are
-/// no others. What's still among those at the next look has sat there all that time, taken by
-/// nothing, and goes back to the allocator. Reuse and freeing cost no more for it.
+/// Freed blocks of one size kept for reuse, the last freed on top, and the fewest there have been
+/// since the heap last looked: those below that many have sat there all that time, taken by
+/// nothing, and go back to the allocator at the next look.
 #[derive(Default)]
 pub(super) struct Spare {
     blocks: Vec<Box<[u64]>>,
-    kept: Vec<Box<[u64]>>,
+    fewest: usize,
 }
 
 impl Spare {
     #[inline]
     fn take(&mut self) -> Option<Box<[u64]>> {
-        match self.blocks.pop() {
-            Some(block) => Some(block),
-            None => self.kept.pop(),
-        }
+        let block = self.blocks.pop()?;
+        self.fewest = self.fewest.min(self.blocks.len());
+        Some(block)
     }
 
     /// How many it holds.
     pub(super) fn len(&self) -> usize {
-        self.blocks.len() + self.kept.len()
+        self.blocks.len()
     }
 }
 
@@ -900,22 +898,25 @@ impl Heap {
         }
     }
 
-    /// Gives back to the allocator each block kept at the last look that nothing has taken since,
-    /// and keeps those freed since, for the next look to judge: so a program that frees a lot at
-    /// once and then makes as much again still finds it kept.
+    /// Gives back to the allocator each kept block nothing has taken since the last look, the
+    /// oldest of its size: below the fewest its size has had. Those freed since stay, for the next
+    /// look to judge: so a program that frees a lot at once and then makes as much again still
+    /// finds it kept.
     #[cold]
     #[inline(never)]
     fn give_back_unused(&mut self) {
         for spare in &mut self.spare {
-            self.spare_words -= spare.kept.drain(..).map(|block| block.len()).sum::<usize>();
-            std::mem::swap(&mut spare.blocks, &mut spare.kept);
-            // A size nothing's freed since goes back whole, lists and all: a short block's list
-            // takes as much again as its blocks. One in use keeps its lists' room, as making it
-            // again for every look cost more than the blocks it gave back.
-            if spare.kept.is_empty() {
-                spare.blocks = Vec::new();
-                spare.kept = Vec::new();
+            let unused = spare.fewest.min(spare.blocks.len());
+            if unused > 0 {
+                self.spare_words -= spare.blocks.drain(..unused).map(|block| block.len()).sum::<usize>();
+                // A size with nothing left goes back whole, its list too: a short block's list
+                // takes as much again as its blocks. One in use keeps its list's room, as making
+                // it again after every look cost more than the blocks it gave back.
+                if spare.blocks.is_empty() {
+                    spare.blocks = Vec::new();
+                }
             }
+            spare.fewest = spare.blocks.len();
         }
         self.freed_since = 0;
     }

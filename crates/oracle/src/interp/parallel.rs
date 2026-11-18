@@ -250,6 +250,17 @@ impl Interp {
     /// all in a round that may not run, or in a stream's item, which runs alongside its reader; a
     /// receive while rounds after it haven't run here, whose messages could be the next; and a
     /// close, which other rounds' sends could come before or after.
+    /// Whether this runs in a `parallel` round with other rounds beside it, and `channel` was made
+    /// outside the call, so they could use it: what a wait of no time on it finds hangs on time.
+    pub(crate) fn beside_other_rounds(&self, channel: i64) -> Run<bool> {
+        let Ok(scopes) = self.shared.scopes.lock() else {
+            return unsupported("a `parallel` call was lost");
+        };
+        Ok(scopes.iter().any(
+            |scope| matches!(scope, Scope::Rounds(call) if channel < call.first_channel && call.count > 1),
+        ))
+    }
+
     pub(crate) fn channel_in_rounds(&self, channel: i64, used: ChannelUse) -> Run<()> {
         let Ok(scopes) = self.shared.scopes.lock() else {
             return unsupported("a `parallel` call was lost");

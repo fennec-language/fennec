@@ -3054,11 +3054,13 @@ const READ_THEN_SENT_AFTER_A_TIMEOUT: &str = "
 /// with nothing beside it prints what the compiled program printed. One listener read by two tasks
 /// at once is refused as one channel's receivers are, which gets which hanging on time (#2116).
 /// Refused too, from the review: a send of no time to a channel a task beside it filled, one in
-/// a `parallel` round beside a later round that takes, and a receive of no time while a task waits
-/// for room behind a send beside its own, which on another run got in first and went on.
+/// a `parallel` round beside another round that takes, and a receive of no time while a task waits
+/// for room behind a send beside its own, which on another run got in first and went on, the send
+/// a task's or a `parallel` round's. A wait of no time on a channel a round made for itself runs.
 #[test]
 fn a_wait_of_no_time_or_a_listener_read_by_two_tasks_is_refused_where_it_hangs_on_time() {
     prints(WAITS_OF_NO_TIME, "got 5\nagain -1\nfull\n");
+    prints(WAITS_OF_NO_TIME_ON_A_ROUND_S_OWN_CHANNEL, "[-1, 9, 19]\n");
     for (program, refused) in [
         (RECEIVE_OF_NO_TIME_BESIDE_A_SENDER, "a receive of no time, which finds a message or not by time"),
         (SEND_OF_NO_TIME_BESIDE_A_TAKER, "a send of no time, which finds room or not by time"),
@@ -3066,6 +3068,10 @@ fn a_wait_of_no_time_or_a_listener_read_by_two_tasks_is_refused_where_it_hangs_o
         (SEND_OF_NO_TIME_IN_A_ROUND, "a send of no time, which finds room or not by time"),
         (
             RECEIVE_OF_NO_TIME_BEHIND_A_RACING_SEND,
+            "a receive of no time, which finds a message or not by time",
+        ),
+        (
+            RECEIVE_OF_NO_TIME_BEHIND_A_RACING_SEND_IN_A_ROUND,
             "a receive of no time, which finds a message or not by time",
         ),
         (
@@ -3198,7 +3204,8 @@ const SEND_OF_NO_TIME_IN_A_ROUND: &str = "
 const RECEIVE_OF_NO_TIME_BEHIND_A_RACING_SEND: &str = "
         from std.concurrent import Closed, Crashed, Sender, Timeout, channel
 
-        def first_in(spot: Sender[int]) fails Closed:
+        def first_in(ready: Sender[int], spot: Sender[int]) fails Closed:
+            ready.send(0)?
             spot.send(1)?
 
         def second_in(spot: Sender[int], box: Sender[int]) fails Closed:
@@ -3206,14 +3213,59 @@ const RECEIVE_OF_NO_TIME_BEHIND_A_RACING_SEND: &str = "
             box.send(9)?
 
         def main(stdout: Stdout) fails Closed | Crashed:
-            with channel[int](size=1) as spot, channel[int](size=1) as box:
-                with launch(() => first_in(spot.sender())?)?:
+            with channel[int](size=1) as ready, channel[int](size=1) as spot, channel[int](size=1) as box:
+                with launch(() => first_in(ready.sender(), spot=spot.sender())?)?:
                     with launch(() => second_in(spot.sender(), box=box.sender())?)?:
+                        _ = ready.receive() else -1
                         got = box.receive_within(0ms) except Timeout(): -1
                         stdout.print('got', got)
                         _ = spot.receive() else -1
                         _ = spot.receive() else -1
                         _ = box.receive() else -1
+        ";
+
+const RECEIVE_OF_NO_TIME_BEHIND_A_RACING_SEND_IN_A_ROUND: &str = "
+        from std.concurrent import Closed, Crashed, Sender, Timeout, channel
+
+        def first_in(ready: Sender[int], spot: Sender[int]) fails Closed:
+            ready.send(0)?
+            spot.send(1)?
+
+        def pass_on(spot: Sender[int], box: Sender[int], at: int) -> int fails Closed:
+            spot.send(1)?
+            box.send(9)?
+            return at
+
+        def second_in(spot: Sender[int], box: Sender[int]) fails Closed:
+            _ = [pass_on(spot, box=box, at=at)? for at in parallel(range(1))]
+
+        def main(stdout: Stdout) fails Closed | Crashed:
+            with channel[int](size=1) as ready, channel[int](size=1) as spot, channel[int](size=1) as box:
+                with launch(() => first_in(ready.sender(), spot=spot.sender())?)?:
+                    with launch(() => second_in(spot.sender(), box=box.sender())?)?:
+                        _ = ready.receive() else -1
+                        got = box.receive_within(0ms) except Timeout(): -1
+                        stdout.print('got', got)
+                        _ = spot.receive() else -1
+                        _ = spot.receive() else -1
+                        _ = box.receive() else -1
+        ";
+
+const WAITS_OF_NO_TIME_ON_A_ROUND_S_OWN_CHANNEL: &str = "
+        from std.concurrent import Closed, Timeout, channel
+
+        def own(at: int) -> int fails Closed:
+            with channel[int](size=1) as box:
+                box.send(at)?
+                got = box.receive_within(0ms) except Timeout(): -1
+                again = box.receive_within(0ms) except Timeout(): -1
+                return (got else -2) * 10 + (again else -2)
+
+        def rounds() -> list[int] fails Closed:
+            return [own(at)? for at in parallel(range(3))]
+
+        def main(stdout: Stdout) fails Closed:
+            stdout.print(rounds()?)
         ";
 
 const BEHIND: &str = "

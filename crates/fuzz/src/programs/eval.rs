@@ -108,20 +108,30 @@ impl Named {
 
     /// As the program's `named_digest` writes it.
     fn digest(&self, text: &mut String) {
+        self.digest_as(text, ('l', 'p'));
+    }
+
+    /// As the program's `held_digest` writes a `Held` of the same shape.
+    fn held_digest(&self, text: &mut String) {
+        self.digest_as(text, ('h', 'q'));
+    }
+
+    /// A digest whose leaves and pairs start with `leaf` and `pair`.
+    fn digest_as(&self, text: &mut String, (leaf, pair): (char, char)) {
         match self {
             Named::Leaf(name) => {
-                let _ = write!(text, "l({name})");
+                let _ = write!(text, "{leaf}({name})");
             }
             Named::Pair(left, right, label, tags) => {
-                let _ = write!(text, "p({label}");
+                let _ = write!(text, "{pair}({label}");
                 for tag in tags {
                     text.push(',');
                     text.push_str(tag);
                 }
                 text.push(' ');
-                left.digest(text);
+                left.digest_as(text, (leaf, pair));
                 text.push(' ');
-                right.digest(text);
+                right.digest_as(text, (leaf, pair));
                 text.push(')');
             }
         }
@@ -2150,7 +2160,12 @@ impl Machine {
                     Named::Leaf(name) | Named::Pair(_, _, name, _) => name.push_str(text),
                 }
                 let moved = if way == RefWay::IndexMoved { " 1" } else { "" };
-                let _ = writeln!(self.out, "{} {}{moved}", digest(&named), digest(&leaf("z")));
+                let held = |named: &Named| {
+                    let mut out = String::new();
+                    named.held_digest(&mut out);
+                    out
+                };
+                let _ = writeln!(self.out, "{} {}{moved}", held(&named), held(&leaf("z")));
             }
             RefWay::ForRefWhile | RefWay::ForRefElif | RefWay::ForRefAnd => {
                 // The first tag grows, and the `?` after it fails with its length, which the

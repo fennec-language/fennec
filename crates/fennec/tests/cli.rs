@@ -4376,6 +4376,7 @@ fn a_kits_grants_belong_to_its_source_not_its_name() {
 #[test]
 fn a_function_handed_to_a_dependency_holds_what_it_captures() {
     let helper = "export def twice(work: (int) -> int) -> int:\n    return work(work(1))\n\n\
+                  export def call(job: () -> int) -> int:\n    return job()\n\n\
                   export def touch(fs: Fs) -> int:\n    return 1\n\n\
                   export def printer() -> (Stdout) -> int:\n    return (out) => 1\n";
     let kits = Kits::new(
@@ -4424,6 +4425,16 @@ fn a_function_handed_to_a_dependency_holds_what_it_captures() {
         (
             "import helper\n\ndef main(stdout: Stdout):\n    show = helper.printer()\n    stdout.print(show(stdout))\n",
             "`helper` makes a function here that takes a `Stdout`, so it would now receive a `Stdout`",
+        ),
+        // A name an arrow function was given in a block, declared again after it by a loop: it
+        // holds what the loop gives it, not that arrow, which held nothing. On main before this,
+        // the arrow was found by name, and `helper` was handed a `Stdout` with nothing said.
+        (
+            "import helper\n\ndef main(stdout: Stdout):\n    if len(\"a\") > 0:\n        work = () => 1\n        \
+             stdout.print(helper.call(work))\n    for work in [loud(stdout)]:\n        stdout.print(helper.call(work))\n\n\
+             def loud(stdout: Stdout) -> () -> int:\n    return () => shout(stdout)\n\n\
+             def shout(stdout: Stdout) -> int:\n    stdout.print(1)\n    return 1\n",
+            "`helper` would now receive a function here whose making can't be seen, so it may hold anything the program holds: a `Stdout`",
         ),
     ] {
         kits.write("app", "src/main.fen", main).unwrap();

@@ -286,7 +286,13 @@ impl Checker {
         match callee.strip_prefix("*.") {
             Some(method) => {
                 let suffix = format!(".{method}");
-                found.iter().find(|(key, _)| key.ends_with(&suffix)).map(|(_, what)| what.clone())
+                // A type's method, not a function written inside another that has its name.
+                let method_of_a_type =
+                    |key: &str| self.program.functions.get(key).is_some_and(|entry| entry.owner.is_some());
+                found
+                    .iter()
+                    .find(|(key, _)| key.ends_with(&suffix) && method_of_a_type(key))
+                    .map(|(_, what)| what.clone())
             }
             None => found.get(callee).cloned(),
         }

@@ -604,6 +604,15 @@ impl FnCx<'_> {
             );
             self.error(Diagnostic::new(message, def.span).with_help("call it something else"));
         }
+        // A function value it reads from around it, an arrow function or a parameter, is checked
+        // as part of the function around it, which notes what the value waits on and locks: so the
+        // nested function counts for what the function around it does, as if it called it.
+        let reads_a_value = reads
+            .iter()
+            .any(|name| !own.contains(name) && matches!(self.lookup(name), Some((Type::Arrow(..), _))));
+        if reads_a_value {
+            self.checker.own_callers.entry(self.key.clone()).or_default().insert(key.clone());
+        }
         let mut captured = self.visible();
         let function = Type::Function(key.clone());
         captured.push(Binding {

@@ -241,6 +241,36 @@ fn a_nested_function_inside_a_lock_takes_only_what_it_takes() {
     assert_eq!(locking(around_it), ["`outer` takes `account`'s lock while `lines` is locked @ outer(a)"]);
 }
 
+/// A nested function that calls a function value from around it, an arrow function or a
+/// parameter, counts for what the function around it waits on and locks, since that's where the
+/// value's own body is checked: called inside a lock, it's refused. One with nothing of the kind,
+/// as an interface's method of the same name, stays fine.
+#[test]
+fn a_nested_function_calling_a_captured_value_takes_what_it_takes() {
+    let empty: [&str; 0] = [];
+    let waits = "struct Scores:\n    total = 0\n\ndef nap(clock: Clock):\n    clock.sleep(1s)\n\n\
+        def serve(stdout: Stdout, clock: Clock):\n    shared scores = Scores()\n    resting = () => nap(clock)\n    \
+        def later():\n        resting()\n    lock scores as held:\n        later()\n        _ = held\n";
+    assert_eq!(locking(waits), ["`later` waits on `Clock.sleep` while `held` is locked @ later()"]);
+    let locks = "def read(account: shared Account) -> int:\n    lock account as now:\n        return now.total\n\n\
+        def serve(stdout: Stdout):\n    shared scores = Account()\n    shared others = Account()\n    \
+        peek = () => read(others)\n    def later() -> int:\n        return peek()\n    \
+        lock scores as ref held:\n        held.total = later()\n";
+    assert_eq!(locking(locks), ["`later` takes `scores`'s lock while `held` is locked @ later()"]);
+    let parameter = "def nap(clock: Clock):\n    clock.sleep(1s)\n\n\
+        def guarded(scores: shared Account, work: () -> nothing):\n    def step():\n        work()\n    \
+        lock scores as held:\n        step()\n        _ = held\n\n\
+        def serve(stdout: Stdout, clock: Clock):\n    shared scores = Account()\n    guarded(scores, () => nap(clock))\n";
+    assert_eq!(locking(parameter), ["`step` takes `scores`'s lock while `held` is locked @ step()"]);
+    let interface = "struct Scores:\n    total = 0\n\ninterface Counter:\n    def count(self) -> int\n\n\
+        struct Plain:\n    n = 0\n\n    def count(self) -> int:\n        return self.n\n\n\
+        def through[T: Counter](counter: T, scores: shared Scores) -> int:\n    lock scores as held:\n        \
+        return held.total + counter.count()\n\n\
+        def serve(stdout: Stdout, clock: Clock):\n    shared scores = Scores()\n    def count():\n        \
+        clock.sleep(1s)\n    count()\n    stdout.print(through(Plain(), scores))\n";
+    assert_eq!(locking(interface), empty);
+}
+
 const HOLDERS: &str = "struct Cell:
     count = 0
 

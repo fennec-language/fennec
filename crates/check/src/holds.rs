@@ -216,11 +216,13 @@ impl FnCx<'_> {
         }
     }
 
-    /// The arrow function a value is, or that the local name it reads holds, when that's known.
+    /// The arrow function a value is, or that the local name it reads was declared with, when
+    /// that's all the name can hold (see `local_arrow`). By the binding the name reads here: a name
+    /// declared again, as by unpacking or a loop, holds something else.
     fn arrow_in(&self, value: &fennec_syntax::Expr) -> Option<(u32, u32)> {
         match &value.kind {
             ExprKind::Lambda { .. } => Some((value.span.start, value.span.end)),
-            ExprKind::Name(name) => self.arrow_locals.get(name).copied().flatten(),
+            ExprKind::Name(name) => self.local_arrow(name),
             _ => None,
         }
     }

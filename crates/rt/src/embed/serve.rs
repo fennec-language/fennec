@@ -43,6 +43,11 @@ const STACK: usize = 1024 * 1024;
 const RANGE_STACK: usize = 64 << 20;
 const RANGE_STACKS_KEPT: usize = 8;
 
+/// A launched task's stack. A server may launch one for each connection, and the kernel's tables
+/// for a range's 64 MB cost 16 KB of each, for room a task seldom uses. Native code in one can
+/// still nest about 150,000 calls of a small function, three quarters of this.
+const LAUNCHED_STACK: usize = 8 << 20;
+
 /// The most ranges of `parallel` calls a worker runs at once. Each has a stack of its own, and past
 /// a few thousand there's no room left for more, nor for the tasks they launch, which they wait for.
 /// Only ranges count: a launched task may live as long as the program, and a worker holding this
@@ -856,7 +861,8 @@ impl Io {
         // The task runs it from its first resume, so it's kept here until then in case it can't.
         let run = Rc::new(Cell::new(Some(run)));
         let held = Rc::clone(&run);
-        let Ok(task) = self.ranges.spawn(move || held.take().map_or(0, |run| run())) else {
+        let stack = if accounts.is_range_s() { RANGE_STACK } else { LAUNCHED_STACK };
+        let Ok(task) = self.ranges.spawn_with_stack(stack, move || held.take().map_or(0, |run| run())) else {
             // A task that was never made never took its work, so it's still here.
             return match run.take() {
                 Some(run) => Err(Deferred { run, accounts: Box::new(accounts), started }),

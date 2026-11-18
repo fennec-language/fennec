@@ -14,7 +14,7 @@
 //! runs to its end. Dropping a scheduler cancels its tasks that way. A panic in a task stops
 //! the process, in every build, as `panic=abort` does in release builds.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use corosensei::stack::{DefaultStack, Stack as _};
@@ -29,6 +29,9 @@ pub type TaskId = u64;
 thread_local! {
     /// The number the next task made on this thread gets.
     static NEXT: Cell<TaskId> = const { Cell::new(1) };
+    /// This thread's stack for deep work, while nothing runs on it: made the first time it's
+    /// wanted, and kept for the next.
+    static DEEP: RefCell<Option<DefaultStack>> = const { RefCell::new(None) };
 }
 
 /// What a parked task waits for, as a number its scheduler's owner gives meaning to, such as
@@ -95,10 +98,35 @@ pub fn stack_size() -> Option<usize> {
     current::stack_size()
 }
 
+/// Runs `work` on a stack of at least `bytes` that this thread keeps for deep work, when the task
+/// running here has a smaller one of its own. While `work` runs, `stack_low` and `stack_size` say
+/// where that stack is, so what checks how far its stack has grown checks that one. With no task
+/// running, with one whose stack is big enough, with the deep stack already in use, or with none to
+/// be had, `work` runs here. `work` mustn't park: that stops the process.
+pub fn on_deep_stack<R>(bytes: usize, work: impl FnOnce() -> R) -> R {
+    if current::stack_size().is_none_or(|size| size >= bytes) {
+        return work();
+    }
+    let kept = DEEP.with_borrow_mut(Option::take);
+    let mut stack = match kept {
+        Some(stack) if stack.base().get() - stack.limit().get() >= bytes => stack,
+        _ => match DefaultStack::new(bytes) {
+            Ok(stack) => stack,
+            Err(_) => return work(),
+        },
+    };
+    let bounds = current::Bounds { low: stack.limit().get(), high: stack.base().get() };
+    let result = corosensei::on_stack(&mut stack, || current::with_stack(bounds, work));
+    DEEP.with_borrow_mut(|deep| *deep = Some(stack));
+    result
+}
+
 struct Task {
     /// Taken out only once the task has ended, for its stack to be used again.
     coroutine: Option<Coroutine<Wake, Request, i64, DefaultStack>>,
     stack: current::Bounds,
+    /// The size its stack was asked for, which an ended task's stack is kept by.
+    stack_bytes: usize,
     cancelled: bool,
 }
 
@@ -111,18 +139,18 @@ impl Drop for Task {
     }
 }
 
-/// How many stacks of tasks that have ended a scheduler keeps for its next tasks, unless it's
-/// told otherwise. Each keeps the pages its task touched, so they're few.
+/// How many stacks of each size, of tasks that have ended, a scheduler keeps for its next tasks,
+/// unless it's told otherwise. Each keeps the pages its task touched, so they're few.
 const SPARE_STACKS: usize = 64;
 
 /// A thread's tasks.
 pub struct Scheduler {
     stack_bytes: usize,
     tasks: HashMap<TaskId, Task>,
-    /// Stacks of tasks that have ended, for new tasks: making a stack maps it, with its guard
-    /// page, which costs a few system calls, and a thread that makes many short tasks pays that
-    /// for each.
-    spare: Vec<DefaultStack>,
+    /// Stacks of tasks that have ended, for new tasks, by the size they were asked for: making a
+    /// stack maps it, with its guard page, which costs a few system calls, and a thread that makes
+    /// many short tasks pays that for each.
+    spare: Vec<(usize, Vec<DefaultStack>)>,
     most_spare: usize,
 }
 
@@ -133,22 +161,35 @@ impl Scheduler {
         Scheduler::keeping(stack_bytes, SPARE_STACKS)
     }
 
-    /// A scheduler that keeps at most `most_spare` stacks of ended tasks for its next ones.
+    /// A scheduler that keeps at most `most_spare` stacks of each size, of ended tasks, for its
+    /// next ones.
     pub fn keeping(stack_bytes: usize, most_spare: usize) -> Scheduler {
         Scheduler { stack_bytes, tasks: HashMap::new(), spare: Vec::new(), most_spare }
     }
 
     /// How many stacks it keeps for its next tasks now.
     pub fn spare_stacks(&self) -> usize {
-        self.spare.len()
+        self.spare.iter().map(|(_, kept)| kept.len()).sum()
     }
 
     /// Makes a task that runs `body` on its own stack, from its first resume: one an ended task
     /// left, or a new one.
     pub fn spawn(&mut self, body: impl FnOnce() -> i64 + 'static) -> std::io::Result<TaskId> {
-        let stack = match self.spare.pop() {
+        self.spawn_with_stack(self.stack_bytes, body)
+    }
+
+    /// Makes a task as `spawn` does, on a stack of `stack_bytes` instead of the scheduler's own
+    /// size, plus a guard page.
+    pub fn spawn_with_stack(
+        &mut self,
+        stack_bytes: usize,
+        body: impl FnOnce() -> i64 + 'static,
+    ) -> std::io::Result<TaskId> {
+        let kept =
+            self.spare.iter_mut().find(|(bytes, _)| *bytes == stack_bytes).and_then(|(_, kept)| kept.pop());
+        let stack = match kept {
             Some(stack) => stack,
-            None => DefaultStack::new(self.stack_bytes)?,
+            None => DefaultStack::new(stack_bytes)?,
         };
         let bounds = current::Bounds { low: stack.limit().get(), high: stack.base().get() };
         let task = NEXT.get();
@@ -163,7 +204,8 @@ impl Scheduler {
                 Err(_) => current::stop("a parked task panicked"),
             }
         });
-        self.tasks.insert(task, Task { coroutine: Some(coroutine), stack: bounds, cancelled: false });
+        self.tasks
+            .insert(task, Task { coroutine: Some(coroutine), stack: bounds, stack_bytes, cancelled: false });
         Ok(task)
     }
 
@@ -184,13 +226,21 @@ impl Scheduler {
             }
             CoroutineResult::Return(result) => {
                 // It's ended, so nothing's on its stack any more, and its stack can be used again.
-                if self.spare.len() < self.most_spare
-                    && let Some(ended) = running.coroutine.take()
-                {
-                    self.spare.push(ended.into_stack());
+                if let Some(ended) = running.coroutine.take() {
+                    self.keep(running.stack_bytes, ended.into_stack());
                 }
                 Step::Done(result)
             }
+        }
+    }
+
+    /// Keeps an ended task's stack, asked for as `stack_bytes`, for the next task wanting one that
+    /// size, unless as many of that size are kept already.
+    fn keep(&mut self, stack_bytes: usize, stack: DefaultStack) {
+        match self.spare.iter_mut().find(|(bytes, _)| *bytes == stack_bytes) {
+            Some((_, kept)) if kept.len() < self.most_spare => kept.push(stack),
+            None if self.most_spare > 0 => self.spare.push((stack_bytes, vec![stack])),
+            Some(_) | None => {}
         }
     }
 

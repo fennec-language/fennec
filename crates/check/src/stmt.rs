@@ -389,8 +389,7 @@ impl FnCx<'_> {
         let looped_before = self.looped_here.len();
         self.looped_here.extend(looped_here(iter));
         let outer = crate::parallel::called_as_outer(iter);
-        let parallel =
-            crate::parallel::parallel_items(iter).filter(|_| outer || self.lookup("parallel").is_none());
+        let parallel = self.parallel_over(iter);
         if outer && parallel.is_some() {
             self.note_outer();
         }
@@ -429,6 +428,10 @@ impl FnCx<'_> {
         self.forget_changed_in(body);
         let before = self.snapshot();
         self.push(false);
+        if let Some(items) = parallel {
+            self.no_failing_generator_apart(&item, items.span);
+            self.set_apart();
+        }
         self.bind_names(names, &item, is_mut, (iter.span, span));
         self.stmts(body, false);
         self.pop();
@@ -663,7 +666,11 @@ impl FnCx<'_> {
         });
         let report = self.report;
         let inherited = self.generics.clone();
+        let handed = self.checker.generators_handed_up.len();
         self.checker.check_nested(&key, def, captured, !report, inherited);
+        // What it couldn't tell about a name of this function's, this function looks at again.
+        let handed_up: Vec<_> = self.checker.generators_handed_up.drain(handed..).collect();
+        self.pending_generators.extend(handed_up);
         self.declare(&def.name, function, false, def.span);
     }
 

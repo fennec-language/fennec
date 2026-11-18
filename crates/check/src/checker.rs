@@ -142,6 +142,10 @@ pub(crate) struct Checker {
     /// The functions that used each function's signature, so they're checked again when it
     /// changes.
     pub(crate) callers: BTreeMap<String, BTreeSet<String>>,
+    /// The functions that call each function, by their own keys, a nested function's its own: what
+    /// waits and locks is followed up these, so a nested function counts for what it does, not for
+    /// what the function around it does.
+    pub(crate) own_callers: BTreeMap<String, BTreeSet<String>>,
     /// What each function waits on itself: a network call, a sleep, a channel.
     pub(crate) waits: BTreeMap<String, String>,
     /// Set when what's checked is a program as lowering rewrote it, checked again: the rules
@@ -266,6 +270,7 @@ impl Checker {
             revisit: BTreeSet::new(),
             previous: BTreeMap::new(),
             callers: BTreeMap::new(),
+            own_callers: BTreeMap::new(),
             waits: BTreeMap::new(),
             again: false,
             takes_locks: BTreeMap::new(),
@@ -541,6 +546,7 @@ impl Checker {
     pub(crate) fn signature(&mut self, key: &str) -> Option<Signature> {
         self.program.functions.get(key)?;
         if let Some(caller) = self.checking.last() {
+            self.own_callers.entry(key.to_owned()).or_default().insert(caller.clone());
             let caller = self.outermost(caller);
             self.callers.entry(self.outermost(key)).or_default().insert(caller);
         }

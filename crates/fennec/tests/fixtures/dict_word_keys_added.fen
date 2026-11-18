@@ -1,0 +1,60 @@
+# Keys held as their own word, added to dicts that hold their values in their entries and to dicts
+# of plain values: added natively while a dict that's alone has room, and by the runtime when it
+# must grow, when another owner holds it, and through `ref`. Every key is found again, the order
+# keys went in is kept, a copy taken partway keeps only what it had, and values holding blocks
+# keep their owners.
+
+struct Visit:
+    cost: int
+    came_from: int
+
+struct Named:
+    name: str
+    count: int
+
+## Adds `count` keys from `start` through `ref`, each with a visit.
+def fill(ref visits: dict[int, Visit], start: int, count: int):
+    for key in range(start, start + count):
+        visits[key] = Visit(cost=key * 3, came_from=key - 1)
+
+def main(stdout: Stdout):
+    mut visits = dict[int, Visit]()
+    mut kept = dict[int, Visit]()
+    mut numbers = dict[int, int]()
+    mut named = dict[int, Named]()
+    # Keys far apart and near, negative, zero and the ends of an int, past many sizes.
+    for step in range(20_000):
+        key = (step * 7_919) % 100_003 - 50_000
+        visits[key] = Visit(cost=step, came_from=key)
+        numbers[key] = step
+        if step % 4 == 0:
+            named[key] = Named(name=f"name {step}", count=step)
+        if step == 9_000:
+            kept = visits
+    visits[-9_223_372_036_854_775_807 - 1] = Visit(cost=1, came_from=2)
+    visits[9_223_372_036_854_775_807] = Visit(cost=3, came_from=4)
+    numbers[0] = -1
+    # Some keys again: changed where they are, not added.
+    for step in range(0, 20_000, 3):
+        key = (step * 7_919) % 100_003 - 50_000
+        visits[key] = Visit(cost=step + 1, came_from=key)
+    # Added through `ref`, into a dict a copy shares for a while.
+    mut shared = dict[int, Visit]()
+    fill(ref shared, 0, 100)
+    earlier = shared
+    fill(ref shared, 100, 5_000)
+    mut total = 0
+    for key, visit in visits.items():
+        total = (total * 31 + key % 1_000 + visit.cost * 7 + visit.came_from) % 1_000_000_007
+    mut sum_numbers = 0
+    for key, number in numbers.items():
+        sum_numbers = (sum_numbers * 17 + key + number) % 1_000_000_007
+    names = sum(len(value.name) + value.count % 10 + key % 3 for key, value in named.items())
+    order = [key for key in visits.keys()]
+    stdout.print(len(visits), len(kept), len(numbers), len(named), len(shared), len(earlier))
+    stdout.print(total, sum_numbers, names)
+    stdout.print(order[0], order[1], order[19_999], order[20_000], order[20_001])
+    first = (0 * 7_919) % 100_003 - 50_000
+    stdout.print(visits[first].cost, kept[first].cost, numbers[0], named[first].name)
+    stdout.print(shared[5_099].came_from, earlier.get(5_099) is None, earlier[99].cost)
+    return

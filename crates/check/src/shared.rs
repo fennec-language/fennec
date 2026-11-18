@@ -45,6 +45,40 @@ impl Program {
 }
 
 impl Checker {
+    /// Whether a value of this type holds a function value, an arrow function or a parameter's, in
+    /// it or anything inside it: a list of them, an optional one, a struct's field.
+    pub(crate) fn holds_function_value(&mut self, ty: &Type, open: &mut Vec<String>) -> bool {
+        let ty = self.settled(ty);
+        if matches!(ty, Type::Arrow(..)) {
+            return true;
+        }
+        if ty.children().iter().any(|child| self.holds_function_value(&(*child).clone(), open)) {
+            return true;
+        }
+        let (Type::Named(name) | Type::Generic(name, _)) = &ty else { return false };
+        if open.contains(name) {
+            return false;
+        }
+        let Some(info) = self.program.type_info(name) else { return false };
+        let def = info.def.clone();
+        open.push(name.clone());
+        let fields = def.fields.iter().map(|field| (None, field));
+        let in_cases = def
+            .cases
+            .iter()
+            .flat_map(|case| case.fields.iter().map(|field| (Some(case.name.as_str()), field)));
+        let mut found = false;
+        for (case, field) in fields.chain(in_cases) {
+            let held = self.field_type(name, case, &field.name);
+            if self.holds_function_value(&held, open) {
+                found = true;
+                break;
+            }
+        }
+        open.pop();
+        found
+    }
+
     /// Whether a value of this type holds a capability, in it or anything inside it.
     pub(crate) fn holds_capability(&mut self, ty: &Type, open: &mut Vec<String>) -> bool {
         if is_capability_type(ty) {

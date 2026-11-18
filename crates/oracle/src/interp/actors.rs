@@ -15,9 +15,10 @@
 //!   receive, whatever else can go on goes first, so every message that could be next is there,
 //!   and where the first from each sender differ, each is taken in turn;
 //! - where a listener of a channel to every listener starts among messages sent beside it,
-//!   neither before nor after: each place it could start. One whose task has waited since it
-//!   started is taken to have started before what's sent after, as a timed wait is taken to be
-//!   answered in time, so a send repeated until it's heard has an end.
+//!   neither before nor after: each place it could start. A timed wait that times out is taken to
+//!   come after every other task got as far as it could, as the note on timeouts below says, its
+//!   listeners started included: one that exists then started before what's sent after, so a send
+//!   repeated until it's heard has an end.
 //!
 //! Anything else whose outcome hangs on time is refused:
 //! - two tasks taking messages from one channel to one receiver at once, which gets which hanging
@@ -285,9 +286,8 @@ struct Listener {
     /// Its maker's clock as it started listening: a message sent beside that, neither before nor
     /// after it, it hears or not by time.
     started: Clock,
-    /// Who made it, and whether that one has waited since: from then on it's taken to have started
-    /// before whatever's sent, as a timed wait is taken to be answered in time.
-    maker: usize,
+    /// Whether a timed wait has timed out since it started: one does only once nothing else can go
+    /// on, so it's taken to have started before whatever's sent after.
     settled: bool,
 }
 
@@ -295,9 +295,9 @@ impl State {
     /// After a send on the channel to every listener numbered `number`: a listener that hasn't
     /// read yet, whose start this send is beside, neither before nor after it, could have started
     /// after it on another run, and not heard it, nor anything it hasn't read before it. Each way
-    /// is a run of its own, the first where it heard it. One whose maker has waited since it
-    /// started is taken to have started first, as a timed wait is taken to be answered in time:
-    /// otherwise a send repeated until it's heard, as a handshake does, would have no end of ways.
+    /// is a run of its own, the first where it heard it. One that existed when a timed wait timed
+    /// out is taken to have started first: a timeout comes only once nothing else can go on, so a
+    /// send repeated until it's heard, as a handshake does, has an end.
     fn heard_or_not(&mut self, number: i64, orders: &mut Orders) {
         let Some(chan) = self.channels.get(&number) else { return };
         let Some(this) = chan.sent.len().checked_sub(1) else { return };
@@ -450,6 +450,10 @@ impl State {
                 self.actors.iter().position(|actor| matches!(actor.state, Doing::Waiting(_, true)))?;
             if let Some(actor) = self.actors.get_mut(timed) {
                 actor.timed_out = true;
+            }
+            // Every other task has got as far as it could, its listeners started included.
+            for listener in self.listeners.values_mut() {
+                listener.settled = true;
             }
             Some(timed)
         });
@@ -687,13 +691,6 @@ impl Interp {
         if let Some(actor) = state.actors.get_mut(me) {
             actor.state = Doing::Waiting(wait, timed);
             actor.scopes = mine;
-        }
-        // A listener this one made, itself or as a `parallel` round it runs, has started by now.
-        let rounds: Vec<usize> = self.rounds_as.iter().flatten().copied().collect();
-        for listener in state.listeners.values_mut() {
-            if listener.maker == me || rounds.contains(&listener.maker) {
-                listener.settled = true;
-            }
         }
         if !state.hand_on(me) {
             // Every thread that's waiting says this, whichever found it, so it's noted first.
@@ -1024,7 +1021,6 @@ impl Interp {
                     reads,
                     receivers,
                     started,
-                    maker,
                     settled: false,
                 };
                 state.listeners.insert(listener, made);

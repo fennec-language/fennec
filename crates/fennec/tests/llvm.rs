@@ -697,6 +697,91 @@ fn a_dict_of_structs_is_the_same_with_values_in_its_entries() -> std::io::Result
     )
 }
 
+/// A dict whose values are generators or closures builds and lets each go (#2099). Their blocks went
+/// into the runtime's calls as addresses where a word goes, so `opt` refused the program, written
+/// out or one value at a time. Each is put in, replaced, got, popped, looped over or called, left
+/// unstarted or part done, and the dict cleared. It prints what the reference evaluator prints, in
+/// entries and boxed, with nothing left.
+#[test]
+fn a_dict_of_generators_or_closures_builds_and_lets_each_go() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    same_with_and_without("FENNEC_BOXED_DICT_VALUES", "dict_of_blocks", DICT_OF_BLOCKS, DICT_OF_BLOCKS_PRINTS)
+}
+
+const DICT_OF_BLOCKS: &str = r#"# A dict whose values are generators or closures: each is a block the dict owns. They're put in
+# written out and one at a time, replaced, got, popped, looped over or called, left unstarted or part
+# done, and the dict cleared, with nothing left at the end.
+
+def counting(limit: int) -> Iterator[int]:
+    for at in range(limit):
+        yield at
+
+def words(text: str) -> Iterator[str]:
+    for word in text.split(" "):
+        yield word
+
+def run_generators(stdout: Stdout):
+    mut held = {"a": counting(3), "b": counting(4)}
+    held["c"] = counting(5)
+    held["a"] = (each * 10 for each in counting(2))
+    stdout.print("held", len(held))
+    for name in ["a", "b", "z"]:
+        made = held.get(name) else counting(1)
+        stdout.print(name, sum(made))
+    popped = held.pop("c") else counting(0)
+    mut seen = 0
+    for each in popped:
+        seen += each
+        if each == 2:
+            break
+    stdout.print("popped", seen, len(held))
+    mut by_number: dict[int, Iterator[str]] = {}
+    for number in range(3):
+        by_number[number] = words(f"one two {number}")
+    for number, made in by_number.items():
+        stdout.print(number, list(made))
+    by_number.clear()
+    by_number[7] = words("never started")
+    stdout.print("left", len(by_number))
+
+def run_closures(stdout: Stdout):
+    base = 10
+    kept = [1, 2, 3]
+    doubled: (int) -> int = (at) => at * 2
+    shifted: (int) -> int = (at) => at + base
+    counted: (int) -> int = (at) => at + len(kept)
+    mut held = {"double": doubled, "shifted": shifted}
+    held["counted"] = counted
+    held["double"] = counted
+    for name, run in held.items():
+        stdout.print(name, run(5))
+    held.clear()
+    held["again"] = shifted
+    again = held["again"]
+    stdout.print("again", again(2), len(held))
+
+def main(stdout: Stdout):
+    run_generators(stdout)
+    run_closures(stdout)
+"#;
+
+const DICT_OF_BLOCKS_PRINTS: &str = r#"held 3
+a 10
+b 6
+z 0
+popped 3 2
+0 ["one", "two", "0"]
+1 ["one", "two", "1"]
+2 ["one", "two", "2"]
+left 1
+double 8
+shifted 15
+counted 8
+again 12 1
+"#;
+
 /// A slice of a text used as a dict's key is found and added with no string made for it only in a
 /// dict of one-word values. Which dicts hold their values in their entries is the layouts' to say:
 /// a tuple is held in an entry as a struct is, and a dict of tuples took the one-word way, which
@@ -25796,7 +25881,7 @@ fn an_unchanged_build_takes_its_program_from_the_store() -> std::io::Result<()> 
     let source = "def main(stdout: Stdout):\n    stdout.print(\"stored\")\n";
     std::fs::write(dir.join("main.fen"), source)?;
     let build = |args: &[&str]| -> std::io::Result<(String, Vec<u8>)> {
-        let output = crate::executables::fennec_command()
+        let output = crate::executables::fennec_command_with_empty_store()
             .args(args)
             .current_dir(&dir)
             .env("FENNEC_HOME", &home)
@@ -29702,7 +29787,7 @@ fn the_cache_is_used_where_no_file_can_be_made_in_the_temp_folder() -> std::io::
     let (path, out) =
         (program.to_string_lossy().into_owned(), dir.join("no_temp").to_string_lossy().into_owned());
     let build = || -> std::io::Result<String> {
-        let built = crate::executables::fennec_command()
+        let built = crate::executables::fennec_command_with_empty_store()
             .args(["build", "--llvm", &path, "-o", &out])
             .env("FENNEC_HOME", &dir)
             .env("TMPDIR", dir.join("not-there"))

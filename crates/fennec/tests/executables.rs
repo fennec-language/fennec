@@ -395,6 +395,16 @@ fn cargo() -> Command {
     cargo
 }
 
+/// `fennec_command()` with the toolchain's store turned off, for a test of what a home's own cache
+/// does, empty or not: the store, which every home reads std's parse and the runtime's stamp from,
+/// would otherwise do that work for it. The tests of the cache, its cleanup, a cache that can't be
+/// written and objects lost before a link use it.
+pub(crate) fn fennec_command_with_empty_store() -> Command {
+    let mut command = fennec_command();
+    command.env("FENNEC_TOOLCHAIN_STORE", "");
+    command
+}
+
 /// The runtime library executables link against, which `fennec build` expects next to
 /// itself. `cargo test` doesn't build it, so this does, once a run: `fennec` refuses one from
 /// other source. Only once, because even when it's

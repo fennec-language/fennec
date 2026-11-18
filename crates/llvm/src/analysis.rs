@@ -4359,11 +4359,17 @@ fn in_entries_of<'p>(
     held
 }
 
+/// Which of a callee's parameters a call may change, as the analyses on threads ask it.
+type ChangesOn<'f> = &'f (dyn Fn(&str) -> Vec<usize> + Sync);
+
+/// Whether a callee keeps the parameter at a place, as the analyses on threads ask it.
+type KeepsOn<'f> = &'f (dyn Fn(&str, usize) -> bool + Sync);
+
 /// Every function's [`analyze`], on as many threads as a build compiles with: each depends only
 /// on its function and what it's given here, so the order they run in changes nothing.
 fn analyzed<'p>(
     program: &'p Program,
-    (changes, keeps): (&(dyn Fn(&str) -> Vec<usize> + Sync), &(dyn Fn(&str, usize) -> bool + Sync)),
+    (changes, keeps): (ChangesOn<'_>, KeepsOn<'_>),
     params: &HashMap<&str, Vec<Range>>,
     in_entries: &(dyn Fn(&Type) -> bool + Sync),
 ) -> HashMap<&'p str, Analysis> {

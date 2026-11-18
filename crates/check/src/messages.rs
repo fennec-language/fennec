@@ -175,13 +175,33 @@ pub(crate) const LITERAL_HELP: &str = "a `LiteralStr` is text written in quotes 
 /// only the function that made it, which passes its failure up, can loop over it.
 const FAILING_GENERATOR_HELP: &str = "loop over a generator that can fail where it's made, so its failure passes up from there, or keep its items with `list(...)` first";
 
-/// A generator that can fail, used inside a nested function, an arrow function or a generator
-/// kept for later, which would loop over it where its failure can't pass up as it says.
-pub(crate) fn failing_generator_inside(name: &str, span: Span) -> Diagnostic {
+/// A generator that can fail, or a value holding one, used inside a nested function, an arrow
+/// function, a generator kept for later or a `parallel` body, which would loop over it where its
+/// failure can't pass up as it says.
+pub(crate) fn failing_generator_inside(name: &str, holds: bool, span: Span) -> Diagnostic {
+    let what = if holds { "holds a generator that can fail" } else { "is a generator that can fail" };
     let message = format!(
-        "`{name}` is a generator that can fail, so a nested function, an arrow function or a generator kept for later can't use it"
+        "`{name}` {what}, so a nested function, an arrow function, a generator kept for later or a `parallel` body can't use it"
     );
     Diagnostic::new(message, span).with_help(FAILING_GENERATOR_HELP)
+}
+
+/// `parallel` over items that hold a generator that can fail: each item goes to another task,
+/// where its failure can't pass up as it says.
+pub(crate) fn failing_generator_in_parallel(span: Span) -> Diagnostic {
+    let message =
+        "`parallel` hands each item to another task, so its items can't hold a generator that can fail";
+    Diagnostic::new(message, span).with_help(FAILING_GENERATOR_HELP)
+}
+
+/// `except` on a generator function's call. Making a generator runs none of its body, so it can't
+/// fail there: its failure comes from where it's looped over, and the `except` would never run.
+pub(crate) fn except_on_a_generator(span: Span) -> Diagnostic {
+    let message =
+        "making a generator runs none of its body, so this can't fail here and `except` would never run";
+    Diagnostic::new(message, span).with_help(
+        "write `?`: its failure passes up from where it's looped over, so handle it around the call that loops over it",
+    )
 }
 
 pub(crate) fn mismatch(what: &str, expected: &Type, actual: &Type, span: Span) -> Diagnostic {

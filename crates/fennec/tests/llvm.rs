@@ -15281,7 +15281,8 @@ def main(stdout: Stdout):
 
 /// A generator held in a name, let go by its last owner, has nothing there to take its cleanup's
 /// failure: the task stops with it, saying so, as for a crash, where the loop over a call it's
-/// made for would fail.
+/// made for would fail. It's got with `?` and let go as its function ends. Got with `except`, as
+/// this program once did first, it's refused now (#2097): `except` on making one never runs.
 #[test]
 fn a_cleanup_failing_as_a_named_generator_is_let_go_stops_the_task() -> std::io::Result<()> {
     if !ready() {
@@ -15297,10 +15298,10 @@ fn a_cleanup_failing_as_a_named_generator_is_let_go_stops_the_task() -> std::io:
     let (out, err, code) = outcome(&Command::new(&executable).output_within()?);
     std::fs::remove_dir_all(&dir)?;
     assert_eq!(code, Some(1), "{err}");
-    assert_eq!(out, "after quiet\nclosing quiet\n");
+    assert_eq!(out, "after kept\nclosing kept\n");
     assert!(
         err.contains(
-            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"quiet\")"
+            "a generator's cleanup failed as it was let go by its last owner: Shut.Stuck(name=\"kept\")"
         ),
         "{err}"
     );
@@ -15329,15 +15330,6 @@ def held(name: str, stdout: Stdout) -> Iterator[int] fails Shut:
         yield 2
 
 
-def quiet(stdout: Stdout):
-    walk = held("quiet", stdout) except why:
-        stdout.print("opening failed", why)
-        stdout.print("after quiet")
-        return
-    for n in walk:
-        break
-    stdout.print("after quiet")
-
 def kept(stdout: Stdout) fails Shut:
     walk = held("kept", stdout)?
     for n in walk:
@@ -15345,7 +15337,6 @@ def kept(stdout: Stdout) fails Shut:
     stdout.print("after kept")
 
 def main(stdout: Stdout):
-    quiet(stdout)
     kept(stdout) except why:
         stdout.print("kept failed", why)
         return

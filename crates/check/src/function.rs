@@ -70,6 +70,9 @@ struct Scope {
     bindings: Vec<Binding>,
     /// An arrow function's scope: names from outside it can be read but not changed.
     barrier: bool,
+    /// A `parallel` loop's or comprehension's body, which runs on other tasks: a generator that
+    /// can fail, from outside it, can't pass its failure up from there.
+    apart: bool,
 }
 
 /// What a function's body gives back.
@@ -190,7 +193,7 @@ impl<'c> FnCx<'c> {
             checker,
             key: key.to_owned(),
             name: name.to_owned(),
-            scopes: vec![Scope { bindings: Vec::new(), barrier: false }],
+            scopes: vec![Scope { bindings: Vec::new(), barrier: false, apart: false }],
             report,
             declared: None,
             generator: false,
@@ -733,7 +736,30 @@ impl<'c> FnCx<'c> {
     }
 
     pub(crate) fn push(&mut self, barrier: bool) {
-        self.scopes.push(Scope { bindings: Vec::new(), barrier });
+        self.scopes.push(Scope { bindings: Vec::new(), barrier, apart: false });
+    }
+
+    /// Marks the innermost scope as a `parallel` loop's or comprehension's body, which runs on
+    /// other tasks.
+    pub(crate) fn set_apart(&mut self) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.apart = true;
+        }
+    }
+
+    /// The items of a `parallel` loop or comprehension over `iter`, when it's one: `parallel(xs)`
+    /// written as the standard library's, and not a name of the program's own.
+    pub(crate) fn parallel_over<'e>(&self, iter: &'e Expr) -> Option<&'e Expr> {
+        let outer = crate::parallel::called_as_outer(iter);
+        crate::parallel::parallel_items(iter).filter(|_| outer || self.lookup("parallel").is_none())
+    }
+
+    /// `parallel` over items that hold a generator that can fail is refused: each item goes to
+    /// another task, where its failure can't pass up.
+    pub(crate) fn no_failing_generator_apart(&mut self, item: &Type, span: Span) {
+        if !self.checker.settled(item).held_generator_failures().is_empty() {
+            self.error(crate::messages::failing_generator_in_parallel(span));
+        }
     }
 
     /// The names declared in the innermost scope, with what each holds.
@@ -900,15 +926,15 @@ impl<'c> FnCx<'c> {
         None
     }
 
-    /// Whether `name` is from around the nested function, arrow function or generator kept for
-    /// later that this is in, rather than this function's own.
+    /// Whether `name` is from around the nested function, arrow function, generator kept for
+    /// later or `parallel` body that this is in, rather than this function's own.
     pub(crate) fn came_from_around(&self, name: &str) -> bool {
         let mut crossed = false;
         for scope in self.scopes.iter().rev() {
             if let Some(binding) = scope.bindings.iter().rev().find(|binding| binding.name == name) {
                 return crossed || binding.origin == Origin::Captured;
             }
-            crossed |= scope.barrier;
+            crossed |= scope.barrier || scope.apart;
         }
         false
     }

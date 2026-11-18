@@ -158,10 +158,11 @@ impl FnCx<'_> {
                     CompKind::List => Type::list(elem),
                     CompKind::Generator => {
                         // It fails as what it loops over does, and as each `?` inside it does,
-                        // when it's asked for an item.
+                        // when it's asked for an item. Each item may be a generator that can fail,
+                        // or hold one, which it can loop over: it fails as that does too.
                         let mut failures = self.errors.get(failed_before..).unwrap_or_default().to_vec();
                         let looped = self.recorded(iter.span).map(|ty| self.checker.settled(&ty));
-                        failures.extend(looped.as_ref().and_then(Type::generator_failure).cloned());
+                        failures.extend(looped.iter().flat_map(Type::held_generator_failures).cloned());
                         let failure =
                             (!failures.is_empty()).then(|| self.joined(&failures, span, "fails with"));
                         let shown = Type::iterator(elem.clone()).to_string();
@@ -298,14 +299,12 @@ impl FnCx<'_> {
         }
         if !outer && let Some((ty, _)) = self.lookup(name) {
             // A generator that can fail passes its failure up from where it's looped over, so only
-            // the function that made it, and counts its failure, may loop over it.
-            let failing = match &ty {
-                Type::Iterator(_, failure) => failure.is_some(),
-                Type::Var(_) => self.checker.settled(&ty).generator_failure().is_some(),
-                _ => false,
-            };
-            if failing && self.came_from_around(name) {
-                self.error(crate::messages::failing_generator_inside(name, span));
+            // the function that made it, and counts its failure, may loop over it: not one around
+            // it, from a name that is one or that holds one in a list, a tuple or a struct.
+            let settled = self.checker.settled(&ty);
+            if !settled.held_generator_failures().is_empty() && self.came_from_around(name) {
+                let holds = settled.generator_failure().is_none();
+                self.error(crate::messages::failing_generator_inside(name, holds, span));
             }
             return ty;
         }
@@ -1123,6 +1122,10 @@ impl FnCx<'_> {
         let before = self.snapshot();
         // One kept for later runs after this line, so it can't change what's around it.
         self.push(kept);
+        if let Some(items) = self.parallel_over(iter) {
+            self.no_failing_generator_apart(&item, items.span);
+            self.set_apart();
+        }
         self.value_functions += 1;
         self.bind_names(names, &item, false, (iter.span, span));
         if let Some(cond) = cond {
@@ -1170,6 +1173,12 @@ impl FnCx<'_> {
         }
         if except && !matches!(self.checker.settled(&value), Type::Result(..) | Type::Unknown) {
             self.nothing_to_except(&value, written);
+        }
+        if except
+            && let Type::Result(made, _) = self.checker.settled(&value)
+            && made.generator_failure().is_some()
+        {
+            self.error(crate::messages::except_on_a_generator(written));
         }
         let default = match default.else_block() {
             Some((failure, block)) => {

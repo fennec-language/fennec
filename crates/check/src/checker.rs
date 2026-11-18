@@ -737,6 +737,7 @@ impl Checker {
             prelude,
             inherited,
             extension: Vec::new(),
+            nested: true,
         };
         self.program.functions.insert(key.to_owned(), entry);
         self.check_with(key, captured);
@@ -952,11 +953,12 @@ impl Checker {
     }
 
     /// `outermost`, as the part of `key` it is, so nothing is made: the outer function's key is
-    /// always the start of a nested one's.
+    /// always the start of a nested one's. A library module's function, `json.dumps`, is its own
+    /// outermost: `json` is the module's name, not a function around it.
     pub(crate) fn outermost_of<'k>(&self, key: &'k str) -> &'k str {
         let mut key = key;
         while let Some(entry) = self.program.functions.get(key)
-            && entry.owner.is_none()
+            && entry.nested
             && let Some((outer, _)) = key.rsplit_once('.')
         {
             key = outer;
@@ -1386,5 +1388,45 @@ mod tests {
             .map(|problem| problem.message)
             .collect();
         assert_eq!(problems, ["`Duration` doesn't exist"]);
+    }
+
+    /// A library module's function, keyed under the module's name, as `intrinsics.launch` is.
+    fn a_module_function(checker: &super::Checker) -> (String, super::FnEntry) {
+        checker
+            .program
+            .functions
+            .iter()
+            .find(|(key, entry)| entry.owner.is_none() && !entry.nested && key.contains('.'))
+            .map(|(key, entry)| (key.clone(), entry.clone()))
+            .unwrap()
+    }
+
+    /// A library module's function is its own outermost, and a function written inside another
+    /// is that other's.
+    #[test]
+    fn a_module_function_is_its_own_outermost_and_a_nested_one_is_its_outers() {
+        let program = fennec_syntax::parse("def main():\n    pass\n").unwrap();
+        let mut checker = super::Checker::new(&program);
+        let (key, entry) = a_module_function(&checker);
+        assert_eq!(checker.outermost_of(&key), key);
+        let inner = super::FnEntry { nested: true, ..entry };
+        checker.program.functions.insert("main.inner".to_owned(), inner);
+        assert_eq!(checker.outermost_of("main.inner"), "main");
+    }
+
+    /// A library module's function that reads a signature still growing, as one calling itself
+    /// does, is checked again itself, and so is what calls it: before, the module's name was
+    /// marked, which is no function, so the function kept the signature it was first given while
+    /// the callers of every function in its module were checked again against it.
+    #[test]
+    fn a_module_function_reading_a_growing_signature_is_checked_again_with_its_callers() {
+        let program = fennec_syntax::parse("def main():\n    pass\n").unwrap();
+        let mut checker = super::Checker::new(&program);
+        let (key, _) = a_module_function(&checker);
+        checker.checking.push(key.clone());
+        checker.mark_stale();
+        assert_eq!(checker.revisit, std::collections::BTreeSet::from([key.clone()]));
+        super::note_caller(&mut checker.own_callers, &key, "main");
+        assert_eq!(checker.outer_callers(&key), std::collections::BTreeSet::from(["main".to_owned()]));
     }
 }

@@ -346,6 +346,15 @@ struct Leaves {
     every: bool,
 }
 
+/// A fact known across functions, by what it's of: a function's parameter (`PARAM`), what a
+/// function or constant gives back (`RETURN`), what a function leaves in a list it's lent
+/// (`LEAVES`), or what a struct's field holds (`FIELD`), with the parameter's or field's place.
+type Across = (String, usize, u8);
+const PARAM: u8 = 0;
+const RETURN: u8 = 1;
+const LEAVES: u8 = 2;
+const FIELD: u8 = 3;
+
 /// What's known about the values of a program's ints and floats.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Ranges {
@@ -388,32 +397,62 @@ impl Ranges {
     pub fn of(program: &Program) -> Self {
         let whole = Whole::of(program);
         let mut world = whole.world();
-        let mut found = BTreeMap::new();
+        let functions: Vec<&Function> = every(program).collect();
+        // What each function's last walk found, or None when it didn't settle, and what it read
+        // across functions: a round walks again only those that read a fact the round before
+        // changed, since a walk is worked out from its function and those facts alone, and what a
+        // walk gives the next round was taken in already when it was last walked.
+        let mut found: Vec<Option<Option<FunctionRanges>>> = vec![None; functions.len()];
+        let mut readers: BTreeMap<Across, BTreeSet<usize>> = BTreeMap::new();
+        let mut read: Vec<BTreeSet<Across>> = vec![BTreeSet::new(); functions.len()];
+        let mut walking: BTreeSet<usize> = (0..functions.len()).collect();
         for _ in 0..MOST_ROUNDS {
             let mut next = Next::default();
-            found.clear();
-            let mut unsettled = None;
-            for function in every(program) {
-                match world.function(function, &mut next) {
-                    Some(ranges) => {
-                        found.insert(function.name.clone(), ranges);
+            for &at in &walking {
+                let Some(function) = functions.get(at) else { continue };
+                let (ranges, reads) = world.function(function, &mut next);
+                if let Some(slot) = found.get_mut(at) {
+                    *slot = Some(ranges);
+                }
+                if let Some(old) = read.get_mut(at) {
+                    for fact in old.difference(&reads) {
+                        if let Some(set) = readers.get_mut(fact) {
+                            set.remove(&at);
+                        }
                     }
-                    None => {
-                        unsettled = unsettled.or_else(|| Some(Unsettled::Function(function.name.clone())));
+                    for fact in &reads {
+                        readers.entry(fact.clone()).or_default().insert(at);
                     }
+                    *old = reads;
                 }
             }
-            if !world.take(next) {
-                // A function's walk that never settled ended on facts still moving: neither what it
-                // found nor what it handed its callees can be trusted.
-                return match unsettled {
-                    None => Ranges { functions: found, unsettled: None },
-                    Some(unsettled) => Ranges { functions: BTreeMap::new(), unsettled: Some(unsettled) },
-                };
+            let changed = world.take(next);
+            if changed.is_empty() {
+                return Self::found(&functions, found);
             }
+            walking = changed.iter().filter_map(|fact| readers.get(fact)).flatten().copied().collect();
         }
         // Still moving after every round: nothing worked out can be trusted.
         Ranges { functions: BTreeMap::new(), unsettled: Some(Unsettled::Program) }
+    }
+
+    /// What each function's last walk found, once nothing across functions moves.
+    fn found(functions: &[&Function], found: Vec<Option<Option<FunctionRanges>>>) -> Self {
+        let mut ranges = BTreeMap::new();
+        for (function, last) in functions.iter().zip(found) {
+            match last.flatten() {
+                Some(found) => {
+                    ranges.insert(function.name.clone(), found);
+                }
+                // A function's walk that never settled ended on facts still moving: neither what
+                // it found nor what it handed its callees can be trusted.
+                None => {
+                    let unsettled = Some(Unsettled::Function(function.name.clone()));
+                    return Ranges { functions: BTreeMap::new(), unsettled };
+                }
+            }
+        }
+        Ranges { functions: ranges, unsettled: None }
     }
 }
 
@@ -492,19 +531,19 @@ struct Next {
 
 impl World<'_> {
     /// Takes what a round found, joined with what was known, widening each fact once it's grown
-    /// a few times. Says whether anything changed.
-    fn take(&mut self, next: Next) -> bool {
-        let mut changed = false;
+    /// a few times. Gives back each fact that changed.
+    fn take(&mut self, next: Next) -> BTreeSet<Across> {
+        let mut changed = BTreeSet::new();
         let grew = &mut self.grew;
-        let mut merge = |key: (String, usize, u8), old: &mut Fact, new: &Fact| {
+        let mut merge = |key: Across, old: &mut Fact, new: &Fact| {
             let joined = old.join(new);
             if joined == *old {
                 return;
             }
-            let times = grew.entry(key).or_insert(0);
+            let times = grew.entry(key.clone()).or_insert(0);
             *times += 1;
             *old = if *times > GROWTHS_BEFORE_WIDENING { old.widen(&joined) } else { joined };
-            changed = true;
+            changed.insert(key);
         };
         for (name, facts) in next.params {
             let known = self.params.entry(name.clone()).or_default();
@@ -512,16 +551,16 @@ impl World<'_> {
                 known.resize(facts.len(), Fact::Unset);
             }
             for (at, (old, new)) in known.iter_mut().zip(&facts).enumerate() {
-                merge((name.clone(), at, 0), old, new);
+                merge((name.clone(), at, PARAM), old, new);
             }
         }
         for (name, fact) in next.returns {
             let old = self.returns.entry(name.clone()).or_insert(Fact::Unset);
-            merge((name, 0, 1), old, &fact);
+            merge((name, 0, RETURN), old, &fact);
         }
         for ((name, at), fact) in next.fields {
             let old = self.fields.entry((name.clone(), at)).or_insert(Fact::Unset);
-            merge((name, at, 3), old, &fact);
+            merge((name, at, FIELD), old, &fact);
         }
         for (name, puts) in next.puts {
             let every = self.sets_every.get(name.as_str()).cloned().unwrap_or_default();
@@ -534,7 +573,7 @@ impl World<'_> {
                     puts: Fact::Unset,
                     every: every.get(at).copied().unwrap_or(false),
                 });
-                merge((name.clone(), at, 2), &mut leaves.puts, new);
+                merge((name.clone(), at, LEAVES), &mut leaves.puts, new);
             }
         }
         changed
@@ -584,13 +623,13 @@ impl World<'_> {
     /// Works out what's known in one function, given what's known across functions, and puts
     /// what its calls give their callees, what it gives back, and what it puts in the lists it's
     /// lent, in `next`. None when its walk is still moving after every round.
-    fn function(&self, function: &Function, next: &mut Next) -> Option<FunctionRanges> {
+    fn function(&self, function: &Function, next: &mut Next) -> (Option<FunctionRanges>, BTreeSet<Across>) {
         let mut walk = Walk::new(self, function);
         let settled = (0..MOST_ROUNDS).any(|_| !walk.round(false));
         // The last round, with nothing moving, writes what's found.
         walk.round(true);
         walk.hand_over(next);
-        settled.then_some(walk.found)
+        (settled.then_some(walk.found), walk.read.into_inner())
     }
 }
 
@@ -640,15 +679,19 @@ struct Walk<'w, 'p> {
     /// Whether this is the last round, which notes what checks can be left out, what calls
     /// give, and what's given back.
     noting: bool,
+    /// Every fact across functions the walk read, for which rounds walk it again.
+    read: std::cell::RefCell<BTreeSet<Across>>,
 }
 
 impl<'w, 'p> Walk<'w, 'p> {
     fn new(world: &'w World<'p>, function: &'w Function) -> Self {
         let mut found =
             FunctionRanges { locals: vec![Fact::Unset; function.locals.len()], ..FunctionRanges::default() };
+        let mut read = BTreeSet::new();
         for at in 0..function.params {
             if let Some(slot) = found.locals.get_mut(at) {
                 *slot = world.param(function, at);
+                read.insert((function.name.clone(), at, PARAM));
             }
         }
         let mut comes_from = vec![Vec::new(); function.blocks.len()];
@@ -705,7 +748,13 @@ impl<'w, 'p> Walk<'w, 'p> {
             puts: vec![Fact::Unset; function.params],
             fields: BTreeMap::new(),
             noting: false,
+            read: std::cell::RefCell::new(read),
         }
+    }
+
+    /// Notes that the walk read a fact across functions.
+    fn reads(&self, name: &str, at: usize, of: u8) {
+        self.read.borrow_mut().insert((name.to_owned(), at, of));
     }
 
     /// Whether a local is a list, whose items are followed through the function.
@@ -755,6 +804,7 @@ impl<'w, 'p> Walk<'w, 'p> {
             let mut start = State::new();
             for at in 0..self.function.params {
                 if self.is_list(LocalId(at)) {
+                    self.reads(&self.function.name, at, PARAM);
                     start.insert(at, self.world.param(self.function, at).items());
                 }
             }
@@ -1018,6 +1068,7 @@ impl<'w, 'p> Walk<'w, 'p> {
                 moved |= self.call(*dest, function, args, state, block);
             }
             InstKind::Constant { dest, name } => {
+                self.reads(name, 0, RETURN);
                 let fact = self.world.returns.get(name).cloned().unwrap_or(Fact::Any);
                 moved |= self.put(*dest, &fact, state);
             }
@@ -1282,6 +1333,7 @@ impl<'w, 'p> Walk<'w, 'p> {
         };
         match at {
             Some(at) if self.world.followed_field(name, at) => {
+                self.reads(name, at, FIELD);
                 self.world.fields.get(&(name.clone(), at)).cloned().unwrap_or(Fact::Unset)
             }
             _ => fact,
@@ -1325,6 +1377,7 @@ impl<'w, 'p> Walk<'w, 'p> {
                 // a parameter nothing has called with is given nothing yet.
                 let every =
                     self.world.sets_every.get(callee).and_then(|all| all.get(at)).copied().unwrap_or(false);
+                self.reads(callee, at, LEAVES);
                 let leaves = self.world.leaves.get(callee).and_then(|all| all.get(at)).cloned().flatten();
                 let puts = leaves.map_or(Fact::Unset, |leaves| leaves.puts);
                 Self::hold(state, *arg, puts, every);
@@ -1337,6 +1390,7 @@ impl<'w, 'p> Walk<'w, 'p> {
         }
         let Some(dest) = dest else { return moved };
         let fact = if known.is_some() {
+            self.reads(callee, 0, RETURN);
             self.world.returns.get(callee).cloned().unwrap_or(Fact::Unset)
         } else {
             Fact::Any
@@ -2053,5 +2107,60 @@ mod tests {
         assert_eq!(state.get(&list.0), Some(&Fact::Any));
         Walk::hold(&mut state, list, Fact::Int(3, 3), false);
         assert_eq!(state.get(&list.0), Some(&Fact::Any));
+    }
+
+    /// The rounds as they were before only what read a changed fact was walked again: every
+    /// function walked in every round, what each finds as the last round had it.
+    fn walking_every_function(program: &Program) -> Ranges {
+        let whole = Whole::of(program);
+        let mut world = whole.world();
+        let mut found = BTreeMap::new();
+        for _ in 0..MOST_ROUNDS {
+            let mut next = Next::default();
+            found.clear();
+            let mut unsettled = None;
+            for function in every(program) {
+                match world.function(function, &mut next).0 {
+                    Some(ranges) => {
+                        found.insert(function.name.clone(), ranges);
+                    }
+                    None => {
+                        unsettled = unsettled.or_else(|| Some(Unsettled::Function(function.name.clone())));
+                    }
+                }
+            }
+            if world.take(next).is_empty() {
+                return match unsettled {
+                    None => Ranges { functions: found, unsettled: None },
+                    Some(unsettled) => Ranges { functions: BTreeMap::new(), unsettled: Some(unsettled) },
+                };
+            }
+        }
+        Ranges { functions: BTreeMap::new(), unsettled: Some(Unsettled::Program) }
+    }
+
+    /// Walking again only the functions that read a fact the round before changed finds just
+    /// what walking every function every round does, for every kernel, example and real program.
+    #[test]
+    fn walking_again_only_what_changed_finds_what_walking_everything_does() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut programs = 0;
+        for folder in ["bench/kernels", "examples", "bench/realworld"] {
+            let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(root.join(folder))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().is_some_and(|extension| extension == "fen"))
+                .collect();
+            files.sort();
+            for path in files {
+                let source = std::fs::read_to_string(&path).unwrap();
+                let Ok(mut module) = fennec_syntax::parse(&source) else { continue };
+                let Ok(checked) = fennec_check::check_and_resolve(&mut module) else { continue };
+                let program = crate::lower(&module, &checked);
+                assert!(Ranges::of(&program) == walking_every_function(&program), "{}", path.display());
+                programs += 1;
+            }
+        }
+        assert!(programs >= 100, "only {programs} programs");
     }
 }

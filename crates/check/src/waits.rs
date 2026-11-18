@@ -58,8 +58,12 @@ pub(crate) struct Values {
     local_calls: Vec<((u32, u32), String, Span, String)>,
     /// Each function parameter a nested function calls, captured from the function it's in: the
     /// nested function's key, then the parameter's, by its function's key and its name. Calling
-    /// the nested function inside a lock calls the parameter inside it.
+    /// the nested function inside a lock, or one inside the same function that calls it, calls
+    /// the parameter inside it.
     through: Vec<(String, ParamKey)>,
+    /// Each arrow function a nested function reads from around it, by the nested function's key
+    /// and the arrow's span: the nested function does what the arrow's own body does.
+    pub(crate) captured_arrows: Vec<(String, (u32, u32))>,
 }
 
 /// A function's parameter, by the function's key and the parameter's name.
@@ -214,8 +218,9 @@ impl FnCx<'_> {
         }
         let given = match &value.kind {
             ExprKind::Lambda { .. } => Given::Arrow((value.span.start, value.span.end), true),
-            ExprKind::Name(name) if self.origin(name) == Some(Origin::Param) => {
-                Given::Param(self.key.clone(), name.clone())
+            // A parameter of this function, or of one around it that a nested function captured.
+            ExprKind::Name(name) if let Some(owner) = self.param_owner(name) => {
+                Given::Param(owner, name.clone())
             }
             ExprKind::Name(name)
                 if self.origin(name) == Some(Origin::Local)
@@ -312,7 +317,7 @@ impl Checker {
     /// when it waits, locks, or can't be known.
     fn values_under_locks(&mut self, waiting: &BTreeMap<String, String>, locking: &BTreeMap<String, String>) {
         let values = std::mem::take(&mut self.values);
-        let (called, locked) = params_called(&values, &self.lock_calls);
+        let (called, locked) = params_called(&values, &self.lock_calls, &self.own_callers);
         self.handed_on_by_value(&values, &called);
         for passed in &values.passed {
             let target = (passed.callee.clone(), passed.param.clone());
@@ -401,6 +406,30 @@ impl Checker {
         }
     }
 
+    /// Has each nested function that reads an arrow function from around it do what the arrow's
+    /// own body does, as if it called it: wait on what it waits on, take the lock it takes, and
+    /// call what it calls. An arrow that calls what can't be known leaves the nested function
+    /// counting for the whole of the function it's written in, where the arrow's body was checked.
+    fn follow_captured_arrows(&mut self) {
+        for (nested, arrow) in std::mem::take(&mut self.values.captured_arrows) {
+            if let Some(what) = self.values.waits.get(&arrow).cloned() {
+                self.waits.entry(nested.clone()).or_insert(what);
+            }
+            if let Some(what) = self.values.locks.get(&arrow).cloned() {
+                self.takes_locks.entry(nested.clone()).or_insert(what);
+            }
+            for callee in self.values.calls.get(&arrow).cloned().into_iter().flatten() {
+                let caller = match callee {
+                    Some(called) => called,
+                    None => nested
+                        .rsplit_once('.')
+                        .map_or_else(|| nested.clone(), |(around, _)| around.to_owned()),
+                };
+                self.own_callers.entry(caller).or_default().insert(nested.clone());
+            }
+        }
+    }
+
     fn note_waits(&mut self, key: &str, what: &str) {
         self.waits.entry(key.to_owned()).or_insert_with(|| what.to_owned());
     }
@@ -408,6 +437,7 @@ impl Checker {
     /// Reports each call inside a lock to something that waits, following what waits up the
     /// call graph from what waits itself.
     pub(crate) fn waits_under_locks(&mut self) {
+        self.follow_captured_arrows();
         let waiting = self.up_the_calls(&self.waits);
         let locking = self.up_the_calls(&self.takes_locks);
         self.lock_verdicts = lock_verdicts(&waiting, &locking);
@@ -444,10 +474,12 @@ fn lock_verdicts(
 
 /// The function parameters called at all, and those called inside a lock, with the lock: a
 /// parameter handed on to one is called as that one is, and one a nested function calls is called
-/// inside each lock the nested function is called in, of `lock_calls`.
+/// inside each lock of `lock_calls` that calls the nested function, or one inside the same function
+/// that calls it, by `own_callers`.
 fn params_called(
     values: &Values,
     lock_calls: &[LockCall],
+    own_callers: &BTreeMap<String, BTreeSet<String>>,
 ) -> (BTreeSet<ParamKey>, BTreeMap<ParamKey, String>) {
     let mut called: BTreeSet<ParamKey> =
         values.called.iter().map(|(key, param, _)| (key.clone(), param.clone())).collect();
@@ -457,7 +489,8 @@ fn params_called(
         .filter_map(|(key, param, held)| Some(((key.clone(), param.clone()), held.clone()?)))
         .collect();
     for (nested, param) in &values.through {
-        if let Some(call) = lock_calls.iter().find(|call| call.callee == *nested) {
+        let reaching = callers_inside(nested, &format!("{}.", param.0), own_callers);
+        if let Some(call) = lock_calls.iter().find(|call| reaching.contains(&call.callee)) {
             locked.entry(param.clone()).or_insert_with(|| call.held.clone());
         }
     }
@@ -485,4 +518,23 @@ fn params_called(
             return (called, locked);
         }
     }
+}
+
+/// `nested`, and every function that calls it, however many calls up, of those written inside the
+/// function whose keys start with `inside`: the calls that reach it from within that function.
+fn callers_inside(
+    nested: &str,
+    inside: &str,
+    own_callers: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let mut found = BTreeSet::from([nested.to_owned()]);
+    let mut pending = vec![nested.to_owned()];
+    while let Some(key) = pending.pop() {
+        for caller in own_callers.get(&key).into_iter().flatten() {
+            if caller.starts_with(inside) && found.insert(caller.clone()) {
+                pending.push(caller.clone());
+            }
+        }
+    }
+    found
 }

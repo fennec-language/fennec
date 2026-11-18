@@ -597,6 +597,34 @@ impl FnCx<'_> {
         self.note_closure(name, &reads, params);
     }
 
+    /// What a nested function, `key`, does through each function value it reads from around it,
+    /// of the names it `reads` that aren't its `own`. A parameter of a function around it is
+    /// followed as that function's, called or handed on (see `note_value_call`). An arrow function
+    /// a local name holds counts for what its own body does, and a named function as a call of
+    /// it. Anything else, as a value held in a list, an optional or a field, is checked as part of
+    /// the function around it, so the nested function counts for all that function does.
+    fn captured_values(&mut self, reads: &[String], own: &[String], key: &str) {
+        let mut around = false;
+        for name in reads.iter().filter(|name| !own.contains(name)) {
+            let Some((ty, _)) = self.lookup(name) else { continue };
+            if !self.checker.holds_function_value(&ty, &mut Vec::new()) || self.param_owner(name).is_some() {
+                continue;
+            }
+            if self.origin(name) == Some(Origin::Local)
+                && let Some(Some(arrow)) = self.arrow_locals.get(name).copied()
+            {
+                self.checker.values.captured_arrows.push((key.to_owned(), arrow));
+            } else if let Type::Function(called) = &ty {
+                self.checker.own_callers.entry(called.clone()).or_default().insert(key.to_owned());
+            } else {
+                around = true;
+            }
+        }
+        if around {
+            self.checker.own_callers.entry(self.key.clone()).or_default().insert(key.to_owned());
+        }
+    }
+
     fn nested(&mut self, def: &FnDef) {
         let mut reads = Vec::new();
         fennec_syntax::visit::in_function(&mut def.clone(), &mut |seen| names_read(seen, &mut reads));
@@ -612,20 +640,7 @@ impl FnCx<'_> {
             );
             self.error(Diagnostic::new(message, def.span).with_help("call it something else"));
         }
-        // A function value it reads from around it, an arrow function or a parameter, or one held
-        // in a list, an optional or a field, is checked as part of the function around it, which
-        // notes what the value waits on and locks: so the nested function counts for what the
-        // function around it does, as if it called it.
-        let captured_types: Vec<Type> = reads
-            .iter()
-            .filter(|name| !own.contains(name))
-            .filter_map(|name| Some(self.lookup(name)?.0))
-            .collect();
-        let reads_a_value =
-            captured_types.iter().any(|ty| self.checker.holds_function_value(ty, &mut Vec::new()));
-        if reads_a_value {
-            self.checker.own_callers.entry(self.key.clone()).or_default().insert(key.clone());
-        }
+        self.captured_values(&reads, &own, &key);
         let mut captured = self.visible();
         let function = Type::Function(key.clone());
         captured.push(Binding {

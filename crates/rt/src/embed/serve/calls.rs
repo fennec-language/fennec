@@ -47,10 +47,30 @@ thread_local! {
 static SERVED_CONNS: std::sync::LazyLock<Mutex<HashMap<i64, std::sync::Weak<Conn>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// How many connections `SERVED_CONNS` holds, kept beside it, so a call on a connection the program
+/// opened itself, which is in neither table, looks no further while nothing is served, rather than
+/// taking the table's lock to miss (Fable 5.2's review of #2081, finding 4).
+static SERVED_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Puts `handle`'s connection in `SERVED_CONNS`, or takes it out, keeping `SERVED_COUNT` with it.
+fn note_served(handle: i64, conn: Option<&Arc<Conn>>) {
+    let mut served = SERVED_CONNS.lock().unwrap_or_else(PoisonError::into_inner);
+    match conn {
+        Some(conn) => drop(served.insert(handle, Arc::downgrade(conn))),
+        None => drop(served.remove(&handle)),
+    }
+    SERVED_COUNT.store(served.len(), Ordering::Release);
+}
+
 /// The connection served with `handle`, on this worker or another, while its round runs.
 fn conn_of(handle: i64) -> Option<Arc<Conn>> {
     if let Some(here) = CONNS.with_borrow(|conns| conns.get(&handle).cloned()) {
         return Some(here);
+    }
+    // Its number reached this task after its round put it in the table, by a send or a call, so
+    // the count says it's there.
+    if SERVED_COUNT.load(Ordering::Acquire) == 0 {
+        return None;
     }
     SERVED_CONNS
         .lock()
@@ -144,14 +164,14 @@ pub extern "C" fn net_serve(server: i64, body: ConnBody, env: i64) -> i64 {
     let handler: Handler = Arc::new(move |conn: Conn| {
         let handle = next_handle();
         let conn = Arc::new(conn);
-        SERVED_CONNS.lock().unwrap_or_else(PoisonError::into_inner).insert(handle, Arc::downgrade(&conn));
+        note_served(handle, Some(&conn));
         CONNS.with_borrow_mut(|conns| conns.insert(handle, conn));
         let result = body(env, handle, i64::from(threads::index()));
         // The failure it handed over is taken at once: lingering may park this task, and another
         // task on the thread, a task launched in a round say, starts by clearing what's handed over.
         let failure = if result == super::ROUND_FAILED { super::launch::take_failed_with() } else { None };
         // Its task is done with it: it ends gracefully, and dropping it closes it.
-        SERVED_CONNS.lock().unwrap_or_else(PoisonError::into_inner).remove(&handle);
+        note_served(handle, None);
         if let Some(conn) = CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
             conn.linger();
         }
@@ -382,7 +402,7 @@ pub(in crate::embed) fn served_call(
         ("close", []) => {
             // Closed by its own round, it's taken out of its worker's table. Closed by a task on
             // another worker, it ends there too: its round, reading, then finds the end.
-            SERVED_CONNS.lock().unwrap_or_else(PoisonError::into_inner).remove(&handle);
+            note_served(handle, None);
             match CONNS.with_borrow_mut(|conns| conns.remove(&handle)) {
                 Some(here) => here.linger(),
                 None => conn.end(),

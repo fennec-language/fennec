@@ -202,6 +202,9 @@ pub struct Conn {
     token: Token,
     /// Bytes read past the end of the last line.
     ahead: Mutex<Vec<u8>>,
+    /// How many times bytes have been taken off the front of `ahead`: a reader that has looked
+    /// through part of it for a newline looks again from the start once another has taken some.
+    taken: AtomicU64,
     /// The registry of the worker whose poll it's registered with, when it is. Only a task on that
     /// worker parks on it: a wait on another thread blocks it, moving the socket off that poll and
     /// back as a second wait there does.
@@ -253,6 +256,7 @@ impl Conn {
             stream: Mutex::new(stream),
             token,
             ahead: Mutex::new(Vec::new()),
+            taken: AtomicU64::new(0),
             home,
             parked: AtomicBool::new(false),
             blocking: Mutex::new(()),
@@ -380,16 +384,18 @@ impl Conn {
     /// Up to `count` bytes, empty at the end.
     pub fn read(&self, count: usize, timeout: Option<Duration>) -> Result<Vec<u8>, Failure> {
         let until = self.read_until(timeout);
-        {
+        loop {
+            // Held for the whole step, so another reader's bytes come before or after these, whole.
             let mut ahead = locked(&self.ahead);
             if !ahead.is_empty() {
                 let taken = ahead.len().min(count);
+                self.taken.fetch_add(1, Ordering::Relaxed);
                 return Ok(ahead.drain(..taken).collect());
             }
-        }
-        loop {
             let mut bytes = Vec::new();
-            match self.fill(&mut bytes, count) {
+            let filled = self.fill(&mut bytes, count);
+            drop(ahead);
+            match filled {
                 Ok(_) => return Ok(bytes),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
                     if self.wait_to_read(until, "read")? {
@@ -412,25 +418,32 @@ impl Conn {
         let most = crate::stdlib::net::MOST_LINE_BYTES;
         let until = self.read_until(timeout);
         // Where in what's held the newline hasn't been looked for yet, so each byte is looked at
-        // once however slowly the line comes.
-        let mut looked = 0;
+        // once however slowly the line comes: unless another reader has taken some since, when
+        // what's held starts somewhere else.
+        let (mut looked, mut taken_then) = (0, self.taken.load(Ordering::Relaxed));
         loop {
-            let found = {
-                let ahead = locked(&self.ahead);
-                let from = looked.min(ahead.len());
-                looked = ahead.len();
-                ahead
-                    .get(from..)
-                    .unwrap_or_default()
-                    .iter()
-                    .position(|byte| *byte == b'\n')
-                    .map(|at| from + at)
-            };
-            if found.is_none() && locked(&self.ahead).len() > most {
+            // One lock for the whole step: finding the line and taking it, or reading more onto
+            // what's held. Two readers on two workers each get whole lines, each line once.
+            let mut ahead = locked(&self.ahead);
+            let taken_now = self.taken.load(Ordering::Relaxed);
+            if taken_now != taken_then {
+                (looked, taken_then) = (0, taken_now);
+            }
+            let from = looked.min(ahead.len());
+            looked = ahead.len();
+            let found = ahead
+                .get(from..)
+                .unwrap_or_default()
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|at| from + at);
+            if found.is_none() && ahead.len() > most {
                 return Err(Failure::Other(format!("a line was longer than {most} bytes")));
             }
             if let Some(end) = found {
-                let mut line: Vec<u8> = locked(&self.ahead).drain(..=end).collect();
+                let mut line: Vec<u8> = ahead.drain(..=end).collect();
+                self.taken.fetch_add(1, Ordering::Relaxed);
+                drop(ahead);
                 if let Some(why) = crate::stdlib::net::line_refused(&line, crlf) {
                     return Err(Failure::Other(why));
                 }
@@ -440,15 +453,13 @@ impl Conn {
                 }
                 return Ok(Some(line));
             }
-            let mut ahead = std::mem::take(&mut *locked(&self.ahead));
             let filled = self.fill(&mut ahead, READ_BYTES);
-            let ended = ahead.is_empty();
-            *locked(&self.ahead) = ahead;
             match filled {
-                Ok(0) if ended => return Ok(None),
+                Ok(0) if ahead.is_empty() => return Ok(None),
                 Ok(0) => {
                     // A last line with no `\n` loses a `\r` it ends with, as one with a `\n` does.
-                    let mut line = std::mem::take(&mut *locked(&self.ahead));
+                    let mut line = std::mem::take(&mut *ahead);
+                    self.taken.fetch_add(1, Ordering::Relaxed);
                     if line.last() == Some(&b'\r') {
                         line.pop();
                     }
@@ -456,6 +467,7 @@ impl Conn {
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    drop(ahead);
                     if self.wait_to_read(until, "read_line")? {
                         return Ok(None);
                     }

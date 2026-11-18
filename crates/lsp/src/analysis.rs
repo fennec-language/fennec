@@ -208,7 +208,7 @@ impl Analysis {
         }
         self.typed = true;
         if self.diagnostics.is_empty() {
-            self.checked = self.module.as_ref().and_then(|module| fennec_check::check_typed(module).ok());
+            self.checked = self.module.as_ref().and_then(|module| fennec_check::check_typed_reached(module).ok());
         }
     }
 

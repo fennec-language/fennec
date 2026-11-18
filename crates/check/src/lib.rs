@@ -200,6 +200,18 @@ pub fn check_typed(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
     checked_typed_in(module, checker::Scope::Everything)
 }
 
+/// `check_typed`, of the module's own functions and what they reach, and every type's fields,
+/// rather than all of the standard library's functions too. What's written in the module has
+/// the same types either way, so a language server answering about a place in it needs no more,
+/// and checking every standard library function was nine tenths of the cost.
+///
+/// # Errors
+///
+/// What the checker finds wrong with the module, in source order.
+pub fn check_typed_reached(module: &Module) -> Result<Checked, Vec<Diagnostic>> {
+    checked_typed_in(module, checker::Scope::ReachedWithFields)
+}
+
 fn checked_typed_in(module: &Module, scope: checker::Scope) -> Result<Checked, Vec<Diagnostic>> {
     library_parses()?;
     let names = own_type_names(module);

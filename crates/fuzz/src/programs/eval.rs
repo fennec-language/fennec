@@ -20,7 +20,7 @@ use super::ast::{
 };
 use super::ast::{
     Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
-    SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding,
+    SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding, ZipSumming, ZipWay,
 };
 use super::source::LONG_PIECE;
 
@@ -1626,6 +1626,7 @@ impl Machine {
                 let _ = writeln!(self.out, "{n}");
             }
             Stmt::Summed(limit, stop) => self.summed(limit, stop)?,
+            Stmt::ZipSummed(zipped) => self.zip_summed(zipped)?,
             Stmt::Arrowed(how, n, limit) => self.arrowed(how, n, *limit)?,
             Stmt::Guarded { code, refuse, crash, noted } => self.guarded(*code, *refuse, *crash, *noted)?,
             Stmt::GuardAll(items) => self.guard_all(items),
@@ -2528,6 +2529,57 @@ impl Machine {
         }
         let _ = writeln!(self.out, "closing {limit}");
         if floor_rem(limit, 2)? == 0 {
+            self.out.push_str("shut\n");
+        } else {
+            let _ = writeln!(self.out, "{total}");
+        }
+        Ok(())
+    }
+
+    /// What `through_shown` prints for a loop over `enumerate` or `zip` of a generator made right
+    /// there, as the compiled program runs it since #2041. `lent_counts` prints as its source opens,
+    /// when it's first asked for an item, and as it closes, when it finishes or is let go, and its
+    /// cleanup fails for an even limit. `failing_counts` fails as it's asked for item `stop`. Then
+    /// `shut` for a failure, or the total.
+    fn zip_summed(&mut self, zipped: &ZipSumming) -> Ran<()> {
+        let ZipSumming { way, failing, limit, stop, words } = zipped.clone();
+        let words: Vec<i64> = (1..=words.max(0)).collect();
+        let (mut total, mut started, mut failed): (i64, bool, bool) = (0, false, false);
+        for at in 0_i64.. {
+            let place = usize::try_from(at).map_err(|_| Stop::Unsure)?;
+            // `zip`'s list first, when the generator is its second.
+            if way == ZipWay::Second && place >= words.len() {
+                break;
+            }
+            if !failing && !started {
+                let _ = writeln!(self.out, "opening {limit}");
+                started = true;
+            }
+            if at >= limit {
+                break;
+            }
+            if failing && at == stop {
+                failed = true;
+                break;
+            }
+            let value = if failing { at } else { checked(at.checked_add(limit))? };
+            if way == ZipWay::First && place >= words.len() {
+                break;
+            }
+            if !failing && value == stop {
+                break;
+            }
+            let beside = match way {
+                ZipWay::Enumerated => at,
+                ZipWay::First | ZipWay::Second => words.get(place).copied().ok_or(Stop::Unsure)?,
+            };
+            total = checked(total.checked_add(checked(value.checked_add(beside))?))?;
+        }
+        if started {
+            let _ = writeln!(self.out, "closing {limit}");
+            failed |= floor_rem(limit, 2)? == 0;
+        }
+        if failed {
             self.out.push_str("shut\n");
         } else {
             let _ = writeln!(self.out, "{total}");

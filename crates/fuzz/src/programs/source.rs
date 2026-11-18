@@ -126,6 +126,85 @@ def summed_shown(limit: int, stop: int, stdout: Stdout) -> str:
             return \"shut\"
     return str(total)
 
+def failing_counts(limit: int, at: int) -> Iterator[int] fails Shut:
+    for each in range(limit):
+        if each == at:
+            fail Shut(code=each)
+        yield each
+
+def enumerated_until(limit: int, stop: int, stdout: Stdout) -> int fails Shut:
+    mut total = 0
+    for place, value in enumerate(lent_counts(limit, stdout)?):
+        if value == stop:
+            break
+        total += value + place
+    return total
+
+def zipped_until(limit: int, stop: int, words: list[int], stdout: Stdout) -> int fails Shut:
+    mut total = 0
+    for value, word in zip(lent_counts(limit, stdout)?, words):
+        if value == stop:
+            break
+        total += value + word
+    return total
+
+def zipped_after(limit: int, stop: int, words: list[int], stdout: Stdout) -> int fails Shut:
+    mut total = 0
+    for word, value in zip(words, lent_counts(limit, stdout)?):
+        if value == stop:
+            break
+        total += value + word
+    return total
+
+def enumerated_failing(limit: int, at: int) -> int fails Shut:
+    mut total = 0
+    for place, value in enumerate(failing_counts(limit, at)?):
+        total += value + place
+    return total
+
+def zipped_failing(limit: int, at: int, words: list[int]) -> int fails Shut:
+    mut total = 0
+    for value, word in zip(failing_counts(limit, at)?, words):
+        total += value + word
+    return total
+
+def zipped_failing_after(limit: int, at: int, words: list[int]) -> int fails Shut:
+    mut total = 0
+    for word, value in zip(words, failing_counts(limit, at)?):
+        total += value + word
+    return total
+
+def through_shown(way: int, limit: int, stop: int, words: list[int], stdout: Stdout) -> str:
+    if way == 0:
+        got = enumerated_until(limit, stop=stop, stdout=stdout) except why:
+            case Shut():
+                return \"shut\"
+        return str(got)
+    if way == 1:
+        got = zipped_until(limit, stop=stop, words=words, stdout=stdout) except why:
+            case Shut():
+                return \"shut\"
+        return str(got)
+    if way == 2:
+        got = zipped_after(limit, stop=stop, words=words, stdout=stdout) except why:
+            case Shut():
+                return \"shut\"
+        return str(got)
+    if way == 3:
+        got = enumerated_failing(limit, at=stop) except why:
+            case Shut():
+                return \"shut\"
+        return str(got)
+    if way == 4:
+        got = zipped_failing(limit, at=stop, words=words) except why:
+            case Shut():
+                return \"shut\"
+        return str(got)
+    got = zipped_failing_after(limit, at=stop, words=words) except why:
+        case Shut():
+            return \"shut\"
+    return str(got)
+
 struct Holder:
     items: list[int]
     tag: int
@@ -2220,6 +2299,21 @@ impl Writer {
                 self.line(
                     indent,
                     &format!("stdout.print(summed_shown({limit}, stop={stop}, stdout=stdout))"),
+                );
+            }
+            Stmt::ZipSummed(zipped) => {
+                let words: Vec<String> = (1..=zipped.words).map(|word| word.to_string()).collect();
+                let (way, limit, stop) = (zipped.number(), zipped.limit, zipped.stop);
+                let words = if words.is_empty() {
+                    "list[int]()".to_owned()
+                } else {
+                    format!("[{}]", words.join(", "))
+                };
+                self.line(
+                    indent,
+                    &format!(
+                        "stdout.print(through_shown(way={way}, limit={limit}, stop={stop}, words={words}, stdout=stdout))"
+                    ),
                 );
             }
             Stmt::Arrowed(how, n, limit) => {

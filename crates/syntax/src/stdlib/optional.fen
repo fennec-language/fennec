@@ -1,5 +1,16 @@
 ## The methods an optional, `T?`, has, written in Fennec.
 extend Optional[T: Serializable]:
+    ## Writes the value, or `None`, for `json.dumps`, `pack.dumps` and the rest, which call it. JSON
+    ## writes `None` as `null`.
+    ## ```fennec
+    ## from std import json
+    ##
+    ## struct Note:
+    ##     text: str
+    ##     due: int? = None
+    ##
+    ## assert json.dumps(Note(text="hi")) == "{\"text\": \"hi\", \"due\": null}"
+    ## ```
     def serialize(self, ref out: Serializer):
         if self is None:
             out.none()
@@ -7,6 +18,12 @@ extend Optional[T: Serializable]:
             out.some(self)
 
 extend Optional[T: Deserializable]:
+    ## Reads a value or `None` for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.loads[int?]("null")? is None
+    ## assert json.loads[int?]("7")? == 7
+    ## ```
     def deserialize(ref src: Deserializer) -> T? fails ParseError:
         if src.none()?: return None
         return src.value[T]()?

@@ -2,41 +2,84 @@
 ## operations the engines provide. A new set keeps `self`'s items first, in their order.
 extend set[T: Hashable]:
     ## Adds every item of `more`.
+    ##
+    ## ```fennec
+    ## mut tags = {"red"}
+    ## tags.update({"blue", "red"})
+    ## assert tags == {"red", "blue"}
+    ## ```
     def update(ref self, more: set[T]):
         for item in more:
             self.add(item)
 
     ## The items in either set.
+    ##
+    ## ```fennec
+    ## assert {1, 2}.union({2, 3}) == {1, 2, 3}
+    ## ```
     def union(self, other: set[T]) -> set[T]:
         mut found = set(self)
         found.update(other)
         return found
 
     ## The items in both sets.
+    ##
+    ## ```fennec
+    ## assert {1, 2}.intersection({2, 3}) == {2}
+    ## ```
     def intersection(self, other: set[T]) -> set[T]:
         return {item for item in self if item in other}
 
     ## The items of this set that aren't in `other`.
+    ##
+    ## ```fennec
+    ## assert {1, 2}.difference({2, 3}) == {1}
+    ## ```
     def difference(self, other: set[T]) -> set[T]:
         return {item for item in self if item not in other}
 
     ## Whether every item is in `other`.
+    ##
+    ## ```fennec
+    ## assert {1}.is_subset({1, 2})
+    ## assert not {3}.is_subset({1, 2})
+    ## ```
     def is_subset(self, other: set[T]) -> bool:
         return all(item in other for item in self)
 
     ## Whether every item of `other` is in this set.
+    ##
+    ## ```fennec
+    ## assert {1, 2}.is_superset({1})
+    ## ```
     def is_superset(self, other: set[T]) -> bool:
         return other.is_subset(self)
 
     ## Whether the sets have no items in common.
+    ##
+    ## ```fennec
+    ## assert {1, 2}.is_disjoint({3})
+    ## assert not {1, 2}.is_disjoint({2})
+    ## ```
     def is_disjoint(self, other: set[T]) -> bool:
         return not any(item in other for item in self)
 
 extend set[T: Hashable & Serializable]:
+    ## Writes the set for `pack.dumps` and the rest, which call it. JSON has no sets, so
+    ## `json.dumps` refuses one, as Python's does.
+    ## ```fennec
+    ## from std import pack
+    ## assert len(pack.dumps({3, 1})) > 0
+    ## ```
     def serialize(self, ref out: Serializer):
         out.sequence([item for item in self])
 
 extend set[T: Hashable & Deserializable]:
+    ## Reads a set for `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import pack
+    ## assert pack.loads[set[int]](pack.dumps({3, 1}))? == {3, 1}
+    ## ```
     def deserialize(ref src: Deserializer) -> set[T] fails ParseError:
         mut found = set[T]()
         for item in src.sequence[T]()?:

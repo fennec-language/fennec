@@ -4,10 +4,16 @@
 ## written for one works on all of them:
 ##
 ## ```fennec
+## from std.io import MemoryStream, Writer
+##
 ## def report[W: Writer](ref out: W, lines: list[str]) fails IoError:
 ##     for line in lines:
 ##         out.write_line(line)?
 ##     out.flush()?
+##
+## mut memory = MemoryStream()
+## report(ref memory, ["one", "two"])?
+## assert memory.text()? == "one\ntwo\n"
 ## ```
 ##
 ## Every failure is an `IoError`, whatever the stream: a connection's `NetError` comes through

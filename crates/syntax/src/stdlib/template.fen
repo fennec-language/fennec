@@ -6,6 +6,13 @@
 ## There's always one more string than values: the text before each value, then the text after
 ## the last. The text is `LiteralStr`s, which only text written in the source is, so a
 ## `Template` can't be built from text made while the program runs.
+##
+## ```fennec
+## name = "ann"
+## query = t"select * from users where name = {name}"
+## assert query.strings == ["select * from users where name = ", ""]
+## assert query.values == ["ann"]
+## ```
 export struct Template[T]:
     strings: list[LiteralStr]
     values: list[T]
@@ -15,6 +22,12 @@ export struct Template[T]:
     format_specs: list[str]
 
     ## Each value with how it was written.
+    ##
+    ## ```fennec
+    ## price = 1.5
+    ## parts = t"{price:.2f} each".interpolations()
+    ## assert parts[0].expression == "price" and parts[0].format_spec == ".2f"
+    ## ```
     def interpolations(self) -> list[Interpolation[T]]:
         mut made = []
         for at, value in enumerate(self.values):
@@ -29,6 +42,12 @@ export struct Template[T]:
         return made
 
 ## One `{}` of a template string: its value, its expression as written, and its format spec.
+##
+## ```fennec
+## count = 3
+## first = t"{count} left".interpolations()[0]
+## assert first.value == 3 and first.expression == "count" and first.format_spec == ""
+## ```
 export struct Interpolation[T]:
     value: T
     expression: str

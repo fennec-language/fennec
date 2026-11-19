@@ -455,8 +455,33 @@ impl FnCx<'_> {
         signature.returns
     }
 
-    /// Matches arguments to parameters, positionally and by name.
+    /// Whether calling `method` on a value of type `ty` changes it: a built-in method that does, or
+    /// one that takes `ref self`, its type's own or one the standard library adds to a built-in
+    /// type, as `list.extend`.
+    fn changes_receiver(&self, ty: &Type, method: &str) -> bool {
+        self.changes_value(ty, method)
+            || self
+                .checker
+                .settled(ty)
+                .method_owner()
+                .and_then(|owner| self.checker.program.method(owner, method))
+                .is_some_and(|(_, entry)| entry.def.params.first().is_some_and(|param| param.is_mut))
+    }
+
+    /// Matches arguments to parameters, positionally and by name. A place given with `ref` can be
+    /// given what the other arguments are, so what a `with` lent among them is held to its block.
     fn bind_args(&mut self, function: &str, params: &[ParamType], args: &[Arg], span: Span) {
+        self.bind_args_to(function, params, args, span);
+        if self.any_lent() {
+            let values: Vec<&Expr> = args.iter().filter(|arg| !arg.is_mut).map(|arg| &arg.value).collect();
+            for arg in args.iter().filter(|arg| arg.is_mut) {
+                self.lent_put(&arg.value, &values);
+            }
+        }
+    }
+
+    /// `bind_args`, all but what's lent.
+    fn bind_args_to(&mut self, function: &str, params: &[ParamType], args: &[Arg], span: Span) {
         let mut given = vec![false; params.len()];
         let mut unmatched_args = false;
         let mut next = 0;
@@ -745,7 +770,20 @@ impl FnCx<'_> {
         }
         let ty = if method == "expect" { ty } else { self.failing_step(ty, object.span, step) };
         let optional = optional || self.chained_step(&ty, step);
-        self.method_on(&MethodCall { object, method, types, args, span }, &ty, optional)
+        self.method_putting(&MethodCall { object, method, types, args, span }, &ty, optional)
+    }
+
+    /// `method_on`, and what a method that changes its value, or a channel's `send`, is given goes
+    /// into it, which what a `with` lent can't do from inside its block (see `lent.rs`).
+    fn method_putting(&mut self, call: &MethodCall<'_>, ty: &Type, optional: bool) -> Type {
+        let gives = self.method_on(call, ty, optional);
+        if self.any_lent()
+            && (self.changes_receiver(ty, call.method) || sends(&self.checker.settled(ty), call.method))
+        {
+            let values: Vec<&Expr> = call.args.iter().map(|arg| &arg.value).collect();
+            self.lent_put(call.object, &values);
+        }
+        gives
     }
 
     fn method_on(&mut self, call: &MethodCall<'_>, ty: &Type, optional: bool) -> Type {
@@ -1772,4 +1810,10 @@ enum UnionSource {
     Dispatched(crate::union_sources::Dispatch),
     /// One that can't be, which is said.
     Refused,
+}
+
+/// Whether `method` is a channel's `send`, which puts what it's given where another task takes it.
+fn sends(ty: &Type, method: &str) -> bool {
+    method == "send"
+        && ty.type_name().is_some_and(|name| matches!(name.rsplit('.').next(), Some("Channel" | "Sender")))
 }

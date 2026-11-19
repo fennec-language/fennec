@@ -369,21 +369,37 @@ impl State {
                 || self.actors.get(other).is_some_and(|found| matches!(found.state, Doing::Waiting(_, true)))
                 || self.behind_a_racing_send(other)
         };
+        // Nothing going is the common case, and settles it without working out who knows what.
+        if !others.iter().any(|&other| could_go(other)) {
+            return false;
+        }
         let Some(made) = of.and_then(|number| self.channels.get(&number)).map(|chan| &chan.made) else {
-            return others.iter().any(|&other| could_go(other));
+            return true;
         };
-        let holds = others.iter().any(|&other| {
+        // What each channel's waiting messages tell, together, worked out once for every task.
+        let told: Vec<(&Clock, Clock)> = self
+            .channels
+            .values()
+            .map(|chan| {
+                let every = chan.sent.get(chan.first..).unwrap_or_default();
+                let mut told = Clock::new();
+                for sent in chan.queue.iter().chain(&chan.waiting_sends).chain(every) {
+                    merge(&mut told, &sent.clock);
+                }
+                (&chan.made, told)
+            })
+            .collect();
+        others.iter().any(|&other| {
             self.actors.get(other).is_some_and(|found| !matches!(found.state, Doing::Ended))
-                && happened_before(made, &self.could_come_to_know(other))
-        });
-        holds && others.iter().any(|&other| could_go(other))
+                && happened_before(made, &self.could_come_to_know(other, &told))
+        })
     }
 
     /// What the thread numbered `actor` could come to know: what it knows, what the `parallel`
     /// rounds it runs know, and those of each thread its rounds were handed on to, which it takes
     /// in at their call's end; and then what each message waiting on a channel it knows of tells,
     /// until that gives nothing more, as an end handed on through one channel can reach another.
-    fn could_come_to_know(&self, actor: usize) -> Clock {
+    fn could_come_to_know(&self, actor: usize, told: &[(&Clock, Clock)]) -> Clock {
         let mut threads = vec![actor];
         let mut more = true;
         while more {
@@ -409,17 +425,16 @@ impl State {
             }
         }
         loop {
-            let mut told = known.clone();
-            for chan in self.channels.values().filter(|chan| happened_before(&chan.made, &known)) {
-                let every = chan.sent.get(chan.first..).unwrap_or_default();
-                for sent in chan.queue.iter().chain(&chan.waiting_sends).chain(every) {
-                    merge(&mut told, &sent.clock);
+            let mut grew = known.clone();
+            for (made, by_messages) in told {
+                if happened_before(made, &known) {
+                    merge(&mut grew, by_messages);
                 }
             }
-            if happened_before(&told, &known) {
+            if happened_before(&grew, &known) {
                 return known;
             }
-            known = told;
+            known = grew;
         }
     }
 

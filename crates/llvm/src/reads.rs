@@ -258,6 +258,7 @@ impl Reads<'_, '_> {
                 Some(key_of("native", &names))
             }
             What::WaitingClosures => Some(key_of("waiting closures", &self.waiting_closures)),
+            What::Abandons => Some(key_of("abandons", &whole.abandons)),
         }
     }
 }

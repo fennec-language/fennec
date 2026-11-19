@@ -1130,11 +1130,11 @@ mod declared {
     /// What's wrong with one declaration against the checker's table, if anything.
     fn mismatch(declared: &EngineDeclaration, found: &Method, ty: &Type) -> Option<String> {
         let def = &declared.def;
-        let (receiver, params) = def.params.split_first()?;
-        if !receiver.is_self {
+        let (taken_self, params) = def.params.split_first()?;
+        if !taken_self.is_self {
             return Some("a method's declaration takes `self` first".to_owned());
         }
-        if receiver.is_mut != found.changes {
+        if taken_self.is_mut != found.changes {
             let wanted = if found.changes {
                 "`ref self`, since it changes it"
             } else {
@@ -1142,9 +1142,9 @@ mod declared {
             };
             return Some(format!("it should take {wanted}"));
         }
-        let receives: Vec<String> = found.receives.iter().map(ToString::to_string).collect();
-        if received(def) != receives {
-            return Some(format!("its arrow should receive ({})", receives.join(", ")));
+        let arrow_takes: Vec<String> = found.receives.iter().map(ToString::to_string).collect();
+        if received(def) != arrow_takes {
+            return Some(format!("its arrow should receive ({})", arrow_takes.join(", ")));
         }
         let returns = match &found.returns {
             Type::Result(value, error) => (value.as_ref(), Some(error.to_string())),
@@ -1177,11 +1177,11 @@ mod declared {
         if required != found.arity.0 {
             return Some(format!("{} of its arguments can be left out", plain - found.arity.0));
         }
-        let mut names: Vec<&str> = named.iter().map(|param| param.name.as_str()).collect();
+        let mut declared_names: Vec<&str> = named.iter().map(|param| param.name.as_str()).collect();
         let mut wanted: Vec<&str> = named_arguments(ty, &def.name).to_vec();
-        names.sort_unstable();
+        declared_names.sort_unstable();
         wanted.sort_unstable();
-        if names != wanted || named.iter().any(|param| param.default.is_none()) {
+        if declared_names != wanted || named.iter().any(|param| param.default.is_none()) {
             return Some(format!("its named arguments should be {wanted:?}, each with a default"));
         }
         None

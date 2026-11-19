@@ -16,6 +16,16 @@ into="${1:-${FENNEC_HOME:-$HOME/.fennec}/bin}"
 # Its user's alone, as fennec makes Fennec's folder: what's kept there is run.
 (umask 077 && mkdir -p "$into")
 
+# What the build needs, said before it starts rather than as an error deep inside it.
+if ! command -v cargo > /dev/null 2>&1; then
+  echo "install.sh needs Rust: install rustup from https://rustup.rs, open a new terminal, and run this again" >&2
+  exit 1
+fi
+if ! command -v cc > /dev/null 2>&1; then
+  echo "install.sh needs a C compiler for the runtime's C parts: \`sudo apt install build-essential\` on Debian or Ubuntu, \`sudo dnf install gcc\` on Fedora, or \`xcode-select --install\` on macOS; then run this again" >&2
+  exit 1
+fi
+
 echo "building fennec and its runtime libraries for release; this takes a few minutes the first time" >&2
 cargo build --release --locked -p fennec -p fennec-runtime
 from="target/release"

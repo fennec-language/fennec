@@ -3,6 +3,11 @@ from std.intrinsics import stop, text_part, text_size
 
 extend str:
     ## `"ab" * 3` is `"ababab"`: the text repeated. Repeating it fewer than once gives "".
+    ##
+    ## ```fennec
+    ## assert "ab" * 3 == "ababab"
+    ## assert "ab" * 0 == ""
+    ## ```
     def *(self, times: int) -> str:
         size = text_size(self)
         if times <= 0 or size == 0: return ""
@@ -26,20 +31,37 @@ extend str:
         return out
 
     ## Whether the text starts with `prefix`.
+    ##
+    ## ```fennec
+    ## assert "fennec".startswith("fen")
+    ## ```
     def startswith(self, prefix: str) -> bool:
         return len(prefix) <= len(self) and self[:len(prefix)] == prefix
 
     ## Whether the text ends with `suffix`.
+    ##
+    ## ```fennec
+    ## assert "main.fen".endswith(".fen")
+    ## ```
     def endswith(self, suffix: str) -> bool:
         size = len(self)
         return len(suffix) <= size and self[size - len(suffix):] == suffix
 
     ## Whether the text is one or more of the digits 0 to 9.
+    ##
+    ## ```fennec
+    ## assert "2026".isdigit()
+    ## assert not "-1".isdigit() and not "".isdigit()
+    ## ```
     def isdigit(self) -> bool:
         return len(self) > 0 and all(c >= "0" and c <= "9" for c in self)
 
     ## The text's lines, without their endings, `\n` or `\r\n`. A last line ending adds no
     ## empty line after it.
+    ##
+    ## ```fennec
+    ## assert "a\nb\r\nc\n".lines() == ["a", "b", "c"]
+    ## ```
     def lines(self) -> list[str]:
         parts = self.split("\n")
         last = len(parts) - 1
@@ -56,15 +78,27 @@ extend str:
 
     ## The text with `fill` after it to make it `width` characters, as it is if it's that long
     ## already: `"ab".ljust(4, fill=".")` is `"ab.."`.
+    ##
+    ## ```fennec
+    ## assert "ab".ljust(4, fill=".") == "ab.."
+    ## ```
     def ljust(self, width: int, fill = " ") -> str:
         return self + padding(fill, count=width - len(self))
 
     ## The text with `fill` before it to make it `width` characters: `"7".rjust(3)` is `"  7"`.
+    ##
+    ## ```fennec
+    ## assert "7".rjust(3) == "  7"
+    ## ```
     def rjust(self, width: int, fill = " ") -> str:
         return padding(fill, count=width - len(self)) + self
 
     ## The text in the middle of `width` characters, with `fill` either side, one more on the
     ## left when they can't be even and `width` is odd, as Python puts it.
+    ##
+    ## ```fennec
+    ## assert "ab".center(5, fill="*") == "**ab*"
+    ## ```
     def center(self, width: int, fill = " ") -> str:
         pad = width - len(self)
         if pad <= 0: return self
@@ -73,12 +107,21 @@ extend str:
 
     ## The text with zeros before it to make it `width` characters, after a sign if it starts
     ## with one: `"-7".zfill(3)` is `"-07"`.
+    ##
+    ## ```fennec
+    ## assert "-7".zfill(3) == "-07"
+    ## ```
     def zfill(self, width: int) -> str:
         if self.startswith("-") or self.startswith("+"):
             return self[:1] + "0" * (width - len(self)) + self[1:]
         return "0" * (width - len(self)) + self
 
     ## The text without `prefix` at its start, or as it is if it doesn't start with it.
+    ##
+    ## ```fennec
+    ## assert "v1.2".removeprefix("v") == "1.2"
+    ## assert "1.2".removeprefix("v") == "1.2"
+    ## ```
     def removeprefix(self, prefix: str) -> str:
         if not self.startswith(prefix): return self
         # The prefix's bytes end where one of the text's characters does, as a string's bytes start
@@ -86,6 +129,10 @@ extend str:
         return text_part(self, text_size(prefix), text_size(self))
 
     ## The text without `suffix` at its end, or as it is if it doesn't end with it.
+    ##
+    ## ```fennec
+    ## assert "main.fen".removesuffix(".fen") == "main"
+    ## ```
     def removesuffix(self, suffix: str) -> str:
         if suffix == "" or not self.endswith(suffix): return self
         # The suffix's bytes start where one of the text's characters does, as a string's bytes
@@ -94,6 +141,11 @@ extend str:
 
     ## How many times `part` is in the text, not counting ones that overlap. "" is counted
     ## between every two characters and at each end.
+    ##
+    ## ```fennec
+    ## assert "banana".count("an") == 2
+    ## assert "aaa".count("aa") == 1
+    ## ```
     def count(self, part: str) -> int:
         if part == "": return len(self) + 1
         mut found = 0
@@ -105,6 +157,11 @@ extend str:
             rest = rest[at + len(part):]
 
     ## Where the last `part` in the text starts, or `None` if it isn't there.
+    ##
+    ## ```fennec
+    ## assert "a/b/c".rfind("/") == 3
+    ## assert "abc".rfind("/") is None
+    ## ```
     def rfind(self, part: str) -> int?:
         mut found: int? = None
         mut start = 0
@@ -117,12 +174,20 @@ extend str:
 
     ## The text with its first character in title case and the rest lower: `"fOX"` is `"Fox"`,
     ## and `"ßa"` is `"Ssa"`, as Python writes them.
+    ##
+    ## ```fennec
+    ## assert "fOX".capitalize() == "Fox"
+    ## ```
     def capitalize(self) -> str:
         if self == "": return ""
         return title_case(self[:1]) + self[1:].lower()
 
     ## Each word upper case first and lower after, a word being letters after anything else:
     ## `"red fox's den"` is `"Red Fox'S Den"`, as Python writes it.
+    ##
+    ## ```fennec
+    ## assert "red fox's den".title() == "Red Fox'S Den"
+    ## ```
     def title(self) -> str:
         mut out = list[str]()
         mut after_letter = False
@@ -134,18 +199,69 @@ extend str:
 
 ## Where a type's `def str(self, ref out: StrWriter)` writes how it prints. `print`, `str(x)`
 ## and f-strings call it, and so does printing a collection that holds the type.
+##
+## ```fennec
+## struct Point:
+##     x: int
+##     y: int
+##
+##     def str(self, ref out: StrWriter):
+##         out.write("(")
+##         out.value(self.x)
+##         out.write(", ")
+##         out.value(self.y)
+##         out.write(")")
+##
+## assert str(Point(x=1, y=2)) == "(1, 2)"
+## assert f"at {Point(x=3, y=4)}" == "at (3, 4)"
+## ```
 export struct StrWriter:
     _parts = list[str]()
 
     ## Adds `text` as it is.
+    ##
+    ## ```fennec
+    ## struct Tag:
+    ##     name: str
+    ##
+    ##     def str(self, ref out: StrWriter):
+    ##         out.write("#")
+    ##         out.write(self.name)
+    ##
+    ## assert str(Tag(name="new")) == "#new"
+    ## ```
     def write(ref self, text: str):
         self._parts.append(text)
 
     ## Adds `x` as printing it would show it.
+    ##
+    ## ```fennec
+    ## struct Basket:
+    ##     items: list[str]
+    ##
+    ##     def str(self, ref out: StrWriter):
+    ##         out.write("basket ")
+    ##         out.value(self.items)
+    ##
+    ## assert str(Basket(items=["fig"])) == "basket [\"fig\"]"
+    ## ```
     def value[T](ref self, x: T):
         self._parts.append(str(x))
 
     ## Everything written so far.
+    ##
+    ## ```fennec
+    ## struct Row:
+    ##     cells: list[str]
+    ##
+    ##     def str(self, ref out: StrWriter):
+    ##         for cell in self.cells:
+    ##             if out.text() != "":
+    ##                 out.write(",")
+    ##             out.write(cell)
+    ##
+    ## assert str(Row(cells=["a", "b", "c"])) == "a,b,c"
+    ## ```
     def text(self) -> str:
         return "".join(self._parts)
 
@@ -170,8 +286,18 @@ def title_case(c: str) -> str:
     return upper
 
 extend str:
+    ## Writes the text for `json.dumps`, `pack.dumps` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.dumps("say \"hi\"") == "\"say \\\"hi\\\"\""
+    ## ```
     def serialize(self, ref out: Serializer):
         out.text(self)
 
+    ## Reads text for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.loads[str]("\"caf\\u00e9\"")? == "café"
+    ## ```
     def deserialize(ref src: Deserializer) -> str fails ParseError:
         return src.text()?

@@ -758,8 +758,14 @@ pub fn check_to_build_keeping(
         Some(kept) => checker::Checker::carrying(module, kept.first, dirty),
         None => checker::Checker::keeping(module),
     };
-    let carriable = first_check.carriable();
-    let found = first_check.run(checker::Scope::Building);
+    let mut carriable = first_check.carriable();
+    let (mut found, moved) = first_check.run_saying(checker::Scope::Building);
+    // A constant's or a field's type worked out differently: what read it was carried over with
+    // the type it had, so it's all checked again.
+    if moved {
+        carriable = 0;
+        found = checker::Checker::keeping(module).run(checker::Scope::Building);
+    }
     if compare
         && carriable > 0
         && let Some(part) = differs_from_checked_again(module, checker::Scope::Building, &found)
@@ -1160,6 +1166,8 @@ fn differs_from_checked_again_given(
         checked.graph_of.clear();
         checked.defs.clear();
         checked.tests.clear();
+        checked.const_types.clear();
+        checked.field_types.clear();
         checked
     };
     let (whole, carried) = (comparable(whole), comparable(carried));
@@ -1665,6 +1673,10 @@ pub struct Checked {
     /// Every test the check knew, by its key, as it was, for the same: those whose name another
     /// shares aren't here, since their key is both's.
     tests: BTreeMap<String, fennec_syntax::TestDef>,
+    /// Each constant's type, and each field's, as the check worked them out, for a later check to
+    /// tell whether it worked any out differently (`Checker::types_moved`). Empty unless kept.
+    const_types: BTreeMap<String, Option<Type>>,
+    field_types: BTreeMap<String, Option<Type>>,
     /// The enum the expected type chose for each leading-dot case more than one enum has.
     cases: BTreeMap<(u32, u32), String>,
     /// The calls to `sum` of floats with no start, which start at `0.0`.

@@ -3,11 +3,26 @@ extend int:
     ## The int `text` writes in decimal, with an optional sign and space around it, as `"-42"`.
     ## Anything else fails, saying what it was given: digit separators, hex, a fraction, an
     ## exponent, digits that aren't ASCII, and an int too big to hold.
+    ##
+    ## ```fennec
+    ## assert int.parse(" -42 ")? == -42
+    ## assert int.parse("4.5") fails InvalidValue()
+    ## ```
     def parse(text: str) -> int fails InvalidValue:
         return int(text)?
 
+    ## Writes the int for `json.dumps`, `pack.dumps` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.dumps(42) == "42"
+    ## ```
     def serialize(self, ref out: Serializer):
         out.int(self)
 
+    ## Reads an int for `json.loads`, `pack.loads` and the rest, which call it.
+    ## ```fennec
+    ## from std import json
+    ## assert json.loads[int]("42")? == 42
+    ## ```
     def deserialize(ref src: Deserializer) -> int fails ParseError:
         return src.int()?

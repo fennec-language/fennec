@@ -5,11 +5,18 @@
 ## matched to the columns by name, as `json.loads[T]` matches keys:
 ##
 ## ```fennec
+## from std import sqlite
+##
 ## struct Entry:
 ##     path: str
 ##     size: int
 ##
-## rows = db.query[Entry](t"select path, size from entries where size > {least}")?
+## with sqlite.open(fs, "index.db")? as db:
+##     _ = db.execute(t"create table entries (path text, size integer)")?
+##     _ = db.execute(t"insert into entries values ('a.txt', 10), ('b.txt', 200)")?
+##     least = 100
+##     rows = db.query[Entry](t"select path, size from entries where size > {least}")?
+##     assert rows == [Entry(path="b.txt", size=200)]
 ## ```
 ##
 ## `std.sqlite` is the first database under it. A driver turns what its database sends back into

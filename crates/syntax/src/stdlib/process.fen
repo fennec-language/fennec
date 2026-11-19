@@ -2,16 +2,38 @@ from std.time import Duration
 
 ## What a program that ran gave back: the status it exited with, and what it wrote. A status
 ## other than 0 usually means it failed, but it's the program's to say, so it isn't an error.
+##
+## ```fennec check
+## from std.process import ProcessError
+##
+## def main(process: Process, stdout: Stdout) fails ProcessError:
+##     done = process.run(t"git branch --show-current")?
+##     stdout.print(done.status, done.stdout)
+## ```
 export struct Output:
     status = 0
     stdout = ""
     stderr = ""
 
     ## Whether the program says it succeeded.
+    ##
+    ## ```fennec check
+    ## from std.process import ProcessError
+    ##
+    ## def main(process: Process, stdout: Stdout) fails ProcessError:
+    ##     if not process.run(t"git diff --quiet")?.ok():
+    ##         stdout.print("there are changes")
+    ## ```
     def ok(self) -> bool:
         return self.status == 0
 
 ## Why a program couldn't be run.
+##
+## ```fennec
+## from std.process import ProcessError
+## flag = "--upload-pack=evil"
+## assert process.run(t"git fetch {flag}") fails ProcessError.LooksLikeAnOption()
+## ```
 export error ProcessError:
     ## It couldn't be run at all, like one that isn't installed, or one given a NUL byte or a
     ## variable whose name is empty or holds `=`, which the system would read as another's.
@@ -30,6 +52,12 @@ export error ProcessError:
     TooMuchOutput(program: str, most: int)
 
     ## The program it was asked to run.
+    ##
+    ## ```fennec
+    ## flag = "-rf"
+    ## why = failure_of(() => process.run(t"rm {flag}")?) else return
+    ## assert why.program() == "rm"
+    ## ```
     def program(self) -> str:
         match self:
             case .NotRun(program, _):
@@ -41,6 +69,19 @@ export error ProcessError:
             case .TooMuchOutput(program, _):
                 return program
 
+    ## What went wrong, in words.
+    ## ```fennec
+    ## from std.process import Output
+    ##
+    ## flag = "-rf"
+    ## done = process.run(t"rm {flag}") except why:
+    ##     stdout.print(why.message())
+    ##     Output(status=-1)
+    ## assert done.status == -1
+    ## ```
+    ## ```output
+    ## `{flag}` starts an argument with `-`, so `rm` would read it as an option: put `--` before it, if `rm` takes that, to mean it isn't one
+    ## ```
     def message(self) -> str:
         match self:
             case .NotRun(_, reason):

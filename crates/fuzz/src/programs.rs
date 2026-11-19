@@ -581,7 +581,10 @@ mod tests {
                     let Some(gives) = trimmed.strip_prefix("def ").and_then(def_gives) else {
                         continue;
                     };
-                    if gives.starts_with("with ") || gives.starts_with("Iterator") {
+                    // A source and a generator give with `lend` and `yield`, and an interface's
+                    // method has no body to end.
+                    if gives.starts_with("with ") || gives.starts_with("Iterator") || !trimmed.ends_with(':')
+                    {
                         continue;
                     }
                     let indent = line.len() - trimmed.len();
@@ -1029,6 +1032,84 @@ mod tests {
         let Some((printed, true, _)) = eval::run_saying(&program) else {
             unreachable!("the evaluator isn't sure, or it failed:\n{source}")
         };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+    }
+
+    /// Every way of a `Stuck` statement checks, and the evaluator prints what the oracle prints:
+    /// a wait with a time limit times out and the program goes on, and each deadlock stops it with
+    /// exit code 1 after what it printed, saying so.
+    #[test]
+    fn the_deadlock_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, STUCK_WAYS, Sticking, Stmt, StuckWay};
+        let run = |body: Vec<Stmt>| {
+            let program = Program { body, threadless: false };
+            let source = source::source(&program);
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
+            let Some((printed, succeeded, said)) = eval::run_saying(&program) else {
+                unreachable!("the evaluator isn't sure:\n{source}")
+            };
+            let oracle = fennec_oracle::run_source(&source, "programs.fen");
+            assert_eq!(oracle.exit_code(), Some(u8::from(!succeeded)), "{source}\n{:?}", oracle.ended);
+            assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+            (printed, said)
+        };
+        let timed = [StuckWay::TimedReceive, StuckWay::TimedSend, StuckWay::TimedReceive]
+            .iter()
+            .enumerate()
+            .map(|(at, way)| Stmt::Stuck(Sticking { id: at + 1, way: *way, n: 3 }))
+            .collect();
+        let (printed, said) = run(timed);
+        assert!(
+            printed.ends_with("send timed out\nstuck3 3\nreceived -1\ndone\n") && said.is_none(),
+            "{printed}"
+        );
+        for way in STUCK_WAYS.iter().skip(2) {
+            let n = if *way == StuckWay::Rounds { 4 } else { 5 };
+            let (_, said) = run(vec![Stmt::Stuck(Sticking { id: 1, way: *way, n })]);
+            assert_eq!(
+                said.as_deref(),
+                Some("a deadlock: every task is waiting for another, and nothing can wake them")
+            );
+        }
+    }
+
+    /// Every step of an `Interfaced` statement, on each type, checks, and the evaluator prints
+    /// what the oracle prints: each generic call runs the method of the type it's given, changes
+    /// the place a `ref` names and leaves a copy apart, and a failing method passed up stops
+    /// where it fails.
+    #[test]
+    fn the_interface_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{IFACE_STEPS, Interfacing, Program, Stmt};
+        let body = (0..3_i64)
+            .map(|round| {
+                let steps = IFACE_STEPS
+                    .iter()
+                    .chain(IFACE_STEPS.iter())
+                    .enumerate()
+                    .map(|(at, step)| {
+                        let at = i64::try_from(at).unwrap_or(0);
+                        (*step, (at + round) % 2 == 0, (at * 3 + round) % 10)
+                    })
+                    .collect();
+                Stmt::Interfaced(Interfacing { id: usize::try_from(round).unwrap_or(0) + 1, steps })
+            })
+            .collect();
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        assert!(printed.contains("failed Nope"), "{printed}");
         let oracle = fennec_oracle::run_source(&source, "programs.fen");
         assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");

@@ -31,7 +31,11 @@ impl Checker {
             None => {}
         }
         self.const_types.insert(name.to_owned(), None);
+        // Its value is worked out once, when the program starts, apart from the function that reads
+        // it first: what it calls is called by the constant, not by that function.
+        self.checking.push(format!("const {name}"));
         let ty = FnCx::check_constant(self, name, written.as_ref(), &value, !prelude);
+        self.checking.pop();
         if !prelude && let Some(inner) = self.shared_inside(&ty, &mut Vec::new()) {
             let message = format!("`{name}` holds `{inner}`, which is `shared`, so it can't be a constant");
             self.diagnostics.push(Diagnostic::new(message, span).with_help(

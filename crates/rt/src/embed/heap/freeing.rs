@@ -408,7 +408,7 @@ fn release_children(state: &mut State, block: &[u64], pending: &mut Vec<u64>, ta
     for child in found.drain(..) {
         release_child(state, child, direct, pending, taken);
     }
-    state.heap.found = found;
+    state.heap.found = super::emptied_if_small(found);
 }
 
 /// Gives up the owner a freed block held of `child`, queueing it to be freed once that was its

@@ -3,34 +3,83 @@ from std.random import random_choice, random_float, random_int
 ## A seeded random number generator. The same seed gives the same numbers in the same order
 ## on every machine, so games replay and tests repeat exactly. It's SplitMix64: fast, and
 ## good enough for games, but not for secrets.
+##
+## ```fennec
+## from std.random import Random
+##
+## mut dice = Random(seed=7)
+## mut again = Random(seed=7)
+## assert dice.randint(1, high=6) == again.randint(1, high=6)
+## assert dice.drawn == 1
+## ```
 export struct Random:
     seed: int
     ## How many numbers it has drawn so far.
     drawn = 0
 
     ## A whole number from `low` to `high`, both included.
+    ##
+    ## ```fennec
+    ## from std.random import Random
+    ##
+    ## mut dice = Random(seed=7)
+    ## roll = dice.randint(1, high=6)
+    ## assert roll >= 1 and roll <= 6
+    ## ```
     def randint(ref self, low: int, high: int) -> int:
         value, drawn = random_int(self.seed, self.drawn, low, high)
         self.drawn = drawn
         return value
 
     ## A float from 0.0 up to, but not including, 1.0.
+    ##
+    ## ```fennec
+    ## from std.random import Random
+    ##
+    ## mut rng = Random(seed=7)
+    ## x = rng.random()
+    ## assert x >= 0.0 and x < 1.0
+    ## ```
     def random(ref self) -> float:
         value, drawn = random_float(self.seed, self.drawn)
         self.drawn = drawn
         return value
 
     ## A float from `low` up to, but not including, `high`.
+    ##
+    ## ```fennec
+    ## from std.random import Random
+    ##
+    ## mut rng = Random(seed=7)
+    ## x = rng.uniform(-1.0, high=1.0)
+    ## assert x >= -1.0 and x < 1.0
+    ## ```
     def uniform(ref self, low: float, high: float) -> float:
         return low + (high - low) * self.random()
 
     ## One of `items`, picked at random.
+    ##
+    ## ```fennec
+    ## from std.random import Random
+    ##
+    ## mut rng = Random(seed=7)
+    ## assert rng.choice(["rock", "paper", "scissors"]) in ["rock", "paper", "scissors"]
+    ## ```
     def choice[T](ref self, items: list[T]) -> T:
         item, drawn = random_choice(self.seed, self.drawn, items)
         self.drawn = drawn
         return item
 
     ## Puts `items` in a random order.
+    ##
+    ## ```fennec
+    ## from std.random import Random
+    ##
+    ## mut rng = Random(seed=7)
+    ## mut cards = [1, 2, 3, 4, 5]
+    ## rng.shuffle(ref cards)
+    ## assert sorted(cards) == [1, 2, 3, 4, 5]
+    ## ```
     def shuffle[T](ref self, ref items: list[T]):
         for at in range(len(items) - 1, 0, -1):
             other = self.randint(0, at)

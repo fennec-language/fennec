@@ -315,7 +315,12 @@ fn a_dict_of_numbers_to_numbers_in_place_holds_no_blocks_to_free() {
     let before = live();
     let visits = dict_of((0..100).map(|at| (Value::Int(at), a_visit(at * 3, at - 1))).collect());
     let dict = made(Word::Int, 4, &visits);
-    let children = with(|state| Some(super::children(state, state.heap.block(dict)?))).unwrap();
+    let children = with(|state| {
+        let mut found = Vec::new();
+        super::children(state, state.heap.block(dict)?, &mut found);
+        Some(found)
+    })
+    .unwrap();
     assert_eq!(children, Vec::<u64>::new());
     assert_eq!(read(dict), visits);
     audited(&[dict]);
@@ -341,7 +346,9 @@ fn the_places_a_dict_holds_blocks_at_are_the_blocks_it_frees() {
         let mut places = Vec::new();
         super::child_places(state, block, &mut places);
         let at_places: Vec<u64> = places.iter().filter_map(|place| block.get(*place).copied()).collect();
-        Some((at_places, super::children(state, block)))
+        let mut freed = Vec::new();
+        super::children(state, block, &mut freed);
+        Some((at_places, freed))
     })
     .unwrap();
     at_places.sort_unstable();
@@ -912,3 +919,71 @@ fn a_dict_of_values_in_place_is_copied_for_a_task_with_all_it_holds() {
 }
 
 mod under_a_lock;
+
+/// The value a found key's value word holds, from the address `find_slice` or `find_header` gives,
+/// or `None` for 0, not found.
+fn found_value(dict: i64, found: i64) -> Option<u64> {
+    (found != 0).then(|| {
+        with(|state| {
+            let block = state.heap.block(u64::try_from(dict).ok()?)?;
+            let at = (usize::try_from(found).ok()? - block.as_ptr().addr()) / 8;
+            block.get(at).copied()
+        })
+        .unwrap()
+    })
+}
+
+/// Every slice of a text in ASCII, of one with characters of two to four bytes, and of one too
+/// long for a key packed on the stack, is found by `find_slice`, and by `find_header` given the
+/// slice's own text, at the key with that text and no other: with positions past either end, below
+/// zero, or left out.
+#[test]
+fn every_slice_and_header_finds_the_key_with_its_text() {
+    started();
+    let shape = shape(0, Word::Str, Word::Int).unwrap();
+    let mut dict = super::new(i64::try_from(shape).unwrap(), 4);
+    let string = |text: &str| with(|state| Some(heap::text_address(state, text))).unwrap();
+    let long = "a text too long for the stack, ".repeat(6);
+    let texts = ["ggtacgtacgt", "aé€😀bé€😀c", long.as_str()];
+    let slice =
+        |text: &str, from: usize, to: usize| -> String { text.chars().skip(from).take(to - from).collect() };
+    // The keys: each text's slices of a few sizes, each numbered.
+    let mut keys: Vec<String> = Vec::new();
+    for text in texts {
+        let count = text.chars().count();
+        for from in 0..=count {
+            for size in [0, 1, 2, 3, 7, 20, count] {
+                let key = slice(text, from, (from + size).min(count));
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+    }
+    for (number, key) in keys.iter().enumerate() {
+        dict = super::set(dict, string(key), i64::try_from(number).unwrap());
+    }
+    let wanted = |key: &str| keys.iter().position(|other| other == key).and_then(|at| u64::try_from(at).ok());
+    for text in texts {
+        let address = string(text);
+        let count = i64::try_from(text.chars().count()).unwrap();
+        // Positions as slicing takes them: below zero from the end, clamped, `i64::MIN` left out.
+        let bound = |at: i64, missing: i64| {
+            let at = if at == i64::MIN { missing } else { at };
+            let at = if at < 0 { at + count } else { at };
+            usize::try_from(at.clamp(0, count)).unwrap()
+        };
+        let places: Vec<i64> = (-count - 2..=count + 2).chain([i64::MIN]).collect();
+        for &from in &places {
+            for &to in places.iter().step_by(3) {
+                let (start, end) = (bound(from, 0), bound(to, count));
+                let key = slice(text, start, end.max(start));
+                let found = found_value(dict, super::find_slice(dict, address, from, to));
+                assert_eq!(found, wanted(&key), "{text:?}[{from}:{to}] is {key:?}");
+                let [a, b, c] = with(|state| Some(super::super::text::header(state, &key))).unwrap();
+                assert_eq!(found_value(dict, super::find_header(dict, a, b, c)), wanted(&key), "{key:?}");
+            }
+        }
+    }
+    finish();
+}

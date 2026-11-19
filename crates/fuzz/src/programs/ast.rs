@@ -1339,6 +1339,92 @@ pub(crate) const GENERIC_STEPS: [GenericStep; 11] = [
     GenericStep::DictPut,
 ];
 
+/// A `Stuck` statement: `stuck{id}(stdout)`, a channel of room for one, then a wait on it that
+/// nothing will end. A wait given a time limit fails with `Timeout` once it's up, and the program
+/// goes on. One without, `main` receiving or sending, at a `with launch` block's end for a task
+/// receiving, or in a `parallel` call's rounds each receiving, is a deadlock: the program stops,
+/// with exit code 1, after what it printed, as `docs/language.md` says. One that hung instead
+/// would be stopped by the fuzzer as stuck.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Sticking {
+    pub(crate) id: usize,
+    pub(crate) way: StuckWay,
+    /// The time limit in milliseconds, from 1 to 20, or how many rounds, from 1 to 4.
+    pub(crate) n: i64,
+}
+
+/// How a `Stuck` statement waits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StuckWay {
+    /// `jobs.receive_within(...)` on the empty channel, which times out.
+    TimedReceive,
+    /// `jobs.send_within(...)` on the full channel, which times out.
+    TimedSend,
+    /// `jobs.receive()` on the empty channel: a deadlock.
+    Received,
+    /// A second `jobs.send(...)` on the full channel: a deadlock.
+    SentFull,
+    /// The end of a `with launch` block whose task receives from the channel: a deadlock. In
+    /// programs with threads.
+    BlockEnd,
+    /// A `parallel` call whose rounds each receive from the channel: a deadlock. In programs with
+    /// threads.
+    Rounds,
+}
+
+/// Every `StuckWay`, for the generator to pick from.
+pub(crate) const STUCK_WAYS: [StuckWay; 6] = [
+    StuckWay::TimedReceive,
+    StuckWay::TimedSend,
+    StuckWay::Received,
+    StuckWay::SentFull,
+    StuckWay::BlockEnd,
+    StuckWay::Rounds,
+];
+
+/// An `Interfaced` statement: `interfaced{id}(stdout)`, an interface `Grower{id}` with a `ref
+/// self` method, a plain one, one that fails partway and a generator, which `Crate{id}`, holding
+/// a list, and `Heap{id}`, holding an int, both have, and generic functions bounded by it, then a
+/// step at a time on a list of each, and one of each. Each generic call must run the method of
+/// the type it's given, change the place a `ref` names, and leave a copy apart.
+#[derive(Clone, Debug)]
+pub(crate) struct Interfacing {
+    pub(crate) id: usize,
+    /// Each step, on the crates rather than the heaps when `crate_first` says, with what it adds,
+    /// from 0 to 9.
+    pub(crate) steps: Vec<(IfaceStep, bool, i64)>,
+}
+
+/// A step of an `Interfaced` statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IfaceStep {
+    /// `grown_all(ref items, by=n)`, printed: `for ref` over a list of `G`, growing each.
+    GrownAll,
+    /// `bumped(ref item, by=n)`: two grows through a `ref G`.
+    Bumped,
+    /// `copied(item, by=n)`, printed: a copy grown inside generic code, the item left as it was.
+    Copied,
+    /// `summed(item)`, printed: the sum of an interface method that's a generator.
+    Summed,
+    /// `tried_twice(ref item, by=n)`, printed or its failure: a failing method twice, through `?`.
+    Tried,
+    /// `for ref each in items: bumped(ref each, by=n)`: a `for ref` item given on by `ref`.
+    EachBumped,
+    /// `sized(items)`, printed: each one's size, summed.
+    Sized,
+}
+
+/// Every `IfaceStep`, for the generator to pick from.
+pub(crate) const IFACE_STEPS: [IfaceStep; 7] = [
+    IfaceStep::GrownAll,
+    IfaceStep::Bumped,
+    IfaceStep::Copied,
+    IfaceStep::Summed,
+    IfaceStep::Tried,
+    IfaceStep::EachBumped,
+    IfaceStep::Sized,
+];
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -1609,8 +1695,12 @@ pub(crate) enum Stmt {
     Turned(Turning),
     /// `ordered{id}(stdout)`: lines whose parts change what's read before them, read left to right.
     Ordered(InOrder),
+    /// `interfaced{id}(stdout)`: two types with one interface, through generic functions bounded by it.
+    Interfaced(Interfacing),
     /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.
     Generic(Genericking),
+    /// `stuck{id}(stdout)`: a wait nothing ends, timing out or stopping the program as a deadlock.
+    Stuck(Sticking),
     /// `filed{id}(fs, stdout)`: files written whole or left as they were, a step at a time.
     Filed(Filing),
     /// `owned{id}(stdout)`: values of types with their own `def []`, changed through it.

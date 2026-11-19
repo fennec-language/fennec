@@ -108,27 +108,58 @@ def sha256_digest_of_bytes_list(chunks: list[bytes]) -> bytes:
 ## `==` on two compares what they hold in constant time.
 ##
 ## ```fennec
-## token = env.secret("API_TOKEN")?
+## from std.crypto import Secret
+##
+## token = Secret.of("s3cret")
 ## headers = {"authorization": f"Bearer {token.expose_secret()}"}
+## assert headers["authorization"] == "Bearer s3cret"
 ## ```
+##
+## `env.secret("API_TOKEN")?` reads one from the environment.
 export struct Secret[T]:
     _value: T
 
     ## A secret holding `value`.
+    ##
+    ## ```fennec
+    ## from std.crypto import Secret
+    ## token = Secret.of("s3cret")
+    ## assert token.expose_secret() == "s3cret"
+    ## ```
     def of(value: T) -> Secret[T]:
         return Secret(_value=value)
 
     ## What it holds, to use where it's needed, like a request's header. The name says a secret
     ## is being read, here and nowhere else.
+    ##
+    ## ```fennec
+    ## from std.crypto import Secret
+    ## key = Secret.of("s3cret")
+    ## assert f"Bearer {key.expose_secret()}" == "Bearer s3cret"
+    ## ```
     def expose_secret(self) -> T:
         return self._value
 
     ## Two secrets are equal when what they hold is, compared in time that depends only on
     ## their lengths, as `equal` compares, so how long it takes never says where they differ.
+    ##
+    ## ```fennec
+    ## from std.crypto import Secret
+    ## assert Secret.of("a") == Secret.of("a") and not Secret.of("a") == Secret.of("b")
+    ## ```
     def ==(self, other: Secret[T]) -> bool:
         return crypto.equal(self._value, other._value)
 
     ## However it's printed, as through a generic function's `T`, it shows only that it's there.
+    ##
+    ## ```fennec
+    ## from std.crypto import Secret
+    ##
+    ## def shown[T](value: T) -> str:
+    ##     return str(value)
+    ##
+    ## assert shown(Secret.of("s3cret")) == "Secret(hidden)"
+    ## ```
     def str(self, ref out: StrWriter):
         out.write("Secret(hidden)")
 
@@ -136,14 +167,39 @@ export struct Secret[T]:
 ## never sits in a plain `str` first. Loading brings a secret in; saving one is refused where it's
 ## written, since that would let it out.
 extend Secret[T: Deserializable]:
+    ## ```fennec
+    ## from std import json
+    ## from std.crypto import Secret
+    ##
+    ## struct SignIn:
+    ##     name: str
+    ##     password: Secret[str]
+    ##
+    ## form = json.loads[SignIn]("{\"name\": \"ana\", \"password\": \"pw\"}")?
+    ## assert form.password.expose_secret() == "pw"
+    ## ```
     def deserialize(ref src: Deserializer) -> Secret[T] fails ParseError:
         return Secret.of(src.value[T]()?)
 
 ## Why a stored password can't be checked: it isn't an Argon2id hash as `hash_password` writes
 ## one, or its settings are below the least that's checked or past the most worth the memory.
+##
+## ```fennec
+## from std import crypto
+## from std.crypto import PasswordError, Secret
+## assert crypto.check_password(Secret.of("pw"), "not a hash") fails PasswordError()
+## ```
 export error PasswordError:
     reason: str
 
+    ## What's wrong with the stored hash, in words.
+    ## ```fennec
+    ## from std import crypto
+    ## from std.crypto import Secret
+    ## said = crypto.check_password(Secret.of("pw"), "not a hash") except why:
+    ##     why.message() != ""
+    ## assert said
+    ## ```
     def message(self) -> str:
         return self.reason
 
@@ -153,6 +209,13 @@ export error PasswordError:
 ## out on a thread of its own while the task waits parked, a thread to a core and at most 8 at
 ## once, so a burst of sign-ups neither stalls a server nor takes all the memory. Inside a `lock`
 ## it's worked out where it is.
+##
+## ```fennec
+## from std import crypto
+## from std.crypto import Secret
+## stored = crypto.hash_password(Secret.of("correct horse"), entropy)
+## assert stored.startswith("$argon2id$v=19$m=19456,t=2,p=1$")
+## ```
 export def hash_password(password: Secret[str], entropy: Entropy) -> str:
     return crypto._hash_password(password.expose_secret(), entropy.bytes(16))
 
@@ -164,6 +227,14 @@ export def hash_password(password: Secret[str], entropy: Entropy) -> str:
 ## all the memory or time there is. For a name nobody has, check against a hash made up for it,
 ## so a missing name takes as long to refuse as a wrong password. In a task it's worked out as
 ## `hash_password` is.
+##
+## ```fennec
+## from std import crypto
+## from std.crypto import Secret
+## stored = crypto.hash_password(Secret.of("correct horse"), entropy)
+## assert crypto.check_password(Secret.of("correct horse"), stored)?
+## assert not crypto.check_password(Secret.of("wrong"), stored)?
+## ```
 export def check_password(password: Secret[str], stored: str) -> bool fails PasswordError:
     problem = crypto._password_problem(stored)
     if problem != "": fail PasswordError(reason=problem)

@@ -469,7 +469,7 @@ pub(crate) struct Checker {
     /// Each constant's type, once worked out. `None` while its value is being checked.
     pub(crate) const_types: BTreeMap<String, Option<Type>>,
     /// The functions being checked, innermost last.
-    checking: Vec<String>,
+    pub(crate) checking: Vec<String>,
     /// Functions that used a signature that may still grow: one being checked, so its
     /// errors aren't all known yet, or one waiting here itself. They're checked again.
     revisit: BTreeSet<String>,
@@ -520,6 +520,13 @@ pub(crate) struct Checker {
     test_reaching: Option<BTreeSet<String>>,
     /// Each function's signature as the check before had it, but those carried over.
     before: BTreeMap<String, Signature>,
+    /// Each function's type parameters as the check before had them, with their bounds, which a
+    /// call reads beside the signature: its own, those around it and its extension's.
+    before_bounds: BTreeMap<String, Bounds>,
+    /// The types of the constants and the fields the check before worked out, which whichever
+    /// function reads one first works out: a check that carries over and finds any of them
+    /// different is done again whole (`types_moved`).
+    before_types: Option<(WorkedOut, WorkedOut)>,
     /// Whether what each function's check finds is kept apart, by its key, for a later check to
     /// carry over (`carrying`). A build that won't check again keeps nothing, and checks as it
     /// would with none of this.
@@ -664,6 +671,8 @@ impl Checker {
             inner_graph: Graph::default(),
             test_reaching: None,
             before: BTreeMap::new(),
+            before_bounds: BTreeMap::new(),
+            before_types: None,
             keeping: false,
             values: crate::waits::Values::default(),
             handovers: crate::holds::Handovers::default(),
@@ -694,6 +703,10 @@ impl Checker {
     pub(crate) fn carrying(module: &Module, mut previous: Checked, dirty: &[Span]) -> Checker {
         let mut next = Checker::with_imports_unchecked(module);
         next.keeping = true;
+        next.before_bounds =
+            previous.defs.iter().map(|(key, entry)| (key.clone(), bounds_of(entry))).collect();
+        next.before_types =
+            Some((std::mem::take(&mut previous.const_types), std::mem::take(&mut previous.field_types)));
         // An edit that adds, takes away or renames a function, but one written inside another,
         // can change what a name means in one left as it was: everything's checked again.
         let outer = |functions: &BTreeMap<String, FnEntry>| -> Vec<String> {
@@ -821,7 +834,14 @@ impl Checker {
     /// Checks everything, or for `Scope::Reached`, the program's own code and just the
     /// standard library functions it reaches: the library's other code can't affect a run.
     /// `Scope::ReachedWithFields` also types every library type's fields, which lowering needs.
-    pub(crate) fn run(mut self, scope: Scope) -> Result<Checked, Vec<Diagnostic>> {
+    pub(crate) fn run(self, scope: Scope) -> Result<Checked, Vec<Diagnostic>> {
+        self.run_saying(scope).0
+    }
+
+    /// `run`, saying too whether a check that carried over what the one before found worked out a
+    /// constant's or a field's type differently (`types_moved`): then what was carried over can't
+    /// be trusted, and it's checked again whole.
+    pub(crate) fn run_saying(mut self, scope: Scope) -> (Result<Checked, Vec<Diagnostic>>, bool) {
         self.check_declarations();
         let keys: Vec<String> = self
             .program
@@ -894,23 +914,38 @@ impl Checker {
             if crate::crossing::wanted() {
                 self.crossing = crate::crossing::crossing(&mut self);
             }
-            return Ok(self.checked(structs, errors));
+            let moved = self.types_moved();
+            return (Ok(self.checked(structs, errors)), moved);
         }
+        let moved = self.types_moved();
         let mut diagnostics = self.diagnostics;
         diagnostics.sort_by(|a, b| (a.span.start, &a.message).cmp(&(b.span.start, &b.message)));
         diagnostics.dedup();
-        Err(diagnostics)
+        (Err(diagnostics), moved)
     }
 
     /// Checks every test. When keeping, each test's check writes its own, kept by its key, as a
     /// function's does (`check_with`), and one the check before found as it is now is carried over.
     fn check_tests(&mut self) {
+        // A test notes no callers, so one that calls a function that changed is found here.
+        let changed = if self.carried.is_empty() { BTreeSet::new() } else { self.changed_functions() };
         for test in self.program.tests.clone() {
             if !self.keeping {
                 FnCx::check_test(self, &test);
                 continue;
             }
             let key = crate::program::test_key(&test.name);
+            let calls_changed =
+                self.carriable.get(&key).and_then(|found| found.graph.as_ref()).is_some_and(|graph| {
+                    graph
+                        .reached
+                        .iter()
+                        .chain(graph.own_callers.keys())
+                        .any(|callee| changed.contains(callee))
+                });
+            if calls_changed {
+                self.carriable.remove(&key);
+            }
             if self.carry(&key) {
                 continue;
             }
@@ -967,16 +1002,7 @@ impl Checker {
         if self.carried.is_empty() {
             return;
         }
-        let changed: Vec<String> = self
-            .states
-            .iter()
-            .filter_map(|(key, state)| match state {
-                State::Done(signature) if !self.carried.contains(key) => {
-                    self.before.get(key).is_none_or(|was| was != signature).then(|| key.clone())
-                }
-                _ => None,
-            })
-            .collect();
+        let changed = self.changed_functions();
         // Only what calls the changed function itself: one written inside a function this edit
         // changed is new with it, and what calls that outer function calls its signature, which is
         // looked at on its own.
@@ -991,6 +1017,43 @@ impl Checker {
                 .collect();
             self.revisit.extend(callers);
         }
+    }
+
+    /// The functions checked again whose callers, carried over, read something of theirs that isn't
+    /// what it was: what they give back and fail with, what they take (`Signature`), their type
+    /// parameters' bounds, or for a `with` source, which its callers keep whole to write in where
+    /// they use it, anything at all.
+    fn changed_functions(&self) -> BTreeSet<String> {
+        self.states
+            .iter()
+            .filter_map(|(key, state)| match state {
+                State::Done(signature) if !self.carried.contains(key) => {
+                    let entry = self.program.functions.get(key);
+                    let signature_changed = self.before.get(key).is_none_or(|was| was != signature);
+                    let bounds_changed =
+                        entry.is_some_and(|entry| self.before_bounds.get(key) != Some(&bounds_of(entry)));
+                    let source = entry.is_some_and(|entry| {
+                        entry.def.ret.as_ref().is_some_and(|ret| ret.name == crate::lend::WITH)
+                    });
+                    (signature_changed || bounds_changed || source).then(|| key.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether a check that carried over what the one before found worked out a constant's or a
+    /// field's type differently: each is worked out by whichever function reads it first, and
+    /// every other that reads it was carried over with what it found then.
+    /// Only those both worked out are compared: every constant and every field of the program's
+    /// own types is worked out each check, and the library's can't change.
+    fn types_moved(&self) -> bool {
+        let differs = |before: &WorkedOut, now: &WorkedOut| {
+            before.iter().any(|(key, was)| now.get(key).is_some_and(|is| is != was))
+        };
+        self.before_types.as_ref().is_some_and(|(constants, fields)| {
+            differs(constants, &self.const_types) || differs(fields, &self.fields)
+        })
     }
 
     /// A function's tables with every type in them settled, so a later check, which has
@@ -1022,6 +1085,24 @@ impl Checker {
         tables
     }
 
+    /// What each source lends, each task launched and each generic call, now that what each is given
+    /// is known, for lowering to write in.
+    fn settled_writes(&mut self) -> SettledWrites {
+        let mut sources = std::mem::take(&mut self.sources);
+        for source in sources.values_mut() {
+            source.gives = self.settled(&source.gives);
+        }
+        let launches = std::mem::take(&mut self.launches)
+            .into_iter()
+            .map(|(at, launch)| (at, launch.settled(&|ty| self.settled(ty))))
+            .collect();
+        let mut generic_calls = std::mem::take(&mut self.generic_calls);
+        for call in generic_calls.values_mut() {
+            call.types = call.types.iter().map(|ty| self.settled(ty)).collect();
+        }
+        (sources, launches, generic_calls)
+    }
+
     /// What each function's check wrote in the tables and added to what's followed, settled, for a
     /// later check to carry over.
     fn settled_by_function(&mut self) -> (BTreeMap<String, Tables>, BTreeMap<String, Graph>) {
@@ -1046,19 +1127,7 @@ impl Checker {
         errors: BTreeMap<String, crate::Struct>,
     ) -> Checked {
         let (tables_of, graph_of) = self.settled_by_function();
-        // What each source lends, now that what it's given is known, for lowering to write in.
-        let mut sources = std::mem::take(&mut self.sources);
-        for source in sources.values_mut() {
-            source.gives = self.settled(&source.gives);
-        }
-        let launches = std::mem::take(&mut self.launches)
-            .into_iter()
-            .map(|(at, launch)| (at, launch.settled(&|ty| self.settled(ty))))
-            .collect();
-        let mut generic_calls = std::mem::take(&mut self.generic_calls);
-        for call in generic_calls.values_mut() {
-            call.types = call.types.iter().map(|ty| self.settled(ty)).collect();
-        }
+        let (sources, launches, generic_calls) = self.settled_writes();
         let enums = self.enums();
         let locals = std::mem::take(&mut self.locals);
         // A type asked about before what it holds was known, like the list in `pack.dumps(pairs)`
@@ -1127,6 +1196,8 @@ impl Checker {
                 BTreeMap::new()
             },
             defs: if self.keeping { std::mem::take(&mut self.program.functions) } else { BTreeMap::new() },
+            const_types: if self.keeping { std::mem::take(&mut self.const_types) } else { BTreeMap::new() },
+            field_types: if self.keeping { std::mem::take(&mut self.fields) } else { BTreeMap::new() },
         }
     }
 
@@ -1285,11 +1356,14 @@ impl Checker {
         let mut live = Vec::new();
         for (key, entry) in self.program.functions.iter().filter(|(_, entry)| !entry.prelude) {
             live.extend(crate::ref_lowering::live_loops(self, key, &entry.def));
-            // One carried over from the check before held to these then, as it is now.
+            // What a call changes under a `ref` comes from the callee's body, however many calls
+            // down, so a function carried over is held to these again.
+            problems.extend(crate::loops::check_function(self, &mut settled, key, &entry.def));
+            // One carried over from the check before held to the rest then, as it is now: they
+            // read only its own typed body.
             if self.carried.contains(key) {
                 continue;
             }
-            problems.extend(crate::loops::check_function(self, &mut settled, key, &entry.def));
             problems.extend(crate::loops::check_arguments(&entry.def.body));
             problems.extend(crate::once::check_function(self, key, &entry.def));
             // What lowering writes reads a failure its own way; the program as written is held
@@ -1635,7 +1709,11 @@ impl Checker {
                 break;
             }
             if self.outermost_of(callee) == outer {
-                found.extend(callers.iter().map(|caller| self.outermost_of(caller).to_owned()));
+                // A constant's value or a field's default is a caller too, but one worked out
+                // once and kept, never checked again: only functions are.
+                let functions =
+                    callers.iter().filter(|caller| self.program.functions.contains_key(caller.as_str()));
+                found.extend(functions.map(|caller| self.outermost_of(caller).to_owned()));
             }
         }
         found
@@ -1731,7 +1809,11 @@ impl Checker {
                 }
             },
             (None, Some(default)) => {
+                // Worked out once, apart from the function that reads it first, which isn't
+                // what calls what the default calls.
+                self.checking.push(format!("default {key}"));
                 let ty = FnCx::type_of_default(self, default, owner);
+                self.checking.pop();
                 if ((!ty.is_known() && ty != Type::Unknown) || ty == Type::None) && report {
                     self.diagnostics.push(field_needs_type(&found.name, &ty, default.span));
                 }
@@ -2032,6 +2114,24 @@ fn lowering_calls(key: &str, entry: &FnEntry) -> bool {
     let method = key.rsplit_once('.').map_or(key, |(_, method)| method);
     PROTOCOLS.contains(&method)
         || method.chars().next().is_some_and(|first| !first.is_alphanumeric() && first != '_')
+}
+
+/// The types of constants or fields, by name, as a check worked them out: `None` while one is.
+pub(crate) type WorkedOut = BTreeMap<String, Option<Type>>;
+
+/// What `Checker::settled_writes` gives: the sources, launches and generic calls, by span.
+type SettledWrites = (
+    BTreeMap<(u32, u32), crate::lend_lowering::Source>,
+    BTreeMap<(u32, u32), crate::launch::Launch>,
+    BTreeMap<(u32, u32), crate::generic_copies::Call>,
+);
+
+/// A function's type parameters, with their bounds, as a call reads them: its own, those of the
+/// functions around it and its extension's.
+type Bounds = (Vec<Generic>, Vec<Generic>, Vec<Generic>);
+
+fn bounds_of(entry: &FnEntry) -> Bounds {
+    (entry.def.generics.clone(), entry.inherited.clone(), entry.extension.clone())
 }
 
 /// Whether `functions` holds `entry` under `key`, as it was.

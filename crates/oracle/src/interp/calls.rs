@@ -225,7 +225,7 @@ impl Interp {
         // So does a built-in method that only reads what it's called on.
         if let Target::Method { receiver, name, buffer: false } = &mut target
             && let Receiver::Place(place) = receiver
-            && self.peek_place(place, callee.span, |held| method_only_reads(held, name))?
+            && self.peek_place(place, callee.span, |held| super::methods::only_reads(held, name))?
         {
             let read = self.read_place(place, callee.span)?;
             *receiver = Receiver::Value(read);
@@ -1017,17 +1017,6 @@ fn type_names(ty: &Type, names: &mut Vec<String>) {
 /// A type as a generator prints it, with the program's own type names as they're written.
 pub(crate) fn shown_type(ty: &Type) -> String {
     ty.to_string().replace(fennec_syntax::rename::RENAMED, "")
-}
-
-/// Whether calling `name` on what's held only reads it: any method of a string, and a dict's or a
-/// list's that look things up. Others, `sort` and `remove_where` among them, change it where it is.
-fn method_only_reads(held: &Value, name: &str) -> bool {
-    match held {
-        Value::Str(_) => true,
-        Value::Dict(_) => matches!(name, "get" | "items" | "keys" | "values"),
-        Value::List(_) => matches!(name, "count" | "get" | "index"),
-        _ => false,
-    }
 }
 
 /// Whether a call can change what it reaches through places: a method that takes `self` as a

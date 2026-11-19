@@ -1034,6 +1034,48 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
     }
 
+    /// Every way of a `Stuck` statement checks, and the evaluator prints what the oracle prints:
+    /// a wait with a time limit times out and the program goes on, and each deadlock stops it with
+    /// exit code 1 after what it printed, saying so.
+    #[test]
+    fn the_deadlock_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{Program, STUCK_WAYS, Sticking, Stmt, StuckWay};
+        let run = |body: Vec<Stmt>| {
+            let program = Program { body, threadless: false };
+            let source = source::source(&program);
+            let module =
+                fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+            if let Err(err) = fennec_check::check(&module) {
+                unreachable!("{source}\n{err:?}");
+            }
+            let Some((printed, succeeded, said)) = eval::run_saying(&program) else {
+                unreachable!("the evaluator isn't sure:\n{source}")
+            };
+            let oracle = fennec_oracle::run_source(&source, "programs.fen");
+            assert_eq!(oracle.exit_code(), Some(u8::from(!succeeded)), "{source}\n{:?}", oracle.ended);
+            assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed, "{source}");
+            (printed, said)
+        };
+        let timed = [StuckWay::TimedReceive, StuckWay::TimedSend, StuckWay::TimedReceive]
+            .iter()
+            .enumerate()
+            .map(|(at, way)| Stmt::Stuck(Sticking { id: at + 1, way: *way, n: 3 }))
+            .collect();
+        let (printed, said) = run(timed);
+        assert!(
+            printed.ends_with("send timed out\nstuck3 3\nreceived -1\ndone\n") && said.is_none(),
+            "{printed}"
+        );
+        for way in STUCK_WAYS.iter().skip(2) {
+            let n = if *way == StuckWay::Rounds { 4 } else { 5 };
+            let (_, said) = run(vec![Stmt::Stuck(Sticking { id: 1, way: *way, n })]);
+            assert_eq!(
+                said.as_deref(),
+                Some("a deadlock: every task is waiting for another, and nothing can wake them")
+            );
+        }
+    }
+
     /// Every step of an `Ordered` statement checks, and the evaluator prints what the oracle
     /// prints, each line read left to right: a receiver, a field's receiver, a list's and a dict's
     /// method, an index's base, arguments, operators, a list, a text, and writes, each changed by

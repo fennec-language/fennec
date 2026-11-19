@@ -1339,6 +1339,49 @@ pub(crate) const GENERIC_STEPS: [GenericStep; 11] = [
     GenericStep::DictPut,
 ];
 
+/// A `Stuck` statement: `stuck{id}(stdout)`, a channel of room for one, then a wait on it that
+/// nothing will end. A wait given a time limit fails with `Timeout` once it's up, and the program
+/// goes on. One without, `main` receiving or sending, at a `with launch` block's end for a task
+/// receiving, or in a `parallel` call's rounds each receiving, is a deadlock: the program stops,
+/// with exit code 1, after what it printed, as `docs/language.md` says. One that hung instead
+/// would be stopped by the fuzzer as stuck.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Sticking {
+    pub(crate) id: usize,
+    pub(crate) way: StuckWay,
+    /// The time limit in milliseconds, from 1 to 20, or how many rounds, from 1 to 4.
+    pub(crate) n: i64,
+}
+
+/// How a `Stuck` statement waits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StuckWay {
+    /// `jobs.receive_within(...)` on the empty channel, which times out.
+    TimedReceive,
+    /// `jobs.send_within(...)` on the full channel, which times out.
+    TimedSend,
+    /// `jobs.receive()` on the empty channel: a deadlock.
+    Received,
+    /// A second `jobs.send(...)` on the full channel: a deadlock.
+    SentFull,
+    /// The end of a `with launch` block whose task receives from the channel: a deadlock. In
+    /// programs with threads.
+    BlockEnd,
+    /// A `parallel` call whose rounds each receive from the channel: a deadlock. In programs with
+    /// threads.
+    Rounds,
+}
+
+/// Every `StuckWay`, for the generator to pick from.
+pub(crate) const STUCK_WAYS: [StuckWay; 6] = [
+    StuckWay::TimedReceive,
+    StuckWay::TimedSend,
+    StuckWay::Received,
+    StuckWay::SentFull,
+    StuckWay::BlockEnd,
+    StuckWay::Rounds,
+];
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -1611,6 +1654,8 @@ pub(crate) enum Stmt {
     Ordered(InOrder),
     /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.
     Generic(Genericking),
+    /// `stuck{id}(stdout)`: a wait nothing ends, timing out or stopping the program as a deadlock.
+    Stuck(Sticking),
     /// `filed{id}(fs, stdout)`: files written whole or left as they were, a step at a time.
     Filed(Filing),
     /// `owned{id}(stdout)`: values of types with their own `def []`, changed through it.

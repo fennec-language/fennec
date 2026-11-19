@@ -1,0 +1,7 @@
+error: can't use `%` on a str and an int
+ --> examples/errors/percent_format.fen:3:18
+  |
+3 |     stdout.print("%d items" % count)
+  |                  ^^^^^^^^^^^^^^^^^^
+  |
+  = help: convert one side so both are numbers, as `int(text)` or `float(count)`

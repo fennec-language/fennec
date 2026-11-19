@@ -532,11 +532,7 @@ impl FnCx<'_> {
         }
         for ((held, ty), item) in names.iter().zip(types).zip(&items) {
             let origin = if self.checker.program.takes_lock(&ty) { Origin::Locked } else { Origin::Local };
-            // What a source lends is the block's to use, `ref self` methods included: it only
-            // can't leave the block.
-            let is_mut = held.is_mut || crate::lend::lent(&ty).is_some();
-            let ty = self.lent_to(ty, body);
-            self.declare_as(&held.name, ty, is_mut, origin, held.span);
+            self.declare_with_name(held, ty, origin, body);
             self.note_to_every(&held.name, item);
         }
         let flow = self.stmts(body, used);
@@ -544,6 +540,17 @@ impl FnCx<'_> {
         self.lock = outer;
         self.locked_types = outer_types;
         flow
+    }
+
+    /// A `with` block's name for what it opens, of type `ty`. What a source lends is the block's
+    /// to use, `ref self` methods included: it only can't leave the block (see `lent.rs`).
+    fn declare_with_name(&mut self, held: &WithName, ty: Type, origin: Origin, body: &[Stmt]) {
+        let lends = crate::lend::lent(&ty).is_some();
+        let ty = self.lent_to(ty, body);
+        self.declare_as(&held.name, ty.clone(), held.is_mut || lends, origin, held.span);
+        if lends {
+            self.note_with_lent(&held.name, &ty);
+        }
     }
 
     /// Several values in one `with`: handles opened in order and finished innermost first, as
@@ -589,7 +596,10 @@ impl FnCx<'_> {
             }
         };
         for (held, ty) in names.iter().zip(items) {
-            self.declare_as(&held.name, ty, true, Origin::Local, held.span);
+            self.declare_as(&held.name, ty.clone(), true, Origin::Local, held.span);
+            if lent.is_some() {
+                self.note_with_lent(&held.name, &ty);
+            }
         }
     }
 

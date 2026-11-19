@@ -1,0 +1,7 @@
+error: `except` names the failure it handles
+ --> examples/errors/except_bare.fen:2:34
+  |
+2 |     count = int.parse("4") except:
+  |                                  ^
+  |
+  = help: write `except why:` and use `why` in the block, or name one case, as `except InvalidValue(): 8080`

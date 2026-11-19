@@ -1,0 +1,7 @@
+error: Fennec doesn't have `:=`
+ --> examples/errors/walrus.fen:3:15
+  |
+3 |     if (count := len(names)) > 0:
+  |               ^^
+  |
+  = help: give `count` its value on a line of its own first, as `count = ...`, then use it

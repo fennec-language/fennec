@@ -1,0 +1,7 @@
+error: Fennec doesn't have `async`
+ --> examples/errors/async_def.fen:1:1
+  |
+1 | async def fetch() -> int:
+  | ^^^^^
+  |
+  = help: write a plain `def`: a call waits where it's written, and `launch` runs work beside it

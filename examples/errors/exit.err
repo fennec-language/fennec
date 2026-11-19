@@ -1,0 +1,7 @@
+error: `exit` doesn't exist
+ --> examples/errors/exit.fen:3:5
+  |
+3 |     exit(1)
+  |     ^^^^
+  |
+  = help: give it a value first, as `exit = ...`, or check the spelling

@@ -1,0 +1,5 @@
+error: a str has no method `format`
+ --> examples/errors/format_method.fen:3:18
+  |
+3 |     stdout.print("{} items".format(count))
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,7 @@
+error: `print` has no parameter called `end`
+ --> examples/errors/print_with_end.fen:2:27
+  |
+2 |     stdout.print("a", end="")
+  |                           ^^
+  |
+  = help: take `end=` off: `print` takes nothing by name

@@ -1,0 +1,7 @@
+error: there's no module called `typing`
+ --> examples/errors/import_typing.fen:1:1
+  |
+1 | from typing import Optional
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: Fennec's types are built in: `str?` for `Optional[str]` and `list[int]` for `List[int]`, so take out the import

@@ -9350,7 +9350,7 @@ fn a_send_to_a_channel_whose_block_left_from_an_except_case_is_closed() -> std::
     Ok(())
 }
 
-/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4 and 16
+/// Builds `tests/fixtures/deadlocks/{name}.fen` and runs it `runs` times each on 1, 4, 8 and 16
 /// threads, wanting what it prints, what it says and its exit code every time.
 fn deadlock_fixture_runs_as(name: &str, runs: usize, wanted: (&str, &str, i32)) -> std::io::Result<()> {
     deadlock_fixture_runs_with(name, runs, &[], wanted)
@@ -9373,7 +9373,7 @@ fn deadlock_fixture_runs_with(
     let (source, built_as) = (program.to_string_lossy(), executable.to_string_lossy());
     let built = fennec(&["build", "--llvm", &source, "-o", &built_as], &dir)?;
     assert!(built.status.success(), "{name}: {}", String::from_utf8_lossy(&built.stderr));
-    for threads in ["1", "4", "16"] {
+    for threads in ["1", "4", "8", "16"] {
         for _ in 0..runs {
             let ran = Command::new(&executable)
                 .env("FENNEC_THREADS", threads)

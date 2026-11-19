@@ -19,20 +19,8 @@ use crate::value::Value;
 /// native code reads the failure flag after it, as after any call that can. It closes every
 /// generator waiting to be, including those [`free_plain`] and the runtime left waiting.
 pub extern "C" fn free(address: i64) {
-    let abandoning = with(|state| {
-        // What other threads let go of last waits for this one, which made it, to free it.
-        if crate::embed::threads::any_waiting() {
-            free_waiting(state);
-        }
-        let address = u64::try_from(address).unwrap_or(0);
-        if !free_plain_list(state, address) {
-            free_block(state, address);
-        }
-        !state.heap.abandoning.is_empty()
-    });
-    if abandoning {
-        run_abandons();
-    }
+    let_go(address);
+    run_abandons();
 }
 
 /// `free`, for a block whose type can't hold or reach a generator that closes something when it's
@@ -41,20 +29,46 @@ pub extern "C" fn free(address: i64) {
 /// does, but a generator that leaves to close waits for the next `free`, or for the end of the
 /// task or the run, which native code checks. A debug build, which tests run, stops if this block
 /// was such a generator or held one, so a wrong proof shows where it's made.
+#[inline]
 pub extern "C" fn free_plain(address: i64) {
-    with(|state| {
+    if cfg!(debug_assertions) {
+        return free_plain_checked(address);
+    }
+    let_go(address);
+}
+
+/// [`free_plain`] in a debug build: it stops if the block, or what it held, was a generator let go
+/// partway, which a free that runs no program code mustn't find.
+#[cold]
+fn free_plain_checked(address: i64) {
+    let waiting = with(|state| {
         if crate::embed::threads::any_waiting() {
             free_waiting(state);
         }
-        let waiting = state.heap.abandoning.len();
+        state.heap.abandoning.len()
+    });
+    let_go(address);
+    if with(|state| state.heap.abandoning.len()) > waiting {
+        super::runtime_bug(
+            "a free that runs no program code let go of a generator stopped partway, which has something to close",
+        );
+    }
+}
+
+/// What both frees do: frees what other threads let go of last, then the block. Kept a function of
+/// its own, so its fast path for strings and plain lists is written once and inlined here, as it
+/// was into `free` when `free` was the only one, and it gives back nothing: what a free that runs
+/// no program code doesn't need costs every free.
+#[inline(never)]
+fn let_go(address: i64) {
+    with(|state| {
+        // What other threads let go of last waits for this one, which made it, to free it.
+        if crate::embed::threads::any_waiting() {
+            free_waiting(state);
+        }
         let address = u64::try_from(address).unwrap_or(0);
         if !free_plain_list(state, address) {
             free_block(state, address);
-        }
-        if cfg!(debug_assertions) && state.heap.abandoning.len() > waiting {
-            super::runtime_bug(
-                "a free that runs no program code let go of a generator stopped partway, which has something to close",
-            );
         }
     });
 }
@@ -63,11 +77,6 @@ pub extern "C" fn free_plain(address: i64) {
 /// go of: out of the table and kept for reuse, with nothing to walk. A string's place kept in it,
 /// and the runtime's copy of its text, are forgotten, as [`free_block`] does. False, having done
 /// nothing, for any other block, which [`free_block`] frees.
-#[expect(
-    clippy::inline_always,
-    reason = "both frees go through this, and as a call of its own it cost api_handler 0.85% of its instructions"
-)]
-#[inline(always)]
 fn free_plain_list(state: &mut State, address: u64) -> bool {
     if crate::embed::threads::held_elsewhere(address) {
         return false;

@@ -23,7 +23,7 @@ test "an offset is taken off, and a fraction kept"():
     assert found.nanosecond() == 250_000_000
     assert Time.parse("2026-11-06 21:55:56.123456789123z")?.nanosecond() == 123_456_789
 
-test "text that isn't RFC 3339 fails where it goes wrong"():
+test "text that isn't RFC 3339 fails, saying what it was given"():
     mut problem = failure_of(() => Time.parse("2026-11-06T21:55")?)
     assert problem is not None
     assert (
@@ -31,7 +31,7 @@ test "text that isn't RFC 3339 fails where it goes wrong"():
     )
     problem = failure_of(() => Time.parse("2026-11-06T21:55:56+0200")?)
     assert problem is not None
-    assert problem.column == 20
+    assert problem.message.startswith("`2026-11-06T21:55:56+0200` isn't an RFC 3339 time")
     problem = failure_of(() => Time.parse("2026-02-30T00:00:00Z")?)
     assert problem is not None
     assert problem.message == "2026-02 has no day 30"

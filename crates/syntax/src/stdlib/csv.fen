@@ -5,12 +5,12 @@
 from std.io import Reader, Writer, read_all
 
 ## The rows of `text`. Text that isn't CSV fails with a `ParseError`.
-export def loads(text: str, delimiter = ",") -> list[list[str]]:
+export def loads(text: str, delimiter = ",") -> list[list[str]] fails ParseError:
     return [row for _, row in rows_in(text, delimiter)?]
 
 ## The rows after the first as dicts, with the first row's fields as their keys. A row
 ## with a different number of fields fails with a `ParseError`.
-export def records(text: str, delimiter = ",") -> list[dict[str, str]]:
+export def records(text: str, delimiter = ",") -> list[dict[str, str]] fails ParseError:
     rows = rows_in(text, delimiter)?
     if len(rows) == 0: return []
     _, names = rows[0]

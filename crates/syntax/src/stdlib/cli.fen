@@ -87,7 +87,7 @@ export struct Cli:
 
     ## Reads `args`, the program's arguments without its name. Arguments that don't fit fail
     ## with a `CliError` that says why.
-    def parse(self, args: list[str]) -> CliArgs:
+    def parse(self, args: list[str]) -> CliArgs fails CliError:
         mut given = CliArgs()
         mut positionals = []
         mut at = 0

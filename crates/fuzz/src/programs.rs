@@ -898,6 +898,36 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
     }
 
+    /// Every way of narrowing a union and changing it (`NarrowWay`), starting as each member,
+    /// checks, and the evaluator prints what the oracle prints: each `grow` changes the member
+    /// the union holds, and a `ref` call taking the union leaves it the other one.
+    #[test]
+    fn the_narrowed_union_shapes_check_and_the_evaluator_agrees_with_the_oracle() {
+        use super::ast::{NARROW_WAYS, Narrowing, Program, Stmt};
+        let mut body = Vec::new();
+        let mut id = 0;
+        for way in NARROW_WAYS {
+            for crate_first in [true, false] {
+                for n in [0, 4, 9] {
+                    id += 1;
+                    body.push(Stmt::Narrowed(Narrowing { id, way, crate_first, n }));
+                }
+            }
+        }
+        let program = Program { body, threadless: true };
+        let source = source::source(&program);
+        let module = fennec_syntax::parse(&source).unwrap_or_else(|err| unreachable!("{err:?}\n{source}"));
+        if let Err(err) = fennec_check::check(&module) {
+            unreachable!("{source}\n{err:?}");
+        }
+        let Some((printed, true, _)) = eval::run_saying(&program) else {
+            unreachable!("the evaluator isn't sure, or it failed:\n{source}")
+        };
+        let oracle = fennec_oracle::run_source(&source, "programs.fen");
+        assert_eq!(oracle.exit_code(), Some(0), "{:?}", oracle.ended);
+        assert_eq!(String::from_utf8_lossy(&oracle.stdout), printed);
+    }
+
     /// Every way of writing a `Listened` statement checks, and the evaluator is sure what it
     /// prints: inboxes kept up or behind, read one at a time or in a loop, and a loop dropping
     /// the oldest, with a message sent before any of them listens or not.

@@ -14,6 +14,7 @@
 )]
 
 use super::ast::Reading;
+use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
 use super::ast::{
     Alias, Aliasing, Amount, Arith, Arrow, BufOp, Case, Compare, Constants, Expr, FLOATS, FloatHeld, Held,
     Leave, Nested, Op, Place, Program, RefPlace, STARTING, Size, Stmt, StreamMap, StreamRead, Streaming,
@@ -88,6 +89,17 @@ const LOOKUPS_SWAPPED: bool = true;
 /// found them, held to the compiled program. On since #2017 put each case back by its fields'
 /// names, and #2038 wrote a `for ref` item back before its case.
 const REF_CASES: bool = true;
+
+/// Whether random programs narrow a union of two structs to one member and change it through a
+/// `ref self` method, a `match` case, a `for ref` loop, a field, or a `ref` call taking the member or
+/// the union (`Narrowed`). The method was given the whole union, so compiled code crashed (#2157).
+const NARROWED_UNIONS: bool = true;
+
+/// Whether a `Narrowed` statement grows a name narrowed by what it was given right after a `ref`
+/// call that gave it the other member (`NarrowWay::RefUnionGrown`). The checker kept the narrowing,
+/// so compiled code ran the other member's method on it (#2163). Off until that's fixed: the
+/// statement takes `RefUnion` instead.
+const REF_ENDS_NARROWING: bool = false;
 
 /// Whether random programs write a name where another of the same name and type is in sight, each
 /// way the checker renamed by text rather than by what the name means where it's written
@@ -685,6 +697,7 @@ impl Writer<'_> {
             27 if YIELDS && !self.threadless && self.choice(4) == 0 => self.yields(body),
             27 if CRASH_WAKES && !self.threadless && self.choice(4) == 0 => self.wakes(body),
             27 if EVERY_LISTENER && !self.threadless && self.choice(4) == 0 => self.listens(body),
+            27 if NARROWED_UNIONS && self.choice(4) == 0 => self.narrows(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1127,6 +1140,20 @@ impl Writer<'_> {
         let start = self.choice(REF_STARTS);
         let text = self.choice(REF_TEXTS.len());
         body.push(Stmt::RefCased(RefCasing { id, way, start, text }));
+    }
+
+    /// A union narrowed to one member and changed through it, one of `NARROW_WAYS`, starting
+    /// from 0 to 9.
+    fn narrows(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut way = NARROW_WAYS.get(self.choice(NARROW_WAYS.len())).copied().unwrap_or(NarrowWay::Given);
+        if way == NarrowWay::RefUnionGrown && !REF_ENDS_NARROWING {
+            way = NarrowWay::RefUnion;
+        }
+        let crate_first = self.choice(2) == 0;
+        let n = i64::from(self.byte() % 10);
+        body.push(Stmt::Narrowed(Narrowing { id, way, crate_first, n }));
     }
 
     /// A name written where another of its name and type is in sight, one of `CAPTURE_WAYS`.

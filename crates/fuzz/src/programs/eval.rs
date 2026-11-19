@@ -22,7 +22,52 @@ use super::ast::{
     Calling, CaptureWay, Capturing, Field, FieldCall, FieldCalls, Listening, REF_TEXTS, RefCasing, RefWay,
     SWAP_KEYS, ShelfPlace, Shelving, SwapField, Swapping, Waking, Yielding, ZipSumming, ZipWay,
 };
+use super::ast::{NarrowWay, Narrowing};
 use super::source::LONG_PIECE;
+
+/// A `Narrowed` statement's union as the evaluator holds it: a `Crate{id}`'s list or a `Heap{id}`'s
+/// int.
+#[derive(Clone, Debug)]
+enum Member {
+    Crate(Vec<i64>),
+    Heap(i64),
+}
+
+impl Member {
+    /// What `grow` does to it, and what it gives back.
+    fn grow(&mut self) -> i64 {
+        match self {
+            Member::Crate(items) => {
+                let length = |items: &Vec<i64>| i64::try_from(items.len()).unwrap_or(i64::MAX);
+                items.push(length(items) + 7);
+                length(items)
+            }
+            Member::Heap(held) => {
+                *held += 3;
+                *held
+            }
+        }
+    }
+
+    /// What `shown{id}` gives back for it.
+    fn shown(&self) -> String {
+        match self {
+            Member::Crate(items) => {
+                let items: Vec<String> = items.iter().map(ToString::to_string).collect();
+                format!("crate [{}]", items.join(", "))
+            }
+            Member::Heap(held) => format!("heap {held}"),
+        }
+    }
+
+    /// The other member, holding what `swapped{id}` gives it: `grown`.
+    fn swapped(&self, grown: i64) -> Member {
+        match self {
+            Member::Crate(_) => Member::Heap(grown),
+            Member::Heap(_) => Member::Crate(vec![grown]),
+        }
+    }
+}
 
 /// A `Swapped`'s struct as the evaluator holds it: its counts and its lists, each in the order
 /// their keys went in.
@@ -1653,6 +1698,7 @@ impl Machine {
             Stmt::Listened(listening) => self.listened(listening),
             Stmt::RefCased(casing) => self.ref_cased(*casing),
             Stmt::Captured(capturing) => self.captured(*capturing),
+            Stmt::Narrowed(narrowing) => self.narrowed(*narrowing),
             Stmt::FloatKeys { held, values, probe, asked, pair, .. } => {
                 let line = float_keys(*held, values, *probe, *asked, *pair);
                 self.out.push_str(&line);
@@ -2192,6 +2238,81 @@ impl Machine {
                 }
                 let _ = writeln!(self.out, "{}", digest(&named));
             }
+        }
+    }
+
+    /// What `narrowed{id}` prints: each `grow` changes the member the union holds, whether it's
+    /// called on a narrowed name, a `match` case, a `for ref` item, a field or a `ref` parameter, and
+    /// a `ref` call taking the union leaves it the other member.
+    fn narrowed(&mut self, narrowing: Narrowing) {
+        let Narrowing { way, crate_first, n, .. } = narrowing;
+        let start = if crate_first { Member::Crate(vec![n]) } else { Member::Heap(n) };
+        let other = if crate_first { Member::Heap(n + 1) } else { Member::Crate(vec![n + 1]) };
+        let mut shape = start.clone();
+        let mut lines: Vec<String> = Vec::new();
+        match way {
+            NarrowWay::Given => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+                shape = other;
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Is => {
+                let grown = shape.grow();
+                let read = match &shape {
+                    Member::Crate(_) => shape.shown().replacen("crate ", "", 1),
+                    Member::Heap(held) => held.to_string(),
+                };
+                lines.push(format!("{grown} {read}"));
+                lines.push(shape.shown());
+            }
+            NarrowWay::Left => {
+                let grown = shape.grow();
+                let added = if crate_first { 100 } else { 0 };
+                lines.push((grown + added).to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Whole | NarrowWay::Field => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::Matched => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+            NarrowWay::ForRef => {
+                let mut shapes = [start, other];
+                for each in &mut shapes {
+                    lines.push(each.grow().to_string());
+                    if matches!(each, Member::Crate(_)) {
+                        lines.push(each.grow().to_string());
+                    }
+                }
+                lines.extend(shapes.iter().map(Member::shown));
+            }
+            NarrowWay::RefMember => {
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+                let mut given = start;
+                lines.push(given.grow().to_string());
+                lines.push(given.shown());
+            }
+            NarrowWay::RefUnion | NarrowWay::RefUnionGrown => {
+                let grown = shape.grow();
+                shape = shape.swapped(grown);
+                lines.push(grown.to_string());
+                if way == NarrowWay::RefUnion {
+                    lines.push(shape.shown());
+                }
+                lines.push(shape.grow().to_string());
+                lines.push(shape.shown());
+            }
+        }
+        for line in lines {
+            let _ = writeln!(self.out, "{line}");
         }
     }
 

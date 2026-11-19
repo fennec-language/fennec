@@ -827,6 +827,63 @@ impl RefWay {
     }
 }
 
+/// A union of `Crate{id}`, holding a list, and `Heap{id}`, holding an int, each with a `ref self`
+/// method `grow` that changes it and gives back its size, grown through a name narrowed to one
+/// member, written `way`. It starts as a `Crate{id}` holding `[n]` when `crate_first`, else as a
+/// `Heap{id}` holding `n`; where it's given the other member, that one holds `n + 1`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Narrowing {
+    pub(crate) id: usize,
+    pub(crate) way: NarrowWay,
+    pub(crate) crate_first: bool,
+    pub(crate) n: i64,
+}
+
+/// The ways a `Narrowed` statement narrows its union and changes it. A `ref self` method called on
+/// a union narrowed to one member was given the whole union (#2157), and a narrowing outlived a
+/// `ref` call that gave the name the other member (#2163).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NarrowWay {
+    /// Narrowed by what it's given: grown twice, given the other member, and grown again.
+    Given,
+    /// Narrowed by `if shape is ...:` for each member, grown and read inside.
+    Is,
+    /// Given by `ref` to a function where it's grown, narrowed to what's left after
+    /// `if shape is Heap{id}: return shape.grow()`.
+    Left,
+    /// Not narrowed: the union's own `grow`, which runs its member's.
+    Whole,
+    /// Grown in the `match` case naming its member.
+    Matched,
+    /// Each item of a list of both, grown in a `for ref` loop, and grown again where `is` narrows
+    /// it to a `Crate{id}`.
+    ForRef,
+    /// Grown as a struct's field, which `is` doesn't narrow.
+    Field,
+    /// Narrowed, by `is` and by what it's given, and given by `ref` to a function taking the member.
+    RefMember,
+    /// Narrowed by `is` and given by `ref` to a function taking the union, which grows it and gives
+    /// it the other member, then grown after the `if`.
+    RefUnion,
+    /// Narrowed by what it's given, given by `ref` to the same function, and grown right after,
+    /// where the narrowing has to have ended (#2163).
+    RefUnionGrown,
+}
+
+/// Every `NarrowWay`.
+pub(crate) const NARROW_WAYS: [NarrowWay; 10] = [
+    NarrowWay::Given,
+    NarrowWay::Is,
+    NarrowWay::Left,
+    NarrowWay::Whole,
+    NarrowWay::Matched,
+    NarrowWay::ForRef,
+    NarrowWay::Field,
+    NarrowWay::RefMember,
+    NarrowWay::RefUnion,
+    NarrowWay::RefUnionGrown,
+];
+
 /// A name that another of the same name and type could capture, written `way`, with `n` the value
 /// it adds or lends.
 #[derive(Clone, Copy, Debug)]
@@ -1199,6 +1256,9 @@ pub(crate) enum Stmt {
     /// `captured{id}(stdout)`: a name written where another of the same name and type is in
     /// sight, in a way the checker once renamed into the other.
     Captured(Capturing),
+    /// `narrowed{id}(stdout)`: a union narrowed to one member and changed through it, by a `ref self`
+    /// method or a `ref` call.
+    Narrowed(Narrowing),
     /// Keys holding a float or an `f32`, as #1306 has them: a dict with a key for each of
     /// `values`, places in `FLOATS`, a set of them, a lookup of `values[probe]`, `in` with
     /// `FLOATS[asked]`, and `==` and `!=` on `pair`, two places in `values`.

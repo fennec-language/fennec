@@ -14,6 +14,9 @@ use crate::function::FnCx;
 use crate::infer::Hole;
 use crate::types::{Type, a};
 
+/// What to do instead of handing a generator to a task or a `shared` value.
+pub(crate) const GENERATOR_HELP: &str = "keep its items with `list(...)` first, as `items = list(made)`, and hand on the list, or make the generator where it's used";
+
 /// What a `with launch(...)` was checked to be, for lowering to write in.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Launch {
@@ -86,6 +89,7 @@ impl FnCx<'_> {
             .into_iter()
             .collect();
         let arrow = self.lambda(params, body, &inbox, task.span);
+        self.no_generator_taken(params, body);
         let returns = match arrow {
             Type::Arrow(_, returns) => self.checker.settled(&returns),
             _ => Type::Unknown,
@@ -113,6 +117,75 @@ impl FnCx<'_> {
         self.checker.launches.insert((span.start, span.end), launch);
         let lent = message.map_or(Type::Unit, |message| Type::Generic("Sender".to_owned(), vec![message]));
         Type::result(Type::Generic(crate::lend::WITH.to_owned(), vec![lent]), fails)
+    }
+
+    /// A task can't take a generator from around it yet: what the task reads from around it is
+    /// kept where both can reach it, as a `shared` value's insides are, and a generator can't be
+    /// kept there. One made inside the task is fine.
+    fn no_generator_taken(&mut self, params: &[String], body: &Expr) {
+        let mut read: Vec<(String, Span)> = Vec::new();
+        fennec_syntax::read::in_expr(body, &mut |expr| {
+            if let ExprKind::Name(name) = &expr.kind
+                && !params.contains(name)
+                && !read.iter().any(|(had, _)| had == name)
+            {
+                read.push((name.clone(), expr.span));
+            }
+        });
+        for (name, at) in read {
+            let Some((ty, _)) = self.lookup(&name) else { continue };
+            if self.holds_generator(&self.checker.settled(&ty), &mut Vec::new()) {
+                self.error(
+                    Diagnostic::new(
+                        format!("a task can't take `{name}`, which holds a generator, from around it yet"),
+                        at,
+                    )
+                    .with_help(GENERATOR_HELP),
+                );
+            }
+        }
+    }
+
+    /// Whether a value of type `ty` is, or holds, a generator: an `Iterator`, among its items,
+    /// members or fields, however deep. `seen` stops a type that holds itself.
+    pub(crate) fn holds_generator(&mut self, ty: &Type, seen: &mut Vec<String>) -> bool {
+        match ty {
+            Type::Iterator(..) => true,
+            Type::List(item)
+            | Type::Buffer(item)
+            | Type::Array(item, _)
+            | Type::Set(item)
+            | Type::Optional(item)
+            | Type::Table(item) => self.holds_generator(item, seen),
+            Type::Dict(key, value) | Type::Result(key, value) => {
+                self.holds_generator(key, seen) || self.holds_generator(value, seen)
+            }
+            Type::Tuple(items) | Type::Union(items) => {
+                items.iter().any(|item| self.holds_generator(item, seen))
+            }
+            Type::Generic(_, args) if args.iter().any(|arg| self.holds_generator(arg, seen)) => true,
+            Type::Named(owner) | Type::Generic(owner, _) => {
+                if seen.contains(owner) {
+                    return false;
+                }
+                seen.push(owner.clone());
+                let Some(info) = self.checker.program.type_info(owner) else { return false };
+                let mut fields: Vec<(Option<String>, String)> =
+                    info.def.fields.iter().map(|field| (None, field.name.clone())).collect();
+                for case in &info.def.cases {
+                    fields.extend(
+                        case.fields.iter().map(|field| (Some(case.name.clone()), field.name.clone())),
+                    );
+                }
+                let args = self.checker.program.type_args(ty);
+                fields.into_iter().any(|(case, field)| {
+                    let held = self.checker.field_type(owner, case.as_deref(), &field).substitute(&args);
+                    let held = self.checker.settled(&held);
+                    self.holds_generator(&held, seen)
+                })
+            }
+            _ => false,
+        }
     }
 
     /// The task and where `inbox_size=` is given, checking `launch`'s options.

@@ -50,6 +50,15 @@ test "a year a Time can't hold fails, saying which years it holds"():
         )
     assert read("1678-01-01T00:00:00Z") == "1678-01-01T00:00:00Z"
     assert read("2261-12-31T23:59:59Z") == "2261-12-31T23:59:59Z"
+    # An offset can take a moment written inside them past either end, where `iso` would write a
+    # year `parse` refuses, so it fails too.
+    for text in ["1678-01-01T00:00:00+00:01", "2261-12-31T23:59:59.5-00:01"]:
+        assert (
+            read(text)
+            == f"`{text}` is outside the years from 1678 to 2261 in UTC, which a `Time` holds"
+        )
+    assert read("1678-01-01T00:00:00-00:01") == "1678-01-01T00:01:00Z"
+    assert read("2261-12-31T23:58:59+00:01") == "2261-12-31T23:57:59Z"
 
 test "a digit that isn't ASCII, a sign in front or something after the end fails"():
     for text in [

@@ -1,0 +1,7 @@
+error: a task can't take `made`, which holds a generator, from around it yet
+  --> examples/errors/generator_to_a_task.fen:12:29
+   |
+12 |     with launch(() => count(made, stdout))?:
+   |                             ^^^^
+   |
+   = help: keep its items with `list(...)` first, as `items = list(made)`, and hand on the list, or make the generator where it's used

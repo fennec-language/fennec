@@ -1178,3 +1178,40 @@ fn a_source_cant_lend_inside_a_lock() {
         "{found:?}"
     );
 }
+
+/// A task, or a `shared` value, can't take a generator yet: what a task reads from around it, and
+/// what a `shared` value holds, is kept where tasks can reach it, and a generator can't be kept
+/// there. One made inside the task is fine, and so is a list of its items (#2189).
+#[test]
+fn a_generator_isnt_handed_to_a_task_or_a_shared_value_yet() {
+    let numbers = "from std.concurrent import Crashed\n\n\
+        def numbers() -> Iterator[int]:\n    yield 1\n    yield 2\n\n\
+        def count(items: Iterator[int], stdout: Stdout):\n    stdout.print(sum(items))\n\n\
+        def total(items: list[int], stdout: Stdout):\n    stdout.print(sum(items))\n\n\
+        struct Holder:\n    items: Iterator[int]\n\n\
+        struct Kept:\n    items: list[int]\n\n";
+    let help = "keep its items with `list(...)` first, as `items = list(made)`, and hand on the list, or make the generator where it's used";
+    let taken = format!(
+        "{numbers}def main(stdout: Stdout) fails Crashed:\n    made = numbers()\n    with launch(() => count(made, stdout))?:\n        pass\n"
+    );
+    assert_eq!(
+        problems(&taken),
+        ["a task can't take `made`, which holds a generator, from around it yet @ made"]
+    );
+    assert_eq!(helps(&taken), [help]);
+    let in_a_struct = format!(
+        "{numbers}def main(stdout: Stdout) fails Crashed:\n    held = Holder(items=numbers())\n    with launch(() => count(held.items, stdout))?:\n        pass\n"
+    );
+    assert_eq!(
+        problems(&in_a_struct),
+        ["a task can't take `held`, which holds a generator, from around it yet @ held"]
+    );
+    let shared = format!(
+        "{numbers}def main(stdout: Stdout):\n    shared holder = Holder(items=numbers())\n    lock holder as held:\n        stdout.print(sum(held.items))\n"
+    );
+    assert_eq!(problems(&shared), ["a `shared` value can't hold a generator yet @ Holder(items=numbers())"]);
+    let fine = format!(
+        "{numbers}def main(stdout: Stdout) fails Crashed:\n    items = list(numbers())\n    with launch(() => count(numbers(), stdout))?:\n        pass\n    with launch(() => total(items, stdout))?:\n        pass\n    shared kept = Kept(items=list(numbers()))\n    lock kept as held:\n        stdout.print(sum(held.items))\n"
+    );
+    assert_eq!(problems(&fine), Vec::<String>::new());
+}

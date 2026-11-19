@@ -121,7 +121,8 @@ export struct Time:
 
     ## The moment RFC 3339 text says, like `2026-11-06T21:55:56Z` or
     ## `2026-11-06T23:55:56.25+02:00`. `t` and `z` may be lowercase, and a space may stand for the
-    ## `T`. Digits past nanoseconds are left off.
+    ## `T`. Digits past nanoseconds are left off. A moment outside the years from 1678 to 2261 in
+    ## UTC fails, even when its offset is what takes it there.
     def parse(text: str) -> Time fails ParseError:
         if len(text) < 20: fail Time._not_rfc3339(text, at=len(text))
         for at, wanted in [(4, "-"), (7, "-"), (13, ":"), (16, ":")]:
@@ -174,7 +175,18 @@ export struct Time:
             second=second,
         ) except problem:
             fail ParseError(message=problem.message, line=1, column=1)
-        return Time(nanos=found.nanos + fraction - offset)
+        moment = found.nanos + fraction - offset
+        # The date written is inside the years a `Time` holds, but an offset can take the moment
+        # past either end, where `iso` would write a year `parse` refuses.
+        first = Time._days_from_date(1678, month=1, day=1) * 86_400_000_000_000
+        past = Time._days_from_date(2262, month=1, day=1) * 86_400_000_000_000
+        if moment < first or moment >= past:
+            fail ParseError(
+                message=f"{quoted_input(text)} is outside the years from 1678 to 2261 in UTC, which a `Time` holds",
+                line=1,
+                column=1,
+            )
+        return Time(nanos=moment)
 
     ## The year, like 2026.
     def year(self) -> int:

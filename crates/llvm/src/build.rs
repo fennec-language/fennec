@@ -651,7 +651,8 @@ pub fn compile_again(tools: &Tools, unit: &Unit, work: &Path) -> Result<Vec<u8>,
 }
 
 /// Whether the cache holds the object a unit with this text's hash compiles to, as `tools` and
-/// this build's passes make it: a build uses a unit again without writing it only then.
+/// this build's passes make it: a build uses a unit again without writing it only then. It's
+/// found without marking it, as the program's list holds it (see [`hold_objects`]).
 ///
 /// # Errors
 /// When `llc` can't be run to ask its version.
@@ -659,8 +660,22 @@ pub fn has_object(cache: &Cache, tools: &Tools) -> Result<impl Fn(&fennec_blake3
     let (version, pipeline) = (tools.version()?, pipeline());
     let cache = cache.clone();
     Ok(move |text: &fennec_blake3::Hash| {
-        cache.kept_object(KIND, &object_key(&version, &pipeline, text)).is_some()
+        cache.held_object(KIND, &object_key(&version, &pipeline, text)).is_some()
     })
+}
+
+/// Keeps the list of the objects `units` compile to as what the program `name` holds, so cleanup
+/// counts each as used whenever the list is marked: a build marks it once as it starts, rather
+/// than marking each object it uses again (`fennec_build::Cache::hold`).
+///
+/// # Errors
+/// When `llc` can't be run to ask its version, or the list can't be written.
+pub fn hold_objects(cache: &Cache, tools: &Tools, name: &str, units: &[Unit]) -> Result<(), String> {
+    let (version, pipeline) = (tools.version()?, pipeline());
+    let objects: Vec<String> = units.iter().map(|unit| object_key(&version, &pipeline, &unit.hash)).collect();
+    cache
+        .hold(name, KIND, &objects)
+        .map_err(|err| format!("couldn't keep the program's list of objects: {err}"))
 }
 
 /// What names a function's compiled object in the cache: the hash of its module's text, with the
@@ -707,10 +722,17 @@ pub fn compile(
                     };
                     let Some(unit) = units.get(at) else { return };
                     let keyed = cache.map(|cache| (cache, object_key(&version, &pipeline, &unit.hash)));
-                    // The cache's own file, which the linker reads where it lies.
-                    let cached = keyed
-                        .as_ref()
-                        .and_then(|(cache, key)| cache.kept_object(KIND, key).map(Object::Kept));
+                    // The cache's own file, which the linker reads where it lies. A unit used again
+                    // without writing it is one the program's list holds, which the build marked as
+                    // it started; any other found is marked, so cleanup leaves it while it links.
+                    let cached = keyed.as_ref().and_then(|(cache, key)| {
+                        let found = if unit.text.is_empty() {
+                            cache.held_object(KIND, key)
+                        } else {
+                            cache.kept_object(KIND, key)
+                        };
+                        found.map(Object::Kept)
+                    });
                     let result = match cached {
                         Some(object) => Ok((object, false)),
                         // A unit used again without writing it has no text to compile: it was

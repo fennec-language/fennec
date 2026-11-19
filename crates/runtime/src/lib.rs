@@ -416,6 +416,7 @@ export! {
     fennec_new_tag() -> i64 => heap::new_tag();
     fennec_free(a0: i64) => heap::free(a0);
     fennec_free_plain(a0: i64) => heap::free_plain(a0);
+    fennec_close_waiting() => heap::close_waiting();
     fennec_retain_shared(a0: i64, a1: i64) => threads::retain_shared(a0, a1);
     fennec_release_shared(a0: i64, a1: i64) => threads::release_shared(a0, a1);
     fennec_parallel_for(a0: i64, a1: parallel::Body, a2: i64) -> i64 => parallel::parallel_for(a0, a1, a2);

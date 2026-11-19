@@ -148,6 +148,13 @@ pub extern "C" fn free_text(address: i64) {
     }
 }
 
+/// `fennec_close_waiting()`: closes the generators let go of partway that wait to be, as a change
+/// to a list or a dict in the runtime leaves those it lets go of, at the line that let go of them.
+/// It can fail, as `free` can.
+pub extern "C" fn close_waiting() {
+    run_abandons();
+}
+
 /// Says what closes what's open in a generator with this shape that's let go partway. Only
 /// shapes given here are treated specially when they're freed. The program says it once, as it
 /// starts, on the thread `main` runs on; every other thread's runtime, started from the program
@@ -202,8 +209,17 @@ fn take_up_abandons(state: &mut State) {
 /// launched task it stops only that task, as any crash does: the crash stays this thread's,
 /// which the task's code finds right after the free, where it reads the flag, and leaves by.
 /// Anywhere else it ends the program on the spot.
+///
+/// A crash already set, as when what a failed function owned is let go of on its way out, or as a
+/// task that crashed ends, is held aside while they close, as a crash's cleanup holds it, since
+/// the code that closes them reads the flag after each call it makes. One of them crashing too is
+/// said, and the first crash goes on.
 pub(in crate::embed) fn run_abandons() {
-    let mut held = None;
+    if with(|state| state.heap.abandoning.is_empty()) {
+        return;
+    }
+    let crashed = crate::embed::failed();
+    let mut held = crashed.then(|| crate::embed::cleanup::crash_hold());
     while let Some((address, abandon)) = with(next_abandoned) {
         // It reads where the generator stopped to know what's open.
         abandon(i64::try_from(address).unwrap_or(0));
@@ -223,7 +239,7 @@ pub(in crate::embed) fn run_abandons() {
     }
     if let Some(first) = held {
         crate::embed::cleanup::crash_resume(first);
-        if !crate::embed::threads::in_a_task() {
+        if !crashed && !crate::embed::threads::in_a_task() {
             crate::embed::aot::stop_for_failure();
         }
     }

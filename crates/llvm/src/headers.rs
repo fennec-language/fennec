@@ -173,7 +173,7 @@ impl Emit<'_, '_, '_> {
     /// One owner fewer for what a header holds.
     pub(crate) fn release_text(&mut self, header: &str) {
         let block = self.header_block(header);
-        self.release(&block);
+        self.release_quietly(&block);
     }
 
     /// A literal's header: inline when it fits, and otherwise its block, which lives forever.
@@ -221,7 +221,7 @@ impl Emit<'_, '_, '_> {
         let (made, done) = (self.label("text_made_gone"), self.label("text_gone"));
         self.line(&format!("br i1 {owned}, label %{made}, label %{done}"));
         self.start_block(&made);
-        self.release(block);
+        self.release_quietly(block);
         self.line(&format!("br label %{done}"));
         self.start_block(&done);
     }
@@ -460,7 +460,7 @@ impl Emit<'_, '_, '_> {
     pub(crate) fn header_order_helper(&mut self) {
         self.declare("declare ptr @fennec_text_block(i64, i64, i64) nounwind");
         self.declare("declare i64 @fennec_str_compare(ptr, ptr) nounwind");
-        self.declare("declare void @fennec_free(ptr) nounwind");
+        self.declare("declare void @fennec_free_plain(ptr) nounwind");
         let mut text = "define internal i64 @fen_header_order(ptr %x, ptr %y) #0 {\nentry:\n".to_owned();
         for side in ["x", "y"] {
             for at in 0..3 {
@@ -475,7 +475,7 @@ impl Emit<'_, '_, '_> {
         text += "  %o = call i64 @fennec_str_compare(ptr %xb, ptr %yb)\n";
         for side in ["x", "y"] {
             text += &format!(
-                "  %{side}z = call i1 @fen_owner_gone(ptr %{side}b)\n  br i1 %{side}z, label %{side}free, label %{side}kept\n{side}free:\n  call void @fennec_free(ptr %{side}b)\n  br label %{side}kept\n{side}kept:\n"
+                "  %{side}z = call i1 @fen_owner_gone(ptr %{side}b)\n  br i1 %{side}z, label %{side}free, label %{side}kept\n{side}free:\n  call void @fennec_free_plain(ptr %{side}b)\n  br label %{side}kept\n{side}kept:\n"
             );
         }
         text += "  ret i64 %o\n}\n\n";
@@ -956,7 +956,7 @@ impl Emit<'_, '_, '_> {
         let (made_length_at, made_chars_at) = (at(self, &made, TEXT_BYTES), at(self, &made, TEXT_CHARS));
         self.line(&format!("store i64 {total}, ptr {made_length_at}"));
         self.line(&format!("store i64 {all_chars}, ptr {made_chars_at}"));
-        self.release(block);
+        self.release_quietly(block);
         made
     }
 

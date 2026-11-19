@@ -157,6 +157,7 @@ pub(crate) struct Analysis {
 }
 
 /// What's known about every function, and which can fail.
+#[expect(clippy::struct_excessive_bools, reason = "each is a fact of its own about the whole program")]
 pub(crate) struct Whole<'p> {
     pub(crate) functions: HashMap<&'p str, &'p Function>,
     pub(crate) analyses: HashMap<&'p str, Analysis>,
@@ -189,6 +190,10 @@ pub(crate) struct Whole<'p> {
     /// Whether the program has tests built into it, as `fennec test`'s and `fennec run`'s do: a
     /// test's capabilities are fakes, which only the runtime's export for every module asks.
     pub(crate) tested: bool,
+    /// Whether any of its generators closes something when it's let go partway, at a `yield`
+    /// inside a `with` source's block: only then does letting go of a value ever run program code,
+    /// which can fail. Without one, every free is plain.
+    pub(crate) abandons: bool,
 }
 
 /// What a function calls by name, a constant being a call of a function of no arguments, and a
@@ -4485,7 +4490,10 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
             kept.get(callee).is_none_or(|params| params.get(at).copied().unwrap_or(true))
         };
         let params = param_ranges(program, &changes, &keeps);
-        let held = in_entries_of(program, joined(layouts).as_ref());
+        let layouts = joined(layouts);
+        let held = in_entries_of(program, layouts.as_ref());
+        let abandons = program.generators.iter().any(|def| def.abandon.is_some());
+        let loud = if abandons { lets_go_loudly(program, layouts.as_ref()) } else { HashSet::new() };
         // Without layouts, which a program that builds always has, any dict that isn't of plain
         // words may hold its values in its entries.
         let in_entries = |dict: &Type| {
@@ -4505,7 +4513,8 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
         // A generator's functions are called through its block, so all the same way: with the flag.
         let mut can_fail: HashSet<&str> = every()
             .filter(|function| {
-                analyses.get(function.name.as_str()).is_none_or(|known| fails_itself(function, known))
+                loud.contains(function.name.as_str())
+                    || analyses.get(function.name.as_str()).is_none_or(|known| fails_itself(function, known))
             })
             .map(|function| function.name.as_str())
             .collect();
@@ -4546,6 +4555,7 @@ pub(crate) fn whole(program: &Program) -> Whole<'_> {
             tasks: joined(tasks),
             runtime_closures: crate::closures::runtime_holds_closures(program),
             tested: program.functions.iter().any(|function| crate::emit::is_test(&function.name)),
+            abandons,
         }
     });
     Whole { functions, ..whole }
@@ -4577,6 +4587,35 @@ fn in_entries_of<'p>(
         }
     }
     held
+}
+
+/// The functions with a local whose value letting go of may run program code: a generator that
+/// closes something when it's let go partway, or what may hold or reach one (see
+/// `dying::lets_go_quietly`). Such a function can fail, as that code can, so it's given the flag:
+/// a free it makes is checked right after, and a launched task whose free fails stops there.
+/// Asked here, on one thread, as `in_entries_of` asks, and every function is one without layouts.
+fn lets_go_loudly<'p>(program: &'p Program, layouts: Option<&fennec_layout::Layouts>) -> HashSet<&'p str> {
+    let every = program.functions.iter().chain(&program.constants);
+    let Some(layouts) = layouts else { return every.map(|function| function.name.as_str()).collect() };
+    // Each type asked once: a program has few, over many locals.
+    let mut asked: Vec<(&Type, bool)> = Vec::new();
+    let mut quiet = |ty: &'p Type| {
+        if let Some((_, quiet)) = asked.iter().find(|(known, _)| *known == ty) {
+            return *quiet;
+        }
+        let quiet = crate::kinds::Kind::of(layouts, ty)
+            .is_ok_and(|kind| crate::dying::lets_go_quietly(layouts, &kind));
+        asked.push((ty, quiet));
+        quiet
+    };
+    let mut loud = HashSet::new();
+    for function in every {
+        let lets_go_loudly = function.locals.iter().any(|local| !quiet(&local.ty));
+        if lets_go_loudly {
+            loud.insert(function.name.as_str());
+        }
+    }
+    loud
 }
 
 /// Which of a callee's parameters a call may change, as the analyses on threads ask it.

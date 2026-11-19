@@ -2430,6 +2430,79 @@ fn std_collections_runs_from_its_own_source() {
     );
 }
 
+/// What's indexed is read before its index, left to right, as `docs/decisions.md` says: an index
+/// that grows a list, or changes a dict's value, reads the list or dict from before. An index too
+/// big for the list as it was stops the program, though the list has grown to hold it. What it
+/// prints is what the compiled program printed, the same on three runs.
+#[test]
+fn what_is_indexed_is_read_before_its_index() {
+    let (printed, ended) = ran(INDEXED_BEFORE_ITS_INDEX);
+    assert_eq!(printed, "2 [1, 2, 3, 5]\n1 {\"a\": 101}\n3\n");
+    let Ended::Stopped(said) = ended else { panic!("{ended:?}") };
+    assert!(said.contains("index 1 is out of range for length 1"), "{said}");
+}
+
+/// A built-in method that only reads what it's called on reads it before its arguments, left to
+/// right, as a method the program writes does (`a_call_reads_what_it_is_made_on_before_its_arguments`):
+/// a dict's `get`, a list's `count` and a string's `split`, each given an argument that changes
+/// what it's called on, see it as it was. What it prints is what the compiled program printed.
+#[test]
+fn a_built_in_method_that_only_reads_reads_what_it_is_called_on_first() {
+    prints(
+        "
+        struct Tally:
+            items: list[int]
+            names: dict[str, int]
+            text: str
+
+            def key(ref self) -> str:
+                self.names['a'] = self.names['a'] + 100
+                return 'a'
+
+            def grow(ref self) -> int:
+                self.items.append(1)
+                return 1
+
+            def renamed(ref self) -> str:
+                self.text = 'b,b'
+                return ','
+
+        def main(stdout: Stdout):
+            mut tally = Tally(items=[1, 1], names={'a': 1}, text='a,a,a')
+            stdout.print(tally.names.get(tally.key()), tally.names)
+            stdout.print(tally.items.count(tally.grow()), tally.items)
+            stdout.print(tally.text.split(tally.renamed()), tally.text)
+            return
+        ",
+        "1 {\"a\": 101}\n2 [1, 1, 1]\n[\"a\", \"a\", \"a\"] b,b\n",
+    );
+}
+
+const INDEXED_BEFORE_ITS_INDEX: &str = "
+        struct Tally:
+            items: list[int]
+            count: int
+            names: dict[str, int]
+
+            def grow(ref self) -> int:
+                self.items.append(self.count + 5)
+                self.count += 1
+                return self.count
+
+            def key(ref self) -> str:
+                self.names['a'] = self.names['a'] + 100
+                return 'a'
+
+        def main(stdout: Stdout):
+            mut tally = Tally(items=[1, 2, 3], count=0, names={'a': 1})
+            stdout.print(tally.items[tally.grow()], tally.items)
+            stdout.print(tally.names[tally.key()], tally.names)
+            stdout.print(tally.items[tally.count + 1])
+            mut short = Tally(items=[1], count=0, names={'a': 1})
+            stdout.print(short.items[short.grow()])
+            return
+        ";
+
 /// Places through a type's own `def []`, as `docs/decisions.md` sets them out. Through the plain
 /// form beside a `def []=`, a change reads the part, changes the copy and writes it back once,
 /// nested too, and once for a method that changes it twice. Through the `ref` form a position is

@@ -212,7 +212,24 @@ impl Interp {
                 self.func_target(value)?
             }
         };
-        let target = self.bound_target(target, callee, args, expr);
+        let mut target = self.bound_target(target, callee, args, expr);
+        // Left to right: a method taking its value as a copy reads it before its arguments, which
+        // could change it.
+        if let Target::Def { def, receiver, .. } = &mut target
+            && def.params.first().is_some_and(|param| param.is_self && !param.is_mut)
+            && let Some(Receiver::Place(place)) = receiver
+        {
+            let read = self.read_place(place, callee.span)?;
+            *receiver = Some(Receiver::Value(read));
+        }
+        // So does a built-in method that only reads what it's called on.
+        if let Target::Method { receiver, name, buffer: false } = &mut target
+            && let Receiver::Place(place) = receiver
+            && self.peek_place(place, callee.span, |held| super::methods::only_reads(held, name))?
+        {
+            let read = self.read_place(place, callee.span)?;
+            *receiver = Receiver::Value(read);
+        }
         let lazy = matches!(target, Target::Builtin(_));
         let mut given = Vec::with_capacity(args.len());
         for arg in args {
@@ -574,15 +591,6 @@ impl Interp {
             if !def.takes_self() {
                 return unsupported("calling a type's function on a value");
             }
-            // One that doesn't change what it's called on is given it as it is now, before its
-            // arguments are worked out: evaluation is left to right, so `tally.show(tally.grow())`
-            // shows the tally before it grew.
-            let receiver = match receiver {
-                Receiver::Place(place) if !super::own_index::takes_ref_self(def) => {
-                    Receiver::Value(self.read_place(&place, span)?)
-                }
-                other => other,
-            };
             return Ok(Some(Target::Def {
                 def,
                 parent: None,

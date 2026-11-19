@@ -492,7 +492,8 @@ pub(crate) fn replay(input: &[u8]) -> Result<(), String> {
         }
         for replayed_on in [1, 4, 16] {
             let replayed = ran(&executable, &work, replayed_on, "FENNEC_REPLAY", &log)?;
-            let quiet = replayed.1.is_empty() || replayed.1 == SERVER_STOPPED;
+            // Only a program with a server has one for the recording's end to stop.
+            let quiet = replayed.1.is_empty() || (!plan.rounds.is_empty() && replayed.1 == SERVER_STOPPED);
             if (&replayed.0, replayed.2) != (&recorded.0, recorded.2) || !quiet {
                 return Err(format!(
                     "recorded on {recorded_on} threads and replayed on {replayed_on}, the replay printed \

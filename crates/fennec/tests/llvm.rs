@@ -16832,6 +16832,41 @@ def made(count: int) -> str:
     padding = "z" * 30
     return ",".join([f"{at}-{padding}" for at in range(count)])
 
+error Bad:
+    why: str
+
+## The separator, after changing the text its loop is over.
+def swap(ref line: str) -> str:
+    line = "x;y"
+    return ";"
+
+## The first part longer than three bytes, given back from inside the loop.
+def first_long(text: str) -> str:
+    for part in text.split(","):
+        if len(part) > 3:
+            return part
+    return ""
+
+## A part's size, failing for one that starts with "bad".
+def checked(part: str) -> int fails Bad:
+    if part.startswith("bad"):
+        fail Bad(part)
+    return len(part)
+
+## The parts' sizes added up, leaving the loop through `?` at the first bad one.
+def total_of(text: str) -> int fails Bad:
+    mut total = 0
+    for part in text.split(","):
+        total += checked(part)?
+    return total
+
+## Fails from inside the loop at the first bad part.
+def first_bad(text: str) -> int fails Bad:
+    for part in text.split(","):
+        if part.startswith("bad"):
+            fail Bad(part)
+    return 0
+
 def main(stdout: Stdout):
     # Empty parts at either end and between, a separator not there, and an empty text.
     stdout.print(
@@ -16889,6 +16924,20 @@ def main(stdout: Stdout):
     for number in "1;22;333".split(separator):
         total += len(number)
     stdout.print(total)
+    # A separator that changes the text's name: the loop splits the text as it was read.
+    mut line = "a,b"
+    mut taken = list[str]()
+    for part in line.split(swap(ref line)):
+        taken.append(part)
+    stdout.print(taken, line)
+    # Leaving by a return, by `?` and by `fail`, from parts that are blocks of their own.
+    padding = "z" * 30
+    found = first_long(f"a,bb,ccc{padding},dddd{padding}")
+    stdout.print(len(found), found[:4])
+    good = total_of(f"1{padding},22{padding}") except Bad(): -1
+    bad = total_of(f"1{padding},bad{padding},333{padding}") except Bad(): -2
+    early = first_bad(f"x{padding},bad{padding}") except Bad(): -3
+    stdout.print(good, bad, early)
     return
 "#;
 
@@ -16897,7 +16946,9 @@ def main(stdout: Stdout):
 /// there, an empty text, separators of two bytes and of more than eight, ones that overlap
 /// themselves, text that isn't ASCII, parts that are blocks of their own from a text a call
 /// made, loops inside loops leaving early and going round again, a field, a text its own loop
-/// changes, and a separator from a name. It prints what `split`'s list gives, with nothing left.
+/// changes, a separator from a name, a separator that changes the text's name, and leaving by a
+/// return, by `?` and by `fail`. It prints what `split`'s list gives, with nothing left. An empty
+/// separator from a name fails as `split` does, where the call is.
 #[test]
 fn a_loop_over_a_split_makes_no_list() -> std::io::Result<()> {
     if !ready() {
@@ -16905,10 +16956,25 @@ fn a_loop_over_a_split_makes_no_list() -> std::io::Result<()> {
     }
     assert_eq!(
         printed_by("loop_split", LOOP_SPLIT)?,
-        "[a][b][][c] [a][b][] [][a]\n[abc] [] [][]\n[x][y][][z] [][][] [][][a]\n[one][two][][three] [<--separator]\n[é][ü][ß] [a][b][c] [][語の][]\n500 16890\n9 [\"GET\", \"/a\", \"200\", \"POST\", \"/b\", \"500\", \"GET\", \"/c\", \"404\"] 4\n3 a-b-c-a-b-c\n6\n"
+        "[a][b][][c] [a][b][] [][a]\n[abc] [] [][]\n[x][y][][z] [][][] [][][a]\n[one][two][][three] [<--separator]\n[é][ü][ß] [a][b][c] [][語の][]\n500 16890\n9 [\"GET\", \"/a\", \"200\", \"POST\", \"/b\", \"500\", \"GET\", \"/c\", \"404\"] 4\n3 a-b-c-a-b-c\n6\n[\"a,b\"] x;y\n33 cccz\n63 -2 -3\n"
     );
     let counts = counts_of("loop_split_counts", LOOP_SPLIT)?;
-    assert!(counts.contains(" allocations 1022 ") && counts.ends_with(" live 0"), "{counts}");
+    assert!(counts.contains(" allocations 1041 ") && counts.ends_with(" live 0"), "{counts}");
+    let dir = folder("loop_split_empty_separator")?;
+    let (program, executable) = (dir.join("empty.fen"), dir.join("empty"));
+    std::fs::write(
+        &program,
+        "def main(stdout: Stdout):\n    separator = \"\"\n    for part in \"abc\".split(separator):\n        stdout.print(part)\n",
+    )?;
+    let built = fennec(&["build", &program.to_string_lossy(), "-o", &executable.to_string_lossy()], &dir)?;
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = Command::new(&executable).output_within()?;
+    std::fs::remove_dir_all(&dir)?;
+    assert!(!ran.status.success());
+    let said = String::from_utf8_lossy(&ran.stderr);
+    let mut lines = said.lines();
+    assert_eq!(lines.next(), Some("error: `split` was called with the wrong arguments"), "{said}");
+    assert!(lines.next().is_some_and(|place| place.ends_with("empty.fen:3:17")), "{said}");
     Ok(())
 }
 

@@ -25,6 +25,7 @@ use super::ast::{
     Waking, Yielding, ZIP_WAYS, ZipSumming, ZipWay,
 };
 use super::ast::{FILE_PIECES, FILE_WAYS, FileStep, FileWay, Filing};
+use super::ast::{GENERIC_STEPS, GENERIC_TYS, GenericStep, GenericTy, Genericking};
 use super::ast::{InOrder, ORDER_STEPS, OrderStep};
 use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
 use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
@@ -53,6 +54,12 @@ const PARALLEL_STREAMS: bool = true;
 /// write; and an `Fs` narrowed with `read_only` or `only` refusing. The second row of the coverage
 /// map: nothing wrote a file before.
 const FILE_WRITES: bool = true;
+
+/// Whether random programs give values of one type, an int, a text, a list or a struct holding a
+/// list, to a generic holder and generic functions (`Generic`): `ref self` and `ref T` changes,
+/// copies made inside generic code, a holder in a holder, in a list and in a dict. Map row 4:
+/// nothing generic was written before.
+const GENERICS: bool = true;
 
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
@@ -722,6 +729,7 @@ impl Writer<'_> {
             27 if EVERY_LISTENER && !self.threadless && self.choice(4) == 0 => self.listens(body),
             27 if NARROWED_UNIONS && self.choice(4) == 0 => self.narrows(body),
             27 if OWN_INDEXES && self.choice(4) == 0 => self.own_indexes(body),
+            27 if GENERICS && self.choice(4) == 0 => self.generics(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1458,6 +1466,21 @@ impl Writer<'_> {
             steps.push((step, self.choice(3), i64::from(self.byte() % 10)));
         }
         body.push(Stmt::Owned(OwnIndexing { id, base, steps }));
+    }
+
+    /// A `Generic` statement: one type, then 3 to 10 steps, each with a value and a count from 0
+    /// to 2.
+    fn generics(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let ty = GENERIC_TYS.get(self.choice(GENERIC_TYS.len())).copied().unwrap_or(GenericTy::Int);
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let step =
+                GENERIC_STEPS.get(self.choice(GENERIC_STEPS.len())).copied().unwrap_or(GenericStep::Put);
+            steps.push((step, self.choice(3), self.choice(3)));
+        }
+        body.push(Stmt::Generic(Genericking { id, ty, steps }));
     }
 
     /// An `Ordered` statement: 3 to 10 steps, each with what its call adds, from 0 to 9.

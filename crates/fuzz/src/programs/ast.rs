@@ -1240,6 +1240,105 @@ pub(crate) const OWN_STEPS: [OwnStep; 22] = [
     OwnStep::ParallelRef,
 ];
 
+/// A `Generic` statement: `generic{id}(stdout)`, a generic `Holder{id}[T]` and generic functions
+/// given one type, a holder, a second one, a holder of the first, a list of both and a dict holding
+/// the second, then a step at a time, each a generic call. Generic code can't look inside a `T`, so
+/// each value's text is all the evaluator needs. Copies of `T` made inside generic code must change
+/// apart, and a `ref` into a `T` must change the one it names.
+#[derive(Clone, Debug)]
+pub(crate) struct Genericking {
+    pub(crate) id: usize,
+    pub(crate) ty: GenericTy,
+    /// Each step, with the value it uses, from 0 to 2 in `GenericTy::values`, and a count, from 0
+    /// to 2.
+    pub(crate) steps: Vec<(GenericStep, usize, usize)>,
+}
+
+/// The type a `Generic` statement's `T` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenericTy {
+    Int,
+    Str,
+    Ints,
+    /// `Point{id}`: a struct holding a list.
+    Point,
+}
+
+impl GenericTy {
+    /// The type as written, for statement `id`.
+    pub(crate) fn written(self, id: usize) -> String {
+        match self {
+            GenericTy::Int => "int".to_owned(),
+            GenericTy::Str => "str".to_owned(),
+            GenericTy::Ints => "list[int]".to_owned(),
+            GenericTy::Point => format!("Point{id}"),
+        }
+    }
+
+    /// Three values of the type for statement `id`, each as written and as it prints inside a
+    /// struct.
+    pub(crate) fn values(self, id: usize) -> [(String, String); 3] {
+        let same = |text: &str| (text.to_owned(), text.to_owned());
+        match self {
+            GenericTy::Int => [same("0"), same("7"), same("-3")],
+            GenericTy::Str => [same("\"a\""), same("\"\""), same("\"\u{e9}\u{1f98a}\"")],
+            GenericTy::Ints => [same("[1, 2]"), ("list[int]()".to_owned(), "[]".to_owned()), same("[5]")],
+            GenericTy::Point => [
+                same(&format!("Point{id}(x=1, tags=[\"a\"])")),
+                (format!("Point{id}(x=2, tags=list[str]())"), format!("Point{id}(x=2, tags=[])")),
+                same(&format!("Point{id}(x=-4, tags=[\"b\", \"c\"])")),
+            ],
+        }
+    }
+}
+
+/// Every `GenericTy`, for the generator to pick from.
+pub(crate) const GENERIC_TYS: [GenericTy; 4] =
+    [GenericTy::Int, GenericTy::Str, GenericTy::Ints, GenericTy::Point];
+
+/// A step of a `Generic` statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenericStep {
+    /// `holder.put(v)`: a `ref self` method keeping the old item and taking the new.
+    Put,
+    /// `grown(ref holder.items, value=v, times=count)`: a `ref list[T]` parameter grown.
+    Grown,
+    /// `swapped(ref holder.item, ref other.item)`: two `ref T` parameters in two holders.
+    Swapped,
+    /// `swapped(ref holder.items, ref other.items)`.
+    SwappedItems,
+    /// `changed_copy(holder, value=v)`, printed: a copy made and changed inside generic code,
+    /// leaving the holder as it was.
+    Copied,
+    /// `doubled(holder.item)`, printed: a list of two copies.
+    Doubled,
+    /// `holder.oldest()`, printed.
+    Oldest,
+    /// `outer.item.put(v)`: a holder held in a holder, changed through its field.
+    Nested,
+    /// `for ref each in pair: each.put(v)`.
+    ForRef,
+    /// `holder.items.pop() else holder.item`, printed.
+    Popped,
+    /// `table["k"].put(v)`: a holder in a dict, changed where it is.
+    DictPut,
+}
+
+/// Every `GenericStep`, for the generator to pick from.
+pub(crate) const GENERIC_STEPS: [GenericStep; 11] = [
+    GenericStep::Put,
+    GenericStep::Grown,
+    GenericStep::Swapped,
+    GenericStep::SwappedItems,
+    GenericStep::Copied,
+    GenericStep::Doubled,
+    GenericStep::Oldest,
+    GenericStep::Nested,
+    GenericStep::ForRef,
+    GenericStep::Popped,
+    GenericStep::DictPut,
+];
+
 /// How a `Turned` loop's int changes sign after its first turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Turn {
@@ -1510,6 +1609,8 @@ pub(crate) enum Stmt {
     Turned(Turning),
     /// `ordered{id}(stdout)`: lines whose parts change what's read before them, read left to right.
     Ordered(InOrder),
+    /// `generic{id}(stdout)`: values of one type through a generic holder and generic functions.
+    Generic(Genericking),
     /// `filed{id}(fs, stdout)`: files written whole or left as they were, a step at a time.
     Filed(Filing),
     /// `owned{id}(stdout)`: values of types with their own `def []`, changed through it.

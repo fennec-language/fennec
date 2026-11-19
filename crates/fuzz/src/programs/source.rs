@@ -14,6 +14,7 @@ use super::ast::{
     RefCasing, RefWay, SWAP_KEYS, ShelfPlace, Shelve, Shelving, SwapField, Swapping, Waking, Yielding,
 };
 use super::ast::{FILE_PIECES, FileWay, Filing};
+use super::ast::{GenericStep, GenericTy, Genericking};
 use super::ast::{InOrder, OrderStep};
 use super::ast::{NarrowWay, Narrowing};
 use super::ast::{OwnIndexing, OwnStep};
@@ -2319,6 +2320,85 @@ fn owned_written(owning: &OwnIndexing) -> String {
     out
 }
 
+/// The generic holder and functions a `Generic` statement calls, `{N}` standing for its id.
+const GENERIC_FUNCTIONS: &str = "struct Holder{N}[T]:
+    item: T
+    items: list[T]
+
+    def put(ref self, value: T):
+        self.items.append(self.item)
+        self.item = value
+
+    def oldest(self) -> T:
+        if len(self.items) > 0:
+            return self.items[0]
+        return self.item
+
+def swapped{N}[T](ref one: T, ref other: T):
+    held = one
+    one = other
+    other = held
+
+def grown{N}[T](ref items: list[T], value: T, times: int):
+    for _ in range(times):
+        items.append(value)
+
+def doubled{N}[T](value: T) -> list[T]:
+    mut out = [value]
+    out.append(value)
+    return out
+
+def changed_copy{N}[T](holder: Holder{N}[T], value: T) -> Holder{N}[T]:
+    mut mine = holder
+    mine.put(value)
+    return mine
+
+";
+
+/// `generic{id}`, the function a `Generic` calls, after its holder and functions: the values, a
+/// line for each step, then what each holds.
+fn generic_written(generic: &Genericking) -> String {
+    let Genericking { id, ty, steps } = generic;
+    let mut out = String::new();
+    if *ty == GenericTy::Point {
+        let _ = write!(out, "struct Point{id}:\n    x: int\n    tags: list[str]\n\n");
+    }
+    out.push_str(&GENERIC_FUNCTIONS.replace("{N}", &id.to_string()));
+    let values = ty.values(*id);
+    let value = |at: usize| values.get(at).map_or("", |(written, _)| written.as_str()).to_owned();
+    let (t, v0, v1, v2) = (ty.written(*id), value(0), value(1), value(2));
+    let _ = write!(
+        out,
+        "def generic{id}(stdout: Stdout):\n    mut holder = Holder{id}[{t}](item={v0}, items=[])\n    mut other = \
+         Holder{id}[{t}](item={v1}, items=[{v2}])\n    mut outer = Holder{id}[Holder{id}[{t}]](item=holder, \
+         items=[])\n    mut pair = [holder, other]\n    mut table = {{\"k\": other}}\n"
+    );
+    for (at, &(step, which, count)) in steps.iter().enumerate() {
+        let v = value(which);
+        let line = match step {
+            GenericStep::Put => format!("holder.put({v})"),
+            GenericStep::Grown => format!("grown{id}(ref holder.items, value={v}, times={count})"),
+            GenericStep::Swapped => format!("swapped{id}(ref holder.item, ref other.item)"),
+            GenericStep::SwappedItems => format!("swapped{id}(ref holder.items, ref other.items)"),
+            GenericStep::Copied => format!("stdout.print(changed_copy{id}(holder, value={v}))"),
+            GenericStep::Doubled => format!("stdout.print(doubled{id}(holder.item))"),
+            GenericStep::Oldest => "stdout.print([holder.oldest()])".to_owned(),
+            GenericStep::Nested => format!("outer.item.put({v})"),
+            GenericStep::ForRef => format!("for ref each in pair:\n        each.put({v})"),
+            GenericStep::Popped => {
+                format!("taken{at} = holder.items.pop() else holder.item\n    stdout.print([taken{at}])")
+            }
+            GenericStep::DictPut => format!("table[\"k\"].put({v})"),
+        };
+        let _ = writeln!(out, "    {line}");
+    }
+    out.push_str(
+        "    stdout.print(holder)\n    stdout.print(other)\n    stdout.print(outer)\n    stdout.print(pair)\n    \
+         stdout.print(table)\n\n",
+    );
+    out
+}
+
 /// `turned{id}`, the function a `Turned` calls: a loop whose int changes sign after its first
 /// turn, printed with what each use of it gives.
 fn turned_written(turning: &Turning) -> String {
@@ -3069,6 +3149,10 @@ impl Writer {
             Stmt::Filed(filing) => {
                 let _ = write!(self.helpers, "{}", filed_written(filing));
                 self.line(indent, &format!("filed{}(fs, stdout)", filing.id));
+            }
+            Stmt::Generic(generic) => {
+                let _ = write!(self.helpers, "{}", generic_written(generic));
+                self.line(indent, &format!("generic{}(stdout)", generic.id));
             }
             Stmt::Ordered(in_order) => {
                 let _ = write!(self.helpers, "{}", ordered_written(in_order));

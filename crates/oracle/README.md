@@ -95,6 +95,10 @@ says they are, at the version the workspace pins.
   parameter, a `for ref` loop's name and a local `ref` stand for a place, written where it is. A
   `case` with `ref` binds a copy of the field it names, put back where the case ends however it
   ends, as the checker writes it in for the compiled program.
+- Evaluation is left to right, as `docs/decisions.md` says. What's indexed is read before its
+  index, and what a method is called on before its arguments, when it takes its value as a copy
+  or is a string's method or one of a dict's or a list's that only looks things up. A method that
+  changes its value where it is, a `ref self` one or a list's `append`, reaches it as it is then.
 - A failure passes up as a Rust error, `except` handles only the failure of the call it follows,
   and `else` the missing value at the end of a chain.
 - A generator runs on a thread of its own, and it and its reader take turns, so a run is the same

@@ -222,8 +222,7 @@ export struct Time:
         if len(text) < 20: fail Time._not_rfc3339(text)
         for at, wanted in [(4, "-"), (7, "-"), (13, ":"), (16, ":")]:
             if text[at] != wanted: fail Time._not_rfc3339(text)
-        if text[10] != "T" and text[10] != "t" and text[10] != " ":
-            fail Time._not_rfc3339(text)
+        if text[10] != "T" and text[10] != "t" and text[10] != " ": fail Time._not_rfc3339(text)
         year = Time._digits_at(text, at=0, count=4)?
         month = Time._digits_at(text, at=5, count=2)?
         day = Time._digits_at(text, at=8, count=2)?
@@ -261,14 +260,7 @@ export struct Time:
         else:
             fail Time._not_rfc3339(text)
         if at != len(text): fail Time._not_rfc3339(text)
-        found = Time.utc(
-            year,
-            month=month,
-            day=day,
-            hour=hour,
-            minute=minute,
-            second=second,
-        )?
+        found = Time.utc(year, month=month, day=day, hour=hour, minute=minute, second=second)?
         moment = found.nanos + fraction - offset
         # The date written is inside the years a `Time` holds, but an offset can take the moment
         # past either end, where `iso` would write a year `parse` refuses.

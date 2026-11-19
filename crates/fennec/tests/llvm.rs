@@ -7699,7 +7699,8 @@ def main(stdout: Stdout):
 }
 
 /// A `u64` from outside: `u64.from(x)?` and `u64.parse(text)?`, which reads what's past the
-/// largest `int` a digit at a time, failing cleanly past the top. And `u64`'s `wrapping_` and
+/// largest `int` a digit at a time, failing cleanly past the top, from the same text `int` reads:
+/// with space around it and a `+` before it. And `u64`'s `wrapping_` and
 /// `saturating_` methods, worked out on its 64 bits without going past them.
 #[test]
 fn a_u64_from_outside_and_its_wrapping_and_saturating_methods() -> std::io::Result<()> {
@@ -7720,6 +7721,7 @@ def main(stdout: Stdout):
     stdout.print(top.wrapping_add(2), u64(1).wrapping_sub(3), top.wrapping_mul(top), half.wrapping_mul(2), u64(3037000500).wrapping_mul(3037000500))
     stdout.print(top.saturating_add(1), u64(1).saturating_sub(2), half.saturating_mul(2), u64(6).saturating_mul(7), top.saturating_mul(0))
     stdout.print(i8(u64(100)), u32(half >> 33), top << 4, u64(3) << 63)
+    stdout.print(said(() => u64.parse(\" 18446744073709551615\\n\")?), said(() => u64.parse(\"+18446744073709551615\")?), said(() => u64.parse(\"+ 18446744073709551615\")?), said(() => u64.parse(\" 18446744073709551616 \")?))
 ",
     )?;
     let too_big = |text: &str| format!("[{text} doesn't fit in u64, which holds 0 to 18446744073709551615]");
@@ -7729,10 +7731,12 @@ def main(stdout: Stdout):
             "18446744073709551615 9223372036854775808 42 7 {} {} {} [\"seven\" isn't an int]\n\
              1 18446744073709551614 1 0 9223372037000250000\n\
              18446744073709551615 0 18446744073709551615 42 0\n\
-             100 1073741824 18446744073709551600 9223372036854775808\n",
+             100 1073741824 18446744073709551600 9223372036854775808\n\
+             18446744073709551615 18446744073709551615 [\"+ 18446744073709551615\" isn't an int] {}\n",
             too_big("-1"),
             too_big("18446744073709551616"),
-            too_big("-3")
+            too_big("-3"),
+            too_big("18446744073709551616")
         )
     );
     Ok(())

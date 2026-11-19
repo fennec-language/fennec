@@ -26,6 +26,7 @@ use super::ast::{
 };
 use super::ast::{FILE_PIECES, FILE_WAYS, FileStep, FileWay, Filing};
 use super::ast::{GENERIC_STEPS, GENERIC_TYS, GenericStep, GenericTy, Genericking};
+use super::ast::{IFACE_STEPS, IfaceStep, Interfacing};
 use super::ast::{InOrder, ORDER_STEPS, OrderStep};
 use super::ast::{NARROW_WAYS, NarrowWay, Narrowing};
 use super::ast::{OWN_STEPS, OwnIndexing, OwnStep};
@@ -60,6 +61,12 @@ const FILE_WRITES: bool = true;
 /// copies made inside generic code, a holder in a holder, in a list and in a dict. Map row 4:
 /// nothing generic was written before.
 const GENERICS: bool = true;
+
+/// Whether random programs give two types with one interface to generic functions bounded by it
+/// (`Interfaced`): `ref self` methods through `ref G` and `for ref`, a copy grown inside generic
+/// code, a method that fails partway passed up with `?`, and one that's a generator. Map row 5:
+/// nothing wrote an interface before.
+const INTERFACES: bool = true;
 
 /// Whether random programs read what a later call in the same line changes: receivers, an index's
 /// base, operators, arguments and writes, each read left to right (`Ordered`). On since compiled
@@ -730,6 +737,7 @@ impl Writer<'_> {
             27 if NARROWED_UNIONS && self.choice(4) == 0 => self.narrows(body),
             27 if OWN_INDEXES && self.choice(4) == 0 => self.own_indexes(body),
             27 if GENERICS && self.choice(4) == 0 => self.generics(body),
+            27 if INTERFACES && self.choice(4) == 0 => self.interfaces(body),
             27 => self.change_buffer(body),
             29 => {
                 let table = self.fresh();
@@ -1481,6 +1489,18 @@ impl Writer<'_> {
             steps.push((step, self.choice(3), self.choice(3)));
         }
         body.push(Stmt::Generic(Genericking { id, ty, steps }));
+    }
+
+    /// An `Interfaced` statement: 3 to 10 steps, each on the crates or the heaps, adding 0 to 9.
+    fn interfaces(&mut self, body: &mut Vec<Stmt>) {
+        self.made += 1;
+        let id = self.made;
+        let mut steps = Vec::new();
+        for _ in 0..3 + self.choice(8) {
+            let step = IFACE_STEPS.get(self.choice(IFACE_STEPS.len())).copied().unwrap_or(IfaceStep::Bumped);
+            steps.push((step, self.choice(2) == 0, i64::from(self.byte() % 10)));
+        }
+        body.push(Stmt::Interfaced(Interfacing { id, steps }));
     }
 
     /// An `Ordered` statement: 3 to 10 steps, each with what its call adds, from 0 to 9.

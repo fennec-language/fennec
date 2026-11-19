@@ -23326,6 +23326,66 @@ def main(stdout: Stdout) fails Nope:
     )
 }
 
+/// A `ref self` method called on a union known to hold one member, after `is`, is given that
+/// member and puts it back changed. So is one called on each union in a list, or on a union field,
+/// and a union given by `ref` to a function that takes the union can be changed to another member.
+/// One given by `ref` where its member is taken is given the member, and gets it back changed.
+#[test]
+fn a_ref_self_method_on_a_narrowed_union_changes_the_member_it_holds() -> std::io::Result<()> {
+    if !ready() {
+        return Ok(());
+    }
+    prints_in_both_builds(
+        "union_ref_self",
+        r"struct Box:
+    items: list[int]
+
+    def grow(ref self) -> int:
+        self.items.append(9)
+        return len(self.items)
+
+struct Bag:
+    held: int
+
+    def grow(ref self) -> int:
+        self.held += 1
+        return self.held
+
+struct Holder:
+    shape: Box | Bag
+
+def reset(ref shape: Box | Bag) -> int:
+    grown = shape.grow()
+    shape = Bag(held=100)
+    return grown
+
+def grow_box(ref box: Box) -> int:
+    return box.grow()
+
+def main(stdout: Stdout):
+    mut shape: Box | Bag = Box(items=[1])
+    stdout.print(shape.grow())
+    if shape is Box:
+        stdout.print(shape.grow(), shape.items)
+    mut shapes: list[Box | Bag] = [Bag(held=0), Box(items=[])]
+    for ref each in shapes:
+        stdout.print(each.grow())
+    stdout.print(shapes)
+    mut holder = Holder(shape=Bag(held=5))
+    stdout.print(holder.shape.grow(), holder.shape)
+    mut other: Box | Bag = Box(items=[])
+    if other is Box:
+        stdout.print(reset(ref other))
+    stdout.print(other)
+    mut third: Box | Bag = Box(items=[])
+    if third is Box:
+        stdout.print(grow_box(ref third), third)
+    return
+",
+        "2\n3 [1, 9, 9]\n1\n1\n[Bag(held=1), Box(items=[9])]\n6 Bag(held=6)\n1\nBag(held=100)\n1 Box(items=[9])\n",
+    )
+}
+
 /// A union with a function member, as a server's `Router | (Request) -> Response`: a struct, an
 /// arrow, a named function and an arrow given to a name of the union's type each go in, and the
 /// function is called once `case _:` or `is` leaves only it.

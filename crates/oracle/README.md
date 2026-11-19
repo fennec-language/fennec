@@ -147,6 +147,10 @@ says they are, at the version the workspace pins.
   the last `size`: a listener that hadn't read the one let go falls behind, and its next receive
   fails as a crash does, or with `when_behind=.DropOldest` goes on from the oldest kept. The
   `with` ends as the task does, with its failure, or `Crashed(why="the task crashed")` for a crash.
+  A listener started beside sends, neither before nor after them, is tried at each place it could
+  start among them, as racing senders are. A timed wait that times out is taken to come after
+  every other task got as far as it could, its listeners started included: one that exists then
+  started before what's sent after.
   Refused: two tasks taking from one channel to one receiver, or from one listener, at once, where
   neither had heard of the other's last take; several senders to a listener whose
   next messages differ; a channel to every listener letting go of a message a listener read, the

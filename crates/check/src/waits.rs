@@ -137,7 +137,8 @@ impl crate::checker::HoldsSpan for LockCall {
 impl crate::checker::HoldsSpan for Values {
     // Named in full, so a field added later can't be left out of what's looked through.
     fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
-        let Values { called: _, passed, waits, calls, locks, local_calls, through: _, captured_arrows } = self;
+        let Values { called: _, passed, waits, calls, locks, local_calls, through: _, captured_arrows } =
+            self;
         passed.iter().any(|passed| {
             let Passed { callee: _, name: _, param: _, given, span, held: _ } = passed;
             hit(*span) || matches!(given, Given::Arrow(arrow, _) if arrow.holds_span(hit))

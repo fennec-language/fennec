@@ -179,7 +179,8 @@ impl<K: HoldsSpan, V: HoldsSpan> HoldsSpan for BTreeMap<K, V> {
 impl HoldsSpan for Graph {
     // Named in full, so a field added later can't be left out of what's looked through.
     fn holds_span(&self, hit: &dyn Fn(Span) -> bool) -> bool {
-        let Graph { own_callers, waits, takes_locks, lock_calls, values, handovers, unfollowed, reached } = self;
+        let Graph { own_callers, waits, takes_locks, lock_calls, values, handovers, unfollowed, reached } =
+            self;
         own_callers.holds_span(hit)
             || waits.holds_span(hit)
             || takes_locks.holds_span(hit)
@@ -746,8 +747,11 @@ impl Checker {
         let unusable: Vec<String> = carried.iter().filter(|key| open(key) || stale(key)).cloned().collect();
         // A function and those written inside it are checked again together, whichever of them
         // can't be carried over: from the outermost.
-        let outermost: BTreeSet<String> = unusable.iter().map(|key| outermost_carried(key, &nested)).collect();
-        carried.retain(|key| !outermost.iter().any(|outer| key == outer || key.starts_with(&format!("{outer}."))));
+        let outermost: BTreeSet<String> =
+            unusable.iter().map(|key| outermost_carried(key, &nested)).collect();
+        carried.retain(|key| {
+            !outermost.iter().any(|outer| key == outer || key.starts_with(&format!("{outer}.")))
+        });
         for outer in &outermost {
             nested.remove(outer);
         }

@@ -585,6 +585,11 @@ impl Type {
         })
     }
 
+    /// Whether a type variable still open is anywhere in this type.
+    pub(crate) fn has_var(&self) -> bool {
+        matches!(self, Type::Var(_)) || self.children().iter().any(|child| child.has_var())
+    }
+
     /// Whether `var` appears anywhere in this type.
     pub(crate) fn mentions(&self, var: u32) -> bool {
         *self == Type::Var(var) || self.children().iter().any(|child| child.mentions(var))

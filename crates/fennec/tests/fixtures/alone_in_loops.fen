@@ -1,0 +1,68 @@
+# Lists and `Table`s a loop changes are made alone once, on the way into the loop, when nothing in
+# it can give them another owner. Each way something in a loop does give one another owner keeps
+# its checks, and every value still means what a copy means.
+
+from std.collections import Id, Table
+from std.concurrent import Crashed
+
+struct Unit:
+    health: int
+    tags: list[str]
+
+def summed(items: list[int]) -> int:
+    return sum(items)
+
+def total(units: Table[Unit]) -> int:
+    return sum(unit.health for unit in units)
+
+def report(stdout: Stdout, units: Table[Unit]):
+    stdout.print("the task saw", total(units))
+    return
+
+def main(stdout: Stdout) fails Crashed:
+    # Copied before the loop: made alone on the way in, so the copy keeps what it had.
+    mut items = [1, 2, 3]
+    kept = items
+    for at in range(5):
+        items.append(at)
+        items[0] += at
+    stdout.print(items, kept, summed(items))
+    # Copied in the loop: each copy keeps what it had when it was made.
+    mut snapshots = list[list[int]]()
+    mut grown = [0]
+    for at in range(3):
+        grown.append(at)
+        snapshots.append(grown)
+        grown[0] = 100 + at
+    stdout.print(snapshots, grown)
+    # Given to a closure in the loop: each closure has its own.
+    mut seen = list[int]()
+    mut counted = [5]
+    for at in range(3):
+        length = () => len(counted)
+        counted.append(at)
+        seen.append(length())
+    stdout.print(seen, counted)
+    # Written anew in the loop, with a list a copy holds too.
+    mut fresh = [1]
+    for at in range(4):
+        if at == 2:
+            fresh = kept
+        fresh.append(at)
+    stdout.print(fresh, kept)
+    # A `Table` changed by `Id` in a loop, a copy kept before it, and a task holding it in another.
+    mut units = Table[Unit]()
+    mut ids = list[Id[Unit]]()
+    for health in range(4):
+        ids.append(units.add(Unit(health=health * 10, tags=[])))
+    before = units
+    for id in ids:
+        units[id].health += 5
+        units[id].tags.append("hit")
+    stdout.print(total(units), total(before))
+    for id in ids:
+        units[id].health -= 1
+        with launch(() => report(stdout, units))?:
+            pass
+    stdout.print(total(units), sum(len(unit.tags) for unit in units))
+    return

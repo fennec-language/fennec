@@ -200,8 +200,8 @@ pub(crate) fn uses_saving(module: &Module) -> bool {
         return true;
     }
     let mut named = false;
-    let mut walked = module.clone();
-    fennec_syntax::visit::exprs_mut(&mut walked, &mut |expr| {
+    // Read where they are: copying a module of 200,000 lines to walk it cost more than the walk.
+    fennec_syntax::read::exprs(module, &mut |expr| {
         named |= match &expr.kind {
             ExprKind::Name(name) => SAVING_NAMES.contains(&name.as_str()),
             // `response.json[T]()` reads what an HTTP call gave back as a `T`.
@@ -211,7 +211,7 @@ pub(crate) fn uses_saving(module: &Module) -> bool {
             _ => false,
         };
     });
-    fennec_syntax::visit::functions_mut(&mut walked, &mut |def| {
+    fennec_syntax::read::each_function(module, &mut |def| {
         named |= def
             .generics
             .iter()

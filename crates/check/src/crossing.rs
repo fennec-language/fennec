@@ -15,6 +15,11 @@
 //!
 //! What can't be worked out counts as crossing: signatures made without it say every type does,
 //! and so does a check that meets a type parameter it can't place.
+//!
+//! It's worked out only when asked for, inside `with_crossing`: nothing a build lowers reads it
+//! yet, and it walks every typed body of every check, so a build that checks a program three times
+//! over its rounds would walk them three times for nothing. Once lowering reads it, a build asks for
+//! it, and it's then worth working out for the last round's check alone.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,6 +27,30 @@ use fennec_syntax::{Expr, ExprKind, Stmt, StmtKind};
 
 use crate::checker::Checker;
 use crate::types::Type;
+
+thread_local! {
+    /// Whether a check on this thread works out what crosses.
+    static WANTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `run` with each check in it working out which types can cross to another task, which a
+/// check otherwise leaves not worked out, so every type is said to cross.
+pub fn with_crossing<R>(run: impl FnOnce() -> R) -> R {
+    /// Puts back whether it was asked for before, however `run` ends.
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            WANTED.with(|wanted| wanted.set(self.0));
+        }
+    }
+    let _restore = Restore(WANTED.with(|wanted| wanted.replace(true)));
+    run()
+}
+
+/// Whether a check on this thread is to work out what crosses.
+pub(crate) fn wanted() -> bool {
+    WANTED.with(std::cell::Cell::get)
+}
 
 /// Which types can cross to another task, as the backend reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]

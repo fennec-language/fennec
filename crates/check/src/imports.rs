@@ -57,6 +57,12 @@ pub(crate) fn unimported(module: &Module, program: &Program) -> Vec<Diagnostic> 
 
 impl Uses<'_> {
     fn name(&mut self, name: &str, span: Span) {
+        // Only a type has to be imported, and a type's name starts with a capital, as
+        // `importable_type` holds: most names are locals and functions, which this leaves at once
+        // rather than looking each up as a type first.
+        if !name.starts_with(|c: char| c.is_ascii_uppercase()) {
+            return;
+        }
         // A standard library source written in where it's used names its own types, and what
         // lowering writes in names the types the checker found, like a source's `T`.
         if span.in_prelude() || crate::lend_lowering::written_in(span) {

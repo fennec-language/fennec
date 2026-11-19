@@ -335,7 +335,8 @@ pub(crate) const RANDOM_PROGRAMS: Target = Target {
 };
 
 /// Tasks and a server's rounds that print and make way, recorded on 1 and 4 threads and each
-/// recording replayed on 1, 4 and 16, which runs only when named, since it runs every input 8 times.
+/// recording replayed on 1, 4 and 16, which runs only when named, since it builds every input once
+/// and runs it 8 times: 2 recordings and 6 replays.
 pub(crate) const REPLAY: Target = Target {
     name: "replay",
     corpus: &["crates/fuzz/seeds/replay"],

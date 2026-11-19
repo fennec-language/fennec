@@ -1,9 +1,13 @@
 //! The `replay` target: a program of tasks and a server's rounds that print and make way for each
 //! other, recorded on 1 and on 4 threads, and each recording replayed on 1, 4 and 16. A replay must
-//! print what its recording printed, byte for byte, and end the same way, with no error on
-//! standard error, where it may say the recording's end stopped the server. Where nothing printed a line in pieces, every line the recording printed must
-//! be one the program prints, each as often as it prints it, so a line torn in two or put in twice
-//! is caught in the recording as well.
+//! print what its recording printed, byte for byte, and end the same way. Standard error is held to
+//! what's expected: nothing from a recording, and from a replay nothing or the one note that the
+//! recording's end stopped the server, so a warning, like a recording that stopped early, fails.
+//!
+//! What each `print` prints has to be in the recording as often as it's printed, so a print torn
+//! in two or put in twice is caught in the recording as well. Where nothing printed a line in
+//! pieces, every line has to be one the program prints. A `write` isn't promised whole, so a line
+//! printed in pieces may have another task's line between them.
 //!
 //! The input chooses how many tasks `main` launches and how many rounds it asks a server it runs
 //! for, and what each does, in steps: print a line, print one in two pieces with a wait between,
@@ -140,6 +144,35 @@ impl Plan {
 
     fn in_pieces(&self) -> bool {
         self.tasks.iter().chain(&self.rounds).flatten().any(|step| matches!(step, Step::Pieces(_)))
+    }
+
+    /// What each `print` prints, its new line too, as often as it's printed, sorted. Step numbers
+    /// are one digit, and no text ends another, so none can be found inside another.
+    fn printed(&self) -> Vec<String> {
+        let mut printed: Vec<String> = Vec::new();
+        for (who, steps) in self.bodies() {
+            let mut taken = 0;
+            for (number, step) in steps.iter().enumerate() {
+                match step {
+                    Step::Print => printed.push(format!("{who} s{number}\n")),
+                    Step::Pieces(_) => printed.push(" b\n".to_owned()),
+                    Step::Wait(_) => {}
+                    Step::Receive => {
+                        printed.push(format!("{who} got {}\n", sent(&who, taken)));
+                        taken += 1;
+                    }
+                }
+            }
+        }
+        for (number, step) in self.main.iter().enumerate() {
+            if matches!(step, MainStep::Print) {
+                printed.push(format!("main s{number}\n"));
+            }
+        }
+        printed.extend((0..self.rounds.len()).map(|round| format!("done r{round}\n")));
+        printed.push("over\n".to_owned());
+        printed.sort();
+        printed
     }
 
     /// Every line the program prints, in no particular order.
@@ -371,6 +404,9 @@ pub(crate) fn written(input: &[u8]) -> String {
     source(&plan(input))
 }
 
+/// What a replay of a server says when the recording's end stops it, and all it may say.
+const SERVER_STOPPED: &str = "replay: the recording ends here, so the server is stopped\n";
+
 /// What a run printed, what it said on standard error, and its exit code.
 type Ran = (Vec<u8>, String, Option<i32>);
 
@@ -425,16 +461,27 @@ pub(crate) fn replay(input: &[u8]) -> Result<(), String> {
     };
     let mut expected = plan.lines();
     expected.sort();
+    let printed = plan.printed();
     for recorded_on in [1, 4] {
         let log = work.join(format!("recorded-{recorded_on}.log"));
         // What `fennec run --record` writes first, which a replay reads to know it's a recording.
         fennec_rt::replay::start_log(&log, b"native\0program.fen")
             .map_err(|err| format!("{}: {err}", log.display()))?;
         let recorded = ran(&executable, &work, recorded_on, "FENNEC_RECORD", &log)?;
-        if recorded.2 != Some(0) || recorded.1.contains("error") {
+        if recorded.2 != Some(0) || !recorded.1.is_empty() {
             return Err(format!(
                 "recorded on {recorded_on} threads, it ended with {:?}, saying:\n{}",
                 recorded.2, recorded.1
+            ));
+        }
+        let text = String::from_utf8_lossy(&recorded.0);
+        let mut counted = printed.clone();
+        counted.dedup();
+        if let Some(print) = counted.iter().find(|print| {
+            text.matches(print.as_str()).count() != printed.iter().filter(|each| each == print).count()
+        }) {
+            return Err(format!(
+                "recorded on {recorded_on} threads, it didn't print {print:?} as often as the program does:\n{text}"
             ));
         }
         if !plan.in_pieces() && sorted_lines(&recorded.0) != expected {
@@ -445,7 +492,8 @@ pub(crate) fn replay(input: &[u8]) -> Result<(), String> {
         }
         for replayed_on in [1, 4, 16] {
             let replayed = ran(&executable, &work, replayed_on, "FENNEC_REPLAY", &log)?;
-            if (&replayed.0, replayed.2) != (&recorded.0, recorded.2) || replayed.1.contains("error") {
+            let quiet = replayed.1.is_empty() || replayed.1 == SERVER_STOPPED;
+            if (&replayed.0, replayed.2) != (&recorded.0, recorded.2) || !quiet {
                 return Err(format!(
                     "recorded on {recorded_on} threads and replayed on {replayed_on}, the replay printed \
                      {:?} and ended with {:?}, saying:\n{}\nwhere the recording printed {:?}",

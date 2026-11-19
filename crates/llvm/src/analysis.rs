@@ -5051,9 +5051,12 @@ mod tests {
             "    mut xs = list[int]()\n    for i in range(n):\n        if i > 3:\n            continue\n        xs.append(i)\n",
             "    mut xs = list[int]()\n    for i in range(n):\n        xs.append(i)\n    xs.append(n)\n",
             "    mut xs = list[int]()\n    for i in range(n):\n        xs.append(i)\n    for i in range(n):\n        xs.append(i)\n",
+            "    mut xs = [n]\n    xs.append(n)\n    m = len(xs)\n    xs = []\n    for i in range(m):\n        xs.append(i)\n",
         ] {
             assert!(!within_room(&filled(body))?, "skipped the check: {body}");
         }
+        let filtered = walked.replace("for unit in units]", "for unit in units if unit.hp > 0]");
+        assert!(!within_room(&filtered)?, "skipped the check: a walk through a Table with a filter");
         Ok(())
     }
 

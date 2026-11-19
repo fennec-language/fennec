@@ -3354,7 +3354,6 @@ fn find_aliases(function: &Function, known: &mut Analysis) {
     }
 }
 
-/// `[f(x) for x in range(n)]` is an empty list and a loop of appends.
 /// A list a loop fills, made once the loop's count is known (see `Analysis::reservations`).
 #[derive(Clone, Debug)]
 pub(crate) struct Reserved {
@@ -3364,6 +3363,7 @@ pub(crate) struct Reserved {
     pub(crate) copied_from: Option<usize>,
 }
 
+/// `[f(x) for x in range(n)]` is an empty list and a loop of appends.
 fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut Analysis) {
     for (at, block) in function.blocks.iter().enumerate() {
         let Terminator::Jump(header_at) = &block.end else { continue };
@@ -3381,7 +3381,8 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
         let Some(body) = function.blocks.get(then.0) else { continue };
         // Every list the loop appends to, in any of its own blocks: one block a turn, as a walk
         // through a `Table`'s live slots appends past the test of whether a slot is live.
-        let appended: BTreeSet<usize> = loop_of(function, header_at.0, then.0)
+        let looped = loop_of(function, header_at.0, then.0);
+        let appended: BTreeSet<usize> = looped
             .iter()
             .filter_map(|at| function.blocks.get(*at))
             .flat_map(|block| &block.insts)
@@ -3394,6 +3395,14 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
             })
             .collect();
         for list in appended {
+            // What's known of a list while its loop fills it goes by its local: so it's known
+            // only of a list nothing outside the loop appends to, before it or after, in another
+            // loop or once on its own.
+            if !appended_only_in(function, &looped, list)
+                || !appended_every_turn(function, (header_at.0, then.0), &looped, list)
+            {
+                continue;
+            }
             // Only a list made here, which has one owner, and empty: written straight in, or
             // made as a temporary nothing else reads and copied in, as `mut xs = list[int]()` is.
             // A constant list is one block every reader shares and nothing frees, so appending to
@@ -3429,6 +3438,58 @@ fn find_reservations(function: &Function, stepped: &HashSet<usize>, known: &mut 
             }
         }
     }
+}
+
+/// Whether `inst` appends to `list`.
+fn appends_to(inst: &InstKind, list: usize) -> bool {
+    matches!(inst, InstKind::Builtin { name, args, .. }
+        if name == "list.append" && args.first() == Some(&Operand::Local(LocalId(list))))
+}
+
+/// Whether every append to `list` in the function is in one of the loop's own blocks.
+fn appended_only_in(function: &Function, looped: &[usize], list: usize) -> bool {
+    function.blocks.iter().enumerate().all(|(at, block)| {
+        looped.contains(&at) || !block.insts.iter().any(|inst| appends_to(&inst.kind, list))
+    })
+}
+
+/// Whether every turn of the loop at `header_at` appends to `list`, but those a walk through a
+/// `Table` steps over for an empty slot: then room for every turn is about as much as the list
+/// comes to hold. A turn past a filter or a `continue` may add nothing, and room made for every
+/// one of a long count would be a great deal of memory for a list that may stay short.
+fn appended_every_turn(
+    function: &Function,
+    (header_at, body_at): (usize, usize),
+    looped: &[usize],
+    list: usize,
+) -> bool {
+    let slot_live = |cond: &Operand| {
+        function.blocks.iter().flat_map(|block| &block.insts).any(|inst| {
+            matches!(&inst.kind, InstKind::Builtin { dest: Some(dest), name, .. }
+                if name == "Table.slot_live" && *cond == Operand::Local(*dest))
+        })
+    };
+    // From the body, every way back round to the header without an append. A way out of the
+    // loop isn't a turn: it appends no more than the turns before it.
+    let mut seen = HashSet::new();
+    let mut waiting = vec![body_at];
+    while let Some(at) = waiting.pop() {
+        if at == header_at {
+            return false;
+        }
+        let Some(block) = function.blocks.get(at) else { continue };
+        if !looped.contains(&at)
+            || block.insts.iter().any(|inst| appends_to(&inst.kind, list))
+            || !seen.insert(at)
+        {
+            continue;
+        }
+        match &block.end {
+            Terminator::Branch { cond, then, .. } if slot_live(cond) => waiting.push(then.0),
+            end => waiting.extend(end.targets().iter().map(|next| next.0)),
+        }
+    }
+    true
 }
 
 /// How a list is made empty in the block before the loop that fills it.
@@ -4963,24 +5024,33 @@ mod tests {
     }
 
     /// A comprehension over a count from 0 or more fills its list with no room check: room
-    /// for every turn is made first, and nothing else touches the list while it's filled. A
-    /// filter appends at most once a turn too, past its test. One counting from below 0 or from
-    /// a variable could outgrow its room, and one appending in a loop inside the loop could
-    /// append more than once a turn, so those keep the check.
+    /// for every turn is made first, and nothing else touches the list while it's filled. So
+    /// does a walk through a `Table`'s live slots, and a named list, filled by one loop. One
+    /// counting from below 0 or from a variable could outgrow its room, and one appending in a
+    /// loop inside the loop could append more than once a turn, so those keep the check. A
+    /// filter may append on few turns, so no room is made for every one. What's known of a list
+    /// while its loop fills it goes by its local, so a list appended to outside the loop, after
+    /// it or in a second loop, keeps the check everywhere.
     #[test]
     fn only_a_list_filled_within_its_room_skips_the_check() -> Result<(), String> {
         let filled = |body: &str| format!("def go(n: int) -> int:\n{body}    return len(xs)\n");
         for body in [
             "    xs = [i * 2 for i in range(n)]\n",
             "    xs = [i for i in range(1, n)]\n",
-            "    xs = [i for i in range(n) if i % 2 == 0]\n",
+            "    mut xs = list[int]()\n    for i in range(n):\n        xs.append(i)\n",
         ] {
             assert!(within_room(&filled(body))?, "kept the check: {body}");
         }
+        let walked = "from std.collections import Table\n\nstruct Unit:\n    hp: int\n\ndef go(units: Table[Unit]) -> int:\n    hps = [unit.hp for unit in units]\n    return len(hps)\n";
+        assert!(within_room(walked)?, "kept the check: a walk through a Table");
         for body in [
             "    xs = [i for i in range(-3, n)]\n",
             "    start = n - 5\n    xs = [i for i in range(start, n)]\n",
             "    mut xs = list[int]()\n    for i in range(n):\n        for j in range(i):\n            xs.append(j)\n",
+            "    xs = [i for i in range(n) if i % 2 == 0]\n",
+            "    mut xs = list[int]()\n    for i in range(n):\n        if i > 3:\n            continue\n        xs.append(i)\n",
+            "    mut xs = list[int]()\n    for i in range(n):\n        xs.append(i)\n    xs.append(n)\n",
+            "    mut xs = list[int]()\n    for i in range(n):\n        xs.append(i)\n    for i in range(n):\n        xs.append(i)\n",
         ] {
             assert!(!within_room(&filled(body))?, "skipped the check: {body}");
         }

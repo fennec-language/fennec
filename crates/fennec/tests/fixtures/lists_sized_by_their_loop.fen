@@ -1,7 +1,9 @@
 # Lists a loop right after fills are made with room for every turn first, once the loop's count is
 # known: written `mut xs = list[int]()` as well as `xs = []`, several in one loop, and filled past
-# a test, as a walk through a `Table`'s live slots appends, or a comprehension with a filter. A
-# loop inside the loop could append more than once a turn, so that list keeps growing as it goes.
+# the test a walk through a `Table`'s live slots makes. A loop inside the loop could append more
+# than once a turn, and a filter may append on few turns, so those lists grow as they go. So does
+# a list appended to outside its loop too, after it or in another loop, and a `list[str]` joined
+# with "" is made as the string it's joined into, as it was.
 
 from std.collections import Id, Table
 
@@ -39,4 +41,31 @@ def main(stdout: Stdout):
         for spot in spots:
             seen.append(spot.across + turn)
         stdout.print(len(seen), seen[0], seen[len(seen) - 1])
+    # Zeros from a count, then one more after the loop.
+    mut counts = list[int]()
+    for _ in range(3):
+        counts.append(0)
+    counts.append(7)
+    stdout.print(counts)
+    # Filled by one loop, then grown well past that loop's room by another.
+    mut grown = list[int]()
+    for at in range(8):
+        grown.append(at)
+    for at in range(1000):
+        grown.append(at)
+    stdout.print(len(grown), grown[7], grown[1007])
+    # Filled, read, then made empty again and filled by a second loop.
+    mut again = list[int]()
+    for at in range(10):
+        again.append(at)
+    stdout.print(len(again))
+    again = []
+    for at in range(4):
+        again.append(at * 3)
+    stdout.print(len(again), again)
+    # Pieces joined with "", kept as the string they're joined into.
+    mut parts = list[str]()
+    for at in range(5):
+        parts.append(f"{at},")
+    stdout.print("".join(parts))
     return

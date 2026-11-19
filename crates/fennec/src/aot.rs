@@ -197,8 +197,14 @@ fn packed_note(sources: &fennec_syntax::Sources) -> Option<String> {
 
 /// What a build says it made.
 pub(crate) fn said_built(output: &Path, built: &Built) {
+    // How many functions' text was written, when the build used any again without writing it.
+    let written = if built.reused > 0 {
+        format!(" (wrote {} of {})", built.total.saturating_sub(built.reused), built.total)
+    } else {
+        String::new()
+    };
     println!(
-        "🦊 built {} with LLVM: compiled {} of {} functions in {} ms, linked in {} ms",
+        "🦊 built {} with LLVM: compiled {} of {} functions in {} ms, linked in {} ms{written}",
         output.display(),
         built.fresh,
         built.total,
@@ -240,7 +246,7 @@ pub(crate) fn tracing_executable(
     output: &Path,
 ) -> Result<(std::collections::BTreeMap<u32, String>, fennec_ir::Program), String> {
     let reached = main_reaches(&program.module);
-    let emitted = emitted_with(&reached, fennec_llvm::emit_tracing_costs, false, None)?;
+    let emitted = emitted_with(&reached, &fennec_llvm::emit_tracing_costs, false, None)?;
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
             sources: program.sources.clone(),
@@ -276,6 +282,8 @@ pub(crate) struct Built {
     /// How many functions the program has, and how many weren't in the cache.
     pub(crate) total: usize,
     pub(crate) fresh: usize,
+    /// How many were used again as the last build kept them, without writing their text.
+    pub(crate) reused: usize,
     pub(crate) compiled: std::time::Duration,
     pub(crate) linked: std::time::Duration,
     /// Its place in the store, when there's one: what a run of the same program can start from.
@@ -329,8 +337,28 @@ pub(crate) fn executable_checked(
     release: bool,
     checked: Option<fennec_check::Signatures>,
 ) -> Result<Built, String> {
+    match built_and_linked(program, output, release, (checked.clone(), true)) {
+        // A unit used again has no text to compile again from, so when its object goes from the
+        // cache before the link, the build is made again writing every unit.
+        Err(why) if why == fennec_llvm::USED_AGAIN_OBJECT_GONE => {
+            eprintln!(
+                "note: a cleanup took the compiled object of a function this build used again, so it wrote every function again"
+            );
+            built_and_linked(program, output, release, (checked, false))
+        }
+        other => other,
+    }
+}
+
+/// [`executable_checked`]'s build, using units again when `reusing` (a dev build only).
+fn built_and_linked(
+    program: &fennec_kit::Program,
+    output: &Path,
+    release: bool,
+    (checked, reusing): (Option<fennec_check::Signatures>, bool),
+) -> Result<Built, String> {
     let started = Instant::now();
-    let (built, units) = llvm_objects(program, release, checked)?;
+    let (built, units) = llvm_objects(program, release, (checked, reusing))?;
     let compiled = started.elapsed();
     // A release built with the runtime's bitcode has its Rust inside already.
     let runtime_in = release && runtime_bitcode(built.runtime, built.statically).is_some();
@@ -338,7 +366,7 @@ pub(crate) fn executable_checked(
     // taking another way.
     let linked = finish(&built, output, runtime_in, &units)?;
     let root = built.stored.as_ref().map(|stored| stored.root.clone());
-    Ok(Built { total: built.total, fresh: built.fresh, compiled, linked, root })
+    Ok(Built { total: built.total, fresh: built.fresh, reused: built.reused, compiled, linked, root })
 }
 
 /// Puts the finished program in the store under `root` at `output`, if it's there.
@@ -521,7 +549,6 @@ struct Stored {
     cache: fennec_build::Cache,
     root: String,
     functions: String,
-    hashes: Vec<fennec_blake3::Hash>,
     program: Option<Vec<u8>>,
 }
 
@@ -538,10 +565,9 @@ fn root_hash(
     (entry, llvm): (&str, &str),
     runtime: Runtime,
     (release, statically): (bool, bool),
-) -> (String, String, Vec<fennec_blake3::Hash>) {
-    let texts: Vec<fennec_blake3::Hash> =
-        units.iter().map(|unit| fennec_blake3::hash(unit.text.as_bytes())).collect();
-    let functions: Vec<String> = texts.iter().map(fennec_blake3::Hash::to_hex).collect();
+) -> (String, String) {
+    // Each unit's hash was taken as its text was written, or kept with a unit used again.
+    let functions: Vec<String> = units.iter().map(|unit| unit.hash.to_hex()).collect();
     let mut hasher = fennec_blake3::Hasher::new_derive_key("fennec build root 2026-11-07");
     let baseline = BASELINE.load(std::sync::atomic::Ordering::Relaxed);
     // Every switch that changes what's built, so a program built one way is never handed back for
@@ -581,7 +607,7 @@ fn root_hash(
         hasher.update(function.as_bytes());
     }
     hasher.update(fennec_blake3::hash(entry.as_bytes()).to_hex().as_bytes());
-    (hasher.finalize().to_hex(), functions.join("\n"), texts)
+    (hasher.finalize().to_hex(), functions.join("\n"))
 }
 
 /// What compiling a program with LLVM gives.
@@ -591,6 +617,8 @@ struct Compiled {
     total: usize,
     /// How many of them weren't already in the cache.
     fresh: usize,
+    /// How many were used again as kept, without writing their text (see [`emitted_reusing`]).
+    reused: usize,
     /// The runtime the objects link against.
     runtime: Runtime,
     /// Whether the program makes requests, so it links what TLS needs.
@@ -614,7 +642,12 @@ struct Emitted {
 
 /// Lowers a trimmed program and writes its text, or says why LLVM can't.
 fn emitted(reached: &fennec_syntax::Module, traced: bool) -> Result<Emitted, String> {
-    emitted_with(reached, if traced { fennec_llvm::emit_traced } else { fennec_llvm::emit_for }, traced, None)
+    emitted_with(
+        reached,
+        if traced { &fennec_llvm::emit_traced } else { &fennec_llvm::emit_for },
+        traced,
+        None,
+    )
 }
 
 /// What LLVM emits for a program: each function's text, and what they share.
@@ -624,7 +657,7 @@ type Emits = Result<(Vec<fennec_llvm::Unit>, fennec_llvm::Shared, fennec_llvm::L
 /// tests, whose network is a fake.
 fn emitted_with(
     reached: &fennec_syntax::Module,
-    emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
+    emit: &dyn Fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
     tests: bool,
     checked: Option<fennec_check::Signatures>,
 ) -> Result<Emitted, String> {
@@ -650,7 +683,7 @@ fn emitted_with(
 /// What LLVM emits for a trimmed program, with its calls as they are.
 fn emitted_as_written(
     reached: &fennec_syntax::Module,
-    emit: fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
+    emit: &dyn Fn(&fennec_ir::Program, fennec_llvm::Cpu) -> Emits,
     tests: bool,
     checked: Option<fennec_check::Signatures>,
 ) -> Result<Emitted, String> {
@@ -861,7 +894,7 @@ fn defined_keys(module: &fennec_syntax::Module) -> std::collections::BTreeSet<St
 fn llvm_objects(
     program: &fennec_kit::Program,
     release: bool,
-    checked: Option<fennec_check::Signatures>,
+    (checked, reusing): (Option<fennec_check::Signatures>, bool),
 ) -> Result<(Compiled, Vec<fennec_llvm::Unit>), String> {
     // A release build leaves native blocks unwatched, paying nothing for it; a dev build tells
     // the runtime of each, for it to stop if it's ever given one.
@@ -870,7 +903,11 @@ fn llvm_objects(
     // Cutting it down only lets items go, so what was checked holds for what's left once what was
     // cut is let go of too.
     let checked = checked.map(|checked| checked.cut_to(&cut_keys(&program.module, &reached)));
-    let emitted = emitted_with(&reached, fennec_llvm::emit_for, false, checked)?;
+    let emitted = if !release && reusing {
+        emitted_reusing(program, &reached, checked)?
+    } else {
+        emitted_with(&reached, &fennec_llvm::emit_for, false, checked)?
+    };
     let image_of = |image: &mut fennec_llvm::Image| {
         fennec_rt::embed::codec::Image {
             sources: if release { portable_sources(program) } else { program.sources.clone() },
@@ -885,6 +922,46 @@ fn llvm_objects(
     // Kept for compiling again any kept object a cleanup takes before the link.
     Ok((compiled, emitted.units))
 }
+
+/// A dev build's text, using again each unit the last build of this program kept whose function,
+/// and everything it read, are as they were, so it isn't written or compiled again (edit builds,
+/// stage 1). What's kept is one cache entry for the program, named by where its first file is,
+/// written after every build. `FENNEC_CACHE_AUDIT=1` writes every unit used again anyway and
+/// checks it comes out as it was kept. Without a cache, every unit is written, as always.
+fn emitted_reusing(
+    program: &fennec_kit::Program,
+    reached: &fennec_syntax::Module,
+    checked: Option<fennec_check::Signatures>,
+) -> Result<Emitted, String> {
+    let cache = fennec_build::fennec_home()
+        .filter(|_| std::env::var_os("FENNEC_NO_CACHE").is_none())
+        .map(|home| fennec_build::Cache::new(&home));
+    let first = program.sources.files().next().map(|(shown, _)| shown.to_owned());
+    let named = first.and_then(|shown| std::fs::canonicalize(shown).ok());
+    let (Some(cache), Some(named)) = (cache, named) else {
+        return emitted_with(reached, &fennec_llvm::emit_for, false, checked);
+    };
+    let key = fennec_blake3::hash(named.as_os_str().as_encoded_bytes()).to_hex();
+    let tools = fennec_llvm::Tools::find()?;
+    let has_object = fennec_llvm::has_object(&cache, &tools)?;
+    let reuse = std::cell::RefCell::new(fennec_llvm::Reuse {
+        kept: cache.read(UNITS, &key),
+        has_object: &has_object,
+        audit: std::env::var("FENNEC_CACHE_AUDIT").as_deref() == Ok("1"),
+        keep: None,
+    });
+    let emit = |lowered: &fennec_ir::Program, cpu: fennec_llvm::Cpu| {
+        fennec_llvm::emit_reusing(lowered, cpu, &mut reuse.borrow_mut())
+    };
+    let emitted = emitted_with(reached, &emit, false, checked)?;
+    if let Some(index) = reuse.borrow_mut().keep.take() {
+        fennec_build::kept("keep what the build's units read", cache.write(UNITS, &key, &index));
+    }
+    Ok(emitted)
+}
+
+/// The store's kind for each program's index of kept units (see [`emitted_reusing`]).
+const UNITS: &str = "units";
 
 /// Compiles what LLVM has text for, with the module made fresh each build from `entry_of`.
 fn compile_emitted(
@@ -921,15 +998,16 @@ fn compile_emitted(
     // A build that's been made before is in the store whole, under its root hash.
     let llvm = tools.version()?;
     let stored = cache.clone().map(|cache| {
-        let (root, functions, hashes) = root_hash(units, (&entry, &llvm), runtime, (release, statically));
+        let (root, functions) = root_hash(units, (&entry, &llvm), runtime, (release, statically));
         let program = cache.read(PROGRAMS, &root);
-        Stored { cache, root, functions, hashes, program }
+        Stored { cache, root, functions, program }
     });
     if stored.as_ref().is_some_and(|stored| stored.program.is_some()) {
         return Ok(Compiled {
             objects: Vec::new(),
             total: units.len(),
             fresh: 0,
+            reused: units.iter().filter(|unit| unit.text.is_empty()).count(),
             runtime,
             tls,
             statically,
@@ -947,8 +1025,7 @@ fn compile_emitted(
             runtime_bitcode(runtime, statically).as_deref(),
         )
     } else {
-        let cached = stored.as_ref().map(|stored| (&stored.cache, stored.hashes.as_slice()));
-        fennec_llvm::compile(&tools, units, &entry, cached, &work)
+        fennec_llvm::compile(&tools, units, &entry, stored.as_ref().map(|stored| &stored.cache), &work)
     };
     // `FENNEC_LLVM_KEEP` leaves the modules' text to look at.
     if std::env::var_os("FENNEC_LLVM_KEEP").is_none() {
@@ -959,6 +1036,7 @@ fn compile_emitted(
         objects: built.objects,
         total: units.len(),
         fresh: built.compiled,
+        reused: units.iter().filter(|unit| unit.text.is_empty()).count(),
         runtime,
         tls,
         statically,
@@ -1406,7 +1484,7 @@ mod tests {
     /// else here: the same build with the same LLVM has the same root.
     #[test]
     fn a_root_hash_changes_with_the_llvm_that_compiles_it() {
-        let units = [fennec_llvm::Unit { function: "f".to_owned(), text: "define i64 @f() {}".to_owned() }];
+        let units = [fennec_llvm::Unit::written("f".to_owned(), "define i64 @f() {}".to_owned())];
         let root =
             |llvm: &str| super::root_hash(&units, ("entry", llvm), super::Runtime::Plain, (false, false)).0;
         assert_eq!(root("LLVM version 21.1.0"), root("LLVM version 21.1.0"));

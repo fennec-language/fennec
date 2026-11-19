@@ -334,8 +334,18 @@ pub(crate) const RANDOM_PROGRAMS: Target = Target {
     stuck: Duration::from_secs(60),
 };
 
+/// Tasks and a server's rounds that print and make way, recorded on 1 and 4 threads and each
+/// recording replayed on 1, 4 and 16, which runs only when named, since it runs every input 8 times.
+pub(crate) const REPLAY: Target = Target {
+    name: "replay",
+    corpus: &["crates/fuzz/seeds/replay"],
+    tokens: &ANYTHING,
+    run: crate::replay_rules::replay,
+    stuck: Duration::from_secs(60),
+};
+
 pub(crate) fn find(name: &str) -> Option<&'static Target> {
-    TARGETS.iter().chain([&UTF8, &LLVM, &RANDOM_PROGRAMS]).find(|target| target.name == name)
+    TARGETS.iter().chain([&UTF8, &LLVM, &RANDOM_PROGRAMS, &REPLAY]).find(|target| target.name == name)
 }
 
 impl Target {
